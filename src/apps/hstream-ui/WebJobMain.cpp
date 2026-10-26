@@ -1175,8 +1175,8 @@ QJsonObject replay(const Request& request) {
 void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts) {
   if (request.operation == "rink-map-check")
     return;
-  if (request.operation != "calibration-complete" && request.operation != "calibration-controls-stage" &&
-      request.operation.rfind("matches-", 0) != 0 &&
+  if (request.operation != "calibration-complete" && request.operation != "calibration-clean" &&
+      request.operation != "calibration-controls-stage" && request.operation.rfind("matches-", 0) != 0 &&
       request.operation.rfind("experiment-", 0) != 0 && request.operation.rfind("rink-map-", 0) != 0 &&
       request.operation.rfind("calibration-view-", 0) != 0)
     return;
@@ -1191,7 +1191,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
         continue;
       }
       const auto name = path.filename().string();
-      if (iterator->is_directory() && name.size() > 3 && name.rfind("cam", 0) == 0 &&
+      if (request.operation != "calibration-clean" && iterator->is_directory() && name.size() > 3 &&
+          name.rfind("cam", 0) == 0 &&
           std::all_of(name.begin() + 3, name.end(), [](unsigned char c) { return std::isdigit(c); })) {
         iterator.disable_recursion_pending();
         continue;
@@ -1249,7 +1250,7 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
     return hm::web::RunCalibrationControlsStage(request, [] { return interrupted != 0; });
   if (request.operation == "camera-experiment")
     return hm::web::RunCameraExperiment(request, artifacts, preview_port, [] { return interrupted != 0; });
-  if (request.operation.rfind("calibration-view-", 0) == 0)
+  if (request.operation == "calibration-clean" || request.operation.rfind("calibration-view-", 0) == 0)
     return hm::web::RunSavedCalibration(request, artifacts, [] { return interrupted != 0; });
   if (request.operation.rfind("rink-map-", 0) == 0)
     return hm::web::RunRinkMap(request, artifacts, [] { return interrupted != 0; });
@@ -1362,7 +1363,8 @@ int main(int argc, char** argv) {
     return 0;
   }
   if ((argc != 3 && argc != 4) || std::string(argv[1]) != "--request") {
-    std::cerr << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities | --runtime-defaults\n";
+    std::cerr
+        << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities | --runtime-defaults\n";
     return 64;
   }
   if (argc == 4) {

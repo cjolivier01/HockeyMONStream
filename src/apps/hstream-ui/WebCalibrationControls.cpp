@@ -300,6 +300,49 @@ void remove_native_aliases(YAML::Node config, const QJsonObject& before, const Q
 }
 } // namespace
 
+void ApplySavedCalibrationControlEdits(YAML::Node& config, const QJsonObject& before, const QJsonObject& desired) {
+  validate_controls(before);
+  validate_controls(desired);
+  const auto baseline = take(hm::baseline_config::load()).values;
+  auto previous_defaults = YAML::Clone(baseline);
+  merge(previous_defaults, YAML::Load(QJsonDocument(before).toJson().toStdString()));
+  auto previous_effective = YAML::Clone(previous_defaults);
+  merge(previous_effective, config);
+  previous_effective["stitching"]["max_output_width"] =
+      take(st::ResolveStitchingCalibrationMaxWidth(config, previous_defaults));
+  st::PreserveLegacyInputLensSelection(previous_effective, config);
+  const auto saved = take(st::ReadStitchingCalibrationState(config, previous_effective));
+
+  auto prepared = YAML::Clone(config);
+  apply_changes(prepared, before, desired);
+  remove_native_aliases(prepared, before, desired);
+  const auto previous_stitching = before.value("stitching").toObject();
+  const auto desired_stitching = desired.value("stitching").toObject();
+  const auto previous_state = before.value("hstream_ui").toObject().value("stitching_calibration").toObject();
+  const auto desired_state = desired.value("hstream_ui").toObject().value("stitching_calibration").toObject();
+  if (previous_stitching.value("calibration_frame_count") == desired_stitching.value("calibration_frame_count"))
+    prepared["stitching"]["calibration_frame_count"] =
+        previous_state.value("frame_count") != desired_state.value("frame_count") &&
+            !desired_state.value("frame_count").isUndefined()
+        ? at(prepared, {"hstream_ui", "stitching_calibration", "frame_count"}).as<int>()
+        : saved.controls.frame_count;
+  auto defaults = YAML::Clone(baseline);
+  merge(defaults, YAML::Load(QJsonDocument(desired).toJson().toStdString()));
+  auto effective = YAML::Clone(defaults);
+  merge(effective, prepared);
+  effective["stitching"]["max_output_width"] = take(st::ResolveStitchingCalibrationMaxWidth(prepared, defaults));
+  st::PreserveLegacyInputLensSelection(effective, prepared);
+  if (previous_stitching.value("control_point_limit") != desired_stitching.value("control_point_limit"))
+    effective["hstream_ui"]["stitching_calibration"]["control_points"] =
+        at(effective, {"stitching", "control_point_limit"}).as<int>();
+  take(
+      st::ApplyStitchingCalibrationInputEdits(
+          saved, take(st::ReadStitchingCalibrationControls(effective)), false, false, prepared));
+  config = std::move(prepared);
+  // A source-bound explicit release arrives as auto_input_lens_frozen=false.
+  // Manual FOV edits alone must not release a frozen automatic lens component.
+}
+
 QJsonObject RunCalibrationControlsStage(const Request& request, const std::function<bool()>& cancelled) {
   const auto& payload = request.payload;
   require(
@@ -310,7 +353,10 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   // source identity is one object so its generation and config bytes cannot be
   // confused with the new run's owner or its post-cleanup artifact set.
   const auto source = payload.value("source").toObject();
-  require(source.size() == 2, "Calibration source requires generation and config_sha256");
+  const bool cleaned_source = source.value("cleaned").isBool() && source.value("cleaned").toBool();
+  require(
+      source.size() == (cleaned_source ? 3 : 2),
+      "Calibration source requires generation, config_sha256 and optional verified cleanup");
   std::optional<std::string> source_generation;
   if (!source.value("generation").isNull())
     source_generation = RequiredString(source, "generation", 1024 * 1024).toStdString();
@@ -349,18 +395,34 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
         source_generation ? output_generation.IsScalar() && output_generation.as<std::string>() == *source_generation
                           : !output_generation.IsDefined() || output_generation.IsNull(),
         "Calibration staging requires the exact saved output generation or its absence");
+    const auto status = at(original, {"hstream_ui", "stitching_calibration", "status"});
     require(
-        at(original, {"hstream_ui", "stitching_calibration", "status"}).as<std::string>() == "complete" &&
+        (cleaned_source ? !status.IsDefined() && !source_generation
+                        : status.IsScalar() && status.as<std::string>() == "complete") &&
             !st::HasStitchingReframeIntent(original),
-        "Calibration staging requires a completed source without a pending reframe");
+        "Calibration staging requires completed calibration or an explicitly cleaned source without a pending reframe");
     const auto rink = at(original, {"rink"});
     for (const auto& item : rink)
       require(
           item.first.as<std::string>().rfind("stitched_output_pending_", 0) != 0,
           "Calibration staging cannot adopt a pending live authorization");
-    const auto generation = take(st::stitch_artifact_preflight_generation_id_locked(request.game));
-    if (source_generation)
-      check(st::validate_stitched_output_generation_hugin(*source_generation, generation));
+    if (cleaned_source) {
+      for (const char* name :
+           {"stitching_generation_id",
+            "stitching_canvas_provenance",
+            "autooptimiser_out.pto",
+            "hm_project.pto",
+            "panorama.tif",
+            "seam_file.png"})
+        require(!fs::exists(request.game / name), "Cleaned calibration still contains retired solve artifacts");
+      auto pruned = YAML::Clone(original);
+      st::RemoveManualStitchingCleanConfigKeys(pruned);
+      require(YAML::Dump(pruned) == YAML::Dump(original), "Cleaned calibration still contains retired solve state");
+    } else {
+      const auto generation = take(st::stitch_artifact_preflight_generation_id_locked(request.game));
+      if (source_generation)
+        check(st::validate_stitched_output_generation_hugin(*source_generation, generation));
+    }
     // Authenticate the saved tuple against its own frozen form, never the
     // account defaults admitted for the next run. Private saved geometry wins
     // over that lower layer, including hidden crop and leveling controls.

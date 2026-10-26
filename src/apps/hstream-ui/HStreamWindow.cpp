@@ -3971,51 +3971,7 @@ bool invalidate_scoreboard_geometry(YAML::Node& config) {
 }
 
 int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
-  int removed = 0;
-  // These are results of the previous calibration, including its crop-review
-  // acknowledgement. Leave the selected projection, camera, sampling and rink
-  // profile intact, but require new leveling/crop decisions after a manual clean.
-  removed += remove_yaml_path(config, {"hstream_ui", "projection_crop_geometry"}) ? 1 : 0;
-  for (const char* key : {"crop", "auto_crop", "rotation_degrees"}) {
-    removed += remove_yaml_path(config, {"stitching", "projection_framing", key}) ? 1 : 0;
-    // A generated backend override can restore its previous private framing
-    // during reload; neither copy may bring the cleaned calibration back.
-    if (remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices", "projection_framing", key}))
-      ++removed;
-    if (remove_yaml_path(
-            config, {"hstream_ui", "generated_stitching_backend_choices", "previous_projection_framing", key}))
-      ++removed;
-  }
-  YAML::Node stitching_config;
-  YAML::Node selected_frames;
-  if (!lookup_yaml_key(config, "stitching", &stitching_config) ||
-      !lookup_yaml_key(stitching_config, "calibration_frame_selection", &selected_frames) || selected_frames.IsNull()) {
-    removed += remove_yaml_path(config, {"stitching", "frame_offsets"}) ? 1 : 0;
-    removed += remove_yaml_path(config, {"game", "stitching", "frame_offsets"}) ? 1 : 0;
-  }
-  removed += remove_yaml_path(config, {"stitching", "control_points"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"game", "stitching", "control_points"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"stitching", "generated_field_mask_post_stitch_rotate_degrees"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_authorization_id"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_owner_process"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
-  removed += invalidate_scoreboard_geometry(config) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "status"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "rink_mask_status"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "stale_from"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "invalidation_id"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "backend_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "reframe"}) ? 1 : 0;
-  return removed;
+  return hm::stitching::RemoveManualStitchingCleanConfigKeys(config);
 }
 
 bool lookup_yaml_path_at(const YAML::Node& node, const QStringList& parts, int index, YAML::Node* value) {

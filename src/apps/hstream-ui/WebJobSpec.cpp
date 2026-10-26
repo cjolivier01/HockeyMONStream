@@ -84,6 +84,7 @@ void WriteObject(const fs::path& path, const QJsonObject& value) {
 QJsonObject Capabilities() {
   const QJsonArray operations{
       "calibration-complete",
+      "calibration-clean",
       "calibration-still-read",
       "detector-controls-read",
       "calibration-view-read",
@@ -147,7 +148,8 @@ QJsonObject Capabilities() {
            "saved-calibration-reset-v1",
            "calibration-view-rotation-stage-v1",
            "calibration-controls-stage-v1",
-           "calibration-controls-stage-v2"}},
+           "calibration-controls-stage-v2",
+           "calibration-clean-v1"}},
       {"maximum_request_bytes", int(kMaximumRequestBytes)},
       {"maximum_result_bytes", int(kMaximumResultBytes)}};
 }

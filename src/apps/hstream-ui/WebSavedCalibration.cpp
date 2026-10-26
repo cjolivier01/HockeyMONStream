@@ -11,6 +11,7 @@
 #include <QtGui/QImageReader>
 #include <cmath>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -18,12 +19,14 @@
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkMapBackend.h"
 #include "src/apps/hstream-ui/StitchingStillImage.h"
+#include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebRinkEditor.h"
 
 namespace hm::web {
@@ -461,6 +464,71 @@ QString ExportSavedCalibrationPreview(
 }
 
 QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, const std::function<bool()>& cancelled) {
+  if (request.operation == "calibration-clean") {
+    const bool controls = request.payload.contains("before_controls") && request.payload.contains("desired_controls");
+    require(request.payload.size() == (controls ? 3 : 1), "Clean Stitching requires its exact private config identity");
+    if (controls)
+      require(
+          request.payload.value("before_controls").isObject() && request.payload.value("desired_controls").isObject(),
+          "Clean Stitching requires saved control objects");
+    const auto expected = RequiredString(request.payload, "config_sha256", 64);
+    require(QRegularExpression("^[0-9a-f]{64}$").match(expected).hasMatch(), "Invalid Clean Stitching config identity");
+    const auto read_config = [&] {
+      return take(
+          rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "clean config"));
+    };
+    const auto digest = [](const std::string& bytes) {
+      return QString::fromLatin1(
+          QCryptographicHash::hash(QByteArray::fromStdString(bytes), QCryptographicHash::Sha256).toHex());
+    };
+    require(digest(read_config()) == expected, "Clean Stitching config changed before cleanup");
+    // Cleanup can remove extracted camera PNGs. Camera directories must be
+    // private real directories; only admitted recording files may be aliases.
+    std::set<fs::path> media;
+    for (const auto& value : request.authorized_media) {
+      require(value.isString(), "Invalid Clean Stitching recording authorization");
+      const fs::path path(value.toString().toStdString());
+      require(path.is_absolute() && fs::is_regular_file(path), "Missing authorized Clean Stitching recording");
+      media.insert(fs::canonical(path));
+    }
+    size_t entries = 0;
+    for (fs::recursive_directory_iterator entry(request.game), end; entry != end; ++entry) {
+      require(++entries <= 100000, "Clean Stitching workspace exceeds its entry bound");
+      if (entry->is_symlink()) {
+        const auto extension = QString::fromStdString(entry->path().extension().string()).toLower();
+        require(
+            extension == ".mp4" && entry->is_regular_file() && media.count(fs::canonical(entry->path())),
+            "Clean Stitching cannot follow a directory or calibration artifact alias");
+      }
+    }
+    require(!cancelled || !cancelled(), "Clean Stitching cancelled");
+    if (controls) {
+      auto transaction = take(rink::GameConfigTransactionLock::Acquire(request.game));
+      const auto bytes = read_config();
+      require(digest(bytes) == expected, "Clean Stitching config changed before applying saved controls");
+      auto config = YAML::Load(bytes);
+      ApplySavedCalibrationControlEdits(
+          config,
+          request.payload.value("before_controls").toObject(),
+          request.payload.value("desired_controls").toObject());
+      check(rink::publish_game_config(request.game, YAML::Dump(config) + "\n"));
+    }
+    check(rink::clean_stitching_artifacts(request.game.string()));
+    int removed = 0;
+    {
+      auto transaction = take(rink::GameConfigTransactionLock::Acquire(request.game));
+      auto config = YAML::Load(read_config());
+      require(config.IsMap(), "Clean Stitching config must be a map");
+      removed = rink::RemoveManualStitchingCleanConfigKeys(config);
+      require(!cancelled || !cancelled(), "Clean Stitching cancelled");
+      check(rink::publish_game_config(request.game, YAML::Dump(config) + "\n"));
+    }
+    return {
+        {"calibration_clean_version", 1},
+        {"cleaned", true},
+        {"removed_config_keys", removed},
+        {"config_sha256", digest(read_config())}};
+  }
   if (request.operation == "calibration-view-reset")
     return reset_view(request, cancelled);
   if (request.operation == "calibration-view-rotation-stage") {

@@ -540,6 +540,27 @@ identity receipts. `desired_generation` describes the source dimensions with
 the requested rotation; startup owns publication of the actual output geometry
 and regenerated downstream artifacts.
 
+`calibration-clean` (`calibration-clean-v1`) runs the desktop Clean Stitching
+policy in a private successor. Its payload contains the exact `config_sha256`
+and, when saved controls changed since the selected source, paired
+`before_controls` and `desired_controls` objects using the controls-stage schema.
+It calls native artifact cleanup and the same config-pruning function used by
+Qt. Sampling, iteration settings, selected frame plans and frozen optics survive;
+the solved geometry, crop/leveling review, output identities and scoreboard
+corners do not. Directory/calibration aliases are rejected before deletion;
+only explicitly authorized recording-file aliases may remain. The result binds
+`calibration_clean_version: 1`, `cleaned: true`, the removed-key count and final
+config hash to the ordinary file-identity receipt.
+
+The outer service adopts this successor only after supervised cleanup and
+verified publication, while the source/settings admission fences still match.
+Cancellation or newer source/settings choices keep the previous selection.
+Next Play passes `source.cleaned: true` to controls staging only after verifying
+that Clean receipt. Native staging requires absent retired state and solve
+artifacts, then owns a fresh pending input solve. An incomplete source without
+this explicit receipt-backed marker is still rejected. Historical published
+calibrations are never deleted by cleaning a successor.
+
 `calibration-controls-stage` (`calibration-controls-stage-v2`) stages ordinary
 unsaved Play controls in a private copy of a completed calibration. Qt Play and
 this adapter call `StitchingCalibrationControls` for the dependency stage,
@@ -685,3 +706,9 @@ owns checked private copies, charged to its run allowance. A successful import
 receipt proves file/manifest validation; it does not qualify an engine against a
 different TensorRT release or GPU. Run the selected custom model on the intended
 compute host before claiming execution parity.
+
+Clean applies saved sampling edits through the same native input transition as Play.
+It resolves historical native frame-count aliases before applying edits, synchronizes
+the next-run count, and releases selected frames and affected manual matches when
+that count changes. A reference-time edit with an unchanged retained selection
+fails before cleanup; restore its time or explicitly select a different frame count.

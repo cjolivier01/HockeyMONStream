@@ -192,6 +192,78 @@ QJsonObject controls_payload(const fs::path& game, const QJsonObject& before, co
       {"sources", QJsonArray{}}};
 }
 
+void clean_stitching(const QString& binary, const fs::path& source) {
+  const auto original = read(source / "config.yaml");
+  for (const char* kind : {"clean", "hash", "directory-alias", "artifact-alias", "unclaimed-clean", "retired-state"}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    auto config = YAML::LoadFile((game / "config.yaml").string());
+    config["stitching"]["auto_input_lens_frozen"] = true;
+    config["hstream_ui"]["show_crop_dialog"] = true;
+    config["hstream_ui"]["show_leveling_dialog"] = true;
+    write(game / "config.yaml", YAML::Dump(config));
+    const std::string name(kind);
+    const bool rejected = name == "hash" || name == "directory-alias" || name == "artifact-alias";
+    if (name == "directory-alias")
+      fs::create_directory_symlink(source, game / "cam1");
+    if (name == "artifact-alias") {
+      fs::remove(game / "left.png");
+      fs::create_symlink(source / "left.png", game / "left.png");
+    }
+    const auto initial = read(game / "config.yaml");
+    const auto cleaned = invoke(
+        binary,
+        root,
+        "calibration-clean",
+        {{"config_sha256", name == "hash" ? QString(64, '0') : digest(initial)}},
+        !rejected);
+    if (rejected) {
+      expect(
+          read(game / "config.yaml") == initial && fs::exists(game / "hm_project.pto"),
+          "Rejected Clean must leave private config and calibration untouched");
+      continue;
+    }
+    auto stored = YAML::LoadFile((game / "config.yaml").string());
+    expect(
+        cleaned.value("cleaned").toBool() &&
+            cleaned.value("config_sha256").toString() == digest(read(game / "config.yaml")) &&
+            !fs::exists(game / "hm_project.pto") && !fs::exists(game / "mapping_0000.tif") &&
+            !fs::exists(game / "stitching_generation_id") && !stored["hstream_ui"]["stitching_calibration"]["status"] &&
+            stored["stitching"]["auto_input_lens_frozen"].as<bool>() &&
+            stored["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1500 &&
+            stored["hstream_ui"]["show_crop_dialog"].as<bool>() &&
+            stored["hstream_ui"]["show_leveling_dialog"].as<bool>(),
+        "Clean retires the solve while preserving sampling, iteration and frozen optics");
+    if (name == "retired-state") {
+      stored["rink"]["stitched_output_pending_generation"] = "old-generation";
+      write(game / "config.yaml", YAML::Dump(stored));
+    }
+    QJsonObject identity{{"generation", QJsonValue::Null}, {"config_sha256", digest(read(game / "config.yaml"))}};
+    if (name != "unclaimed-clean")
+      identity["cleaned"] = true;
+    const auto staged = invoke(
+        binary,
+        root,
+        "calibration-controls-stage",
+        {{"version", 1},
+         {"source", identity},
+         {"before_controls", QJsonObject{}},
+         {"desired_controls", QJsonObject{}},
+         {"defaults", QJsonObject{}},
+         {"sources", QJsonArray{}}},
+        name == "clean");
+    if (name == "clean")
+      expect(
+          staged.value("pending").toBool() && !staged.value("alignment_reused").toBool() &&
+              staged.value("start_stage").toString() == "input" && staged.value("cleanup_completed").toBool(),
+          "The next Play after Clean must own a fresh input solve, never reuse old alignment");
+  }
+  expect(
+      read(source / "config.yaml") == original && fs::exists(source / "hm_project.pto"),
+      "Cleaning private descendants must never change the historical source");
+}
+
 void controls_staging(const QString& binary, const fs::path& source) {
   const auto original = read(source / "config.yaml");
   for (const char* kind :
@@ -791,6 +863,7 @@ int main(int argc, char** argv) {
     const auto opened = invoke(argv[1], root, "calibration-view-read", {{"kind", "leveling"}});
     controls_staging(argv[1], game);
     controls_staging_regressions(argv[1], game);
+    clean_stitching(argv[1], game);
     const auto snap = opened.value("snapshot");
     expect(opened.value("image_sizes").toArray().size() == 2, "Original images must be exposed");
     // Reset only stages configuration. The selected source and its optimized

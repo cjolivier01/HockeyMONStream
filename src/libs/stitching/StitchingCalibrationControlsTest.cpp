@@ -205,9 +205,7 @@ void matrix(const fs::path& game) {
     require(
         plan.retain_selected_frames == (kind != "count" && kind != "time" && kind != "sources"),
         "Shared planner changed exact selected-frame retention");
-    require(
-        plan.retain_manual_matches == (kind == "backend" || kind == "sync"),
-        "Shared planner changed manual-match retention");
+    require(plan.retain_manual_matches == (kind == "backend"), "Shared planner changed manual-match retention");
     const auto cleanup = kind == "count" || kind == "time" || kind == "sources"
         ? st::StitchingCalibrationCleanup::kAll
         : st::StitchingCalibrationCleanup::kControlPoints;
@@ -301,12 +299,120 @@ void cleanup(const fs::path& game) {
 }
 } // namespace
 
+void manual_clean() {
+  for (const char* kind : {"unchanged", "count", "time", "count-time", "points", "sync"}) {
+    auto config = baseline(true, true);
+    const auto before = take(st::ReadStitchingCalibrationState(config, config));
+    auto desired = before.controls;
+    const std::string change(kind);
+    if (change == "count" || change == "count-time")
+      desired.frame_count = 3;
+    if (change == "time" || change == "count-time")
+      desired.frame_time = "00:00:09";
+    if (change == "points")
+      desired.control_points = 1777;
+    if (change == "sync")
+      desired.sync_method = desired.sync_method == "audio" ? "imu" : "audio";
+    const auto original = YAML::Dump(config);
+    const auto result = st::ApplyStitchingCalibrationInputEdits(before, desired, false, false, config);
+    if (change == "time") {
+      require(!result.ok() && YAML::Dump(config) == original, "Selected time conflict must reject without mutation");
+      continue;
+    }
+    const bool retained = take(result);
+    require(
+        retained == (change == "unchanged" || change == "points" || change == "sync"),
+        "Clean input retention differs from Play");
+    require(
+        bool(config["stitching"]["calibration_frame_selection"]) == retained, "Old selected plan survived count edit");
+    require(
+        bool(config["stitching"]["manual_control_points"]) == (change == "unchanged"),
+        "Manual matches outlived input edit");
+    st::RemoveManualStitchingCleanConfigKeys(config);
+    const auto reloaded = take(st::ReadStitchingCalibrationState(config, config));
+    require(
+        reloaded.controls.frame_count == desired.frame_count &&
+            reloaded.controls.control_points == desired.control_points &&
+            config["stitching"]["calibration_frame_count"].as<int>() == desired.frame_count,
+        "Clean reload restored stale native sampling aliases");
+  }
+  const auto original = YAML::Load(R"(
+stitching:
+  frame_offsets: {left: 12, right: 34}
+  control_points: [[1, 2, 3, 4]]
+  camera_config: manual
+  auto_input_lens_frozen: true
+  camera_fov: {horizontal_fov: 121.5}
+  mapping_backend: nona
+  projection_framing: {auto_fov: false, horizontal_fov: 202, auto_crop: false, crop: [0.1, 0.9, 0.2, 0.8], rotation_degrees: [0, -5, 2]}
+game:
+  name: Keep this game
+  videos: {left: [cam1/source.MP4], right: [cam2/source.MP4]}
+  stitching: {frame_offsets: {right: 34}, control_points: [[4, 3, 2, 1]]}
+hstream_ui:
+  projection_crop_geometry: reviewed
+  stitching_calibration: {control_points: 1700, frame_count: 3, status: complete, invalidation_id: old, backend_generation: old, reframe: true}
+  generated_stitching_backend_choices:
+    mapping_backend: nona
+    projection_framing: {horizontal_fov: 202, auto_crop: false, crop: [0.1, 0.9, 0.2, 0.8]}
+    previous_projection_framing: {horizontal_fov: 200, rotation_degrees: [0, -20, 3]}
+rink:
+  scoreboard: {enable: true, perspective_polygon: [1, 2, 3, 4]}
+  stitched_output_generation: old
+  ice_contours_mask_count: 1
+  tracking: {cam_ignore_largest_count: 2}
+pipeline:
+  hmplaycropper: {scoreboard-perspective-polygon: [1, 2, 3, 4]}
+  hmstitcher: {properties: {shadow-lift: 35}}
+)");
+  for (bool retain : {false, true}) {
+    auto config = YAML::Clone(original);
+    if (retain)
+      config["stitching"]["calibration_frame_selection"] = selected_plan(3);
+    const auto selection = YAML::Dump(config["stitching"]["calibration_frame_selection"]);
+    st::RemoveManualStitchingCleanConfigKeys(config);
+    require(
+        bool(config["stitching"]["frame_offsets"]) == retain,
+        "Clean must retain offsets exactly when paired inputs are retained");
+    require(
+        bool(config["game"]["stitching"]["frame_offsets"]) == retain,
+        "Legacy offsets must share retained-input ownership");
+    require(
+        !config["stitching"]["control_points"] && !config["hstream_ui"]["stitching_calibration"]["status"],
+        "Clean must retire prior solve state");
+    require(
+        !config["stitching"]["projection_framing"]["crop"] &&
+            !config["hstream_ui"]["generated_stitching_backend_choices"]["previous_projection_framing"]
+                   ["rotation_degrees"],
+        "Clean must retire current and generated framing reviews");
+    require(
+        config["rink"]["scoreboard"]["perspective_polygon"].IsNull() &&
+            !config["pipeline"]["hmplaycropper"]["scoreboard-perspective-polygon"],
+        "Clean must shadow inherited scoreboard geometry");
+    require(
+        config["stitching"]["auto_input_lens_frozen"].as<bool>() &&
+            config["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 121.5 &&
+            config["stitching"]["projection_framing"]["horizontal_fov"].as<int>() == 202,
+        "Clean must preserve operator optics and output controls");
+    require(
+        config["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1700 &&
+            config["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 3,
+        "Clean must preserve stored sampling choices");
+    require(
+        YAML::Dump(config["stitching"]["calibration_frame_selection"]) == selection &&
+            config["game"]["videos"]["left"][0].as<std::string>() == "cam1/source.MP4" &&
+            config["pipeline"]["hmstitcher"]["properties"]["shadow-lift"].as<int>() == 35,
+        "Clean must preserve retained evidence, original recordings and processing controls");
+  }
+}
+
 int main() {
   char path[] = "/tmp/stitching-controls-test-XXXXXX";
   const char* root = ::mkdtemp(path);
   if (!root)
     return 1;
   try {
+    manual_clean();
     matrix(root);
     cleanup(root);
     fs::remove_all(root);

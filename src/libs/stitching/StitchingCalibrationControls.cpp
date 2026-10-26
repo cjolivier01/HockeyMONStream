@@ -115,6 +115,68 @@ void release_inputs(YAML::Node& config, bool selected, bool manual, bool sources
 }
 } // namespace
 
+int RemoveManualStitchingCleanConfigKeys(YAML::Node& config) {
+  const auto remove = [&](std::initializer_list<const char*> path) {
+    auto parent = config;
+    for (auto key = path.begin(); key != path.end() - 1; ++key) {
+      if (!parent.IsMap())
+        return false;
+      const auto child = static_cast<const YAML::Node&>(parent)[*key];
+      if (!child.IsDefined())
+        return false;
+      parent.reset(child);
+    }
+    return parent.IsMap() && parent.remove(*(path.end() - 1));
+  };
+  int removed = 0;
+  // These are results of the previous calibration, including its crop-review
+  // acknowledgement. Leave the selected projection, camera, sampling and rink
+  // profile intact, but require new leveling/crop decisions after a manual clean.
+  removed += remove({"hstream_ui", "projection_crop_geometry"}) ? 1 : 0;
+  for (const char* key : {"crop", "auto_crop", "rotation_degrees"}) {
+    removed += remove({"stitching", "projection_framing", key}) ? 1 : 0;
+    // A generated backend override can restore its previous private framing
+    // during reload; neither copy may bring the cleaned calibration back.
+    if (remove({"hstream_ui", "generated_stitching_backend_choices", "projection_framing", key}))
+      ++removed;
+    if (remove({"hstream_ui", "generated_stitching_backend_choices", "previous_projection_framing", key}))
+      ++removed;
+  }
+  const auto selected_frames = at(config, {"stitching", "calibration_frame_selection"});
+  if (!selected_frames.IsDefined() || selected_frames.IsNull()) {
+    removed += remove({"stitching", "frame_offsets"}) ? 1 : 0;
+    removed += remove({"game", "stitching", "frame_offsets"}) ? 1 : 0;
+  }
+  removed += remove({"stitching", "control_points"}) ? 1 : 0;
+  removed += remove({"game", "stitching", "control_points"}) ? 1 : 0;
+  removed += remove({"stitching", "generated_field_mask_post_stitch_rotate_degrees"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_generation"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_pending_generation"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_pending_authorization_id"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_pending_owner_process"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
+  removed += remove({"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
+  remove({"rink", "stitched_output_pending_completed_scoreboard_polygon"});
+  remove({"rink", "stitched_output_pending_scoreboard_polygon_invalidated"});
+  remove({"pipeline", "hmplaycropper", "scoreboard-perspective-polygon"});
+  // Shadow inherited polygons instead of reviving them on the next merge.
+  config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+  ++removed;
+  removed += remove({"rink", "ice_contours_mask_count"}) ? 1 : 0;
+  removed += remove({"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
+  removed += remove({"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "status"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "rink_mask_status"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "stale_from"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "artifacts_invalidated"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "invalidation_id"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "backend_generation"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "reframe"}) ? 1 : 0;
+  return removed;
+}
+
 bool InvalidateStitchingSourceInputs(YAML::Node& config) {
   bool changed = false;
   const auto remove = [&](std::initializer_list<const char*> path, const char* key) {
@@ -265,6 +327,34 @@ absl::StatusOr<StitchingCalibrationState> ReadStitchingCalibrationState(
   }
 }
 
+absl::StatusOr<bool> ApplyStitchingCalibrationInputEdits(
+    const StitchingCalibrationState& before,
+    const StitchingCalibrationControls& desired,
+    bool force,
+    bool sources_changed,
+    YAML::Node& config) {
+  if (desired.control_points < 1 || desired.frame_count < 1 || desired.frame_count > kPlayerFrameMaximumPairs)
+    return absl::InvalidArgumentError("Calibration inputs require positive bounded controls");
+  const auto& saved = before.controls;
+  const bool retain_selected =
+      before.selected_frame_count.has_value() && saved.frame_count == desired.frame_count && !sources_changed;
+  const bool time_changed = !before.frame_time_valid || saved.frame_time != desired.frame_time;
+  if (time_changed && retain_selected)
+    return absl::FailedPreconditionError(
+        "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
+        "reference time, or explicitly change the frame count to select a new frame set.");
+  const bool matcher_changed = saved.matcher != desired.matcher || saved.resolution != desired.resolution ||
+      saved.execution_provider != desired.execution_provider || saved.filtering != desired.filtering;
+  const bool release_manual = force || sources_changed || time_changed || saved.sync_method != desired.sync_method ||
+      !before.control_points_present || saved.control_points != desired.control_points || !before.frame_count_present ||
+      saved.frame_count != desired.frame_count || matcher_changed || saved.camera != desired.camera;
+  release_inputs(config, saved.frame_count != desired.frame_count || sources_changed, release_manual, sources_changed);
+  config["stitching"]["calibration_frame_count"] = desired.frame_count;
+  config["hstream_ui"]["stitching_calibration"]["control_points"] = desired.control_points;
+  config["hstream_ui"]["stitching_calibration"]["frame_count"] = desired.frame_count;
+  return retain_selected;
+}
+
 absl::StatusOr<StitchingCalibrationPlan> PrepareStitchingCalibrationControlsLocked(
     const std::filesystem::path& game,
     const StitchingCalibrationState& before,
@@ -303,21 +393,13 @@ absl::StatusOr<StitchingCalibrationPlan> PrepareStitchingCalibrationControlsLock
     c.canvas_cleanup = canvas_cleanup;
     c.force = force;
     c.sources = sources_changed;
-    plan.retain_selected_frames =
-        before.selected_frame_count.has_value() && saved.frame_count == desired.frame_count && !sources_changed;
-    if (c.frame_time && plan.retain_selected_frames)
-      return absl::FailedPreconditionError(
-          "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
-          "reference time, or explicitly change the frame count to select a new frame set.");
     YAML::Node staged = YAML::Clone(desired_private);
     YAML::Node effective = YAML::Clone(desired_effective);
     const bool release_selection = saved.frame_count != desired.frame_count || sources_changed;
-    const bool release_manual =
-        force || sources_changed || c.frame_time || c.control_points || c.frame_count || c.matcher || c.camera;
     for (auto* config : {&staged, &effective}) {
-      release_inputs(*config, release_selection, release_manual, sources_changed);
-      (*config)["hstream_ui"]["stitching_calibration"]["control_points"] = desired.control_points;
-      (*config)["hstream_ui"]["stitching_calibration"]["frame_count"] = desired.frame_count;
+      HM_ASSIGN_OR_RETURN(
+          plan.retain_selected_frames,
+          ApplyStitchingCalibrationInputEdits(before, desired, force, sources_changed, *config));
     }
     // Synchronization and reference-time edits change alignment inputs even
     // when a simultaneous view edit would otherwise qualify for reframe.

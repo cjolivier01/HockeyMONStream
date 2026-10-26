@@ -53,6 +53,21 @@ absl::StatusOr<StitchingCalibrationState> ReadStitchingCalibrationState(
     const YAML::Node& private_config,
     const YAML::Node& effective);
 
+// Apply the shared sampling/input transition without disk I/O or a solve claim.
+// Returns whether the existing selected frames survive. Rejected time edits do
+// not mutate the document. Clean and Play use the same native state precedence.
+absl::StatusOr<bool> ApplyStitchingCalibrationInputEdits(
+    const StitchingCalibrationState& before,
+    const StitchingCalibrationControls& desired,
+    bool force,
+    bool sources_changed,
+    YAML::Node& config);
+
+// Exact manual Clean Stitching config policy shared by Qt and the web adapter.
+// Call after successful artifact cleanup under the game config transaction lock.
+// Preserve retained frame selections, operator controls and unrelated settings.
+int RemoveManualStitchingCleanConfigKeys(YAML::Node& config);
+
 // Camera-role edits invalidate oriented inputs and synchronization. Only active
 // config references are removed; immutable historical bundles stay untouched.
 bool InvalidateStitchingSourceInputs(YAML::Node& config);
