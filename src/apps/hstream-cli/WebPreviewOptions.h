@@ -2,6 +2,7 @@
 
 #include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
 #include "hstream/src/libs/program/PreviewOverlayRuntime.h"
+#include "hstream/src/libs/tracking/PlayTrackerRuntimeControls.h"
 
 #include <yaml-cpp/yaml.h>
 #include "absl/status/statusor.h"
@@ -65,6 +66,22 @@ struct WebPlayerDrawingRequest {
   unsigned layers{0};
   bool query{false};
 };
+
+struct WebCameraControlsRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  hm::tracking::CameraControlValues controls;
+  bool query{false};
+};
+absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
+    const std::string& json,
+    const hm::tracking::CameraControlValues& defaults,
+    bool query = false);
+std::string WebCameraControlsReply(
+    const WebCameraControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::tracking::CameraControlValues>& controls);
 
 struct WebScoreboardRequest {
   RouteOwner::Session session;

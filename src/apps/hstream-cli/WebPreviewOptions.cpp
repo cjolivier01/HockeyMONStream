@@ -326,6 +326,102 @@ std::string WebPreviewSeekReply(
   });
 }
 
+absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
+    const std::string& json,
+    const hm::tracking::CameraControlValues& defaults,
+    bool query) {
+  if (json.empty() || json.size() > 4096)
+    return absl::InvalidArgumentError("Camera controls JSON exceeds its limit");
+  const auto specs = hm::tracking::PlaytrackerControlSpecs(defaults);
+  if (!specs.ok())
+    return specs.status();
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebCameraControlsRequest request{};
+  request.query = query;
+  gint64 version = 0, stage = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  bool valid = object && json_object_get_size(object) == (query ? 5U : 6U) && Integer(object, "version", &version) &&
+      version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN && stage <= INT_MAX &&
+      String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64;
+  unsigned count = 0;
+  if (valid && !query) {
+    auto* controls_node = json_object_get_member(object, "controls");
+    auto* controls =
+        controls_node && JSON_NODE_HOLDS_OBJECT(controls_node) ? json_node_get_object(controls_node) : nullptr;
+    valid = controls && json_object_get_size(controls) > 0 && json_object_get_size(controls) <= specs->size();
+    if (valid) {
+      count = json_object_get_size(controls);
+      for (const auto& spec : *specs) {
+        auto* node = json_object_get_member(controls, spec.id);
+        if (!node)
+          continue;
+        const bool integer = JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_INT64;
+        const bool real = JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_DOUBLE;
+        if (!integer && !(real && std::string(spec.id) == "Oversized_Player_Percent")) {
+          valid = false;
+          break;
+        }
+        const double value = integer ? static_cast<double>(json_node_get_int(node)) : json_node_get_double(node);
+        if (!hm::tracking::ValidPlaytrackerControlValue(spec, value)) {
+          valid = false;
+          break;
+        }
+        request.controls.emplace(spec.id, value);
+      }
+      valid = valid && request.controls.size() == count;
+    }
+  }
+  valid = valid && members == (query ? 5U : 6U + count);
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid camera control identity or values");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebCameraControlsReply(
+    const WebCameraControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::tracking::CameraControlValues>& controls) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "controls");
+    if (!controls) {
+      json_builder_add_null_value(builder);
+      return;
+    }
+    json_builder_begin_object(builder);
+    for (const auto& [id, value] : *controls) {
+      json_builder_set_member_name(builder, id.c_str());
+      if (id == "Oversized_Player_Percent")
+        json_builder_add_double_value(builder, value);
+      else
+        json_builder_add_int_value(builder, static_cast<gint64>(value));
+    }
+    json_builder_end_object(builder);
+  });
+}
+
 absl::StatusOr<WebScoreboardRequest> ParseWebScoreboard(const std::string& json) {
   if (json.empty() || json.size() > 1024)
     return absl::InvalidArgumentError("Scoreboard JSON exceeds its limit");

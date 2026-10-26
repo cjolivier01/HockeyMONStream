@@ -335,6 +335,9 @@ class PipelineApplication {
   // rebuilt so a seek or stage restart does not silently restore the
   // launch-time choice.
   std::optional<guint> player_drawing_layers_;
+  std::optional<hm::tracking::CameraControlValues> web_camera_defaults_, web_camera_controls_;
+  YAML::Node web_camera_base_;
+
   guint64 player_drawing_generation_{0};
   bool rink_map_preview_requested_{false};
   bool rink_map_preview_active_{false};

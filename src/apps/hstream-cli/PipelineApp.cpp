@@ -1,4 +1,5 @@
 #include "OutputRinkMap.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/program/ToneControlCommand.h"
 #include "hstream/src/libs/program/ToneControls.h"
@@ -1849,6 +1850,27 @@ absl::Status PipelineApplication::createPipelines(
 }
 
 absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
+  if (!stitching_calibration_only_ && current_stage_ == 0 && !web_camera_defaults_) {
+    hm::baseline_config::BaselineConfig baseline;
+    HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
+    hm::tracking::CameraControlValues defaults;
+    HM_ASSIGN_OR_RETURN(defaults, hm::tracking::ReadPlaytrackerControlValues(baseline.values));
+    web_camera_defaults_ = std::move(defaults);
+    const auto& config = app.configurator().config();
+    const auto section = config["pipeline"]["ds-playtracker"];
+    if (section.IsMap() && section["enable"].IsScalar() && section["enable"].as<bool>()) {
+      hm::tracking::CameraControlValues values;
+      HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config));
+      if (!section["config-file"].IsScalar())
+        return absl::InvalidArgumentError("Live camera controls require the resolved native tracker config");
+      try {
+        web_camera_base_ = YAML::LoadFile(section["config-file"].as<std::string>());
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(std::string("Cannot read native tracker configuration: ") + error.what());
+      }
+      web_camera_controls_ = std::move(values);
+    }
+  }
   HM_ASSIGN_OR_RETURN(
       web_preview_,
       hm::preview::WebPreviewSession::Prepare(
@@ -1872,6 +1894,12 @@ void PipelineApplication::publish_web_preview_capability() {
     g_print(
         "HSTREAM_WEB_PLAYER_DRAWING %s\n",
         hm::preview::WebPlayerDrawingReply(drawing, "state", "", current_player_drawing_layers()).c_str());
+    if (web_camera_controls_) {
+      const hm::preview::WebCameraControlsRequest camera{web_preview_->identity(), "0", {}, true};
+      g_print(
+          "HSTREAM_WEB_CAMERA_CONTROLS %s\n",
+          hm::preview::WebCameraControlsReply(camera, "state", "", web_camera_controls_).c_str());
+    }
     const hm::preview::WebScoreboardRequest scoreboard{web_preview_->identity(), "0", "query", ""};
     g_print(
         "HSTREAM_WEB_SCOREBOARD %s\n",
@@ -6154,7 +6182,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   // through the same short fence as inspector queries before borrowing it.
   // Never wait for reconstruction: Stop must remain responsive.
   const bool typed_preview = trimmed_line.rfind("preview-", 0) == 0 ||
-      trimmed_line.rfind("web-player-drawing", 0) == 0 || trimmed_line.rfind("web-scoreboard", 0) == 0;
+      trimmed_line.rfind("web-player-drawing", 0) == 0 || trimmed_line.rfind("web-scoreboard", 0) == 0 ||
+      trimmed_line.rfind("web-camera-controls", 0) == 0;
   std::unique_lock<std::mutex> preview_lock(pipeline_access_mu_, std::defer_lock);
   bool preview_reconstructing = false;
   if (typed_preview) {
@@ -6205,6 +6234,61 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     g_print("HSTREAM_PREVIEW_ROUTE %s\n", reply.c_str());
     std::fflush(stdout);
     return true;
+  }
+  if (trimmed_line.rfind("web-camera-controls ", 0) == 0 || trimmed_line.rfind("web-camera-controls-query ", 0) == 0) {
+    const bool query = trimmed_line.rfind("web-camera-controls-query ", 0) == 0;
+    const auto request = hm::preview::ParseWebCameraControls(
+        trim_ascii(trimmed_line.substr(query ? 26 : 20)),
+        web_camera_defaults_.value_or(hm::tracking::CameraControlValues{}),
+        query);
+    if (!request.ok()) {
+      g_printerr("runtime camera controls rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    std::string status = "failed", reason;
+    if (preview_reconstructing) {
+      reason = "reconstructing";
+    } else if (
+        !web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reason = "stale-session";
+    } else if (stitching_calibration_only_ || current_stage_ != 0 || !web_camera_controls_) {
+      reason = "program-unavailable";
+    } else if (query) {
+      status = "state";
+    } else if (runtime_seek_pending_) {
+      reason = "seeking";
+    } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
+    } else {
+      auto values = *web_camera_controls_;
+      std::set<std::string> changed;
+      for (const auto& [id, value] : request->controls) {
+        values[id] = value;
+        changed.insert(id);
+      }
+      const auto document = hm::tracking::BuildPlaytrackerRuntimeControls(
+          web_camera_base_, values, *web_camera_defaults_, changed, false);
+      if (!document.ok()) {
+        reason = "invalid-runtime-tuning";
+      } else {
+        std::string path;
+        if (materialize_secure_runtime_file(YAML::Dump(*document) + "\n", &path, &reason)) {
+          auto remove = absl::MakeCleanup([&path] { ::unlink(path.c_str()); });
+          if (set_element_properties_runtime(
+                  {{"dsplaytracker0", "runtime-tuning-config-file", path}}, &reason, false)) {
+            web_camera_controls_ = std::move(values);
+            status = "applied";
+          }
+        }
+      }
+    }
+    g_print(
+        "HSTREAM_WEB_CAMERA_CONTROLS %s\n",
+        hm::preview::WebCameraControlsReply(
+            *request, status, reason, preview_reconstructing ? std::nullopt : web_camera_controls_)
+            .c_str());
+    std::fflush(stdout);
+    return reason.empty();
   }
   if (trimmed_line.rfind("web-scoreboard ", 0) == 0) {
     const auto request = hm::preview::ParseWebScoreboard(trim_ascii(trimmed_line.substr(15)));

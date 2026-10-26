@@ -204,6 +204,40 @@ int main() {
           std::string::npos,
       "Unavailable scoreboard response invented a placement");
 
+  const auto camera_defaults = hm::tracking::ReadPlaytrackerControlValues(baseline);
+  Check(camera_defaults.ok(), "Required camera control baseline was rejected");
+  const std::string camera_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","controls":{"Max_Speed_X_x10":123,"Oversized_Player_Percent":125.25,"Cancel_Stop_On_Opposite_Direction":1}})";
+  const auto camera = hm::preview::ParseWebCameraControls(camera_json, *camera_defaults);
+  Check(
+      camera.ok() && camera->controls.size() == 3 && camera->controls.at("Oversized_Player_Percent") == 125.25,
+      "Camera controls lost identity or fractional percentage");
+  for (const auto& replacement :
+       {std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":2001"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":1.5"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":true"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"unknown\":123"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":123,\"Max_Speed_X_x10\":0"),
+        std::make_pair("\"Oversized_Player_Percent\":125.25", "\"Oversized_Player_Percent\":-1"),
+        std::make_pair("\"requestId\":\"1234\"", "\"requestId\":\"01234\"")}) {
+    auto invalid = camera_json;
+    invalid.replace(invalid.find(replacement.first), std::strlen(replacement.first), replacement.second);
+    Check(!hm::preview::ParseWebCameraControls(invalid, *camera_defaults).ok(), "Unsafe camera controls were admitted");
+  }
+  auto camera_query = camera_json;
+  camera_query.erase(camera_query.find(",\"controls\""));
+  camera_query += "}";
+  Check(
+      hm::preview::ParseWebCameraControls(camera_query, *camera_defaults, true).ok() &&
+          !hm::preview::ParseWebCameraControls(camera_json, *camera_defaults, true).ok() &&
+          !hm::preview::ParseWebCameraControls(camera_query, *camera_defaults).ok(),
+      "Camera mutation and readback envelopes were interchangeable");
+  const auto camera_reply = hm::preview::WebCameraControlsReply(*camera, "applied", "", camera->controls);
+  Check(
+      camera_reply.find("125.25") != std::string::npos &&
+          camera_reply.find("\"requestId\":\"1234\"") != std::string::npos,
+      "Camera reply lost exact readback or request correlation");
+
   const std::string drawing_json =
       R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","layers":31})";
   const auto drawing = hm::preview::ParseWebPlayerDrawing(drawing_json);

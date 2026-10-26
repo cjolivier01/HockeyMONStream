@@ -33,6 +33,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 
 HSTREAM_CLI_DEPS = [
     ":web_preview_options",
+    "//src/libs/tracking:playtracker_runtime_controls",
     "//src/apps/apps-common:web_preview_target",
     "//src/apps/apps-common:preview_overlay_painter",
     "//src/apps/apps-common:preview_overlay_scene",
@@ -98,6 +99,7 @@ cc_library(
     hdrs = ["WebPreviewOptions.h"],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/tracking:playtracker_runtime_controls",
         "//src/apps/apps-common:preview_route_owner",
         "//src/libs/program:preview_overlay_config",
         "@yaml-cpp",
