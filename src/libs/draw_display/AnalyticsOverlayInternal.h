@@ -12,7 +12,7 @@ inline constexpr int kAtlasWidth = kGlyphWidth * kAtlasColumns;
 inline constexpr int kAtlasHeight = kGlyphHeight * 12;
 inline constexpr size_t kAtlasBytes = kAtlasWidth * kAtlasHeight;
 static_assert(kAtlasBytes <= kMaximumAtlasBytes);
-static_assert(sizeof(Command) == 48);
+static_assert(sizeof(Command) == 56);
 static_assert(sizeof(Tile) == 16);
 cudaError_t Raster(
     const ImageView& image,
@@ -21,5 +21,7 @@ cudaError_t Raster(
     const uint32_t* references,
     uint32_t tile_count,
     const uint8_t* atlas,
+    float coordinate_per_pixel_x,
+    float coordinate_per_pixel_y,
     cudaStream_t stream);
 } // namespace hm::draw_display::analytics::detail

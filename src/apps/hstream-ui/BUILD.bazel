@@ -105,6 +105,14 @@ cc_library(
     deps = ["@qt//:qt_widgets"],
 )
 
+cc_binary(
+    name = "action_icons_export",
+    srcs = ["ActionIconsExport.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", "@qt//:qt_widgets"],
+)
+
 cc_library(
     name = "native_preview_surface",
     srcs = ["NativePreviewSurface.cpp"],
@@ -422,10 +430,13 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:config_layers",
         "//src/libs/common:status_macros",
         "//src/libs/common:utils_base",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:auto_input_lens",
         "//src/libs/stitching:game_config",
         "//src/libs/stitching:hugin_project",
         "//src/libs/stitching:player_frame_input_store",
@@ -682,12 +693,27 @@ cc_library(
 )
 
 cc_library(
+    name = "highlight_web_preview",
+    srcs = ["HighlightWebPreview.cpp"],
+    hdrs = ["HighlightWebPreview.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/apps/hstream-cli:web_preview_options",
+        "//src/apps/apps-common:web_preview_target",
+        "//src/apps/apps-common:webrtc_signaling",
+        "//src/apps/apps-common:webrtc_endpoint",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
     name = "highlight_reel_pipeline",
     srcs = ["HighlightReelPipeline.cpp"],
     hdrs = ["HighlightReelPipeline.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_scene", ":highlight_mp4_audio", ":highlights_encode_settings", "//src/libs/highlights:texture_blend",
+    deps = [":highlight_web_preview", ":highlight_scene", ":highlight_mp4_audio", ":highlights_encode_settings", "//src/libs/highlights:texture_blend",
             "//src/apps/apps-common:hm_gpu_preview", "@deepstream//:deepstream_lib", "@gstreamer", "@qt//:qt_gui"],
 )
 
@@ -767,6 +793,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/publication",
+        "//src/libs/program:tone_controls",
         "//src/libs/stitching:auto_input_lens",
         ":input_lens_widget",
         ":backend_options",
@@ -789,6 +816,7 @@ cc_library(
         ":stitching_experiment_dialog",
         ":telemetry_csv_publisher",
         "//src/libs/common:baseline_config",
+        "//src/libs/program:preview_overlay_config",
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:gpu_memory_profile",
         "//src/libs/common:user_config",
@@ -807,6 +835,15 @@ cc_library(
         "//:use_hip": [],
         "//conditions:default": [":camera_experiment_dialog", ":highlights_dialog"],
     }),
+)
+
+cc_test(
+    name = "tone_controls_window_test",
+    srcs = ["ToneControlsWindowTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":hstream_window", "@qt//:qt_widgets", "@qt//:qt_test"],
 )
 
 cc_test(
@@ -1062,6 +1099,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":action_icons",
         "//src/libs/player_analytics:config",
         "//src/libs/player_analytics:model_catalog",
         "//src/libs/player_analytics:model_contract",
@@ -1235,15 +1273,19 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":highlight_web_preview",
         ":web_job_spec",
+        "//src/libs/common:baseline_config",
         ":calibration_image",
         ":highlight_plan",
         ":highlight_reel_pipeline",
+        ":highlight_scene",
         ":highlights_encode_settings",
         ":highlight_tracking",
         ":stitching_experiment_backend",
         "//src/libs/playtracker_replay",
         "//src/libs/recording",
+        "//src/libs/stitching:auto_input_lens",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
@@ -1272,10 +1314,40 @@ sh_test(
 )
 
 cc_test(
+    name = "web_card_preview_test",
+    srcs = ["WebCardPreviewTest.cpp"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":highlight_scene", ":web_job_spec", "@qt//:qt_gui"],
+)
+
+sh_test(
+    name = "web_card_probe_test",
+    srcs = ["WebCardProbeTest.py"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job", "WebJobTest.py"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
+cc_test(
     name = "rink_map_dialog_test",
     srcs = ["RinkMapDialogTest.cpp"],
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":rink_map_dialog", ":rink_leveling_dialog", ":scoreboard_selection_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
+)
+
+cc_binary(
+    name = "tone_controls_gpu_test",
+    testonly = True,
+    srcs = ["ToneControlsGpuTest.cpp"],
+    tags = ["manual", "requires-gpu", "local"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    copts = COMMON_COPTS,
+    deps = [":hstream_window", "@qt//:qt_widgets", "@qt//:qt_test"],
 )

@@ -109,6 +109,78 @@ acknowledgments and generation checks. A successful write to stdin does not
 mean the operation was applied. Pipeline inspection uses the shared inspector
 protocol described in [pipeline-inspector.md](pipeline-inspector.md).
 
+`src/libs/program/ToneControls.*` is the shared, Qt-free specification and
+property builder for shadow lift, black-point lift and exposure. Qt reads its
+labels/ranges and uses its validated presentation-unit conversion when building
+the existing property batch. The active run's resolved precision chooses the
+stitcher or Program cropper; changing next-run precision does not retarget a
+running batch. The shared specification carries no default values and leaves
+Qt's initialization and saved-setting resolution unchanged.
+Eligibility, debounce, seek blocking and acknowledgments stay with the runtime
+owner. The builder neither applies changes nor saves presets.
+
+The outer web service may enable these three live controls only after a native
+capability announcement and successful correlated readback. Browsers never
+supply raw property commands or native filesystem paths. Legacy property
+acknowledgments alone do not establish the required identity. `ProgramRuntimeControl` continues to own AMD command dispatch;
+the shared builder does not make unsupported commands available there.
+
+The native CLI additionally accepts a correlated tone transaction:
+
+```text
+@set-tone-controls 42 0 7 Bring_Up_Shadows=35 Lift_Shadow_Black_Point=1 Exposure_x100=61
+```
+
+The header is request ID, stage and inspector topology generation. IDs must be
+positive signed-64-bit integers and increase within this process, including
+after rejection; duplicate or older IDs are rejected. The supervisor must bind
+that process to the owning run. Use the current `HSTREAM_PIPELINE_INSPECTOR`
+session record for stage/generation; values from an earlier process cannot
+identify the new run. The command accepts one to three unique canonical tone
+IDs in integral slider units, with a 1024-byte protocol bound. Exposure `61`
+means the existing native setting `0.61`, not exposure stops.
+
+The session record advertises `toneControlsVersion: 1` only in this native
+implementation. `@query-tone-controls REQUEST STAGE GENERATION` shares the
+monotonic request sequence and the transaction's graph lock and eligibility
+checks. Its `HSTREAM_TONE_CONTROLS` `descriptor` reply supplies the resolved
+precision/element and each shared ID, label, bounds, step, divisor and current
+integer slider value. A nonfinite or fractional runtime value fails readback
+with `unrepresentable-value`; only floating-point storage roundoff is tolerated.
+Queries do not mutate properties or replay overrides. An old/AMD/HockeyMON
+runner without the advertised version must remain unavailable to the browser.
+
+The synchronized baseline owns `hstream_ui.camera_controls` for all three
+integer slider defaults and `hstream_ui.runtime_controls.debounce_ms` and
+`ack_timeout_ms` for Qt/browser scheduling. Qt resolves these through its normal
+baseline/user layers. The web contract derives the shipped values from the same
+baseline; live edits never rewrite an admitted run or its staged configuration.
+
+Admission rechecks stage/generation under the pipeline access lock at mutation
+time. Reconstruction, active seek/frame recovery, INT8 capture and stages with
+anything other than one active pipeline reject the transaction. The actual
+stitcher property determines precision. Calibration admits tone changes only
+for high-bit-depth stitching. All properties are prepared before any setter;
+plugin rejection uses the existing property batch rollback, and only successful
+batches enter the existing in-memory reconstruction replay. Nothing saves a
+preset or modifies the admitted launch settings.
+
+The runner emits `HSTREAM_TONE_CONTROLS` followed by a version-1 JSON object with
+`kind: "set-result"`, `requestId`, `stage`, `generation` and `status: "ok"` or
+`"error"`. Success includes the actual target `element` and the accepted
+`controls` (`id`/integer `value` pairs). Failure includes `reason` and `message`;
+an unparseable request ID is zero. Success is emitted after the setters and
+replay commit finish. Typed transactions emit no legacy per-property success
+lines, and reconstruction replay emits no new typed acknowledgment. A transport
+write or an unrelated property log is never completion of a typed request.
+
+This endpoint has no browser admission/compiler or AMD/HockeyMON adapter yet;
+no capability is advertised and Qt continues to use its legacy wire protocol.
+`//src/apps/hstream-cli:pipeline_tone_controls_test` exercises the real native
+handler, mutex fence, GObject transaction/rollback and replay with CPU-only
+elements. Its library build excludes only the CLI entry point; it does not add
+a runtime test mode or bypass production validation.
+
 Each Program launch receives a fresh private directory in
 `HSTREAM_UI_BACKEND_SESSION`. `HM_UI_INITIAL_LAUNCH`, when present, names the
 one-use launch document. The selected runner owns its Python workers within the

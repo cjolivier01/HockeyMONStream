@@ -8,7 +8,7 @@ HSTREAM_CLI_SRCS = glob(
         "*.cpp",
         "*.h",
     ],
-    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp"],
+    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h"],
 )
 
 HSTREAM_CLI_COPTS = [
@@ -32,6 +32,15 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    ":web_preview_options",
+    "//src/apps/apps-common:web_preview_target",
+    "//src/apps/apps-common:preview_overlay_painter",
+    "//src/apps/apps-common:preview_overlay_scene",
+    "//src/libs/program:preview_overlay_config",
+    "//src/libs/program:tone_control_command",
+    "//src/libs/program:tone_controls",
+    "//src/apps/apps-common:preview_route_owner",
+    "//src/apps/apps-common:preview_route_graph",
     "//src/gst-plugins/gst-rink-map:overlay",
     "//src/libs/program:preview_overlay_runtime",
     "//src/libs/common:config_layers",
@@ -84,6 +93,35 @@ HSTREAM_CLI_DEPS = [
 ]
 
 cc_library(
+    name = "web_preview_options",
+    srcs = ["WebPreviewOptions.cpp"],
+    hdrs = ["WebPreviewOptions.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/apps/apps-common:preview_route_owner",
+        "//src/libs/program:preview_overlay_config",
+        "@yaml-cpp",
+        "@json_glib",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "web_preview_options_test",
+    srcs = ["WebPreviewOptionsTest.cpp", "WebPreviewRuntime.h"],
+    data = ["//configs:baseline.yaml"],
+    deps = [
+        ":web_preview_options",
+        "//src/apps/apps-common:preview_route_owner",
+        "//src/libs/program:preview_overlay_config",
+        "@yaml-cpp",
+        "@json_glib",
+        "@gstreamer",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_library(
     name = "player_model_cache",
     visibility = ["//src/apps/hstream-model-prepare:__pkg__"],
     srcs = ["PlayerModelCache.cpp", "DeepStreamReIdCache.inc"],
@@ -129,7 +167,7 @@ cc_binary(
     deps = select({
         "//:use_hip": [
             ":amd_pipeline_options", "//src/gst-plugins/gst-rink-map:overlay", "//src/libs/program:amd_program_admission", "//src/libs/program:file_output",
-            "//src/libs/program:calibration",
+            "//src/libs/program:calibration", "//src/libs/program:preview_overlay_config",
             "//src/libs/program:archive_config", "//src/libs/publication", "//src/libs/common:user_config",
             "//src/gst-plugins/gst-amd-program:graph", "//src/libs/program:launch_config",
             "//src/libs/program:detector_settings", "//src/libs/program:output_config",
@@ -227,6 +265,38 @@ cc_test(
         "//src/libs/common:utils",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "pipeline_tone_controls_test",
+    srcs = ["PipelineToneControlsTest.cpp"],
+    copts = HSTREAM_CLI_COPTS,
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [":pipeline_application_test_library"],
+)
+
+cc_library(
+    name = "pipeline_application_test_library",
+    testonly = True,
+    srcs = HSTREAM_CLI_SRCS,
+    copts = HSTREAM_CLI_COPTS + ["-DHSTREAM_PIPELINE_APPLICATION_LIBRARY"],
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = HSTREAM_CLI_DEPS,
+)
+
+cc_test(
+    name = "pipeline_process_output_test",
+    size = "small",
+    srcs = ["PipelineRuntimeControlTest.cpp"],
+    args = ["--test-output-reader"],
+    deps = ["//src/libs/recording"],
 )
 
 cc_test(

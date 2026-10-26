@@ -31,6 +31,7 @@
 
 #include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
+#include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
 
 // Application and common headers.
 #include "Int8FrameSampler.h"
@@ -38,6 +39,7 @@
 #include "PlayerFrameScan.h"
 #include "PreviewOverlayRuntime.h"
 #include "TerminalProgressUi.h"
+#include "WebPreviewSession.h"
 #include "configurator.h"
 #include "deepstream_app.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
@@ -113,6 +115,7 @@ class PipelineApplication {
   absl::Status stopPipeline(std::shared_ptr<HmApp> app_context) const;
 
  private:
+  friend struct PipelineToneControlsTestAccess;
   // Callback and helper functions.
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static void _intr_handler(int signum);
@@ -153,7 +156,10 @@ class PipelineApplication {
   // wholesale because one preview channel is not in use.
   bool set_player_drawing_runtime(guint64 generation, guint layers);
   bool apply_player_drawing_layers(guint layers);
-  bool apply_preview_overlay_state(const hm::pipeline_internal::PreviewOverlaySelection& selection, bool apply_sinks);
+  bool apply_preview_overlay_state(
+      const hm::pipeline_internal::PreviewOverlaySelection& selection,
+      bool apply_sinks,
+      std::optional<uint64_t> generation = std::nullopt);
   bool update_preview_overlay_producers();
   bool capture_preview_frame_runtime(const std::string& channel, const std::string& path);
   bool set_render_audio_muted_runtime(bool muted);
@@ -177,7 +183,10 @@ class PipelineApplication {
       const std::string& property_name,
       const std::string& value);
   bool set_element_properties_runtime(
-      const std::vector<std::tuple<std::string, std::string, std::string>>& assignments);
+      const std::vector<std::tuple<std::string, std::string, std::string>>& assignments,
+      std::string* failure_reason = nullptr,
+      bool emit_legacy_ack = true);
+  bool set_tone_controls_runtime(const std::string& line);
   struct PreparedRuntimeProperty {
     std::string original_value;
     std::string applied_value;
@@ -254,6 +263,7 @@ class PipelineApplication {
   static gboolean inject_stitching_calibration_error_static(gpointer arg);
   gboolean inject_stitching_calibration_error();
   absl::Status auto_focus_cameras(const std::vector<std::shared_ptr<HmApp>>& app_contexts) const;
+  absl::Status configure_preview_overlay_producers(const std::vector<std::shared_ptr<HmApp>>& app_contexts);
   absl::Status configure_source_preview_sinks(
       const std::vector<std::shared_ptr<HmApp>>& app_contexts,
       bool sources_only = false);
@@ -310,10 +320,14 @@ class PipelineApplication {
     GstElement* sink{nullptr};
   };
   std::map<std::string, UiPreviewChannel> ui_preview_channels_;
-  std::string active_ui_preview_channel_;
-  bool ui_preview_channel_explicitly_disabled_{false};
-  guint64 active_ui_preview_generation_{1};
+  hm::preview::RouteOwner preview_routes_;
+  std::string web_preview_run_id_;
+  std::string retained_web_preview_selection_;
+  std::unique_ptr<hm::preview::WebPreviewSession> web_preview_;
+  absl::Status prepare_web_preview(HmApp& app);
+  void publish_web_preview_capability();
   hm::pipeline_internal::PreviewOverlayRuntimeState preview_overlay_state_;
+  bool preview_overlay_initialized_{false};
   // Last accepted live drawing selection, re-applied when the graph is
   // rebuilt so a seek or stage restart does not silently restore the
   // launch-time choice.
@@ -417,6 +431,7 @@ class PipelineApplication {
   std::atomic<bool> pipeline_recreation_active_{false};
   std::mutex pipeline_access_mu_;
   uint64_t inspector_topology_generation_ ABSL_GUARDED_BY(pipeline_access_mu_){0};
+  uint64_t last_tone_request_id_ ABSL_GUARDED_BY(pipeline_access_mu_){0};
   bool runtime_seek_recreation_timed_out_{false};
   bool runtime_seek_shutdown_requested_{false};
   std::atomic<uint64_t> runtime_seek_recovery_frame_generation_{0};

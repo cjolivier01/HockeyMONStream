@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -114,6 +115,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/program/PreviewOverlayConfig.h"
 #include "hstream/src/libs/stitching/ControlPointMatcher.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
@@ -244,13 +246,6 @@ constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
-constexpr int kRuntimeControlAckTimeoutMs = 3000;
-// How long SIGINT gets before we SIGKILL the pipeline. Sized to outlast the
-// CLI's own shutdown watchdog (kShutdownWatchdogGraceUs in deepstream_app.cpp,
-// which hard-exits around 13 s after the stop request) so a wedged teardown
-// reports which thread stalled instead of dying anonymously here. Costs
-// nothing on a healthy stop: waitForFinished returns as soon as it exits.
-constexpr int kPipelineTerminateGraceMs = 30000;
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
 constexpr char kUiDirectoryName[] = "hstream-ui";
 constexpr char kLegacyUiDirectoryName[] = ".hstream-ui";
@@ -5053,6 +5048,7 @@ void HStreamWindow::loadBaselineDefaults() {
   };
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
+  require("hstream_ui.playback_start_time");
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
 
@@ -5264,14 +5260,37 @@ void HStreamWindow::loadBaselineDefaults() {
   camera_defaults_["Max_Speed_Y_x10"] = 0;
   camera_defaults_["Max_Accel_X_x10"] = 0;
   camera_defaults_["Max_Accel_Y_x10"] = 0;
-  camera_defaults_["Lift_Shadow_Black_Point"] = 0;
-  camera_defaults_["Exposure_x100"] = 0;
-  camera_defaults_["Use_10_Bit_Grading"] = 0;
+  for (const auto& spec : hm::program::kToneControls) {
+    const int value = integer(QString("hstream_ui.camera_controls.%1").arg(spec.id));
+    if (value < spec.minimum || value > spec.maximum)
+      throw std::runtime_error(std::string("Invalid baseline tone value: ") + spec.id);
+    camera_defaults_[spec.id] = value;
+  }
+  runtime_control_debounce_ms_ = integer("hstream_ui.runtime_controls.debounce_ms");
+  runtime_control_ack_timeout_ms_ = integer("hstream_ui.runtime_controls.ack_timeout_ms");
+  pipeline_stop_timeout_ms_ = integer("hstream_ui.runtime_controls.stop_timeout_ms");
+  pipeline_kill_timeout_ms_ = integer("hstream_ui.runtime_controls.kill_timeout_ms");
+  if (runtime_control_debounce_ms_ <= 0 || runtime_control_ack_timeout_ms_ <= 0 || pipeline_stop_timeout_ms_ <= 0 ||
+      pipeline_kill_timeout_ms_ <= 0)
+    throw std::runtime_error("Runtime control and process stop timeouts must be positive");
+  const YAML::Node precision_default = require("pipeline.hmstitcher.properties.high-bit-depth");
+  if (!precision_default.IsScalar())
+    throw std::runtime_error("Baseline high-bit-depth must be auto, true, false, 1, or 0");
+  const QString precision = QString::fromStdString(precision_default.as<std::string>()).trimmed().toLower();
+  if (precision == "auto")
+    default_high_bit_depth_mode_ = precision;
+  else if (precision == "true" || precision == "1")
+    default_high_bit_depth_mode_ = "1";
+  else if (precision == "false" || precision == "0")
+    default_high_bit_depth_mode_ = "0";
+  else
+    throw std::runtime_error("Baseline high-bit-depth must be auto, true, false, 1, or 0");
+  camera_defaults_["Use_10_Bit_Grading"] = default_high_bit_depth_mode_ == "1" ? 1 : 0;
   YAML::Node controls;
   if (lookup_yaml_path(user_layer_, "hstream_ui.camera_controls", &controls) && controls.IsMap()) {
     for (const auto& entry : controls) {
       const QString id = QString::fromStdString(entry.first.as<std::string>());
-      if (camera_defaults_.count(id))
+      if (camera_defaults_.count(id) && !hm::program::FindToneControl(id.toStdString()))
         camera_defaults_[id] = entry.second.as<double>();
     }
   }
@@ -5279,6 +5298,13 @@ void HStreamWindow::loadBaselineDefaults() {
 
 HStreamWindow::~HStreamWindow() {
   qApp->removeEventFilter(this);
+  // Normal closeEvent waits for playback and publication. If the window is
+  // destroyed directly, QProcess still kills/reaps its child, but may emit
+  // error/finished while QWidget is already deleting our controls. Disconnect
+  // these callbacks (including transient job exporters) before any members or
+  // child widgets lose their lifetime. Descendant dialogs own their processes.
+  for (QProcess* process : findChildren<QProcess*>(QString(), Qt::FindDirectChildrenOnly))
+    disconnect(process, nullptr, this, nullptr);
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
   finishArchiveJobLog();
@@ -6190,8 +6216,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   show_rink_mask_toggle_ = new QCheckBox("Rink mask");
   show_rink_mask_toggle_->setObjectName("showRinkMaskCheck");
   show_rink_mask_toggle_->setToolTip("Composite the saved ice-rink mask as translucent green on both GPU previews");
+  const auto preview_overlay_defaults = hm::pipeline_internal::ReadPreviewOverlaySelection(baseline_config_);
+  if (!preview_overlay_defaults.ok())
+    throw std::runtime_error(preview_overlay_defaults.status().ToString());
+  show_player_tracking_toggle_->setChecked(preview_overlay_defaults->players);
+  show_play_tracking_toggle_->setChecked(preview_overlay_defaults->play);
+  show_rink_mask_toggle_->setChecked(preview_overlay_defaults->rink);
   for (QCheckBox* toggle : {show_player_tracking_toggle_, show_play_tracking_toggle_, show_rink_mask_toggle_}) {
-    toggle->setChecked(false);
     connect(toggle, &QCheckBox::toggled, this, [this]() { setRuntimePreviewOverlays(); });
   }
 
@@ -6808,8 +6839,8 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_splitter->setSizes({960, 320});
   stitched_layout->addWidget(stitched_splitter, 1);
 
-  preview_tabs_->addTab(program, "Program");
-  preview_tabs_->addTab(stitched, "Stitched");
+  preview_tabs_->addTab(program, tab_icon("Program"), "Program");
+  preview_tabs_->addTab(stitched, tab_icon("Stitched"), "Stitched");
   for (int camera_index = 0; camera_index < 3; ++camera_index) {
     auto* camera = new QWidget();
     auto* camera_layout = new QVBoxLayout(camera);
@@ -6839,14 +6870,14 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         QString("Camera %1 decoded source preview — downstream controls do not alter this tab").arg(camera_index + 1));
     camera_status->setObjectName(QString("camera%1PreviewStatusLabel").arg(camera_index + 1));
     camera_layout->addWidget(camera_status);
-    preview_tabs_->addTab(camera, QString("Camera %1").arg(camera_index + 1));
+    preview_tabs_->addTab(camera, tab_icon(QString("Camera %1").arg(camera_index + 1)), QString("Camera %1").arg(camera_index + 1));
   }
   pipeline_inspector_ = new PipelineInspectorWidget();
   pipeline_inspector_->setCommandWriter([this](const QByteArray& command) {
     return pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning &&
         pipeline_process_->write(command) == command.size();
   });
-  pipeline_inspector_tab_index_ = preview_tabs_->addTab(pipeline_inspector_, "Pipeline");
+  pipeline_inspector_tab_index_ = preview_tabs_->addTab(pipeline_inspector_, tab_icon("Pipeline"), "Pipeline");
   preview_tabs_->setTabToolTip(
       pipeline_inspector_tab_index_,
       "Inspect the structured live GStreamer graph, select elements, and edit explicitly live-mutable properties.");
@@ -7219,11 +7250,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       }
     }
     if (include_color_toggles) {
-      addCameraCheckBox(
-          content_layout,
-          "Lift_Shadow_Black_Point",
-          "Lift black point too (stronger)",
-          default_value("Lift_Shadow_Black_Point") != 0);
+      const auto& black_point = *hm::program::FindToneControl("Lift_Shadow_Black_Point");
+      addCameraCheckBox(content_layout, black_point.id, black_point.label, default_value(black_point.id) != 0);
       addCameraCheckBox(
           content_layout,
           "Use_10_Bit_Grading",
@@ -7238,10 +7266,13 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
 
   const auto tracking_controls = tracking_control_specs(default_value);
   const auto motion_controls = motion_control_specs(default_value);
-  const std::vector<CameraSliderSpec> color_controls = {
-      {"Bring_Up_Shadows", "Bring up shadows (%)", 0, 100, 0},
-      {"Exposure_x100", "Exposure x100", 0, 130, 0},
-  };
+  std::vector<CameraSliderSpec> color_controls;
+  for (const auto& spec : hm::program::kToneControls) {
+    if (spec.maximum == 1)
+      continue; // Black-point lift stays beside its existing checkbox controls.
+    color_controls.push_back(
+        {spec.id, spec.label, spec.minimum, spec.maximum, default_value(spec.id), spec.property, spec.divisor});
+  }
   const std::vector<CameraSliderSpec> stitch_controls = {
       {"Stitch_Rotate_Degrees", "Final stitched-output rotation", 0, 180, default_value("Stitch_Rotate_Degrees")},
       {"Link_Fixed_Edge_Rotation_Left_Right",
@@ -7326,8 +7357,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       updatePresetDirtyState();
     });
     loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
-    control_tabs->addTab(add_slider_tab(tracking_controls, false), "Tracking");
-    control_tabs->addTab(add_slider_tab(motion_controls, false), "Motion");
+    control_tabs->addTab(add_slider_tab(tracking_controls, false), tab_icon("Tracking"), "Tracking");
+    control_tabs->addTab(add_slider_tab(motion_controls, false), tab_icon("Motion"), "Motion");
     auto* framing_scroll = new QScrollArea();
     framing_scroll->setWidgetResizable(true);
     framing_scroll->setFrameShape(QFrame::NoFrame);
@@ -7338,8 +7369,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       maybeStartDeferredRestart();
     });
     framing_scroll->setWidget(rink_framing_controls_);
-    control_tabs->addTab(framing_scroll, "Rink framing");
-    control_tabs->addTab(add_slider_tab(color_controls, true), "Color");
+    control_tabs->addTab(framing_scroll, tab_icon("Rink framing"), "Rink framing");
+    control_tabs->addTab(add_slider_tab(color_controls, true), tab_icon("Color"), "Color");
     const std::vector<CameraSliderSpec> crop_controls(stitch_controls.begin() + 1, stitch_controls.end());
     auto* crop_page = add_slider_tab(crop_controls, false);
     crop_rotation_explanation_ = new QLabel(
@@ -7348,9 +7379,9 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     crop_rotation_explanation_->setWordWrap(true);
     crop_rotation_explanation_->hide();
     crop_page->layout()->addWidget(crop_rotation_explanation_);
-    control_tabs->addTab(crop_page, "Crop Rotation");
-    control_tabs->addTab(runtime_page, "Runtime");
-    control_tabs->addTab(detection_page, "Detection");
+    control_tabs->addTab(crop_page, tab_icon("Crop Rotation"), "Crop Rotation");
+    control_tabs->addTab(runtime_page, tab_icon("Runtime"), "Runtime");
+    control_tabs->addTab(detection_page, tab_icon("Detection"), "Detection");
     auto* analytics_scroll = new QScrollArea();
     analytics_scroll->setObjectName("playerAnalyticsScrollArea");
     analytics_scroll->setWidgetResizable(true);
@@ -7362,10 +7393,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     });
     analytics_scroll->setWidget(player_analytics_controls_);
     loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
-    control_tabs->addTab(analytics_scroll, "Players");
+    control_tabs->addTab(analytics_scroll, tab_icon("Players"), "Players");
   } else {
     const std::vector<CameraSliderSpec> rotation_controls = {stitch_controls.front()};
-    control_tabs->addTab(add_slider_tab(rotation_controls, false), "Rotation");
+    control_tabs->addTab(add_slider_tab(rotation_controls, false), tab_icon("Rotation"), "Rotation");
 
     auto* color_page = new QWidget();
     color_page->setObjectName("stitchedColorPrecisionTab");
@@ -7443,7 +7474,8 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       add_mirrored_slider(*spec);
     };
     add_color_slider("Bring_Up_Shadows");
-    add_mirrored_checkbox("Lift_Shadow_Black_Point", "Lift black point too (stronger)");
+    const auto& black_point = *hm::program::FindToneControl("Lift_Shadow_Black_Point");
+    add_mirrored_checkbox(black_point.id, black_point.label);
     add_color_slider("Exposure_x100");
     add_mirrored_checkbox("Use_10_Bit_Grading", "10-bit / FP16 mode (Auto / Force on / Force off, next run)");
     {
@@ -7525,7 +7557,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     color_layout->addStretch(1);
     color_scroll->setWidget(color_content);
     color_page_layout->addWidget(color_scroll, 1);
-    control_tabs->addTab(color_page, "Color & Precision");
+    control_tabs->addTab(color_page, tab_icon("Color & Precision"), "Color & Precision");
 
     const auto add_stitching_tab = [control_tabs](const QString& name, const QString& title) {
       auto* scroll = new QScrollArea();
@@ -7541,7 +7573,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
       grid->setContentsMargins(8, 8, 8, 8);
       grid->setColumnStretch(1, 1);
       scroll->setWidget(page);
-      control_tabs->addTab(scroll, title);
+      control_tabs->addTab(scroll, tab_icon(title), title);
       return grid;
     };
     auto* alignment_layout = add_stitching_tab("stitchingAlignment", "Alignment");
@@ -11285,7 +11317,7 @@ void HStreamWindow::updateDetectorPrecisionStatus() {
 QString HStreamWindow::highBitDepthMode() const {
   const auto checkbox = camera_checkboxes_.find("Use_10_Bit_Grading");
   if (checkbox == camera_checkboxes_.end() || !checkbox->second)
-    return "auto";
+    return default_high_bit_depth_mode_;
   if (checkbox->second->checkState() == Qt::Checked)
     return "1";
   if (checkbox->second->checkState() == Qt::Unchecked)
@@ -12059,7 +12091,7 @@ void HStreamWindow::stopPipeline() {
 #endif
       pipeline_process_->terminate();
   }
-  if (!pipeline_process_->waitForFinished(kPipelineTerminateGraceMs)) {
+  if (!pipeline_process_->waitForFinished(pipeline_stop_timeout_ms_)) {
     appendLog("pipeline did not exit after terminate; killing");
 #ifdef Q_OS_UNIX
     if (pid > 0 && pipeline_uses_process_group_) {
@@ -12067,7 +12099,7 @@ void HStreamWindow::stopPipeline() {
     }
 #endif
     pipeline_process_->kill();
-    if (!pipeline_process_->waitForFinished(5000)) {
+    if (!pipeline_process_->waitForFinished(pipeline_kill_timeout_ms_)) {
       appendLog("pipeline still running after kill");
     }
   }
@@ -12383,6 +12415,7 @@ void HStreamWindow::clearPreviewFrames() {
   preview_recovery_attempts_ = 0;
   preview_disable_attempts_ = 0;
   preview_runtime_ready_ = false;
+  preview_overlay_deferred_ = false;
   updatePreviewTabResolution("program", 0, 0);
   updatePreviewTabResolution("stitched", 0, 0);
 }
@@ -16746,6 +16779,10 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       return true;
     preview_runtime_ready_ = true;
     preview_generation_ = generation;
+    if (preview_overlay_deferred_) {
+      preview_overlay_deferred_ = false;
+      setRuntimePreviewOverlays();
+    }
     const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
     const QString selected_channel = selectedPipelinePreviewChannel();
     if (!render_video) {
@@ -17390,6 +17427,16 @@ void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
     } else if (!adoptPreviewOverlayReconciliationFallback("embedded-preview-unavailable")) {
       restoreConfirmedPreviewOverlays("embedded-preview-unavailable");
     }
+    return;
+  }
+  if (!preview_runtime_ready_) {
+    // Retain the operator's latest complete selection while the child starts.
+    // The normal transaction/timeout begins only after its runtime handshake.
+    preview_overlay_deferred_ = true;
+    appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=waiting-for-runtime")
+                  .arg(players ? 1 : 0)
+                  .arg(play ? 1 : 0)
+                  .arg(rink ? 1 : 0));
     return;
   }
   const quint64 generation = ++preview_overlay_generation_;
@@ -18617,7 +18664,8 @@ void HStreamWindow::resetCameraControls() {
     const auto checkbox = camera_checkboxes_.find(id);
     if (checkbox != camera_checkboxes_.end() && checkbox->second) {
       if (id == "Use_10_Bit_Grading") {
-        checkbox->second->setCheckState(Qt::PartiallyChecked);
+        if (!pipeline_running)
+          setHighBitDepthMode(default_high_bit_depth_mode_);
       } else {
         checkbox->second->setChecked(value != 0);
       }
@@ -19255,7 +19303,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       if (checkbox != camera_checkboxes_.end() && checkbox->second) {
         const bool blocked = checkbox->second->blockSignals(true);
         if (id == "Use_10_Bit_Grading") {
-          checkbox->second->setCheckState(Qt::PartiallyChecked);
+          setHighBitDepthMode(default_high_bit_depth_mode_);
         } else {
           checkbox->second->setChecked(value != 0);
         }
@@ -20437,6 +20485,7 @@ bool HStreamWindow::applySavedControlConfig(
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = use_high_bit_grading;
     mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
   } else if (
+      default_high_bit_depth_mode_ != "auto" ||
       lookup_yaml_path(user_layer_, "pipeline.hmstitcher.properties.high-bit-depth", nullptr) ||
       lookup_yaml_path(user_layer_, "hstream_ui.camera_controls.Use_10_Bit_Grading", nullptr)) {
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = "auto";
@@ -22500,7 +22549,7 @@ void HStreamWindow::resolveLiveRotationRuntimeBatch(quint64 batch_id) {
 int HStreamWindow::runtimeControlAckTimeoutMs() const {
   bool valid = false;
   const int test_timeout = qEnvironmentVariableIntValue("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", &valid);
-  return valid && test_timeout > 0 ? test_timeout : kRuntimeControlAckTimeoutMs;
+  return valid && test_timeout > 0 ? test_timeout : runtime_control_ack_timeout_ms_;
 }
 
 void HStreamWindow::timeoutRuntimeControlBatch(quint64 batch_id) {
@@ -22588,7 +22637,7 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, double value) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
-  const bool tone_control = id == "Bring_Up_Shadows" || id == "Lift_Shadow_Black_Point" || id == "Exposure_x100";
+  const bool tone_control = hm::program::FindToneControl(id.toStdString()) != nullptr;
   if (active_run_is_calibration_ && id != "Stitch_Rotate_Degrees" && !(tone_control && active_run_high_bit_depth_)) {
     return false;
   }
@@ -22645,7 +22694,7 @@ void HStreamWindow::scheduleRotationRuntimeControl(const QString& id, int value)
   if (id == "Stitch_Rotate_Degrees" && slider != camera_sliders_.end() && slider->second->isSliderDown()) {
     return;
   }
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_rotation_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
@@ -22660,7 +22709,7 @@ void HStreamWindow::schedulePlaytrackerRuntimeControl(const QString& id, double 
   scheduled_playtracker_controls_[id] = value;
   scheduled_playtracker_controls_ready_ = false;
   const quint64 generation = ++scheduled_playtracker_control_generation_;
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_playtracker_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
@@ -22694,7 +22743,7 @@ void HStreamWindow::schedulePlayerDrawingRuntimeControl() {
   scheduled_player_drawing_layers_ = layers;
   scheduled_player_drawing_ready_ = false;
   const quint64 generation = ++scheduled_player_drawing_generation_;
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_player_drawing_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
@@ -22709,7 +22758,7 @@ void HStreamWindow::schedulePlaycropperRuntimeControl(const QString& id, int val
   scheduled_playcropper_controls_[id] = value;
   scheduled_playcropper_controls_ready_ = false;
   const quint64 generation = ++scheduled_playcropper_control_generation_;
-  QTimer::singleShot(120, this, [this, generation]() {
+  QTimer::singleShot(runtime_control_debounce_ms_, this, [this, generation]() {
     if (generation != scheduled_playcropper_control_generation_ || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
@@ -23007,17 +23056,23 @@ void HStreamWindow::flushScheduledRuntimeControls() {
     scheduled_playcropper_controls_.clear();
     scheduled_playcropper_controls_ready_ = false;
     std::vector<RuntimePropertyCommand> commands;
-    const QString tone_element = active_run_high_bit_depth_ ? "hmstitcher0" : "playcropper0";
-    if (controls.count("Bring_Up_Shadows")) {
-      commands.push_back({tone_element, "shadow-lift", QString::number(cameraControlValue("Bring_Up_Shadows"))});
-    }
-    if (controls.count("Lift_Shadow_Black_Point")) {
+    for (const auto& spec : hm::program::kToneControls) {
+      if (!controls.count(spec.id))
+        continue;
+      const auto command =
+          hm::program::BuildTonePropertyCommand(spec.id, cameraControlValue(spec.id), active_run_high_bit_depth_);
+      if (!command.ok()) {
+        for (const auto& [id, value] : controls)
+          appendLog(QString("camera control %1=%2 apply=failed reason=%3")
+                        .arg(id)
+                        .arg(value)
+                        .arg(QString::fromStdString(command.status().ToString())));
+        return;
+      }
       commands.push_back(
-          {tone_element, "shadow-lift-black-point", QString::number(cameraControlValue("Lift_Shadow_Black_Point"))});
-    }
-    if (controls.count("Exposure_x100")) {
-      commands.push_back(
-          {tone_element, "exposure", QString::number(cameraControlValue("Exposure_x100") / 100.0, 'f', 2)});
+          {QString::fromStdString(command->element),
+           QString::fromStdString(command->property),
+           QString::fromStdString(command->value)});
     }
     publishRuntimeControlBatch({controls.begin(), controls.end()}, commands);
     return;
@@ -23228,7 +23283,8 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
   const bool high_bit_depth_mode = id == "Use_10_Bit_Grading";
   if (high_bit_depth_mode) {
     checkbox->setTristate(true);
-    checkbox->setCheckState(Qt::PartiallyChecked);
+    checkbox->setCheckState(default_high_bit_depth_mode_ == "1" ? Qt::Checked
+        : default_high_bit_depth_mode_ == "0" ? Qt::Unchecked : Qt::PartiallyChecked);
   } else {
     checkbox->setChecked(checked);
   }

@@ -19,6 +19,7 @@ test_suite(
         "//src/libs/detection:gpu_test",
         "//src/libs/program:gpu_test",
         "//src/libs/draw_display:analytics_overlay_test",
+        "//src/libs/draw_display:alpha_mask_overlay_test",
         "//src/libs/highlights:texture_blend_test",
         "//src/libs/player_analytics/runtime:pose_gpu_test",
         "//src/libs/player_analytics/runtime:team_gpu_test",

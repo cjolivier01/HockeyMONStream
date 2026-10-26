@@ -69,8 +69,10 @@ int main(int argc, char** argv) {
   QApplication application(argc, argv);
   try {
     // Directly constructed dialogs must also get colored icons without main().
-    for (int value = 0; value <= static_cast<int>(ActionIcon::Undo); ++value)
+    for (int value = 0; value < static_cast<int>(ActionIcon::Count); ++value)
       check_icon(action_icon(static_cast<ActionIcon>(value)), QString("direct action %1").arg(value));
+    for (const auto& tab : kTabIconSpecs)
+      check_icon(tab_icon(QString::fromLatin1(tab.label)), QString("tab %1").arg(tab.label));
     install_button_icon_style();
     QStyle* installed = application.style();
     install_button_icon_style();
@@ -82,7 +84,7 @@ int main(int argc, char** argv) {
       palette.setColor(QPalette::WindowText, dark ? Qt::white : Qt::black);
       palette.setColor(QPalette::Button, dark ? QColor("#202a38") : QColor("#eeeeee"));
       application.setPalette(palette);
-      for (int value = 0; value <= static_cast<int>(ActionIcon::Undo); ++value)
+      for (int value = 0; value < static_cast<int>(ActionIcon::Count); ++value)
         check_icon(action_icon(static_cast<ActionIcon>(value)), QString("action %1").arg(value));
       for (int value = QStyle::SP_TitleBarMenuButton; value <= static_cast<int>(QStyle::SP_TabCloseButton); ++value) {
         const auto standard = static_cast<QStyle::StandardPixmap>(value);
@@ -170,11 +172,12 @@ int main(int argc, char** argv) {
             QStyle::CC_ScrollBar, &scroll_option, QStyle::SC_ScrollBarAddLine, &scroll));
     const QString gallery = qEnvironmentVariable("HSTREAM_TEST_ICON_GALLERY");
     if (!gallery.isEmpty()) {
-      QImage image(640, 120, QImage::Format_RGB32);
+      const int width = static_cast<int>(ActionIcon::Count) * 20;
+      QImage image(width, 120, QImage::Format_RGB32);
       QPainter painter(&image);
-      painter.fillRect(0, 0, 640, 60, QColor("#eeeeee"));
-      painter.fillRect(0, 60, 640, 60, QColor("#202a38"));
-      for (int value = 0; value <= static_cast<int>(ActionIcon::Undo); ++value) {
+      painter.fillRect(0, 0, width, 60, QColor("#eeeeee"));
+      painter.fillRect(0, 60, width, 60, QColor("#202a38"));
+      for (int value = 0; value < static_cast<int>(ActionIcon::Count); ++value) {
         const QIcon icon = action_icon(static_cast<ActionIcon>(value));
         for (int row = 0; row < 4; ++row)
           icon.paint(

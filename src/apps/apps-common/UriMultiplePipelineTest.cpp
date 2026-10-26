@@ -978,6 +978,7 @@ int run_render_audio_initial_mute(
   gboolean audio_sync = TRUE;
   gboolean audio_async = TRUE;
   gboolean audio_qos = TRUE;
+  gboolean provides_clock = TRUE;
   gint64 max_lateness = 0;
   g_object_get(G_OBJECT(volume), "mute", &actual_muted, NULL);
   g_object_get(
@@ -988,6 +989,8 @@ int run_render_audio_initial_mute(
       &audio_async,
       "qos",
       &audio_qos,
+      "provide-clock",
+      &provides_clock,
       "max-lateness",
       &max_lateness,
       NULL);
@@ -1004,9 +1007,10 @@ int run_render_audio_initial_mute(
     std::cerr << "Expected initial local render-audio mute=" << initially_muted << ", got " << actual_muted << '\n';
     return 5;
   }
-  if (audio_sync != paced || audio_async || audio_qos || max_lateness != -1 || leaky != (paced ? 0 : 2)) {
+  if (audio_sync != paced || audio_async || audio_qos || max_lateness != -1 || leaky != (paced ? 0 : 2) ||
+      (paced && provides_clock)) {
     std::cerr << "Unexpected local audio timing policy; realtime=" << realtime << " sync=" << audio_sync
-              << ", async=" << audio_async << " leaky=" << leaky << '\n';
+              << ", async=" << audio_async << " leaky=" << leaky << " provides-clock=" << provides_clock << '\n';
     return 6;
   }
   return 0;

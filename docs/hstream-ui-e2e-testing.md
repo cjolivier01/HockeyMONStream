@@ -16,6 +16,16 @@ user defaults file; selecting a game keeps saving to its `config.yaml`.
 The application never writes the bundled baseline. The defaults path is fixed
 under `HOME`, independently of the `XDG_CONFIG_HOME` UI preference location.
 
+Program → Color and Stitched → Color & Precision share the three-state
+**10-bit / FP16 mode** checkbox. Click or Space cycles Auto, Force on, Force off,
+then Auto. Its default comes from `pipeline.hmstitcher.properties.high-bit-depth`
+in `configs/baseline.yaml`; account and game settings retain their usual
+precedence. Saving Auto over a forced default preserves an explicit Auto
+override. Precision changes apply to the next run; Reset Controls during live
+playback preserves that selection. `defaults_preset_test` checks mirrored
+cycling, custom baseline modes, saving/reloading Auto and Reset to Baseline;
+`tone_controls_window_test` checks live Reset preserves next-run precision.
+
 **Reset to Baseline** appears only for Defaults. It loads the baseline into the
 controls without changing files. Save Preset then writes an empty YAML map (`{}`)
 if no further edits were made; edits after Reset are saved as new overrides.
@@ -180,6 +190,60 @@ to the source game. Configured stitching artifacts are reflinked (or copied
 when reflinks are not available), while `config.yaml`, UI state, locks, and
 encoded output remain isolated. The source game is not modified.
 
+The separate opt-in GPU tone check runs real Program processing with video
+rendering and archive outputs disabled. It compares native typed readbacks
+with Qt edits: coalesced shadows/black-point/exposure updates, a newer edit
+queued behind genuine delayed acknowledgments, mirrored keyboard changes,
+wheel protection, retained disabled black-point state, and Save Preset during
+playback. Changing the next-run precision checkbox must preserve the active
+native owner and precision before and after Save.
+
+Build `//src/apps/hstream-ui:tone_controls_gpu_test` and the native CLI/plugins
+first. Run this command inside the machine's GPU allocation, once with
+`standard` and once with `high-bit`, using a different artifact directory:
+
+```bash
+python3 scripts/test_hstream_tone_controls_gpu.py \
+  --source-game /mnt/games/game-42 --native-root "$PWD" \
+  --artifacts /tmp/tone-standard --precision standard
+```
+
+The wrapper requires a recorded game with saved calibration (`panorama.tif`),
+copies configuration/calibration into the new artifact directory, and symlinks
+untouched video inputs. It disables optional calibration dialogs
+and telemetry in that copy and isolates Qt preferences. Model caches remain
+available from the normal user environment. Logs, native runner SHA-256, and
+screenshots stay outside the Git tree. This test verifies tone-control behavior;
+it does not establish preview pixel, calibration, or complete workflow parity.
+
+Set `HSTREAM_UI_E2E_SKIP_OPTIONAL_REVIEW=1` for preview-only acceptance when an
+older fixture may need calibration regeneration. This disables optional crop
+and leveling review in the copied game's settings; it does not change the
+source game or skip native calibration. Scoreboard selection remains automated.
+
+`HSTREAM_UI_E2E_PREVIEW_TRANSITIONS_ONLY=1` selects a separate live X11 check:
+Program → paused Stitched → Camera 1, a source-only seek, Render off immediately
+after starting a backward seek, restart with rendering still off, then Program
+reactivation. It preserves Qt's rule that Render off disables new seek requests.
+It turns archive routes and telemetry off so native local seeking is available,
+uses normal-speed playback, and requires generation-matched readiness plus
+nonblank native diagnostic captures. It writes `preview-transitions-report.txt`
+and `pipeline.log` in the artifact directory. Run this with `--x11-preview` and
+the same copied-game setup; it replaces the archive/visual-matching check, so
+run the ordinary archive check separately. A new-process restart is covered;
+this does not force the same-process full-reconstruction seek fallback.
+
+The focused CPU regression `HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY=1`
+checks that overlay changes and Render-on before runtime readiness retain the
+latest choices, send no early command, and start acknowledgment timing only
+after the native readiness handshake.
+
+With `HSTREAM_UI_E2E_PREVIEW_OVERLAY_CONTROLS=1`, the transition check also
+changes Player boxes, Play tracking and Rink mask on Program and Stitched,
+requires complete live acknowledgments and captures each combined selection.
+It ends each route with all three off. These are diagnostic framebuffer captures;
+ordinary playback does not read video back to the CPU.
+
 On X11, the backend renders NVMM video through CUDA/OpenGL into the native
 preview windows. The acceptance test requests bounded diagnostic captures of
 the presented GPU framebuffer; ordinary playback performs no CPU frame readback.
@@ -223,6 +287,21 @@ the default of 20. Lowering it should be accompanied by inspection of
 `panorama-feature-matches.jpg`; the 35% inlier-fraction requirement remains.
 `HSTREAM_UI_E2E_RECORD_MS` can extend the post-FPS recording interval; the
 default is 6000 ms.
+
+The complete fake-runner main-window comparison uses a screen large enough for
+its resize and composed native-control checks:
+
+```sh
+QT_QPA_PLATFORM=xcb xvfb-run -a -s '-screen 0 2560x1600x24' \
+  bazel-bin/src/apps/hstream-ui/hstream_ui_test
+```
+
+The default 1280×1024 Xvfb screen clips the test's 1500-pixel-wide focused
+preview, so its top-right icon cannot appear in the captured image. The Bazel
+test uses `QT_QPA_PLATFORM=offscreen` for the non-X11 behavior checks. Set
+`HSTREAM_UI_TEST_DESTRUCTION_ONLY=1` to isolate active pipeline/finalizer and
+transient-process destruction; it verifies safe signal teardown and process reaping on either
+platform. Normal window closing still waits for the pipeline and publication.
 
 The focused native background regression runs with
 `QT_QPA_PLATFORM=xcb xvfb-run -a bazel-bin/src/apps/hstream-ui/native_preview_surface_test`.

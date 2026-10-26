@@ -563,6 +563,11 @@ bool create_render_audio_branch(
     // Apply backpressure only in explicitly paced playback. Archive audio
     // retains its own lossless queue and unchanged sample timestamps.
     g_object_set(G_OBJECT(queue), "leaky", 0, NULL);
+    // Exact-pair gating releases audio only after its matching video frames.
+    // An ALSA clock stops while its ring buffer is priming after a source seek;
+    // video waiting on that clock would then prevent the audio needed to start
+    // it. Keep both paced branches on the pipeline's monotonic system clock.
+    g_object_set(G_OBJECT(audiosink), "provide-clock", FALSE, NULL);
   }
   g_object_set(G_OBJECT(audiosink), "sync", realtime, "async", FALSE, "max-lateness", gint64{-1}, "qos", FALSE, NULL);
   if (*hmaudio_config->alsa_dest_device) {
@@ -750,7 +755,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
       gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, high_bit_depth ? "RGB10A2_LE" : "RGBA", NULL),
       bin->cap_filter);
 
-  if (config->ui_preview || config->archive_stitched) {
+  if (config->ui_preview || config->preview_tap_only || config->archive_stitched) {
     HMGST_ELEMENT_MAKE_BINADD(bin->output_tee, "tee", "hmstitcher_output_tee");
     NVGSTDS_LINK_ELEMENT(bin->elem_hmstitcher, bin->output_tee);
     if (high_bit_depth_output) {
@@ -786,7 +791,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
       NVGSTDS_BIN_ADD_GHOST_PAD_NAMED(bin->bin, bin->stitched_queue, "src", "stitched_src");
     }
 
-    if (config->ui_preview) {
+    if (config->ui_preview && !config->preview_tap_only) {
       if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
         NVGSTDS_ERR_MSG_V("GPU-native stitching preview is unavailable on this platform");
         goto done;

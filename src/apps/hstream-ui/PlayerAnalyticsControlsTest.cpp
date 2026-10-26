@@ -10,6 +10,7 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QPushButton>
 
 #include <array>
 #include <cstdlib>
@@ -677,6 +678,13 @@ void HomeSweater() {
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
+  {
+    PlayerAnalyticsControls widget;
+    const auto buttons = widget.findChildren<QPushButton*>();
+    Require(!buttons.empty(), "Custom analytics controls need their Browse actions");
+    for (const auto* button : buttons)
+      Require(!button->icon().isNull(), "Custom analytics Browse actions retain their Open icon");
+  }
   QTemporaryDir directory;
   Require(directory.isValid(), "Cannot create test directory");
   Disabled();

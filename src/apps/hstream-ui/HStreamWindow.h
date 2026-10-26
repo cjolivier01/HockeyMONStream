@@ -70,7 +70,7 @@ struct StitchingIterationSettings {
   QString sync_method{"audio"};
   bool show_crop_dialog{true};
   bool show_leveling_dialog{true};
-  QString playback_start_time{"00:00:00"};
+  QString playback_start_time;
 
   bool operator!=(const StitchingIterationSettings& other) const {
     return sync_method != other.sync_method || show_crop_dialog != other.show_crop_dialog ||
@@ -859,6 +859,7 @@ class HStreamWindow : public QMainWindow {
   int preview_recovery_attempts_{0};
   int preview_disable_attempts_{0};
   bool preview_runtime_ready_{false};
+  bool preview_overlay_deferred_{false};
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
   QString active_archive_output_path_;
@@ -1014,6 +1015,10 @@ class HStreamWindow : public QMainWindow {
   YAML::Node user_layer_;
   QString user_config_source_;
   QString baseline_config_root_;
+  int runtime_control_debounce_ms_;
+  int runtime_control_ack_timeout_ms_;
+  int pipeline_stop_timeout_ms_;
+  int pipeline_kill_timeout_ms_;
   bool default_drivegpt_database_enabled_;
   QString default_stitch_frame_time_{"00:00:00"};
   int default_stitch_max_output_width_{0};
@@ -1034,6 +1039,7 @@ class HStreamWindow : public QMainWindow {
   std::map<QString, int> suppressed_crop_rotation_controls_;
   QLabel* crop_rotation_explanation_{nullptr};
   QString saved_high_bit_depth_mode_{"auto"};
+  QString default_high_bit_depth_mode_;
   int saved_stitching_control_points_{0};
   int saved_stitching_calibration_frame_count_{0};
   int saved_stitch_max_output_width_{0};

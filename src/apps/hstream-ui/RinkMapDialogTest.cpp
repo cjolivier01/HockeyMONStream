@@ -493,6 +493,8 @@ int main(int argc, char** argv) {
     RinkMapDialog dialog(game.path());
     dialog.show();
     ok &= expect(idle(dialog), "Partial reopen completes");
+    const auto* fit = dialog.findChild<QPushButton*>("rinkMapFitImagesButton");
+    ok &= expect(fit && !fit->icon().isNull(), "Fit images retains its action icon");
     auto wheel = [](QWidget* widget, bool pixels = false, bool include_angle = false) {
       const QPoint position = widget->rect().center();
       QWheelEvent event(

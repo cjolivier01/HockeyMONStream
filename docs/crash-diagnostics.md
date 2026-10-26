@@ -57,6 +57,15 @@ the stalled thread and a collapsed dump of every other thread's name and
 `wchan` to stderr and to `events.log`, records a `shutdown-watchdog`
 breadcrumb, and exits 70.
 
+An orderly Stop from a GStreamer pause first resumes the graph, after closing
+the browser transport and before retiring URI readers. Paused sinks retain
+preroll buffers and cannot finish EOS; leaving them paused can also hold decoder
+references during source retirement. The resume shares the existing stop
+watchdog and does not wait on a separate playback deadline. Already completed
+or failed graphs proceed directly to teardown. Qt process pauses are released
+by its existing supervisor before Stop, and AMD output clocks already resume
+before their EOS drain.
+
 So a `shutdown-watchdog` breadcrumb immediately before `process-exit` with code
 70 means the teardown was abandoned, not that it completed. Output being
 finalized at the time is lost. The thread dump names where each thread was

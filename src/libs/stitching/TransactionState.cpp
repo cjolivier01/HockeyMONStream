@@ -936,6 +936,77 @@ absl::StatusOr<bool> transaction_recovery_scan_required(const fs::path& root, Tr
       root_metadata.st_mtim.tv_nsec != protocol_metadata.st_mtim.tv_nsec;
 }
 
+absl::StatusOr<bool> transaction_snapshot_readable(const fs::path& root, TransactionJournalKind kind) {
+  auto opened = open_recovery_root(root);
+  if (!opened.ok())
+    return opened.status();
+  const int descriptor = *opened;
+  struct DescriptorCleanup {
+    int descriptor;
+    ~DescriptorCleanup() {
+      ::close(descriptor);
+    }
+  } cleanup{descriptor};
+  const auto names = recovery_marker_names(kind);
+  auto protocol = regular_empty_marker_exists(descriptor, names.protocol);
+  if (!protocol.ok())
+    return protocol.status();
+  auto pending = regular_empty_marker_exists(descriptor, names.pending);
+  if (!pending.ok())
+    return pending.status();
+  if (*pending)
+    return false;
+  struct stat root_metadata{}, protocol_metadata{};
+  if (::fstat(descriptor, &root_metadata) != 0)
+    return absl::InternalError("Unable to inspect advisory transaction root");
+  if (*protocol) {
+    if (::fstatat(descriptor, names.protocol, &protocol_metadata, AT_SYMLINK_NOFOLLOW) != 0)
+      return absl::InternalError("Unable to inspect advisory transaction marker");
+    if (root_metadata.st_mtim.tv_sec == protocol_metadata.st_mtim.tv_sec &&
+        root_metadata.st_mtim.tv_nsec == protocol_metadata.st_mtim.tv_nsec)
+      return true;
+  }
+  // Legacy roots have no marker; directory changes also require inspection.
+  // The optional reader only checks names and never opens a possible journal.
+  const int copy = ::dup(descriptor);
+  if (copy < 0)
+    return absl::InternalError("Unable to duplicate advisory transaction root");
+  DIR* directory = ::fdopendir(copy);
+  if (!directory) {
+    ::close(copy);
+    return absl::InternalError("Unable to list advisory transaction root");
+  }
+  struct DirectoryCleanup {
+    DIR* directory;
+    ~DirectoryCleanup() {
+      ::closedir(directory);
+    }
+  } listing{directory};
+  const std::string current = kind == TransactionJournalKind::kStitch ? "hstream-stitch-" : "hstream-rink-";
+  const std::string legacy = "." + current;
+  constexpr size_t maximum_entries = 4096;
+  size_t entries = 0;
+  for (;;) {
+    errno = 0;
+    const dirent* entry = ::readdir(directory);
+    if (!entry) {
+      if (errno != 0)
+        return absl::InternalError("Unable to read advisory transaction directory");
+      return true;
+    }
+    if (++entries > maximum_entries)
+      return false;
+    const std::string name(entry->d_name);
+    if (name == names.protocol || name == names.pending)
+      continue;
+    if (name.rfind(legacy, 0) == 0)
+      return false;
+    if (name.rfind(current, 0) == 0 && name.size() == current.size() + 6 &&
+        std::all_of(name.begin() + current.size(), name.end(), [](unsigned char c) { return std::isalnum(c); }))
+      return false;
+  }
+}
+
 absl::Status mark_transaction_recovery_pending(const fs::path& root, TransactionJournalKind kind) {
   auto opened = open_recovery_root(root);
   if (!opened.ok())

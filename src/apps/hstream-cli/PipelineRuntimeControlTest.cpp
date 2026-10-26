@@ -152,22 +152,33 @@ class PipelineProcess {
   }
 
   bool WaitFor(const std::string& text, size_t after = 0, std::chrono::seconds timeout = std::chrono::seconds(8)) {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    while (std::chrono::steady_clock::now() < deadline) {
-      Drain();
-      if (output_text_.find(text, after) != std::string::npos) {
-        return true;
-      }
-      int status = 0;
-      if (::waitpid(pid_, &status, WNOHANG) == pid_) {
-        pid_ = -1;
-        return false;
-      }
-      pollfd fd{output_, POLLIN, 0};
-      ::poll(&fd, 1, 50);
-    }
-    Drain();
-    return output_text_.find(text, after) != std::string::npos;
+    return WaitUntil([&] { return output_text_.find(text, after) != std::string::npos; }, timeout);
+  }
+
+  // Inspector documents can span multiple pipe reads. Keep the request prefix
+  // and its terminator together, and capture only that response for assertions.
+  bool WaitForLine(
+      const std::string& prefix,
+      size_t after = 0,
+      std::chrono::seconds timeout = std::chrono::seconds(8),
+      std::string* line = nullptr) {
+    return WaitUntil(
+        [&] {
+          size_t position = after;
+          while ((position = output_text_.find(prefix, position)) != std::string::npos) {
+            const size_t end = output_text_.find('\n', position);
+            if (end == std::string::npos)
+              return false;
+            if (position == 0 || output_text_[position - 1] == '\n') {
+              if (line)
+                *line = output_text_.substr(position, end - position);
+              return true;
+            }
+            position = end + 1;
+          }
+          return false;
+        },
+        timeout);
   }
 
   bool WaitForProgressAtOrBeyond(
@@ -233,6 +244,27 @@ class PipelineProcess {
   }
 
  private:
+  template <typename Predicate>
+  bool WaitUntil(Predicate ready, std::chrono::seconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      Drain();
+      if (ready())
+        return true;
+      int status = 0;
+      if (pid_ > 0 && ::waitpid(pid_, &status, WNOHANG) == pid_) {
+        pid_ = -1;
+        // The child may have completed its last write between Drain and waitpid.
+        Drain();
+        return ready();
+      }
+      pollfd fd{output_, POLLIN, 0};
+      ::poll(&fd, 1, 50);
+    }
+    Drain();
+    return ready();
+  }
+
   bool HasProgressAtOrBeyond(int minimum_video_seconds, size_t after) const {
     size_t position = after;
     while ((position = output_text_.find("**PERF:", position)) != std::string::npos) {
@@ -272,6 +304,74 @@ class PipelineProcess {
   int output_{-1};
   std::string output_text_;
 };
+
+// The writer cannot finish a response until the reader explicitly releases each
+// chunk. This reproduces a pipe read ending in the middle of a large JSON line
+// without timing assumptions, a native pipeline, or GPU allocation.
+const std::string kSplitInspectorPrefix =
+    "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":101,\"status\":\"ok\"";
+const std::string kSplitInspectorBody =
+    ",\"nodes\":[\"" + std::string(65536, 'x') + "\"],\"edges\":[],\"splitEnd\":true}";
+
+int write_split_inspector_response() {
+  auto step = [](char expected) {
+    char value = 0;
+    ssize_t count;
+    do {
+      count = ::read(STDIN_FILENO, &value, 1);
+    } while (count < 0 && errno == EINTR);
+    return count == 1 && value == expected;
+  };
+  return write_all(STDOUT_FILENO, kSplitInspectorPrefix + ",\"old\":true}\n") && step('p') &&
+          write_all(STDOUT_FILENO, "unrelated complete line\n" + kSplitInspectorPrefix) && step('b') &&
+          write_all(STDOUT_FILENO, kSplitInspectorBody) && step('n') &&
+          write_all(STDOUT_FILENO, "\nunrelated trailing line\n") && step('q')
+      ? 0
+      : 1;
+}
+
+bool verify_complete_output_lines(const fs::path& executable) {
+  PipelineProcess process;
+  if (!expect(
+          process.Start(
+              executable,
+              fs::temp_directory_path() / "split-inspector-unused.yaml",
+              "URI",
+              "FAKE",
+              false,
+              {{"HSTREAM_TEST_SPLIT_INSPECTOR_RESPONSE", "1"}}),
+          "split response writer must start"))
+    return false;
+  std::string line;
+  if (!expect(process.WaitForLine(kSplitInspectorPrefix), "old complete response must arrive"))
+    return false;
+  const size_t mark = process.Mark();
+  bool ok = expect(
+      !process.WaitForLine(kSplitInspectorPrefix, mark, std::chrono::seconds(0)),
+      "a response before the request mark must not satisfy a new request");
+  if (!expect(process.Send("p") && process.WaitFor(kSplitInspectorPrefix, mark), "response prefix must arrive"))
+    return false;
+  ok &= expect(
+      !process.WaitForLine(kSplitInspectorPrefix, mark, std::chrono::seconds(0)),
+      "an unrelated newline and an incomplete matching prefix must not complete a response");
+  if (!expect(process.Send("b") && process.WaitFor("\"splitEnd\":true}", mark), "large JSON body must arrive"))
+    return false;
+  ok &= expect(
+      !process.WaitForLine(kSplitInspectorPrefix, mark, std::chrono::seconds(0)),
+      "a complete JSON body still requires its line terminator");
+  if (!expect(process.Send("n"), "line terminator must be released"))
+    return false;
+  ok &= expect(
+      process.WaitForLine(kSplitInspectorPrefix, mark, std::chrono::seconds(8), &line),
+      "split response must complete after its terminator");
+  ok &= expect(
+      line == kSplitInspectorPrefix + kSplitInspectorBody,
+      "captured response must include the full body and exclude unrelated output");
+  int exit_code = -1;
+  ok &= expect(
+      process.Send("q") && process.WaitForExit(&exit_code) && exit_code == 0, "split writer must exit successfully");
+  return ok;
+}
 
 bool verify_telemetry_seek_rejection(
     const fs::path& executable,
@@ -671,6 +771,10 @@ bool write_playlist_seek_config(
 
 int main(int argc, char** argv) {
   ::signal(SIGPIPE, SIG_IGN);
+  if (::getenv("HSTREAM_TEST_SPLIT_INSPECTOR_RESPONSE"))
+    return write_split_inspector_response();
+  if (argc == 2 && std::string(argv[1]) == "--test-output-reader")
+    return verify_complete_output_lines(fs::canonical("/proc/self/exe")) ? 0 : 1;
   if (argc != 2) {
     std::cerr << "FAIL: expected hstream-cli path\n";
     return 1;
@@ -813,19 +917,21 @@ int main(int argc, char** argv) {
   ok &= expect(process.Start(argv[1], config), "hstream-cli process must start");
   ok &= expect(process.WaitFor("Pipeline running"), "hstream-cli must reach PLAYING");
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
           "\"stage\":0,\"generation\":1}"),
       "hstream-cli must announce the active inspector stage/generation binding");
   ok &= expect(process.running(), "hstream-cli must keep processing after reaching PLAYING");
   const size_t graph_mark = process.Mark();
   ok &= expect(process.Send("@inspect-pipeline 101 0 1\n"), "pipeline graph inspection command must be delivered");
+  std::string graph_output;
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":101,\"status\":\"ok\"",
-          graph_mark),
+          graph_mark,
+          std::chrono::seconds(8),
+          &graph_output),
       "backend must return a versioned structured pipeline graph");
-  const std::string graph_output = process.output().substr(graph_mark);
   ok &= expect(
       graph_output.find("\"stage\":0,\"generation\":1") != std::string::npos &&
           graph_output.find("\"nodes\":[") != std::string::npos &&
@@ -837,13 +943,15 @@ int main(int argc, char** argv) {
   ok &= expect(
       process.Send(std::string("@inspect-properties 102 0 1 0 ") + kQueuePath + "\n"),
       "pipeline element property inspection command must be delivered");
+  std::string properties_output;
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"properties\",\"requestId\":102,"
           "\"status\":\"ok\"",
-          properties_mark),
+          properties_mark,
+          std::chrono::seconds(8),
+          &properties_output),
       "backend must return selected-node property names, types, values, and mutability");
-  const std::string properties_output = process.output().substr(properties_mark);
   ok &= expect(
       properties_output.find("\"name\":\"silent\"") != std::string::npos &&
           properties_output.find("\"editable\":true") != std::string::npos,
@@ -854,7 +962,7 @@ int main(int argc, char** argv) {
           std::string("@inspect-set-property 103 -1 1 0 ") + kQueuePath + " " + kSilentProperty + " dHJ1ZQ==\n"),
       "stale-stage inspector property mutation must be delivered");
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":103,"
           "\"status\":\"error\",\"stage\":-1,\"generation\":1,"
           "\"message\":\"Stale pipeline inspector stage/generation",
@@ -866,7 +974,7 @@ int main(int argc, char** argv) {
           std::string("@inspect-set-property 104 0 1 0 ") + kQueuePath + " " + kSilentProperty + " dHJ1ZQ==\n"),
       "approved inspector property mutation must be delivered");
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":104,"
           "\"status\":\"ok\"",
           property_set_mark),
@@ -877,7 +985,7 @@ int main(int argc, char** argv) {
           std::string("@inspect-set-property 105 0 1 0 ") + kQueuePath + " " + kSilentProperty + " ZmFsc2U=\n"),
       "inspector property restoration must be delivered");
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":105,"
           "\"status\":\"ok\"",
           property_restore_mark),
@@ -887,7 +995,7 @@ int main(int argc, char** argv) {
       process.Send(std::string("@inspect-set-property 106 0 1 0 ") + kQueuePath + " bmFtZQ== aGFja2Vk\n"),
       "unsafe inspector property request must be delivered");
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":106,"
           "\"status\":\"error\"",
           unsafe_property_mark),
@@ -897,7 +1005,7 @@ int main(int argc, char** argv) {
       process.Send("@inspect-properties 107 0 1 0 not-base64\n"),
       "malformed pipeline inspector command must be delivered");
   ok &= expect(
-      process.WaitFor(
+      process.WaitForLine(
           "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"command\",\"requestId\":0,"
           "\"status\":\"error\"",
           malformed_inspector_mark),
@@ -1024,7 +1132,7 @@ int main(int argc, char** argv) {
         "hstream-cli seek process must start with exact-paired multi-chapter sources and native tracker");
     ok &= expect(seek_process.WaitFor("Pipeline running"), "seek hstream-cli must reach PLAYING");
     ok &= expect(
-        seek_process.WaitFor(
+        seek_process.WaitForLine(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
             "\"stage\":0,\"generation\":1}"),
         "seek pipeline must announce its initial inspector topology generation");
@@ -1082,7 +1190,7 @@ int main(int argc, char** argv) {
         seek_process.WaitFor("HSTREAM_SEEK status=ok generation=2 position_ns=10000000000", seek_mark),
         "local-render-only playback must acknowledge the first processed frame after a replacement seek");
     ok &= expect(
-        seek_process.WaitFor(
+        seek_process.WaitForLine(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
             "\"stage\":0,\"generation\":2}",
             seek_mark),
@@ -1094,7 +1202,7 @@ int main(int argc, char** argv) {
         seek_process.Send(queued_pre_recreation_command),
         "a property command retained from the pre-recreation graph must be delivered");
     ok &= expect(
-        seek_process.WaitFor(
+        seek_process.WaitForLine(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"set-result\",\"requestId\":150,"
             "\"status\":\"error\",\"stage\":0,\"generation\":1,"
             "\"message\":\"Stale pipeline inspector stage/generation",
@@ -1105,7 +1213,7 @@ int main(int argc, char** argv) {
         seek_process.Send("@inspect-pipeline 151 0 2\n"),
         "replacement topology graph request must be delivered with the new generation");
     ok &= expect(
-        seek_process.WaitFor(
+        seek_process.WaitForLine(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"graph\",\"requestId\":151,"
             "\"status\":\"ok\",\"stage\":0,\"generation\":2",
             replacement_graph_mark),
@@ -1651,7 +1759,7 @@ int main(int argc, char** argv) {
         "hstream-cli archive process must start");
     ok &= expect(archive_process.WaitFor("Pipeline running"), "archive pipeline must reach PLAYING");
     ok &= expect(
-        archive_process.WaitFor(
+        archive_process.WaitForLine(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
             "\"stage\":0,\"generation\":1}"),
         "periodic-recreation pipeline must announce its initial topology generation");
@@ -1666,7 +1774,7 @@ int main(int argc, char** argv) {
         "recreated archive pipeline must return to PLAYING");
     ok &= expect(
         recreated_at != std::string::npos &&
-            archive_process.WaitFor(
+            archive_process.WaitForLine(
                 "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,"
                 "\"status\":\"ok\",\"stage\":0,\"generation\":2}",
                 recreated_at,
@@ -1697,7 +1805,7 @@ int main(int argc, char** argv) {
         recreation_process->WaitFor("Pipeline running"),
         "injected-failure periodic recreation must reach initial PLAYING");
     ok &= expect(
-        recreation_process->WaitFor(
+        recreation_process->WaitForLine(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
             "\"stage\":0,\"generation\":1}"),
         "injected-failure recreation must announce its initial inspector generation");
@@ -1708,7 +1816,7 @@ int main(int argc, char** argv) {
         recreation_process->WaitFor(failure_marker, recreation_mark, std::chrono::seconds(12)),
         "periodic recreation must reach the requested post-destruction failure phase");
     ok &= expect(
-        recreation_process->WaitFor(
+        recreation_process->WaitForLine(
             "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
             "\"stage\":0,\"generation\":2}",
             recreation_mark),

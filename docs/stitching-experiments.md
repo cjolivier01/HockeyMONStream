@@ -369,6 +369,18 @@ pixels per side, using the shared `CalibrationImage` PNG row decoder and a TIFF
 row decoder. Resizing preserves its aspect ratio. A completed reframe can show
 its panorama while its downstream rink-mask/PNG snapshot still needs rebuilding.
 
+Clearing the source cancels queued reads and drains only the still reader's
+metadata section, preventing that reader from rejecting an immediate Play as
+writer-busy. Publication locks are released before image decoding; clearing or
+destroying the widget never joins decoding or pumps Qt events. Optional reads
+use the native advisory lock path and decline pending stitch/rink recovery,
+leaving journals and rollback images untouched for explicit startup or writers.
+Legacy or changed directories are inspected without following journal entries,
+with a fixed 4096-entry bound; an active external writer still prevents reuse.
+Generation checks read only the identity and inode/timestamp bindings; an older
+identity or changed binding waits for explicit validation instead of hashing
+calibration maps or publishing an upgraded identity from the preview reader.
+
 Calibration snapshots convert GPU RGBA pixels to OpenCV's BGRA order before PNG
 encoding. Older `s.png` files made by the 8-bit snapshot path may have red and
 blue swapped; regenerating the snapshot with the corrected writer fixes both

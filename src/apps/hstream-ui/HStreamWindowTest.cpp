@@ -31,6 +31,7 @@
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
 #include <QtGui/QWindow>
+#include <QtTest/QSignalSpy>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
@@ -75,6 +76,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -87,12 +89,57 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool previewOverlayStartupChecks() {
+    const QByteArray old_timeout = qgetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    const bool had_timeout = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", "20");
+    const absl::Cleanup restore_timeout = [&] {
+      if (had_timeout)
+        qputenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS", old_timeout);
+      else
+        qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
+    };
+    HStreamWindow window;
+    window.render_video_toggle_->setChecked(false);
+    if (!startStubPipelineProcess(&window))
+      return false;
+    const absl::Cleanup stop = [&] { killStubPipelineProcess(&window); };
+    window.pipeline_render_embedded_ = true;
+    window.preview_runtime_ready_ = false;
+    window.preview_overlay_generation_ = 0;
+    window.show_player_tracking_toggle_->setChecked(true);
+    window.show_play_tracking_toggle_->setChecked(true);
+    window.show_rink_mask_toggle_->setChecked(true);
+    window.render_video_toggle_->setChecked(true);
+    QTest::qWait(80);
+    bool ok = window.preview_overlay_deferred_ && window.preview_overlay_generation_ == 0 &&
+        window.pending_preview_overlay_generation_ == 0 && window.show_player_tracking_toggle_->isChecked() &&
+        window.show_play_tracking_toggle_->isChecked() && window.show_rink_mask_toggle_->isChecked() &&
+        !window.logText().contains("apply=live") &&
+        !window.logText().contains("reason=acknowledgement-timeout");
+    window.handleGpuPreviewStatus("HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=1");
+    ok &= !window.preview_overlay_deferred_ && window.preview_overlay_generation_ == 1 &&
+        window.pending_preview_overlay_generation_ == 1;
+    window.handlePreviewOverlayResponse("HSTREAM_PREVIEW_OVERLAYS status=applied generation=1 players=1 play=1 rink=1");
+    QTest::qWait(40);
+    ok &= window.pending_preview_overlay_generation_ == 0 && window.confirmed_show_player_tracking_ &&
+        window.confirmed_show_play_tracking_ && window.confirmed_show_rink_mask_ &&
+        window.logText().contains("preview overlays players=1 play=1 rink=1 apply=live") &&
+        !window.logText().contains("reason=acknowledgement-timeout");
+    window.clearPreviewFrames();
+    if (!ok)
+      std::cerr
+          << "Delayed preview readiness must preserve choices and start acknowledgment timing only after readiness\n"
+          << window.logText().toStdString();
+    return ok;
+  }
   static bool scoreboardControlChecks(HStreamWindow* window) {
     const QString config_path = window->gameDirectoryText() + "/config.yaml";
     QFile file(config_path);
@@ -566,6 +613,10 @@ struct HStreamWindowTestAccess {
     window->pipeline_process_->waitForFinished(5000);
     delete window->pipeline_process_;
     window->pipeline_process_ = nullptr;
+  }
+
+  static QProcess* ownedProcess(HStreamWindow* window, bool finalizer) {
+    return finalizer ? window->archive_finalize_process_ : window->pipeline_process_;
   }
 
   static void toggleProcessPause(HStreamWindow* window) {
@@ -1572,7 +1623,12 @@ bool write_fake_runner(const QString& path) {
   file.write(
       "print('HSTREAM_STARTUP stage=stitching message=Discovering source chapters and validating saved stitching "
       "artifacts', flush=True)\n");
-  file.write("time.sleep(float(os.environ.get('HSTREAM_UI_TEST_STARTUP_DELAY_MS', '0')) / 1000.0)\n");
+  file.write("startup_hold = os.environ.get('HSTREAM_UI_TEST_STARTUP_HOLD_DIR', '')\n");
+  file.write("startup_deadline = time.monotonic() + 30.0\n");
+  file.write("while startup_hold and os.path.isdir(startup_hold):\n");
+  file.write("    if time.monotonic() >= startup_deadline:\n");
+  file.write("        sys.exit('test did not release the startup hold')\n");
+  file.write("    time.sleep(0.005)\n");
   file.write(
       "print('HSTREAM_STARTUP stage=decoding message=Starting decoders and waiting for the first frame', "
       "flush=True)\n");
@@ -5347,16 +5403,21 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW", "1");
   qputenv("HSTREAM_UI_TEST_PREVIEW_TIMEOUT_MS", "20");
   qputenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER", "1");
-  qputenv("HSTREAM_UI_TEST_STARTUP_DELAY_MS", "150");
+  // Hold the fake runner in this stage until its presentation is inspected;
+  // a short fixed delay can expire before Qt runs under concurrent builds.
+  QTemporaryDir startup_hold;
+  if (!expect(startup_hold.isValid(), "Could not prepare the startup-stage hold"))
+    return false;
+  qputenv("HSTREAM_UI_TEST_STARTUP_HOLD_DIR", startup_hold.path().toLocal8Bit());
   for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
     surface->setProperty("previewRendererState", "ready");
   }
   activate(start);
-  for (int i = 0; i < 100 && !playback_progress->format().contains("validating saved stitching artifacts"); ++i) {
+  for (int i = 0; i < 500 && !playback_progress->format().contains("validating saved stitching artifacts"); ++i) {
     QApplication::processEvents();
     QTest::qWait(5);
   }
-  qunsetenv("HSTREAM_UI_TEST_STARTUP_DELAY_MS");
+  qunsetenv("HSTREAM_UI_TEST_STARTUP_HOLD_DIR");
   if (!expect(
           playback_progress->isVisible() && playback_progress->minimum() == 0 && playback_progress->maximum() == 0 &&
               playback_progress->format().contains("STARTING") &&
@@ -5384,6 +5445,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "Program")) {
     return false;
   }
+  if (!expect(startup_hold.remove(), "Could not release the startup-stage hold"))
+    return false;
   for (int i = 0; i < 200 &&
        (!window->logText().contains("one-pass stitching calibration complete; continuous program playback running") ||
         window->pipelineStateText() != "PLAYING");
@@ -5556,14 +5619,31 @@ bool test_pipeline_buttons(HStreamWindow* window) {
             static_cast<long double>(displayed_playback_position_ns) * seek_slider->maximum() /
             static_cast<long double>(displayed_playback_duration_ns)))
       : seek_slider->minimum();
-  const QString expected_restored_seek_text = displayed_playback_duration_ns > 0
-      ? QString("%1 / %2").arg(
-            format_test_video_time_ns(displayed_playback_position_ns),
-            format_test_video_time_ns(displayed_playback_duration_ns))
-      : "00:00:00 / --:--:--";
+  const auto current_seek_position_text = [window]() {
+    const qint64 position_ns = HStreamWindowTestAccess::playbackPositionNs(window);
+    const qint64 duration_ns = HStreamWindowTestAccess::playbackDurationNs(window);
+    return duration_ns > 0
+        ? QString("%1 / %2").arg(format_test_video_time_ns(position_ns), format_test_video_time_ns(duration_ns))
+        : QString("00:00:00 / --:--:--");
+  };
+  const QString expected_restored_seek_text = current_seek_position_text();
   const bool outside_release_cancelled = !seek_slider->isSliderDown() &&
       seek_slider->value() == expected_restored_seek_value && seek_position->text() == expected_restored_seek_text &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
+  // Playback can advance between cancelled gestures (including delayed reset
+  // samples). Each cancellation must restore the latest accepted position,
+  // rather than the position captured after the first cancellation.
+  const qint64 advanced_playback_position_ns = displayed_playback_position_ns + 1'000'000'000LL;
+  HStreamWindowTestAccess::handlePlaybackProgressOutput(
+      window,
+      QString("HSTREAM_PROGRESS processed_ns=%1 total_ns=600000000000 instance=aggregate generation=%2")
+          .arg(advanced_playback_position_ns)
+          .arg(HStreamWindowTestAccess::playbackResetGeneration(window)));
+  if (!expect(
+          HStreamWindowTestAccess::playbackPositionNs(window) == advanced_playback_position_ns &&
+              current_seek_position_text() != expected_restored_seek_text,
+          "The cancellation regression must advance accepted playback progress between gestures"))
+    return false;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
   seek_slider->setEnabled(false);
@@ -5571,7 +5651,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   seek_slider->setEnabled(true);
   QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
   QApplication::processEvents();
-  const bool disabled_drag_sent_no_seek = seek_position->text() == expected_restored_seek_text &&
+  const bool disabled_drag_sent_no_seek = seek_position->text() == current_seek_position_text() &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
@@ -5580,7 +5660,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const bool ungrab_cancelled_drag = !seek_slider->isSliderDown();
   QTest::mouseRelease(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_finish, 0);
   QApplication::processEvents();
-  const bool ungrabbed_drag_sent_no_seek = seek_position->text() == expected_restored_seek_text &&
+  const bool ungrabbed_drag_sent_no_seek = seek_position->text() == current_seek_position_text() &&
       window->logText().count("stdin:@seek ") == absolute_seek_commands_before_drag;
   QTest::mousePress(seek_slider, Qt::LeftButton, Qt::NoModifier, seek_drag_start, 0);
   QTest::mouseMove(seek_slider, seek_drag_finish, 0);
@@ -15676,6 +15756,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   if (!source_baseline.has_value())
     return expect(false, "Could not locate bundled baseline.yaml for user-default fixture");
   YAML::Node baseline = YAML::LoadFile(source_baseline->string());
+  baseline["hstream_ui"]["playback_start_time"] = "01:02:03.456";
   baseline["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
   baseline["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1234;
   {
@@ -16345,6 +16426,34 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   }
   try {
     HStreamWindow legacy_baseline_window;
+    legacy_baseline_window.show();
+    auto* playback = require_child<QTimeEdit>(&legacy_baseline_window, "playbackStartTimeEdit");
+    ok &= expect(
+        playback && playback->time() == QTime(1, 2, 3, 456),
+        "Playback start must read the resolved baseline instead of a compiled-in zero");
+    if (playback) {
+      playback->setFocus(Qt::OtherFocusReason);
+      QApplication::processEvents();
+      // Select the existing digits for replacement; moving the caret to the
+      // section alone would append to 456 and correctly reject the input.
+      playback->setSelectedSection(QDateTimeEdit::MSecSection);
+      QTest::keyClicks(playback, "250");
+      QTest::keyClick(playback, Qt::Key_Tab);
+      QApplication::processEvents();
+      auto* playback_line = playback->findChild<QLineEdit*>();
+      ok &= expect(
+          playback->time() == QTime(1, 2, 3, 250),
+          QString(
+              "Typed playback milliseconds must remain exact (time=%1, format=%2, section=%3, focus=%4, "
+              "enabled=%5, text=%6)")
+              .arg(playback->time().toString("HH:mm:ss.zzz"))
+              .arg(playback->displayFormat())
+              .arg(static_cast<int>(playback->currentSection()))
+              .arg(playback->hasFocus())
+              .arg(playback->isEnabled())
+              .arg(playback_line ? playback_line->text() : QString("missing"))
+              .toStdString());
+    }
     auto* mapping_backend = require_child<QComboBox>(&legacy_baseline_window, "mappingBackendCombo");
     auto* run_autooptimizer = require_child<QCheckBox>(&legacy_baseline_window, "runAutooptimizerCheck");
     ok &= expect(
@@ -16354,6 +16463,15 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   } catch (const std::exception& error) {
     std::cerr << "FAIL: Older baseline UI startup threw: " << error.what() << '\n';
     ok = false;
+  }
+  baseline["hstream_ui"].remove("playback_start_time");
+  std::ofstream(QDir(baseline_root.path()).filePath("baseline.yaml").toStdString()) << baseline << '\n';
+  try {
+    HStreamWindow missing_playback_baseline;
+    ok &= expect(false, "A baseline without playback_start_time must fail instead of choosing a literal default");
+  } catch (const std::exception& error) {
+    ok &= expect(std::string(error.what()).find("hstream_ui.playback_start_time") != std::string::npos,
+                 "Missing playback baseline must identify its required key");
   }
   if (original_home.isEmpty())
     qunsetenv("HOME");
@@ -16506,6 +16624,10 @@ bool prepare_real_e2e_game(const QString& game_id) {
     config["hstream_ui"]["stitching_calibration"]["control_points"] =
         configured_control_points > 0 ? configured_control_points : 1500;
     config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_SKIP_OPTIONAL_REVIEW")) {
+      config["hstream_ui"]["show_crop_dialog"] = false;
+      config["hstream_ui"]["show_leveling_dialog"] = false;
+    }
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR")) {
       YAML::Node rink = config["rink"];
       if (rink && rink.IsMap()) {
@@ -16961,6 +17083,248 @@ bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) 
 }
 #endif
 
+// Exercise the real native owner through Qt's transport controls. This runs in
+// the same copied-game sandbox as the archive E2E, but deliberately has no file
+// outputs or telemetry because those correctly prohibit local source seeking.
+bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) {
+  auto* game = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* create = require_child<QPushButton>(window, "createGameButton");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* pause = require_child<QPushButton>(window, "pausePipelineButton");
+  auto* restart = require_child<QPushButton>(window, "restartStageButton");
+  auto* render = require_child<QCheckBox>(window, "renderVideoCheck");
+  auto* telemetry = require_child<QCheckBox>(window, "drivegptCsvCheck");
+  auto* realtime = require_child<QCheckBox>(window, "realtimePlaybackCheck");
+  auto* tabs = require_child<QTabWidget>(window, "previewTabs");
+  auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
+  auto* seek_back = require_child<QPushButton>(window, "playbackSeekBack10Button");
+  auto* program = require_child<QWidget>(window, "previewSurface");
+  auto* stitched = require_child<QWidget>(window, "stitchedPreviewSurface");
+  auto* source = require_child<QWidget>(window, "camera1PreviewSurface");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  if (!game || !create || !start || !stop || !pause || !restart || !render || !telemetry || !realtime || !tabs ||
+      !seek_forward || !seek_back || !program || !stitched || !source || !mode)
+    return false;
+  const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_E2E_ARTIFACT_DIR");
+  if (!expect(
+          QGuiApplication::platformName() == "xcb" && !artifact_dir.isEmpty() && QDir().mkpath(artifact_dir),
+          "Preview transitions require X11 and an isolated artifact directory"))
+    return false;
+  game->setText(game_id);
+  activate(create);
+  mode->setCurrentIndex(mode->findData("program"));
+  for (auto* toggle : window->findChildren<QCheckBox*>())
+    if (toggle->objectName().startsWith("outputToggle_"))
+      toggle->setChecked(false);
+  telemetry->setChecked(false);
+  realtime->setChecked(true);
+  render->setChecked(true);
+  tabs->setCurrentIndex(0);
+  QString report;
+  auto wait_for = [&](auto predicate, const char* label, int timeout_ms = 30000) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!predicate() && timer.elapsed() < timeout_ms) {
+      QApplication::processEvents();
+      // Completion can delete the dialog before the queued URL-clear reaches
+      // the window. Do not submit the already completed selection again.
+      if (!window->scoreboardSelectorUrl().isEmpty() && window->findChild<QDialog*>("scoreboardSelectionDialog")) {
+        QString error;
+        if (!submit_no_scoreboard(window, &error)) {
+          std::cerr << error.toStdString() << '\n';
+          break;
+        }
+      }
+      QTest::qWait(25);
+    }
+    const bool passed = predicate();
+    report += QString("%1: %2\n").arg(label, passed ? "PASS" : "FAIL");
+    return expect(passed, label);
+  };
+  const auto ready = [](QWidget* surface) { return surface->property("previewRendererState").toString() == "ready"; };
+  const auto generation = [](QWidget* surface) { return surface->property("previewRendererGeneration").toULongLong(); };
+  const auto capture = [&](const QString& channel, const QString& filename) {
+    auto* process = window->findChild<QProcess*>();
+    if (!clear_diagnostic_capture_artifact(artifact_dir, filename))
+      return false;
+    // Native geometry changes clear to black. Allow the next rendered frame to
+    // arrive after the readiness acknowledgment, retaining each bounded attempt.
+    for (int attempt = 1; attempt <= 5; ++attempt) {
+      const QString path = diagnostic_capture_attempt_path(artifact_dir, filename, attempt);
+      QFile::remove(path);
+      const QString completion = QString("runtime preview frame channel=%1 path=%2").arg(channel, path);
+      const QByteArray command = QString("@capture-preview-frame %1 %2\n").arg(channel, path).toUtf8();
+      if (!process || process->write(command) != command.size() ||
+          !wait_for(
+              [&] { return window->completeLogText().contains(completion) && QFileInfo(path).size() > 0; },
+              "Current route produces an acknowledged diagnostic frame",
+              5000))
+        return false;
+      const auto frame = inspect_native_preview_capture(path);
+      report += native_preview_report_line(channel, frame);
+      if (frame.passed)
+        return promote_diagnostic_capture_artifact(path, QDir(artifact_dir).filePath(filename));
+      QTest::qWait(250);
+    }
+    return expect(false, "Current route's captured frame must not remain blank");
+  };
+  const auto compare_overlays = [&](const QString& channel) {
+    if (!qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREVIEW_OVERLAY_CONTROLS"))
+      return true;
+    const std::array<QCheckBox*, 3> toggles{
+        require_child<QCheckBox>(window, "showPlayerTrackingCheck"),
+        require_child<QCheckBox>(window, "showPlayTrackingCheck"),
+        require_child<QCheckBox>(window, "showRinkMaskCheck")};
+    for (const auto* toggle : toggles)
+      if (!toggle)
+        return false;
+    for (const auto& state :
+         {std::array<bool, 3>{true, false, false}, {true, true, false}, {true, true, true}, {false, false, false}}) {
+      const auto before = window->completeLogText().size();
+      for (size_t i = 0; i < toggles.size(); ++i)
+        toggles[i]->setChecked(state[i]);
+      const QString expected = QString("preview overlays players=%1 play=%2 rink=%3 apply=live")
+                                   .arg(state[0] ? 1 : 0)
+                                   .arg(state[1] ? 1 : 0)
+                                   .arg(state[2] ? 1 : 0);
+      if (!wait_for(
+              [&] { return window->completeLogText().mid(before).contains(expected); },
+              "All preview diagnostics receive the complete live acknowledgment"))
+        return false;
+      QTest::qWait(300);
+      if (!capture(
+              channel,
+              QString("overlays-%1-%2%3%4.png")
+                  .arg(channel)
+                  .arg(state[0] ? 1 : 0)
+                  .arg(state[1] ? 1 : 0)
+                  .arg(state[2] ? 1 : 0)))
+        return false;
+    }
+    return true;
+  };
+  const bool passed = [&] {
+    activate(start);
+    if (!wait_for(
+            [&] { return ready(program) && seek_forward->isEnabled(); },
+            "Real Program preview and local seeking become available",
+            180000))
+      return false;
+    if (!capture("program", "transitions-program.png") || !compare_overlays("program"))
+      return false;
+    const auto before_pause = generation(program);
+    activate(pause);
+    if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses native playback"))
+      return false;
+    tabs->setCurrentIndex(1);
+    QTest::qWait(200);
+    if (!expect(window->pipelineStateText() == "PAUSED", "Switching tabs must preserve the deliberate pause"))
+      return false;
+    activate(pause);
+    if (!wait_for(
+            [&] {
+              return window->pipelineStateText() == "PLAYING" && ready(stitched) && generation(stitched) > before_pause;
+            },
+            "Resuming activates the paused tab selection"))
+      return false;
+    if (!capture("stitched", "transitions-stitched.png") || !compare_overlays("stitched"))
+      return false;
+    const auto before_source = generation(stitched);
+    tabs->setCurrentIndex(2);
+    if (!wait_for(
+            [&] { return ready(source) && generation(source) > before_source && seek_forward->isEnabled(); },
+            "Source preview activates after the Stitched route"))
+      return false;
+    const int seeks = window->completeLogText().count("playback seek complete at ");
+    activate(seek_forward);
+    if (!wait_for(
+            [&] {
+              return window->completeLogText().count("playback seek complete at ") > seeks && ready(source) &&
+                  seek_back->isEnabled();
+            },
+            "Source-only seek re-registers the selected native preview",
+            60000))
+      return false;
+    if (!capture("source0", "transitions-source-after-seek.png"))
+      return false;
+    const int disabled = window->completeLogText().count("GPU preview disabled generation=");
+    const int hidden_seeks = window->completeLogText().count("playback seek complete at ");
+    // Start while seeking is allowed, then turn rendering off without pumping
+    // events. The outstanding source replacement must preserve the new choice.
+    seek_back->click();
+    render->setChecked(false);
+    if (!wait_for(
+            [&] { return window->completeLogText().count("GPU preview disabled generation=") > disabled; },
+            "Render off receives native deactivation"))
+      return false;
+    if (!wait_for(
+            [&] {
+              return window->completeLogText().count("playback seek complete at ") > hidden_seeks && pause->isEnabled();
+            },
+            "An outstanding seek completes after Render is turned off",
+            60000))
+      return false;
+    if (!expect(
+            !render->isChecked() && !ready(source) && !seek_back->isEnabled() && !seek_forward->isEnabled(),
+            "Source replacement must preserve disabled rendering and Qt's disabled seek controls"))
+      return false;
+    const int starts = window->completeLogText().count("pipeline started pid=");
+    activate(restart);
+    if (!wait_for(
+            [&] {
+              return window->completeLogText().count("pipeline started pid=") > starts &&
+                  window->pipelineStateText() == "PLAYING" && pause->isEnabled();
+            },
+            "Restart waits for the old process and recreates local playback",
+            180000))
+      return false;
+    if (!expect(
+            !render->isChecked() && !ready(program) && !ready(stitched) && !ready(source),
+            "A restarted pipeline must preserve Render off"))
+      return false;
+    tabs->setCurrentIndex(0);
+    render->setChecked(true);
+    if (!wait_for([&] { return ready(program); }, "Program preview can reactivate after restart"))
+      return false;
+    return capture("program", "transitions-program-after-restart.png");
+  }();
+  if (window->pipelineStateText() != "STOPPED")
+    activate(stop);
+  const bool stopped =
+      wait_for([&] { return window->pipelineStateText() == "STOPPED"; }, "Native playback stops cleanly");
+  write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), window->completeLogText());
+  write_e2e_text(QDir(artifact_dir).filePath("preview-transitions-report.txt"), report);
+  std::cout << report.toStdString();
+  return passed && stopped;
+}
+
+bool has_fatal_pipeline_log_issue(const QString& log) {
+  const QRegularExpression missing_optional_rink_map(
+      R"(^\d{2}:\d{2}:\d{2}\.\d{3} HSTREAM_RINK_MAP status=unavailable run=\d+ message=FAILED_PRECONDITION: Save a reviewed rink map before using rink-aware framing or the mini-map$)");
+  for (const QString& line : log.split('\n')) {
+    if (missing_optional_rink_map.match(line).hasMatch())
+      continue;
+    if (line.contains("ERROR from element") || line.contains("FAILED_PRECONDITION:") ||
+        line.contains("Segmentation fault") || line.contains("CUDA error:"))
+      return true;
+  }
+  return false;
+}
+
+bool test_pipeline_log_issue_classification() {
+  const QString optional =
+      "10:50:02.852 HSTREAM_RINK_MAP status=unavailable run=1 message=FAILED_PRECONDITION: Save a reviewed rink map "
+      "before using rink-aware framing or the mini-map\n";
+  return expect(!has_fatal_pipeline_log_issue(optional), "An absent optional rink map is not a pipeline failure") &&
+      expect(
+          has_fatal_pipeline_log_issue(optional + "ERROR from element primary_gie: inference failed\n") &&
+              has_fatal_pipeline_log_issue("FAILED_PRECONDITION: calibration is stale\n") &&
+              has_fatal_pipeline_log_issue("CUDA error: invalid argument\n") &&
+              has_fatal_pipeline_log_issue(optional + "Segmentation fault\n"),
+          "Optional status messages must not hide actual pipeline failures");
+}
+
 bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* game_id_edit = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
@@ -17353,8 +17717,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     }
   }
   write_e2e_text(QDir(artifact_dir).filePath("log-issues.txt"), log_issues);
-  const bool fatal_log_issue = final_log.contains("ERROR from element") || final_log.contains("FAILED_PRECONDITION:") ||
-      final_log.contains("Segmentation fault") || final_log.contains("CUDA error:");
+  const bool fatal_log_issue = has_fatal_pipeline_log_issue(final_log);
 
   QString output_path;
   const QMap<QString, QString> output_labels = {
@@ -18454,6 +18817,42 @@ bool test_process_pause_protocol() {
   return true;
 }
 
+bool test_active_process_destruction() {
+  for (const QString& role : QStringList{"pipeline", "finalizer", "export"}) {
+    auto window = std::make_unique<HStreamWindow>();
+    QProcess* process = role == "export"
+        ? new QProcess(window.get())
+        : HStreamWindowTestAccess::ownedProcess(window.get(), role == "finalizer");
+    bool window_notified = false;
+    QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), window.get(), [&] {
+      window_notified = true;
+    });
+    QSignalSpy errors(process, &QProcess::errorOccurred);
+    QSignalSpy finished(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished));
+    // Keep the production pipeline/finalizer connections; the disconnected
+    // stub would miss their callbacks into a partially destroyed window. Also
+    // cover a transient process with the job exporter's ownership pattern.
+    process->start("sleep", {"120"});
+    if (!expect(process->waitForStarted(5000), "The destruction regression needs an active owned process"))
+      return false;
+    const qint64 pid = process->processId();
+    window.reset();
+    if (!expect(
+            !window_notified && errors.size() == 1 &&
+                errors.front().front().value<QProcess::ProcessError>() == QProcess::Crashed && finished.size() == 1,
+            "Destroying a window must safely terminate its active process without suppressing external observers"))
+      return false;
+#ifdef Q_OS_UNIX
+    errno = 0;
+    if (!expect(
+            ::kill(static_cast<pid_t>(pid), 0) == -1 && errno == ESRCH,
+            "Destroying a window must reap its active process"))
+      return false;
+#endif
+  }
+  return true;
+}
+
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
   // Read-only smoke for a saved game whose crop review should be deferred or
@@ -18486,7 +18885,8 @@ int main(int argc, char** argv) {
         : 1;
   }
   if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
-      !test_stitching_canvas_constraint_decisions() || !test_diagnostic_capture_attempt_paths()) {
+      !test_stitching_canvas_constraint_decisions() || !test_diagnostic_capture_attempt_paths() ||
+      !test_pipeline_log_issue_classification()) {
     return 1;
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");
@@ -18507,6 +18907,8 @@ int main(int argc, char** argv) {
 #endif
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_COMPLETION_ONLY"))
       return run_real_calibration_completion_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREVIEW_TRANSITIONS_ONLY"))
+      return run_preview_transitions_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
     if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {
       std::cerr << "run_real_pipeline_e2e failed\n";
       return 1;
@@ -18536,6 +18938,36 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ICONS_ONLY")) {
+    HStreamWindow window;
+    window.resize(1600, 1000);
+    window.show();
+    QGuiApplication::sync();
+    int count = 0;
+    for (auto* tabs : window.findChildren<QTabWidget*>()) {
+      for (int index = 0; index < tabs->count(); ++index) {
+        const QString text = tabs->tabText(index);
+        if (!expect(!tabs->tabIcon(index).isNull(), "Every tab must preserve its semantic icon: " + text.toStdString()))
+          return 1;
+        const auto identity = tabs->tabIcon(index).cacheKey();
+        tabs->setTabText(index, text + " (1920×1080)");
+        if (!expect(tabs->tabIcon(index).cacheKey() == identity, "A live dimension caption must retain its tab icon"))
+          return 1;
+        tabs->setTabText(index, text);
+        ++count;
+      }
+    }
+    if (!expect(count >= 19, "The main and both stage tab bars must be checked"))
+      return 1;
+    const QString screenshot = qEnvironmentVariable("HSTREAM_UI_ICON_SCREENSHOT");
+    if (!screenshot.isEmpty() && !window.grab().save(screenshot))
+      return 1;
+    return 0;
+  }
+  if (!HStreamWindowTestAccess::previewOverlayStartupChecks())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY"))
+    return 0;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_GEOMETRY_ONLY")) {
     HStreamWindow window;
     window.resize(1440, 900);
@@ -18553,6 +18985,10 @@ int main(int argc, char** argv) {
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
     return test_job_export() ? 0 : 1;
+  if (!test_active_process_destruction())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_DESTRUCTION_ONLY"))
+    return 0;
   if (!test_process_pause_protocol()) {
     std::cerr << "test_process_pause_protocol failed\n";
     return 1;

@@ -199,6 +199,9 @@ struct HmStitcherConfig : public NvDsHmVideoPrepConfig {
   gfloat post_stitch_rotate_degrees;
   gboolean minimize_blend;
   gboolean ui_preview;
+  // Runtime-only: expose the existing output tee for a shared preview consumer
+  // factory, without preallocating the legacy standalone Qt renderer.
+  gboolean preview_tap_only;
   guint calibration_frame_count;
   gulong calibration_sample_span_ns;
   gchar stitch_compute_precision[32];

@@ -1997,6 +1997,25 @@ absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransaction
   return std::unique_ptr<GameConfigTransactionLock>(new GameConfigTransactionLock(std::move(state)));
 }
 
+absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransactionLock::TryAcquireSnapshot(
+    const fs::path& game_dir) {
+  auto config = GameConfigLock::TryAcquire(game_dir);
+  if (!config.ok())
+    return config.status();
+  auto rink = lock_rink_transactions(game_dir, /*wait=*/false);
+  if (!rink.ok())
+    return rink.status();
+  auto readable = transaction_snapshot_readable(game_dir, TransactionJournalKind::kRink);
+  if (!readable.ok())
+    return readable.status();
+  if (!*readable)
+    return absl::UnavailableError("Rink transaction requires recovery before an advisory read");
+  auto state = std::make_unique<State>();
+  state->config = std::move(*config);
+  state->rink = std::move(*rink);
+  return std::unique_ptr<GameConfigTransactionLock>(new GameConfigTransactionLock(std::move(state)));
+}
+
 absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs::path& game_dir) {
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)

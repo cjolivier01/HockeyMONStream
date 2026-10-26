@@ -546,7 +546,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent, Rin
   toolbar->addWidget(mask_);
   connect(mask_, &QPushButton::clicked, this, [this] { update(false, true); });
   toolbar->addWidget(stop_);
-  auto* fit = new QPushButton("Fit images");
+  auto* fit = new QPushButton(action_icon(ActionIcon::Fit), "Fit images");
+  fit->setObjectName("rinkMapFitImagesButton");
   toolbar->addWidget(fit);
   undo_ = new QPushButton(action_icon(ActionIcon::Undo), "Undo");
   undo_->setObjectName("rinkMapUndoButton");
@@ -615,7 +616,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent, Rin
   for (int camera = 0; camera < 2; ++camera) {
     cameras_[camera] = new RinkMapCanvas();
     cameras_[camera]->setObjectName(QString("rinkMapCamera%1").arg(camera));
-    tabs_->addTab(cameras_[camera], camera ? "Right camera" : "Left camera");
+    tabs_->addTab(cameras_[camera], tab_icon(camera ? "Right camera" : "Left camera"), camera ? "Right camera" : "Left camera");
     cameras_[camera]->clicked = [this, camera](QPointF point) { addPoint(camera, point); };
     cameras_[camera]->selected = [this](int row) {
       if (busy_ || (row == table_->currentRow() && (row < 0 || table_->selectionModel()->isRowSelected(row, {}))))

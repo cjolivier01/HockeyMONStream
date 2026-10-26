@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/PlayerAnalyticsControls.h"
+#include "ActionIcons.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -297,7 +298,7 @@ void PlayerAnalyticsControls::addPath(const QString& key, const QString& name, b
   editor->setObjectName(name);
   editor->setPlaceholderText(directory ? "Prepared custom model folder" : "Custom tracker configuration file");
   editor->setToolTip("Used only with Custom. Relative paths use the pipeline configuration directory.");
-  auto* browse = new QPushButton("Browse…");
+  auto* browse = new QPushButton(action_icon(ActionIcon::Open), "Browse…");
   browse->setObjectName(name + "Browse");
   layout->addWidget(editor, 1);
   layout->addWidget(browse);

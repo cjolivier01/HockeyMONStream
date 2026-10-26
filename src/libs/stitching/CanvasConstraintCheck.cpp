@@ -271,7 +271,7 @@ std::optional<size_t> live_canvas_limit_impl() {
 #endif
 }
 
-absl::StatusOr<int> lock_canvas_constraint_artifacts_impl(const fs::path& game_dir, bool wait) {
+absl::StatusOr<int> lock_canvas_constraint_artifacts_impl(const fs::path& game_dir, bool wait, bool recover = true) {
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Canvas compatibility check requires an existing game directory");
@@ -286,6 +286,8 @@ absl::StatusOr<int> lock_canvas_constraint_artifacts_impl(const fs::path& game_d
       return -1;
     return absl::InternalError("Unable to lock stitching artifacts: " + std::string(std::strerror(lock_error)));
   }
+  if (!recover)
+    return descriptor;
   // Selection promotion nests the rink/config journal inside the stitch
   // journal. Recover the inner transaction before the outer stitch journal
   // decides whether an AWAITING_CONFIG publication committed or rolled back.
@@ -2192,7 +2194,10 @@ absl::Status recover_stitch_transactions_locked(const fs::path& root) {
   return complete_transaction_recovery(root, TransactionJournalKind::kStitch);
 }
 
+CanvasConstraintArtifactLock::CanvasConstraintArtifactLock(int descriptor) : descriptor_(descriptor) {}
+
 CanvasConstraintArtifactLock::~CanvasConstraintArtifactLock() {
+  snapshot_config_.reset();
   if (descriptor_ >= 0) {
     ::flock(descriptor_, LOCK_UN);
     ::close(descriptor_);
@@ -2241,6 +2246,29 @@ absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> lock_canvas_constr
   if (!descriptor.ok())
     return descriptor.status();
   return std::unique_ptr<CanvasConstraintArtifactLock>(new CanvasConstraintArtifactLock(*descriptor));
+}
+
+absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_constraint_snapshot(
+    const fs::path& game_dir) {
+  auto descriptor = lock_canvas_constraint_artifacts_impl(game_dir, /*wait=*/false, /*recover=*/false);
+  if (!descriptor.ok())
+    return descriptor.status();
+  if (*descriptor < 0)
+    return std::unique_ptr<CanvasConstraintArtifactLock>();
+  auto lock = std::unique_ptr<CanvasConstraintArtifactLock>(new CanvasConstraintArtifactLock(*descriptor));
+  auto config = GameConfigTransactionLock::TryAcquireSnapshot(game_dir);
+  if (!config.ok()) {
+    if (absl::IsUnavailable(config.status()))
+      return std::unique_ptr<CanvasConstraintArtifactLock>();
+    return config.status();
+  }
+  auto readable = transaction_snapshot_readable(game_dir, TransactionJournalKind::kStitch);
+  if (!readable.ok())
+    return readable.status();
+  if (!*readable)
+    return std::unique_ptr<CanvasConstraintArtifactLock>();
+  lock->snapshot_config_ = std::move(*config);
+  return lock;
 }
 
 absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path& game_dir) {
@@ -2360,6 +2388,24 @@ absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const
     return bindings.status();
   if (parsed->bindings != *bindings)
     return stitch_artifact_generation_id_locked(game_dir);
+  return parsed->logical_id;
+}
+
+absl::StatusOr<std::string> stitch_artifact_snapshot_generation_id_locked(const fs::path& game_dir) {
+  auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
+  if (!identity.ok()) {
+    if (absl::IsNotFound(identity.status()))
+      return stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacyGeneration);
+    return identity.status();
+  }
+  auto parsed = parse_stitch_generation_identity(*identity);
+  if (!parsed.ok() || parsed->version != 3)
+    return absl::UnavailableError("Hugin generation identity requires validation before an advisory read");
+  auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
+  if (!bindings.ok())
+    return bindings.status();
+  if (parsed->bindings != *bindings)
+    return absl::UnavailableError("Hugin generation bindings changed before an advisory read");
   return parsed->logical_id;
 }
 

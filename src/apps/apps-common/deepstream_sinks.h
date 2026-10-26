@@ -21,6 +21,7 @@
 
 #include "deepstream_config.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -75,6 +76,10 @@ typedef struct {
   guint udp_port;
   guint webrtc_port;
   gchar* webrtc_stun_server;
+  // Runtime-only borrowed target, supplied before graph/audio construction.
+  // When present this replaces the static WEBRTC video branch entirely.
+  GstElement* preview_bin{nullptr};
+  GstElement* preview_endpoint{nullptr};
   guint64 udp_buffer_size;
   guint iframeinterval;
   guint copy_meta;
@@ -198,6 +203,14 @@ void set_embedded_gpu_preview_video_mode(gboolean enabled, gboolean preserve_ren
 void set_render_playback_realtime(gboolean enabled, gboolean preparing_calibration = FALSE);
 gboolean render_playback_realtime();
 gboolean start_webrtc_signaling_for_sink(GstElement* webrtc, const NvDsSinkEncoderConfig* config);
+namespace hm::preview {
+struct WebPreviewSignaling;
+}
+// Selectable-target adapter. Its caller stops signaling before destroying it.
+gboolean start_webrtc_signaling_for_preview(
+    GstElement* endpoint,
+    const NvDsSinkEncoderConfig* config,
+    std::shared_ptr<hm::preview::WebPreviewSignaling> preview);
 gboolean link_webrtc_rtp_src_to_sink(
     GstElement* webrtc,
     GstElement* rtp_src_element,

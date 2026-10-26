@@ -3,6 +3,28 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "tone_control_command",
+    srcs = ["ToneControlCommand.cpp"],
+    hdrs = ["ToneControlCommand.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":tone_controls"],
+)
+
+cc_library(
+    name = "tone_controls",
+    srcs = ["ToneControls.cpp"],
+    hdrs = ["ToneControls.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "tone_controls_test",
+    srcs = ["ToneControlsTest.cpp"],
+    deps = [":tone_controls"],
+)
+
+cc_library(
     name = "preview_overlay_runtime",
     hdrs = ["PreviewOverlayRuntime.h"],
     include_prefix = "hstream/src/libs/program",
@@ -400,4 +422,12 @@ cc_test(
     args = ["$(location //configs:baseline.yaml)", "$(location //configs:ds_hockey_app_config.yaml)"],
     data = ["//configs:baseline.yaml", "//configs:ds_hockey_app_config.yaml"],
     deps = [":scoreboard_config"],
+)
+
+cc_library(
+    name = "preview_overlay_config",
+    srcs = ["PreviewOverlayConfig.cpp"],
+    hdrs = ["PreviewOverlayConfig.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = [":preview_overlay_runtime", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
 )

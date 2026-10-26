@@ -47,13 +47,15 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentWorkspace(
 // Worker-staged source snapshots may alias stable media outside the snapshot.
 // Every symlink target must be a regular file explicitly authorized by the
 // caller. Directory symlinks are forbidden; desktop creation keeps its stricter
-// selected-game containment policy above.
+// selected-game containment policy above. Automatic optics resolve only after
+// playlist linking; explicit camera edits refresh a previously frozen snapshot.
 absl::StatusOr<StitchingExperimentWorkspace> CreateStagedStitchingExperimentWorkspace(
     const std::filesystem::path& source_game_directory,
     const std::filesystem::path& experiment_root,
     const StitchingExperimentSettings& settings,
     int sequence,
-    const std::vector<std::filesystem::path>& authorized_media);
+    const std::vector<std::filesystem::path>& authorized_media,
+    bool refresh_camera_metadata);
 
 // Copies a generation-validated main/candidate workspace for a fresh automatic
 // solve. Explicit media links remain bound to their original regular files.
@@ -135,6 +137,12 @@ struct StitchingExperimentFrameInspection {
   std::string source_validation;
   std::vector<StitchingExperimentSelectedFrame> frames;
 };
+
+// The inspector shows three apparent-size bands in the baseline panorama grid.
+// These are image-space scoring cells, never distances or raw-camera overlays.
+inline constexpr unsigned kStitchingExperimentCoverageColumns = 16;
+inline constexpr unsigned kStitchingExperimentCoverageRows = 9;
+inline constexpr std::array<const char*, 3> kStitchingExperimentCoverageColors{"#0000ff", "#008000", "#808000"};
 
 // Reads the highlighted candidate's captured ordinary frames or frozen player
 // selection, including partial captures from a failed solve. Thumbnail paths

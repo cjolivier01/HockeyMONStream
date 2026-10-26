@@ -30,7 +30,7 @@ bool ValidColor(Color c) {
 }
 bool ValidCommand(const Command& c) {
   return Finite(c.x0) && Finite(c.y0) && Finite(c.x1) && Finite(c.y1) && std::isfinite(c.radius) && c.radius >= 0 &&
-      c.radius <= kMaximumSide && ValidColor(c.color);
+      c.radius <= kMaximumSide && ValidColor(c.color) && (c.kind != Kind::kTriangle || (Finite(c.x2) && Finite(c.y2)));
 }
 size_t Align(size_t bytes) {
   return (bytes + 15U) & ~size_t(15U);
@@ -40,6 +40,12 @@ struct Bounds {
   float left, top, right, bottom;
 };
 Bounds CommandBounds(const Command& c) {
+  if (c.kind == Kind::kTriangle)
+    return {
+        std::min({c.x0, c.x1, c.x2}),
+        std::min({c.y0, c.y1, c.y2}),
+        std::max({c.x0, c.x1, c.x2}),
+        std::max({c.y0, c.y1, c.y2})};
   if (c.kind == Kind::kLine)
     return {
         std::min(c.x0, c.x1) - c.radius - 1,
@@ -53,9 +59,9 @@ Bounds CommandBounds(const Command& c) {
 
 // Conservative intersection eliminates empty centers of rectangle outlines and
 // most empty tiles in long diagonal-line AABBs. Pixel coverage stays in CUDA.
-bool TouchesTile(const Command& c, uint32_t tx, uint32_t ty) {
-  const float left = tx * kTileSize, top = ty * kTileSize;
-  const float right = left + kTileSize, bottom = top + kTileSize;
+bool TouchesTile(const Command& c, uint32_t tx, uint32_t ty, float units_x, float units_y) {
+  const float left = tx * kTileSize * units_x, top = ty * kTileSize * units_y;
+  const float right = left + kTileSize * units_x, bottom = top + kTileSize * units_y;
   if (c.kind == Kind::kRectangle) {
     return !(
         left >= c.x0 + c.radius && right <= c.x1 - c.radius && top >= c.y0 + c.radius && bottom <= c.y1 - c.radius);
@@ -166,6 +172,18 @@ bool CommandList::AddFill(float left, float top, float right, float bottom, Colo
     return false;
   }
   return Add({left, top, right, bottom, color, 0, Kind::kFill, 0, 0});
+}
+bool CommandList::AddTriangle(float x0, float y0, float x1, float y1, float x2, float y2, Color color) {
+  const double area = (double(x1) - x0) * (double(y2) - y0) - (double(y1) - y0) * (double(x2) - x0);
+  if (!std::isfinite(area) || area == 0) {
+    ++rejected_;
+    return false;
+  }
+  if (area < 0) {
+    std::swap(x1, x2);
+    std::swap(y1, y2);
+  }
+  return Add({x0, y0, x1, y1, color, 0, Kind::kTriangle, 0, 0, x2, y2});
 }
 bool CommandList::AddText(float x, float y, float height, std::string_view text, Color color, TextWeight weight) {
   const float advance = height * (static_cast<float>(detail::kGlyphWidth) / detail::kGlyphHeight);
@@ -278,6 +296,16 @@ RenderResult Compositor::Render(
     const CommandList& commands,
     cudaStream_t stream,
     const TimingEvents* timing) {
+  return RenderMapped(image, image.width, image.height, commands, stream, timing);
+}
+
+RenderResult Compositor::RenderMapped(
+    const ImageView& image,
+    float coordinate_width,
+    float coordinate_height,
+    const CommandList& commands,
+    cudaStream_t stream,
+    const TimingEvents* timing) {
   ++counters_.renders;
   if (commands.empty()) {
     ++counters_.empty_renders;
@@ -304,6 +332,8 @@ RenderResult Compositor::Render(
     return result;
   };
   const bool planar = image.format == PixelFormat::kI420 || image.format == PixelFormat::kP010;
+  if (!Finite(coordinate_width) || !Finite(coordinate_height) || coordinate_width <= 0 || coordinate_height <= 0)
+    return invalid();
   if (image.explicit_yuv_encoding) {
     const auto& c = image.yuv_encoding;
     const float maximum = image.format == PixelFormat::kP010 ? 1023 : 255;
@@ -326,6 +356,9 @@ RenderResult Compositor::Render(
       !limits_.active_tiles || limits_.active_tiles > kMaximumActiveTiles || !limits_.tile_references ||
       limits_.tile_references > kMaximumTileReferences || !limits_.upload_bytes ||
       limits_.upload_bytes > kMaximumUploadBytes)
+    return invalid();
+  const float units_x = coordinate_width / image.width, units_y = coordinate_height / image.height;
+  if (!Finite(units_x) || !Finite(units_y) || units_x <= 0 || units_y <= 0)
     return invalid();
   try {
     if (!state_)
@@ -352,7 +385,8 @@ RenderResult Compositor::Render(
     bool glyphs = false;
     for (uint32_t ci = 0; ci < commands.size(); ++ci) {
       const Command& command = commands.data()[ci];
-      const Bounds b = CommandBounds(command);
+      Bounds b = CommandBounds(command);
+      b = {b.left / units_x, b.top / units_y, b.right / units_x, b.bottom / units_y};
       const float left = std::max(0.0F, b.left), top = std::max(0.0F, b.top);
       const float right = std::min(static_cast<float>(image.width), b.right);
       const float bottom = std::min(static_cast<float>(image.height), b.bottom);
@@ -368,7 +402,7 @@ RenderResult Compositor::Render(
       candidates += count;
       for (uint32_t y = y0; y <= y1; ++y) {
         for (uint32_t x = x0; x <= x1; ++x) {
-          if (!TouchesTile(command, x, y))
+          if (!TouchesTile(command, x, y, units_x, units_y))
             continue;
           if (state.references.size() == limits_.tile_references)
             return capacity();
@@ -531,6 +565,8 @@ RenderResult Compositor::Render(
         reinterpret_cast<const uint32_t*>(slot->device + ref_offset),
         state.bins.size(),
         state.atlas_device,
+        units_x,
+        units_y,
         stream);
     // Fence even failed launches: the asynchronous command upload may be live.
     const cudaError_t event_error = cudaEventRecord(slot->complete, stream);

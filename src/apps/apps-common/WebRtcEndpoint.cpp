@@ -22,6 +22,9 @@ struct Endpoint {
   std::string stun;
   guint64 generation = 0;
   bool transitioning = false;
+  bool managed_readiness = false;
+  bool connected = false;
+  std::uint64_t connection_revision = 0;
   GstElement* peer = nullptr; // Owned by endpoint.
   std::vector<Track> tracks;
   ~Endpoint() {
@@ -97,8 +100,10 @@ void connection_changed(GObject* peer, GParamSpec*, gpointer user_data) {
     return;
   GstWebRTCPeerConnectionState connection;
   g_object_get(peer, "connection-state", &connection, nullptr);
+  state->connected = connection == GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED;
+  ++state->connection_revision;
   for (auto& track : state->tracks) {
-    g_object_set(track.valve, "drop", connection != GST_WEBRTC_PEER_CONNECTION_STATE_CONNECTED, nullptr);
+    g_object_set(track.valve, "drop", state->managed_readiness || !state->connected, nullptr);
   }
 }
 // Closing the valves first also masks an in-flight push's FLUSHING result
@@ -110,6 +115,8 @@ void remove_peer(GstElement* endpoint, Endpoint* state) {
     std::lock_guard<std::mutex> lock(state->mutex);
     old = state->peer;
     state->peer = nullptr;
+    state->connected = false;
+    ++state->connection_revision;
     state->transitioning = true;
     for (auto& track : state->tracks)
       g_object_set(track.valve, "drop", TRUE, nullptr);
@@ -258,8 +265,52 @@ void webrtc_endpoint_set_active(GstElement* endpoint, bool active) {
   if (!state)
     return;
   std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->managed_readiness)
+    return;
   for (auto& track : state->tracks)
     g_object_set(track.valve, "drop", state->peer && !active, nullptr);
+}
+
+bool webrtc_endpoint_manage_readiness(GstElement* endpoint) {
+  auto* state = data(endpoint);
+  if (!state)
+    return false;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->peer || state->transitioning)
+    return false;
+  state->managed_readiness = true;
+  return true;
+}
+
+bool webrtc_endpoint_connection_snapshot(
+    GstElement* endpoint,
+    GstElement* peer,
+    std::uint64_t* revision,
+    bool* connected) {
+  auto* state = data(endpoint);
+  if (!state || !revision || !connected)
+    return false;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (!peer || state->peer != peer || state->transitioning)
+    return false;
+  *revision = state->connection_revision;
+  *connected = state->connected;
+  return true;
+}
+
+bool webrtc_endpoint_apply_readiness(GstElement* endpoint, GstElement* peer, std::uint64_t revision, bool ready) {
+  auto* state = data(endpoint);
+  if (!state)
+    return false;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (!state->managed_readiness || !peer || state->peer != peer || state->transitioning ||
+      state->connection_revision != revision ||
+      (ready &&
+       (!state->connected || GST_STATE(endpoint) < GST_STATE_PAUSED || GST_STATE_TARGET(endpoint) < GST_STATE_PAUSED)))
+    return false;
+  for (auto& track : state->tracks)
+    g_object_set(track.valve, "drop", !ready, nullptr);
+  return true;
 }
 
 void webrtc_endpoint_detach_peer(GstElement* endpoint) {

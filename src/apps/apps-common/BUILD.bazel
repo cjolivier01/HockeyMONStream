@@ -1,6 +1,201 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "decoder_pad_link",
+    hdrs = ["DecoderPadLink.h"],
+    include_prefix = INCLUDE_PREFIX,
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "decoder_pad_link_test",
+    srcs = ["DecoderPadLinkTest.cpp"],
+    deps = [":decoder_pad_link", "@gstreamer"],
+)
+
+cc_library(
+    name = "preview_route_graph",
+    srcs = ["PreviewRouteGraph.cpp"],
+    hdrs = ["PreviewRouteGraph.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "preview_route_graph_test",
+    srcs = ["PreviewRouteGraphTest.cpp"],
+    deps = [":preview_route_graph", "@gstreamer"],
+)
+
+cc_test(
+    name = "web_preview_sink_ownership_test",
+    srcs = ["WebPreviewSinkOwnershipTest.cpp"],
+    deps = [":deepstream_apps_common", ":preview_route_graph", "@gstreamer"],
+)
+
+cc_library(
+    name = "preview_route_owner",
+    srcs = ["PreviewRouteOwner.cpp"],
+    hdrs = ["PreviewRouteOwner.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "preview_route_owner_test",
+    srcs = ["PreviewRouteOwnerTest.cpp"],
+    deps = [":preview_route_owner"],
+)
+
+cc_library(
+    name = "selected_preview_stream",
+    srcs = ["SelectedPreviewStream.cpp"],
+    hdrs = ["SelectedPreviewStream.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "selected_preview_stream_test",
+    srcs = ["SelectedPreviewStreamTest.cpp"],
+    deps = [":selected_preview_stream", "@gstreamer"],
+)
+
+cc_test(
+    name = "selected_preview_stream_gpu_test",
+    srcs = ["SelectedPreviewStreamGpuTest.cpp"],
+    tags = ["manual", "requires-gpu", "local"],
+    deps = [
+        ":hm_gpu_preview",
+        ":preview_route_graph",
+        ":preview_route_owner",
+        ":preview_gpu_surface",
+        ":preview_transport_frames",
+        ":selected_preview_stream",
+        ":webrtc_endpoint",
+        ":web_preview_observer",
+        ":web_preview_target",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
+    name = "preview_gpu_surface",
+    srcs = ["PreviewGpuSurface.cpp"],
+    hdrs = ["PreviewGpuSurface.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":selected_preview_stream",
+        "//src/libs/draw_display:opaque_video_canvas",
+        "//src/libs/draw_display:opaque_video_canvas_headers",
+        "//toolchains/jetson:cuda_runtime",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
+    name = "preview_transport_frames",
+    srcs = ["PreviewTransportFrames.cpp"],
+    hdrs = ["PreviewTransportFrames.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":selected_preview_stream", "@gstreamer"],
+)
+
+cc_test(
+    name = "preview_transport_frames_test",
+    srcs = ["PreviewTransportFramesTest.cpp"],
+    deps = [":preview_transport_frames"],
+)
+
+cc_library(
+    name = "preview_presentation_history",
+    srcs = ["PreviewPresentationHistory.cpp"],
+    hdrs = ["PreviewPresentationHistory.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_transport_frames"],
+)
+
+cc_library(
+    name = "web_preview_observer",
+    srcs = ["WebPreviewObserver.cpp"],
+    hdrs = ["WebPreviewObserver.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_route_owner", ":preview_transport_monitor", "@json_glib"],
+)
+
+cc_test(
+    name = "web_preview_observer_test",
+    srcs = ["WebPreviewObserverTest.cpp"],
+    deps = [":web_preview_observer", "@gstreamer", "@json_glib"],
+)
+
+cc_library(
+    name = "preview_transport_monitor",
+    srcs = ["PreviewTransportMonitor.cpp"],
+    hdrs = ["PreviewTransportMonitor.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_transport_frames", ":preview_presentation_history", "@gstreamer"],
+)
+
+cc_test(
+    name = "preview_transport_monitor_test",
+    srcs = ["PreviewTransportMonitorTest.cpp"],
+    deps = [":preview_transport_monitor", "@gstreamer"],
+)
+
+cc_library(
+    name = "webrtc_signaling",
+    srcs = ["WebRtcSignaling.cpp"],
+    hdrs = ["WebRtcSignaling.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    copts = ["-DGST_USE_UNSTABLE_API"],
+    deps = [":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@json_glib", "@libsoup"],
+)
+
+cc_library(
+    name = "web_preview_target",
+    srcs = ["WebPreviewTarget.cpp"],
+    hdrs = ["WebPreviewTarget.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":preview_gpu_surface",
+        ":preview_rtp_gate",
+        ":preview_transport_monitor",
+        ":selected_preview_stream",
+        ":webrtc_endpoint",
+        ":web_preview_observer",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
+    name = "preview_rtp_gate",
+    srcs = ["PreviewRtpGate.cpp"],
+    hdrs = ["PreviewRtpGate.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":preview_transport_monitor", "@gstreamer"],
+)
+
+cc_test(
+    name = "preview_rtp_gate_test",
+    srcs = ["PreviewRtpGateTest.cpp"],
+    deps = [":preview_rtp_gate", "@gstreamer"],
+)
+
+cc_library(
     name = "uri_playlist_capture_pool_drain",
     srcs = ["UriPlaylistCapturePoolDrain.cpp"],
     hdrs = ["UriPlaylistCapturePoolDrain.h"],
@@ -187,6 +382,93 @@ cc_test(
     deps = [":hstream_lossless_nvstreammux", "@gstreamer"],
 )
 
+# CPU metadata preparation shared by native desktop and encoded previews.
+cc_library(
+    name = "preview_overlay_scene_data",
+    srcs = ["PreviewOverlaySceneData.cpp"],
+    hdrs = ["PreviewOverlayScene.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/draw_display:analytics_overlay_headers",
+    ],
+)
+
+cc_library(
+    name = "preview_overlay_scene",
+    srcs = ["PreviewOverlayScene.cpp"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":preview_overlay_scene_data",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/draw_display:analytics_overlay",
+        "//src/libs/draw_display:player_overlays",
+        "//src/libs/draw_display:rink_mini_map",
+        "//src/libs/stitching:stitching",
+        "@deepstream//:deepstream_lib",
+    ],
+)
+
+cc_test(
+    name = "preview_overlay_scene_test",
+    srcs = ["PreviewOverlaySceneTest.cpp"],
+    deps = [
+        ":preview_overlay_scene",
+        "//src/libs/common:preview_overlay_meta",
+        "//src/libs/stitching:stitching",
+        "@deepstream//:deepstream_lib",
+    ],
+)
+
+cc_library(
+    name = "preview_overlay_gl_paths",
+    srcs = ["PreviewOverlayGlPaths.cpp"],
+    hdrs = ["PreviewOverlayGlPaths.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-lGL"],
+    visibility = ["//visibility:public"],
+    deps = [":preview_overlay_scene_data"],
+)
+
+cc_test(
+    name = "preview_overlay_gl_paths_test",
+    srcs = ["PreviewOverlayGlPathsTest.cpp"],
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    linkopts = ["-lX11"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":preview_overlay_gl_paths", "//src/libs/draw_display:gpu_gl_surface"],
+)
+
+cc_library(
+    name = "preview_overlay_painter",
+    srcs = ["PreviewOverlayPainter.cpp"],
+    hdrs = ["PreviewOverlayPainter.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":preview_overlay_gl_paths",
+        ":preview_overlay_scene_data",
+        ":rink_mask_image",
+        "//src/libs/draw_display:alpha_mask_overlay",
+        "//src/libs/draw_display:alpha_mask_overlay_headers",
+        "//src/libs/draw_display:analytics_overlay",
+        "//src/libs/draw_display:gpu_gl_surface",
+        "//src/libs/draw_display:watermark",
+    ],
+)
+
+cc_test(
+    name = "preview_overlay_painter_test",
+    srcs = ["PreviewOverlayPainterTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [
+        ":preview_overlay_painter",
+        ":preview_overlay_gl_paths",
+        "//src/libs/draw_display:gpu_gl_surface",
+    ],
+)
+
 cc_library(
     name = "hm_gpu_preview",
     srcs = ["HmGpuPreview.cpp"],
@@ -211,6 +493,8 @@ cc_library(
         "@gstreamer",
     ] + select({
         "@platforms//cpu:x86_64": [
+            ":preview_overlay_gl_paths",
+            ":preview_overlay_scene",
             "//src/libs/draw_display:analytics_overlay_gl",
             "//src/libs/draw_display:player_overlays",
             "//src/libs/draw_display:rink_mini_map",
@@ -341,8 +625,11 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":webrtc_signaling",
         ":archive_watermark",
         ":webrtc_endpoint",
+        ":decoder_pad_link",
+        ":web_preview_observer",
         "//src/libs/tracker_reid:tracker_reid",
         ":player_analytics_bin",
         ":encoder_dimensions",
@@ -530,5 +817,20 @@ cc_binary(
     name = "webrtc_preview_test_server",
     testonly = True,
     srcs = ["WebRtcPreviewTestServer.cpp"],
-    deps = [":deepstream_apps_common", ":webrtc_endpoint", "@gstreamer"],
+    deps = [
+        ":deepstream_apps_common",
+        ":preview_rtp_gate",
+        ":preview_transport_monitor",
+        ":selected_preview_stream",
+        ":web_preview_observer",
+        ":webrtc_endpoint",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "web_preview_signaling_test",
+    srcs = ["WebPreviewSignalingTest.cpp"],
+    tags = ["local"],
+    deps = [":deepstream_apps_common", ":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@libsoup"],
 )

@@ -18,6 +18,7 @@
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "src/apps/hstream-ui/HighlightMp4Audio.h"
 #include "src/apps/hstream-ui/HighlightScene.h"
+#include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/libs/highlights/TextureBlend.h"
 
 namespace hm::ui {
@@ -254,6 +255,9 @@ struct HighlightReelPipeline::Impl {
   mutable std::mutex mutex;
   Status status;
   std::atomic<bool> cancel{false}, failed{false};
+  std::atomic<bool> browser_started{false};
+  GstClockTime browser_offset{0}; // Published before browser_started becomes true.
+  HighlightWebPreview* browser{nullptr}; // Worker-owned; Poll reads counters under mutex.
   std::thread worker;
   GstElement* output{nullptr}; // borrowed while worker graph lives; guarded by mutex
   GstElement *video_src{nullptr}, *audio_src{nullptr};
@@ -278,6 +282,9 @@ struct HighlightReelPipeline::Impl {
   void check_output() {
     if (!output)
       return;
+    std::string presentation_error;
+    if (browser && !browser->CheckPresentation(&presentation_error))
+      error(QString::fromStdString(presentation_error));
     const QString e = bus_error(output);
     if (!e.isEmpty())
       error(e);
@@ -373,26 +380,66 @@ struct HighlightReelPipeline::Impl {
       }
     }
     cuda_check(cudaStreamSynchronize(stream)); // complete writes before encoder's independent stream
-    auto* hold = new std::shared_ptr<Surface>(owned);
-    GstBuffer* buffer = gst_buffer_new_wrapped_full(
-        GST_MEMORY_FLAG_READONLY, owned->value, sizeof(NvBufSurface), 0, sizeof(NvBufSurface), hold, [](gpointer p) {
-          delete static_cast<std::shared_ptr<Surface>*>(p);
-        });
-    GST_BUFFER_PTS(buffer) = pts;
-    GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
-    GST_BUFFER_DURATION(buffer) = duration;
-    const bool pushed = push(video_src, buffer);
-    return pushed;
+    const auto send = [&](GstClockTime at) {
+      auto* hold = new std::shared_ptr<Surface>(owned);
+      GstBuffer* buffer = gst_buffer_new_wrapped_full(
+          GST_MEMORY_FLAG_READONLY, owned->value, sizeof(NvBufSurface), 0, sizeof(NvBufSurface), hold, [](gpointer p) {
+            delete static_cast<std::shared_ptr<Surface>*>(p);
+          });
+      GST_BUFFER_PTS(buffer) = at;
+      GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
+      GST_BUFFER_DURATION(buffer) = duration;
+      return push(video_src, buffer);
+    };
+    // Negotiation needs actual encoded video and audio caps. Present the first
+    // authored frame with silence until the browser confirms its exact receipt;
+    // only then begin source audio/video at their original relative timestamps.
+    // Short clips cannot run to completion while the browser connects.
+    if (browser && !browser_started) {
+      const GstClockTime step = gst_util_uint64_scale(GST_SECOND, fps_d, fps_n);
+      for (guint64 index = 0; !stopped() && !browser->counters().presented; ++index) {
+        const GstClockTime at = gst_util_uint64_scale(index, GST_SECOND * guint64(fps_d), fps_n);
+        const GstClockTime next = gst_util_uint64_scale(index + 1, GST_SECOND * guint64(fps_d), fps_n);
+        if (!send(at))
+          return false;
+        const auto first = gst_util_uint64_scale(at, kRate, GST_SECOND);
+        const auto last = gst_util_uint64_scale(next, kRate, GST_SECOND);
+        if (!raw_audio_buffer(nullptr, last - first, first, 0))
+          return false;
+        browser_offset = next;
+        while (!stopped() && running_time() + step < next) {
+          check_output();
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+      }
+      if (stopped())
+        return false;
+      browser_started = true;
+    }
+    return send(pts + browser_offset);
   }
-  bool audio_buffer(const unsigned char* data, qint64 count, qint64 index) {
+  GstClockTime running_time() const {
+    GstClock* clock = output ? gst_element_get_clock(output) : nullptr;
+    if (!clock)
+      return 0;
+    const auto now = gst_clock_get_time(clock), base = gst_element_get_base_time(output);
+    gst_object_unref(clock);
+    return now >= base ? now - base : 0;
+  }
+  bool raw_audio_buffer(const unsigned char* data, qint64 count, qint64 index, GstClockTime offset) {
     GstBuffer* b = gst_buffer_new_allocate(nullptr, count * kAudioBytes, nullptr);
     if (data)
       gst_buffer_fill(b, 0, data, count * kAudioBytes);
     else
       gst_buffer_memset(b, 0, 0, count * kAudioBytes);
-    GST_BUFFER_PTS(b) = gst_util_uint64_scale(index, GST_SECOND, kRate);
-    GST_BUFFER_DURATION(b) = gst_util_uint64_scale(index + count, GST_SECOND, kRate) - GST_BUFFER_PTS(b);
+    GST_BUFFER_PTS(b) = gst_util_uint64_scale(index, GST_SECOND, kRate) + offset;
+    GST_BUFFER_DURATION(b) = gst_util_uint64_scale(index + count, GST_SECOND, kRate) - (GST_BUFFER_PTS(b) - offset);
     return push(audio_src, b);
+  }
+  bool audio_buffer(const unsigned char* data, qint64 count, qint64 index) {
+    while (request.web_preview && !browser_started && !stopped())
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    return !stopped() && raw_audio_buffer(data, count, index, browser_offset);
   }
   void audio_item(Input* in, qint64 start_ms, qint64 length_ms, qint64 base_ms) {
     try {
@@ -485,7 +532,7 @@ struct HighlightReelPipeline::Impl {
     }
     return false;
   }
-  void output_graph(Graph& graph) {
+  void output_graph(Graph& graph, std::unique_ptr<HighlightWebPreview>& web) {
     video_src = element(graph.value, "appsrc", "reel-video");
     audio_src = element(graph.value, "appsrc", "reel-audio");
     for (auto* src : {video_src, audio_src})
@@ -494,7 +541,7 @@ struct HighlightReelPipeline::Impl {
           "format",
           GST_FORMAT_TIME,
           "is-live",
-          FALSE,
+          gboolean(bool(request.web_preview)),
           "block",
           FALSE,
           "max-bytes",
@@ -524,7 +571,18 @@ struct HighlightReelPipeline::Impl {
     for (auto* q : {vq, aq})
       g_object_set(q, "max-size-buffers", 3, "max-size-bytes", 0, "max-size-time", guint64(0), nullptr);
     check(gst_element_link(video_src, vq) && gst_element_link(audio_src, aq), "Could not link reel sources");
-    if (request.window_id) {
+    if (request.web_preview) {
+      GstElement *video_clock = element(graph.value, "identity"), *audio_clock = element(graph.value, "identity");
+      g_object_set(video_clock, "sync", TRUE, nullptr);
+      g_object_set(audio_clock, "sync", TRUE, nullptr);
+      check(gst_element_link(vq, video_clock) && gst_element_link(aq, audio_clock), "Could not pace authored preview");
+      std::string error;
+      web = HighlightWebPreview::Create(*request.web_preview, graph.value, video_clock, audio_clock, &error);
+      if (!web)
+        throw std::runtime_error(error);
+      std::lock_guard<std::mutex> lock(mutex);
+      browser = web.get();
+    } else if (request.window_id) {
       GstElement* sink = element(graph.value, "hmgpupreviewsink", "reel-preview");
       g_object_set(
           sink,
@@ -722,20 +780,28 @@ struct HighlightReelPipeline::Impl {
     try {
       cuda_check(cudaSetDevice(0));
       cuda_check(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-      const double scale =
-          request.window_id ? std::min({1.0, 1280.0 / request.media.width, 720.0 / request.media.height}) : 1.0;
+      const double scale = (request.window_id || request.web_preview)
+          ? std::min({1.0, 1280.0 / request.media.width, 720.0 / request.media.height})
+          : 1.0;
       width = std::max(2, int(request.media.width * scale) & ~1);
       height = std::max(2, int(request.media.height * scale) & ~1);
-      ten = !request.window_id && request.media.bit_depth > 8;
+      ten = !request.window_id && !request.web_preview && request.media.bit_depth > 8;
       gst_util_double_to_fraction(request.media.frame_rate > 0 ? request.media.frame_rate : 30, &fps_n, &fps_d);
       for (int i = 0; i < 6; ++i)
         pool.push_back(std::make_shared<Surface>(width, height, ten));
+      std::unique_ptr<HighlightWebPreview> web;
       Graph graph;
-      graph.before_destroy = [this] {
+      graph.before_destroy = [this, &web] {
+        if (web)
+          web->Stop();
         std::lock_guard<std::mutex> lock(mutex);
+        if (browser)
+          status.presented_frames = browser->counters().presented;
+        status.waiting_for_browser = request.web_preview && !browser_started;
         output = nullptr;
+        browser = nullptr;
       };
-      output_graph(graph);
+      output_graph(graph, web);
       qint64 base_ms = 0;
       do {
         for (int i = 0; i < request.items.size() && !stopped(); ++i) {
@@ -747,6 +813,15 @@ struct HighlightReelPipeline::Impl {
           base_ms += HighlightItemDuration(request.items[i]);
         }
       } while (request.loop && !stopped());
+      if (web && !stopped()) {
+        // Deliver the complete timed reel before closing its peer. The endpoint
+        // must retire before EOS/NULL so an absent browser cannot block teardown.
+        while (!stopped() && running_time() < base_ms * GST_MSECOND + browser_offset) {
+          check_output();
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        web->Stop();
+      }
       if (!stopped()) {
         gst_app_src_end_of_stream(GST_APP_SRC(video_src));
         gst_app_src_end_of_stream(GST_APP_SRC(audio_src));
@@ -770,7 +845,7 @@ struct HighlightReelPipeline::Impl {
         }
         gst_object_unref(bus);
         check(ended || stopped(), "Reel encoder/mux did not finalize within 60 seconds");
-        if (ended && !stopped() && !request.window_id) {
+        if (ended && !stopped() && !request.window_id && !request.web_preview) {
           {
             std::lock_guard<std::mutex> lock(mutex);
             output = nullptr;
@@ -830,8 +905,11 @@ bool HighlightReelPipeline::Start(Request request, QString* error) {
   if (request.media.width <= 0 || request.media.height <= 0 || request.media.width > 8192 ||
       request.media.height > 8192)
     return fail("Reel output needs even video dimensions up to 8192 pixels per side");
-  if ((!request.window_id && request.output_path.isEmpty()) || (request.window_id && !PreviewAvailable()))
+  const int outputs = bool(request.window_id) + !request.output_path.isEmpty() + bool(request.web_preview);
+  if (outputs != 1 || (request.window_id && !PreviewAvailable()))
     return fail("Reel needs an output file or an available NVIDIA/X11 preview");
+  if (request.web_preview && request.inspect_game_ms >= 0)
+    return fail("Browser authored-frame inspection is not available");
   qint64 total = 0;
   for (auto& item : request.items) {
     QString e;
@@ -858,6 +936,7 @@ bool HighlightReelPipeline::Start(Request request, QString* error) {
   impl_ = std::make_unique<Impl>();
   impl_->request = std::move(request);
   impl_->status.total_ms = total;
+  impl_->status.waiting_for_browser = bool(impl_->request.web_preview);
   gst_init(nullptr, nullptr);
   gst_registry_scan_path(gst_registry_get(), "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   impl_->worker = std::thread([s = impl_.get()] { s->run(); });
@@ -869,10 +948,15 @@ void HighlightReelPipeline::Cancel() {
 HighlightReelPipeline::Status HighlightReelPipeline::Poll() const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto result = impl_->status;
+  if (impl_->browser) {
+    result.waiting_for_browser = !impl_->browser_started;
+    result.presented_frames = impl_->browser->counters().presented;
+  }
   if (impl_->output) {
     gint64 time = 0;
     if (gst_element_query_position(impl_->output, GST_FORMAT_TIME, &time))
-      result.position_ms = time / GST_MSECOND;
+      result.position_ms =
+          std::max<qint64>(0, time / GST_MSECOND - (impl_->browser_started ? impl_->browser_offset / GST_MSECOND : 0));
   }
   return result;
 }

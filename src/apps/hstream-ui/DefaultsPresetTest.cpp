@@ -7,6 +7,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <stdexcept>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/UserConfig.h"
@@ -17,6 +18,21 @@ struct HStreamWindowTestAccess {
   }
   static QString HighBitMode(HStreamWindow& window) {
     return window.highBitDepthMode();
+  }
+  static void PrecisionCycle(HStreamWindow& window) {
+    auto* program = window.camera_checkboxes_.at("Use_10_Bit_Grading");
+    auto* stitched = window.stitched_color_checkboxes_.at("Use_10_Bit_Grading");
+    window.setHighBitDepthMode("auto");
+    for (const auto state : {Qt::Checked, Qt::Unchecked, Qt::PartiallyChecked}) {
+      program->click();
+      if (program->checkState() != state || stitched->checkState() != state)
+        throw std::runtime_error("Program precision cycle or mirror changed");
+    }
+    for (const auto state : {Qt::Checked, Qt::Unchecked, Qt::PartiallyChecked}) {
+      stitched->click();
+      if (program->checkState() != state || stitched->checkState() != state)
+        throw std::runtime_error("Stitched precision cycle or mirror changed");
+    }
   }
   static bool Save(HStreamWindow& window) {
     return window.savePreset();
@@ -85,6 +101,8 @@ int main(int argc, char** argv) {
   Require(window.gameIdText().isEmpty(), "Defaults must not masquerade as a game");
   Require(!Find<QPushButton>(window, "startPipelineButton")->isEnabled(), "Defaults cannot run a pipeline");
   Require(!QFile::exists(defaults_path), "Selecting Defaults must not create a preset");
+  Require(HStreamWindowTestAccess::HighBitMode(window) == "auto", "Shipped precision must resolve to Auto");
+  HStreamWindowTestAccess::PrecisionCycle(window);
   auto* output_map = Find<QCheckBox>(window, "outputRinkMapCheck");
   auto* output_size = Find<QComboBox>(window, "outputRinkMapSizeCombo");
   auto* output_position = Find<QComboBox>(window, "outputRinkMapPositionCombo");
@@ -205,6 +223,40 @@ int main(int argc, char** argv) {
       !defaults["pipeline"] || !defaults["pipeline"]["ds-playtracker"] ||
           !defaults["pipeline"]["ds-playtracker"]["config-file"],
       "Restoring tracker controls left a stale native override");
+  // A configured baseline may force either mode. Auto must still be a saved
+  // explicit override, rather than disappearing and restoring that forced mode.
+  QTemporaryDir custom_baseline;
+  Require(custom_baseline.isValid(), "Cannot create precision baseline fixture");
+  qputenv("HM_CONFIG_ROOT", custom_baseline.path().toLocal8Bit());
+  for (const char* mode : {"1", "0"}) {
+    YAML::Node custom = YAML::Load(original_baseline.toStdString());
+    custom["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = std::string(mode);
+    Write(custom_baseline.filePath("baseline.yaml"), QByteArray::fromStdString(YAML::Dump(custom)));
+    Write(defaults_path, "{}\n");
+    Write(games.filePath("inherit/config.yaml"), "{}\n");
+    HStreamWindow forced;
+    auto* forced_selector = Find<QComboBox>(forced, "gameSelector");
+    forced_selector->setCurrentIndex(0);
+    Require(HStreamWindowTestAccess::HighBitMode(forced) == mode, "Defaults ignored configured precision");
+    forced_selector->setCurrentIndex(forced_selector->findText("inherit"));
+    Require(HStreamWindowTestAccess::HighBitMode(forced) == mode, "Game ignored baseline precision");
+    HStreamWindowTestAccess::HighBit(forced, "auto");
+    Require(HStreamWindowTestAccess::Save(forced), "Cannot save Auto over a forced baseline");
+    forced_selector->setCurrentIndex(0);
+    forced_selector->setCurrentIndex(forced_selector->findText("inherit"));
+    Require(HStreamWindowTestAccess::HighBitMode(forced) == "auto", "Auto override was lost on reload");
+    forced_selector->setCurrentIndex(0);
+    HStreamWindowTestAccess::HighBit(forced, "auto");
+    Require(HStreamWindowTestAccess::Save(forced), "Cannot save Auto Defaults over a forced baseline");
+    HStreamWindow custom_reopened;
+    Find<QComboBox>(custom_reopened, "gameSelector")->setCurrentIndex(0);
+    Require(HStreamWindowTestAccess::HighBitMode(custom_reopened) == "auto", "Saved Auto Defaults were lost");
+    Find<QPushButton>(custom_reopened, "resetDefaultsButton")->click();
+    Require(HStreamWindowTestAccess::HighBitMode(custom_reopened) == mode, "Reset ignored configured precision");
+    Require(HStreamWindowTestAccess::Save(custom_reopened), "Cannot reset configured precision");
+    const auto reset_defaults = YAML::LoadFile(defaults_path.toStdString());
+    Require(reset_defaults.IsMap() && reset_defaults.size() == 0, "Precision reset left an override");
+  }
   std::cout << "Defaults preset tests passed\n";
   return 0;
 }

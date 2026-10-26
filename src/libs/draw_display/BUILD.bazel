@@ -4,6 +4,28 @@ load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 INCLUDE_PREFIX = "hstream/src/libs/draw_display"
 
 cc_library(
+    name = "opaque_video_canvas_headers",
+    hdrs = ["OpaqueVideoCanvas.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers"],
+)
+
+gpu_library(
+    name = "opaque_video_canvas",
+    srcs = ["OpaqueVideoCanvas.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":opaque_video_canvas_headers"],
+)
+
+cc_test(
+    name = "opaque_video_canvas_test",
+    srcs = ["OpaqueVideoCanvasTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":opaque_video_canvas", ":opaque_video_canvas_headers", ":analytics_overlay"],
+)
+
+cc_library(
     name = "rink_mini_map_options",
     hdrs = ["RinkMiniMapOptions.h"],
     include_prefix = INCLUDE_PREFIX,
@@ -176,6 +198,28 @@ cc_library(
     deps = [":analytics_overlay_headers", ":analytics_overlay_atlas", ":analytics_overlay_cuda"],
 )
 
+cc_library(
+    name = "alpha_mask_overlay_headers",
+    hdrs = ["AlphaMaskOverlay.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers"],
+)
+
+gpu_library(
+    name = "alpha_mask_overlay",
+    srcs = ["AlphaMaskOverlay.cu"],
+    visibility = ["//visibility:public"],
+    deps = [":alpha_mask_overlay_headers"],
+)
+
+cc_test(
+    name = "alpha_mask_overlay_test",
+    srcs = ["AlphaMaskOverlayTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":alpha_mask_overlay", ":alpha_mask_overlay_headers"],
+)
+
 cc_test(
     name = "analytics_overlay_test",
     srcs = ["AnalyticsOverlayTest.cpp"],
@@ -197,6 +241,23 @@ cc_library(
     deps = [":analytics_overlay", ":analytics_overlay_atlas"],
 )
 
+cc_library(
+    name = "gpu_gl_surface",
+    srcs = ["GpuGlSurface.cpp"],
+    hdrs = ["GpuGlSurface.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-lEGL", "-lGL"] + select({"//:use_hip": ["-lgbm"], "//conditions:default": []}),
+    visibility = ["//visibility:public"],
+    deps = [":analytics_overlay_headers"],
+)
+
+cc_test(
+    name = "gpu_gl_surface_test",
+    srcs = ["GpuGlSurfaceTest.cpp"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":gpu_gl_surface", ":analytics_overlay"],
+)
+
 cc_test(
     name = "analytics_overlay_gl_test",
     srcs = ["AnalyticsOverlayGlTest.cpp"],
@@ -206,7 +267,7 @@ cc_test(
         "@platforms//cpu:x86_64": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":analytics_overlay_gl", ":watermark"],
+    deps = [":analytics_overlay_gl", ":watermark", ":alpha_mask_overlay", ":alpha_mask_overlay_headers"],
 )
 
 cc_library(

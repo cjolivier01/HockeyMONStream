@@ -2380,7 +2380,7 @@ gboolean create_pipeline(
       for (size_t sink_index = 0; sink_index < appCtx->config.num_sink_sub_bins; ++sink_index) {
         const NvDsSinkSubBinConfig& sink_config = appCtx->config.sink_bin_sub_bin_config[sink_index];
         if (!sink_config.enable || sink_config.source_id != i || sink_config.link_to_demux ||
-            sink_config.type != NV_DS_SINK_WEBRTC) {
+            sink_config.type != NV_DS_SINK_WEBRTC || sink_config.encoder_config.preview_bin) {
           continue;
         }
         GstElement* webrtc = pipeline->instance_bins[i].sink_bin.sub_bins[sink_index].sink;
@@ -2635,6 +2635,17 @@ gboolean stop_pipeline_gracefully(AppCtx* appCtx, GstClockTime timeout) {
     g_object_set(G_OBJECT(cropper), "cancel-pending-work", TRUE, nullptr);
   // Retire network transports before EOS can wait on an absent browser.
   prepare_webrtc_sinks_for_stop(pipeline);
+  // A paused sink retains preroll buffers and cannot post EOS. Its borrowed
+  // decoder buffers can also block reader retirement before EOS is sent.
+  // Release that pause before either operation, under the same stop watchdog.
+  // Do not wait for fresh preroll: retiring the sources below supplies EOS.
+  // Completed/failed graphs must not restart processing during cleanup.
+  if (!appCtx->eos_received && appCtx->return_value == 0 &&
+      (current == GST_STATE_PAUSED || pending == GST_STATE_PAUSED) &&
+      gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+    g_printerr("Pipeline could not resume to finalize EOS during shutdown\n");
+    appCtx->return_value = -1;
+  }
   stop_uri_playlist_sources_gracefully(&appCtx->pipeline.multi_src_bin);
   if (appCtx->return_value != 0) {
     mark_playtracker_telemetry_failed(appCtx);

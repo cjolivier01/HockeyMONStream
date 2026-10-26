@@ -30,6 +30,7 @@
 #include <gst/rtsp/gstrtsptransport.h>
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
+#include "hstream/src/apps/apps-common/DecoderPadLink.h"
 #include "hstream/src/apps/apps-common/HStreamLosslessMux.h"
 #include "hstream/src/apps/apps-common/UriPlaylistCapturePoolDrain.h"
 #include "hstream/src/apps/apps-common/UriPlaylistDiscovery.h"
@@ -2462,7 +2463,8 @@ static GstElement* hardware_decoder_for_decode_pad(GstPad* exposed_pad) {
   return nullptr;
 }
 
-static UriDecodePadLinkResult link_uri_decode_pad(NvDsSrcBin* bin, GstPad* pad, GstPad* sinkpad, gboolean is_video) {
+static UriDecodePadLinkResult link_uri_decode_pad(
+    NvDsSrcBin* bin, GstPad* pad, GstPad* sinkpad, gboolean is_video, bool native_nvmm_decoder = false) {
   NvDsSrcParentBin* parent = bin ? bin->parent_bin : nullptr;
   if (!bin || !pad || !sinkpad) {
     return {};
@@ -2492,10 +2494,24 @@ static UriDecodePadLinkResult link_uri_decode_pad(NvDsSrcBin* bin, GstPad* pad, 
       }
     }
     if (result.status != UriDecodePadLinkStatus::kBlockerFailed) {
-      const GstPadLinkReturn link_result = gst_pad_link(pad, sinkpad);
+      const GstPadLinkReturn link_result = hm::gst::LinkDecodedPad(pad, sinkpad, native_nvmm_decoder);
       if (link_result == GST_PAD_LINK_OK) {
         result.status = UriDecodePadLinkStatus::kLinked;
       } else {
+        GstCaps* decoded_caps = gst_pad_query_caps(pad, nullptr);
+        GstCaps* downstream_caps = gst_pad_query_caps(sinkpad, nullptr);
+        gchar* decoded_text = decoded_caps ? gst_caps_to_string(decoded_caps) : nullptr;
+        gchar* downstream_text = downstream_caps ? gst_caps_to_string(downstream_caps) : nullptr;
+        g_printerr(
+            "Decoded %s pad link failed for source %u: %s; decoded=%s; downstream=%s\n",
+            is_video ? "video" : "audio", bin->source_id, gst_pad_link_get_name(link_result),
+            decoded_text ? decoded_text : "missing", downstream_text ? downstream_text : "missing");
+        g_free(decoded_text);
+        g_free(downstream_text);
+        if (decoded_caps)
+          gst_caps_unref(decoded_caps);
+        if (downstream_caps)
+          gst_caps_unref(downstream_caps);
         result.status = link_result == GST_PAD_LINK_WAS_LINKED ? UriDecodePadLinkStatus::kSecondary
                                                                : UriDecodePadLinkStatus::kLinkFailed;
       }
@@ -2611,7 +2627,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
         g_object_set_data(G_OBJECT(bin->src_elem), "hstream-uri-playlist-video-decoder", nullptr);
       }
     }
-    const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, TRUE);
+    const UriDecodePadLinkResult link_result = link_uri_decode_pad(bin, pad, sinkpad, TRUE, decoder != nullptr);
     if (link_result.status != UriDecodePadLinkStatus::kLinked && event_probe_id != 0) {
       gst_pad_remove_probe(pad, event_probe_id);
     }

@@ -34,6 +34,119 @@ void expect_eos(GstElement* pipeline) {
   gst_message_unref(message);
   gst_object_unref(bus);
 }
+
+void connected_readiness(bool managed) {
+  GstElement* pipeline = gst_pipeline_new(nullptr);
+  GstElement* source = gst_element_factory_make("appsrc", nullptr);
+  GstElement* endpoint = hstream::webrtc_endpoint_create("connection-endpoint", nullptr);
+  GstElement* receiver = gst_element_factory_make("webrtcbin", nullptr);
+  expect(source && receiver);
+  if (managed)
+    expect(hstream::webrtc_endpoint_manage_readiness(endpoint));
+  GstCaps* caps = gst_caps_from_string(
+      "application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000,packetization-mode=(string)1");
+  GstPad* input = hstream::webrtc_endpoint_add_track(endpoint, caps);
+  g_object_set(source, "caps", caps, "is-live", TRUE, "format", GST_FORMAT_TIME, nullptr);
+  gst_caps_unref(caps);
+  gst_bin_add_many(GST_BIN(pipeline), source, endpoint, receiver, nullptr);
+  expect(gst_element_link_pads(source, "src", endpoint, "sink_0"));
+  g_signal_connect(
+      receiver,
+      "pad-added",
+      G_CALLBACK(+[](GstElement*, GstPad* pad, gpointer parent) {
+        GstElement* sink = gst_element_factory_make("fakesink", nullptr);
+        g_object_set(sink, "sync", FALSE, "async", FALSE, nullptr);
+        gst_bin_add(GST_BIN(parent), sink);
+        GstPad* input = gst_element_get_static_pad(sink, "sink");
+        expect(gst_pad_link(pad, input) == GST_PAD_LINK_OK);
+        gst_object_unref(input);
+        gst_element_sync_state_with_parent(sink);
+      }),
+      pipeline);
+  expect(gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE);
+  GstElement* peer = hstream::webrtc_endpoint_reset_peer(endpoint);
+  expect(peer);
+  auto candidate = +[](GstElement*, guint index, gchar* text, gpointer other) {
+    g_signal_emit_by_name(other, "add-ice-candidate", index, text);
+  };
+  g_signal_connect(peer, "on-ice-candidate", G_CALLBACK(candidate), receiver);
+  g_signal_connect(receiver, "on-ice-candidate", G_CALLBACK(candidate), peer);
+  // Only RTP headers/caps are needed to negotiate. There is no decoder or claim
+  // of browser presentation in this connected transport/valve lifecycle test.
+  const guint8 bytes[]{0x80, 0xe0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0x65, 0x80};
+  GstBuffer* packet = gst_buffer_new_allocate(nullptr, sizeof(bytes), nullptr);
+  gst_buffer_fill(packet, 0, bytes, sizeof(bytes));
+  GST_BUFFER_PTS(packet) = 0;
+  expect(gst_app_src_push_buffer(GST_APP_SRC(source), packet) == GST_FLOW_OK);
+  bool offer_ready = false;
+  for (int i = 0; i < 200 && !offer_ready; ++i) {
+    offer_ready = hstream::webrtc_endpoint_prepare_offer(endpoint);
+    if (!offer_ready)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  expect(offer_ready);
+  auto create = [](GstElement* peer, const char* action, const char* field) {
+    GstPromise* promise = gst_promise_new();
+    g_signal_emit_by_name(peer, action, nullptr, promise);
+    expect(gst_promise_wait(promise) == GST_PROMISE_RESULT_REPLIED);
+    GstWebRTCSessionDescription* description = nullptr;
+    expect(gst_structure_get(
+        gst_promise_get_reply(promise), field, GST_TYPE_WEBRTC_SESSION_DESCRIPTION, &description, nullptr));
+    gst_promise_unref(promise);
+    return description;
+  };
+  auto set = [](GstElement* peer, const char* action, GstWebRTCSessionDescription* description) {
+    GstPromise* promise = gst_promise_new();
+    g_signal_emit_by_name(peer, action, description, promise);
+    expect(gst_promise_wait(promise) == GST_PROMISE_RESULT_REPLIED);
+    gst_promise_unref(promise);
+  };
+  auto* offer = create(peer, "create-offer", "offer");
+  set(receiver, "set-remote-description", offer);
+  set(peer, "set-local-description", offer);
+  auto* answer = create(receiver, "create-answer", "answer");
+  set(peer, "set-remote-description", answer);
+  set(receiver, "set-local-description", answer);
+  gst_webrtc_session_description_free(offer);
+  gst_webrtc_session_description_free(answer);
+  bool connected = false;
+  std::uint64_t revision = 0;
+  for (int i = 0; i < 1000 && !connected; ++i) {
+    expect(hstream::webrtc_endpoint_connection_snapshot(endpoint, peer, &revision, &connected));
+    if (!connected)
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  expect(connected);
+  GstPad* valve_input = gst_ghost_pad_get_target(GST_GHOST_PAD(input));
+  GstElement* valve = gst_pad_get_parent_element(valve_input);
+  auto dropped = [&] {
+    gboolean value = FALSE;
+    g_object_get(valve, "drop", &value, nullptr);
+    return value != FALSE;
+  };
+  expect(dropped() == managed); // Legacy peers still open automatically.
+  if (managed) {
+    hstream::webrtc_endpoint_set_active(endpoint, true);
+    expect(dropped()); // Legacy bypass must not open a managed endpoint.
+    expect(hstream::webrtc_endpoint_apply_readiness(endpoint, peer, revision, true) && !dropped());
+    // A repeated real connected-state notification invalidates any previously
+    // queued reopen. Only the latest endpoint revision may open its valves.
+    g_object_notify(G_OBJECT(peer), "connection-state");
+    expect(dropped() && !hstream::webrtc_endpoint_apply_readiness(endpoint, peer, revision, true));
+    expect(hstream::webrtc_endpoint_connection_snapshot(endpoint, peer, &revision, &connected) && connected);
+    expect(hstream::webrtc_endpoint_apply_readiness(endpoint, peer, revision, true) && !dropped());
+  }
+  g_signal_handlers_disconnect_by_data(peer, receiver);
+  g_signal_handlers_disconnect_by_data(receiver, peer);
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  if (managed)
+    expect(!hstream::webrtc_endpoint_apply_readiness(endpoint, peer, revision, true));
+  gst_object_unref(valve);
+  gst_object_unref(valve_input);
+  gst_object_unref(peer);
+  gst_object_unref(input);
+  gst_object_unref(pipeline);
+}
 void paused_drain_replacement() {
   GstElement* pipeline = gst_pipeline_new(nullptr);
   GstElement* source = gst_element_factory_make("appsrc", nullptr);
@@ -194,6 +307,8 @@ void run(bool replace, bool detach) {
 } // namespace
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
+  connected_readiness(false);
+  connected_readiness(true);
   paused_drain_replacement();
   run(false, false);
   run(true, true);

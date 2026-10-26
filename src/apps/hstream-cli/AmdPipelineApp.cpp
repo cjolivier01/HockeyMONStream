@@ -18,6 +18,7 @@
 
 #include "AmdPipelineOptions.h"
 #include "PlaybackProgress.h"
+#include "hstream/src/gst-plugins/gst-amd-program/AmdProgramGraph.h"
 #include "hstream/src/gst-plugins/gst-rink-map/RinkMapOverlay.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigPath.h"
@@ -26,7 +27,7 @@
 #include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
 #include "hstream/src/libs/media/AudioPlaylist.h"
 #include "hstream/src/libs/program/AmdProgramAdmission.h"
-#include "hstream/src/gst-plugins/gst-amd-program/AmdProgramGraph.h"
+#include "hstream/src/libs/program/PreviewOverlayConfig.h"
 #include "hstream/src/libs/program/ProgramArchiveConfig.h"
 #include "hstream/src/libs/program/ProgramAudioConfig.h"
 #include "hstream/src/libs/program/ProgramDetectorSettings.h"
@@ -128,8 +129,15 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   hm::publication::ValidatePipelineStart(false);
   const bool encoding = args.sinks.count("ENCODE_FILE") || args.sinks.count("ENCODE_PROGRAM_4K_FILE");
   Require(hm::publication::EnvironmentManifest().empty() || encoding, "Managed Program runs require an archive sink");
-  hm::pipeline_internal::PreviewOverlaySelection initial_overlays;
+  const auto root = Take(hm::baseline_config::resolve_root());
+  const auto launch = Take(
+      hm::program::LoadProgramLaunchConfig(
+          args.game,
+          args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
+          args.options));
+  auto initial_overlays = Take(hm::pipeline_internal::ReadPreviewOverlaySelection(launch.configuration.values));
   if (const auto* value = std::getenv("HSTREAM_UI_PREVIEW_OVERLAYS")) {
+    initial_overlays = {};
     std::istringstream names(value);
     std::string name;
     while (std::getline(names, name, ',')) {
@@ -139,14 +147,12 @@ void Run(const hm::program::AmdPipelineOptions& args) {
       initial_overlays.players = true;
     }
   }
+  Require(
+      !initial_overlays.play && !initial_overlays.rink,
+      "AMD Program preview currently supports only the players diagnostic overlay");
   Require(!initial_overlays.any() || args.sinks.count("RENDER"), "Preview overlays require the RENDER sink");
   hm::pipeline_internal::PreviewOverlayRuntimeState overlay_state(initial_overlays);
   hm::program::ProgramPreviewBoxes preview_boxes;
-  const auto root = Take(hm::baseline_config::resolve_root());
-  const auto launch = Take(hm::program::LoadProgramLaunchConfig(
-      args.game,
-      args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
-      args.options));
   auto rink_settings = Take(hm::rink_map::ResolveSettings(launch.configuration.values));
   std::shared_ptr<const hm::stitching::PlaybackRinkMap> output_rink_map;
   if (rink_settings.enabled && encoding) {

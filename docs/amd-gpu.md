@@ -8,12 +8,53 @@ launch uses the same pipeline; additional preview channels, live controls
 and other optional application features remain unfinished. This is
 not yet a complete AMD application release.
 
+`src/apps/apps-common/PreviewRouteOwner.*` is portable CPU control code and does
+not depend on CUDA, HIP, Qt or X11. The NVIDIA CLI uses it for existing desktop
+route activation. It does not add AMD source/Stitched branches or WebRTC;
+those consumers and their capability reports remain unfinished. No HIP surface
+or pointer is passed to the NVIDIA preview implementation.
+`PreviewRouteGraph` is also CPU/GStreamer-only; its NVIDIA CLI integration does
+not add AMD source/Stitched route construction. `SelectedPreviewStream` and
+`PreviewTransportFrames` likewise isolate events and
+identity without GPU calls; they do not supply an AMD consumer. The independent
+`PreviewGpuSurface` prototype accepts CUDA-device NVMM and remains unavailable
+for HIP/VA surfaces. Its NVIDIA hardware test is not AMD preview qualification.
+`WebPreviewTarget` currently assembles only that CUDA-device surface path and
+the NVIDIA H.264 encoder. Its bounded `PreviewTransportMonitor`, separate
+`PreviewPresentationHistory` and optional `WebPreviewObserver` are CPU-only,
+but no HIP/VA target or AMD browser capability is registered. The new explicit
+`--web-preview-run-id` CLI path remains NVIDIA-only; the AMD CLI does not admit
+that option or advertise selectable browser routes. Jetson cross-build
+success likewise does not qualify Jetson surface-array input or runtime encoding.
+
 ## Implemented paths
 
 `--config=rocm` selects HIP for HStream's highlight texture compositor,
 analytics overlay compositor, pose preprocessing/decoding, and jersey, action,
 and team preprocessing/reduction. CUDA and HIP compile the same kernel sources.
 NVIDIA remains the default, including Jetson builds.
+
+The shared analytics compositor also supports convex triangle fans and an
+explicit logical coordinate extent mapped onto a bounded output viewport.
+`AlphaMaskOverlay` uses the same CUDA/HIP kernel for bilinear coverage with a
+transparent border and affine inverse crop/rotation. Both primitive suites pass
+on AMD hardware at `ripper` and NVIDIA; the native Qt OpenGL pixel oracle runs on x86 CUDA.
+The shared `OpaqueVideoCanvas` kernel also clears bars and normalizes only the
+owned output alpha before drawing. Its pixel, transparent-corner blend and
+padding regressions pass on NVIDIA and AMD (`ripper`); a 100-frame 1080p pass
+measured 0.0400 ms/frame on AMD. This does not enable a HIP/VA browser target.
+No production HIP/VA browser painter or route is enabled by these primitives.
+`PreviewOverlayPainter` now shares Qt's unchanged aliased diagnostic paths via
+`GpuGlSurface`, with the same CUDA/HIP graphics interop implementation. The HIP
+owner selects exactly the GPU's DRM render node through EGL/GBM, matching the
+existing AMD display path. On `ripper`, the installed ROCm/Mesa stack rejects
+`hipGraphicsGLRegisterImage` with `hipErrorInvalidValue`. Diagnostic GL overlays
+therefore remain unavailable on this stack: preflight returns
+`kInteropUnavailable` before mask, analytics, watermark or video writes. There
+is no host-video or software fallback. The `gpu_gl_surface_test` and `preview_overlay_painter_test` binaries both
+accept `--expect-interop-unavailable` to explicitly check unchanged output. CUDA qualifies exact GL RGB;
+HIP graphics interop support, archived replay-mask ownership and full browser
+overlay qualification remain outstanding.
 
 The configuration also enables the existing HIP implementations in the pinned
 `hm-cupano` and `jetson-utils` dependencies. Both use the discovered ROCm SDK.
@@ -957,6 +998,13 @@ physical monitor/speaker output. The first model compilation can take longer
 than cached startup; a private virtual X11 display and null ALSA device are
 sufficient for protocol qualification.
 
+The native NVIDIA CLI's typed `set-tone-controls` transaction and
+`query-tone-controls` capability/readback are not implemented
+by `ProgramRuntimeControl` on AMD. Shared tone IDs/ranges/scaling are available
+in `ToneControls`, but AMD must add the same stage/topology fencing, correlated
+completion and rollback/replay tests before an outer client enables that
+capability. The existing desktop wire and AMD startup tone settings are unchanged.
+
 On the RX 9060 XT, the real desktop check processed frames with detected tracks,
 acknowledged Render off/on, and restored Program at generation 5 after visiting
 the unavailable Stitched tab. A separate 120-frame native-window run covered
@@ -1162,3 +1210,11 @@ The local AMD preview minimap is still a separate port gap.
 on both backends, including real GPU pixel changes, timing, stale-map suppression
 and EOS. `rink_map_test` covers shared configuration layering and immutable
 metadata; `defaults_preset_test` covers UI save/inheritance/reset.
+
+Qt and both CLI backends now resolve initial Player boxes / Play tracking /
+Rink mask selections from required `preview_overlays` baseline settings. An
+explicit `HSTREAM_UI_PREVIEW_OVERLAYS` launch selection replaces those values.
+The AMD local preview still supports only Player boxes: Play/Rink settings
+fail explicitly. The new fenced selectable-browser overlay protocol and mask
+consumer belong to the NVIDIA WebPreviewSession; no AMD browser-target or
+EGL/HIP interoperability qualification is implied.

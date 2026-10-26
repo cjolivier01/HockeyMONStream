@@ -1,4 +1,5 @@
 #include "hstream/src/libs/draw_display/AnalyticsOverlayGl.h"
+#include "hstream/src/libs/draw_display/AlphaMaskOverlay.h"
 #include "hstream/src/libs/draw_display/Watermark.h"
 
 #define GL_GLEXT_PROTOTYPES
@@ -181,7 +182,9 @@ std::vector<uint8_t> CudaReference(
     unsigned height,
     bool packed,
     const std::vector<uint8_t>& original,
-    size_t pitch) {
+    size_t pitch,
+    float coordinate_width = 0,
+    float coordinate_height = 0) {
   cudaStream_t stream{};
   void* device{};
   Cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
@@ -190,8 +193,12 @@ std::vector<uint8_t> CudaReference(
   {
     a::Compositor compositor;
     Cuda(cudaMemcpyAsync(device, original.data(), original.size(), cudaMemcpyHostToDevice, stream));
-    const auto rendered = compositor.Render(
-        {device, pitch, width, height, packed ? a::PixelFormat::kRgb10A2 : a::PixelFormat::kRgba8}, commands, stream);
+    const auto rendered = compositor.RenderMapped(
+        {device, pitch, width, height, packed ? a::PixelFormat::kRgb10A2 : a::PixelFormat::kRgba8},
+        coordinate_width > 0 ? coordinate_width : width,
+        coordinate_height > 0 ? coordinate_height : height,
+        commands,
+        stream);
     Check(rendered.launched, "CUDA reference suppression");
     Cuda(cudaMemcpyAsync(result.data(), device, result.size(), cudaMemcpyDeviceToHost, stream));
     Cuda(cudaStreamSynchronize(stream));
@@ -221,6 +228,8 @@ void Pixels(bool packed) {
   commands.AddText(-8, 51, 29, "87 skating", {.9F, .8F, .1F, .7F});
   commands.AddText(55, 3, 19, "27", {.2F, .7F, .9F, 1});
   commands.AddDisc(136, 102, 7, {1, 0, 1, .9F});
+  commands.AddTriangle(78, 45, 126, 45, 126, 93, {0, 1, 0, .5F});
+  commands.AddTriangle(78, 45, 78, 93, 126, 93, {0, 1, 0, .5F});
   const auto expected = CudaReference(commands, width, height, packed, original, pitch);
   a::GlCompositor renderer;
   target.Upload(original, pitch);
@@ -448,20 +457,134 @@ void StateAndCapacity(Context& owner) {
 void ScaledViewport(float width, float height) {
   Target target(128, 96);
   target.Clear();
+  const auto before = target.Read();
   glViewport(16, 12, 96, 72);
   a::CommandList commands;
-  commands.AddFill(0, 0, width, height, {1, 0, 0, 1});
-  commands.AddDisc(width / 2, height / 2, std::min(width, height) / 10, {0, 1, 0, 1});
+  commands.AddFill(0, 0, width, height, {1, 0, 0, .4F});
+  commands.AddDisc(width / 2, height / 2, std::min(width, height) / 10, {0, 1, 0, .8F});
+  commands.AddLine(-width / 5, height / 3, width * .9F, height * .8F, height / 35, {0, 0, 1, .7F});
+  commands.AddTriangle(width / 8, height / 8, width / 4, height / 8, width / 4, height / 4, {1, 1, 0, .5F});
+  commands.AddTriangle(width / 8, height / 8, width / 8, height / 4, width / 4, height / 4, {1, 1, 0, .5F});
+  const size_t pitch = (96 + 19) * 4;
+  std::vector<uint8_t> original(pitch * 72, 0xa5);
+  for (unsigned y = 0; y < 72; ++y)
+    std::memcpy(original.data() + y * pitch, before.data() + ((y + 12) * 128 + 16) * 4, 96 * 4);
+  const auto expected = CudaReference(commands, 96, 72, false, original, pitch, width, height);
   a::GlCompositor renderer;
   Check(renderer.Render(width, height, commands).drawn, "scaled draw failed");
   const auto actual = target.Read();
-  const auto at = [&](unsigned x, unsigned y, unsigned c) { return actual[(y * 128 + x) * 4 + c]; };
-  Check(at(16, 12, 0) == 255 && at(111, 83, 0) == 255 && at(64, 48, 1) == 255, "scaled viewport coordinate mismatch");
-  Check(
-      at(15, 12, 0) != 255 && at(112, 83, 0) != 255 && at(16, 11, 0) != 255 && at(111, 84, 0) != 255,
-      "letterbox was overwritten");
-  std::cout << "gl_viewport width=" << width << " height=" << height
-            << " output_coordinates_scaled=1 letterbox_preserved=1\n";
+  unsigned maximum = 0;
+  for (unsigned y = 0; y < 96; ++y)
+    for (unsigned x = 0; x < 128; ++x) {
+      const size_t index = (y * 128 + x) * 4;
+      if (x < 16 || x >= 112 || y < 12 || y >= 84) {
+        Check(std::memcmp(actual.data() + index, before.data() + index, 4) == 0, "letterbox was overwritten");
+        continue;
+      }
+      for (unsigned c = 0; c < 4; ++c) {
+        const unsigned error = std::abs(int(actual[index + c]) - int(expected[(y - 12) * pitch + (x - 16) * 4 + c]));
+        maximum = std::max(maximum, error);
+        if (error > 3)
+          throw std::runtime_error(
+              "mapped GL/CUDA mismatch at " + std::to_string(x) + "," + std::to_string(y) +
+              " error=" + std::to_string(error));
+      }
+    }
+  for (unsigned y = 0; y < 72; ++y)
+    for (size_t p = 96 * 4; p < pitch; ++p)
+      Check(expected[y * pitch + p] == 0xa5, "mapped CUDA pitch guard changed");
+  std::cout << "gl_viewport width=" << width << " height=" << height << " gpu_channel_max_error=" << maximum
+            << " output_coordinates_scaled=1 letterbox_preserved=1 shared_triangle_edges=1\n";
+}
+void MaskPixels() {
+  namespace d = hm::draw_display;
+  constexpr unsigned width = 96, height = 72;
+  Target target(128, 96);
+  std::vector<uint8_t> mask(12 * 11);
+  for (unsigned y = 0; y < 11; ++y)
+    for (unsigned x = 0; x < 12; ++x)
+      mask[y * 12 + x] = (x * 71 + y * 19) % 256;
+  GLuint texture{};
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+  const GLfloat border[] = {0, 0, 0, 0};
+  glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA8, 12, 11, 0, GL_ALPHA, GL_UNSIGNED_BYTE, mask.data());
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  cudaStream_t stream{};
+  void *device{}, *device_mask{};
+  Cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+  Cuda(cudaMalloc(&device, 128 * 96 * 4));
+  Cuda(cudaMalloc(&device_mask, mask.size()));
+  Cuda(cudaMemcpy(device_mask, mask.data(), mask.size(), cudaMemcpyHostToDevice));
+  const std::array<d::AlphaMaskMapping, 3> mappings = {{
+      {0, 0, 1.0F / width, 0, 0, 1.0F / height},
+      {-.3F, .2F, .8F / width, .5F / width, -.4F / height, 1.2F / height},
+      {1, 1, -1.0F / width, 0, 0, -1.0F / height},
+  }};
+  unsigned maximum = 0;
+  for (const auto& mapping : mappings) {
+    target.Clear();
+    const auto before = target.Read();
+    Cuda(cudaMemcpyAsync(device, before.data(), before.size(), cudaMemcpyHostToDevice, stream));
+    Cuda(
+        d::DrawAlphaMask(
+            {static_cast<uint8_t*>(device) + (12 * 128 + 16) * 4, 128 * 4, width, height},
+            {static_cast<uint8_t*>(device_mask), 12, 12, 11},
+            mapping,
+            {0, 1, 0, .28F},
+            stream));
+    std::vector<uint8_t> expected(before.size());
+    Cuda(cudaMemcpyAsync(expected.data(), device, expected.size(), cudaMemcpyDeviceToHost, stream));
+    Cuda(cudaStreamSynchronize(stream));
+    glViewport(16, 12, width, height);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glColor4f(0, 1, 0, .28F);
+    // Same fixed-function native rink-mask pass, including bottom-to-top GL
+    // vertices and top-to-bottom saved mask coordinates. Readback is test-only.
+    glBegin(GL_QUADS);
+    for (const auto& point : std::array<std::array<float, 2>, 4>{{{0, height}, {width, height}, {width, 0}, {0, 0}}}) {
+      glTexCoord2f(
+          mapping.origin_u + point[0] * mapping.step_x_u + point[1] * mapping.step_y_u,
+          mapping.origin_v + point[0] * mapping.step_x_v + point[1] * mapping.step_y_v);
+      glVertex2f(-1 + 2 * point[0] / width, 1 - 2 * point[1] / height);
+    }
+    glEnd();
+    glColor4f(1, 1, 1, 1);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_BLEND);
+    const auto actual = target.Read();
+    for (unsigned y = 0; y < 96; ++y)
+      for (unsigned x = 0; x < 128; ++x) {
+        const size_t index = (y * 128 + x) * 4;
+        if (x < 16 || x >= 112 || y < 12 || y >= 84) {
+          Check(std::memcmp(actual.data() + index, before.data() + index, 4) == 0, "GL mask changed letterbox");
+          Check(std::memcmp(expected.data() + index, before.data() + index, 4) == 0, "GPU mask changed letterbox");
+        }
+        // RGB is the displayed/encoded video contract. Legacy GL mask blending
+        // changes framebuffer alpha; the video encoder ignores that component.
+        for (unsigned c = 0; c < 3; ++c) {
+          const unsigned error = std::abs(int(actual[index + c]) - int(expected[index + c]));
+          maximum = std::max(maximum, error);
+          Check(error <= 2, "GPU mask differs from native GL bilinear/inverse mapping");
+        }
+      }
+  }
+  glDeleteTextures(1, &texture);
+  Cuda(cudaFree(device));
+  Cuda(cudaFree(device_mask));
+  Cuda(cudaStreamDestroy(stream));
+  GlCheck();
+  std::cout << "gl_mask inverse_affine=1 transparent_border=1 letterbox_preserved=1 gpu_rgb_max_error=" << maximum
+            << '\n';
 }
 void LargeCanvasWatermark() {
   // The native panorama is wider than 16K; only the bounded preview framebuffer
@@ -601,6 +724,7 @@ int main(int argc, char** argv) {
     ScaledViewport(64, 48);
     ScaledViewport(20457, 5256);
     ScaledViewport(5256, 20457);
+    MaskPixels();
     LargeCanvasWatermark();
     FailureSuppression();
     if (argc == 2 && std::string(argv[1]) == "--benchmark") {

@@ -1,5 +1,7 @@
 #include "OutputRinkMap.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/program/ToneControlCommand.h"
+#include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 /* clang-format off */
@@ -19,6 +21,7 @@
 #include "configurator.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/program/PreviewOverlayConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveOutputEpoch.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
@@ -73,6 +76,7 @@
 #include "TensorRtModelCache.h"
 #include "hstream/src/apps/apps-common/AsyncInferenceSeekRecovery.h"
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
+#include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
 #include "hstream/src/apps/apps-common/deepstream_app_version.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
@@ -484,7 +488,7 @@ void emit_ui_startup(const char* stage, const char* message) {
 void emit_pipeline_inspector_session(long stage, uint64_t topology_generation) {
   g_print(
       "HSTREAM_PIPELINE_INSPECTOR {\"version\":1,\"kind\":\"session\",\"requestId\":0,\"status\":\"ok\","
-      "\"stage\":%ld,\"generation\":%" G_GUINT64_FORMAT "}\n",
+      "\"stage\":%ld,\"generation\":%" G_GUINT64_FORMAT ",\"toneControlsVersion\":1}\n",
       stage,
       topology_generation);
   std::fflush(stdout);
@@ -1142,8 +1146,6 @@ PipelineApplication::PipelineApplication()
       rcfg_(0),
       rrowsel_(FALSE),
       selecting_(FALSE) {
-  preview_overlay_state_ =
-      hm::pipeline_internal::PreviewOverlayRuntimeState(preview_overlay_selection_from_environment());
   rink_map_preview_requested_ = g_strcmp0(g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP"), "1") == 0;
   memset(fps_, 0, sizeof(fps_));
   memset(fps_avg_, 0, sizeof(fps_avg_));
@@ -1607,7 +1609,11 @@ absl::Status PipelineApplication::configureInstances(
       // graphs need the stitcher's own preview branch and its GPU resources.
       app_ctx->config.hmsticher_config.ui_preview = ui_preview_window_ids_.count("stitched") &&
           !app_ctx->config.dsplaytracker_config.enable && !app_ctx->config.tracker_config.enable;
+      app_ctx->config.hmsticher_config.preview_tap_only = app_ctx->config.hmsticher_config.ui_preview;
     }
+    if (!web_preview_run_id_.empty())
+      app_ctx->config.hmsticher_config.preview_tap_only =
+          !app_ctx->config.dsplaytracker_config.enable && !app_ctx->config.tracker_config.enable;
     const std::string video_converter = effective_video_converter_element_name(app_ctx->config);
     if (!stage_video_converter.has_value()) {
       stage_video_converter = video_converter;
@@ -1668,6 +1674,30 @@ absl::Status PipelineApplication::configureInstances(
 absl::Status PipelineApplication::createPipelines(
     std::vector<std::shared_ptr<HmApp>>& app_contexts,
     CleanupStack& cleanup_stack) {
+  if (!web_preview_run_id_.empty() && rink_mask_preparation_ == RinkMaskPreparation::kNone) {
+    if (app_contexts.size() != 1)
+      return absl::InvalidArgumentError("Selectable browser preview requires one native pipeline context");
+    HM_RETURN_IF_ERROR(prepare_web_preview(*app_contexts.front()));
+    // Also covers partial create_pipeline failures before createMainLoop has
+    // installed its ordinary graph cleanup. The target must outlive its graph.
+    cleanup_stack.push([this, app = app_contexts.front()] {
+      if (web_preview_) {
+        web_preview_->Stop();
+        if (app->pipeline.pipeline)
+          destroy_pipeline(app.get());
+        web_preview_.reset();
+      }
+    });
+  }
+  if (!preview_overlay_initialized_ && !app_contexts.empty()) {
+    auto initial = hm::pipeline_internal::ReadPreviewOverlaySelection(app_contexts.front()->configurator().config());
+    if (!initial.ok())
+      return initial.status();
+    if (g_getenv("HSTREAM_UI_PREVIEW_OVERLAYS"))
+      *initial = preview_overlay_selection_from_environment();
+    preview_overlay_state_ = hm::pipeline_internal::PreviewOverlayRuntimeState(*initial);
+    preview_overlay_initialized_ = true;
+  }
   // Section 2: Create pipelines for each instance.
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
     const auto& app = app_contexts.front();
@@ -1808,9 +1838,65 @@ absl::Status PipelineApplication::createPipelines(
       hm::save_dot_file(app_contexts[i]->pipeline.pipeline, GST_DEBUG_GRAPH_SHOW_ALL, "pipeline_created" + s);
     }
   }
-  if (rink_mask_preparation_ == RinkMaskPreparation::kNone)
+  if (rink_mask_preparation_ == RinkMaskPreparation::kNone) {
+    HM_RETURN_IF_ERROR(configure_preview_overlay_producers(app_contexts));
     HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
+  }
+  if (web_preview_)
+    HM_RETURN_IF_ERROR(
+        web_preview_->Attach([this] { return apply_preview_overlay_state(preview_overlay_state_.selection(), true); }));
   return auto_focus_cameras(app_contexts);
+}
+
+absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
+  HM_ASSIGN_OR_RETURN(
+      web_preview_,
+      hm::preview::WebPreviewSession::Prepare(
+          app,
+          app.configurator().config(),
+          {web_preview_run_id_, static_cast<int>(current_stage_), inspector_topology_generation_ + 1},
+          retained_web_preview_selection_,
+          hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "").string()));
+  return absl::OkStatus();
+}
+
+void PipelineApplication::publish_web_preview_capability() {
+  if (!web_preview_ || web_preview_->identity().stage != current_stage_ ||
+      web_preview_->identity().topology != inspector_topology_generation_)
+    return;
+  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_).c_str());
+  std::fflush(stdout);
+}
+
+absl::Status PipelineApplication::configure_preview_overlay_producers(
+    const std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+  preview_overlay_producers_.clear();
+  preview_overlay_probe_flags_.store(0, std::memory_order_release);
+  const bool diagnostics =
+      web_preview_ || ui_preview_window_ids_.count("program") || ui_preview_window_ids_.count("stitched");
+  if (!diagnostics)
+    return absl::OkStatus();
+  for (const auto& app : app_contexts) {
+    auto* producer = app->pipeline.dsplaytracker_bin.elem_dsplaytracker;
+    if (producer) {
+      preview_overlay_producers_.push_back(producer);
+      continue;
+    }
+    auto* source = hm::gst::SelectTrackedPreviewSource(
+        app->pipeline.dsplaytracker_bin.bin,
+        app->pipeline.common_elements.player_analytics,
+        app->pipeline.common_elements.tracker_bin.bin);
+    if (!source)
+      source = app->pipeline.hmstitcher_bin.elem_hmstitcher;
+    const char* pad = "src";
+    if (!source) {
+      source = app->pipeline.common_elements.hmplaycropper_bin.playcropper;
+      pad = "sink";
+    }
+    if (!hm::preview_overlay::ConfigureTrackColorProducer(source, false, &preview_overlay_probe_flags_, pad))
+      return absl::InternalError("Could not install the shared post-tracker preview overlay producer");
+  }
+  return absl::OkStatus();
 }
 
 absl::Status PipelineApplication::configure_source_preview_sinks(
@@ -1818,8 +1904,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     bool sources_only) {
   if (!ui_preview_window_ids_.empty()) {
     if (!sources_only) {
-      preview_overlay_producers_.clear();
-      preview_overlay_probe_flags_.store(0, std::memory_order_release);
+      preview_routes_.forget_routes();
+      ui_preview_channels_.clear();
     }
     if (app_contexts.size() != 1) {
       return absl::InvalidArgumentError("GPU-native UI previews require exactly one active pipeline context");
@@ -1931,8 +2017,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
                               guint64 window_id,
                               guint gpu_id,
                               gint width,
-                              gint height,
-                              bool link_elements) -> bool {
+                              gint height) -> bool {
       if (!queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink)
         return false;
       const guint64 aligned_pitch = (static_cast<guint64>(width) * 4ULL + 255ULL) & ~255ULL;
@@ -1951,13 +2036,13 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "max-size-time",
           static_cast<guint64>(0),
           nullptr);
-      const bool initially_active = channel == active_ui_preview_channel_;
+      const bool initially_active = channel == preview_routes_.selected_channel();
       g_object_set(
           G_OBJECT(ingress_isolation),
           "channel",
           channel.c_str(),
           "generation",
-          static_cast<guint64>(active_ui_preview_generation_),
+          static_cast<guint64>(preview_routes_.operation_generation()),
           "active",
           initially_active ? TRUE : FALSE,
           nullptr);
@@ -1966,7 +2051,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "channel",
           channel.c_str(),
           "generation",
-          static_cast<guint64>(active_ui_preview_generation_),
+          static_cast<guint64>(preview_routes_.operation_generation()),
           "active",
           initially_active ? TRUE : FALSE,
           nullptr);
@@ -2004,7 +2089,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "channel",
           channel.c_str(),
           "generation",
-          static_cast<guint64>(active_ui_preview_generation_),
+          static_cast<guint64>(preview_routes_.operation_generation()),
           "sync",
           realtime,
           "max-lateness",
@@ -2016,12 +2101,6 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "enable-last-sample",
           FALSE,
           nullptr);
-      // The ingress gate keeps inactive buffers out of the queue. The second
-      // gate remains after the queue as a drain barrier: once it is closed,
-      // no already-enqueued buffer can still reach the converter or renderer.
-      if (link_elements &&
-          !gst_element_link_many(ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr))
-        return false;
       // Unrestricted processing bounds preview work to 30 fps. Paced playback
       // retains every frame and uses its timestamp, including 50/60 fps video.
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
@@ -2040,154 +2119,133 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             delete state;
           });
       gst_object_unref(probe_pad);
-      ui_preview_channels_[channel] = UiPreviewChannel{ingress_isolation, isolation, sink};
-      if (initially_active)
-        active_ui_preview_channel_ = channel;
       return true;
     };
+    auto register_path =
+        [&](GstElement* ingress_isolation, GstElement* isolation, GstElement* sink, const std::string& channel) {
+          if (!preview_routes_.register_route(
+                  channel,
+                  {
+                      [ingress_isolation](bool active, std::uint64_t generation) {
+                        hm::gpu_preview::set_isolation_active(ingress_isolation, active, generation);
+                      },
+                      [isolation](bool active, std::uint64_t generation) {
+                        hm::gpu_preview::set_isolation_active(isolation, active, generation);
+                      },
+                      [ingress_isolation, isolation] {
+                        return hm::gpu_preview::isolation_active(ingress_isolation) &&
+                            hm::gpu_preview::isolation_active(isolation);
+                      },
+                      [sink](std::uint64_t generation) { hm::gpu_preview::set_renderer_generation(sink, generation); },
+                      [ingress_isolation, isolation, sink](std::uint64_t generation) {
+                        hm::gpu_preview::set_renderer_generation(sink, generation);
+                        hm::gpu_preview::set_isolation_generation(ingress_isolation, generation);
+                        hm::gpu_preview::set_isolation_generation(isolation, generation);
+                        return hm::gpu_preview::isolation_active(ingress_isolation) &&
+                            hm::gpu_preview::isolation_active(isolation);
+                      },
+                      [sink](std::uint64_t generation) { return hm::gpu_preview::quiesce(sink, generation); },
+                  }))
+            return false;
+          ui_preview_channels_[channel] = UiPreviewChannel{ingress_isolation, isolation, sink};
+          return true;
+        };
 
     const auto& app_context = app_contexts.front();
+    hm::preview::PreviewReferenceGeometry reference;
+    HM_ASSIGN_OR_RETURN(
+        reference,
+        hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
     NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
     const auto program_target = ui_preview_window_ids_.find("program");
     if (!sources_only && program_target != ui_preview_window_ids_.end()) {
       GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_gpu_preview_queue");
-      GstElement* ingress_isolation =
-          gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_ingress_isolation");
-      GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_isolation");
+      GstElement* ingress = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_ingress_isolation");
+      GstElement* drain = gst_element_factory_make("hmpreviewisolation", "program_gpu_preview_isolation");
       GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "program_gpu_preview_converter");
-      GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_gpu_preview_caps");
+      GstElement* caps = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "program_gpu_preview_caps");
       GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "program_gpu_preview_sink");
-      if (!output.bin || !output.tee || !queue || !ingress_isolation || !isolation || !converter || !caps_filter ||
-          !sink) {
-        return absl::InternalError("Could not create the GPU-native Program preview branch");
-      }
-      gst_bin_add_many(GST_BIN(output.bin), ingress_isolation, queue, isolation, converter, caps_filter, sink, nullptr);
-      if (!configure_path(
+      std::string error;
+      auto attachment = hm::preview::RouteAttachment::Create(
+          {hm::preview::RouteTap::Kind::kExistingTee, output.bin, output.tee},
+          {ingress, queue, drain, converter, caps, sink},
+          nullptr,
+          &error);
+      if (!attachment ||
+          !configure_path(
               queue,
-              ingress_isolation,
-              isolation,
+              ingress,
+              drain,
               converter,
-              caps_filter,
+              caps,
               sink,
               "program",
               program_target->second,
               app_context->config.hmsticher_config.gpu_id,
-              1600,
-              900,
-              true) ||
-          !link_element_to_tee_src_pad(output.tee, ingress_isolation)) {
-        return absl::InternalError("Could not link the GPU-native Program preview branch");
-      }
+              reference.program_width,
+              reference.program_height) ||
+          !attachment->Commit([&] { return register_path(ingress, drain, sink, "program"); }))
+        return absl::InternalError("Could not attach the GPU-native Program preview: " + error);
       configure_overlays(sink, app_context->config.player_analytics_config.analytics);
     }
 
     const auto stitched_target = ui_preview_window_ids_.find("stitched");
-    GstElement* preview_overlay_producer = app_context->pipeline.dsplaytracker_bin.elem_dsplaytracker;
-    if (!sources_only && preview_overlay_producer)
-      preview_overlay_producers_.push_back(preview_overlay_producer);
     HmStitcherBin& stitcher = app_context->pipeline.hmstitcher_bin;
     GstElement* tracked_preview_source = hm::gst::SelectTrackedPreviewSource(
         app_context->pipeline.dsplaytracker_bin.bin,
         app_context->pipeline.common_elements.player_analytics,
         app_context->pipeline.common_elements.tracker_bin.bin);
-    if (!sources_only &&
-        (program_target != ui_preview_window_ids_.end() || stitched_target != ui_preview_window_ids_.end()) &&
-        !preview_overlay_producer) {
-      GstElement* snapshot_source = tracked_preview_source ? tracked_preview_source : stitcher.elem_hmstitcher;
-      const char* snapshot_pad = "src";
-      if (!snapshot_source) {
-        snapshot_source = app_context->pipeline.common_elements.hmplaycropper_bin.playcropper;
-        snapshot_pad = "sink";
-      }
-      if (!hm::preview_overlay::ConfigureTrackColorProducer(
-              snapshot_source, false, &preview_overlay_probe_flags_, snapshot_pad)) {
-        return absl::InternalError("Could not install the post-tracker GPU overlay snapshot producer");
-      }
-    }
     if (!sources_only && stitched_target != ui_preview_window_ids_.end()) {
-      GstElement* playtracker = tracked_preview_source;
-      if (playtracker) {
-        GstPad* playtracker_src = gst_element_get_static_pad(playtracker, "src");
-        GstPad* tracked_downstream_sink = playtracker_src ? gst_pad_get_peer(playtracker_src) : nullptr;
-        GstElement* tracked_downstream =
-            tracked_downstream_sink ? gst_pad_get_parent_element(tracked_downstream_sink) : nullptr;
-        if (!playtracker_src || !tracked_downstream_sink || !tracked_downstream) {
-          if (tracked_downstream)
-            gst_object_unref(tracked_downstream);
-          if (tracked_downstream_sink)
-            gst_object_unref(tracked_downstream_sink);
-          if (playtracker_src)
-            gst_object_unref(playtracker_src);
-          return absl::FailedPreconditionError("The play tracker does not expose a linked downstream preview point");
-        }
-        auto tracked_link_cleanup = absl::MakeCleanup([&] {
-          gst_object_unref(tracked_downstream);
-          gst_object_unref(tracked_downstream_sink);
-          gst_object_unref(playtracker_src);
-        });
-        GstElement* tee = gst_element_factory_make(NVDS_ELEM_TEE, "stitched_tracking_gpu_preview_tee");
-        GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "stitched_gpu_preview_queue");
-        GstElement* ingress_isolation =
-            gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_ingress_isolation");
-        GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "stitched_gpu_preview_isolation");
-        GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "stitched_gpu_preview_converter");
-        GstElement* caps_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "stitched_gpu_preview_caps");
-        GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "stitched_gpu_preview_sink");
-        if (!tee || !queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink) {
-          return absl::InternalError("Could not create the tracked Stitched GPU preview branch");
-        }
-        gst_bin_add_many(
-            GST_BIN(app_context->pipeline.pipeline),
-            tee,
-            ingress_isolation,
-            queue,
-            isolation,
-            converter,
-            caps_filter,
-            sink,
-            nullptr);
-        if (!gst_pad_unlink(playtracker_src, tracked_downstream_sink) || !gst_element_link(playtracker, tee) ||
-            !link_element_to_tee_src_pad(tee, tracked_downstream) ||
-            !configure_path(
-                queue,
-                ingress_isolation,
-                isolation,
-                converter,
-                caps_filter,
-                sink,
-                "stitched",
-                stitched_target->second,
-                app_context->config.hmsticher_config.gpu_id,
-                1600,
-                900,
-                true) ||
-            !link_element_to_tee_src_pad(tee, ingress_isolation)) {
-          return absl::InternalError("Could not link the tracked Stitched GPU preview branch");
-        }
-        configure_overlays(sink, app_context->config.player_analytics_config.analytics);
-      } else {
-        if (!stitcher.preview_queue || !stitcher.preview_ingress_isolation || !stitcher.preview_isolation ||
-            !stitcher.preview_converter || !stitcher.preview_caps_filter || !stitcher.preview_sink) {
-          return absl::FailedPreconditionError("The stitched GPU preview branch was not created");
-        }
-        g_object_set(G_OBJECT(stitcher.preview_sink), "window-id", stitched_target->second, nullptr);
-        if (!configure_path(
-                stitcher.preview_queue,
-                stitcher.preview_ingress_isolation,
-                stitcher.preview_isolation,
-                stitcher.preview_converter,
-                stitcher.preview_caps_filter,
-                stitcher.preview_sink,
-                "stitched",
-                stitched_target->second,
-                app_context->config.hmsticher_config.gpu_id,
-                1600,
-                900,
-                false)) {
-          return absl::InternalError("Could not configure the GPU-native Stitched preview branch");
-        }
-        configure_overlays(stitcher.preview_sink, app_context->config.player_analytics_config.analytics);
+      const bool tracked = tracked_preview_source != nullptr;
+      const std::string prefix = tracked ? "stitched_gpu_preview_" : "hmstitcher_preview_";
+      GstElement* queue = gst_element_factory_make(NVDS_ELEM_QUEUE, (prefix + "queue").c_str());
+      GstElement* ingress = gst_element_factory_make("hmpreviewisolation", (prefix + "ingress_isolation").c_str());
+      GstElement* drain = gst_element_factory_make("hmpreviewisolation", (prefix + "isolation").c_str());
+      GstElement* converter = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, (prefix + "converter").c_str());
+      GstElement* caps = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (prefix + "caps").c_str());
+      GstElement* sink = gst_element_factory_make("hmgpupreviewsink", (prefix + "sink").c_str());
+      hm::preview::RouteTap tap{hm::preview::RouteTap::Kind::kExistingTee, stitcher.bin, stitcher.output_tee};
+      if (tracked)
+        tap = {
+            hm::preview::RouteTap::Kind::kAfterElement,
+            app_context->pipeline.pipeline,
+            tracked_preview_source,
+            nullptr,
+            nullptr,
+            "stitched_tracking_gpu_preview_tee"};
+      std::string error;
+      auto attachment =
+          hm::preview::RouteAttachment::Create(tap, {ingress, queue, drain, converter, caps, sink}, nullptr, &error);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+      // Preserve the calibration branch's CUDA copy engine when construction
+      // moves out of create_hmstitcher_bin; VIC cannot copy these device surfaces.
+      if (attachment && !tracked)
+        g_object_set(G_OBJECT(converter), "copy-hw", 2, nullptr);
+#endif
+      if (!attachment ||
+          !configure_path(
+              queue,
+              ingress,
+              drain,
+              converter,
+              caps,
+              sink,
+              "stitched",
+              stitched_target->second,
+              app_context->config.hmsticher_config.gpu_id,
+              reference.program_width,
+              reference.program_height) ||
+          !attachment->Commit([&] { return register_path(ingress, drain, sink, "stitched"); }))
+        return absl::InternalError("Could not attach the GPU-native Stitched preview: " + error);
+      if (!tracked) {
+        stitcher.preview_queue = queue;
+        stitcher.preview_ingress_isolation = ingress;
+        stitcher.preview_isolation = drain;
+        stitcher.preview_converter = converter;
+        stitcher.preview_caps_filter = caps;
+        stitcher.preview_sink = sink;
       }
+      configure_overlays(sink, app_context->config.player_analytics_config.analytics);
     }
 
     NvDsSrcParentBin& sources = app_context->pipeline.multi_src_bin;
@@ -2197,58 +2255,35 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       if (target == ui_preview_window_ids_.end())
         continue;
       NvDsSrcBin& source = sources.sub_bins[source_index];
-      if (!source.bin || !source.tee || !source.fakesink_queue || !source.fakesink) {
-        return absl::FailedPreconditionError(TO_STRING(channel << " does not expose a preview tee branch"));
-      }
-      GstPad* source_queue_sink = gst_element_get_static_pad(source.fakesink_queue, "sink");
-      GstPad* old_tee_pad = source_queue_sink ? gst_pad_get_peer(source_queue_sink) : nullptr;
-      if (!source_queue_sink || !old_tee_pad || GST_OBJECT_PARENT(old_tee_pad) != GST_OBJECT(source.tee) ||
-          !gst_pad_unlink(old_tee_pad, source_queue_sink)) {
-        if (old_tee_pad)
-          gst_object_unref(old_tee_pad);
-        if (source_queue_sink)
-          gst_object_unref(source_queue_sink);
-        return absl::InternalError(TO_STRING("Could not detach the fake preview branch for " << channel));
-      }
-      gst_element_release_request_pad(source.tee, old_tee_pad);
-      gst_object_unref(old_tee_pad);
-      gst_object_unref(source_queue_sink);
-      gst_element_unlink(source.fakesink_queue, source.fakesink);
-      if (!gst_bin_remove(GST_BIN(source.bin), source.fakesink)) {
-        return absl::InternalError(TO_STRING("Could not replace the fake sink for " << channel));
-      }
-      source.fakesink = nullptr;
-      GstElement* ingress_isolation =
+      GstElement* ingress =
           gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_ingress_isolation").c_str());
-      GstElement* isolation =
-          gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_isolation").c_str());
+      GstElement* drain = gst_element_factory_make("hmpreviewisolation", (channel + "_gpu_preview_isolation").c_str());
       GstElement* converter =
           gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, (channel + "_gpu_preview_converter").c_str());
-      GstElement* caps_filter =
-          gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (channel + "_gpu_preview_caps").c_str());
+      GstElement* caps = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, (channel + "_gpu_preview_caps").c_str());
       GstElement* sink = gst_element_factory_make("hmgpupreviewsink", (channel + "_gpu_preview_sink").c_str());
-      if (!ingress_isolation || !isolation || !converter || !caps_filter || !sink)
-        return absl::InternalError(TO_STRING("Could not create the GPU-native preview branch for " << channel));
-      gst_bin_add_many(GST_BIN(source.bin), ingress_isolation, isolation, converter, caps_filter, sink, nullptr);
+      std::string error;
+      auto attachment = hm::preview::RouteAttachment::Create(
+          {hm::preview::RouteTap::Kind::kReplaceDrain, source.bin, source.tee, source.fakesink_queue, source.fakesink},
+          {ingress, source.fakesink_queue, drain, converter, caps, sink},
+          nullptr,
+          &error);
       const NvDsSourceConfig& source_config = app_context->config.multi_source_config[source_index];
-      if (!configure_path(
+      if (!attachment ||
+          !configure_path(
               source.fakesink_queue,
-              ingress_isolation,
-              isolation,
+              ingress,
+              drain,
               converter,
-              caps_filter,
+              caps,
               sink,
               channel,
               target->second,
               source_config.gpu_id,
-              1280,
-              720,
-              true)) {
-        return absl::InternalError(TO_STRING("Could not link the GPU-native preview branch for " << channel));
-      }
-      if (!link_element_to_tee_src_pad(source.tee, ingress_isolation)) {
-        return absl::InternalError(TO_STRING("Could not attach the GPU-native preview branch for " << channel));
-      }
+              reference.source_width,
+              reference.source_height) ||
+          !attachment->Commit([&] { return register_path(ingress, drain, sink, channel); }))
+        return absl::InternalError("Could not attach the GPU-native preview for " + channel + ": " + error);
       source.fakesink = sink;
     }
 
@@ -2258,14 +2293,11 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
             " message=no active camera source for XID %" G_GUINT64_FORMAT "\n",
             channel.c_str(),
-            active_ui_preview_generation_,
+            preview_routes_.operation_generation(),
             window_id);
       }
     }
-    if (!active_ui_preview_channel_.empty() && !ui_preview_channels_.count(active_ui_preview_channel_)) {
-      active_ui_preview_channel_.clear();
-      ui_preview_channel_explicitly_disabled_ = false;
-    }
+    preview_routes_.reconcile_selection();
     const bool has_overlay_sink =
         std::any_of(ui_preview_channels_.begin(), ui_preview_channels_.end(), [](const auto& channel) {
           return hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel.first);
@@ -2291,9 +2323,13 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     return absl::InvalidArgumentError("--source-render-window-ids requires exactly one active pipeline context");
   }
 
-  constexpr gint kProgramPreviewWidth = 1600;
-  constexpr gint kProgramPreviewHeight = 900;
   const auto& app_context = app_contexts.front();
+  hm::preview::PreviewReferenceGeometry reference;
+  HM_ASSIGN_OR_RETURN(
+      reference,
+      hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
+  const gint kProgramPreviewWidth = reference.program_width;
+  const gint kProgramPreviewHeight = reference.program_height;
   HM_RETURN_IF_ERROR(select_video_converter_for_element_creation(app_context->config, "source previews"));
   NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
   GstElement* program_queue = gst_element_factory_make(NVDS_ELEM_QUEUE, "program_preview_queue");
@@ -2386,8 +2422,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     return absl::InternalError("Could not link retained Program preview branch");
   }
 
-  constexpr gint kCameraPreviewWidth = 1280;
-  constexpr gint kCameraPreviewHeight = 720;
+  const gint kCameraPreviewWidth = reference.source_width;
+  const gint kCameraPreviewHeight = reference.source_height;
   for (const auto& app_context : app_contexts) {
     NvDsSrcParentBin& sources = app_context->pipeline.multi_src_bin;
     const guint preview_count = std::min<guint>(sources.num_bins, static_cast<guint>(source_render_window_ids_.size()));
@@ -2600,6 +2636,10 @@ absl::Status PipelineApplication::createMainLoop(
   auto owned_windows = std::make_shared<std::set<Window>>();
   cleanup_stack.push([this, contexts = app_contexts, stage = current_stage_, owned_windows] {
     begin_pipeline_recreation();
+    if (web_preview_)
+      web_preview_->Stop();
+    preview_routes_.forget_routes();
+    ui_preview_channels_.clear();
     for (const auto& context : contexts) {
       if (!context) {
         continue;
@@ -2793,6 +2833,8 @@ absl::Status PipelineApplication::stopPipeline(std::shared_ptr<HmApp> app_contex
   if (!pipeline) {
     return absl::OkStatus();
   }
+  if (web_preview_)
+    web_preview_->Stop();
   if (one_pass_calibration_contexts_.count(app_context.get()) != 0) {
     // A one-pass generation has no complete downstream stream to finalize
     // until calibration posts its completion message. On interruption, discard
@@ -2888,8 +2930,8 @@ absl::Status PipelineApplication::playPipelines(
     // Re-arm the initial channel directly after PLAYING. Startup must not race
     // an external command against installation of the GLib stdin poll.
     const std::string channel = hm::pipeline_internal::preview_channel_for_pipeline_start(
-        active_ui_preview_channel_, initial_ui_preview_channel_, ui_preview_channel_explicitly_disabled_);
-    const guint64 generation = active_ui_preview_generation_ + 1;
+        preview_routes_.selected_channel(), initial_ui_preview_channel_, preview_routes_.explicitly_disabled());
+    const guint64 generation = preview_routes_.operation_generation() + 1;
     emit_preview_protocol(
         "HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=%" G_GUINT64_FORMAT "\n",
         channel.c_str(),
@@ -3218,6 +3260,21 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        },
        "GPU-native UI preview targets as logical-channel:XID pairs",
        "program:XID,stitched:XID,source0:XID,..."},
+      {"web-preview-run-id",
+       0,
+       0,
+       G_OPTION_ARG_CALLBACK,
+       (gpointer) + [](const gchar*, const gchar* value, gpointer data, GError** error) -> gboolean {
+         const std::string run = value ? value : "";
+         if (!hm::preview::ValidWebPreviewRun(run)) {
+           g_set_error(error, G_OPTION_ERROR, G_OPTION_ERROR_BAD_VALUE, "--web-preview-run-id requires a UUID");
+           return FALSE;
+         }
+         static_cast<PipelineApplication*>(data)->web_preview_run_id_ = run;
+         return TRUE;
+       },
+       "Enable private selectable WebRTC preview for this supervisor-owned run",
+       "UUID"},
       {"ui-preview-active",
        0,
        0,
@@ -3484,6 +3541,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
       g_unsetenv(key);
   }
 
+  if (!web_preview_run_id_.empty() &&
+      (!ui_preview_window_ids_.empty() || !source_render_window_ids_.empty() || render_window_id_ ||
+       int8_sample_output_ || stitching_player_scan_output_))
+    return absl::InvalidArgumentError("Selectable WebRTC preview cannot share Qt targets or offline sampling");
   if (!ui_preview_window_ids_.empty()) {
     if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {
       return absl::FailedPreconditionError(
@@ -3492,9 +3553,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     if (initial_ui_preview_channel_ != "none" && !ui_preview_window_ids_.count(initial_ui_preview_channel_)) {
       return absl::InvalidArgumentError("--ui-preview-active must name a channel present in --ui-preview-windows");
     }
-    ui_preview_channel_explicitly_disabled_ = initial_ui_preview_channel_ == "none";
-    active_ui_preview_channel_ = ui_preview_channel_explicitly_disabled_ ? std::string() : initial_ui_preview_channel_;
-    active_ui_preview_generation_ = 1;
+    preview_routes_.initialize_selection(initial_ui_preview_channel_, 1);
   }
   if (ui_preview_realtime_ && headless_render_video_)
     return absl::InvalidArgumentError("--render-realtime cannot be combined with --headless-render-video");
@@ -5137,13 +5196,13 @@ void json_add_int_member(JsonBuilder* builder, const char* name, gint64 value) {
   json_builder_add_int_value(builder, value);
 }
 
-void emit_inspector_response(JsonBuilder* builder) {
+void emit_runtime_json_response(JsonBuilder* builder, const char* prefix) {
   JsonGenerator* generator = json_generator_new();
   JsonNode* root = json_builder_get_root(builder);
   json_generator_set_root(generator, root);
   json_generator_set_pretty(generator, FALSE);
   gchar* document = json_generator_to_data(generator, nullptr);
-  g_print("HSTREAM_PIPELINE_INSPECTOR %s\n", document ? document : "{}");
+  g_print("%s %s\n", prefix, document ? document : "{}");
   std::fflush(stdout);
   g_free(document);
   json_node_free(root);
@@ -5162,7 +5221,7 @@ JsonBuilder* begin_inspector_response(const char* kind, guint64 request_id, cons
 
 void finish_inspector_response(JsonBuilder* builder) {
   json_builder_end_object(builder);
-  emit_inspector_response(builder);
+  emit_runtime_json_response(builder, "HSTREAM_PIPELINE_INSPECTOR");
   g_object_unref(builder);
 }
 
@@ -5461,6 +5520,180 @@ bool PipelineApplication::set_inspected_element_property_runtime(
   return true;
 }
 
+bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
+  hm::diagnostics::Breadcrumb("runtime-command", "set-tone-controls");
+  hm::program::ToneControlCommand command;
+  const auto parsed = hm::program::ParseToneControlCommand(line, &command);
+  std::string reason;
+  std::string message;
+  std::string tone_element;
+  bool applied = false;
+  bool resolved_high_bit_depth = false;
+  std::vector<hm::program::ToneControlValue> readback;
+  {
+    // The same fence as inspector mutations: a reconstruction waits for an
+    // admitted transaction, and a request waiting on this lock rechecks the
+    // current topology before looking up any element or changing a property.
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    if (command.request_id && command.request_id <= last_tone_request_id_) {
+      reason = "stale-request";
+      message = "Tone request IDs must increase for this process; duplicate IDs are not reapplied";
+    } else {
+      if (command.request_id)
+        last_tone_request_id_ = command.request_id;
+      if (!parsed.ok()) {
+        reason = "invalid-command";
+        message = parsed.message();
+      } else if (int8_sample_output_) {
+        reason = "capture-active";
+        message = "Tone mutations are unavailable during INT8 sample capture";
+      } else if (
+          pipeline_recreation_active_.load(std::memory_order_acquire) ||
+          runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+        reason = "reconstructing";
+        message = "Pipeline reconstruction is in progress";
+      } else if (runtime_seek_pending_) {
+        reason = "seeking";
+        message = "Playback seek or frame recovery is in progress";
+      } else if (current_stage_ != command.stage || inspector_topology_generation_ != command.generation) {
+        reason = "stale-session";
+        message = "Tone request stage/topology generation is no longer current";
+      } else {
+        const auto stage = stage_app_contexts_.find(current_stage_);
+        if (stage == stage_app_contexts_.end() || stage->second.size() != 1 || !stage->second.front() ||
+            !stage->second.front()->pipeline.pipeline) {
+          reason = "unsupported-topology";
+          message = "Typed tone controls require exactly one active pipeline";
+        } else {
+          GstElement* pipeline = stage->second.front()->pipeline.pipeline;
+          GstElement* stitcher = gst_bin_get_by_name(GST_BIN(pipeline), "hmstitcher0");
+          gboolean high_bit_depth = FALSE;
+          if (stitcher) {
+            GParamSpec* precision = g_object_class_find_property(G_OBJECT_GET_CLASS(stitcher), "high-bit-depth");
+            if (!precision || G_PARAM_SPEC_VALUE_TYPE(precision) != G_TYPE_BOOLEAN ||
+                !(precision->flags & G_PARAM_READABLE)) {
+              reason = "precision-unavailable";
+              message = "Active stitcher does not expose its resolved precision";
+            } else {
+              g_object_get(stitcher, "high-bit-depth", &high_bit_depth, nullptr);
+            }
+            gst_object_unref(stitcher);
+          }
+          if (reason.empty() && (current_stage_ < 0 || stitching_calibration_only_) && !high_bit_depth) {
+            reason = "ineligible-calibration";
+            message = "Live calibration tone controls require high-bit-depth stitching";
+          }
+          resolved_high_bit_depth = high_bit_depth;
+          if (reason.empty() && command.query) {
+            tone_element = high_bit_depth ? "hmstitcher0" : "playcropper0";
+            GstElement* owner = gst_bin_get_by_name(GST_BIN(pipeline), tone_element.c_str());
+            if (!owner) {
+              reason = "tone-unavailable";
+              message = "Active pipeline does not contain its tone owner";
+            } else {
+              for (const auto& spec : hm::program::kToneControls) {
+                GParamSpec* property = g_object_class_find_property(G_OBJECT_GET_CLASS(owner), spec.property);
+                if (!property || !(property->flags & G_PARAM_READABLE) || !(property->flags & G_PARAM_WRITABLE)) {
+                  reason = "tone-unavailable";
+                  message = std::string("Active tone property is unavailable: ") + spec.id;
+                  break;
+                }
+                GValue value = G_VALUE_INIT;
+                g_value_init(&value, G_PARAM_SPEC_VALUE_TYPE(property));
+                g_object_get_property(G_OBJECT(owner), spec.property, &value);
+                double native_value = std::numeric_limits<double>::quiet_NaN();
+                if (G_VALUE_HOLDS_DOUBLE(&value))
+                  native_value = g_value_get_double(&value);
+                else if (G_VALUE_HOLDS_FLOAT(&value))
+                  native_value = g_value_get_float(&value);
+                else if (G_VALUE_HOLDS_BOOLEAN(&value))
+                  native_value = g_value_get_boolean(&value) ? 1 : 0;
+                else if (G_VALUE_HOLDS_INT(&value))
+                  native_value = g_value_get_int(&value);
+                else if (G_VALUE_HOLDS_UINT(&value))
+                  native_value = g_value_get_uint(&value);
+                g_value_unset(&value);
+                const double units = native_value * spec.divisor;
+                const double integral = std::round(units);
+                // Plugins may expose a double backed by float storage. Allow
+                // its roundoff only; fractional slider steps stay unavailable.
+                const double tolerance = 8 * std::numeric_limits<float>::epsilon() * std::max(1.0, std::abs(units));
+                if (!std::isfinite(units) || integral < spec.minimum || integral > spec.maximum ||
+                    std::abs(units - integral) > tolerance) {
+                  reason = "unrepresentable-value";
+                  message = std::string("Active tone value cannot be represented by the shared slider: ") + spec.id;
+                  break;
+                }
+                readback.push_back({spec.id, static_cast<int>(integral)});
+              }
+              gst_object_unref(owner);
+            }
+            applied = reason.empty();
+          } else if (reason.empty()) {
+            std::vector<std::tuple<std::string, std::string, std::string>> assignments;
+            for (const auto& spec : hm::program::kToneControls) {
+              const auto control =
+                  std::find_if(command.controls.begin(), command.controls.end(), [&](const auto& item) {
+                    return item.id == spec.id;
+                  });
+              if (control == command.controls.end())
+                continue;
+              const auto property = hm::program::BuildTonePropertyCommand(control->id, control->value, high_bit_depth);
+              if (!property.ok()) {
+                reason = "invalid-command";
+                message = property.status().message();
+                break;
+              }
+              tone_element = property->element;
+              assignments.emplace_back(property->element, property->property, property->value);
+            }
+            if (reason.empty()) {
+              // Reuse the Qt batch's prepare/validate/rollback and committed
+              // override replay. Only the correlated reply acknowledges this
+              // request; legacy per-property success lines are suppressed.
+              applied = set_element_properties_runtime(assignments, &message, false);
+              if (!applied)
+                reason = "apply-rejected";
+            }
+          }
+        }
+      }
+    }
+  }
+  JsonBuilder* reply = begin_inspector_response(
+      command.query ? "descriptor" : "set-result", command.request_id, applied ? "ok" : "error");
+  json_add_int_member(reply, "stage", command.stage);
+  json_add_int_member(reply, "generation", static_cast<gint64>(command.generation));
+  if (!applied) {
+    json_add_string_member(reply, "reason", reason);
+    json_add_string_member(reply, "message", message);
+  } else {
+    json_add_string_member(reply, "element", tone_element);
+    json_add_bool_member(reply, "highBitDepth", resolved_high_bit_depth);
+    json_builder_set_member_name(reply, "controls");
+    json_builder_begin_array(reply);
+    for (const auto& control : command.query ? readback : command.controls) {
+      json_builder_begin_object(reply);
+      json_add_string_member(reply, "id", control.id);
+      json_add_int_member(reply, "value", control.value);
+      if (command.query) {
+        const auto* spec = hm::program::FindToneControl(control.id);
+        json_add_string_member(reply, "label", spec->label);
+        json_add_int_member(reply, "minimum", spec->minimum);
+        json_add_int_member(reply, "maximum", spec->maximum);
+        json_add_int_member(reply, "step", 1);
+        json_add_int_member(reply, "divisor", spec->divisor);
+      }
+      json_builder_end_object(reply);
+    }
+    json_builder_end_array(reply);
+  }
+  json_builder_end_object(reply);
+  emit_runtime_json_response(reply, "HSTREAM_TONE_CONTROLS");
+  g_object_unref(reply);
+  return applied;
+}
+
 bool PipelineApplication::set_element_property_runtime(
     const std::string& element_name,
     const std::string& property_name,
@@ -5560,7 +5793,16 @@ bool PipelineApplication::set_element_property_runtime(
 }
 
 bool PipelineApplication::set_element_properties_runtime(
-    const std::vector<std::tuple<std::string, std::string, std::string>>& assignments) {
+    const std::vector<std::tuple<std::string, std::string, std::string>>& assignments,
+    std::string* failure_reason,
+    bool emit_legacy_ack) {
+  if (failure_reason)
+    failure_reason->clear();
+  const auto fail = [failure_reason](const std::string& reason) {
+    if (failure_reason)
+      *failure_reason = reason;
+    return false;
+  };
   struct PendingAssignment {
     GstElement* element{nullptr};
     std::string element_name;
@@ -5594,7 +5836,7 @@ bool PipelineApplication::set_element_properties_runtime(
           "runtime command failed: property is not live-mutable here: %s.%s\n",
           element_name.c_str(),
           property_name.c_str());
-      return false;
+      return fail("property-not-live: " + element_name + "." + property_name);
     }
     GstElement* element = nullptr;
     for (const auto& app : app_ctx) {
@@ -5605,7 +5847,7 @@ bool PipelineApplication::set_element_properties_runtime(
     }
     if (!element) {
       g_printerr("runtime command failed: element not found: %s\n", element_name.c_str());
-      return false;
+      return fail("missing-element: " + element_name);
     }
     PendingAssignment assignment;
     assignment.element = element;
@@ -5614,7 +5856,7 @@ bool PipelineApplication::set_element_properties_runtime(
     if (!prepare_runtime_property(element_name, property_name, value, &assignment.prepared)) {
       assignment.prepared.original_value = value;
       pending.push_back(std::move(assignment));
-      return false;
+      return fail("property-preparation-failed: " + element_name + "." + property_name);
     }
     assignment.pspec = g_object_class_find_property(G_OBJECT_GET_CLASS(element), property_name.c_str());
     if (!assignment.pspec ||
@@ -5626,7 +5868,7 @@ bool PipelineApplication::set_element_properties_runtime(
           element_name.c_str(),
           property_name.c_str(),
           value.c_str());
-      return false;
+      return fail("invalid-property-value: " + element_name + "." + property_name);
     }
     if (assignments.size() > 1 && (assignment.pspec->flags & G_PARAM_READABLE) == 0) {
       pending.push_back(std::move(assignment));
@@ -5634,7 +5876,7 @@ bool PipelineApplication::set_element_properties_runtime(
           "runtime command failed: property has no rollback snapshot: %s.%s\n",
           element_name.c_str(),
           property_name.c_str());
-      return false;
+      return fail("property-not-readable: " + element_name + "." + property_name);
     }
     g_value_init(&assignment.previous, G_PARAM_SPEC_VALUE_TYPE(assignment.pspec));
     if ((assignment.pspec->flags & G_PARAM_READABLE) != 0) {
@@ -5687,17 +5929,18 @@ bool PipelineApplication::set_element_properties_runtime(
         failed.element_name.c_str(),
         failed.property_name.c_str(),
         failed.prepared.original_value.c_str());
-    return false;
+    return fail("property-rejected: " + failed.element_name + "." + failed.property_name);
   }
   for (const PendingAssignment& assignment : pending) {
     if (!replaying_runtime_properties_) {
       commit_runtime_property(assignment.element_name, assignment.property_name, assignment.prepared);
     }
-    g_print(
-        "runtime property %s %s=%s\n",
-        assignment.element_name.c_str(),
-        assignment.property_name.c_str(),
-        assignment.prepared.original_value.c_str());
+    if (emit_legacy_ack)
+      g_print(
+          "runtime property %s %s=%s\n",
+          assignment.element_name.c_str(),
+          assignment.property_name.c_str(),
+          assignment.prepared.original_value.c_str());
   }
   return true;
 }
@@ -5877,6 +6120,48 @@ bool PipelineApplication::reapply_runtime_properties() {
 }
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
+  const std::string trimmed_line = trim_ascii(line);
+  const bool overlay_query =
+      trimmed_line == "preview-overlays-query" || trimmed_line.rfind("preview-overlays-query ", 0) == 0;
+  if (overlay_query || trimmed_line == "preview-overlays" || trimmed_line.rfind("preview-overlays ", 0) == 0) {
+    const auto request =
+        hm::preview::ParseWebPreviewOverlays(trim_ascii(trimmed_line.substr(overlay_query ? 22 : 16)), overlay_query);
+    if (!request.ok()) {
+      g_printerr("runtime preview overlays rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    const auto reply = hm::preview::ApplyWebPreviewOverlays(
+        *request,
+        web_preview_ && web_preview_->available() ? web_preview_->identity() : hm::preview::RouteOwner::Session{},
+        preview_overlay_state_,
+        web_preview_ ? web_preview_->MutationBlockReason() : "preview-unavailable",
+        [this, &request](const auto& selection) {
+          return web_preview_ && apply_preview_overlay_state(selection, true, request->command.generation);
+        });
+    g_print("HSTREAM_PREVIEW_OVERLAY_STATE %s\n", reply.c_str());
+    std::fflush(stdout);
+    if (overlay_query && web_preview_)
+      web_preview_->RefreshOverlayStatus(request->session);
+    return true;
+  }
+  if (trimmed_line == "preview-route" || trimmed_line.rfind("preview-route ", 0) == 0) {
+    const auto request = hm::preview::ParseWebPreviewRoute(trim_ascii(trimmed_line.substr(13)));
+    if (!request.ok()) {
+      g_printerr("runtime preview route rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    const auto reply = web_preview_
+        ? web_preview_->Command(*request)
+        : hm::preview::WebPreviewRouteReply(*request,
+            {hm::preview::RouteOwner::Status::kUnconfigured, "selectable-preview-unavailable"});
+    g_print("HSTREAM_PREVIEW_ROUTE %s\n", reply.c_str());
+    std::fflush(stdout);
+    return true;
+  }
+  if (trimmed_line == "set-tone-controls" || trimmed_line.rfind("set-tone-controls ", 0) == 0 ||
+      trimmed_line.rfind("set-tone-controls\t", 0) == 0 || trimmed_line == "query-tone-controls" ||
+      trimmed_line.rfind("query-tone-controls ", 0) == 0 || trimmed_line.rfind("query-tone-controls\t", 0) == 0)
+    return set_tone_controls_runtime(trimmed_line);
   if (int8_sample_output_) {
     g_printerr("Runtime mutations are unavailable during INT8 sample capture\n");
     return false;
@@ -5884,7 +6169,6 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   constexpr absl::string_view kResetProgressCommand = "reset-progress-rate";
   constexpr absl::string_view kSeekRelativeCommand = "seek-relative";
   constexpr absl::string_view kSeekCommand = "seek";
-  const std::string trimmed_line = trim_ascii(line);
   hm::diagnostics::Breadcrumb("runtime-command", trimmed_line.substr(0, trimmed_line.find_first_of(" \t")));
   const bool prepare_process_pause = trimmed_line.rfind("process-pause ", 0) == 0;
   const bool resume_process_pause = trimmed_line.rfind("process-resume ", 0) == 0;
@@ -5914,6 +6198,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   }
   constexpr absl::string_view kRenderAudioMutedCommand = "set-render-audio-muted";
   if (hm::pipeline_internal::is_preview_overlay_command(trimmed_line)) {
+    if (web_preview_) {
+      g_printerr("Selectable browser sessions require the fenced preview-overlays command\n");
+      return false;
+    }
     hm::pipeline_internal::PreviewOverlayCommand command;
     if (!hm::pipeline_internal::parse_preview_overlay_command(trimmed_line, &command)) {
       emit_preview_protocol(
@@ -6117,7 +6405,7 @@ bool PipelineApplication::seek_runtime_impl(
   if (stitch_frame_calibration_active_.load(std::memory_order_acquire)) {
     return reject("rejected", "stitching-calibration-active");
   }
-  if (!ui_preview_window_ids_.empty() && active_ui_preview_channel_.empty()) {
+  if (!ui_preview_window_ids_.empty() && preview_routes_.selected_channel().empty()) {
     return reject("rejected", "local-render-disabled");
   }
   const auto stage = stage_app_contexts_.find(current_stage_);
@@ -6468,7 +6756,8 @@ void PipelineApplication::reset_playback_progress_rates(uint64_t generation) {
 
 bool PipelineApplication::apply_preview_overlay_state(
     const hm::pipeline_internal::PreviewOverlaySelection& selection,
-    bool apply_sinks) {
+    bool apply_sinks,
+    std::optional<uint64_t> generation) {
   struct SinkState {
     GstElement* sink{nullptr};
     gboolean players{FALSE};
@@ -6483,7 +6772,7 @@ bool PipelineApplication::apply_preview_overlay_state(
   std::vector<SinkState> sinks;
   std::set<GstElement*> seen_sinks;
   if (apply_sinks) {
-    if (ui_preview_channels_.empty())
+    if (ui_preview_channels_.empty() && !web_preview_)
       return false;
     for (const auto& [channel, preview] : ui_preview_channels_) {
       if (!hm::pipeline_internal::preview_overlay_channel_supports_diagnostics(channel))
@@ -6510,7 +6799,7 @@ bool PipelineApplication::apply_preview_overlay_state(
           nullptr);
       sinks.push_back(state);
     }
-    if (sinks.empty())
+    if (sinks.empty() && !web_preview_)
       return false;
   }
 
@@ -6540,7 +6829,9 @@ bool PipelineApplication::apply_preview_overlay_state(
           g_object_get_data(G_OBJECT(context->pipeline.pipeline), "hstream-output-rink-map") != nullptr;
   const guint output_flags = output_map_active ? 1U : 0U;
   const guint producer_flags =
-      preview_overlay_producer_flags(producer_selection, active_ui_preview_channel_) | output_flags;
+      preview_overlay_producer_flags(
+          producer_selection, web_preview_ ? web_preview_->selection() : preview_routes_.selected_channel()) |
+      output_flags;
   bool applied = true;
   for (const SinkState& state : sinks) {
     g_object_set(
@@ -6605,6 +6896,8 @@ bool PipelineApplication::apply_preview_overlay_state(
     return false;
   }
   preview_overlay_probe_flags_.store(producer_flags, std::memory_order_release);
+  if (apply_sinks && web_preview_)
+    web_preview_->SetOverlays(selection, generation.value_or(preview_overlay_state_.generation()));
   return true;
 }
 
@@ -6709,125 +7002,36 @@ bool PipelineApplication::set_player_drawing_runtime(guint64 generation, guint l
 }
 
 bool PipelineApplication::set_preview_active_runtime(const std::string& channel, guint64 generation) {
-  if (ui_preview_channels_.empty()) {
-    preview_overlay_probe_flags_.store(0, std::memory_order_release);
-    g_printerr("runtime preview activation failed: GPU-native UI previews are not configured\n");
-    return false;
-  }
-  if (generation <= active_ui_preview_generation_) {
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=stale generation=%" G_GUINT64_FORMAT
-        " message=activation generation is not newer than %" G_GUINT64_FORMAT "\n",
-        channel.c_str(),
-        generation,
-        active_ui_preview_generation_);
-    return true;
-  }
-
-  const auto previous = ui_preview_channels_.find(active_ui_preview_channel_);
-  if (previous != ui_preview_channels_.end() && previous->first == channel) {
-    // A first-frame recovery for the selected channel must not destroy its
-    // renderer or wait behind a buffer that is still negotiating downstream.
-    // Advancing the generation re-arms the ready acknowledgement on the next
-    // presented frame while leaving the observational GPU branch flowing.
-    hm::gpu_preview::set_renderer_generation(previous->second.sink, generation);
-    hm::gpu_preview::set_isolation_generation(previous->second.ingress_isolation, generation);
-    hm::gpu_preview::set_isolation_generation(previous->second.isolation, generation);
-    active_ui_preview_generation_ = generation;
-    if (!hm::gpu_preview::isolation_active(previous->second.ingress_isolation) ||
-        !hm::gpu_preview::isolation_active(previous->second.isolation)) {
-      active_ui_preview_channel_.clear();
-      ui_preview_channel_explicitly_disabled_ = false;
-      update_preview_overlay_producers();
-      emit_preview_protocol(
-          "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
-          " message=the selected GPU preview channel cannot be re-armed\n",
-          channel.c_str(),
-          generation);
-      return true;
-    }
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
-        " message=GPU preview branch re-armed\n",
-        channel.c_str(),
-        generation);
-    return true;
-  }
-  if (previous != ui_preview_channels_.end()) {
-    // Close the cheap ingress gate first so no new buffer enters the queue.
-    // Closing the post-queue barrier then waits for any buffer already inside
-    // the converter/sink path. Only then is renderer destruction safe.
-    hm::gpu_preview::set_isolation_active(previous->second.ingress_isolation, false, generation);
-    hm::gpu_preview::set_isolation_active(previous->second.isolation, false, generation);
-    if (!hm::gpu_preview::quiesce(previous->second.sink, generation)) {
-      active_ui_preview_channel_.clear();
-      ui_preview_channel_explicitly_disabled_ = false;
-      active_ui_preview_generation_ = generation;
-      update_preview_overlay_producers();
-      emit_preview_protocol(
-          "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
-          " message=could not quiesce the previous preview channel\n",
-          channel.c_str(),
-          generation);
-      return true;
-    }
-  }
-
-  active_ui_preview_channel_.clear();
-  ui_preview_channel_explicitly_disabled_ = false;
-  active_ui_preview_generation_ = generation;
-  if (channel == "none") {
-    ui_preview_channel_explicitly_disabled_ = true;
-    update_preview_overlay_producers();
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=none status=deactivated generation=%" G_GUINT64_FORMAT
-        " message=all GPU preview branches are inactive\n",
-        generation);
-    return true;
-  }
-
-  const auto target = ui_preview_channels_.find(channel);
-  if (target == ui_preview_channels_.end()) {
-    update_preview_overlay_producers();
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=unavailable generation=%" G_GUINT64_FORMAT
-        " message=the requested camera source is unavailable\n",
-        channel.c_str(),
-        generation);
-    return true;
-  }
-
-  // Arm metadata production before opening either preview gate so the first
-  // admitted Program/Stitched frame already has the requested immutable
-  // snapshot (and Program crop transform, when needed).
-  active_ui_preview_channel_ = channel;
-  ui_preview_channel_explicitly_disabled_ = false;
-  update_preview_overlay_producers();
-  g_object_set(G_OBJECT(target->second.sink), "generation", generation, nullptr);
-  // Arm the drain barrier before opening the ingress gate. A newly enqueued
-  // buffer can therefore never be dropped between the two gates.
-  hm::gpu_preview::set_isolation_active(target->second.isolation, true, generation);
-  hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, true, generation);
-  if (!hm::gpu_preview::isolation_active(target->second.isolation) ||
-      !hm::gpu_preview::isolation_active(target->second.ingress_isolation)) {
-    hm::gpu_preview::set_isolation_active(target->second.ingress_isolation, false, generation);
-    hm::gpu_preview::set_isolation_active(target->second.isolation, false, generation);
-    hm::gpu_preview::quiesce(target->second.sink, generation);
-    active_ui_preview_channel_.clear();
-    ui_preview_channel_explicitly_disabled_ = false;
-    update_preview_overlay_producers();
-    emit_preview_protocol(
-        "HSTREAM_PREVIEW channel=%s status=failed generation=%" G_GUINT64_FORMAT
-        " message=the requested GPU preview channel has failed locally\n",
-        channel.c_str(),
-        generation);
-    return true;
+  const auto result =
+      preview_routes_.select_current(channel, generation, [this] { update_preview_overlay_producers(); });
+  using Status = hm::preview::RouteOwner::Status;
+  const char* status = "failed";
+  switch (result.status) {
+    case Status::kUnconfigured:
+      preview_overlay_probe_flags_.store(0, std::memory_order_release);
+      g_printerr("runtime preview activation failed: GPU-native UI previews are not configured\n");
+      return false;
+    case Status::kActivated:
+      status = "activated";
+      break;
+    case Status::kDeactivated:
+      status = "deactivated";
+      break;
+    case Status::kUnavailable:
+      status = "unavailable";
+      break;
+    case Status::kStale:
+      status = "stale";
+      break;
+    default:
+      break;
   }
   emit_preview_protocol(
-      "HSTREAM_PREVIEW channel=%s status=activated generation=%" G_GUINT64_FORMAT
-      " message=GPU preview branch activated\n",
+      "HSTREAM_PREVIEW channel=%s status=%s generation=%" G_GUINT64_FORMAT " message=%s\n",
       channel.c_str(),
-      generation);
+      status,
+      generation,
+      result.reason.c_str());
   return true;
 }
 
@@ -8289,6 +8493,7 @@ void PipelineApplication::publish_inspector_topology() {
     published_generation = ++inspector_topology_generation_;
   }
   emit_pipeline_inspector_session(published_stage, published_generation);
+  publish_web_preview_capability();
 }
 
 void PipelineApplication::begin_pipeline_recreation() {
@@ -8312,6 +8517,7 @@ void PipelineApplication::end_pipeline_recreation(bool topology_changed) {
   }
   if (published_session.has_value()) {
     emit_pipeline_inspector_session(published_session->first, published_session->second);
+    publish_web_preview_capability();
   }
 }
 
@@ -8334,6 +8540,11 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     }
   }
   g_print("Destroy pipeline\n");
+  if (web_preview_) {
+    retained_web_preview_selection_ = web_preview_->selection();
+    web_preview_->Stop();
+  }
+  preview_routes_.forget_routes();
   ui_preview_channels_.clear();
   preview_overlay_producers_.clear();
   preview_overlay_probe_flags_.store(0, std::memory_order_release);
@@ -8361,6 +8572,7 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   } else {
     destroy_pipeline(app_ctx_ptr);
   }
+  web_preview_.reset();
   remember_scoreboard_selection(app_ctx_ptr, GST_OBJECT(retiring_cropper), retiring_epoch ? retiring_epoch : "");
   g_free(retiring_epoch);
   if (retiring_cropper)
@@ -8397,6 +8609,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     runtime_playback_offset_ns_.store(runtime_seek_target_ns, std::memory_order_release);
   }
   g_print("Recreate pipeline\n");
+  if (!web_preview_run_id_.empty()) {
+    const auto preview_status = prepare_web_preview(*static_cast<HmApp*>(app_ctx_ptr));
+    if (!preview_status.ok()) {
+      g_printerr("Cannot prepare replacement web preview: %s\n", preview_status.ToString().c_str());
+      return FALSE;
+    }
+  }
   set_render_playback_realtime(
       ui_preview_realtime_,
       static_cast<HmApp*>(app_ctx_ptr)->configurator().stitching_calibration_required() &&
@@ -8454,6 +8673,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to arm replacement URI-playlist chapter seeks before preroll");
     return FALSE;
   }
+  if (web_preview_ || !ui_preview_window_ids_.empty()) {
+    const auto configured = configure_preview_overlay_producers(stage_app_contexts_.at(current_stage_));
+    if (!configured.ok()) {
+      g_printerr("Cannot rebuild preview overlay producers: %s\n", configured.ToString().c_str());
+      return FALSE;
+    }
+  }
   if (!ui_preview_window_ids_.empty()) {
     const auto stage = stage_app_contexts_.find(current_stage_);
     if (stage == stage_app_contexts_.end()) {
@@ -8463,6 +8689,14 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     const absl::Status preview_status = configure_source_preview_sinks(stage->second);
     if (!preview_status.ok()) {
       NVGSTDS_ERR_MSG_V("Failed to rebuild GPU preview branches: %s", preview_status.ToString().c_str());
+      return FALSE;
+    }
+  }
+  if (web_preview_) {
+    const auto preview_status =
+        web_preview_->Attach([this] { return apply_preview_overlay_state(preview_overlay_state_.selection(), true); });
+    if (!preview_status.ok()) {
+      g_printerr("Cannot attach replacement web preview: %s\n", preview_status.ToString().c_str());
       return FALSE;
     }
   }
@@ -8694,9 +8928,10 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
     }
   }
   for (auto it = ui_preview_channels_.begin(); it != ui_preview_channels_.end();) {
-    if (it->first.rfind("source", 0) == 0)
+    if (it->first.rfind("source", 0) == 0) {
+      preview_routes_.forget_route(it->first);
       it = ui_preview_channels_.erase(it);
-    else
+    } else
       ++it;
   }
   if (!gst_bin_remove(GST_BIN(app->pipeline.pipeline), sources.bin))
@@ -8972,6 +9207,7 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
 //------------------------------------------------------------------------------
 // Main function.
 //------------------------------------------------------------------------------
+#ifndef HSTREAM_PIPELINE_APPLICATION_LIBRARY
 int main(int argc, char* argv[]) {
 #if defined(__linux__)
   if (const char* expected_parent_text = std::getenv("HSTREAM_UI_PARENT_PID")) {
@@ -9093,3 +9329,4 @@ int main(int argc, char* argv[]) {
   }
   return finish(0);
 }
+#endif

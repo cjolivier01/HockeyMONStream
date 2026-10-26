@@ -135,6 +135,10 @@ absl::StatusOr<std::vector<PinnedRinkRollbackArtifact>> pin_rink_rollback_artifa
 // marker before creating a journal, allowing the steady-state recovery path to
 // avoid enumerating the game directory.
 absl::StatusOr<bool> transaction_recovery_scan_required(const std::filesystem::path& root, TransactionJournalKind kind);
+// Advisory readers must not recover transactions. With the corresponding
+// publication locks held, checks markers and a bounded directory listing for
+// possible journals without following entries or reading rollback payloads.
+absl::StatusOr<bool> transaction_snapshot_readable(const std::filesystem::path& root, TransactionJournalKind kind);
 absl::Status mark_transaction_recovery_pending(const std::filesystem::path& root, TransactionJournalKind kind);
 absl::Status complete_transaction_recovery(const std::filesystem::path& root, TransactionJournalKind kind);
 
