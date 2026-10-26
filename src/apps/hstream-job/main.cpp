@@ -1,5 +1,6 @@
 #include <yaml-cpp/yaml.h>
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -169,6 +171,7 @@ int main(int argc, char** argv) {
     fs::path game, output, config, working;
     std::string runner = "hstream-cli", finalizer = "hstream-finalize";
     std::string requested_sinks;
+    std::optional<std::string> requested_run_id;
     std::vector<std::string> directives;
     bool overwrite = false, interactive = false, interactive_publication = false, runtime_only = false,
          calibration_prompts = false;
@@ -178,6 +181,7 @@ int main(int argc, char** argv) {
         std::cout << "Usage: hstream-job --game-dir DIR [--output FILE] [--force] [--interactive]\n"
                      "  [--sbatch '--partition=gpu'] [--sbatch '--time=02:00:00']\n"
                      "  [--runner COMMAND] [--finalizer COMMAND] [--config FILE] [--working-directory DIR]\n"
+                     "  [--run-id ID] (managed publication only; otherwise generates a fresh identity)\n"
                      "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE]\n"
                      "Save an executable job (default: DIR/hstream-job.sh). Never launches the job.\n"
                      "Commands default to hstream-cli and hstream-finalize on the execution host PATH.\n"
@@ -231,7 +235,11 @@ int main(int argc, char** argv) {
         runner = value;
       else if (arg == "--finalizer")
         finalizer = value;
-      else if (arg == "--config")
+      else if (arg == "--run-id") {
+        if (requested_run_id)
+          throw std::runtime_error("--run-id may only be supplied once");
+        requested_run_id = value;
+      } else if (arg == "--config")
         config = value;
       else if (arg == "--working-directory")
         working = value;
@@ -248,6 +256,11 @@ int main(int argc, char** argv) {
       throw std::runtime_error("--game-dir is required");
     if (runtime_only && interactive_publication)
       throw std::runtime_error("--runtime-only cannot publish interactive archives");
+    if (requested_run_id) {
+      if (interactive && !interactive_publication)
+        throw std::runtime_error("--run-id requires managed publication");
+      hm::publication::ValidateRunId(*requested_run_id);
+    }
     // Preserve a symlinked game's logical name, which is also its CLI game ID.
     game = fs::absolute(game).lexically_normal();
     if (game.filename().empty())
@@ -372,7 +385,7 @@ export HSTREAM_JOB_MANAGED_RUNTIME=1
     if (interactive_publication)
       script += "export HSTREAM_JOB_MANAGED_RUNTIME=1\n";
     script += "exec " + quote(finalizer) + " --game-dir " + quote(game.string()) + " --run-id " +
-        quote(hm::recording::NewGuid());
+        quote(requested_run_id ? *requested_run_id : hm::recording::NewGuid());
     // The supervisor resolves the same live config layers before it can admit
     // the runner. Forward option groups separately from the runner arguments.
     for (size_t i = 0; i < args.size(); ++i) {

@@ -19,6 +19,8 @@ struct PublishedOutput {
 // the configured output root changes. These functions throw on I/O or validation
 // failure; callers must not announce success afterwards.
 fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std::string& id);
+// Shared by exporters and the supervisor; throws for an unsafe receipt identity.
+void ValidateRunId(const std::string& id);
 fs::path ReceiptPath(const fs::path& game, const std::string& id);
 void BeginRun(const fs::path& manifest, bool telemetry_required = false);
 bool PipelineCompleted(const fs::path& manifest);

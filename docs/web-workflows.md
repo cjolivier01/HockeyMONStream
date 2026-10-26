@@ -548,6 +548,13 @@ entire desired form over the staged config again, which would erase hidden saved
 leveling/crop values. A staging receipt alone does not prove that runner
 configuration equality; the outer integration must verify it before playback.
 
+Managed publication can reserve its archive identity before staging and export
+afterward with `hstream-job --run-id ID`. The exporter and finalizer share the
+same ID validation; ordinary exports still generate a fresh ID when it is
+omitted. Plain `--interactive` and `--runtime-only` sessions reject this option
+because they have no publication receipt. This archive identity is separate from
+the calibration invalidation owner returned by the staging operation.
+
 An empty `sources` retains the admitted playlists. A nonempty list supplies every
 ordered chapter from both roles as `{id, before_role, after_role, before_alias,
 after_alias}`. Roles are `left` or `right`; aliases are private relative paths.

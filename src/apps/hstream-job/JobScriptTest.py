@@ -77,6 +77,33 @@ class JobScriptTest(unittest.TestCase):
             check=False,
         )
 
+    def test_supervisor_run_identity_reaches_the_native_finalizer(self):
+        identity = "admitted-run_123"
+        exported = self.generate("--run-id", identity)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertFalse(self.output.exists())
+        run = subprocess.run(
+            [str(self.game / "hstream-job.sh")], env=self.env, text=True, capture_output=True
+        )
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["env"]["HSTREAM_ARCHIVE_RUN_ID"], identity)
+        self.assertTrue((self.game / f"hstream-job-{identity}.yaml").is_file())
+        self.assertEqual(len(list(self.game.glob("hstream-job-*.yaml"))), 1)
+
+    def test_invalid_or_unmanaged_run_identity_cannot_publish_a_script(self):
+        for identity in ("", "short", "x" * 101, "../outside", "unsafe/run", "new\nline", "$(touch INJECTED)"):
+            with self.subTest(identity=identity):
+                self.assertNotEqual(self.generate("--run-id", identity).returncode, 0)
+                self.assertFalse((self.game / "hstream-job.sh").exists())
+        for mode in ("--interactive", "--runtime-only"):
+            self.assertNotEqual(self.generate(mode, "--run-id", "admitted-run_123").returncode, 0)
+            self.assertFalse((self.game / "hstream-job.sh").exists())
+        self.assertNotEqual(self.generate("--run-id", "first-run-id", "--run-id", "second-run-id").returncode, 0)
+        self.assertFalse((self.game / "hstream-job.sh").exists())
+        self.assertFalse(self.output.exists())
+        self.assertFalse((self.root / "INJECTED").exists())
+
     def test_direct_execution_preserves_arguments_and_exit_code(self):
         result = self.generate(
             "--sbatch", "--partition=gpu", "--sbatch", "--time=02:00:00"
@@ -227,7 +254,7 @@ class JobScriptTest(unittest.TestCase):
             "assert sys.stdin.readline() == 'q\\n'\n"
             + "subprocess.run(" + repr([str(PUBLICATION), "--produce", str(fixture)]) + ",check=True)\n"
         )
-        self.assertEqual(self.generate("--interactive-publication").returncode, 0)
+        self.assertEqual(self.generate("--interactive-publication", "--run-id", "interactive-admitted-id").returncode, 0)
         script = self.game / "hstream-job.sh"
         run = subprocess.run([str(script)], input="q\n", env=self.env, text=True, capture_output=True)
         self.assertEqual(run.returncode, 0, run.stderr)
@@ -236,6 +263,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(len(list(self.game.glob("*.hstream-archive.json"))), 3)
         receipts = list(self.game.glob("hstream-job-*.yaml"))
         self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0].name, "hstream-job-interactive-admitted-id.yaml")
         self.assertIn("state: complete", receipts[0].read_text())
         self.assertIn("runner_succeeded: true", receipts[0].read_text())
         self.assertFalse(list((Path(self.env["HM_OUTPUT_WORK_DIR"]) / self.game.name / "runs").glob("*")))
