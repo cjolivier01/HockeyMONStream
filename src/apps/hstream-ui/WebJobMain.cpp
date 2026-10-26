@@ -16,6 +16,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/WebExperimentFrames.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
+#include "src/apps/hstream-ui/WebRinkEditor.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -812,7 +813,17 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     return {{"workspace", workspace_json(request, saved)}, {"state", "complete"}};
   }
   if (request.operation == "experiment-promote") {
-    check(PromoteStitchingExperiment(saved, request.game));
+    std::optional<StitchingExperimentBlend> blend;
+    if (request.payload.contains("blend")) {
+      require(request.payload.value("blend").isObject(), "Experiment blend must be an object");
+      const auto object = request.payload.value("blend").toObject();
+      const auto mode = RequiredString(object, "mode");
+      require(mode == "laplacian" || mode == "alpha" || mode == "gpu-hard-seam", "Invalid experiment blend mode");
+      blend = StitchingExperimentBlend{mode, std::nullopt};
+      if (object.contains("feather_fraction"))
+        blend->feather_fraction = Number(object, "feather_fraction", 0, 1, 0);
+    }
+    check(PromoteStitchingExperiment(saved, request.game, blend));
     return {{"workspace", workspace_json(request, saved)}, {"promoted", true}};
   }
   const auto inspection = take(InspectStitchingExperimentFrames(saved));
@@ -1149,6 +1160,16 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "--rink-editor") {
+    try {
+      const auto result = hm::web::RinkEditor(ReadObject(argv[2]));
+      std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
   if (argc == 2 && std::string(argv[1]) == "--capabilities") {
     // Readiness probes need neither a display server nor a request workspace.
     std::cout << QJsonDocument(hm::web::Capabilities()).toJson(QJsonDocument::Compact).constData() << '\n';

@@ -110,7 +110,7 @@ QJsonObject Capabilities() {
       {"request_schema", 1},
       {"receipt_schema", 1},
       {"operations", operations},
-      {"features", QJsonArray{"experiment-optics-filtering-v1", "match-editor-v1"}},
+      {"features", QJsonArray{"experiment-optics-filtering-v1", "match-editor-v1", "rink-editor-v1"}},
       {"maximum_request_bytes", int(kMaximumRequestBytes)},
       {"maximum_result_bytes", int(kMaximumResultBytes)}};
 }

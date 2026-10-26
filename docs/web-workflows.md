@@ -327,3 +327,22 @@ allows the web worker to publish and adopt calibration. The preview is a
 single bounded decode of the saved panorama; no video frame is read back from
 the GPU. The outer worker must retain its Slurm reservation, timeout, disk
 quota, and cancellation enforcement through this postprocessing step.
+
+### Live rink leveling and crop editing
+
+The private `hstream-web-job --rink-editor REQUEST.json` CPU helper advertises
+`rink-editor-v1`. It validates the same original camera PTO and image geometry
+as Qt and runs the shared point formatting, ray parsing and corner/post
+estimators. The supervisor supplies the bounded JSON and runs `pano_trafo` in
+its owned child process group; the helper does not publish calibration files.
+Live browser prompts expose the original left/right images and preserve
+rectangle mismatch confirmation, exact preview-angle acceptance and optional
+seam blending. Crop previews cover the full projection and report advisory
+automatic bounds. Skip leveling and Use crop retire any pending preview before
+writing the generation-bound native response. These still-image tools do not
+read video frames back from the GPU.
+
+`web_rink_editor_test` checks real Hugin transforms with nonzero camera rotation,
+absolute leveling recovery, original-image bounds and escaped image references.
+The web rink-editor tests also run the actual helper and Hugin tools through
+the supervisor bridge when `HSTREAM_WORKFLOW_TEST_BIN` is set.

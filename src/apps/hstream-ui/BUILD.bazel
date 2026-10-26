@@ -1268,7 +1268,7 @@ cc_library(
 
 cc_binary(
     name = "hstream-web-job",
-    srcs = ["WebJobMain.cpp", "WebExperimentFrames.cpp", "WebExperimentFrames.h", "StitchingExperimentDefaults.h", "CameraControlSpecs.h"],
+    srcs = ["WebJobMain.cpp", "WebRinkEditor.cpp", "WebRinkEditor.h", "WebExperimentFrames.cpp", "WebExperimentFrames.h", "StitchingExperimentDefaults.h", "CameraControlSpecs.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
@@ -1288,6 +1288,8 @@ cc_binary(
         "//src/libs/stitching:auto_input_lens",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",
+        "//src/libs/stitching:rink_leveling",
+        "//src/libs/stitching:hugin_project",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "@local_cuda//:cuda",
         "@qt//:qt_core",
@@ -1307,6 +1309,15 @@ cc_test(
 sh_test(
     name = "web_job_test",
     srcs = ["WebJobTest.py"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
+sh_test(
+    name = "web_rink_editor_test",
+    srcs = ["WebRinkEditorTest.py"],
     args = ["$(location :hstream-web-job)"],
     data = [":hstream-web-job"],
     target_compatible_with = QT_UI_COMPATIBILITY,
