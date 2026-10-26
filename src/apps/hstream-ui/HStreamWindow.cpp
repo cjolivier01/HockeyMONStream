@@ -6921,6 +6921,18 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 }
 
 void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
+  const auto network_routes = baseline_config_["hstream_ui"]["network_routes"];
+  if (!network_routes || !network_routes.IsSequence())
+    throw std::runtime_error("Baseline hstream_ui.network_routes must be a sequence");
+  std::set<QString> initial_network_routes;
+  for (const auto& route : network_routes) {
+    if (!route.IsScalar())
+      throw std::runtime_error("Baseline hstream_ui.network_routes must contain route names");
+    const auto name = QString::fromStdString(route.as<std::string>());
+    if (name != "youtube-primary" && name != "rtsp-local" && name != "spare-rtmp")
+      throw std::runtime_error("Baseline hstream_ui.network_routes contains an unsupported route");
+    initial_network_routes.insert(name);
+  }
   auto* group = new QGroupBox("Output Routing");
   group->setObjectName("outputRoutingGroup");
   group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
@@ -6941,8 +6953,8 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
     auto* row = new QHBoxLayout();
     auto* toggle = new QCheckBox(label);
     toggle->setObjectName("outputToggle_" + id);
-    toggle->setChecked(false);
-    auto* state = make_value_label("outputState_" + id, "STOPPED");
+    toggle->setChecked(initial_network_routes.count(id) != 0);
+    auto* state = make_value_label("outputState_" + id, toggle->isChecked() ? "ENABLED" : "STOPPED");
     output_toggles_[id] = toggle;
     output_states_[id] = state;
     connect(toggle, &QCheckBox::toggled, this, [this, id](bool enabled) { toggleOutput(id, enabled); });
