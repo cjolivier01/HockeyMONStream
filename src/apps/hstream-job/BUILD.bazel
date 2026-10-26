@@ -4,12 +4,12 @@ cc_binary(
     copts = ["-std=c++17"],
     data = ["//configs:ds_hockey_app_config.yaml", "//src/apps/hstream-finalize:hstream-finalize"],
     visibility = ["//visibility:public"],
-    deps = ["@yaml-cpp", "//src/libs/recording"],
+    deps = ["@yaml-cpp", "//src/libs/common:baseline_config", "//src/libs/recording"],
 )
 
 sh_test(
     name = "job_script_test",
     srcs = ["JobScriptTest.py"],
-    args = ["$(location :hstream-job)", "$(location //scripts:make_deb.sh)"],
-    data = [":hstream-job", "//scripts:make_deb.sh"],
+    args = ["$(location :hstream-job)", "$(location //scripts:make_deb.sh)", "$(location //src/libs/publication:publication_test)"],
+    data = [":hstream-job", "//scripts:make_deb.sh", "//src/libs/publication:publication_test"],
 )

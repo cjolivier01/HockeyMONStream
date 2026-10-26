@@ -11,6 +11,7 @@ cc_test(
     name = "publication_test",
     srcs = ["PublicationTest.cpp"],
     tags = ["local"],
+    visibility = ["//src/apps/hstream-job:__pkg__"],
     deps = [":publication", "//src/libs/recording", "@yaml-cpp"],
 )
 

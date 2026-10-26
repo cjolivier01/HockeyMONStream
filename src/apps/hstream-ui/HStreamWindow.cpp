@@ -6924,14 +6924,28 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
   const auto network_routes = baseline_config_["hstream_ui"]["network_routes"];
   if (!network_routes || !network_routes.IsSequence())
     throw std::runtime_error("Baseline hstream_ui.network_routes must be a sequence");
-  std::set<QString> initial_network_routes;
+  std::set<QString> initial_routes;
   for (const auto& route : network_routes) {
     if (!route.IsScalar())
       throw std::runtime_error("Baseline hstream_ui.network_routes must contain route names");
     const auto name = QString::fromStdString(route.as<std::string>());
     if (name != "youtube-primary" && name != "rtsp-local" && name != "spare-rtmp")
       throw std::runtime_error("Baseline hstream_ui.network_routes contains an unsupported route");
-    initial_network_routes.insert(name);
+    initial_routes.insert(name);
+  }
+  const auto archive_routes = baseline_config_["hstream_ui"]["archive_routes"];
+  if (!archive_routes || !archive_routes.IsSequence())
+    throw std::runtime_error("Baseline hstream_ui.archive_routes must be a sequence");
+  for (const auto& route : archive_routes) {
+    const auto name = route.as<std::string>();
+    if (name == "program")
+      initial_routes.insert("archive-file");
+    else if (name == "program_4k")
+      initial_routes.insert("archive-program-4k");
+    else if (name == "stitched")
+      initial_routes.insert("archive-stitched");
+    else
+      throw std::runtime_error("Baseline hstream_ui.archive_routes contains an unsupported archive");
   }
   auto* group = new QGroupBox("Output Routing");
   group->setObjectName("outputRoutingGroup");
@@ -6953,7 +6967,7 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
     auto* row = new QHBoxLayout();
     auto* toggle = new QCheckBox(label);
     toggle->setObjectName("outputToggle_" + id);
-    toggle->setChecked(initial_network_routes.count(id) != 0);
+    toggle->setChecked(initial_routes.count(id) != 0);
     auto* state = make_value_label("outputState_" + id, toggle->isChecked() ? "ENABLED" : "STOPPED");
     output_toggles_[id] = toggle;
     output_states_[id] = state;
@@ -8189,7 +8203,24 @@ QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
     sinks.push_front("RENDER");
   }
   if (sinks.isEmpty()) {
-    sinks.push_back(job_export ? "ENCODE_PROGRAM_4K_FILE" : "FAKE");
+    if (job_export) {
+      const auto routes = baseline_config_["hstream_ui"]["export_archive_routes"];
+      if (!routes.IsSequence() || routes.size() == 0)
+        throw std::runtime_error("Baseline hstream_ui.export_archive_routes must select an archive");
+      for (const auto& route : routes) {
+        const auto name = route.as<std::string>();
+        if (name == "program")
+          sinks.push_back("ENCODE_FILE");
+        else if (name == "program_4k")
+          sinks.push_back("ENCODE_PROGRAM_4K_FILE");
+        else if (name == "stitched")
+          sinks.push_back("ENCODE_STITCHED_FILE");
+        else
+          throw std::runtime_error("Baseline hstream_ui.export_archive_routes contains an unsupported archive");
+      }
+    } else {
+      sinks.push_back("FAKE");
+    }
   }
   sinks.removeDuplicates();
   return sinks;

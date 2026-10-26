@@ -289,6 +289,26 @@ pending calibration, start-stage and invalidation identity variables. Without
 this flag managed exports clear both flow variables, preserving unattended
 behavior. The managed finalizer and publication protocol remain active.
 
+Interactive Program sessions that select an archive use
+`hstream-job --interactive-publication`. The exporter preserves WebRTC, network
+and file sinks, pacing, and inherited stdin without adding `--encode-job`.
+Its frozen finalizer run ID owns the existing manifest, runtime directory and
+publication transaction. Supervisor arguments, including the reserved signaling
+port and private preview run ID, pass through to the CLI unchanged. The bridge
+reads `work/game/runs/<native-id>/pipeline.log` while the finalizer owns stdout.
+Graceful Stop drains completed files into exact native receipts; cancellation
+or failed encoding cannot publish them. Preview-only sessions continue to use
+`--interactive` and require no archive receipt.
+
+The baseline's `hstream_ui.archive_routes` initializes both interfaces; the
+shipped empty list permits preview-only Play. A separate
+`hstream_ui.export_archive_routes` supplies the explicit file-export fallback.
+Calibration may record Archive Stitched while retaining disabled Program route
+choices for a later Program session. Its worker verifies both the native
+archive receipt and the subsequent `calibration-complete` receipt before
+adopting either output set. Shared sidecars must agree in both receipts and are
+retained once.
+
 ### Validation on 2026-10-15
 
 After rebasing onto `cfca9029`, the x86 optimized CLI build passed, along with
