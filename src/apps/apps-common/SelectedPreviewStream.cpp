@@ -129,11 +129,22 @@ bool allowed_caps(StreamState* state, GstCaps* caps) {
 }
 
 GstClockTime running_time(GstElement* element) {
-  GstClock* clock = gst_element_get_clock(element);
+  // A non-live source can deliver preroll after GstPipeline assigns the clock
+  // but before it distributes the playback base time. Sampling then seeds
+  // last_pts with absolute uptime; subsequent frames advance by 1 ns and stay
+  // in one GPU sampling slot. Paused clocks likewise are not running time.
+  // Take this snapshot outside the flow lock, which state changes may drain.
+  GST_OBJECT_LOCK(element);
+  GstClock* clock = GST_STATE(element) == GST_STATE_PLAYING && GST_STATE_TARGET(element) == GST_STATE_PLAYING
+      ? GST_ELEMENT_CLOCK(element)
+      : nullptr;
+  const GstClockTime base = element->base_time;
+  if (clock)
+    gst_object_ref(clock);
+  GST_OBJECT_UNLOCK(element);
   if (!clock)
     return GST_CLOCK_TIME_NONE;
   const auto now = gst_clock_get_time(clock);
-  const auto base = gst_element_get_base_time(element);
   gst_object_unref(clock);
   return GST_CLOCK_TIME_IS_VALID(now) && GST_CLOCK_TIME_IS_VALID(base) && now >= base ? now - base
                                                                                       : GST_CLOCK_TIME_NONE;

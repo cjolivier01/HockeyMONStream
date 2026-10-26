@@ -156,7 +156,13 @@ check; these attachment tests do not qualify AMD consumers.
 
 `SelectedPreviewStream` isolates inactive route events, preserves original NVMM
 memory and source-buffer pool ownership, and assigns a monotonic presentation
-clock without changing source PTS. `PreviewGpuSurface` bounds cadence and pool
+clock without changing source PTS. It admits frames only while its current and
+target states are PLAYING. Non-live preroll can arrive between clock assignment
+and playback base-time assignment; accepting that clock would seed the timeline
+with absolute uptime and leave subsequent frames in one GPU sampling slot.
+Paused inputs likewise cannot advance the timeline. The CPU regression covers
+that startup interval, pause/resume and a paused route replacement with backwards
+source PTS. `PreviewGpuSurface` bounds cadence and pool
 ownership, fits differing source shapes into one GPU RGBA canvas, and lends only
 that owned surface to a painter. After fitting, `OpaqueVideoCanvas` clears bars
 and forces alpha255 in one shared CUDA/HIP pass, replacing the preceding memset.

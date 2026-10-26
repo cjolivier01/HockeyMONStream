@@ -230,6 +230,49 @@ bool switching_and_memory() {
       "Route changes must retain one stream/segment and monotonic time despite backwards source PTS");
 }
 
+bool preroll_and_paused_clock() {
+  Fixture fixture;
+  fixture.headers(0, 2);
+  fixture.headers(1, 4);
+  hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 1);
+  GstClock* clock = gst_element_get_clock(fixture.stream);
+  // GstPipeline distributes its clock before setting the playback base time.
+  // A non-live route can already be delivering preroll during that interval.
+  gst_element_set_state(fixture.stream, GST_STATE_PAUSED);
+  gst_element_set_base_time(fixture.stream, 0);
+  const bool preroll_dropped = fixture.push(0, 3600 * GST_SECOND) == GST_FLOW_OK && fixture.frames.empty();
+  gst_element_set_base_time(fixture.stream, gst_clock_get_time(clock));
+  gst_element_set_state(fixture.stream, GST_STATE_PLAYING);
+  const bool started = fixture.push(0, 3601 * GST_SECOND) == GST_FLOW_OK && fixture.frames.size() == 1;
+  const auto* first = started ? hm::preview::frame_identity(fixture.frames.back()) : nullptr;
+  const bool current_clock = first && first->sequence == 1 && first->presentation_pts < GST_SECOND;
+  if (!preroll_dropped || !current_clock) {
+    if (!fixture.frames.empty())
+      std::cerr << "Preroll presentation PTS=" << GST_BUFFER_PTS(fixture.frames.front())
+                << " clock=" << gst_clock_get_time(clock) << '\n';
+    gst_object_unref(clock);
+    return expect(false, "Preroll must not seed the presentation timeline from an unstarted clock");
+  }
+
+  // Paused playback keeps its clock, but wall-clock time continues advancing.
+  // Switching routes while paused must not consume time or frame identities.
+  gst_element_set_state(fixture.stream, GST_STATE_PAUSED);
+  gst_element_set_base_time(fixture.stream, gst_clock_get_time(clock) - 90 * GST_SECOND);
+  const bool switched = hm::preview::selected_stream_select(fixture.stream, fixture.routes[1], 2);
+  const bool paused_dropped = fixture.push(1, 0) == GST_FLOW_OK && fixture.frames.size() == 1;
+  gst_element_set_base_time(fixture.stream, gst_clock_get_time(clock) - first->presentation_pts - GST_MSECOND);
+  gst_element_set_state(fixture.stream, GST_STATE_PLAYING);
+  const bool resumed = fixture.push(1, GST_SECOND) == GST_FLOW_OK && fixture.frames.size() == 2;
+  const auto* second = resumed ? hm::preview::frame_identity(fixture.frames.back()) : nullptr;
+  gst_object_unref(clock);
+  return expect(
+      switched && paused_dropped && second && second->sequence == 2 && second->operation == 2 &&
+          std::string(second->channel) == "source0" && second->source_pts == GST_SECOND &&
+          second->presentation_pts > first->presentation_pts && second->presentation_pts < GST_SECOND &&
+          fixture.stream_ids.size() == 1 && fixture.segments == 1,
+      "Resume and route replacement must preserve one current playback timeline despite backwards source PTS");
+}
+
 bool inactive_eos_and_output_eof() {
   Fixture fixture;
   for (unsigned i = 0; i < 3; ++i)
@@ -396,7 +439,7 @@ bool test_admission_operation_fence() {
 
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
-  if (!test_admission_operation_fence())
+  if (!preroll_and_paused_clock() || !test_admission_operation_fence())
     return 1;
   return switching_and_memory() && inactive_eos_and_output_eof() && replacement_and_failure() && source_pool_lifetime()
       ? 0
