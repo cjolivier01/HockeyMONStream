@@ -11,6 +11,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":frame_work_plan",
+        "//src/libs/common:person_roles",
         "//src/libs/player_analytics:config",
         "//src/libs/player_analytics:frame_meta",
         "//src/libs/player_analytics:team_affiliation",

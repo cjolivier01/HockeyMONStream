@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/PersonRoles.h"
 #include "hstream/src/gst-plugins/gst-player-analytics/PlayerAnalyticsProcessor.h"
 
 #include <cuda_runtime_api.h>
@@ -240,7 +241,7 @@ struct PlayerAnalyticsProcessor::Impl {
     size_t count = 0;
     for (const auto* item = frame->obj_meta_list; item; item = item->next) {
       const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
-      if (!object || object->class_id != 0 || object->object_id == kUntrackedId)
+      if (!object || !hm::IsPlayer(object->class_id, object->obj_label) || object->object_id == kUntrackedId)
         continue;
       const Box box{
           object->rect_params.left, object->rect_params.top, object->rect_params.width, object->rect_params.height};
