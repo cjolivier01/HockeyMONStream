@@ -1054,7 +1054,10 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
     }
   } activity(scoreboard_selection_active_, GST_ELEMENT(m_element));
   const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled, reselect);
-  if (reselect && absl::IsCancelled(selection) && !is_cancelled()) {
+  if (absl::IsCancelled(selection) && !is_cancelled()) {
+    // Cancelling an initial selection is also a valid choice: retain the
+    // empty polygon and let playback continue. A worker error here strands
+    // preroll instead of delivering another output frame.
     std::cout << "Scoreboard selection cancelled; keeping previous selection" << std::endl;
     return absl::OkStatus();
   }

@@ -74,6 +74,16 @@ Positive FPS alone is deliberately insufficient. The visual check requires squar
 least 20 geometrically consistent feature matches and a 35% inlier fraction,
 so a healthy pipeline processing the wrong game fails.
 
+Set `HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD=1` on a private fixture to exercise
+Cancel instead of No scoreboard. With `HSTREAM_UI_E2E_PREPARE_GAME=1`, preparation
+clears canonical and legacy scoreboard geometry. Allow at least 12 seconds of
+recording: the check requires distinct processed-video positions after Cancel,
+no replacement selector, an unchanged empty polygon, and normal process teardown,
+in addition to the ordinary rendered-output checks. Initial Cancel continues
+playback without a scoreboard; it does not save the No scoreboard sentinel.
+Run `HSTREAM_UI_E2E_SCOREBOARD_CONTROLS=1` separately for cancellation/reselection
+of an already saved polygon and acknowledged placement changes.
+
 The **Play at normal speed** checkbox beside **Render video** is an opt-in,
 session-only playback choice. Select it before Play; it is disabled when rendering
 is off or a run is active. The runner's `--render-realtime` option clocks local

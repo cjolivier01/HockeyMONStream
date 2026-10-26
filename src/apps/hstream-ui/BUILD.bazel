@@ -1284,6 +1284,15 @@ cc_test(
     deps = [":highlight_scene", "@qt//:qt_gui"],
 )
 
+sh_test(
+    name = "highlight_raster_policy_test",
+    srcs = ["HighlightRasterPolicyTest.py"],
+    args = ["$(location :highlight_scene_test)"],
+    data = [":highlight_scene_test"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
 cc_test(
     name = "highlight_reel_pipeline_test",
     srcs = ["HighlightReelPipelineTest.cpp"],

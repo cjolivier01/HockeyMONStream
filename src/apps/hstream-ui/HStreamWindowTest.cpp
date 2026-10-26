@@ -16760,6 +16760,14 @@ bool prepare_real_e2e_game(const QString& game_id) {
         }
       }
     }
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD")) {
+      config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+      for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"}) {
+        config["pipeline"]["hmplaycropper"].remove(key);
+        config["pipeline"]["hmplaycropper"]["properties"].remove(key);
+        config["pipeline"]["hmplaycropper"]["private-properties"].remove(key);
+      }
+    }
     const auto published = hm::stitching::publish_game_config(game_dir, YAML::Dump(config) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not prepare E2E game config: " << published << '\n';
@@ -17669,6 +17677,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   timer.start();
   bool observed_first_frame = false;
   bool submitted_scoreboard = false;
+  const bool cancel_initial_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD");
+  int scoreboard_cancel_log_offset = -1;
   bool checked_scoreboard_controls = false;
   const bool require_scoreboard_controls = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_SCOREBOARD_CONTROLS");
   qint64 first_frame_at_ms = -1;
@@ -17805,7 +17815,19 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return false;
     }
     if (!require_scoreboard_controls && !submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
-      submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+      if (cancel_initial_scoreboard) {
+        auto* dialog = window->findChild<QDialog*>("scoreboardSelectionDialog");
+        auto* cancel = dialog ? dialog->findChild<QPushButton*>("scoreboardCancelButton") : nullptr;
+        if (cancel && cancel->isEnabled()) {
+          scoreboard_cancel_log_offset = window->completeLogText().size();
+          cancel->click();
+          submitted_scoreboard = true;
+        } else {
+          interaction_error = "initial scoreboard Cancel is unavailable";
+        }
+      } else {
+        submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+      }
       if (!submitted_scoreboard) {
         std::cerr << "Could not submit the scoreboard selector: " << interaction_error.toStdString() << '\n';
         stop_and_preserve_failure();
@@ -17836,7 +17858,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       capture_x11_previews();
     }
     const int configured_record_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_RECORD_MS");
-    const int record_ms = configured_record_ms > 0 ? configured_record_ms : 6000;
+    const int record_ms = configured_record_ms > 0 ? configured_record_ms : (cancel_initial_scoreboard ? 12000 : 6000);
     if (!wait_for_eos && observed_first_frame && timer.elapsed() - first_frame_at_ms >= record_ms &&
         (!verify_x11_preview || x11_previews_captured)) {
       break;
@@ -17920,6 +17942,35 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   }
   write_e2e_text(QDir(artifact_dir).filePath("log-issues.txt"), log_issues);
   const bool fatal_log_issue = has_fatal_pipeline_log_issue(final_log);
+
+  if (cancel_initial_scoreboard) {
+    // A closed dialog alone misses the regression: preroll used to strand the
+    // output worker after the initial selector returned CANCELLED. Require
+    // distinct processed-video positions after Cancel, then normal teardown.
+    const QString after_cancel = scoreboard_cancel_log_offset >= 0 ? final_log.mid(scoreboard_cancel_log_offset) : "";
+    const QRegularExpression progress(R"(HSTREAM_PROGRESS[^\n]*\bprocessed_ns=([0-9]+))");
+    auto samples = progress.globalMatch(after_cancel);
+    qint64 first_position = -1;
+    bool progressed = false;
+    while (samples.hasNext()) {
+      const qint64 position = samples.next().captured(1).toLongLong();
+      if (first_position < 0)
+        first_position = position;
+      progressed |= position > first_position;
+    }
+    const YAML::Node config = YAML::LoadFile((window->gameDirectoryText() + "/config.yaml").toStdString());
+    const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+    QProcess* process = HStreamWindowTestAccess::ownedProcess(window, false);
+    if (!expect(
+            submitted_scoreboard && progressed &&
+                after_cancel.count("Scoreboard selection cancelled; keeping previous selection") == 1 &&
+                !after_cancel.contains("scoreboard selector opened in Qt:") &&
+                (!polygon.IsDefined() || polygon.IsNull()) &&
+                !window->findChild<QDialog*>("scoreboardSelectionDialog") &&
+                (!process || process->state() == QProcess::NotRunning) && window->pipelineStateText() == "STOPPED",
+            "Initial scoreboard Cancel must preserve the empty polygon, resume output, avoid reprompting and stop"))
+      return false;
+  }
 
   QString output_path;
   const QMap<QString, QString> output_labels = {

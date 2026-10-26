@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HighlightScene.h"
+#include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QGuiApplication>
@@ -21,9 +22,50 @@ QRect red_bounds(const QImage& image) {
     }
   return bounds;
 }
+bool write_rasters(const QString& directory) {
+  if (!QDir().mkpath(directory))
+    return false;
+  const auto save = [&](const QString& name, const QImage& original) {
+    const QImage image = original.convertToFormat(QImage::Format_RGBA8888);
+    QFile file(QDir(directory).filePath(name));
+    if (image.isNull() || !file.open(QIODevice::WriteOnly))
+      return false;
+    const QByteArray dimensions = QByteArray::number(image.width()) + "x" + QByteArray::number(image.height()) + "\n";
+    return file.write(dimensions) == dimensions.size() &&
+        file.write(reinterpret_cast<const char*>(image.constBits()), image.sizeInBytes()) == image.sizeInBytes();
+  };
+  HighlightCard card;
+  card.heading = "Opening period";
+  card.background = "#103050";
+  card.size = .075;
+  card.weight = 800;
+  QImage image;
+  QString error;
+  if (!RasterHighlightCard(card, directory, &image, &error) || !save("title.rgba", image))
+    return false;
+  card.matchup = true;
+  card.heading = "Final score";
+  card.background = "#202040";
+  card.team_a = "Home";
+  card.team_b = "Away";
+  card.date = "2026-10-26";
+  if (!RasterHighlightCard(card, directory, &image, &error) || !save("matchup.rgba", image))
+    return false;
+  HighlightAnnotation cue;
+  cue.text = "Goal sequence";
+  cue.kind = "text";
+  cue.size = .055;
+  cue.weight = 900;
+  if (!save("text-cue.rgba", RasterHighlightAnnotation(cue).image))
+    return false;
+  cue.kind = "arrow";
+  return save("arrow-cue.rgba", RasterHighlightAnnotation(cue).image);
+}
 } // namespace
 int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
+  if (argc == 3 && QString::fromLocal8Bit(argv[1]) == "--raster-dir")
+    return write_rasters(QString::fromLocal8Bit(argv[2])) ? 0 : 1;
   bool ok = true;
   QString error;
   HighlightAnnotation a;
