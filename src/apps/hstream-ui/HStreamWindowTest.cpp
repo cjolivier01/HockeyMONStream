@@ -17238,6 +17238,80 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       return false;
     if (!capture("program", "transitions-program.png") || !compare_overlays("program"))
       return false;
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_LIVE_CAMERA_CONTROLS")) {
+      const std::array<const char*, 5> drawing_ids{
+          "playerDrawBoxes", "playerDrawPose", "playerDrawJerseys", "playerDrawActions", "playerDrawTeams"};
+      for (const auto* id : drawing_ids) {
+        auto* toggle = require_child<QCheckBox>(window, id);
+        if (!toggle)
+          return false;
+        toggle->setChecked(false);
+        toggle->setChecked(true);
+      }
+      if (!wait_for(
+              [&] { return window->completeLogText().contains("player drawing layers=31 apply=live"); },
+              "Qt confirms all five live Players drawing layers"))
+        return false;
+      if (!capture("program", "live-drawing.png"))
+        return false;
+      auto* speed = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
+      auto* ratio = require_child<QSlider>(window, "cameraSlider_Overshoot_Speed_Ratio_x100");
+      auto* percentage = require_child<QDoubleSpinBox>(window, "cameraSpin_Oversized_Player_Percent");
+      auto* ignore = require_child<QCheckBox>(window, "cameraCheck_Ignore_Oversized_Players");
+      auto* fast = require_child<QCheckBox>(window, "cameraCheck_Apply_To_Fast_Box");
+      auto* follower = require_child<QCheckBox>(window, "cameraCheck_Apply_To_Follower_Box");
+      auto* reset = require_child<QPushButton>(window, "resetCameraButton");
+      if (!speed || !ratio || !percentage || !ignore || !fast || !follower || !reset)
+        return false;
+      activate(pause);
+      if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses before camera edits"))
+        return false;
+      const auto before_edits = window->completeLogText().size();
+      speed->setValue(123);
+      ratio->setValue(125);
+      ignore->setChecked(true);
+      percentage->setValue(125.25);
+      fast->setChecked(true);
+      follower->setChecked(true);
+      require_child<QCheckBox>(window, "playerDrawPose")->setChecked(false);
+      // Exceed the normal runtime acknowledgment budget: paused drafts must
+      // not start that budget or enter the frozen process's stdin pipe.
+      QTest::qWait(5000);
+      const auto paused_log = window->completeLogText().mid(before_edits);
+      if (!expect(
+              !paused_log.contains("apply=pending") && !paused_log.contains("acknowledgement-timeout") &&
+                  !paused_log.contains("player drawing layers=29 apply=scheduled"),
+              "Qt retains paused camera and drawing edits without starting an acknowledgment timeout"))
+        return false;
+      activate(pause);
+      if (!wait_for(
+              [&] {
+                const auto log = window->completeLogText().mid(before_edits);
+                return log.contains("camera control Max_Speed_X_x10=123 apply=live") &&
+                    log.contains("camera control Overshoot_Speed_Ratio_x100=125 apply=live") &&
+                    log.contains("camera control Oversized_Player_Percent=125.25 apply=live") &&
+                    log.contains("player drawing layers=29 apply=live");
+              },
+              "Qt applies sparse camera units and Drawing only after confirmed Resume"))
+        return false;
+      if (!capture("program", "live-camera-tuning.png"))
+        return false;
+      const auto before_reset = window->completeLogText().size();
+      activate(reset);
+      if (!wait_for(
+              [&] {
+                return window->completeLogText()
+                    .mid(before_reset)
+                    .contains("camera control Max_Speed_X_x10=0 apply=live");
+              },
+              "Qt confirms live camera Reset"))
+        return false;
+      if (!expect(
+              !require_child<QCheckBox>(window, "playerDrawPose")->isChecked() && !fast->isChecked() &&
+                  follower->isChecked(),
+              "Qt live Reset preserves Drawing and restores native tracker target choices"))
+        return false;
+    }
     const auto before_pause = generation(program);
     activate(pause);
     if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses native playback"))

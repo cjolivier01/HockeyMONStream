@@ -244,6 +244,14 @@ requires complete live acknowledgments and captures each combined selection.
 It ends each route with all three off. These are diagnostic framebuffer captures;
 ordinary playback does not read video back to the CPU.
 
+With `HSTREAM_UI_E2E_LIVE_CAMERA_CONTROLS=1`, the transition check also changes
+all five Players drawing layers, pauses before editing tracker controls, and
+holds those drafts beyond the runtime acknowledgment timeout. Resume must
+confirm the queued controls with their native units before capturing another
+frame. Live Reset restores the camera defaults while preserving Drawing.
+The focused `tone_controls_window_test` covers the same pause/resume deferral
+without a GPU.
+
 On X11, the backend renders NVMM video through CUDA/OpenGL into the native
 preview windows. The acceptance test requests bounded diagnostic captures of
 the presented GPU framebuffer; ordinary playback performs no CPU frame readback.

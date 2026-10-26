@@ -109,6 +109,18 @@ struct HStreamWindowTestAccess {
       Check(
           window.logText().contains("camera control Exposure_x100=72 apply=failed"),
           "Rejected tone edit was not reported as failed");
+      window.pipeline_paused_ = true;
+      exposure->setValue(73);
+      NoCommand(process.echo);
+      Check(window.runtime_control_batches_.empty(), "Paused tone draft started its acknowledgment timeout");
+      window.pipeline_paused_ = false;
+      window.pending_process_resume_generation_ = 17;
+      window.flushScheduledRuntimeControls();
+      NoCommand(process.echo);
+      window.handleProcessPauseOutput("HSTREAM_PROCESS_PAUSE status=resumed generation=17");
+      command = ReadCommand(process.echo);
+      Check(command == "@set-properties playcropper0 exposure=0.73\n", "Confirmed Resume lost the paused tone draft");
+      Ack(window, command);
       window.pending_playback_seek_generation_ = 9;
       shadows->setValue(44);
       NoCommand(process.echo);

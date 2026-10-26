@@ -1858,7 +1858,7 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
     web_camera_defaults_ = std::move(defaults);
     const auto& config = app.configurator().config();
     const auto section = config["pipeline"]["ds-playtracker"];
-    if (section.IsMap() && section["enable"].IsScalar() && section["enable"].as<bool>()) {
+    if (section.IsMap() && section["enable"].IsScalar() && config_section_enabled(section)) {
       hm::tracking::CameraControlValues values;
       HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config));
       if (!section["config-file"].IsScalar())

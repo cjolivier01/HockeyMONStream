@@ -12794,6 +12794,7 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
     if (generation == pending_process_resume_generation_) {
       pending_process_resume_generation_ = 0;
       updateRunControls();
+      flushScheduledRuntimeControls();
     }
     return true;
   }
@@ -22996,9 +22997,10 @@ void HStreamWindow::completeLiveRotationAuthorization(
 }
 
 void HStreamWindow::flushScheduledRuntimeControls() {
-  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !runtime_control_batches_.empty() ||
-      live_rotation_authorization_pending_ || pending_playback_seek_generation_ != 0 ||
-      playback_seek_recovery_generation_ != 0) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || pipeline_paused_ ||
+      pending_process_pause_generation_ != 0 || pending_process_resume_generation_ != 0 || pipeline_stop_requested_ ||
+      !runtime_control_batches_.empty() || live_rotation_authorization_pending_ ||
+      pending_playback_seek_generation_ != 0 || playback_seek_recovery_generation_ != 0) {
     return;
   }
   if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {
