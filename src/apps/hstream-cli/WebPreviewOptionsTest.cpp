@@ -207,10 +207,11 @@ int main() {
   const auto camera_defaults = hm::tracking::ReadPlaytrackerControlValues(baseline);
   Check(camera_defaults.ok(), "Required camera control baseline was rejected");
   const std::string camera_json =
-      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","controls":{"Max_Speed_X_x10":123,"Oversized_Player_Percent":125.25,"Cancel_Stop_On_Opposite_Direction":1}})";
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","forceAllTargets":false,"controls":{"Max_Speed_X_x10":123,"Oversized_Player_Percent":125.25,"Cancel_Stop_On_Opposite_Direction":1}})";
   const auto camera = hm::preview::ParseWebCameraControls(camera_json, *camera_defaults);
   Check(
-      camera.ok() && camera->controls.size() == 3 && camera->controls.at("Oversized_Player_Percent") == 125.25,
+      camera.ok() && !camera->force_all_targets && camera->controls.size() == 3 &&
+          camera->controls.at("Oversized_Player_Percent") == 125.25,
       "Camera controls lost identity or fractional percentage");
   for (const auto& replacement :
        {std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":2001"),
@@ -219,13 +220,20 @@ int main() {
         std::make_pair("\"Max_Speed_X_x10\":123", "\"unknown\":123"),
         std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":123,\"Max_Speed_X_x10\":0"),
         std::make_pair("\"Oversized_Player_Percent\":125.25", "\"Oversized_Player_Percent\":-1"),
-        std::make_pair("\"requestId\":\"1234\"", "\"requestId\":\"01234\"")}) {
+        std::make_pair("\"requestId\":\"1234\"", "\"requestId\":\"01234\""),
+        std::make_pair("\"forceAllTargets\":false", "\"forceAllTargets\":1"),
+        std::make_pair("\"forceAllTargets\":false", "\"forceAllTargets\":false,\"forceAllTargets\":true"),
+        std::make_pair("\"forceAllTargets\":false,", "")}) {
     auto invalid = camera_json;
     invalid.replace(invalid.find(replacement.first), std::strlen(replacement.first), replacement.second);
     Check(!hm::preview::ParseWebCameraControls(invalid, *camera_defaults).ok(), "Unsafe camera controls were admitted");
   }
+  auto camera_reset = camera_json;
+  camera_reset.replace(camera_reset.find("\"forceAllTargets\":false"), 23, "\"forceAllTargets\":true");
+  const auto reset_request = hm::preview::ParseWebCameraControls(camera_reset, *camera_defaults);
+  Check(reset_request.ok() && reset_request->force_all_targets, "Camera Reset lost all-target publication");
   auto camera_query = camera_json;
-  camera_query.erase(camera_query.find(",\"controls\""));
+  camera_query.erase(camera_query.find(",\"forceAllTargets\""));
   camera_query += "}";
   Check(
       hm::preview::ParseWebCameraControls(camera_query, *camera_defaults, true).ok() &&

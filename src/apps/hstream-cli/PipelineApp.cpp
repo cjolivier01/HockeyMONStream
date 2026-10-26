@@ -1895,7 +1895,7 @@ void PipelineApplication::publish_web_preview_capability() {
         "HSTREAM_WEB_PLAYER_DRAWING %s\n",
         hm::preview::WebPlayerDrawingReply(drawing, "state", "", current_player_drawing_layers()).c_str());
     if (web_camera_controls_) {
-      const hm::preview::WebCameraControlsRequest camera{web_preview_->identity(), "0", {}, true};
+      const hm::preview::WebCameraControlsRequest camera{web_preview_->identity(), "0", {}, false, true};
       g_print(
           "HSTREAM_WEB_CAMERA_CONTROLS %s\n",
           hm::preview::WebCameraControlsReply(camera, "state", "", web_camera_controls_).c_str());
@@ -6267,7 +6267,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         changed.insert(id);
       }
       const auto document = hm::tracking::BuildPlaytrackerRuntimeControls(
-          web_camera_base_, values, *web_camera_defaults_, changed, false);
+          web_camera_base_, values, *web_camera_defaults_, changed, request->force_all_targets);
       if (!document.ok()) {
         reason = "invalid-runtime-tuning";
       } else {

@@ -350,7 +350,7 @@ absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
   gint64 version = 0, stage = 0;
   uint64_t request_id = 0;
   std::string topology;
-  bool valid = object && json_object_get_size(object) == (query ? 5U : 6U) && Integer(object, "version", &version) &&
+  bool valid = object && json_object_get_size(object) == (query ? 5U : 7U) && Integer(object, "version", &version) &&
       version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN && stage <= INT_MAX &&
       String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
       String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
@@ -361,7 +361,8 @@ absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
     auto* controls_node = json_object_get_member(object, "controls");
     auto* controls =
         controls_node && JSON_NODE_HOLDS_OBJECT(controls_node) ? json_node_get_object(controls_node) : nullptr;
-    valid = controls && json_object_get_size(controls) > 0 && json_object_get_size(controls) <= specs->size();
+    valid = controls && Boolean(object, "forceAllTargets", &request.force_all_targets) &&
+        json_object_get_size(controls) > 0 && json_object_get_size(controls) <= specs->size();
     if (valid) {
       count = json_object_get_size(controls);
       for (const auto& spec : *specs) {
@@ -384,7 +385,7 @@ absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
       valid = valid && request.controls.size() == count;
     }
   }
-  valid = valid && members == (query ? 5U : 6U + count);
+  valid = valid && members == (query ? 5U : 7U + count);
   g_object_unref(parser);
   if (!valid)
     return absl::InvalidArgumentError("Invalid camera control identity or values");

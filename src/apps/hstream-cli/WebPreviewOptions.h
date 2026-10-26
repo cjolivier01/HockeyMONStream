@@ -71,6 +71,7 @@ struct WebCameraControlsRequest {
   RouteOwner::Session session;
   std::string request_id;
   hm::tracking::CameraControlValues controls;
+  bool force_all_targets{false};
   bool query{false};
 };
 absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
