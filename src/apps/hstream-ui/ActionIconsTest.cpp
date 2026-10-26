@@ -73,6 +73,11 @@ int main(int argc, char** argv) {
       check_icon(action_icon(static_cast<ActionIcon>(value)), QString("direct action %1").arg(value));
     for (const auto& tab : kTabIconSpecs)
       check_icon(tab_icon(QString::fromLatin1(tab.label)), QString("tab %1").arg(tab.label));
+    const QImage detection = tab_icon("Detection").pixmap(16, 16).toImage();
+    const QImage players = tab_icon("Players").pixmap(16, 16).toImage();
+    const QImage inspect = action_icon(ActionIcon::Inspect).pixmap(16, 16).toImage();
+    if (detection == players || detection == inspect || players == inspect)
+      throw std::runtime_error("Detection and Players tabs need distinct artwork instead of the generic Inspect icon");
     install_button_icon_style();
     QStyle* installed = application.style();
     install_button_icon_style();

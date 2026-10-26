@@ -38,6 +38,8 @@ enum class ActionIcon {
   ActualSize,
   Undo,
   NewFolder,
+  Detection,
+  Players,
   Count,
 };
 
@@ -85,6 +87,8 @@ inline constexpr auto kActionIconSpecs = std::array{
     ActionIconSpec{"actualsize", ActionIcon::ActualSize},
     ActionIconSpec{"undo", ActionIcon::Undo},
     ActionIconSpec{"newfolder", ActionIcon::NewFolder},
+    ActionIconSpec{"detection", ActionIcon::Detection},
+    ActionIconSpec{"players", ActionIcon::Players},
 };
 static_assert(kActionIconSpecs.size() == static_cast<size_t>(ActionIcon::Count));
 
@@ -102,7 +106,7 @@ inline constexpr auto kTabIconSpecs = std::array{
     TabIconSpec{"Tracking", ActionIcon::Inspect},    TabIconSpec{"Motion", ActionIcon::Next},
     TabIconSpec{"Rink framing", ActionIcon::Crop},   TabIconSpec{"Color", ActionIcon::Inspect},
     TabIconSpec{"Crop Rotation", ActionIcon::Crop},  TabIconSpec{"Runtime", ActionIcon::Prepare},
-    TabIconSpec{"Detection", ActionIcon::Inspect},   TabIconSpec{"Players", ActionIcon::Inspect},
+    TabIconSpec{"Detection", ActionIcon::Detection}, TabIconSpec{"Players", ActionIcon::Players},
     TabIconSpec{"Rotation", ActionIcon::Refresh},    TabIconSpec{"Color & Precision", ActionIcon::Inspect},
     TabIconSpec{"Alignment", ActionIcon::Stitching}, TabIconSpec{"Projection", ActionIcon::Crop},
     TabIconSpec{"Rink", ActionIcon::Level},          TabIconSpec{"Left camera", ActionIcon::Camera},

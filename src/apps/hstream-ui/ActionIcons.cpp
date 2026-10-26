@@ -224,7 +224,7 @@ QIcon drawn_icon(ActionIcon action) {
     p.scale(size / 24.0, size / 24.0);
     const QColor color = action == ActionIcon::Add                       ? QColor("#229954")
         : action == ActionIcon::Remove                                   ? QColor("#c48920")
-        : action == ActionIcon::Camera                                   ? QColor("#9966dd")
+        : action == ActionIcon::Camera || action == ActionIcon::Players  ? QColor("#9966dd")
         : action == ActionIcon::Stitching || action == ActionIcon::Level ? QColor("#159895")
         : action == ActionIcon::Crop                                     ? QColor("#c48920")
                                                                          : QColor("#2d7dd2");
@@ -239,6 +239,21 @@ QIcon drawn_icon(ActionIcon action) {
       font.setPixelSize(10);
       p.setFont(font);
       p.drawText(QRectF(2, 4, 20, 16), Qt::AlignCenter, "1:1");
+    } else if (action == ActionIcon::Detection) {
+      p.drawPolyline(QPolygonF({{8, 2}, {2, 2}, {2, 8}}));
+      p.drawPolyline(QPolygonF({{16, 2}, {22, 2}, {22, 8}}));
+      p.drawPolyline(QPolygonF({{2, 16}, {2, 22}, {8, 22}}));
+      p.drawPolyline(QPolygonF({{16, 22}, {22, 22}, {22, 16}}));
+      p.drawRoundedRect(QRectF(8, 7, 8, 10), 1, 1);
+    } else if (action == ActionIcon::Players) {
+      p.setBrush(color);
+      p.drawEllipse(QPointF(4, 9), 1.8, 1.8);
+      p.drawEllipse(QPointF(20, 9), 1.8, 1.8);
+      p.drawEllipse(QPointF(12, 5.5), 2.5, 2.5);
+      p.setBrush(Qt::NoBrush);
+      p.drawPolyline(QPolygonF({{5, 20}, {1, 20}, {1, 15}, {3, 13}, {5, 13}}));
+      p.drawPolyline(QPolygonF({{19, 20}, {23, 20}, {23, 15}, {21, 13}, {19, 13}}));
+      p.drawPolygon(QPolygonF({{7, 21}, {7, 14}, {10, 11}, {14, 11}, {17, 14}, {17, 21}}));
     } else if (action == ActionIcon::Camera) {
       p.drawRoundedRect(QRectF(2, 7, 20, 14), 2, 2);
       p.drawEllipse(QPointF(12, 14), 4, 4);
@@ -286,6 +301,8 @@ QIcon action_icon(ActionIcon action) {
     case ActionIcon::Remove:
     case ActionIcon::ActualSize:
     case ActionIcon::Camera:
+    case ActionIcon::Detection:
+    case ActionIcon::Players:
     case ActionIcon::Stitching:
     case ActionIcon::Crop:
     case ActionIcon::Level:
