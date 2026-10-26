@@ -27,6 +27,14 @@ but no HIP/VA target or AMD browser capability is registered. The new explicit
 that option or advertise selectable browser routes. Jetson cross-build
 success likewise does not qualify Jetson surface-array input or runtime encoding.
 
+Camera Experiments retain the existing NVIDIA decoder/stitch/crop preview path.
+The headless `camera-experiment` adapter now uses that same worker with a bounded
+held NVMM sample and `WebPreviewTarget`; it does not add an AMD replay decoder or
+HIP/VA browser target. Qt and authenticated Chromium qualification cover NVIDIA
+only. The shared replay policy, parameter catalog and trajectory data remain
+portable, while actual AMD moving-preview and historical-mask qualification are
+still required. No system-memory video fallback is added.
+
 ## Implemented paths
 
 `--config=rocm` selects HIP for HStream's highlight texture compositor,

@@ -105,7 +105,7 @@ final publication rechecks the same artifacts. Both interfaces resolve defaults
 from `camera_experiments` in the bundled baseline and share the archived recording
 source-origin calculation and immutable historical mask. Legacy manifest import
 is still unavailable in the browser. Scaled-panorama mask rendering, reconnect,
-abandonment and the complete authenticated overlay/rink-aware comparison remain
+abandonment and authenticated rink-aware paired trials remain
 qualification gaps; the presence of this operation does not establish full
 Camera workflow parity.
 
