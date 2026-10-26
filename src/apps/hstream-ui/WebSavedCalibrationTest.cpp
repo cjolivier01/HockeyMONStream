@@ -10,6 +10,7 @@
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 namespace fs = std::filesystem;
@@ -363,6 +364,17 @@ void controls_staging(const QString& binary, const fs::path& source) {
     expect(
         fs::exists(game / "left.png") == (unchanged || reframe || name == "budget"),
         "Native cleanup lost or retained the wrong original frames");
+    if (reframe) {
+      auto launch = YAML::Clone(stored);
+      launch["hstream_ui"]["stitching_calibration"]["reframe"]["desired_view"]["projection_framing"]["crop"] =
+          YAML::Load("[0.1, 0.9, 0.1, 0.9]");
+      write(game / "config.yaml", YAML::Dump(launch));
+      auto artifact_lock = value(lock_canvas_constraint_artifacts(game));
+      auto config_lock = value(GameConfigTransactionLock::Acquire(game));
+      const auto playback = ValidateStitchingReframeIntentLocked(game, YAML::LoadFile((game / "config.yaml").string()));
+      expect(
+          playback.ok(), "Native playback must consume staged intent after outer launch YAML shortens numeric scalars");
+    }
     if (name == "roles")
       expect(
           stored["game"]["videos"]["left"][0].as<std::string>() == "media/right.mp4" &&

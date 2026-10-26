@@ -1,6 +1,7 @@
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 
 #include <unistd.h>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -185,6 +186,70 @@ YAML::Node desired_view(const YAML::Node& before) {
   framing.crop = {0.1, 0.9, 0.05, 0.95};
   write_stitch_projection_framing(desired, framing);
   return desired;
+}
+
+bool test_serialized_intent(const fs::path& root) {
+  auto before = fixture(root);
+  before["game"]["videos"]["left"].push_back("1");
+  before["game"]["videos"]["right"].push_back("002");
+  before["game"]["stitching"]["frame_offsets"]["left"] = 1;
+  before["game"]["stitching"]["frame_offsets"]["right"] = 0.885511;
+  provenance(root);
+  auto artifact_lock = value(lock_canvas_constraint_artifacts(root));
+  auto config_lock = value(GameConfigTransactionLock::Acquire(root));
+  auto desired = desired_view(before);
+  const auto prepared = PrepareStitchingReframeIntentLocked(root, before, desired, "serialized-view", desired);
+  bool ok = expect(prepared.ok() && *prepared, "capture intent before launch serialization");
+  if (!prepared.ok() || !*prepared)
+    return false;
+  pending(desired, "serialized-view");
+  auto launch = YAML::Load(YAML::Dump(desired));
+  auto record = launch["hstream_ui"]["stitching_calibration"]["reframe"];
+  // The outer service loads native staging YAML, then emits launch YAML with
+  // PyYAML's shortest float spellings. These are the actual 5% crop spellings
+  // from the failed projection-edit playback, plus equivalent solver values.
+  record["desired_view"]["projection_framing"]["crop"] = YAML::Load("[0.1, 0.9, 0.05, 0.95]");
+  record["desired_view"]["projection_parameters"][0] = YAML::Load("1.0e+2");
+  record["source_solver"]["camera_fov"]["horizontal_fov"] = YAML::Load("109.0");
+  record["source_solver"]["frame_offsets"]["left"] = YAML::Load("1.0");
+  record["source_solver"]["frame_offsets"]["right"] = YAML::Load("0.885511");
+  write(root / "config.yaml", YAML::Dump(launch));
+  const auto roundtrip = YAML::LoadFile((root / "config.yaml").string());
+  const auto valid = ValidateStitchingReframeIntentLocked(root, roundtrip);
+  ok &= expect(valid.ok(), "runtime accepts equal numeric values after outer launch serialization");
+  if (!valid.ok())
+    std::cerr << valid.status() << '\n';
+  for (const char* change : {"crop", "offset", "video", "video-alias", "unknown", "infinite", "malformed"}) {
+    auto changed = YAML::Clone(roundtrip);
+    auto intent = changed["hstream_ui"]["stitching_calibration"]["reframe"];
+    const std::string name(change);
+    if (name == "crop")
+      intent["desired_view"]["projection_framing"]["crop"][2] = std::nextafter(0.05, 1.0);
+    else if (name == "offset")
+      intent["source_solver"]["frame_offsets"]["left"] = std::nextafter(1.0, 2.0);
+    else if (name == "video")
+      intent["source_solver"]["videos"]["left"][0] = "01";
+    else if (name == "video-alias") {
+      // Normalizing the numeric anchor must not rewrite an aliased filename.
+      intent["source_solver"]["frame_offsets"]["left"] = YAML::Load("01");
+      intent["source_solver"]["videos"]["left"][0] = intent["source_solver"]["frame_offsets"]["left"];
+    } else if (name == "unknown")
+      intent["desired_view"]["projection_framing"]["new_setting"] = 0;
+    else
+      intent["desired_view"]["projection_framing"]["crop"][2] = name == "infinite" ? ".inf" : "invalid";
+    ok &= expect(
+        !ValidateStitchingReframeIntentLocked(root, changed).ok(),
+        "launch serialization must not weaken changed or invalid " + name + " checks");
+    auto rejected = YAML::Clone(changed);
+    ok &= expect(
+        !PrepareResolvedStitchingReframeIntentLocked(root, changed, changed, "invalid-rebind", rejected).ok(),
+        "resolved staging must retain exact identity checks for " + name);
+  }
+  auto another = YAML::Clone(roundtrip);
+  another["stitching"]["max_output_width"] = 50;
+  const auto rebound = PrepareStitchingReframeIntentLocked(root, roundtrip, another, "serialized-retry", another);
+  ok &= expect(rebound.ok() && *rebound, "serialized intent can be rebound without losing its saved alignment");
+  return ok;
 }
 
 bool test_ownership_and_edits(const fs::path& root) {
@@ -567,6 +632,7 @@ int main() {
   try {
     ScopedEnvironment no_platform_limit("HM_ALLOW_OVERSIZED_LIVE_STITCH", "1");
     bool ok = test_optional_presence();
+    ok &= test_serialized_intent(root / "serialized");
     ok &= test_ownership_and_edits(root / "ownership");
     ok &= test_capture_guards(root / "capture");
     ok &= test_environment_canvas_limit(root / "environment");

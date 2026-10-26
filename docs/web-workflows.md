@@ -565,6 +565,10 @@ It must disable or override mutable process-user defaults and must not merge the
 entire desired form over the staged config again, which would erase hidden saved
 leveling/crop values. A staging receipt alone does not prove that runner
 configuration equality; the outer integration must verify it before playback.
+The shared native reframe consumer compares finite numeric settings by their
+exact resolved double values, so Python's shorter YAML float spellings survive
+the stage-to-launch boundary. It uses no numeric tolerance; changed values,
+source paths, fingerprints, owners and artifact identities remain fenced.
 
 Managed publication can reserve its archive identity before staging and export
 afterward with `hstream-job --run-id ID`. The exporter and finalizer share the
