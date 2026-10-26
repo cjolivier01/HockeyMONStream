@@ -7,8 +7,10 @@
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
+#include "src/apps/hstream-ui/DetectorOptions.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/HighlightReelPipeline.h"
 #include "src/apps/hstream-ui/HighlightScene.h"
@@ -17,12 +19,12 @@
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 #include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
+#include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebCameraExperiment.h"
 #include "src/apps/hstream-ui/WebExperimentFrames.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 #include "src/apps/hstream-ui/WebRinkEditor.h"
 #include "src/apps/hstream-ui/WebRinkMap.h"
-#include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebSavedCalibration.h"
 
 #include <fcntl.h>
@@ -1205,7 +1207,42 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
   }
 }
 
+QJsonObject detector_state(const YAML::Node& game, bool hockeymon) {
+  const auto baseline = take(hm::baseline_config::load());
+  const auto user = take(hm::user_config::load_snapshot());
+  auto defaults = hm::config::MergeNodes(YAML::Clone(baseline.values), user.values, false);
+  const auto models = hm::ui::ReadDetectorModels(defaults);
+  const auto selected = hm::ui::ReadDetectorSelection(
+      hm::config::MergeNodes(defaults, game, false),
+      models,
+      [&](const QString& name) { return QString::fromStdString((baseline.root / name.toStdString()).string()); },
+      hockeymon);
+  QJsonArray choices;
+  for (const auto& model : models)
+    choices.append(QJsonObject{{"id", model.id}, {"label", model.label}});
+  const bool known_prepared =
+      std::any_of(models.begin(), models.end(), [&](const auto& model) { return model.id == selected.prepared_model; });
+  return {
+      {"version", 1},
+      {"models", choices},
+      {"model", selected.model},
+      {"precision", selected.precision},
+      {"prepared_model", known_prepared ? selected.prepared_model : QString()},
+      {"prepared", !selected.prepared_engine.isEmpty()}};
+}
+
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "detector-controls-read") {
+    require(request.payload.size() == 1 && request.payload.value("backend").isString(), "Expected detector backend");
+    const auto backend = request.payload.value("backend").toString();
+    require(backend == "native" || backend == "hockeymon", "Unsupported detector backend");
+    const auto bytes = take(
+        hm::stitching::read_bounded_regular_file_no_follow(
+            request.game / "config.yaml", 4 * 1024 * 1024, "detector config"));
+    const auto config = YAML::Load(bytes);
+    require(config.IsMap(), "Detector configuration must be a map");
+    return detector_state(config, backend == "hockeymon");
+  }
   if (request.operation == "calibration-still-read")
     return hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
   if (request.operation == "calibration-controls-stage")
@@ -1267,6 +1304,19 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--detector-defaults") {
+    try {
+      const YAML::Node empty(YAML::NodeType::Map);
+      const QJsonObject result{
+          {"version", 1}, {"native", detector_state(empty, false)}, {"hockeymon", detector_state(empty, true)}};
+      std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
+
   if (argc == 2 && std::string(argv[1]) == "--runtime-defaults") {
     try {
       const auto baseline = take(hm::baseline_config::load());

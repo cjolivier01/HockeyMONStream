@@ -85,6 +85,7 @@ QJsonObject Capabilities() {
   const QJsonArray operations{
       "calibration-complete",
       "calibration-still-read",
+      "detector-controls-read",
       "calibration-view-read",
       "calibration-view-estimate",
       "calibration-view-landmarks",
@@ -128,6 +129,7 @@ QJsonObject Capabilities() {
       {"features",
        QJsonArray{
            "runtime-defaults-v1",
+           "detector-controls-v1",
            "experiment-optics-filtering-v1",
            "match-editor-v1",
            "rink-editor-v1",

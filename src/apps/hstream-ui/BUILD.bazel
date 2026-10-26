@@ -76,6 +76,8 @@ filegroup(
         "PipelineInspectorWidget.h",
         "PlayerAnalyticsControls.cpp",
         "PlayerAnalyticsControls.h",
+        "DetectorOptions.cpp",
+        "DetectorOptions.h",
         "RuntimeOptions.cpp",
         "RuntimeOptions.h",
         "RinkFramingControls.cpp",
@@ -828,6 +830,23 @@ cc_test(
 )
 
 cc_library(
+    name = "detector_options",
+    srcs = ["DetectorOptions.cpp"],
+    hdrs = ["DetectorOptions.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["//src/libs/common:config_path", "@qt//:qt_core", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "detector_options_test",
+    srcs = ["DetectorOptionsTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":detector_options", "@qt//:qt_core", "@yaml-cpp"],
+)
+
+cc_library(
     name = "runtime_options",
     srcs = ["RuntimeOptions.cpp"],
     hdrs = ["RuntimeOptions.h"],
@@ -859,6 +878,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":detector_options",
         ":runtime_options",
         "//src/libs/tracking:playtracker_runtime_controls",
         "//src/libs/publication",
@@ -1400,7 +1420,9 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":detector_options",
         ":runtime_options",
+        "//src/libs/stitching:transaction_state",
         "//src/libs/common:user_config",
         "//src/libs/common:config_layers",
         ":stitching_still_image",

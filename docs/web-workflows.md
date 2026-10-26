@@ -25,6 +25,20 @@ operations the request parser rejects. HockeyMONWeb checks its required operatio
 against this deployed executable in addition to checking the generated startup
 catalog. Deploy changes to this contract with the matching web worker.
 
+`hstream-web-job --detector-defaults` resolves both native and HockeyMON detector
+selection without a display or GPU query. It uses `DetectorOptions`, canonical
+baseline and the read-only user snapshot. The browser readiness check validates
+its model catalog before caching the result. The same classifier powers
+`detector-controls-read` for owned saved game configs. A familiar inference
+filename with a custom engine remains “Use saved detector configuration”; a
+prepared INT8 engine explains only the model it was prepared for.
+Historical architecture IDs `yolov8m` and `yolov8s` normalize to `default` and
+`distilled-s`. `prepared` reports any remembered engine; an unrecognized prepared
+model is returned as an empty ID, without echoing its private value. The worker
+can reuse this operation for a bounded config-only inheritance check before
+cloning/preflight, fenced by the deployment identity captured at INT8 admission.
+Only verified owned preparation artifacts authorize engine reuse.
+
 `hstream-web-job --runtime-defaults` is a separate read-only readiness probe
 advertised by `runtime-defaults-v1`. It loads the canonical baseline and active
 user overlay without creating preferences, and uses Qt's shared `RuntimeOptions`
@@ -83,6 +97,7 @@ contract, then testing both interfaces against the same native checkout.
 | `highlight-live-preview` | The same plan/assets/selection, plus required boolean `loop`. Plays the shared native authored reel through hardware H.264/Opus WebRTC, without an MP4 artifact. The supervisor supplies `--preview-port=N`; payloads cannot select ports. Finite completion publishes only `operation-data.json`; Stop/cancellation publishes no artifact. |
 | `highlight-card-preview` | One authored card in a native schema-2 `plan`, with no `archive_path` or `selected_indices`. Uses the desktop's `RasterHighlightCard` to publish `highlight-card.png`, fitted to the selected archive's aspect inside the existing 1920×1080 raster bound. Returns `preview`, `width`, `height`, `source_width`, and `source_height`. Requires the frozen metadata probe described below. |
 | `calibration-complete` | Trusted setup postprocessor after a successful bounded calibration-only CLI run. Requires nonempty `invalidation_id` matching the persisted owner and optional boolean `require_ice_mask`. Validates the native generation, completes its calibration state, and publishes `game/setup-preview.png` through the shared Qt saved-still reader (2048-pixel maximum). Prefers a current `s.png`, falling back to `panorama.tif`; a missing valid image or generation fails completion. Returns `state`, `invalidation_id`, and `preview`; the receipt retains calibration artifacts for adoption. |
+| `detector-controls-read` | Read-only detector metadata (`detector-controls-v1`). Payload is exactly `{"backend":"native"}` or `{"backend":"hockeymon"}`. Reads owned `game/config.yaml` with a 4 MiB regular-file/no-follow bound, then uses the same baseline/user/game classifier as Qt. Publishes only `operation-data.json` with version 1, model IDs/labels, selected model/precision and prepared-model availability. No engine path or calibration mutation is returned. |
 | `calibration-still-read` | Read-only idle preview (`saved-calibration-still-v1`). Requires a `config` object containing frozen effective settings; optional `expected_generation` binds an exact native generation. Returns `calibration_still_version: 1`, `available`, and `retryable`. Available results also contain `preview: "saved-stitching-preview.png"`, `width`, `height`, `source_image` (`s.png` or `panorama.tif`), and `source_revision` (SHA-256 of the native stat revision). The receipt contains only this run-root PNG and `operation-data.json`; unavailable results publish metadata alone. No calibration adoption, invalidation completion, reframe or source-config write occurs. |
 | `matches-read` | Optional `fingerprint`; omission reads the current native match snapshot. Optional trusted `workspace` selects an experiment instead of the main game. Returns original camera images, dimensions and endpoints. |
 | `matches-publish` | Existing `fingerprint` and `frames` containing `index` and `matches` (`left`, `right`, optional `score`). Validates original-image endpoints and publishes an immutable manual snapshot. This does not activate new maps; use the candidate edit/solve/promote sequence. |

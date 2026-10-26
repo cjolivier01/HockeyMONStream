@@ -2,6 +2,7 @@
 
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
+#include "src/apps/hstream-ui/DetectorOptions.h"
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -164,11 +165,7 @@ class HStreamWindow : public QMainWindow {
   };
 
   // A program detector offered in the Detection tab, from hstream_ui.detector_models.
-  struct DetectorModel {
-    QString id;
-    QString label;
-    QString config_prefix;
-  };
+  using DetectorModel = hm::ui::DetectorModel;
 
   struct LiveRotationAuthorization {
     QString game_id;

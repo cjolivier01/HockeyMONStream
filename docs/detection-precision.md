@@ -17,6 +17,15 @@ its inference config, including an inherited override.
 
 ## Detection model
 
+Qt and the browser share `DetectorOptions` to classify saved/inherited controls.
+The canonical structural FP32 selection lives at
+`pipeline.primary-gie.config-file` in the synchronized baseline. Browser model
+and precision edits are saved controls and unsaved Play drafts. Read-only native
+metadata distinguishes bundled recipes from custom engines; ordinary HTTP
+polling never starts native processing. CPU resolver, Qt and Chromium checks
+cover these control transitions. GPU inference and preparation still require
+paired hardware validation.
+
 `hstream_ui.detector_models` in `configs/baseline.yaml` lists the models the
 Detection tab offers. Each entry names a `config_prefix`: the bare prefix is the
 FP32 inference config and the selected precision appends `_fp16`, `_bf16` or

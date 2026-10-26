@@ -14938,6 +14938,15 @@ bool test_detector_model() {
           "an unrecognized detector config must keep the default model and the saved precision"))
     return false;
 
+  if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    return false;
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  const bool next_run_editable = model->isEnabled() && precision->isEnabled();
+  HStreamWindowTestAccess::killStubPipelineProcess(&window);
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  if (!expect(next_run_editable, "Detector model and precision remain next-run edits during playback"))
+    return false;
+
   // A model choice alone writes nothing while precision keeps the saved config,
   // so selecting one must pin the bundled FP32 to make the change reachable.
   model->setCurrentIndex(model->findData("distilled-s"));
@@ -19131,6 +19140,9 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  // The focused detector suite does not need the unrelated hardware memory probe.
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
+    return test_detector_precision() && test_detector_model() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_CONTROL_POINT_LIMIT_ONLY"))
     return test_control_point_limit_precedence() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ICONS_ONLY")) {
@@ -19213,8 +19225,6 @@ int main(int argc, char** argv) {
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BLEND_ONLY"))
     return test_blend_mode() ? 0 : 1;
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
-    return test_detector_precision() && test_detector_model() ? 0 : 1;
   if (!test_blend_mode())
     return 1;
   if (!test_detector_precision())

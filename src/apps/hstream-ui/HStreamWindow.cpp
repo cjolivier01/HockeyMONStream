@@ -10910,30 +10910,7 @@ double HStreamWindow::blendFeatherFraction() const {
 }
 
 std::vector<HStreamWindow::DetectorModel> HStreamWindow::detectorModels() const {
-  std::vector<DetectorModel> models;
-  YAML::Node configured;
-  if (lookup_yaml_path(baseline_config_, "hstream_ui.detector_models", &configured) && configured.IsSequence()) {
-    for (const YAML::Node& entry : configured) {
-      if (!entry.IsMap())
-        continue;
-      try {
-        if (!entry["id"] || !entry["config_prefix"])
-          continue;
-        const QString id = QString::fromStdString(entry["id"].as<std::string>());
-        const QString prefix = QString::fromStdString(entry["config_prefix"].as<std::string>());
-        if (id.isEmpty() || prefix.isEmpty())
-          continue;
-        models.push_back(
-            {id, entry["label"] ? QString::fromStdString(entry["label"].as<std::string>()) : id, prefix});
-      } catch (const YAML::Exception&) {
-        // A malformed catalog entry must not cost the user the other models.
-      }
-    }
-  }
-  // The bundled detector stays selectable when baseline.yaml declares no catalog.
-  if (models.empty())
-    models.push_back({"default", "Default", "config_infer_yolov8_hockey"});
-  return models;
+  return hm::ui::ReadDetectorModels(baseline_config_);
 }
 
 QString HStreamWindow::detectorModel() const {
@@ -11012,12 +10989,13 @@ QString HStreamWindow::detectorConfigName() const {
 }
 
 QString HStreamWindow::detectorEnginePath() const {
-  // A prepared engine belongs to the model it was built from. Pairing it with
-  // another model's inference config silently runs the wrong network.
-  if (detectorPrecision() == "int8" && !prepared_int8_engine_.isEmpty() && prepared_int8_model_ == detectorModel())
-    return prepared_int8_engine_;
-  const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(detectorConfigName()).toStdString());
-  return QString::fromStdString(inference["property"]["model-engine-file"].as<std::string>());
+  const auto models = detectorModels();
+  const auto model =
+      std::find_if(models.begin(), models.end(), [this](const auto& entry) { return entry.id == detectorModel(); });
+  return hm::ui::DetectorEnginePath(
+      model == models.end() ? models.front() : *model,
+      {detectorModel(), detectorPrecision(), prepared_int8_engine_, prepared_int8_manifest_, prepared_int8_model_},
+      [this](const QString& name) { return pipelineConfigPath(name); });
 }
 
 void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config) {
@@ -11113,93 +11091,20 @@ void HStreamWindow::loadBlendMode(const YAML::Node& config) {
 void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   if (!detector_precision_combo_)
     return;
-  const QSignalBlocker blocker(detector_precision_combo_);
-  const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
-  const QString prepared_prefix = backend_.isHockeyMon() ? "hstream_ui.hockeymon.detector" : "hstream_ui.detector_int8";
-  const auto prepared_value = [&](const QString& suffix) {
-    YAML::Node value;
-    return lookup_yaml_path(effective, prepared_prefix + "." + suffix, &value)
-        ? QString::fromStdString(value.as<std::string>())
-        : QString();
-  };
-  prepared_int8_engine_ = prepared_value("engine");
-  prepared_int8_manifest_ = prepared_value("manifest");
-  const auto models = detectorModels();
-  prepared_int8_model_ = prepared_value("model");
-  // Engines prepared before the model catalog existed were built from the
-  // detector that was then the only one.
-  if (prepared_int8_model_.isEmpty() && !prepared_int8_engine_.isEmpty())
-    prepared_int8_model_ = models.front().id;
-  YAML::Node prepared_precision;
-  if (backend_.isHockeyMon() && lookup_yaml_path(effective, prepared_prefix + ".precision", &prepared_precision)) {
-    const QString precision = QString::fromStdString(prepared_precision.as<std::string>());
-    YAML::Node model;
-    if (!lookup_yaml_path(effective, prepared_prefix + ".model", &model) ||
-        detector_precision_combo_->findData(precision) < 0 ||
-        detector_model_combo_->findData(QString::fromStdString(model.as<std::string>())) < 0)
-      throw std::runtime_error("Invalid saved HockeyMON detector model or precision");
-    const QSignalBlocker model_blocker(detector_model_combo_);
-    set_combo_to_data(detector_model_combo_, QString::fromStdString(model.as<std::string>()));
-    set_combo_to_data(detector_precision_combo_, precision);
-    updateDetectorPrecisionStatus();
-    return;
-  }
-  YAML::Node configured;
-  QString file;
-  if (lookup_yaml_path(effective, "pipeline.primary-gie.config-file", &configured))
-    file = QString::fromStdString(configured.as<std::string>());
-  else {
-    try {
-      const YAML::Node app = YAML::LoadFile(pipelineConfigPath("ds_hockey_app_config.yaml").toStdString());
-      file = QString::fromStdString(app["primary-gie"]["config-file"].as<std::string>());
-    } catch (const std::exception&) {
-      file.clear();
-    }
-  }
-  // An explicit engine is part of the custom detector choice. Preserve it
-  // even when its inference config has a familiar filename.
-  auto config_matches = [&](const DetectorModel& model, const QString& name, const QString& mode) {
-    if (file != name && !same_file_path(file, pipelineConfigPath(name)))
-      return false;
-    YAML::Node engine;
-    if (lookup_yaml_path(effective, "pipeline.primary-gie.model-engine-file", &engine)) {
-      try {
-        const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(name).toStdString());
-        // The prepared engine only explains this config for the model it was
-        // built from; against any other model it is a custom detector.
-        const bool prepared_for_this_model = mode == "int8" && prepared_int8_model_ == model.id &&
-            QString::fromStdString(engine.as<std::string>()) == prepared_int8_engine_;
-        if (engine.as<std::string>() != inference["property"]["model-engine-file"].as<std::string>() &&
-            !prepared_for_this_model)
-          return false;
-      } catch (const std::exception&) {
-        return false;
-      }
-    }
-    return true;
-  };
-  QString selected;
-  QString selected_model;
-  for (const DetectorModel& model : models) {
-    for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
-      const QString name =
-          mode == "fp32" ? model.config_prefix + ".yaml" : QString("%1_%2.yaml").arg(model.config_prefix, mode);
-      if (!config_matches(model, name, mode))
-        continue;
-      selected = mode;
-      selected_model = model.id;
-      break;
-    }
-    if (!selected.isEmpty())
-      break;
-  }
+  const auto selected = hm::ui::ReadDetectorSelection(
+      merge_yaml_maps(baseline_config_, config),
+      detectorModels(),
+      [this](const QString& name) { return pipelineConfigPath(name); },
+      backend_.isHockeyMon());
+  prepared_int8_engine_ = selected.prepared_engine;
+  prepared_int8_manifest_ = selected.prepared_manifest;
+  prepared_int8_model_ = selected.prepared_model;
+  const QSignalBlocker precision_blocker(detector_precision_combo_);
   if (detector_model_combo_) {
-    // Setting the model must not drag the precision to FP32 the way an
-    // interactive choice does; an unrecognized config keeps "use saved".
     const QSignalBlocker model_blocker(detector_model_combo_);
-    set_combo_to_data(detector_model_combo_, selected_model.isEmpty() ? models.front().id : selected_model);
+    set_combo_to_data(detector_model_combo_, selected.model);
   }
-  set_combo_to_data(detector_precision_combo_, selected);
+  set_combo_to_data(detector_precision_combo_, selected.precision);
   updateDetectorPrecisionStatus();
 }
 
