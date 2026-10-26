@@ -513,6 +513,81 @@ def confined_experiment_optics_contract(binary, root):
             os.close(events)
 
 
+def pinned_archive_contract(binary, root):
+    for case in ("valid", "changed", "final-link", "parent-link", "unauthorized", "wrong-marker"):
+        directory = root / ("pinned-" + case)
+        directory.mkdir()
+        original = root / ("archive-" + case)
+        original.mkdir()
+        archive = original / "archive.mp4"
+        archive.write_bytes(b"owned archive")
+        info = archive.stat()
+        identity = {"dev": str(info.st_dev), "ino": str(info.st_ino), "size": str(info.st_size),
+                    "mtime_ns": str(info.st_mtime_ns), "ctime_ns": str(info.st_ctime_ns)}
+        with sqlite3.connect(directory / "telemetry.db") as database:
+            database.executescript("""
+                PRAGMA application_id=1213027156;
+                PRAGMA user_version=1;
+                CREATE TABLE frames(run_id TEXT, sample_id INTEGER, pts_ns INTEGER,
+                    geometry_id INTEGER, seek_epoch INTEGER, reset_epoch INTEGER, source_id INTEGER);
+                CREATE TABLE tracks(run_id TEXT, sample_id INTEGER, tracking_id TEXT,
+                    left REAL, top REAL, width REAL, height REAL, ordinal INTEGER);
+                CREATE TABLE geometries(run_id TEXT, geometry_id INTEGER, width INTEGER, height INTEGER);
+                CREATE TABLE cameras(run_id TEXT, sample_id INTEGER, role TEXT,
+                    left REAL, top REAL, width REAL, height REAL);
+                CREATE TABLE replay_frames(run_id TEXT, sample_id INTEGER,
+                    edge_rotation_left REAL, edge_rotation_right REAL);
+                INSERT INTO frames VALUES('recorded',1,1000000000,9,3,4,5);
+                INSERT INTO frames VALUES('recorded',2,1033000000,9,3,4,5);
+                INSERT INTO tracks VALUES('recorded',1,'17',200,100,100,200,0);
+                INSERT INTO tracks VALUES('recorded',2,'17',220,100,100,200,0);
+                INSERT INTO geometries VALUES('recorded',9,1000,500);
+            """)
+        authored = plan()
+        cue = {"kind": "arrow", "text": "", "start_ms": 1000, "end_ms": 2000,
+            "x": 0.5, "y": 0.35, "dx": 0, "dy": 0.12, "size": 0.055, "thickness": 0.008,
+            "weight": 900, "color": "#ffff00", "blink": True, "blink_ms": 250, "motion": "fixed", "positions": []}
+        cue.update({key: "" for key in ("database", "run_id", "track_id", "archive_path")})
+        cue.update({key: 0 for key in ("geometry_id", "seek_epoch", "reset_epoch", "source_id", "telemetry_offset_ms", "archive_origin_ms", "archive_size", "archive_mtime_ms")})
+        authored["intervals"][0].update(is_card=False, start_ms=1000, end_ms=2000, annotations=[cue])
+        path = request(directory, "track-capture", {"plan": authored,
+            "archive_path": "inputs/archive.mp4", "database": "telemetry.db", "run_id": "recorded",
+            "route": "stitched", "item_index": 0, "cue_index": 0,
+            "choice": {"id": "17", "geometry": 9, "seek": 3, "reset": 4, "source": 5}})
+        document = json.loads(path.read_text())
+        document["authorized_media"] = [str(archive)]
+        document["runtime"] = {"archive_input": {"path": str(archive), "identity": identity}}
+        if case == "changed":
+            archive.write_bytes(b"other archive")
+        elif case == "final-link":
+            target = original / "saved.mp4"
+            archive.rename(target)
+            archive.symlink_to(target)
+        elif case == "parent-link":
+            target = original.with_name(original.name + "-saved")
+            original.rename(target)
+            original.symlink_to(target, target_is_directory=True)
+        elif case == "unauthorized":
+            document["authorized_media"] = []
+        elif case == "wrong-marker":
+            document["payload"]["archive_path"] = "other.mp4"
+        path.write_text(json.dumps(document))
+        run(binary, path, 0 if case == "valid" else 1)
+        receipt = json.loads((directory / "operation-result.json").read_text())
+        assert not (directory / "inputs/archive.mp4").exists()
+        if case == "valid":
+            saved = receipt["result"]["plan"]
+            cue = saved["intervals"][0]["annotations"][0]
+            assert saved["archive_path"] == cue["archive_path"] == "inputs/archive.mp4"
+            assert cue["database"] == "telemetry.db" and cue["archive_size"] == info.st_size
+            assert cue["geometry_id"] == 9 and cue["seek_epoch"] == 3 and cue["source_id"] == 5
+            assert [point["time_ms"] for point in cue["positions"]] == [1000, 1033]
+            assert abs(cue["positions"][0]["x"] - 0.25) < 1e-9
+            assert_artifacts(directory, receipt)
+        else:
+            assert receipt["state"] == "failed" and not receipt["artifacts"]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
@@ -536,10 +611,12 @@ def main():
     )
     assert "calibration-complete" in capabilities["operations"]
     assert "experiment-optics-filtering-v1" in capabilities["features"]
+    assert "highlight-pinned-archive-v1" in capabilities["features"]
     assert len(capabilities["operations"]) == len(set(capabilities["operations"]))
     assert capabilities["maximum_request_bytes"] < capabilities["maximum_result_bytes"]
     with tempfile.TemporaryDirectory(prefix="hstream-web-contract-") as temporary:
         root = Path(temporary)
+        pinned_archive_contract(args.binary, root)
         calibration_contract(args.binary, root)
         missing_matches = root / "missing-matches"
         missing_matches.mkdir()

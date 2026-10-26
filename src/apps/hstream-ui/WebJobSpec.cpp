@@ -126,6 +126,7 @@ QJsonObject Capabilities() {
            "rink-editor-v1",
            "rink-map-v1",
            "highlight-frame-inspection-v1",
+           "highlight-pinned-archive-v1",
            "highlight-card-without-archive-v1",
            "saved-calibration-view-v1"}},
       {"maximum_request_bytes", int(kMaximumRequestBytes)},

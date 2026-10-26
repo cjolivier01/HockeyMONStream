@@ -128,53 +128,66 @@ hm::ui::ArchiveMediaInfo probe(const fs::path& archive, bool metadata_only = fal
   return media;
 }
 
-hm::ui::ArchiveMediaInfo card_archive(const Request& request) {
-  const auto source = request.runtime.value("archive_probe").toObject();
-  const auto name = RequiredString(source, "path", 4096);
-  const fs::path path(name.toStdString());
-  require(
-      path.is_absolute() && path.lexically_normal() == path && request.authorized_media.size() == 1 &&
-          request.authorized_media.at(0).isString() && request.authorized_media.at(0).toString() == name,
-      "Card preview requires exactly its frozen authorized archive");
-  const auto expected = source.value("identity").toObject();
-  require(expected.size() == 5, "Card archive identity is incomplete");
-  // Open every directory without following aliases, then pin the immutable file
-  // while the metadata-only probe reads its descriptor. The archive is neither
-  // copied into this run nor retained as a symlink or hardlink after completion.
-  QFile pinned;
-  int descriptor = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  require(descriptor >= 0, "Cannot open the archive filesystem root");
-  require(pinned.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive root");
-  for (auto component = path.begin(); component != path.end(); ++component) {
-    if (*component == path.root_directory())
-      continue;
-    require(*component != "." && *component != "..", "Invalid card archive path");
-    const bool last = std::next(component) == path.end();
-    descriptor = ::openat(
-        pinned.handle(), component->c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (last ? O_NONBLOCK : O_DIRECTORY));
-    require(descriptor >= 0, "Cannot open the frozen card archive without following links");
-    pinned.close();
-    require(pinned.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive input");
+// Keep one checked descriptor alive for the whole decoder/capture lifetime.
+// No archive copy, symlink or hardlink is retained by the private run.
+class PinnedArchive {
+ public:
+  PinnedArchive(const Request& request, const QString& key) {
+    const auto source = request.runtime.value(key).toObject();
+    const auto name = RequiredString(source, "path", 4096);
+    const fs::path original(name.toStdString());
+    require(
+        original.is_absolute() && original.lexically_normal() == original && request.authorized_media.size() == 1 &&
+            request.authorized_media.at(0).isString() && request.authorized_media.at(0).toString() == name,
+        "Highlights require exactly their frozen authorized archive");
+    expected_ = source.value("identity").toObject();
+    require(expected_.size() == 5, "Archive identity is incomplete");
+    int descriptor = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    require(descriptor >= 0, "Cannot open the archive filesystem root");
+    require(pinned_.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive root");
+    for (auto component = original.begin(); component != original.end(); ++component) {
+      if (*component == original.root_directory())
+        continue;
+      require(*component != "." && *component != "..", "Invalid archive path");
+      const bool last = std::next(component) == original.end();
+      descriptor = ::openat(
+          pinned_.handle(), component->c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (last ? O_NONBLOCK : O_DIRECTORY));
+      require(descriptor >= 0, "Cannot open the frozen archive without following links");
+      pinned_.close();
+      require(pinned_.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive input");
+    }
+    Verify();
+    path_ = fs::path("/proc") / std::to_string(::getpid()) / "fd" / std::to_string(pinned_.handle());
   }
-  const auto matches = [&] {
+  void Verify() const {
     struct stat info{};
-    require(::fstat(pinned.handle(), &info) == 0 && S_ISREG(info.st_mode), "Card archive is not a regular file");
+    require(::fstat(pinned_.handle(), &info) == 0 && S_ISREG(info.st_mode), "Archive is not a regular file");
     const QJsonObject actual{
         {"dev", QString::number(info.st_dev)},
         {"ino", QString::number(info.st_ino)},
         {"size", QString::number(info.st_size)},
         {"mtime_ns", QString::number(qint64(info.st_mtim.tv_sec) * 1000000000 + info.st_mtim.tv_nsec)},
         {"ctime_ns", QString::number(qint64(info.st_ctim.tv_sec) * 1000000000 + info.st_ctim.tv_nsec)}};
-    require(actual == expected, "Card archive identity changed before or during inspection");
-  };
-  matches();
-  const auto media =
-      probe(fs::path("/proc") / std::to_string(::getpid()) / "fd" / std::to_string(pinned.handle()), true);
-  matches();
+    require(actual == expected_, "Archive identity changed before or during processing");
+  }
+  const fs::path& path() const {
+    return path_;
+  }
+
+ private:
+  QFile pinned_;
+  QJsonObject expected_;
+  fs::path path_;
+};
+
+hm::ui::ArchiveMediaInfo card_archive(const Request& request) {
+  const PinnedArchive pinned(request, "archive_probe");
+  const auto media = probe(pinned.path(), true);
+  pinned.Verify();
   return media;
 }
 
-hm::ui::HighlightPlan load_plan(const Request& request) {
+hm::ui::HighlightPlan load_plan(const Request& request, const PinnedArchive* archive = nullptr) {
   require(request.payload.value("plan").isObject(), "Expected a native highlight plan");
   auto json = request.payload.value("plan").toObject();
   // The worker resolves artifact IDs. No saved desktop absolute paths can leak
@@ -186,8 +199,12 @@ hm::ui::HighlightPlan load_plan(const Request& request) {
   QString error;
   if (!hm::ui::LoadHighlightPlan(qs(path), &plan, &error))
     throw std::runtime_error(error.toStdString());
-  if (!plan.archive_path.isEmpty())
-    plan.archive_path = qs(Contained(request.root, plan.archive_path));
+  if (!plan.archive_path.isEmpty()) {
+    require(!archive || plan.archive_path == "inputs/archive.mp4", "Unexpected frozen archive marker");
+    plan.archive_path = qs(archive ? archive->path() : Contained(request.root, plan.archive_path));
+  } else {
+    require(!archive, "A frozen archive requires an explicit plan binding");
+  }
   for (auto& item : plan.intervals) {
     for (auto* logo : {&item.card.logo_a, &item.card.logo_b})
       if (!logo->isEmpty())
@@ -195,15 +212,20 @@ hm::ui::HighlightPlan load_plan(const Request& request) {
     for (auto& annotation : item.annotations) {
       if (!annotation.database.isEmpty())
         annotation.database = qs(Contained(request.root, annotation.database));
-      if (!annotation.archive_path.isEmpty())
-        annotation.archive_path = qs(Contained(request.root, annotation.archive_path));
+      if (!annotation.archive_path.isEmpty()) {
+        require(!archive || annotation.archive_path == "inputs/archive.mp4", "Unexpected tracked archive marker");
+        annotation.archive_path = qs(archive ? archive->path() : Contained(request.root, annotation.archive_path));
+      }
     }
   }
   return plan;
 }
 
 QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
-  auto plan = load_plan(request);
+  std::optional<PinnedArchive> archive;
+  if (request.runtime.contains("archive_input"))
+    archive.emplace(request, "archive_input");
+  auto plan = load_plan(request, archive ? &*archive : nullptr);
   if (request.operation == "highlight-card-preview") {
     require(
         plan.intervals.size() == 1 && plan.intervals.front().is_card && !request.payload.contains("selected_indices"),
@@ -217,8 +239,7 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
     QImage image;
     QString error;
     require(!interrupted, "cancelled");
-    if (!hm::ui::RasterHighlightCard(
-            plan.intervals.front().card, qs(request.root), &image, &error, output_size))
+    if (!hm::ui::RasterHighlightCard(plan.intervals.front().card, qs(request.root), &image, &error, output_size))
       throw std::runtime_error(error.toStdString());
     // Without an archive, use the same intrinsic card canvas as the Qt editor.
     if (!output_size.isValid())
@@ -268,7 +289,7 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
     job.inspect_game_ms = integer(request.payload, "inspect_game_ms", 0, 86400000, -1);
   }
   if (!job.archive_path.isEmpty())
-    job.media = probe(job.archive_path.toStdString());
+    job.media = probe(job.archive_path.toStdString(), archive.has_value());
   else {
     job.media.width = 1920;
     job.media.height = 1080;
@@ -328,6 +349,8 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
     if (interrupted)
       pipeline.Cancel();
     const auto status = pipeline.Poll();
+    if (archive)
+      archive->Verify();
     if (live) {
       std::cout << "HSTREAM_HIGHLIGHT_PREVIEW "
                 << QJsonDocument(
@@ -999,7 +1022,10 @@ QJsonObject tracks(const Request& request, QJsonArray& artifacts) {
               {"box", QJsonArray{choice.box.x(), choice.box.y(), choice.box.width(), choice.box.height()}}});
     return {{"choices", result}};
   }
-  auto plan = load_plan(request);
+  std::optional<PinnedArchive> archive_input;
+  if (request.runtime.contains("archive_input"))
+    archive_input.emplace(request, "archive_input");
+  auto plan = load_plan(request, archive_input ? &*archive_input : nullptr);
   const int item = integer(request.payload, "item_index", 0, plan.intervals.size() - 1, -1);
   require(item >= 0, "Select a reel item");
   const int cue = integer(request.payload, "cue_index", 0, plan.intervals[item].annotations.size() - 1, -1);
@@ -1023,8 +1049,10 @@ QJsonObject tracks(const Request& request, QJsonArray& artifacts) {
   annotation.archive_mtime_ms = archive.lastModified().toMSecsSinceEpoch();
   if (!hm::ui::CaptureHighlightTrack(&annotation, choice, route, &error))
     throw std::runtime_error(error.toStdString());
-  // Return portable run-relative paths rather than exposing worker locations.
-  plan.archive_path = text(Relative(request, plan.archive_path.toStdString()));
+  if (archive_input)
+    archive_input->Verify();
+  // Return portable run-relative markers rather than exposing pinned descriptors.
+  plan.archive_path = archive_input ? "inputs/archive.mp4" : text(Relative(request, plan.archive_path.toStdString()));
   for (auto& interval : plan.intervals) {
     for (auto* logo : {&interval.card.logo_a, &interval.card.logo_b})
       if (!logo->isEmpty())
@@ -1033,7 +1061,8 @@ QJsonObject tracks(const Request& request, QJsonArray& artifacts) {
       if (!mark.database.isEmpty())
         mark.database = text(Relative(request, mark.database.toStdString()));
       if (!mark.archive_path.isEmpty())
-        mark.archive_path = text(Relative(request, mark.archive_path.toStdString()));
+        mark.archive_path =
+            archive_input ? "inputs/archive.mp4" : text(Relative(request, mark.archive_path.toStdString()));
     }
   }
   const auto path = request.root / "tracked-plan.json";
