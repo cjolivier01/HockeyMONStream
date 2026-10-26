@@ -442,18 +442,26 @@ QJsonObject RunCameraExperiment(
     media.height = session->height();
   } else {
     require(source == "panorama", "Unsupported camera video source kind");
-    media.path = Contained(request.root, RequiredString(request.payload, "archive_path")).string();
-    media.width = index(request.payload, "media_width", 65536);
-    media.height = index(request.payload, "media_height", 65536);
-    require(media.width && media.height, "Camera panorama dimensions are missing");
+    const auto path = request.payload.value("archive_path");
+    require(path.isString(), "Camera panorama path must be a string");
+    if (!path.toString().isEmpty()) {
+      media.path = Contained(request.root, path.toString()).string();
+      media.width = index(request.payload, "media_width", 65536);
+      media.height = index(request.payload, "media_height", 65536);
+      require(media.width && media.height, "Camera panorama dimensions are missing");
+    } else {
+      require(
+          !request.payload.contains("media_width") && !request.payload.contains("media_height"),
+          "Camera dimensions require a panorama");
+    }
     // The worker freezes ffprobe-verified dimensions alongside the immutable
     // media reference. Open validates their relation to the recorded canvas.
   }
   media.telemetry_origin_pts_ns = session->original().front().pts_ns;
   auto video_origin_ms = std::llround(number(request.payload, "video_origin_seconds", 0, 1e8) * 1000);
   hm::ui::ArchiveEntry archive;
-  if (!media.stitching && hm::ui::LoadArchiveSidecar(QString::fromStdString(media.path), &archive) &&
-      archive.start_time_known)
+  if (!media.path.empty() && !media.stitching &&
+      hm::ui::LoadArchiveSidecar(QString::fromStdString(media.path), &archive) && archive.start_time_known)
     video_origin_ms -= archive.start_time_ms;
   require(video_origin_ms >= 0, "Playback start plus Video start offset precedes the selected archive");
   media.video_origin_pts_ns = video_origin_ms * GST_MSECOND;
@@ -495,8 +503,10 @@ QJsonObject RunCameraExperiment(
   config.port = preview_port;
   config.stun_server = config.options.stun_server;
   std::string error;
-  auto output = MakeCameraExperimentWebPreviewOutput(config, &error);
-  require(bool(output), error);
+  // Qt prepares and inspects trajectories before Play, even with video selected.
+  // Allocate the encoder and signaling listener only when playback first opens.
+  std::shared_ptr<CameraExperimentPreviewOutput> output;
+  std::size_t inspected_frame = 0;
   CameraExperimentPreviewWorker preview;
   std::vector<replay::TrialResult> trials;
   std::map<std::size_t, QJsonObject> saved_trials;
@@ -522,6 +532,7 @@ QJsonObject RunCameraExperiment(
          {"provenance", QString::fromStdString(session->provenance())},
          {"mask_available", bool(mask)},
          {"source_confirmed", confirmed},
+         {"media_available", !media.path.empty()},
          {"rink_available", bool(rink_map)},
          {"rink_reason", QString::fromStdString(rink_reason)}},
         views,
@@ -530,9 +541,17 @@ QJsonObject RunCameraExperiment(
     PublishEvent(request, {{"kind", "catalog"}, {"revision", QString::number(catalog_revision)}});
   };
   const auto seek = [&](std::size_t frame, bool playing, bool replace) {
-    require(confirmed, "Playback needs source confirmation. Confirm the uncropped panorama or original cameras.");
     const auto selected = selected_frames();
     require(frame < selected->size(), "Camera frame lies outside the selected range");
+    inspected_frame = frame;
+    if (!preview_open && !playing)
+      return;
+    require(confirmed, "Playback needs source confirmation. Confirm the uncropped panorama or original cameras.");
+    require(!media.path.empty(), "Select the original game directory or panorama, then prepare the recording again.");
+    if (!output) {
+      output = MakeCameraExperimentWebPreviewOutput(config, &error);
+      require(bool(output), error);
+    }
     const bool open = !preview_open;
     preview_open = true;
     preview.Submit([=](CameraExperimentPreview& target, std::string* failure) {
@@ -564,6 +583,26 @@ QJsonObject RunCameraExperiment(
   publish_catalog();
   Commands commands;
   auto last_state = std::chrono::steady_clock::time_point{};
+  const auto publish_state = [&] {
+    const auto state = preview.Poll();
+    PublishEvent(
+        request,
+        {{"kind", "state"},
+         {"busy", state.busy},
+         {"seeking", state.seeking},
+         {"playing", state.playing},
+         {"open", state.open},
+         {"frame", state.frame ? QJsonValue(int(*state.frame)) : QJsonValue(int(inspected_frame))},
+         {"view", int(view)},
+         {"operation", QString::number(output ? output->PresentationOperation() : 0)},
+         {"error", QString::fromStdString(state.error)},
+         {"loop", loop},
+         {"realtime", realtime},
+         {"players", players},
+         {"play", play_overlay},
+         {"rink", rink}});
+    last_state = std::chrono::steady_clock::now();
+  };
   while (!finished && !interrupted()) {
     for (const auto& command : commands.Read()) {
       QJsonObject reply{{"kind", "ack"}, {"request", command.value("request")}, {"status", "rejected"}};
@@ -580,24 +619,26 @@ QJsonObject RunCameraExperiment(
         if (action == "close")
           finished = true;
         else if (action == "stop") {
+          inspected_frame = state.frame.value_or(inspected_frame);
           preview.Close();
           preview_open = false;
-        } else if (action == "pause")
-          preview.Submit([](auto& target, auto*) {
-            target.Pause();
-            return true;
-          });
-        else {
+        } else if (action == "pause") {
+          if (output)
+            preview.Submit([](auto& target, auto*) {
+              target.Pause();
+              return true;
+            });
+        } else {
           require(!state.busy && !state.seeking, "Wait for the current camera preview operation");
           if (action == "play")
-            seek(state.frame.value_or(0), true, false);
+            seek(state.frame.value_or(inspected_frame), true, false);
           else if (action == "seek") {
             require(!state.playing, "Pause the preview before stepping or seeking");
             seek(index(command, "frame", selected_frames()->size() - 1), false, false);
           } else if (action == "view") {
-            require(confirmed, "Playback needs source confirmation before changing preview views");
+            const auto frame = preview_open && !state.playing ? state.frame.value_or(inspected_frame) : 0;
             view = index(command, "view", trials.size() + 1);
-            seek(std::min(state.frame.value_or(0), selected_frames()->size() - 1), state.playing, true);
+            seek(std::min(frame, selected_frames()->size() - 1), false, true);
           } else if (action == "overlays") {
             require(
                 !boolean(command, "rink") || bool(mask),
@@ -605,27 +646,35 @@ QJsonObject RunCameraExperiment(
             players = boolean(command, "players");
             play_overlay = boolean(command, "play");
             rink = boolean(command, "rink");
-            preview.Submit([=](auto& target, auto*) {
-              target.SetOverlays(players, play_overlay, rink);
-              return true;
-            });
+            if (output)
+              preview.Submit([=](auto& target, auto*) {
+                target.SetOverlays(players, play_overlay, rink);
+                return true;
+              });
           } else if (action == "source-confirm") {
             require(!state.playing, "Pause the preview before changing source confirmation");
             confirmed = boolean(command, "confirmed");
+            if (!confirmed) {
+              inspected_frame = state.frame.value_or(inspected_frame);
+              preview.Close();
+              preview_open = false;
+            }
             publish_catalog();
           } else if (action == "loop") {
             loop = boolean(command, "loop");
-            preview.Submit([=](auto& target, auto*) {
-              target.SetLoop(loop);
-              return true;
-            });
+            if (output)
+              preview.Submit([=](auto& target, auto*) {
+                target.SetLoop(loop);
+                return true;
+              });
           } else if (action == "realtime") {
             require(!state.playing, "Pause the preview before changing playback pacing");
             realtime = boolean(command, "realtime");
-            preview.Submit([=](auto& target, auto*) {
-              target.SetRealtime(realtime);
-              return true;
-            });
+            if (output)
+              preview.Submit([=](auto& target, auto*) {
+                target.SetRealtime(realtime);
+                return true;
+              });
           } else if (action == "trial") {
             require(
                 !state.playing && confirmed, "Pause the preview and confirm the video source before applying a trial");
@@ -664,7 +713,7 @@ QJsonObject RunCameraExperiment(
                 cancelled = true;
             CommitCameraExperimentTrials(trials, take(trial.get()), publish_catalog);
             view = trials.size() + 1;
-            seek(0, true, true);
+            seek(0, !media.path.empty(), true);
           } else if (action == "save") {
             require(
                 !state.playing && confirmed && view >= 2,
@@ -687,29 +736,14 @@ QJsonObject RunCameraExperiment(
       } catch (const std::exception& failure) {
         reply.insert("error", QString::fromUtf8(failure.what()));
       }
+      // The browser ACK must include a current worker snapshot. In particular,
+      // Stop must expose its closing/closed state before a later Play is admitted.
+      publish_state();
       PublishEvent(request, reply);
     }
     require(!commands.closed(), "Camera experiment command owner disconnected");
-    if (std::chrono::steady_clock::now() - last_state >= std::chrono::milliseconds(100)) {
-      const auto state = preview.Poll();
-      PublishEvent(
-          request,
-          {{"kind", "state"},
-           {"busy", state.busy},
-           {"seeking", state.seeking},
-           {"playing", state.playing},
-           {"open", state.open},
-           {"frame", state.frame ? QJsonValue(int(*state.frame)) : QJsonValue()},
-           {"view", int(view)},
-           {"operation", QString::number(output->PresentationOperation())},
-           {"error", QString::fromStdString(state.error)},
-           {"loop", loop},
-           {"realtime", realtime},
-           {"players", players},
-           {"play", play_overlay},
-           {"rink", rink}});
-      last_state = std::chrono::steady_clock::now();
-    }
+    if (std::chrono::steady_clock::now() - last_state >= std::chrono::milliseconds(100))
+      publish_state();
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   preview.Close();

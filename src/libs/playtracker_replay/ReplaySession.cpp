@@ -477,7 +477,35 @@ absl::Status ValidatePanoramaGeometry(uint32_t width, uint32_t height, uint32_t 
   if (!width || !height || !canvas_width || !canvas_height)
     return absl::InvalidArgumentError("Panorama and recorded canvas dimensions must be positive");
   const double scale = std::min(double(width) / canvas_width, double(height) / canvas_height);
-  if (std::abs(width - canvas_width * scale) > 2.0 || std::abs(height - canvas_height * scale) > 2.0)
+  if (std::abs(width - canvas_width * scale) <= 2.0 && std::abs(height - canvas_height * scale) <= 2.0)
+    return absl::OkStatus();
+  const uint64_t width_product = uint64_t(width) * canvas_height;
+  const uint64_t height_product = uint64_t(height) * canvas_width;
+  // EncoderDimensions independently rounds each scaled dimension down to an
+  // even value. A shared scale must lie in both [output/input, (output+2)/input)
+  // intervals. Anchoring to the smaller axis ratio instead would magnify that
+  // axis's rounding on wide or tall canvases. Cross-products keep the open
+  // upper boundaries exact; promoting before +2 also covers uint32 dimensions.
+  const uint64_t width_upper = (uint64_t(height) + 2) * canvas_width;
+  const uint64_t height_upper = (uint64_t(width) + 2) * canvas_height;
+  const bool even = ((width | height) & 1U) == 0;
+  bool encoder_aligned = even && width_product < width_upper && height_product < height_upper;
+  if (!encoder_aligned && even && width_product <= width_upper && height_product <= height_upper) {
+    // Native double multiplication can land just below an exact even boundary:
+    // 8415x1122 at a 7680 width limit produces 7680x1022, not 7680x1024.
+    // At touching intervals, require an actual common floating-point scale to
+    // reproduce both dimensions, rather than accepting every closed endpoint.
+    // Half a product ULP divided by its input is at most one scale ULP, so the
+    // nearest boundary scale and its adjacent doubles cover these roundings.
+    const auto matches = [&](double candidate) {
+      return std::floor(canvas_width * candidate / 2) * 2 == width &&
+          std::floor(canvas_height * candidate / 2) * 2 == height;
+    };
+    const double boundary = std::max(double(width) / canvas_width, double(height) / canvas_height);
+    encoder_aligned = matches(boundary) || matches(std::nextafter(boundary, 0.0)) ||
+        matches(std::nextafter(boundary, std::numeric_limits<double>::infinity()));
+  }
+  if (!encoder_aligned)
     return absl::InvalidArgumentError("Select the corresponding uncropped panorama with the same aspect ratio");
   return absl::OkStatus();
 }

@@ -92,7 +92,9 @@ struct MediaBinding {
 };
 
 // A scaled panorama must still cover the same canvas, without padding or
-// cropping. Allow up to two pixels of encoder alignment rounding.
+// cropping. Preserve the two-pixel uniform-rescale allowance; independent
+// even-floor encoder rounding must admit a common scale for both axes.
+// Dimensions alone do not establish media provenance.
 absl::Status ValidatePanoramaGeometry(uint32_t width, uint32_t height, uint32_t canvas_width, uint32_t canvas_height);
 
 struct TrialResult {

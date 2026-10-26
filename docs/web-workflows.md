@@ -88,7 +88,22 @@ contract, then testing both interfaces against the same native checkout.
 | `track-choices` | `database`, `run_id`, `route` (`program`, `stitched`, `program-full`), `game_ms`, optional `pts_offset_ms`. Returns native segment-bound track choices. |
 | `track-capture` | Track choice fields plus `plan`, `archive_path`, `archive_offset_ms`, `item_index`, `cue_index`, and `choice`. Uses native track capture and returns a portable plan and `tracked-plan.json`. |
 | `camera-replay` | `database`, `run_id`, bounded `start_seconds` and `duration_seconds`, native `tuning`, and optional fast/follower target booleans. Returns original, baseline and trial trajectories from `ReplaySession`. This operation does not encode a moving camera-preview video. |
-| `camera-experiment` | A completed `database`/`run_id`, `media_kind` (`original-cameras` or `panorama`), bounded `start_seconds`, `duration_seconds` (0.1–120), `playback_start_seconds`, `video_origin_seconds`, and explicit source-confirmation/playback/overlay booleans. Original cameras use the worker-staged game calibration; panoramas require `archive_path` and validated media dimensions. Uses the shared `ReplaySession`, decoder/cropper and preview worker with hardware WebRTC output. The supervisor assigns `--preview-port=N`. |
+| `camera-experiment` | A completed `database`/`run_id`, `media_kind` (`original-cameras` or `panorama`), bounded `start_seconds`, `duration_seconds` (0.1–120), `playback_start_seconds`, `video_origin_seconds`, and explicit source-confirmation/playback/overlay booleans. Original cameras use the worker-staged game calibration; panoramas use `archive_path` and validated media dimensions when selected. An empty `archive_path` with omitted dimensions prepares trajectories without video (`camera-optional-panorama-v1`). Uses the shared `ReplaySession`, decoder/cropper and preview worker with hardware WebRTC output. The supervisor assigns `--preview-port=N`. |
+
+The outer Camera selector may bind either a published panorama artifact or one
+completed owner-scoped upload. Uploaded bytes are frozen by file identity and
+SHA-256, copied through a pinned descriptor within the run storage reservation,
+and probed before this adapter receives its private `archive_path`. They remain
+normal run inputs for cancellation and cleanup; no archive publication is invented.
+With no selected panorama, preparation, full trajectory inspection and trial
+computation use the shared CPU replay engine without creating an encoder or
+signaling listener. Play reports that video must be selected and prepared; Save
+uses the same media-binding validator as Qt. No video presentation is claimed.
+Selected media also stays metadata-only until Play or a trial opens playback.
+Unconfirmed prepared controls remain available like Qt, with command errors
+retained for the user. Revoking confirmation closes the preview; switching
+comparison views pauses it. Each command acknowledgment follows a current
+worker-state event so the browser can retire and reopen video in order.
 
 Camera Experiments accept sequential typed stdin commands for play/pause, Stop,
 frame seek, comparison view, overlays, repeat, real-time playback, source

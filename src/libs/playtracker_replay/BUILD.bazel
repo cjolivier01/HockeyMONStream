@@ -44,6 +44,7 @@ cc_binary(
 
 cc_test(
     name = "playtracker_replay_test",
+    visibility = ["//src/apps/hstream-ui:__pkg__"],
     srcs = ["ReplaySessionTest.cpp"],
     deps = [
         ":playtracker_replay",

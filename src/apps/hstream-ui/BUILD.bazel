@@ -1426,6 +1426,15 @@ sh_test(
 )
 
 sh_test(
+    name = "web_camera_metadata_test",
+    srcs = ["WebCameraMetadataTest.py"],
+    args = ["$(location :hstream-web-job)", "$(location //src/libs/playtracker_replay:playtracker_replay_test)"],
+    data = [":hstream-web-job", "//src/libs/playtracker_replay:playtracker_replay_test"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
+sh_test(
     name = "web_rink_editor_test",
     srcs = ["WebRinkEditorTest.py"],
     args = ["$(location :hstream-web-job)"],

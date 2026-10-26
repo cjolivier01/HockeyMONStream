@@ -136,6 +136,7 @@ QJsonObject Capabilities() {
            "highlight-card-without-archive-v1",
            "camera-legacy-recording-v1",
            "camera-view-catalog-v3",
+           "camera-optional-panorama-v1",
            "saved-calibration-view-v1",
            "saved-calibration-still-v1",
            "saved-calibration-reset-v1",

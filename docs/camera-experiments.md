@@ -27,10 +27,13 @@ saved trials record them alongside the other stitching settings. Unsupported ble
 modes fail preparation before the GPU graph starts.
 
 An **uncropped Stitched archive** is also supported. It may be proportionally
-downsized, with up to two pixels of encoder alignment rounding, provided it has no
-padding or cropping. Camera coordinates remain in the recorded canvas and the
-cropper scales them to the archive's resolution. A Program archive contains only
-the old camera view and cannot reveal pixels outside that crop.
+downsized. Geometry validation keeps the two-pixel allowance for uniform-resize
+rounding and also accepts independent rounding down to even dimensions when both
+axes share one encoder scale. The archive must have no padding or cropping;
+matching dimensions alone do not prove its provenance. Camera coordinates remain
+in the recorded canvas and the cropper scales them to the archive's resolution.
+A Program archive contains only the old camera view and cannot reveal pixels
+outside that crop.
 
 ## Try a camera change
 
