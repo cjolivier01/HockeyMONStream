@@ -569,6 +569,9 @@ struct HStreamWindowTestAccess {
   static hm::stitching::StitchProjectionFraming cropFraming(HStreamWindow* window) {
     return window->stitchProjectionFraming();
   }
+  static hm::stitching::StitchProjectionFraming defaultCropFraming(HStreamWindow* window) {
+    return window->default_projection_framing_;
+  }
 
   static void handleProjectionCropOutput(HStreamWindow* window, const QString& line) {
     window->handleProjectionCropOutput(line);
@@ -10399,10 +10402,23 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
   ok &= expect(
       suppressed() && YAML::LoadFile(path.string())["rink"]["camera"]["fixed_edge_rotation_angle"].IsNull(),
       "Suppression must preserve explicit null crop rotation through save");
+  const auto before_reset = YAML::Dump(YAML::LoadFile(path.string()));
   activate(reset);
   ok &= expect(
       left->isEnabled() && left->value() == 100 && right->value() == 100,
       "Reset must clear game leveling and restore baseline crop angles");
+  const auto reset_framing = HStreamWindowTestAccess::cropFraming(window);
+  const auto default_framing = HStreamWindowTestAccess::defaultCropFraming(window);
+  ok &= expect(
+      reset_framing == default_framing && reset_framing.rotation_inherited == default_framing.rotation_inherited &&
+          YAML::Dump(YAML::LoadFile(path.string())) == before_reset,
+      "Reset stages default framing and inheritance without changing saved calibration");
+  activate(save);
+  const auto reset_saved = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(path.string()));
+  ok &= expect(
+      reset_saved.ok() && *reset_saved == reset_framing &&
+          reset_saved->rotation_inherited == reset_framing.rotation_inherited,
+      "Save Preset publishes the staged default framing with inherited leveling intact");
   game->setText(original_game);
   activate(create);
   return ok;
@@ -19142,6 +19158,10 @@ int main(int argc, char** argv) {
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PATHS_ONLY"))
     return 0;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RESET_FRAMING_ONLY")) {
+    HStreamWindow window;
+    return test_leveled_crop_rotation(&window) ? 0 : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GAME_SETUP_ONLY")) {
     HStreamWindow window;
     return test_game_setup(&window, source_root.path()) ? 0 : 1;

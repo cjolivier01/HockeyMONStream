@@ -67,10 +67,25 @@ int main() {
       legacy_changed.ok() &&
           MergeRotationControls(*legacy_changed, {{"Left_Fixed_Edge_Rotation_Angle_x10", -123}}, &*legacy).ok(),
       "An edit must not shrink the session's original saved angle range");
-  for (const auto& [angle, expected] : {std::pair<double, int>{1.15, 12}, {1.05, 11}, {-1.15, -12}, {1.14999999, 11}}) {
+  for (const auto& [angle, expected] : {
+           std::pair<double, int>{1.15, 12},
+           {1.05, 11},
+           {-1.15, -12},
+           {1.14999999, 11},
+           {1.150001, 12},
+           {1.050001, 11},
+           {21.05001, 211},
+           {-21.05001, -211},
+       }) {
     config["rink"]["camera"]["fixed_edge_rotation_angle"] = angle;
     const auto canonical = ReadRotationControls(config);
-    const double effective = static_cast<float>(angle);
+    const float native_angle = static_cast<float>(angle);
+    const auto serialized = SerializeFixedEdgeRotationAngle(native_angle);
+    char* end = nullptr;
+    const double effective = std::strtof(serialized.c_str(), &end);
+    Check(
+        end == serialized.c_str() + serialized.size() && effective == native_angle,
+        "Private rotation configuration changed the native float during serialization");
     const auto readback = ReadRotationControls(config, std::make_pair(effective, effective));
     Check(
         canonical.ok() && readback.ok() && *readback == *canonical &&
@@ -78,6 +93,11 @@ int main() {
             config["rink"]["camera"]["fixed_edge_rotation_angle"].as<double>() == angle,
         "Float-backed startup readback changed an untouched canonical angle or slider step");
   }
+  config["rink"]["camera"]["fixed_edge_rotation_angle"] = 1.150001;
+  const auto nearby_alias = ReadRotationControls(config, std::make_pair(1.15F, 1.15F));
+  Check(
+      nearby_alias.ok() && nearby_alias->at("Left_Fixed_Edge_Rotation_Angle_x10") == 11,
+      "A distinct nearby native alias was mistaken for canonical float rounding");
   config["rink"]["camera"]["fixed_edge_rotation_angle"] = YAML::Load("[1.05, -1.15]");
   const auto pair_readback =
       ReadRotationControls(config, std::make_pair(static_cast<double>(1.05F), static_cast<double>(-1.15F)));

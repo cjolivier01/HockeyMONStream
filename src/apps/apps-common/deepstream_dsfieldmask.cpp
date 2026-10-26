@@ -5,6 +5,7 @@
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
+#include "hstream/src/libs/program/RotationControls.h"
 
 #include <glib-2.0/glib.h>
 #include <gst/gstelement.h>
@@ -1013,13 +1014,16 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   ppc << ";color-players=" << config->color_players;
   ppc << ";show=" << config->show;
   if (config->fixed_edge_rotation_angle_set) {
-    ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
+    ppc << ";fixed-edge-rotation-angle="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle);
   }
   if (config->fixed_edge_rotation_angle_left_set) {
-    ppc << ";fixed-edge-rotation-angle-left=" << config->fixed_edge_rotation_angle_left;
+    ppc << ";fixed-edge-rotation-angle-left="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_left);
   }
   if (config->fixed_edge_rotation_angle_right_set) {
-    ppc << ";fixed-edge-rotation-angle-right=" << config->fixed_edge_rotation_angle_right;
+    ppc << ";fixed-edge-rotation-angle-right="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_right);
   }
   ppc << ";dynamic-acceleration-scaling=" << config->dynamic_acceleration_scaling;
   if (config->fixed_edge_rotation_angle_set) {
@@ -1245,13 +1249,16 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
     ppc << ";runtime-output-max-height=" << config->runtime_output_max_height;
   }
   if (config->fixed_edge_rotation_angle_set) {
-    ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
+    ppc << ";fixed-edge-rotation-angle="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle);
   }
   if (config->fixed_edge_rotation_angle_left_set) {
-    ppc << ";fixed-edge-rotation-angle-left=" << config->fixed_edge_rotation_angle_left;
+    ppc << ";fixed-edge-rotation-angle-left="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_left);
   }
   if (config->fixed_edge_rotation_angle_right_set) {
-    ppc << ";fixed-edge-rotation-angle-right=" << config->fixed_edge_rotation_angle_right;
+    ppc << ";fixed-edge-rotation-angle-right="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_right);
   }
   ppc << ";no-crop=" << config->no_crop;
 

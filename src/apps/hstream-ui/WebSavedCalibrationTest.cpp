@@ -177,6 +177,98 @@ int main(int argc, char** argv) {
     const auto opened = invoke(argv[1], root, "calibration-view-read", {{"kind", "leveling"}});
     const auto snap = opened.value("snapshot");
     expect(opened.value("image_sizes").toArray().size() == 2, "Original images must be exposed");
+    // Reset only stages configuration. The selected source and its optimized
+    // camera alignment remain unchanged until Save Preset and the next run.
+    const auto source_bytes = [&] {
+      std::ifstream input(game / "config.yaml");
+      return std::string(std::istreambuf_iterator<char>(input), {});
+    }();
+    const QJsonObject optics{
+        {"camera_config", "gopro-mission-1"},
+        {"camera_fov", QJsonObject{{"horizontal_fov", 109}, {"vertical_fov", 64}}},
+        {"input_lens",
+         QJsonObject{
+             {"projection", "rectilinear"},
+             {"optimization", "auto"},
+             {"distortion", QJsonArray{0, 0, 0}},
+             {"center_offset", QJsonArray{0, 0}}}},
+        {"camera_automation", QJsonObject{{"fov", false}, {"lens", false}}},
+        {"rink_config", "sharks-ice"}};
+    for (bool solver_changed : {false, true}) {
+      QTemporaryDir reset_temporary;
+      const fs::path reset_root(reset_temporary.path().toStdString());
+      fs::copy(game, reset_root / "game", fs::copy_options::recursive);
+      auto controls = optics;
+      if (solver_changed)
+        controls.insert("calibration_frame_count", 3);
+      const auto reset = invoke(
+          argv[1],
+          reset_root,
+          "calibration-view-reset",
+          {{"config", QJsonObject{{"stitching", controls}}},
+           {"defaults", QJsonObject{{"stitching", QJsonObject{{"rink_config", "sharks-ice"}}}}},
+           {"source_changed", false},
+           {"settings_changed", true},
+           {"output_changed", false}});
+      if (reset.value("alignment_reused").toBool() != !solver_changed) {
+        std::cerr << QJsonDocument(reset).toJson().constData();
+      }
+      expect(
+          reset.value("staged").toBool() && reset.value("pending").toBool() &&
+              reset.value("alignment_reused").toBool() == !solver_changed,
+          "Reset must distinguish preserved alignment from changed solve inputs");
+      expect(
+          reset.value("rotation_inherited").toBool() && reset.value("angles").toArray() == QJsonArray{0, -15, 0},
+          "Reset inherits the resolved nonzero rink default instead of inventing zero angles");
+      expect(
+          reset.value("rink_config").toString() == "sharks-ice" &&
+              reset.value("rink_profiles").toObject().value("sharks-ice").toBool(),
+          "Reset carries native rink ownership for dormant browser fixed-edge controls");
+      const auto reset_config = YAML::LoadFile((reset_root / "game/config.yaml").string());
+      const auto state = reset_config["hstream_ui"]["stitching_calibration"];
+      expect(
+          reset_config["stitching"]["projection_framing"]["rotation_degrees"].IsNull(),
+          "Reset preserves null/inherited leveling in private YAML");
+      expect(
+          state["status"].as<std::string>() == "pending" &&
+              state["stale_from"].as<std::string>() == (solver_changed ? "input" : "canvas") &&
+              reset_config["rink"]["scoreboard"]["perspective_polygon"].IsNull(),
+          "Reset owns pending regeneration and invalidates dependent scoreboard geometry");
+      expect(reset.value("config_sha256").toString().size() == 64, "Reset receipt must bind the exact staged config");
+      invoke(argv[1], reset_root, "calibration-view-read", {{"kind", "leveling"}}, false);
+    }
+    {
+      QTemporaryDir reset_temporary;
+      const fs::path reset_root(reset_temporary.path().toStdString());
+      fs::copy(game, reset_root / "game", fs::copy_options::recursive);
+      auto controls = optics;
+      controls.insert("rink_config", "");
+      const auto reset = invoke(
+          argv[1],
+          reset_root,
+          "calibration-view-reset",
+          {{"config", QJsonObject{{"stitching", controls}}},
+           {"defaults",
+            QJsonObject{
+                {"stitching",
+                 QJsonObject{
+                     {"projection_framing",
+                      QJsonObject{
+                          {"auto_fov", false},
+                          {"horizontal_fov", 180},
+                          {"rotation_degrees", QJsonArray{0, -15, 3}}}}}}}},
+           {"source_changed", false},
+           {"settings_changed", false},
+           {"output_changed", false}});
+      expect(
+          !reset.value("changed").toBool() && !reset.value("pending").toBool(),
+          "Identical default framing does not invalidate or adopt a new calibration");
+    }
+    const auto unchanged_bytes = [&] {
+      std::ifstream input(game / "config.yaml");
+      return std::string(std::istreambuf_iterator<char>(input), {});
+    }();
+    expect(source_bytes == unchanged_bytes, "Staging or cancelling Reset must preserve the selected source bytes");
     QJsonArray cameras;
     for (int camera = 0; camera < 2; ++camera) {
       QJsonArray points;

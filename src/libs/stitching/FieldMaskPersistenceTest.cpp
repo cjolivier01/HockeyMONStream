@@ -1,3 +1,4 @@
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -7,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -1467,6 +1469,145 @@ int main() {
       "rink profile writer must reject masks, config, and stitched snapshot above the artifact limit");
   profile.masks[1] = cv::Mat(10, 10, CV_8U);
   ok &= expect(!hm::stitching::save_rink_profile(root.string(), profile).ok(), "mixed mask dimensions must fail");
+  // Retained selected-frame input is adopted with the exact mask generation,
+  // remains portable, and survives a rejected or cancelled successor.
+  {
+    using namespace hm::stitching;
+    const fs::path timed = root / "timed";
+    fs::create_directory(timed);
+    for (const auto& entry : fs::directory_iterator(root)) {
+      const std::string name = entry.path().filename().string();
+      if (entry.is_regular_file() &&
+          (name.find("mapping_") == 0 || name == "hm_project.pto" || name == "autooptimiser_out.pto" ||
+           name == "seam_file.png"))
+        fs::copy_file(entry.path(), timed / name);
+    }
+    YAML::Node config;
+    config["stitching"]["rink_mask_frame_time"] = "-00:00:01";
+    config["stitching"]["post_stitch_rotate_degrees"] = 0.0;
+    std::ofstream(timed / "config.yaml") << config;
+    std::ofstream(timed / "left.mp4") << "left";
+    std::ofstream(timed / "right.mp4") << "right";
+    auto lock = HuginProject::RecoverAndLock(timed);
+    auto generation =
+        lock.ok() ? HuginProject::GenerationId(timed, **lock) : absl::StatusOr<std::string>(lock.status());
+    RinkMaskInputDescription description;
+    description.width = 32;
+    description.height = 24;
+    description.format = "rgba8";
+    description.hugin_generation = generation.ok() ? *generation : "invalid";
+    auto identity = stitch_artifact_content_identity_locked(timed);
+    description.hugin_fingerprint = identity.ok() ? identity->fingerprint : std::string(64, 'a');
+    description.frame.selection = "-00:00:01";
+    description.frame.recording_time_ns = 99000000000ULL;
+    description.frame.sources = {{{timed / "left.mp4", 99.0}, {timed / "right.mp4", 99.5}}};
+    lock = absl::CancelledError("release lock");
+    const RinkMaskInputLimits limits{2147483648ULL, 2214592512ULL};
+    auto input = PublishRinkMaskInput(timed, description, limits, [](uint32_t y, void* row, size_t bytes) {
+      std::memset(row, y, bytes);
+      return absl::OkStatus();
+    });
+    ok &= expect(generation.ok() && input.ok(), "timed fixture must retain its original unrotated pixels");
+    if (generation.ok() && input.ok()) {
+      description.frame.input_id = input->id;
+      auto output = stitched_output_generation_id(*generation, 0.0, 32, 24);
+      const auto writer = [](const fs::path& path) {
+        return cv::imwrite(path.string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(32, 64, 96)))
+            ? absl::OkStatus()
+            : absl::InternalError("fixture image write failed");
+      };
+      ::setenv("HM_TEST_RINK_FORCE_PROFILE", "1", 1);
+      auto published = create_field_mask(timed.string(), writer, *output, {}, {}, {}, description.frame);
+      if (!published.ok())
+        std::cerr << published << '\n';
+      ok &= expect(published.ok(), "timed mask publication adopts the retained input");
+      auto adopted = YAML::LoadFile((timed / "config.yaml").string());
+      ok &= expect(
+          adopted["rink"]["mask_frame"]["input_id"].as<std::string>("") == input->id &&
+              LoadRinkMaskInputForConfig(timed, adopted, *generation, description.hugin_fingerprint, 32, 24).ok(),
+          "published input reference validates against exact frame and Hugin generation");
+      const std::string before = YAML::Dump(adopted);
+      auto wrong_description = description;
+      wrong_description.hugin_fingerprint = std::string(64, 'b');
+      auto wrong_input =
+          PublishRinkMaskInput(timed, wrong_description, limits, [](uint32_t y, void* row, size_t bytes) {
+            std::memset(row, y, bytes);
+            return absl::OkStatus();
+          });
+      ok &= expect(wrong_input.ok(), "wrong-fingerprint fixture must be a structurally valid immutable bundle");
+      if (wrong_input.ok()) {
+        auto wrong_frame = description.frame;
+        wrong_frame.input_id = wrong_input->id;
+        ok &= expect(
+            !create_field_mask(timed.string(), writer, *output, {}, {}, {}, wrong_frame).ok(),
+            "publication must reject the wrong Hugin content fingerprint");
+        auto wrong_config = YAML::Clone(adopted);
+        wrong_config["rink"]["mask_frame"]["input_id"] = wrong_input->id;
+        ok &= expect(
+            !LoadRinkMaskInputForConfig(timed, wrong_config, *generation, description.hugin_fingerprint, 32, 24).ok(),
+            "reuse rejects the wrong Hugin content fingerprint");
+      }
+      auto invalid_frame = description.frame;
+      invalid_frame.recording_time_ns = 1;
+      ok &= expect(
+          !create_field_mask(timed.string(), writer, *output, {}, {}, {}, invalid_frame).ok(),
+          "a different sampled position cannot claim retained pixels");
+      ok &= expect(
+          YAML::Dump(YAML::LoadFile((timed / "config.yaml").string())) == before,
+          "rejected input adoption preserves committed mask and provenance");
+      ok &= expect(
+          absl::IsCancelled(create_field_mask(
+              timed.string(), writer, *output, {}, [] { return true; }, {}, description.frame)),
+          "cancelled successor preserves retained evidence");
+      // Cancel after inference, first while the retained input is verified and
+      // then after rollback files are staged. Neither may adopt new artifacts.
+      const auto read_bytes = [](const fs::path& path) {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+      };
+      const std::string prior_config = read_bytes(timed / "config.yaml");
+      const std::string prior_mask = read_bytes(timed / "rink_mask_0.png");
+      const std::string prior_image = read_bytes(timed / "s.png");
+      for (const std::string& staged_artifact : {std::string("s.png"), std::string("new-files")}) {
+        bool observed_staging = false;
+        const auto stop_when_staged = [&] {
+          for (const auto& entry : fs::directory_iterator(timed)) {
+            if (entry.path().filename().string().find("hstream-rink-") == 0 &&
+                fs::exists(entry.path() / staged_artifact)) {
+              observed_staging = true;
+              return true;
+            }
+          }
+          return false;
+        };
+        const auto stopped = create_field_mask(
+            timed.string(), writer, *output, {}, stop_when_staged, {}, description.frame);
+        ok &= expect(observed_staging && absl::IsCancelled(stopped), "Stop must reach mask publication staging");
+        if (staged_artifact == "s.png")
+          ok &= expect(
+              stopped.message() == "Rink-mask input operation cancelled",
+              "publication must forward Stop into the retained-input checksum");
+        ok &= expect(
+            read_bytes(timed / "config.yaml") == prior_config &&
+                read_bytes(timed / "rink_mask_0.png") == prior_mask && read_bytes(timed / "s.png") == prior_image,
+            "Stop during publication must preserve exact committed config, mask and panorama bytes");
+        for (const auto& entry : fs::directory_iterator(timed))
+          ok &= expect(
+              entry.path().filename().string().find("hstream-rink-") != 0,
+              "cancelled publication must retire its private staging directory");
+      }
+      ok &= expect(
+          InspectRinkMaskInput(timed, input->id, limits).ok(), "prior evidence survives rejection and cancellation");
+      auto stale = LoadRinkMaskInputForConfig(
+          timed, adopted, "different-Hugin-generation", description.hugin_fingerprint, 32, 24);
+      ok &= expect(!stale.ok(), "changed mapping cannot reuse selected-frame evidence");
+      adopted["stitching"]["rink_mask_frame_time"] = "00:00:04";
+      ok &= expect(
+          !LoadRinkMaskInputForConfig(timed, adopted, *generation, description.hugin_fingerprint, 32, 24).ok(),
+          "changed frame selection cannot reuse selected-frame evidence");
+      ::unsetenv("HM_TEST_RINK_FORCE_PROFILE");
+    }
+  }
   fs::remove_all(root);
   return ok ? 0 : 1;
 }

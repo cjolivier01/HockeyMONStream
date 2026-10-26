@@ -20,6 +20,7 @@
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
 #include "configurator.h"
+#include "hstream/src/apps/apps-common/PipelineStartupError.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/program/PreviewOverlayConfig.h"
@@ -579,7 +580,7 @@ absl::Status pause_pipeline_for_model_initialization(
   set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, TRUE);
   if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
     set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, FALSE);
-    return absl::InternalError("Failed to set pipeline to PAUSED");
+    return hm::gst::PipelineStartupFailure(pipeline, "Failed to set pipeline to PAUSED");
   }
   constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
   constexpr auto kCancellationTimeout = std::chrono::seconds(5);
@@ -606,7 +607,7 @@ absl::Status pause_pipeline_for_model_initialization(
       return absl::CancelledError("Pipeline initialization interrupted");
     }
     if (result == GST_STATE_CHANGE_FAILURE) {
-      return absl::InternalError("Pipeline failed while initializing models");
+      return hm::gst::PipelineStartupFailure(pipeline, "Pipeline failed while initializing models");
     }
     // Initial seek blockers can hold preroll until both decoded camera pads
     // exist. The bus watch is not dispatched until playPipelines() starts the

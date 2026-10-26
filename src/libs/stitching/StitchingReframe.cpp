@@ -485,7 +485,10 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
     const YAML::Node& before_config,
     const YAML::Node& desired_config,
     const std::string& desired_owner,
-    YAML::Node& desired_private) {
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed) {
+  if (solve_inputs_changed)
+    *solve_inputs_changed = false;
   try {
     const bool existing = HasStitchingReframeIntent(before_config);
     const auto previous_state = calibration(before_config);
@@ -519,6 +522,8 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
       }
     }
     if (canonical_text(comparable_original) != canonical_text(comparable_requested)) {
+      if (solve_inputs_changed)
+        *solve_inputs_changed = true;
       ClearStitchingReframeIntent(desired_private);
       return false;
     }

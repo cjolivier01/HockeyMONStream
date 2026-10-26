@@ -28,6 +28,32 @@ frame admitted under an old setting cannot receive the new operation. Video
 remains on the GPU. These native ownership/admission tests do not qualify AMD
 browser presentation or replace real decoded-frame workflow comparisons.
 
+Timed rink masks retain their original unrotated, ungraded panorama in
+`rink-mask-input/<manifest-sha256>/`. The immutable manifest binds the logical
+Hugin generation and content fingerprint, selected recording time, original
+camera samples and encoded-payload checksum. `rink.mask_frame.input_id` is
+adopted with the mask/provenance transaction; the large TIFF stays outside its
+rollback snapshot. Private copies preserve manifest bytes and historical source
+paths. Failed or cancelled publication preserves the previous reference.
+
+The selected-time preparation pass captures one panorama through bounded row
+buffers: RGBA8, or exact half4 encodings before rotation and tone conversion.
+Live rotation reloads that original and uses the existing GPU rotation and
+calibration conversion before inference. Repeated angles never resample an
+already rotated mask. This requires one D2H capture per retained input generation
+and one bounded H2D reload per mask regeneration; steady-state video stays on
+the GPU. The half4 path reuses the completed live frame's blend workspace after
+its output conversion; RGBA8 uses a separate calibration canvas. Required
+`stitching.rink_mask_input` limits come from the shared baseline. Capture/reload
+logs report raw bytes, TIFF bytes and elapsed milliseconds; inference/publication
+has a separate timing. Legacy timed masks without valid retained input enter
+the existing selected-time preparation pass before normal playback. Runs that
+do not need a rink mask skip this work. Superseded publication drops output
+batches until a valid mask owns the advertised generation. Property acknowledgments
+retain their existing transaction timing; browser admission still requires a
+fresh matching frame. Full-size paired Qt/browser and hardware qualification
+must verify regeneration latency, cancellation and repeated-angle presentation.
+
 `PreviewRouteOwner` owns logical route selection and its operation generation.
 The desktop CLI registers its existing gates and renderer callbacks, retaining
 the legacy `HSTREAM_PREVIEW` acknowledgments. Selection closes ingress before

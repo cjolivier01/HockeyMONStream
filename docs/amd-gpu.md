@@ -477,8 +477,13 @@ this stage converts YUV matrices/ranges but is not a tone mapper.
 The owner pins and validates saved control maps and the exact-generation rink
 mask before GPU preparation. It currently requires the current unrotated saved
 geometry; calibration, post-stitch rotation and reconstruction on changed
-source caps remain application work. The caller owns source identity, stereo
-pairing, timestamps, output pools and decoder/sink lifecycles.
+source caps remain application work. The shared `RinkMaskInputStore` validates
+and copies exact retained selected-time panoramas without a GPU dependency.
+NVIDIA's selected-time capture and live mask regeneration use it, but this does
+not add AMD live post-stitch rotation: AMD still rejects that unsupported request.
+HIP capture/reload and actual AMD rotated-mask presentation remain unimplemented
+and unqualified. The caller owns source identity, stereo pairing, timestamps,
+output pools and decoder/sink lifecycles.
 
 `Reset` clears camera/object histories and the last renderable frame after a
 seek, preserving model compilation and stitch allocations. Object IDs are not

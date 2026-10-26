@@ -14,8 +14,12 @@ struct CameraExperimentCatalogView {
   const std::vector<hm::playtracker_replay::Frame>* frames;
 };
 
-// Trajectories are immutable after the compact catalog publishes them. A failed
-// batch may leave unlisted files; retry replaces those files before publication.
+inline constexpr std::size_t kCameraHistoryPageViews = 64;
+inline constexpr std::size_t kCameraChunkBytes = 4 * 1024 * 1024;
+inline constexpr int kCameraChunkItems = 1024;
+
+// Trajectories and history pages are immutable after the compact head publishes
+// them. A failed batch removes its new files and retains the preceding head.
 void PublishCameraExperimentCatalog(
     const std::filesystem::path& root,
     const std::string& run,

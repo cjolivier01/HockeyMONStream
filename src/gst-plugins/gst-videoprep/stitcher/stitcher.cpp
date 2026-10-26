@@ -9,9 +9,11 @@
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationCompletion.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
+#include "hstream/src/libs/stitching/RinkMaskInputStore.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 
@@ -266,6 +268,7 @@ void StitcherPriv::Shutdown() {
   calibration_run_generation_.clear();
   mask_preparation_ = false;
   mask_frame_ = {};
+  mask_input_limits_.reset();
   field_mask_authority_monitor_.reset();
   update_live_output_epoch(std::nullopt, std::string(), std::string());
   release_rotation_scratch();
@@ -1706,6 +1709,20 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     RequestShutdown();
   } else if (prop.key == "mask-preparation") {
     mask_preparation_ = std::atol(prop.value.c_str()) != 0;
+  } else if (prop.key == "rink-mask-input-max-raw-bytes" || prop.key == "rink-mask-input-max-file-bytes") {
+    if (caps_initialized_ || prop.value.empty() || prop.value.front() == '-')
+      return false;
+    errno = 0;
+    char* end = nullptr;
+    const auto bytes = std::strtoull(prop.value.c_str(), &end, 10);
+    if (end == prop.value.c_str() || *end || errno == ERANGE || bytes == 0)
+      return false;
+    if (!mask_input_limits_)
+      mask_input_limits_ = stitching::RinkMaskInputLimits{0, 0};
+    if (prop.key == "rink-mask-input-max-raw-bytes")
+      mask_input_limits_->max_raw_bytes = bytes;
+    else
+      mask_input_limits_->max_file_bytes = bytes;
   } else if (prop.key == "rink-mask-frame-time") {
     mask_frame_.selection = prop.value;
   } else if (prop.key == "rink-mask-frame-position-ns") {
@@ -2486,10 +2503,6 @@ absl::Status StitcherPriv::GenerateOutput(
     logical_output_params.planeParams.height[0] = canvas->height();
     hm::surface::Surface logical_output_surface(&logical_output_params);
 
-    if (!stitcher_rgb10_fp16_) {
-      HM_RETURN_IF_ERROR(apply_post_stitch_rotation(
-          logical_output_surface, canvas->width(), canvas->height(), applied_post_stitch_rotation));
-    }
     std::string hugin_generation;
     {
       absl::MutexLock lk(&stitcher_mu_);
@@ -2528,6 +2541,7 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
 
+    bool live_surface_rotated = false;
     if (one_pass_mode_ && attempt_field_mask) {
       if (field_mask_attempted_)
         calibration_completion_ready_ = false;
@@ -2535,8 +2549,9 @@ absl::Status StitcherPriv::GenerateOutput(
       field_mask_attempted_generation_ = output_generation;
       field_mask_attempted_authorization_id_ = output_authorization_id;
       bool mask_configured = !calibrate_field_mask_ ||
-          stitching::is_field_mask_configured_for_loaded_generation(
-              config_file_, output_generation, hugin_generation, calibration_invalidation_id_);
+          (!mask_preparation_ &&
+           stitching::is_field_mask_configured_for_loaded_generation(
+               config_file_, output_generation, hugin_generation, calibration_invalidation_id_));
       OnePassCalibrationProgressPlan progress = one_pass_calibration_progress_plan(
           configured_during_run_,
           mask_configured,
@@ -2550,26 +2565,125 @@ absl::Status StitcherPriv::GenerateOutput(
         CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
         std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
         mask_configured = !calibrate_field_mask_ ||
-            stitching::is_field_mask_configured_for_loaded_generation(
-                config_file_, output_generation, hugin_generation, calibration_invalidation_id_);
+            (!mask_preparation_ &&
+             stitching::is_field_mask_configured_for_loaded_generation(
+                 config_file_, output_generation, hugin_generation, calibration_invalidation_id_));
         if (!mask_configured) {
           hm::surface::Surface field_mask_surface = logical_output_surface;
-          if (stitcher_rgb10_fp16_) {
-            if (!high_bit_field_mask_canvas_ ||
-                high_bit_field_mask_canvas_->width() != current_high_bit_canvas->width() ||
-                high_bit_field_mask_canvas_->height() != current_high_bit_canvas->height()) {
-              high_bit_field_mask_canvas_ = std::make_unique<hm::CudaMat<uchar4>>(
-                  /*batch_size=*/1,
-                  current_high_bit_canvas->width(),
-                  current_high_bit_canvas->height(),
-                  /*pixel_channels=*/1);
+          stitching::RinkMaskFrameProvenance frame = mask_frame_;
+          frame.sources = {
+              calibration_frame_source(frame_info_left.frame_meta),
+              calibration_frame_source(frame_info_right.frame_meta)};
+          auto saved = stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml");
+          if (!saved.ok())
+            return report_calibration_failure(saved.status());
+          YAML::Node saved_config = saved->value_or(YAML::Node(YAML::NodeType::Map));
+          std::string requested_time;
+          HM_ASSIGN_OR_RETURN(requested_time, stitching::read_rink_mask_frame_time(saved_config));
+          std::optional<stitching::RinkMaskInput> retained;
+          const auto is_cancelled = [this] { return calibration_cancelled_.load(std::memory_order_acquire); };
+          const std::string input_format = stitcher_rgb10_fp16_ ? "half4-bits" : "rgba8";
+          const auto input_started = std::chrono::steady_clock::now();
+          if (requested_time != "auto") {
+            stitching::RinkMaskInputLimits limits;
+            if (mask_input_limits_) {
+              limits = *mask_input_limits_;
+            } else {
+              HM_ASSIGN_OR_RETURN(limits, stitching::ReadRinkMaskInputLimits(saved_config));
             }
-            if (!high_bit_field_mask_canvas_ || !high_bit_field_mask_canvas_->is_valid()) {
+            // Keep the effective runtime bounds for validation of the saved
+            // reference, including overrides supplied by the configurator.
+            saved_config["stitching"]["rink_mask_input"]["max_raw_bytes"] = limits.max_raw_bytes;
+            saved_config["stitching"]["rink_mask_input"]["max_file_bytes"] = limits.max_file_bytes;
+            auto lock = stitching::HuginProject::RecoverAndLock(config_file_);
+            if (!lock.ok())
+              return report_calibration_failure(lock.status());
+            stitching::StitchArtifactContentIdentity identity;
+            HM_ASSIGN_OR_RETURN(identity, stitching::stitch_artifact_content_identity_locked(config_file_));
+            if (identity.generation_id != hugin_generation)
+              return report_calibration_failure(absl::AbortedError("Rink-mask input mapping changed"));
+            if (mask_preparation_ && frame.selection == requested_time && frame.recording_time_ns) {
+              stitching::RinkMaskInputDescription description;
+              description.width = canvas->width();
+              description.height = canvas->height();
+              description.format = input_format;
+              description.hugin_generation = identity.generation_id;
+              description.hugin_fingerprint = identity.fingerprint;
+              description.frame = frame;
+              const void* original = stitcher_rgb10_fp16_
+                  ? static_cast<const void*>(current_high_bit_canvas->data_raw())
+                  : canvas->data_raw();
+              const size_t pitch = stitcher_rgb10_fp16_ ? current_high_bit_canvas->pitch() : canvas->pitch();
+              // One bounded D2H capture at the selected recording frame, before
+              // rotation/tone. Normal playback never reads pixels back here.
+              HM_ASSIGN_OR_RETURN(
+                  retained,
+                  stitching::PublishRinkMaskInput(
+                      config_file_,
+                      description,
+                      limits,
+                      [&](uint32_t y, void* row, size_t bytes) -> absl::Status {
+                        HM_RETURN_IF_ERROR(to_status(cudaMemcpyAsync(
+                            row,
+                            static_cast<const char*>(original) + y * pitch,
+                            bytes,
+                            cudaMemcpyDeviceToHost,
+                            cuda_stream_)));
+                        return to_status(cudaStreamSynchronize(cuda_stream_));
+                      },
+                      is_cancelled));
+              frame.input_id = retained->id;
+            } else {
+              HM_ASSIGN_OR_RETURN(
+                  retained,
+                  stitching::LoadRinkMaskInputForConfig(
+                      config_file_,
+                      saved_config,
+                      hugin_generation,
+                      identity.fingerprint,
+                      canvas->width(),
+                      canvas->height(),
+                      is_cancelled));
+              if (retained->description.format != input_format)
+                return report_calibration_failure(
+                    absl::FailedPreconditionError(
+                        "Retained rink-mask input precision changed; a selected-frame preparation pass is required"));
+              frame = retained->description.frame;
+            }
+          }
+          const bool reuse_input = retained.has_value() && !mask_preparation_;
+          if (stitcher_rgb10_fp16_ || reuse_input) {
+            if (!high_bit_field_mask_canvas_ || high_bit_field_mask_canvas_->width() != canvas->width() ||
+                high_bit_field_mask_canvas_->height() != canvas->height()) {
+              high_bit_field_mask_canvas_ = std::make_unique<hm::CudaMat<uchar4>>(
+                  /*batch_size=*/1, canvas->width(), canvas->height(), /*pixel_channels=*/1);
+            }
+            if (!high_bit_field_mask_canvas_ || !high_bit_field_mask_canvas_->is_valid())
               return report_calibration_failure(
                   absl::ResourceExhaustedError("Could not allocate the ungraded rink-mask calibration canvas"));
-            }
             high_bit_field_mask_canvas_params_ =
                 cuda_mat_surface_params(*high_bit_field_mask_canvas_, NVBUF_COLOR_FORMAT_RGBA);
+            field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
+          }
+          if (reuse_input) {
+            // High-bit live output conversion is already queued on this stream.
+            // Its borrowed blend workspace can now hold the retained original;
+            // the outgoing video surface remains untouched.
+            void* target = stitcher_rgb10_fp16_ ? static_cast<void*>(current_high_bit_canvas->data_raw())
+                                                : high_bit_field_mask_canvas_->data_raw();
+            const size_t pitch =
+                stitcher_rgb10_fp16_ ? current_high_bit_canvas->pitch() : high_bit_field_mask_canvas_->pitch();
+            HM_RETURN_IF_ERROR(
+                stitching::ReadRinkMaskInputRows(
+                    *retained,
+                    [&](uint32_t y, const void* row, size_t bytes) -> absl::Status {
+                      HM_RETURN_IF_ERROR(to_status(cudaMemcpyAsync(
+                          static_cast<char*>(target) + y * pitch, row, bytes, cudaMemcpyHostToDevice, cuda_stream_)));
+                      return to_status(cudaStreamSynchronize(cuda_stream_));
+                    },
+                    is_cancelled));
+          }
+          if (stitcher_rgb10_fp16_) {
             HM_RETURN_IF_ERROR(to_status(convertHalf4ToCalibrationRgba8(
                 current_high_bit_canvas->data(),
                 current_high_bit_canvas->pitch(),
@@ -2578,13 +2692,21 @@ absl::Status StitcherPriv::GenerateOutput(
                 &high_bit_field_mask_canvas_params_,
                 applied_post_stitch_rotation,
                 cuda_stream_)));
-            // Field-mask calibration downloads this one-time surface immediately.
-            HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
-            field_mask_surface = hm::surface::Surface(&high_bit_field_mask_canvas_params_);
+          } else {
+            HM_RETURN_IF_ERROR(apply_post_stitch_rotation(
+                field_mask_surface, canvas->width(), canvas->height(), applied_post_stitch_rotation));
           }
-          mask_frame_.sources = {
-              calibration_frame_source(frame_info_left.frame_meta),
-              calibration_frame_source(frame_info_right.frame_meta)};
+          HM_RETURN_IF_ERROR(to_status(cudaStreamSynchronize(cuda_stream_)));
+          if (retained) {
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - input_started)
+                    .count();
+            std::cout << "Rink-mask input " << (reuse_input ? "reload" : "capture") << ": format=" << input_format
+                      << " raw-bytes=" << uint64_t(canvas->width()) * canvas->height() * (stitcher_rgb10_fp16_ ? 8 : 4)
+                      << " file-bytes=" << retained->file_bytes << " elapsed-ms=" << elapsed << "\n"
+                      << std::flush;
+          }
+          const auto inference_started = std::chrono::steady_clock::now();
           absl::Status mask_status = stitching::create_field_mask(
               config_file_,
               field_mask_surface,
@@ -2592,7 +2714,17 @@ absl::Status StitcherPriv::GenerateOutput(
               calibration_invalidation_id_,
               [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
               output_authorization_id,
-              mask_frame_);
+              frame);
+          std::cout << "Rink-mask inference/publication: elapsed-ms="
+                    << std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now() - inference_started)
+                           .count()
+                    << " status=" << mask_status << "\n"
+                    << std::flush;
+          // A first eight-bit preparation uses the live surface for inference;
+          // mark it rotated so the delivery path does not rotate it twice.
+          if (!stitcher_rgb10_fp16_ && !reuse_input)
+            live_surface_rotated = true;
           release_high_bit_field_mask_canvas();
           if (!mask_status.ok()) {
             if (absl::IsAborted(mask_status)) {
@@ -2663,6 +2795,18 @@ absl::Status StitcherPriv::GenerateOutput(
           }
         }
       }
+    }
+
+    if (one_pass_mode_ && field_mask_publication_superseded_) {
+      // No frame can advertise this output generation until its corresponding
+      // mask publication succeeds. The worker drops this batch and the existing
+      // control-plane monitor waits for supersession/rollback without blocking
+      // the property acknowledgment or emitting stale-mask preview pixels.
+      return videoprep::runtime_output_pool_deferred_status("Waiting for rink-mask publication authority");
+    }
+    if (!stitcher_rgb10_fp16_ && !live_surface_rotated) {
+      HM_RETURN_IF_ERROR(apply_post_stitch_rotation(
+          logical_output_surface, canvas->width(), canvas->height(), applied_post_stitch_rotation));
     }
 
     if (!stitching::add_stitched_output_generation_meta(

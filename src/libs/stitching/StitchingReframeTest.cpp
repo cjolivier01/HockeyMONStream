@@ -204,9 +204,11 @@ bool test_ownership_and_edits(const fs::path& root) {
       "automatic reframe solver snapshots retain the legacy schema and fingerprints");
   auto changed_lens = desired_view(before);
   changed_lens["stitching"]["input_lens"]["projection"] = "full-frame-fisheye";
-  const auto lens_reframe = PrepareStitchingReframeIntentLocked(root, before, changed_lens, "lens-edit", changed_lens);
+  bool solve_inputs_changed = false;
+  const auto lens_reframe =
+      PrepareStitchingReframeIntentLocked(root, before, changed_lens, "lens-edit", changed_lens, &solve_inputs_changed);
   ok &= expect(
-      lens_reframe.ok() && !*lens_reframe && !HasStitchingReframeIntent(changed_lens),
+      lens_reframe.ok() && !*lens_reframe && !HasStitchingReframeIntent(changed_lens) && solve_inputs_changed,
       "changing source optics requires alignment rather than reusing the old solve");
   pending(desired, "view-1");
   auto valid = ValidateStitchingReframeIntentLocked(root, desired);

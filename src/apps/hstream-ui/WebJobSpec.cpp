@@ -89,6 +89,7 @@ QJsonObject Capabilities() {
       "calibration-view-landmarks",
       "calibration-view-preview",
       "calibration-view-save",
+      "calibration-view-reset",
       "calibration-view-rotation-stage",
       "rink-map-read",
       "rink-map-update",
@@ -132,8 +133,9 @@ QJsonObject Capabilities() {
            "highlight-archive-info-v1",
            "highlight-card-without-archive-v1",
            "camera-legacy-recording-v1",
-           "camera-view-catalog-v2",
+           "camera-view-catalog-v3",
            "saved-calibration-view-v1",
+           "saved-calibration-reset-v1",
            "calibration-view-rotation-stage-v1"}},
       {"maximum_request_bytes", int(kMaximumRequestBytes)},
       {"maximum_result_bytes", int(kMaximumResultBytes)}};

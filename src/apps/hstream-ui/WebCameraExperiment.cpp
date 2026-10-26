@@ -131,36 +131,104 @@ DsPlayTrackerRuntimeTuning tuning(const QJsonObject& payload) {
 QJsonValue box(const std::optional<hm::BBox>& value) {
   return value ? QJsonValue(QJsonArray{value->left, value->top, value->right, value->bottom}) : QJsonValue();
 }
-QJsonArray frames(const std::vector<replay::Frame>& input) {
-  require(input.size() <= 50000, "Camera trajectory exceeds its sample limit");
-  QJsonArray result;
-  for (const auto& frame : input) {
-    QJsonArray players;
-    if (frame.overlays)
-      for (const auto& player : frame.overlays->player_rects)
-        players.append(QJsonArray{player.rect.left + player.rect.width / 2, player.ignored});
-    result.append(
-        QJsonObject{
-            {"sample", QString::number(frame.sample_id)},
-            {"pts", QString::number(frame.pts_ns)},
-            {"fast", box(frame.fast)},
-            {"follower", box(frame.follower)},
-            {"cluster", box(frame.tracking.cluster)},
-            {"breakaway_target", box(frame.tracking.breakaway_target)},
-            {"breakaway_edge",
-             frame.tracking.breakaway_edge ? QJsonValue(frame.tracking.breakaway_edge->x) : QJsonValue()},
-            {"players", players},
-            {"rink_camera",
-             frame.rink_camera ? QJsonValue(
-                                     QJsonObject{
-                                         {"active", frame.rink_camera->active},
-                                         {"speed_mps", frame.rink_camera->speed_mps},
-                                         {"lead_pixels", frame.rink_camera->lead_pixels},
-                                         {"zoom_ratio", frame.rink_camera->zoom_ratio},
-                                         {"goal", frame.rink_camera->goal}})
-                               : QJsonValue()}});
+QJsonObject frame_fields(const replay::Frame& frame) {
+  return {
+      {"sample", QString::number(frame.sample_id)},
+      {"pts", QString::number(frame.pts_ns)},
+      {"fast", box(frame.fast)},
+      {"follower", box(frame.follower)},
+      {"cluster", box(frame.tracking.cluster)},
+      {"breakaway_target", box(frame.tracking.breakaway_target)},
+      {"breakaway_edge", frame.tracking.breakaway_edge ? QJsonValue(frame.tracking.breakaway_edge->x) : QJsonValue()},
+      {"player_width", frame.overlays ? QJsonValue(frame.overlays->coordinate_width) : QJsonValue()},
+      {"rink_camera",
+       frame.rink_camera ? QJsonValue(
+                               QJsonObject{
+                                   {"active", frame.rink_camera->active},
+                                   {"speed_mps", frame.rink_camera->speed_mps},
+                                   {"lead_pixels", frame.rink_camera->lead_pixels},
+                                   {"zoom_ratio", frame.rink_camera->zoom_ratio},
+                                   {"goal", frame.rink_camera->goal}})
+                         : QJsonValue()}};
+}
+
+// Players may dominate a single admitted frame. Fragment their exact point list
+// too, rather than imposing a transport-only limit on that frame's track count.
+void write_trajectory(
+    const std::filesystem::path& root,
+    const std::string& run,
+    std::size_t view,
+    const std::vector<replay::Frame>& frames,
+    std::vector<std::filesystem::path>& created) {
+  Request request;
+  request.root = root;
+  QJsonArray chunks, items;
+  std::size_t bytes = 0;
+  int first = 0, last = 0;
+  const auto write = [&](const std::string& name, const QJsonObject& document) {
+    const auto path = root / name;
+    require(
+        !std::filesystem::exists(std::filesystem::symlink_status(path)),
+        "Camera publication would replace an immutable file");
+    created.push_back(path);
+    require(
+        std::size_t(QJsonDocument(document).toJson(QJsonDocument::Compact).size()) <= kCameraChunkBytes,
+        "Camera page exceeds its size bound");
+    WriteObject(path, document);
+    return Artifact(request, path, "metadata");
+  };
+  const auto flush = [&] {
+    if (items.isEmpty())
+      return;
+    const int chunk = chunks.size();
+    const auto receipt = write(
+        "camera-view-" + std::to_string(view) + "-chunk-" + std::to_string(chunk) + ".json",
+        {{"version", 3},
+         {"run", QString::fromStdString(run)},
+         {"view", int(view)},
+         {"chunk", chunk},
+         {"items", items}});
+    chunks.append(QJsonObject{{"first", first}, {"last", last}, {"artifact", receipt}});
+    items = {};
+    bytes = 0;
+  };
+  const auto append = [&](int index, QJsonObject item) {
+    const auto size = std::size_t(QJsonDocument(item).toJson(QJsonDocument::Compact).size());
+    // Reserve ample space for the envelope and commas; verify exact bytes above.
+    if (items.size() >= kCameraChunkItems || bytes + size + 4096 > kCameraChunkBytes)
+      flush();
+    if (items.isEmpty())
+      first = index;
+    last = index;
+    items.append(item);
+    bytes += size + 1;
+  };
+  for (std::size_t index = 0; index < frames.size(); ++index) {
+    const auto& frame = frames[index];
+    const auto count = frame.overlays ? frame.overlays->player_rects.size() : 0;
+    std::size_t offset = 0;
+    do {
+      const auto end = std::min(count, offset + std::size_t(kCameraChunkItems));
+      QJsonArray players;
+      for (auto point = offset; point < end; ++point) {
+        const auto& player = frame.overlays->player_rects[point];
+        players.append(QJsonArray{player.rect.left + player.rect.width / 2.0, player.ignored});
+      }
+      QJsonObject item{{"frame", int(index)}, {"offset", int(offset)}, {"last", end == count}, {"players", players}};
+      if (offset == 0)
+        item.insert("value", frame_fields(frame));
+      append(int(index), item);
+      offset = end;
+    } while (offset < count);
   }
-  return result;
+  flush();
+  write(
+      "camera-view-" + std::to_string(view) + ".json",
+      {{"version", 3},
+       {"run", QString::fromStdString(run)},
+       {"view", int(view)},
+       {"frame_count", int(frames.size())},
+       {"chunks", chunks}});
 }
 void PublishEvent(const Request& request, QJsonObject value) {
   value.insert("version", 1);
@@ -230,24 +298,80 @@ void PublishCameraExperimentCatalog(
     std::uint64_t& revision) {
   require(views.size() >= 2 && views.size() <= std::numeric_limits<int>::max(), "Invalid camera view count");
   require(published_views <= views.size(), "Camera history cannot remove published views");
-  QJsonArray catalog;
-  for (std::size_t view = 0; view < views.size(); ++view) {
-    const auto& item = views[view];
-    require(item.frames && !item.frames->empty() && item.frames->size() <= 50000, "Invalid camera trajectory size");
-    if (view >= published_views)
-      WriteObject(
-          root / ("camera-view-" + std::to_string(view) + ".json"),
-          {{"version", 2},
-           {"run", QString::fromStdString(run)},
-           {"view", int(view)},
-           {"frames", frames(*item.frames)}});
-    catalog.append(QJsonObject{{"name", QString::fromStdString(item.name)}, {"frame_count", int(item.frames->size())}});
+  const auto frame_count = views.front().frames ? views.front().frames->size() : 0;
+  require(frame_count > 0 && frame_count <= 50000, "Invalid camera trajectory size");
+  std::vector<std::filesystem::path> created;
+  try {
+    Request request;
+    request.root = root;
+    for (std::size_t view = published_views; view < views.size(); ++view) {
+      const auto& item = views[view];
+      require(item.frames && item.frames->size() == frame_count, "Camera comparisons must share the recorded range");
+      write_trajectory(root, run, view, *item.frames, created);
+    }
+    // Full history pages never change. An appended partial page gets a new end
+    // count in its name, so readers of the previous head keep their exact page.
+    for (std::size_t start = (published_views / kCameraHistoryPageViews) * kCameraHistoryPageViews;
+         start < views.size();
+         start += kCameraHistoryPageViews) {
+      const auto end = std::min(views.size(), start + kCameraHistoryPageViews);
+      const auto path = root / ("camera-history-" + std::to_string(start) + "-" + std::to_string(end) + ".json");
+      if (end <= published_views)
+        continue;
+      QJsonArray descriptors;
+      for (auto view = start; view < end; ++view) {
+        const auto manifest = root / ("camera-view-" + std::to_string(view) + ".json");
+        descriptors.append(
+            QJsonObject{
+                {"name", QString::fromStdString(views[view].name)},
+                {"frame_count", int(frame_count)},
+                {"artifact", Artifact(request, manifest, "metadata")}});
+      }
+      require(
+          !std::filesystem::exists(std::filesystem::symlink_status(path)),
+          "Camera publication would replace an immutable history page");
+      created.push_back(path);
+      QJsonObject page{
+          {"version", 3},
+          {"run", QString::fromStdString(run)},
+          {"start", int(start)},
+          {"end", int(end)},
+          {"views", descriptors}};
+      if (start > 0)
+        page.insert(
+            "previous",
+            Artifact(
+                request,
+                root /
+                    ("camera-history-" + std::to_string(start - kCameraHistoryPageViews) + "-" + std::to_string(start) +
+                     ".json"),
+                "metadata"));
+      require(
+          std::size_t(QJsonDocument(page).toJson(QJsonDocument::Compact).size()) <= kCameraChunkBytes,
+          "Camera history page exceeds its size bound");
+      WriteObject(path, page);
+    }
+    metadata.insert("version", 3);
+    metadata.insert("run", QString::fromStdString(run));
+    metadata.insert("revision", QString::number(revision + 1));
+    metadata.insert("view_count", int(views.size()));
+    metadata.insert("frame_count", int(frame_count));
+    metadata.insert("history_page_size", int(kCameraHistoryPageViews));
+    const auto tail = ((views.size() - 1) / kCameraHistoryPageViews) * kCameraHistoryPageViews;
+    metadata.insert(
+        "history",
+        Artifact(
+            request,
+            root / ("camera-history-" + std::to_string(tail) + "-" + std::to_string(views.size()) + ".json"),
+            "metadata"));
+    WriteObject(root / "camera-experiment-catalog.json", metadata);
+  } catch (...) {
+    for (const auto& path : created) {
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
+    throw;
   }
-  metadata.insert("version", 2);
-  metadata.insert("run", QString::fromStdString(run));
-  metadata.insert("revision", QString::number(revision + 1));
-  metadata.insert("views", catalog);
-  WriteObject(root / "camera-experiment-catalog.json", metadata);
   published_views = views.size();
   ++revision;
 }
@@ -547,7 +671,8 @@ QJsonObject RunCameraExperiment(
                 "Pause, confirm the source and select a trial before saving it");
             const auto path = request.root / ("camera-trial-" + std::to_string(view - 1) + ".yaml");
             if (!saved_trials.count(view)) {
-              require(!std::filesystem::exists(path), "The trial output already exists");
+              require(
+                  !std::filesystem::exists(std::filesystem::symlink_status(path)), "The trial output already exists");
               const auto saved = session->SaveTrial(path.string(), trials.at(view - 2), media);
               require(saved.ok(), saved.ToString());
               saved_trials.emplace(view, Artifact(request, path, "metadata"));

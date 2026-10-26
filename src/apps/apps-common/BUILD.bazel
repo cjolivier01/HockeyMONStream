@@ -1,6 +1,21 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "pipeline_startup_error",
+    srcs = ["PipelineStartupError.cpp"],
+    hdrs = ["PipelineStartupError.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer", "@com_google_absl//absl/status"],
+)
+
+cc_test(
+    name = "pipeline_startup_error_test",
+    srcs = ["PipelineStartupErrorTest.cpp"],
+    deps = [":pipeline_startup_error", "@gstreamer"],
+)
+
+cc_library(
     name = "decoder_pad_link",
     hdrs = ["DecoderPadLink.h"],
     include_prefix = INCLUDE_PREFIX,
@@ -646,6 +661,7 @@ cc_library(
         "//src/libs/common:fs",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
+        "//src/libs/program:rotation_controls",
         "//src/libs/stitching:stitching",
         "//toolchains/jetson:cuda_runtime",
         "@com_google_absl//absl/status:status",

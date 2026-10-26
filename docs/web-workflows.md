@@ -428,6 +428,27 @@ browser; Save Preset adopts it atomically with the form, matching the desktop
 accept/save boundary. Only an accepted crop's `auto_crop` control changes the
 child's browser geometry snapshot.
 
+`calibration-view-reset` stages the main window's Reset Controls in another
+private descendant. Admission validates the ordinary settings form and freezes
+the account defaults separately. The adapter reads default framing from the
+bundled baseline plus that overlay, including null/inherited rink rotation; the
+browser never supplies hidden angles or an invented full-canvas crop. It uses
+`PrepareStitchingReframeIntentLocked` to retain alignment for a view change or
+marks changed solve inputs for ordinary calibration. Output geometry changes
+retire masks and scoreboard coordinates through the native transaction.
+
+The `saved-calibration-reset-v1` receipt binds the staged config by SHA-256 and
+states whether regeneration is pending. Reset does not render or run matching.
+Save Preset adopts the receipt and matching form controls atomically; changed
+defaults, selected source, inputs or geometry reject adoption. Playback alone
+consumes its native reframe or solve invalidation. Its supervisor retires every
+pipeline descendant before invoking `calibration-complete`; publication verifies
+that exact receipt alongside any selected archives. The completed successor
+becomes the selected calibration only while the saved source and preset revision
+still match. Cancellation and newer settings retain the previous selection.
+Pending Reset results cannot open editors that require completed images. Cancel waits for supervised cleanup
+and restores the previous draft; a no-op retains the current calibration.
+
 The dialog's `view-preview.png` remains separate from `game/setup-preview.png`.
 The latter is regenerated from the final panorama after view saves and
 experiment promotion, with final file identities captured after native
@@ -438,6 +459,10 @@ rotation recovery, saved-view preview acceptance, preserved-alignment saves,
 manual crop publication and stale snapshots. Its synthetic uniform stills
 explicitly allow the native hard-seam fallback because Enblend may reject
 featureless overlap; real media still require separate seam qualification.
+It also verifies inherited nonzero Reset defaults, unchanged source bytes,
+no-op behavior, pending reframe and changed-solver invalidation. The Qt window
+test clicks Reset and Save Preset and verifies the same staged framing and
+inheritance boundary.
 
 The Highlights source description uses `highlight-archive-info` and the
 `highlight-archive-info-v1` capability. Its only browser input is a recording-owned

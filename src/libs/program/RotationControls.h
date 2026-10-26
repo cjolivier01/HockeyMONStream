@@ -32,6 +32,10 @@ struct RotationPropertyCommand {
   std::string value;
 };
 
+// Preserve the native float through plugin-private-config serialization and
+// parsing; rounding its text first can change the canonical slider readback.
+std::string SerializeFixedEdgeRotationAngle(float angle);
+
 // Read the resolved canonical values. Null is the native automatic/neutral
 // choice; it is not replaced with an independently maintained default set.
 // A float-backed readback retains canonical rounding when only its numeric

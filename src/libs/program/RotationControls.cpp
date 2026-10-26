@@ -12,6 +12,13 @@
 
 namespace hm::program {
 
+std::string SerializeFixedEdgeRotationAngle(float angle) {
+  std::ostringstream text;
+  text.imbue(std::locale::classic());
+  text << std::setprecision(std::numeric_limits<float>::max_digits10) << angle;
+  return text.str();
+}
+
 bool ValidRotationControls(
     const RotationControlValues& controls,
     bool complete,

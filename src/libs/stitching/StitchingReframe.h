@@ -35,12 +35,15 @@ void ClearStitchingReframeIntent(YAML::Node& config);
 // unsupported/unverifiable completed source fails instead of rerunning a solve.
 // This only mutates desired_private; the caller publishes it atomically with
 // the matching pending owner. Earlier input/features invalidations stay ordinary.
+// An optional output distinguishes changed solve inputs from an unchanged view
+// when false is returned. Callers staging a reset must invalidate those inputs.
 absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
     const std::filesystem::path& game_directory,
     const YAML::Node& before_effective,
     const YAML::Node& desired_effective,
     const std::string& desired_owner,
-    YAML::Node& desired_private);
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed = nullptr);
 
 // Revalidate source artifacts/stills, retained selected inputs, current owner,
 // and the complete solve/view snapshots. Does not decode original recordings

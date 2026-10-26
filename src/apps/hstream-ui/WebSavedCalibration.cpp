@@ -152,6 +152,142 @@ Snapshot snapshot(const Request& request) {
   auto config_lock = take(rink::GameConfigTransactionLock::Acquire(request.game));
   return snapshot_locked(request);
 }
+
+QJsonObject reset_view(const Request& request, const std::function<bool()>& cancelled) {
+  require(
+      request.payload.size() == 5 && request.payload.value("config").isObject() &&
+          request.payload.value("defaults").isObject() && request.payload.value("source_changed").isBool() &&
+          request.payload.value("settings_changed").isBool() && request.payload.value("output_changed").isBool(),
+      "Saved Reset requires frozen controls and account defaults");
+  auto lock = take(rink::lock_canvas_constraint_artifacts(request.game));
+  auto config_lock = take(rink::GameConfigTransactionLock::Acquire(request.game));
+  const auto source = snapshot_locked(request);
+  const auto decode = [&](const char* key) {
+    return YAML::Load(QJsonDocument(request.payload.value(key).toObject()).toJson().toStdString());
+  };
+  const auto controls = decode("config");
+  auto defaults = YAML::Clone(take(hm::baseline_config::load()).values);
+  merge(defaults, decode("defaults"));
+  const auto default_framing = take(rink::read_stitch_projection_framing(defaults));
+  auto desired = YAML::Clone(source.config);
+  rink::restore_generated_stitching_backend_choices(desired);
+  rink::restore_generated_stitch_rink_context(desired);
+  rink::restore_generated_rink_mask_frame_time(desired);
+  // A reset releases the old automatic-optics snapshot just as Qt does. Manual
+  // fields absent from the form must inherit the selected camera, not the solve.
+  for (const char* key : {"camera_fov", "input_lens"})
+    desired["stitching"].remove(key);
+  desired["stitching"]["auto_input_lens_frozen"] = false;
+  rink::write_stitch_projection_framing(desired, default_framing);
+  if (default_framing.rotation_inherited)
+    desired["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Node(YAML::NodeType::Null);
+  merge(desired, controls);
+  // Canonical reset controls replace any same-layer aliases frozen by a run.
+  for (const char* stage : {"hmstitcher", "hmplaycropper", "ds-playtracker"}) {
+    auto node = desired["pipeline"][stage];
+    for (const char* section : {"", "properties", "private-properties"}) {
+      auto values = *section ? node[section] : node;
+      if (!values.IsMap())
+        continue;
+      for (const char* name :
+           {"post-stitch-rotate-degrees",
+            "post_stitch_rotate_degrees",
+            "fixed-edge-rotation-angle",
+            "fixed_edge_rotation_angle",
+            "fixed-edge-rotation-angle-left",
+            "fixed_edge_rotation_angle_left",
+            "fixed-edge-rotation-angle-right",
+            "fixed_edge_rotation_angle_right"})
+        values.remove(name);
+    }
+  }
+  auto effective = YAML::Clone(take(hm::baseline_config::load()).values);
+  merge(effective, desired);
+  auto camera = take(rink::read_stitch_camera_selection(effective));
+  camera = rink::ReadAutoInputLensForGame(request.game, effective, camera).camera;
+  rink::write_stitch_camera_selection(desired, camera);
+  rink::write_stitch_camera_selection(effective, camera);
+  const auto framing = take(rink::read_stitch_projection_framing(effective));
+  QJsonObject rink_profiles;
+  for (const auto& profile : take(rink::read_stitch_rink_configurations(effective)))
+    rink_profiles[text(profile.id)] = profile.rotation_degrees[1] != 0 || profile.rotation_degrees[2] != 0;
+  const auto selected_rink = take(rink::read_stitch_rink_selection(effective));
+  const auto count = effective["stitching"]["calibration_frame_count"].as<size_t>();
+  auto calibration = desired["hstream_ui"]["stitching_calibration"];
+  const bool count_changed = count != source.config["hstream_ui"]["stitching_calibration"]["frame_count"].as<size_t>();
+  if (count_changed) {
+    desired["stitching"].remove("calibration_frame_selection");
+    desired["stitching"].remove("calibration_frame_inputs_fingerprint");
+    effective["stitching"].remove("calibration_frame_selection");
+    effective["stitching"].remove("calibration_frame_inputs_fingerprint");
+  } else if (
+      desired["stitching"]["calibration_frame_selection"] &&
+      YAML::Dump(effective["stitching"]["stitch_frame_time"]) !=
+          YAML::Dump(source.effective["stitching"]["stitch_frame_time"])) {
+    throw std::runtime_error(
+        "Restore the saved reference time or change the frame count before resetting selected frames");
+  }
+  calibration["frame_count"] = count;
+  effective["hstream_ui"]["stitching_calibration"]["frame_count"] = count;
+  const auto owner = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+  bool solve_changed = false;
+  const bool force_solve = request.payload.value("source_changed").toBool() ||
+      YAML::Dump(source.effective["stitching"]["sync_method"]) != YAML::Dump(effective["stitching"]["sync_method"]);
+  const bool reframe = !force_solve &&
+      take(
+          rink::PrepareStitchingReframeIntentLocked(
+              request.game, source.effective, effective, owner, desired, &solve_changed));
+  solve_changed = solve_changed || force_solve;
+  const bool pending = reframe || solve_changed;
+  const bool output_changed = request.payload.value("output_changed").toBool();
+  const bool changed = pending || output_changed || request.payload.value("settings_changed").toBool() ||
+      framing != source.framing || framing.rotation_inherited != source.framing.rotation_inherited;
+  if (pending) {
+    calibration["status"] = "pending";
+    calibration["rink_mask_status"] = "pending";
+    calibration["stale_from"] = reframe ? "canvas" : "input";
+    calibration["artifacts_invalidated"] = reframe;
+    calibration["invalidation_id"] = owner;
+    calibration.remove("backend_generation");
+    desired["hstream_ui"].remove("projection_crop_geometry");
+    if (solve_changed) {
+      rink::ClearStitchingReframeIntent(desired);
+      desired["stitching"].remove("manual_control_points");
+      calibration.remove("match_snapshot");
+    }
+    if (reframe)
+      take(rink::ValidateStitchingReframeIntentLocked(request.game, desired));
+  }
+  if (pending || output_changed) {
+    rink::invalidate_rotation_dependent_artifacts(desired);
+    calibration["rink_mask_status"] = "pending";
+  }
+  require(!cancelled || !cancelled(), "Saved Reset cancelled");
+  if (changed) {
+    if (pending || output_changed)
+      take(rink::publish_game_config_without_rink_masks(request.game, YAML::Dump(desired), true));
+    else
+      check(rink::publish_game_config(request.game, YAML::Dump(desired)));
+  }
+  const auto bytes =
+      take(rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "reset config"));
+  return {
+      {"calibration_reset_version", 1},
+      {"staged", true},
+      {"changed", changed},
+      {"pending", pending},
+      {"alignment_reused", reframe},
+      {"invalidation_id", pending ? text(owner) : QString()},
+      {"config_sha256",
+       QString::fromLatin1(
+           QCryptographicHash::hash(QByteArray::fromStdString(bytes), QCryptographicHash::Sha256).toHex())},
+      {"angles", values(framing.rotation_degrees)},
+      {"rotation_inherited", framing.rotation_inherited},
+      {"rink_config", text(selected_rink)},
+      {"rink_profiles", rink_profiles},
+      {"crop", values(framing.crop)},
+      {"automatic", framing.auto_crop}};
+}
 QJsonObject render(
     const Request& request,
     const Snapshot& source,
@@ -244,6 +380,8 @@ QString ExportSavedCalibrationPreview(const Request& request, QJsonArray& artifa
 }
 
 QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, const std::function<bool()>& cancelled) {
+  if (request.operation == "calibration-view-reset")
+    return reset_view(request, cancelled);
   if (request.operation == "calibration-view-rotation-stage") {
     require(
         request.payload.size() == 2 && request.payload.contains("source_generation") &&

@@ -241,6 +241,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::string calibration_run_generation_;
   bool mask_preparation_{false};
   hm::stitching::RinkMaskFrameProvenance mask_frame_;
+  std::optional<hm::stitching::RinkMaskInputLimits> mask_input_limits_;
   GstElement* owner_element_{nullptr};
   std::mutex process_mu_;
   size_t process_pass_{0};

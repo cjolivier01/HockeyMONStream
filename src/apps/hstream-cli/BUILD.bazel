@@ -32,6 +32,8 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/stitching:rink_mask_input_store",
+    "//src/apps/apps-common:pipeline_startup_error",
     ":web_preview_options",
     ":web_rotation_transaction",
     "//src/libs/tracking:playtracker_runtime_controls",
@@ -229,6 +231,22 @@ cc_test(
     copts = HSTREAM_CLI_COPTS,
     linkopts = HSTREAM_CLI_LINKOPTS,
     deps = HSTREAM_CLI_DEPS,
+)
+
+cc_test(
+    name = "configurator_rink_mask_precision_test",
+    srcs = [
+        "ConfiguratorRinkMaskPrecisionTest.cpp",
+        "StitcherOnePassConfig.h",
+        "StitchingCalibrationMode.h",
+        "configurator.cpp",
+        "configurator.h",
+        "deepstream_app.h",
+    ],
+    copts = HSTREAM_CLI_COPTS,
+    linkopts = HSTREAM_CLI_LINKOPTS + ["-ltiff"],
+    deps = HSTREAM_CLI_DEPS,
+    tags = ["local"],
 )
 
 cc_test(
