@@ -253,6 +253,8 @@ int main() {
   using hm::stitching::read_control_point_limit;
   const auto inherited_limit = read_control_point_limit(YAML::Node());
   ok &= expect(inherited_limit.ok() && *inherited_limit == 1500, "the bundled baseline owns the control-point budget");
+  const auto sparse_limit = read_control_point_limit(YAML::Load("stitching: {blend_mode: alpha}\n"));
+  ok &= expect(sparse_limit.ok() && *sparse_limit == 1500, "a sparse stitching map must inherit the baseline budget");
   YAML::Node limit_config = YAML::Load("stitching: {control_point_limit: 250}\n");
   ok &= expect(read_control_point_limit(limit_config).value() == 250, "explicit canonical budget overrides baseline");
   limit_config["hstream_ui"]["stitching_calibration"]["control_points"] = 75;

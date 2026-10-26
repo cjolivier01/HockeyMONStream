@@ -1248,7 +1248,12 @@ absl::StatusOr<int> read_control_point_limit(const YAML::Node& config) {
     if (saved.IsDefined())
       return saved;
     const auto stitching = root && root.IsMap() ? root["stitching"] : missing;
-    return stitching && stitching.IsMap() ? stitching["control_point_limit"] : missing;
+    if (stitching && stitching.IsMap()) {
+      const auto configured = stitching["control_point_limit"];
+      if (configured.IsDefined())
+        return configured;
+    }
+    return missing;
   };
   try {
     YAML::Node selected = declared(config);
