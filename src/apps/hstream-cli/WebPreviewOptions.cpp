@@ -273,17 +273,28 @@ absl::StatusOr<WebPreviewSeekRequest> ParseWebPreviewSeek(const std::string& jso
   auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
   WebPreviewSeekRequest request{};
   gint64 version = 0, stage = 0;
-  std::string topology, identifier, position;
+  std::string topology, identifier, position, delta;
   const bool valid = object && member_count == 6 && json_object_get_size(object) == 6 &&
       Integer(object, "version", &version) && version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN &&
       stage <= INT_MAX && String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
       String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
       String(object, "requestId", &identifier) && Decimal(identifier, &request.request_id) &&
-      request.request_id <= G_MAXINT64 && String(object, "positionNs", &position) &&
-      ((position == "0" && (request.position_ns = 0, true)) || Decimal(position, &request.position_ns)) &&
-      request.position_ns <= G_MAXINT64;
+      request.request_id <= G_MAXINT64;
+  bool valid_position = false;
+  if (valid && String(object, "positionNs", &position)) {
+    valid_position =
+        ((position == "0" && (request.position_ns = 0, true)) || Decimal(position, &request.position_ns)) &&
+        request.position_ns <= G_MAXINT64;
+  } else if (valid && String(object, "deltaNs", &delta) && !delta.empty()) {
+    int64_t value = 0;
+    const auto parsed = std::from_chars(delta.data(), delta.data() + delta.size(), value);
+    valid_position = parsed.ec == std::errc{} && parsed.ptr == delta.data() + delta.size() && value != 0 &&
+        std::to_string(value) == delta;
+    if (valid_position)
+      request.delta_ns = value;
+  }
   g_object_unref(parser);
-  if (!valid)
+  if (!valid || !valid_position)
     return absl::InvalidArgumentError("Invalid preview seek identity or position");
   request.session.stage = static_cast<int>(stage);
   return request;

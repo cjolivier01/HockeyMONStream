@@ -43,6 +43,7 @@ std::string WebPreviewRouteReply(const RouteOwner::Request& request, const Route
 struct WebPreviewSeekRequest {
   RouteOwner::Session session;
   uint64_t request_id, position_ns;
+  std::optional<int64_t> delta_ns;
 };
 absl::StatusOr<WebPreviewSeekRequest> ParseWebPreviewSeek(const std::string& json);
 std::string WebPreviewSeekReply(

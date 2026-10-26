@@ -198,6 +198,15 @@ int main() {
   auto zero_seek = seek_json;
   zero_seek.replace(zero_seek.find("9223372036854775807"), 19, "0");
   Check(hm::preview::ParseWebPreviewSeek(zero_seek).ok(), "Seek to start rejected");
+  auto relative_seek = zero_seek;
+  relative_seek.replace(relative_seek.find("\"positionNs\":\"0\""), 16, "\"deltaNs\":\"-10000000000\"");
+  const auto relative = hm::preview::ParseWebPreviewSeek(relative_seek);
+  Check(relative.ok() && relative->delta_ns == -10000000000LL, "Relative seek lost its signed native offset");
+  for (const auto& delta : {"0", "-0", "01", "+1", "-01", "9223372036854775808", "-9223372036854775809"}) {
+    auto input = relative_seek;
+    input.replace(input.find("-10000000000"), 12, delta);
+    Check(!hm::preview::ParseWebPreviewSeek(input).ok(), "Noncanonical relative seek admitted");
+  }
   Check(!hm::preview::ParseWebPreviewSeek(std::string(4097, ' ')).ok(), "Oversize seek admitted");
   const auto completed_seek = hm::preview::WebPreviewSeekReply(*seek, "completed", "", 8, 4000000000ULL, 0);
   Check(

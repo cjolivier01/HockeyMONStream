@@ -6186,7 +6186,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       return false;
     }
     web_seek_pending_ = *request;
-    const bool admitted = seek_runtime(request->position_ns, request->request_id);
+    const bool admitted = request->delta_ns ? seek_runtime_relative(*request->delta_ns, request->request_id)
+                                            : seek_runtime(request->position_ns, request->request_id);
     if (!admitted) {
       if (web_seek_pending_) {
         web_seek_pending_.reset();
