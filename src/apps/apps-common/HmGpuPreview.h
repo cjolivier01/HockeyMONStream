@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -95,12 +96,20 @@ std::pair<unsigned, unsigned> bounded_capture_dimensions(unsigned width, unsigne
 // Copies the most recently presented OpenGL texture to host memory for an
 // explicit, one-shot diagnostic capture. Normal preview rendering never calls
 // this function and remains entirely GPU-resident.
+struct CapturedFrameIdentity {
+  std::uint64_t generation;
+  GstClockTime pipeline_pts;
+};
+
+// Optional identity is sampled with the pixels under the render mutex. It is
+// absent if the current window/generation/size differs from the last render.
 bool capture_presented_frame(
     GstElement* sink,
     std::vector<std::uint8_t>* rgba,
     unsigned* width,
     unsigned* height,
-    std::string* error);
+    std::string* error,
+    std::optional<CapturedFrameIdentity>* identity = nullptr);
 
 // Installs one-shot failures used to verify the GStreamer/GObject callback and
 // explicit-capture exception boundaries. Production code never enables these

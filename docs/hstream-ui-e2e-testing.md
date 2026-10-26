@@ -177,6 +177,23 @@ Program or Stitched surface is blank:
 DISPLAY=:0 scripts/test_hstream_ui_e2e.sh --x11-preview short
 ```
 
+For timestamp-qualified comparisons, the explicit runner command
+`@capture-preview-frame program /absolute/path/frame.png` also logs a
+`runtime preview frame identity` line with the renderer generation and
+`pipeline-pts-ns`. This is the rendered buffer's PTS after native playlist/seek
+rebasing, not a raw chapter-local timestamp. The image and identity are captured
+under the same render lock.
+The identity is omitted if the current window, generation or size differs from
+the last render, or while the window is hidden. Native WebRTC's accepted
+`sourcePts` is also the buffer PTS before transport rebasing. Compare these only
+after verifying identical source identities, chapter order, synchronization and
+playback start/seek epochs. The alternate HockeyMON decoder's chapter-local PTS
+needs an explicit timeline mapping; numeric equality alone cannot identify the
+same media frame. An ordinary screenshot has no timestamp evidence.
+This uses the existing bounded, one-shot diagnostic readback and adds no video
+readback to normal playback. A window that Qt cleared still needs a newly
+presented frame before comparison.
+
 `HM_GAME_DIR` selects the source game root, as it does for the application. An
 optional second argument selects the artifact directory:
 

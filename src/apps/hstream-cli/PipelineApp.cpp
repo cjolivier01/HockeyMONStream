@@ -5087,6 +5087,7 @@ struct PreviewFrameSaveResult {
   int width{0};
   int height{0};
   std::string message;
+  std::optional<hm::gpu_preview::CapturedFrameIdentity> identity;
 };
 
 PreviewFrameSaveResult save_preview_frame(GstElement* sink, const fs::path& output_path) {
@@ -5187,7 +5188,8 @@ PreviewFrameSaveResult save_gpu_preview_frame(GstElement* sink, const fs::path& 
   unsigned width = 0;
   unsigned height = 0;
   std::string capture_error;
-  if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error)) {
+  std::optional<hm::gpu_preview::CapturedFrameIdentity> identity;
+  if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error, &identity)) {
     return {PreviewFrameSaveStatus::kUnavailable, 0, 0, capture_error};
   }
   if (width == 0 || height == 0 || rgba.size() != static_cast<size_t>(width) * height * 4U) {
@@ -5206,7 +5208,7 @@ PreviewFrameSaveResult save_gpu_preview_frame(GstElement* sink, const fs::path& 
   } catch (const std::exception& exception) {
     return {PreviewFrameSaveStatus::kFailed, 0, 0, exception.what()};
   }
-  return {PreviewFrameSaveStatus::kSaved, static_cast<int>(width), static_cast<int>(height)};
+  return {PreviewFrameSaveStatus::kSaved, static_cast<int>(width), static_cast<int>(height), {}, identity};
 }
 
 void report_last_render_sample(GstElement* sink) {
@@ -7645,6 +7647,14 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
       path.c_str(),
       result.width,
       result.height);
+  if (result.identity)
+    g_print(
+        "runtime preview frame identity channel=%s path=%s generation=%" G_GUINT64_FORMAT
+        " pipeline-pts-ns=%" G_GUINT64_FORMAT "\n",
+        channel.c_str(),
+        path.c_str(),
+        static_cast<guint64>(result.identity->generation),
+        static_cast<guint64>(result.identity->pipeline_pts));
   return true;
 }
 

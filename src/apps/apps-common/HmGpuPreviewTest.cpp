@@ -1034,7 +1034,14 @@ bool run_renderer_test(Display* display, Window window) {
   unsigned height = 0;
   std::string capture_error;
   sink = gst_bin_get_by_name(GST_BIN(pipeline), "preview");
-  const bool captured = hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error);
+  std::uint64_t presented_generation = 0;
+  GstClockTime presented_pts = GST_CLOCK_TIME_NONE;
+  const bool presented = hm::gpu_preview::presented_frame(sink, &presented_generation, &presented_pts);
+  std::optional<hm::gpu_preview::CapturedFrameIdentity> identity;
+  const bool captured =
+      hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error, &identity);
+  const bool identity_matches =
+      presented && identity && identity->generation == presented_generation && identity->pipeline_pts == presented_pts;
   const size_t center = (static_cast<size_t>(height / 2) * width + width / 2) * 4;
   const bool opaque_video =
       captured && rgba.size() > center + 2 && rgba[center + 2] >= 240 && rgba[center] < 16 && rgba[center + 1] < 16;
@@ -1055,8 +1062,14 @@ bool run_renderer_test(Display* display, Window window) {
   unsigned failed_capture_width = 0;
   unsigned failed_capture_height = 0;
   std::string failed_capture_error;
+  auto failed_identity = identity;
   const bool injected_capture = hm::gpu_preview::capture_presented_frame(
-      sink, &failed_capture_rgba, &failed_capture_width, &failed_capture_height, &failed_capture_error);
+      sink,
+      &failed_capture_rgba,
+      &failed_capture_width,
+      &failed_capture_height,
+      &failed_capture_error,
+      &failed_identity);
   std::vector<std::uint8_t> recovered_capture_rgba;
   unsigned recovered_capture_width = 0;
   unsigned recovered_capture_height = 0;
@@ -1065,12 +1078,16 @@ bool run_renderer_test(Display* display, Window window) {
       sink, &recovered_capture_rgba, &recovered_capture_width, &recovered_capture_height, &recovered_capture_error);
   XResizeWindow(display, window, 4096, 2160);
   XSync(display, False);
+  XWindowAttributes resized_attributes{};
+  const bool window_resized = XGetWindowAttributes(display, window, &resized_attributes) &&
+      resized_attributes.width == 4096 && resized_attributes.height == 2160;
   std::vector<std::uint8_t> bounded_rgba;
   unsigned bounded_width = 0;
   unsigned bounded_height = 0;
   std::string bounded_capture_error;
+  auto resized_identity = identity;
   const bool bounded_capture = hm::gpu_preview::capture_presented_frame(
-      sink, &bounded_rgba, &bounded_width, &bounded_height, &bounded_capture_error);
+      sink, &bounded_rgba, &bounded_width, &bounded_height, &bounded_capture_error, &resized_identity);
   const auto [minimum, maximum] = rgba.empty()
       ? std::pair<std::uint8_t, std::uint8_t>{0, 0}
       : std::minmax({*std::min_element(rgba.begin(), rgba.end()), *std::max_element(rgba.begin(), rgba.end())});
@@ -1086,15 +1103,18 @@ bool run_renderer_test(Display* display, Window window) {
   const bool stale_xid_cleanup = hm::gpu_preview::renderer_resources_released_for_test(sink);
   gst_object_unref(sink);
   gst_object_unref(pipeline);
-  const bool bounded_capture_ok = bounded_capture && bounded_width < 4096 && bounded_height < 2160 &&
+  const bool bounded_capture_ok = window_resized && bounded_capture && bounded_width < 4096 && bounded_height < 2160 &&
       bounded_rgba.size() <= hm::gpu_preview::kMaximumPresentedFrameCaptureBytes;
   const bool capture_recovery_ok = !injected_capture && !failed_capture_error.empty() && recovered_capture &&
       recovered_capture_width == 640 && recovered_capture_height == 360 && !recovered_capture_rgba.empty();
-  if (!ready || !eos || !captured || !opaque_video || !watermark_visible || width != 640 || height != 360 ||
-      maximum == minimum || !capture_recovery_ok || !bounded_capture_ok || !stale_xid_cleanup) {
+  if (!ready || !eos || !captured || !identity_matches || failed_identity || resized_identity || !opaque_video ||
+      !watermark_visible || width != 640 || height != 360 || maximum == minimum || !capture_recovery_ok ||
+      !bounded_capture_ok || !stale_xid_cleanup) {
     std::cerr << "GPU preview did not expose its presented texture: ready=" << ready << " captured=" << captured
               << " watermark=" << watermark_visible << " range=" << static_cast<int>(maximum - minimum)
               << " opaque-video=" << opaque_video << " error=" << capture_error
+              << " identity-matches=" << identity_matches << " failed-identity=" << failed_identity.has_value()
+              << " resized-identity=" << resized_identity.has_value() << " window-resized=" << window_resized
               << " bounded-capture=" << bounded_capture << " bounded-size=" << bounded_width << 'x' << bounded_height
               << " bounded-error=" << bounded_capture_error << " capture-recovery=" << capture_recovery_ok << '\n';
     return false;
@@ -1150,6 +1170,11 @@ int main(int argc, char** argv) {
         BlackPixel(display, screen),
         BlackPixel(display, screen));
     XStoreName(display, window, name);
+    // These renderer fixtures own their exact surface size. A window manager
+    // may defer or constrain a managed resize even after our XSync returns.
+    XSetWindowAttributes attributes{};
+    attributes.override_redirect = True;
+    XChangeWindowAttributes(display, window, CWOverrideRedirect, &attributes);
     XMapRaised(display, window);
     return window;
   };
