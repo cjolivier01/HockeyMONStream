@@ -239,3 +239,5 @@ camera files / live sources -> decode and batch -> hmstitcher
 ## Testing misc
 All tests should pass before oppening a PR
 All tests should pass before and after each review round.
+
+- The optional epoch-10 hockey-role detector uses `configs/config_infer_yolov8m_hockey_roles*.yaml` and pinned release assets. `common/PersonRoles.h` identifies semantic NVIDIA roles; AMD receives model-owned indices through `ProgramLaunchConfig`. Camera-only exclusions are mapped by `ProgramCameraMapping` and applied before camera observations; role tracks remain available to overlays/telemetry. See `docs/hockey-roles-detector.md`.

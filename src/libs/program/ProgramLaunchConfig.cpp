@@ -97,6 +97,8 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       return inference_file.status();
     result.inference_file = fs::canonical(*inference_file);
     result.inference = YAML::LoadFile(result.inference_file.string());
+    if (result.inference["person-roles"])
+      result.camera["person-roles"] = YAML::Clone(result.inference["person-roles"]);
     if (!result.inference.IsMap() || !result.inference["property"].IsMap())
       return absl::InvalidArgumentError("Program requires an inference YAML property map");
     for (size_t index = 0; index < 2; ++index) {

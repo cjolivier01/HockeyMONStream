@@ -400,6 +400,7 @@ cc_library(
     srcs = ["PreviewOverlayScene.cpp"],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         ":preview_overlay_scene_data",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/draw_display:analytics_overlay",
@@ -416,6 +417,7 @@ cc_test(
     deps = [
         ":preview_overlay_scene",
         "//src/libs/common:preview_overlay_meta",
+        "//src/libs/player_analytics:frame_meta",
         "//src/libs/stitching:stitching",
         "@deepstream//:deepstream_lib",
     ],

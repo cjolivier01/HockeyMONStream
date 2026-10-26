@@ -48,6 +48,12 @@ int main() {
     boxes.Update(400, tracks);
     boxes.Reset();
     Check(boxes.Build(crop, 200, 120).empty(), "Seek/reset retained old boxes");
+    boxes.SetRoles(1, 2);
+    tracks = {{30, {20, 30, 40, 60, .9F, 1, 0}}, {31, {50, 30, 70, 60, .9F, 2, 1}}};
+    boxes.Update(450, tracks);
+    const auto& role_commands = boxes.Build(crop, 200, 120);
+    Check(role_commands.size() == 8 + 6 + 3, "Role boxes or GOALIE/REF glyphs missing");
+    Check(boxes.RinkFrame("test", 100, 100, 450, 1).players.size() == 2, "Roles vanished from rink metadata");
     tracks.clear();
     for (uint64_t i = 0; i < 400; ++i)
       tracks.push_back({i, {20, 30, 40, 60, .9F, 0, 0}});

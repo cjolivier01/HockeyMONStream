@@ -10,9 +10,9 @@ void ProgramPreviewBoxes::Update(uint64_t pts, const std::vector<tracking::Obser
   std::array<uint64_t, player_analytics::kMaximumTracks> ids{};
   for (const auto& track : tracks) {
     const auto& b = track.box;
-    if (b.class_id != 0 || track.id == player_analytics::kUntrackedId || !std::isfinite(b.left) ||
-        !std::isfinite(b.top) || !std::isfinite(b.right) || !std::isfinite(b.bottom) || b.left >= b.right ||
-        b.top >= b.bottom)
+    if ((b.class_id != 0 && b.class_id != goalie_ && b.class_id != referee_) ||
+        track.id == player_analytics::kUntrackedId || !std::isfinite(b.left) || !std::isfinite(b.top) ||
+        !std::isfinite(b.right) || !std::isfinite(b.bottom) || b.left >= b.right || b.top >= b.bottom)
       continue;
     if (tracks_.size() == ids.size())
       break;
@@ -47,6 +47,9 @@ const draw_display::analytics::CommandList& ProgramPreviewBoxes::Build(
     const auto& b = track.box;
     const std::array<hm::Point, 4> corners{
         map(b.left, b.top), map(b.right, b.top), map(b.right, b.bottom), map(b.left, b.bottom)};
+    const char* role = b.class_id == goalie_ ? "GOALIE" : b.class_id == referee_ ? "REF" : "";
+    if (*role)
+      commands_.AddText(corners[0].x, corners[0].y - 10 * stroke, 8 * stroke, role, {1, 1, 1, 1});
     for (size_t i = 0; i < corners.size(); ++i) {
       const auto& a = corners[i];
       const auto& z = corners[(i + 1) % corners.size()];

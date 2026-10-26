@@ -30,6 +30,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/ShadowToneCurve.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
+#include "hstream/src/libs/common/PersonRoles.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -1140,7 +1141,7 @@ absl::Status PlayCropperPriv::RenderDisplayMeta(
     tracked_player_metas.reserve(frame_meta->num_obj_meta);
     for (NvDsMetaList* l_obj = frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
       NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-      if (obj_meta->object_id == UNTRACKED_OBJECT_ID || obj_meta->class_id != 0) {
+      if (obj_meta->object_id == UNTRACKED_OBJECT_ID || !hm::IsPerson(obj_meta->class_id, obj_meta->obj_label)) {
         continue;
       }
       tracked_player_metas.push_back(obj_meta);

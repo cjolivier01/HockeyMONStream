@@ -13,9 +13,9 @@
 #include "absl/status/statusor.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/ManagedObject.h"
-#include "hstream/src/libs/tracking/ProgramCameraConfig.h"
 #include "hstream/src/libs/common/TrackColorMeta.h"
 #include "hstream/src/libs/playtracker_replay/RinkCameraGuide.h"
+#include "hstream/src/libs/tracking/ProgramCameraConfig.h"
 // #include "deepstream/sources/includes/nvbufsurface.h"
 #include "nvbufsurface.h"
 
@@ -52,6 +52,7 @@ struct DsPlayTrackerCtx {
     hm::play_tracker::PlayTrackerConfig play_tracker_config;
     std::unique_ptr<hm::play_tracker::PlayTracker> play_tracker;
     bool has_received_tracks{false};
+    bool ignore_referees{false}, ignore_goalies{false};
     std::unique_ptr<hm::playtracker_replay::RinkCameraGuide> rink_guide;
     std::string rink_generation;
     unsigned rink_width{0}, rink_height{0};

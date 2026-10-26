@@ -29,6 +29,7 @@ struct DsPlayTrackerRuntimeTuning {
   std::optional<int> zoom_in_aggressiveness;
   std::optional<int> ignore_largest_bbox_count;
   std::optional<bool> ignore_oversized_bboxes;
+  std::optional<bool> ignore_referees, ignore_goalies;
   std::optional<double> oversized_bbox_percent;
   bool apply_to_fast_box{false};
   bool apply_to_follower_box{true};

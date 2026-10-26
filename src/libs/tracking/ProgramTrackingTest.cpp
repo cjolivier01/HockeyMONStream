@@ -16,6 +16,8 @@ int main() {
     const YAML::Node yaml = YAML::Load(R"(
 camera-name: GoPro
 no-wide-start: false
+ignore-referees: false
+ignore-goalies: false
 ignore-largest-bbox: false
 max-speed-ratio-x: 2.0
 max-speed-ratio-y: 3.0
@@ -61,6 +63,20 @@ live-boxes:
     scale-dest-height: 1.45
 )");
 
+    for (int role : {1, 2}) {
+      for (bool excluded : {false, true}) {
+        auto role_config = YAML::Clone(yaml);
+        role_config["person-roles"]["goalie"] = 1;
+        role_config["person-roles"]["referee"] = 2;
+        role_config[role == 1 ? "ignore-goalies" : "ignore-referees"] = excluded;
+        auto camera = hm::tracking::ProgramCamera::Create(hm::BBox(0, 0, 2000, 1000), role_config);
+        Check(camera.ok(), camera.status().ToString());
+        auto output = (*camera)->Process({{1, {400, 200, 440, 300, .9f, role, 0}}});
+        Check(
+            output.ok() && output->has_value() != excluded,
+            "Role camera inclusion did not follow its independent switch");
+      }
+    }
     cv::Mat mask(1000, 2000, CV_8UC1, cv::Scalar(0));
     mask(cv::Rect(100, 200, 1800, 600)).setTo(255);
     const hm::tracking::TrackerConfig tuning{.25, .6, .7, .8, .5, .7, true, 30, 2, 512, 8 * 1024 * 1024};

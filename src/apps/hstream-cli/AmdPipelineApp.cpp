@@ -153,6 +153,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   Require(!initial_overlays.any() || args.sinks.count("RENDER"), "Preview overlays require the RENDER sink");
   hm::pipeline_internal::PreviewOverlayRuntimeState overlay_state(initial_overlays);
   hm::program::ProgramPreviewBoxes preview_boxes;
+  if (const auto roles = launch.inference["person-roles"])
+    preview_boxes.SetRoles(roles["goalie"].as<int>(), roles["referee"].as<int>());
   auto rink_settings = Take(hm::rink_map::ResolveSettings(launch.configuration.values));
   std::shared_ptr<const hm::stitching::PlaybackRinkMap> output_rink_map;
   if (rink_settings.enabled && encoding) {

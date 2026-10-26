@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <string>
 #include <thread>
 
@@ -185,11 +186,16 @@ int main(int argc, char** argv) {
   ::setenv("HOME", home.c_str(), 1);
 
   fs::copy_file(models / "labels.txt", home_models / "labels_coco.txt");
+  fs::copy_file(models / "labels.txt", home_models / "hockey_roles_person_goalie_official.txt");
+  std::set<std::string> calibration_paths;
   // Every selectable detector model must stay startable from an engine alone.
-  for (const char* model : {"config_infer_yolov8_hockey_", "config_infer_yolov8s_hockey_"}) {
+  for (const char* model : {"config_infer_yolov8_hockey_", "config_infer_yolov8s_hockey_", "config_infer_yolov8m_hockey_roles_"}) {
     for (const char* precision : {"bf16", "int8"}) {
       const std::string name = std::string(model) + precision;
       auto bundled = YAML::LoadFile("configs/" + name + ".yaml");
+      if (std::string(precision) == "int8")
+        ok &= expect(calibration_paths.insert(bundled["property"]["int8-calib-file"].as<std::string>()).second,
+                     "Detector models must not share a legacy calibration-table path");
       // Exercise startup asset acquisition before cache preparation, as the CLI
       // does. No source model is installed and a download would fail immediately.
       bundled["property"]["model-engine-file"] = (models / "detector_bf16.engine").string();

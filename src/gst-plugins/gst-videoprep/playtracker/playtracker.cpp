@@ -21,6 +21,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "hstream/src/libs/common/DetectionSnapshotMeta.h"
+#include "hstream/src/libs/common/PersonRoles.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/TempFile.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
@@ -703,7 +704,7 @@ absl::Status PlayTrackerPriv::GenerateOutput(
 
       for (NvDsMetaList* item = frame.frame_meta->obj_meta_list; item; item = item->next) {
         const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
-        if (!object || object->class_id != 0 || object->object_id == UNTRACKED_OBJECT_ID) {
+        if (!object || !hm::IsPerson(object->class_id, object->obj_label) || object->object_id == UNTRACKED_OBJECT_ID) {
           continue;
         }
         const NvBbox_Coords& bbox = object->tracker_bbox_info.org_bbox_coords;

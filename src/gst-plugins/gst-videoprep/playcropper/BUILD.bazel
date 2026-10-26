@@ -13,6 +13,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         ":play_cropper_cuda_lib",
         "//src/libs/program:frame_geometry",
         "//src/gst-plugins/gst-videoprep/algorithm-base",

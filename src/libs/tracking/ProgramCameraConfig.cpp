@@ -370,7 +370,12 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
   SET_LOCATOR(locator, config, ignore_oversized_bboxes);
   if (yaml["oversized-bbox-percent"])
     config.oversized_bbox_percent = yaml["oversized-bbox-percent"].as<double>();
-  set_config_from_yaml(yaml, locator);
+  // These wrapper-owned fields filter observations before the camera engine.
+  auto native_yaml = YAML::Clone(yaml);
+  native_yaml.remove("ignore-referees");
+  native_yaml.remove("ignore-goalies");
+  native_yaml.remove("person-roles");
+  set_config_from_yaml(native_yaml, locator);
   config.no_wide_start = no_wide_start;
   if (config.ignore_largest_bbox_count < 0 || !std::isfinite(config.oversized_bbox_percent) ||
       config.oversized_bbox_percent < 0)

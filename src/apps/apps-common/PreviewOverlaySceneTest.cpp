@@ -1,13 +1,16 @@
 #include "hstream/src/apps/apps-common/PreviewOverlayScene.h"
 
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
+#include "hstream/src/libs/player_analytics/FrameMeta.h"
 
 #include <gst/gst.h>
 
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 namespace {
 namespace preview = hm::preview_overlay;
@@ -36,6 +39,16 @@ struct Frame {
   }
   ~Frame() {
     nvds_destroy_batch_meta(batch);
+  }
+  void SetTransform(const preview::PlayCropperTransform& transform) {
+    for (auto* item = frame->frame_user_meta_list; item; item = item->next) {
+      auto* meta = static_cast<NvDsUserMeta*>(item->data);
+      if (meta->base_meta.meta_type == preview::playcropper_transform_meta_type()) {
+        nvds_remove_user_meta_from_frame(frame, meta);
+        break;
+      }
+    }
+    Check(preview::add_playcropper_transform_meta(frame, transform), "attach crop transform");
   }
 };
 
@@ -151,6 +164,113 @@ void ExactArtifactGeometry() {
     Check(!scene::ExactPreviewDimension(dimension), "invalid canvas dimension accepted");
   }
 }
+
+void RoleAndSemanticLabels() {
+  namespace pa = hm::player_analytics;
+  constexpr unsigned semantic_layers = pa::kDrawJerseys | pa::kDrawActions | pa::kDrawTeams;
+  for (const char* label : {"", "person", "goalie", "official"}) {
+    const std::string role = std::strcmp(label, "goalie") == 0 ? "GOALIE"
+        : std::strcmp(label, "official") == 0                  ? "REF"
+                                                               : "";
+    for (bool frozen : {false, true}) {
+      for (bool program : {false, true}) {
+        Frame fixture;
+        auto* object = nvds_acquire_obj_meta_from_pool(fixture.batch);
+        Check(object, "role object allocation");
+        object->class_id = role.empty() ? 0 : role == "GOALIE" ? 1 : 2;
+        object->object_id = 17;
+        std::strcpy(object->obj_label, label);
+        object->rect_params.left = 200;
+        object->rect_params.top = 100;
+        object->rect_params.width = 80;
+        object->rect_params.height = 120;
+        object->rect_params.border_color = {1, 1, 1, 1};
+        nvds_add_obj_meta_to_frame(fixture.frame, object, nullptr);
+        pa::FrameResult result;
+        result.stream_id = fixture.frame->source_id;
+        result.pts_ns = fixture.frame->buf_pts;
+        result.coordinate_width = 800;
+        result.coordinate_height = 600;
+        // Only goalies and ordinary players receive squad analytics.
+        result.player_count = role == "REF" ? 0 : 1;
+        auto& player = result.players[0];
+        player.track_id = 17;
+        player.box = {200, 100, 80, 120};
+        player.jersey.text = {'0', '7', '\0'};
+        player.jersey.observed_at = result.pts_ns;
+        player.jersey.expires_at = result.pts_ns;
+        player.action.label = 0;
+        player.action.window_start = player.action.observed_at = result.pts_ns;
+        player.action.expires_at = result.pts_ns;
+        std::strcpy(player.action_text.data(), "falling");
+        player.team.label = pa::TeamLabel::kHome;
+        player.team.cluster = 0;
+        player.team.observed_at = result.pts_ns;
+        Check(pa::AttachFrameResult(fixture.frame, result), "attach role analytics");
+        if (frozen) {
+          Check(preview::add_overlay_snapshot_meta(fixture.frame), "attach role snapshot");
+          // The preview and semantic row reservation must use frozen roles.
+          object->class_id = 0;
+          std::strcpy(object->obj_label, "person");
+          object->rect_params.left = 999;
+        }
+        preview::PlayCropperTransform transform{};
+        transform.input_width = transform.metadata_width = transform.crop_width = transform.output_width = 800;
+        transform.input_height = transform.metadata_height = transform.crop_height = transform.output_height = 600;
+        transform.anchor_x = 400;
+        transform.anchor_y = 300;
+        transform.angle_degrees = 30;
+        if (program)
+          Check(preview::add_playcropper_transform_meta(fixture.frame, transform), "attach role crop transform");
+        scene::PreviewOverlayOptions options{
+            program ? "program" : "stitched", 800, 600, 800, 600, true, false, semantic_layers, .3F};
+        analytics::CommandList commands;
+        const auto combined = scene::BuildPreviewOverlayScene(fixture.frame, options, commands, nullptr);
+        const size_t semantic_glyphs = result.player_count ? 13 : 0;
+        Check(combined.paths.size() == 1, "preview role box missing");
+        Check(commands.size() == role.size() + semantic_glyphs, "preview added or lost label glyphs");
+        std::string text;
+        for (size_t i = 0; i < commands.size(); ++i) {
+          Check(commands.data()[i].kind == analytics::detail::Kind::kGlyph, "unexpected label command");
+          text += static_cast<char>(commands.data()[i].glyph + 32);
+        }
+        Check(text == role + (result.player_count ? "07fallingHOME" : ""), "unexpected role/player text");
+        float semantic_y = 0;
+        if (semantic_glyphs) {
+          semantic_y = commands.data()[role.size()].y0;
+          if (!role.empty())
+            Check(semantic_y + .001F >= commands.data()[0].y1, "preview role overlaps semantic text");
+          Check(
+              commands.data()[role.size() + 2].y0 + .001F >= commands.data()[role.size()].y1 &&
+                  commands.data()[role.size() + 9].y0 + .001F >= commands.data()[role.size() + 2].y1,
+              "preview semantic rows overlap");
+        }
+        options.show_player_tracking = false;
+        const auto hidden = scene::BuildPreviewOverlayScene(fixture.frame, options, commands, nullptr);
+        Check(hidden.paths.empty() && commands.size() == semantic_glyphs, "hidden preview boxes emitted role text");
+        if (semantic_glyphs)
+          Check(std::abs(commands.data()[0].y0 - semantic_y) < .001F, "preview toggle moved semantic rows");
+        options.show_player_tracking = true;
+        options.player_analytics_layers = 0;
+        scene::BuildPreviewOverlayScene(fixture.frame, options, commands, nullptr);
+        Check(commands.size() == role.size(), "box-only preview added person/player text");
+        if (program) {
+          transform.baked_player_layers = pa::kDrawPlayerBoxes;
+          fixture.SetTransform(transform);
+          options.player_analytics_layers = semantic_layers;
+          const auto baked = scene::BuildPreviewOverlayScene(fixture.frame, options, commands, nullptr);
+          Check(baked.paths.empty() && commands.size() == semantic_glyphs, "preview redrew baked role labels");
+          if (semantic_glyphs)
+            Check(std::abs(commands.data()[0].y0 - semantic_y) < .001F, "baked preview role row was not reserved");
+          transform.baked_player_layers |= semantic_layers;
+          fixture.SetTransform(transform);
+          scene::BuildPreviewOverlayScene(fixture.frame, options, commands, nullptr);
+          Check(commands.empty(), "preview redrew fully baked labels");
+        }
+      }
+    }
+  }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -159,6 +279,7 @@ int main(int argc, char** argv) {
     GeometryAndFrozenMetadata();
     MissingAndAlreadyTransformedGeometry();
     ExactArtifactGeometry();
+    RoleAndSemanticLabels();
     std::cout << "Shared preview overlay geometry, frozen metadata, frame clearing and artifact bounds passed\n";
     return 0;
   } catch (const std::exception& error) {
