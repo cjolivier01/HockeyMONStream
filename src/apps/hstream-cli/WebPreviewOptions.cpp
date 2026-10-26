@@ -326,6 +326,55 @@ std::string WebPreviewSeekReply(
   });
 }
 
+absl::StatusOr<WebPlayerDrawingRequest> ParseWebPlayerDrawing(const std::string& json, bool query) {
+  if (json.empty() || json.size() > 1024)
+    return absl::InvalidArgumentError("Player drawing JSON exceeds its limit");
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebPlayerDrawingRequest request{};
+  request.query = query;
+  gint64 version = 0, stage = 0, layers = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  const bool valid = object && members == (query ? 5U : 6U) && json_object_get_size(object) == members &&
+      Integer(object, "version", &version) && version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN &&
+      stage <= INT_MAX && String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64 && (query || (Integer(object, "layers", &layers) && layers >= 0 && layers <= 31));
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid player drawing identity or layers");
+  request.session.stage = static_cast<int>(stage);
+  request.layers = static_cast<unsigned>(layers);
+  return request;
+}
+
+std::string WebPlayerDrawingReply(
+    const WebPlayerDrawingRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    unsigned layers) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    Add(builder, "layers", static_cast<gint64>(layers));
+  });
+}
+
 absl::StatusOr<WebPreviewOverlayRequest> ParseWebPreviewOverlays(const std::string& json, bool query) {
   if (json.empty() || json.size() > 1024)
     return absl::InvalidArgumentError("Preview overlay JSON exceeds its limit");

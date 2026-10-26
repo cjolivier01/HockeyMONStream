@@ -59,6 +59,18 @@ struct WebPreviewOverlayRequest {
   pipeline_internal::PreviewOverlayCommand command;
   bool query{false};
 };
+struct WebPlayerDrawingRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  unsigned layers{0};
+  bool query{false};
+};
+absl::StatusOr<WebPlayerDrawingRequest> ParseWebPlayerDrawing(const std::string& json, bool query = false);
+std::string WebPlayerDrawingReply(
+    const WebPlayerDrawingRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    unsigned layers);
 absl::StatusOr<WebPreviewOverlayRequest> ParseWebPreviewOverlays(const std::string& json, bool query = false);
 // Validates session and generation before invoking the same native transaction
 // used by Qt. Failed/stale requests never mutate or advance committed state.

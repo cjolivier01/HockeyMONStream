@@ -1866,6 +1866,13 @@ void PipelineApplication::publish_web_preview_capability() {
     return;
   const bool seek = !stitching_calibration_only_ && current_stage_ == 0 && runtime_seek_is_local_render_only();
   g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_, seek).c_str());
+  if (!stitching_calibration_only_ && current_stage_ == 0) {
+    web_preview_->SetPlayerDrawingLayers(current_player_drawing_layers());
+    const hm::preview::WebPlayerDrawingRequest drawing{web_preview_->identity(), "0", 0, true};
+    g_print(
+        "HSTREAM_WEB_PLAYER_DRAWING %s\n",
+        hm::preview::WebPlayerDrawingReply(drawing, "state", "", current_player_drawing_layers()).c_str());
+  }
   std::fflush(stdout);
 }
 
@@ -6122,6 +6129,19 @@ bool PipelineApplication::reapply_runtime_properties() {
 
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   const std::string trimmed_line = trim_ascii(line);
+  // Full browser seeks replace the preview on a worker. Readers must enter
+  // through the same short fence as inspector queries before borrowing it.
+  // Never wait for reconstruction: Stop must remain responsive.
+  const bool typed_preview = trimmed_line.rfind("preview-", 0) == 0 || trimmed_line.rfind("web-player-drawing", 0) == 0;
+  std::unique_lock<std::mutex> preview_lock(pipeline_access_mu_, std::defer_lock);
+  bool preview_reconstructing = false;
+  if (typed_preview) {
+    preview_reconstructing = pipeline_recreation_active_.load(std::memory_order_acquire);
+    if (!preview_reconstructing) {
+      preview_lock.lock();
+      preview_reconstructing = pipeline_recreation_active_.load(std::memory_order_acquire);
+    }
+  }
   const bool overlay_query =
       trimmed_line == "preview-overlays-query" || trimmed_line.rfind("preview-overlays-query ", 0) == 0;
   if (overlay_query || trimmed_line == "preview-overlays" || trimmed_line.rfind("preview-overlays ", 0) == 0) {
@@ -6133,15 +6153,18 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     }
     const auto reply = hm::preview::ApplyWebPreviewOverlays(
         *request,
-        web_preview_ && web_preview_->available() ? web_preview_->identity() : hm::preview::RouteOwner::Session{},
+        !preview_reconstructing && web_preview_ && web_preview_->available() ? web_preview_->identity()
+                                                                             : hm::preview::RouteOwner::Session{},
         preview_overlay_state_,
-        web_preview_ ? web_preview_->MutationBlockReason() : "preview-unavailable",
+        preview_reconstructing ? "reconstructing"
+            : web_preview_     ? web_preview_->MutationBlockReason()
+                               : "preview-unavailable",
         [this, &request](const auto& selection) {
           return web_preview_ && apply_preview_overlay_state(selection, true, request->command.generation);
         });
     g_print("HSTREAM_PREVIEW_OVERLAY_STATE %s\n", reply.c_str());
     std::fflush(stdout);
-    if (overlay_query && web_preview_)
+    if (overlay_query && !preview_reconstructing && web_preview_)
       web_preview_->RefreshOverlayStatus(request->session);
     return true;
   }
@@ -6151,13 +6174,53 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       g_printerr("runtime preview route rejected: %s\n", request.status().ToString().c_str());
       return false;
     }
-    const auto reply = web_preview_
+    const auto reply = preview_reconstructing
+        ? hm::preview::WebPreviewRouteReply(*request, {hm::preview::RouteOwner::Status::kFailed, "reconstructing"})
+        : web_preview_
         ? web_preview_->Command(*request)
-        : hm::preview::WebPreviewRouteReply(*request,
-            {hm::preview::RouteOwner::Status::kUnconfigured, "selectable-preview-unavailable"});
+        : hm::preview::WebPreviewRouteReply(
+              *request, {hm::preview::RouteOwner::Status::kUnconfigured, "selectable-preview-unavailable"});
     g_print("HSTREAM_PREVIEW_ROUTE %s\n", reply.c_str());
     std::fflush(stdout);
     return true;
+  }
+  if (trimmed_line.rfind("web-player-drawing ", 0) == 0 || trimmed_line.rfind("web-player-drawing-query ", 0) == 0) {
+    const bool query = trimmed_line.rfind("web-player-drawing-query ", 0) == 0;
+    const auto request = hm::preview::ParseWebPlayerDrawing(trim_ascii(trimmed_line.substr(query ? 25 : 19)), query);
+    if (!request.ok()) {
+      g_printerr("runtime player drawing rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    std::string status = "failed", reason;
+    if (preview_reconstructing) {
+      reason = "reconstructing";
+    } else if (
+        !web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reason = "stale-session";
+    } else if (stitching_calibration_only_ || current_stage_ != 0) {
+      reason = "program-unavailable";
+    } else if (query) {
+      status = "state";
+    } else if (runtime_seek_pending_ || pipeline_recreation_active_.load(std::memory_order_acquire)) {
+      reason = "seeking";
+    } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
+    } else if (!apply_player_drawing_layers(request->layers)) {
+      reason = "no-drawing-targets";
+    } else {
+      player_drawing_layers_ = request->layers;
+      status = "applied";
+    }
+    g_print(
+        "HSTREAM_WEB_PLAYER_DRAWING %s\n",
+        hm::preview::WebPlayerDrawingReply(
+            *request,
+            status,
+            reason,
+            preview_reconstructing ? player_drawing_layers_.value_or(0) : current_player_drawing_layers())
+            .c_str());
+    std::fflush(stdout);
+    return reason.empty();
   }
   if (trimmed_line == "preview-seek" || trimmed_line.rfind("preview-seek ", 0) == 0) {
     const auto request = hm::preview::ParseWebPreviewSeek(trim_ascii(trimmed_line.substr(12)));
@@ -6168,14 +6231,13 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     const auto reply = [&](const char* status, const char* reason) {
       g_print(
           "HSTREAM_PREVIEW_SEEK %s\n",
-          hm::preview::WebPreviewSeekReply(
-              *request,
-              status,
-              reason,
-              std::string(status) == "accepted" ? request->session.topology : inspector_topology_generation_)
-              .c_str());
+          hm::preview::WebPreviewSeekReply(*request, status, reason, request->session.topology).c_str());
       std::fflush(stdout);
     };
+    if (preview_reconstructing) {
+      reply("failed", "reconstructing");
+      return false;
+    }
     if (!web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
         request->session.topology != inspector_topology_generation_) {
       reply("failed", "stale-session");
@@ -6185,6 +6247,8 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       reply("failed", "seek-in-progress");
       return false;
     }
+    // Seek admission takes this mutex itself while establishing the worker fence.
+    preview_lock.unlock();
     web_seek_pending_ = *request;
     const bool admitted = request->delta_ns ? seek_runtime_relative(*request->delta_ns, request->request_id)
                                             : seek_runtime(request->position_ns, request->request_id);
@@ -7033,6 +7097,21 @@ bool PipelineApplication::set_preview_overlays_runtime(const hm::pipeline_intern
   return true;
 }
 
+guint PipelineApplication::current_player_drawing_layers() const {
+  if (player_drawing_layers_)
+    return *player_drawing_layers_;
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.empty() || !stage->second.front())
+    return 0;
+  const auto& config = stage->second.front()->config;
+  const auto& drawing = config.player_analytics_config.analytics.drawing;
+  return (config.hmplaycropper_config.plot_player_tracking ? hm::player_analytics::kDrawPlayerBoxes : 0U) |
+      (drawing.pose ? hm::player_analytics::kDrawPose : 0U) |
+      (drawing.jersey ? hm::player_analytics::kDrawJerseys : 0U) |
+      (drawing.action ? hm::player_analytics::kDrawActions : 0U) |
+      (drawing.team ? hm::player_analytics::kDrawTeams : 0U);
+}
+
 bool PipelineApplication::apply_player_drawing_layers(guint layers) {
   bool applied = false;
   for (const auto& app : stage_app_contexts_.at(current_stage_)) {
@@ -7054,6 +7133,10 @@ bool PipelineApplication::apply_player_drawing_layers(guint layers) {
     if (!preview.sink || !seen.insert(preview.sink).second)
       continue;
     g_object_set(G_OBJECT(preview.sink), "player-drawing-layers", layers, nullptr);
+    applied = true;
+  }
+  if (web_preview_) {
+    web_preview_->SetPlayerDrawingLayers(layers);
     applied = true;
   }
   return applied;

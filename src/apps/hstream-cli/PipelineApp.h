@@ -156,6 +156,7 @@ class PipelineApplication {
   // wholesale because one preview channel is not in use.
   bool set_player_drawing_runtime(guint64 generation, guint layers);
   bool apply_player_drawing_layers(guint layers);
+  guint current_player_drawing_layers() const;
   bool apply_preview_overlay_state(
       const hm::pipeline_internal::PreviewOverlaySelection& selection,
       bool apply_sinks,

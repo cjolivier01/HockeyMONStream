@@ -30,7 +30,7 @@ struct WebPreviewSession::PaintState {
   draw_display::analytics::CommandList commands;
   std::map<std::string, std::shared_ptr<RouteState>> channels;
   unsigned program_width, program_height, source_width, source_height;
-  unsigned analytics_layers;
+  std::atomic<unsigned> analytics_layers{0};
   float joint_confidence;
   // One immutable snapshot binds the three flags and their acknowledged epoch.
   std::shared_ptr<const pipeline_internal::PreviewOverlayCommand> overlays =
@@ -129,7 +129,7 @@ struct WebPreviewSession::PaintState {
         route->second->height.load(std::memory_order_acquire),
         (flags & 1U) != 0,
         (flags & 2U) != 0,
-        analytics_layers,
+        analytics_layers.load(std::memory_order_acquire),
         joint_confidence};
     const auto scene = gpu_preview::BuildPreviewOverlayScene(metadata, options, commands, nullptr);
     EnsureMask(scene, flags);
@@ -461,6 +461,10 @@ WebPreviewSession::~WebPreviewSession() {
     sink_config_->preview_bin = nullptr;
     sink_config_->preview_endpoint = nullptr;
   }
+}
+
+void WebPreviewSession::SetPlayerDrawingLayers(unsigned layers) {
+  paint_->analytics_layers.store(layers, std::memory_order_release);
 }
 
 std::string WebPreviewSession::selection() const {

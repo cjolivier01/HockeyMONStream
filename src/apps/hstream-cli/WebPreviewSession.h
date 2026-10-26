@@ -28,6 +28,7 @@ class WebPreviewSession {
   void RefreshOverlayStatus(const RouteOwner::Session& session);
   void Stop();
   std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays, bool seek) const;
+  void SetPlayerDrawingLayers(unsigned layers);
   std::string Command(const RouteOwner::Request& request);
   std::string MutationBlockReason() const;
   const RouteOwner::Session& identity() const {

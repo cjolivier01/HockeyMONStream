@@ -5,6 +5,7 @@
 #include <json-glib/json-glib.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 
 namespace {
@@ -171,6 +172,37 @@ int main() {
           json_object_get_boolean_member(json_node_get_object(json_parser_get_root(parser)), "seek"),
       "Seekable session lost its capability");
   g_object_unref(parser);
+
+  const std::string drawing_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","layers":31})";
+  const auto drawing = hm::preview::ParseWebPlayerDrawing(drawing_json);
+  Check(
+      drawing.ok() && drawing->layers == 31 && drawing->session.topology == 7,
+      "Player drawing identity or full selection was lost");
+  for (const auto& replacement :
+       {std::make_pair("\"layers\":31", "\"layers\":32"),
+        std::make_pair("\"layers\":31", "\"layers\":true"),
+        std::make_pair("\"layers\":31", "\"layers\":1.5"),
+        std::make_pair("\"requestId\":\"1234\"", "\"requestId\":\"0\""),
+        std::make_pair("\"layers\":31", "\"layers\":31,\"layers\":0"),
+        std::make_pair("\"topology\":\"7\"", "\"topology\":\"07\"")}) {
+    auto invalid = drawing_json;
+    invalid.replace(invalid.find(replacement.first), std::strlen(replacement.first), replacement.second);
+    Check(!hm::preview::ParseWebPlayerDrawing(invalid).ok(), "Unsafe player drawing request was admitted");
+  }
+  auto drawing_query = drawing_json;
+  drawing_query.erase(drawing_query.find(",\"layers\""));
+  drawing_query += "}";
+  Check(
+      hm::preview::ParseWebPlayerDrawing(drawing_query, true).ok() &&
+          !hm::preview::ParseWebPlayerDrawing(drawing_query).ok() &&
+          !hm::preview::ParseWebPlayerDrawing(drawing_json, true).ok(),
+      "Player drawing query and mutation envelopes were interchangeable");
+  const auto drawing_reply = hm::preview::WebPlayerDrawingReply(*drawing, "applied", "", 31);
+  Check(
+      drawing_reply.find("\"layers\":31") != std::string::npos &&
+          drawing_reply.find("\"requestId\":\"1234\"") != std::string::npos,
+      "Player drawing reply lost readback or correlation");
 
   const std::string seek_json =
       R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","positionNs":"9223372036854775807"})";
