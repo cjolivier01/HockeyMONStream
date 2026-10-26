@@ -899,6 +899,25 @@ cc_library(
   ],
 )
 
+cc_library(
+  name = "stitching_calibration_controls",
+  srcs = ["StitchingCalibrationControls.cpp"],
+  hdrs = ["StitchingCalibrationControls.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    ":game_config", ":stitching_reframe", ":player_frame_selection", ":rink_mask_frame_time", ":transaction_state",
+    "//src/libs/common:status_macros", "@yaml-cpp", "@com_google_absl//absl/status:statusor",
+  ],
+)
+
+cc_test(
+  name = "stitching_calibration_controls_test",
+  srcs = ["StitchingCalibrationControlsTest.cpp"],
+  deps = [":stitching_calibration_controls", ":stitching_core", ":game_config", ":player_frame_selection",
+    "//src/libs/common:baseline_config"],
+)
+
 cc_test(
   name = "stitching_reframe_test",
   srcs = ["StitchingReframeTest.cpp"],

@@ -860,6 +860,7 @@ cc_library(
         "//src/libs/stitching:live_rotation_config_owner",
         "//src/libs/stitching:stitching_algorithms",
         "//src/libs/stitching:stitching_reframe",
+        "//src/libs/stitching:stitching_calibration_controls",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ] + select({
@@ -1337,6 +1338,21 @@ cc_test(
     deps = [":web_camera_experiment", ":web_job_spec", "//src/libs/playtracker_replay", "@qt//:qt_core"],
 )
 
+cc_library(
+    name = "web_calibration_controls",
+    srcs = ["WebCalibrationControls.cpp"],
+    hdrs = ["WebCalibrationControls.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":web_job_spec", "//src/libs/common:baseline_config",
+        "//src/libs/stitching:auto_input_lens", "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config", "//src/libs/stitching:stitching_core",
+        "//src/libs/stitching:live_stitching_generation", "//src/libs/stitching:stitching_calibration_controls",
+        "//src/libs/stitching:transaction_state", "@qt//:qt_core", "@yaml-cpp",
+    ],
+)
+
 cc_binary(
     name = "hstream-web-job",
     srcs = ["WebJobMain.cpp", "WebRinkEditor.cpp", "WebRinkEditor.h", "WebRinkMap.cpp", "WebRinkMap.h", "WebSavedCalibration.cpp", "WebSavedCalibration.h", "WebExperimentFrames.cpp", "WebExperimentFrames.h", "StitchingExperimentDefaults.h", "CameraControlSpecs.h"],
@@ -1345,11 +1361,13 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/tracking:camera_control_specs",
+        ":web_calibration_controls",
         ":web_camera_experiment",
         ":highlight_web_preview",
         ":rink_map_dialog",
         ":projection_crop_dialog",
         "//src/libs/stitching:stitching_reframe",
+        "//src/libs/stitching:stitching_calibration_controls",
         ":web_job_spec",
         "//src/libs/common:baseline_config",
         ":calibration_image",
@@ -1409,7 +1427,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":web_job_spec", "//src/libs/common:baseline_config", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "@qt//:qt_gui"],
+    deps = [":web_job_spec", ":web_calibration_controls", "//src/libs/common:baseline_config", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "@qt//:qt_gui"],
 )
 
 cc_test(

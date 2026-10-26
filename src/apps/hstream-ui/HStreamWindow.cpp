@@ -8,6 +8,7 @@
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
+#include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
@@ -3793,22 +3794,7 @@ bool config_references_video_path(const YAML::Node& config, const QDir& game_dir
 }
 
 bool clear_stitching_frame_offsets(YAML::Node& config) {
-  bool changed = false;
-  if (config["stitching"].IsMap())
-    changed = config["stitching"].remove("manual_control_points");
-  if (config["hstream_ui"]["stitching_calibration"].IsMap())
-    changed = config["hstream_ui"]["stitching_calibration"].remove("match_snapshot") || changed;
-  YAML::Node game_stitching = config["game"]["stitching"];
-  if (game_stitching && game_stitching["frame_offsets"]) {
-    game_stitching.remove("frame_offsets");
-    changed = true;
-  }
-  YAML::Node stitching = config["stitching"];
-  if (stitching && stitching["frame_offsets"]) {
-    stitching.remove("frame_offsets");
-    changed = true;
-  }
-  return changed;
+  return hm::stitching::InvalidateStitchingSourceInputs(config);
 }
 
 bool invalidate_stitching_calibration(YAML::Node& config, const char* stale_from) {
@@ -9648,6 +9634,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool clean_all = false;
   bool clean_from_control_points = false;
   bool replay_selected_frames = false;
+  hm::stitching::StitchingCalibrationPlan calibration_plan;
+  YAML::Node prepared_calibration_config;
   auto width_constraint_check = lockStitchingCanvasConstraint(active_run_game_id_);
   if (!width_constraint_check.has_value())
     return false;
@@ -9807,19 +9795,6 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required;
     const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count;
     replay_selected_frames = retain_selected_frames;
-    if (stitch_frame_time_changed && retain_selected_frames) {
-      calibration_failure_message_ =
-          "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
-          "reference time, or explicitly change the frame count to select a new frame set.";
-      appendLog(calibration_failure_message_);
-      return false;
-    }
-    // Changing the count explicitly requests a new set; other stitching edits
-    // must retain the experiment's exact chosen pairs.
-    if (saved_frame_count != frame_count) {
-      remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
-      remove_yaml_path(config, {"stitching", "calibration_frame_inputs_fingerprint"});
-    }
     if (!retain_selected_frames)
       remove_yaml_path(config, {"stitching", "stitch_frame_time"});
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
@@ -9875,39 +9850,84 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     config["hstream_ui"]["stitching_calibration"]["control_points"] = control_points;
     config["hstream_ui"]["stitching_calibration"]["frame_count"] = frame_count;
-    if (active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed || frame_count_changed ||
-        control_point_matcher_changed || camera_changed) {
-      remove_yaml_path(config, {"stitching", "manual_control_points"});
-      remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "match_snapshot"});
-    }
-    if (active_force_reconfigure_ || saved_frame_count != frame_count) {
-      hm::stitching::ClearStitchingReframeIntent(config);
-    } else {
+    {
+      hm::stitching::StitchingCalibrationState before;
+      before.control_points_present = saved_found;
+      before.frame_count_present = saved_frame_count_found;
+      before.frame_time_valid = saved_stitch_frame_time_valid;
+      before.selected_frame_count = selected_plan_frame_count;
+      before.status = saved_status.toStdString();
+      before.stale_from = saved_stale_from.toStdString();
+      before.artifacts_invalidated = saved_artifacts_invalidated;
+      auto& previous = before.controls;
+      previous.control_points = saved_control_points;
+      previous.frame_count = saved_frame_count;
+      previous.max_output_width = saved_max_output_width;
+      previous.frame_time = saved_stitch_frame_time.toStdString();
+      previous.sync_method = saved_sync_method.toStdString();
+      previous.matcher = saved_control_point_matcher.toStdString();
+      previous.resolution = saved_resolution.toStdString();
+      previous.filtering = saved_filtering;
+      previous.backend = saved_mapping_backend.toStdString();
+      previous.camera = saved_camera_selection;
+      previous.autooptimizer = saved_run_autooptimizer;
+      previous.projection = saved_projection.toStdString();
+      previous.projection_parameters = saved_projection_parameters;
+      previous.framing = saved_projection_framing;
+      hm::stitching::StitchingCalibrationControls desired;
+      desired.control_points = control_points;
+      desired.frame_count = frame_count;
+      desired.max_output_width = active_stitch_max_output_width_;
+      desired.frame_time = active_stitch_frame_time_.toStdString();
+      desired.sync_method = active_iteration_settings_.sync_method.toStdString();
+      desired.matcher = active_control_point_matcher_.toStdString();
+      desired.resolution = active_control_point_resolution_.toStdString();
+      desired.filtering = active_control_point_filtering_;
+      desired.backend = active_mapping_backend_.toStdString();
+      desired.camera = active_camera_selection_;
+      desired.autooptimizer = active_run_autooptimizer_;
+      desired.projection = active_projection_.toStdString();
+      desired.projection_parameters = active_projection_parameters_;
+      desired.framing = active_projection_framing_;
       YAML::Node before_effective = merge_yaml_maps(baseline_config_, before_config);
       YAML::Node desired_effective = merge_yaml_maps(baseline_config_, config);
+      const auto previous_provider = hm::stitching::read_control_point_execution_provider(before_effective);
+      const auto desired_provider = hm::stitching::read_control_point_execution_provider(desired_effective);
+      if (!previous_provider.ok() || !desired_provider.ok()) {
+        appendLog("Cannot resolve the calibration control-point execution provider");
+        return false;
+      }
+      previous.execution_provider = hm::onnx::ExecutionProviderName(*previous_provider);
+      desired.execution_provider = hm::onnx::ExecutionProviderName(*desired_provider);
       // The UI resolves canonical/native width aliases with explicit layer
       // precedence; freeze that resolved value in the shared comparison.
       before_effective["stitching"]["max_output_width"] = saved_max_output_width;
       desired_effective["stitching"]["max_output_width"] = active_stitch_max_output_width_;
-      const auto reframe = hm::stitching::PrepareStitchingReframeIntentLocked(
+      const auto plan = hm::stitching::PrepareStitchingCalibrationControlsLocked(
           config_path.parent_path(),
+          before,
+          desired,
           before_effective,
           desired_effective,
           active_calibration_invalidation_id_.toStdString(),
+          active_force_reconfigure_,
+          false,
+          canvas_constraint.calibration_required,
+          canvas_constraint.cleanup_required,
           config);
-      if (!reframe.ok()) {
-        appendLog(
-            QString("could not preserve the saved stitching alignment: %1").arg(reframe.status().ToString().c_str()));
+      if (!plan.ok()) {
+        calibration_failure_message_ = QString::fromStdString(plan.status().ToString());
+        appendLog(QString("could not preserve the saved stitching alignment: %1").arg(calibration_failure_message_));
         return false;
       }
-      active_stitching_reframe_ = *reframe;
+      calibration_plan = *plan;
+      active_stitching_reframe_ = plan->alignment_reused;
+      replay_selected_frames = plan->retain_selected_frames;
+      clean_all = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kAll;
+      clean_from_control_points = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kControlPoints;
+      active_calibration_start_stage_ = QString::fromStdString(plan->start_stage);
     }
-    const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed ||
-        control_points_changed || frame_count_changed || control_point_matcher_changed || mapping_backend_changed ||
-        camera_changed || projection_changed || projection_parameters_changed || projection_framing_changed ||
-        run_autooptimizer_changed || canvas_constraint.calibration_required || saved_status != "complete" ||
-        active_stitching_reframe_;
-    if (!needs_calibration) {
+    if (!calibration_plan.required) {
       active_calibration_start_stage_.clear();
       // Reserve one generation owner before the process starts. Program can
       // discover a missing artifact only after the first stitched frame; this
@@ -9967,71 +9987,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       reasons << QString("saved calibration status=%1").arg(saved_status.isEmpty() ? "missing" : saved_status);
     appendLog("stitching calibration required: " + reasons.join("; "));
 
-    QString stale_from = saved_stale_from;
-    if (!calibration_stage_index(stale_from).has_value()) {
-      stale_from =
-          (mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
-           projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) &&
-              !control_point_matcher_changed && !control_points_changed && !frame_count_changed
-          ? QString("canvas")
-          : QString("input");
-    }
-    const size_t features_index = *calibration_stage_index("features");
-    if ((control_points_changed || control_point_matcher_changed) && saved_status == "complete") {
-      stale_from = "features";
-    } else if (
-        (control_points_changed || control_point_matcher_changed) && saved_found &&
-        features_index < *calibration_stage_index(stale_from)) {
-      stale_from = "features";
-    }
-    const size_t canvas_index = *calibration_stage_index("canvas");
-    if ((mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
-         projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) &&
-        !control_point_matcher_changed && !control_points_changed && !frame_count_changed &&
-        canvas_index < *calibration_stage_index(stale_from)) {
-      stale_from = "canvas";
-    }
-    if (active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed || frame_count_changed)
-      stale_from = "input";
-    active_calibration_start_stage_ = stale_from;
-
-    clean_from_control_points = !active_force_reconfigure_ && !stitch_frame_time_changed && stale_from == "features" &&
-        (control_points_changed || control_point_matcher_changed || !saved_artifacts_invalidated);
-    clean_all = active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed ||
-        (stale_from != "features" &&
-         (!saved_artifacts_invalidated || control_points_changed || control_point_matcher_changed ||
-          mapping_backend_changed || projection_changed || projection_parameters_changed || run_autooptimizer_changed ||
-          camera_changed || projection_framing_changed || canvas_constraint.cleanup_required));
-    const bool width_only_change_from_complete_state = saved_status == "complete" && max_output_width_changed &&
-        !active_force_reconfigure_ && !stitch_frame_time_changed && !sync_method_changed && !frame_count_changed &&
-        !control_point_matcher_changed && !mapping_backend_changed && !projection_changed && !camera_changed &&
-        !projection_parameters_changed && !projection_framing_changed && !run_autooptimizer_changed;
-    if (width_only_change_from_complete_state && !canvas_constraint.cleanup_required)
-      clean_all = false;
-    const bool retain_manual_matches = config["stitching"]["manual_control_points"].IsScalar();
-    if ((retain_selected_frames || retain_manual_matches) && clean_all) {
-      // Retained matches/plans own synchronization and exact input images.
-      // Geometry-only solves must not discard their input offsets.
-      clean_all = false;
-      clean_from_control_points = true;
-    }
-
-    if (active_stitching_reframe_) {
-      clean_all = false;
-      clean_from_control_points = false;
-      stale_from = "canvas";
-      active_calibration_start_stage_ = stale_from;
+    if (active_stitching_reframe_)
       appendLog("Reusing the saved stitching alignment to generate the edited view");
-    }
-
-    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
-    calibration["control_points"] = control_points;
-    calibration["frame_count"] = frame_count;
-    calibration["status"] = "pending";
-    calibration["rink_mask_status"] = "pending";
-    calibration["stale_from"] = stale_from.toStdString();
-    calibration["artifacts_invalidated"] = !(clean_all || clean_from_control_points);
-    calibration["invalidation_id"] = active_calibration_invalidation_id_.toStdString();
+    prepared_calibration_config = YAML::Clone(config);
     const auto publish = publish_yaml_config(config_path, config);
     if (!publish.ok()) {
       appendLog(QString("failed to write stitching calibration settings %1: %2")
@@ -10084,20 +10042,13 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
 
   if (clean_all || clean_from_control_points) {
-    bool state_applied = false;
-    if (!saveStitchingCalibrationState(
-            active_run_game_id_,
-            control_points,
-            "pending",
-            active_calibration_start_stage_,
-            active_calibration_invalidation_id_,
-            true,
-            /*require_matching_pending=*/true,
-            &state_applied)) {
-      return false;
-    }
-    if (!state_applied) {
-      appendLog("stitching calibration cleanup was superseded by a newer dependency invalidation");
+    const auto completed = hm::stitching::CompleteStitchingCalibrationCleanup(
+        config_path.parent_path(), calibration_plan, prepared_calibration_config);
+    if (!completed.ok()) {
+      if (absl::IsAborted(completed))
+        appendLog("stitching calibration cleanup was superseded by a newer dependency invalidation");
+      else
+        appendLog(QString("stitching calibration cleanup failed: %1").arg(completed.ToString().c_str()));
       return false;
     }
   }

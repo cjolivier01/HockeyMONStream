@@ -45,6 +45,16 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
     YAML::Node& desired_private,
     bool* solve_inputs_changed = nullptr);
 
+// Same transaction with already resolved, frozen effective documents. Does not
+// reopen the process user's mutable defaults. Used by shared launch staging.
+absl::StatusOr<bool> PrepareResolvedStitchingReframeIntentLocked(
+    const std::filesystem::path& game_directory,
+    const YAML::Node& before_effective,
+    const YAML::Node& desired_effective,
+    const std::string& desired_owner,
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed = nullptr);
+
 // Revalidate source artifacts/stills, retained selected inputs, current owner,
 // and the complete solve/view snapshots. Does not decode original recordings
 // or acquire another lock. Failure never authorizes an ordinary full solve.

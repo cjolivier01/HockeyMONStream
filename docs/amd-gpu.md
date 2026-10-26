@@ -35,6 +35,12 @@ only. The shared replay policy, parameter catalog and trajectory data remain
 portable, while actual AMD moving-preview and historical-mask qualification are
 still required. No system-memory video fallback is added.
 
+`StitchingCalibrationControls` shares CPU dependency staging, source-reference
+invalidation and cleanup completion between Qt Play and the private web adapter.
+It changes no CUDA/HIP data path and adds no frame readback. Its CPU regressions
+do not qualify an AMD calibration run or enable the missing HIP/VA browser target;
+paired AMD/native workflow validation remains required on `ripper`.
+
 ## Implemented paths
 
 `--config=rocm` selects HIP for HStream's highlight texture compositor,

@@ -489,6 +489,104 @@ identity receipts. `desired_generation` describes the source dimensions with
 the requested rotation; startup owns publication of the actual output geometry
 and regenerated downstream artifacts.
 
+`calibration-controls-stage` (`calibration-controls-stage-v1`) stages ordinary
+unsaved Play controls in a private copy of a completed calibration. Qt Play and
+this adapter call `StitchingCalibrationControls` for the dependency stage,
+selected-frame/manual-match retention, reframe capture and cleanup owner. This
+operation does not reset framing or release optics merely because a form omitted
+hidden saved values. The outer service must validate and freeze its form before
+dispatch and supply exactly these payload fields:
+
+```json
+{
+  "version": 1,
+  "source": {"generation": "exact saved output generation", "config_sha256": "64 lowercase hex characters"},
+  "before_controls": {},
+  "desired_controls": {},
+  "defaults": {},
+  "sources": []
+}
+```
+
+The adapter applies only changed leaves between the two control snapshots over
+the actual saved private config. It verifies the source hash, completed output
+and Hugin identity under artifact/config locks. Defaults are the bundled baseline
+plus the supplied frozen calibration overlay; staging never reloads the process
+user's defaults. Legacy private width aliases retain precedence over baseline
+values. `defaults`, `before_controls` and `desired_controls` accept these canonical
+calibration roots:
+
+- `stitching`: `control_point_limit`, `calibration_frame_count`, `stitch_frame_time`,
+  `sync_method`, `control_point_matcher`, `control_point_resolution`,
+  `control_point_filtering`, `control_point_execution_provider`, `mapping_backend`,
+  `camera_config`, `camera_fov`, `camera_automation`, `input_lens`,
+  `auto_input_lens_frozen`, `run_autooptimizer`, `projection`,
+  `projection_parameters`, `projection_framing`, `max_output_width`,
+  `post_stitch_rotate_degrees`, `rink_config`, `rink_mask_frame_time`, `rink_mask_frame_time_default`,
+  `blend_mode`, `blend_feather_fraction`, `dtype`.
+- `rink.camera.fixed_edge_rotation_angle`, as one number or `[left, right]`.
+- `hstream_ui.stitching_calibration.control_points`, `frame_count`,
+  `hstream_ui.show_crop_dialog` and `hstream_ui.show_leveling_dialog`.
+
+Map controls accept their native fields only. Projection parameter keys must be
+native projection names. Arbitrary pipeline settings, paths, commands and custom
+camera/rink catalogs are excluded; any required custom catalog must already be
+frozen in the verified private config.
+
+`stitching.rink_mask_frame_time` is the native mask-time control; the adapter
+rejects `rink.mask_frame.time` and split canonical fixed-edge keys. Rink/time
+edits restore generated mask-time bookkeeping before applying the new choice,
+so an inherited old rink time does not override the newly selected rink. Each
+blend edit retires only that field's aliases. Unchanged blend controls keep their
+effective native values.
+
+The supplied defaults are frozen for this staging comparison. The outer launch
+must also preserve that snapshot: its effective calibration values must resolve
+from the same baseline/defaults with the staged private config taking precedence.
+It must disable or override mutable process-user defaults and must not merge the
+entire desired form over the staged config again, which would erase hidden saved
+leveling/crop values. A staging receipt alone does not prove that runner
+configuration equality; the outer integration must verify it before playback.
+
+An empty `sources` retains the admitted playlists. A nonempty list supplies every
+ordered chapter from both roles as `{id, before_role, after_role, before_alias,
+after_alias}`. Roles are `left` or `right`; aliases are private relative paths.
+Both aliases must exist and resolve to the same regular recording listed in the
+request's `authorized_media`. Same-role entries retain the same alias. Source
+changes release selected/manual input references, synchronization and the active
+mask-input reference; immutable historical bundles remain intact. Automatic
+optics resolve only through those validated private playlists before freezing.
+
+Every successful stage reserves a new `invalidation_id`, including unchanged
+Play. Matching/budget/provider changes restart `features`; compatible view edits
+reuse alignment at `canvas`; source/time/count changes restart `input`. A retained
+selected-frame plan rejects a changed reference time until its count is explicitly
+changed. Native cleanup preserves synchronized inputs when the retained plan or
+manual matches owns them. Cleanup completion checks the owner, pending stage and
+unchanged controls/selection, allowing only the cache removals that cleanup owns.
+Legacy completed frame counts remain authoritative when the canonical count is
+absent and the form count is unchanged. Synchronization edits always restart
+input alignment, including when the same request changes crop/projection.
+
+The result includes `calibration_controls_stage_version: 1`, `staged`, the exact
+original `source`, `invalidation_id`, `pending`, `start_stage`, `cleanup`
+(`none`, `all` or `control-points`), `cleanup_completed`, `alignment_reused`,
+`retained_selected_frames`, `retained_manual_matches`, `output_changed` and final
+`config_sha256`, alongside the standard exact file-identity receipts. Cancellation
+before publication preserves the clone; cancellation afterward leaves a private
+incomplete workspace without a completion receipt. The supervisor must verify
+staging, bind the launch to that owner, retire all descendants and then run
+`calibration-complete`. A staging receipt alone never proves a completed solve or
+authorizes changing the project's saved preset or selected calibration.
+
+`stitching_calibration_controls_test` covers the shared dependency/retention
+matrix and stale cleanup owners. `web_saved_calibration_test` adds actual native
+cleanup and Hugin reframe fixtures, exact receipts, hidden leveling preservation,
+source roles and cancellation around publication/cleanup. The Qt window test
+exercises source replacement through its real actions. These regressions do not
+replace paired Qt/authenticated-browser workflow tests against one native build;
+retain the web parity limitations until those comparisons pass.
+
 ## Prepared model imports
 
 The browser imports account-owned Pose, Jersey, Activity, Team and Appearance

@@ -1,5 +1,6 @@
 #include <opencv2/imgcodecs.hpp>
 #include <sys/stat.h>
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QGuiApplication>
@@ -8,6 +9,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 namespace fs = std::filesystem;
 namespace {
@@ -116,7 +118,8 @@ QJsonObject invoke(
     const fs::path& root,
     const char* operation,
     const QJsonObject& payload,
-    bool success = true) {
+    bool success = true,
+    const QJsonArray& authorized_media = {}) {
   fs::remove(root / "operation-result.json");
   hm::web::WriteObject(
       root / "operation-request.json",
@@ -125,6 +128,7 @@ QJsonObject invoke(
        {"operation", operation},
        {"root", QString::fromStdString(root.string())},
        {"game_dir", "game"},
+       {"authorized_media", authorized_media},
        {"payload", payload}});
   QProcess child;
   child.start(binary, {"--request", QString::fromStdString((root / "operation-request.json").string())});
@@ -155,6 +159,357 @@ void expect(bool condition, const char* message) {
   if (!condition)
     throw std::runtime_error(message);
 }
+
+std::string read(const fs::path& path) {
+  std::ifstream input(path);
+  return std::string(std::istreambuf_iterator<char>(input), {});
+}
+QString digest(const std::string& bytes) {
+  return QString::fromLatin1(
+      QCryptographicHash::hash(QByteArray::fromStdString(bytes), QCryptographicHash::Sha256).toHex());
+}
+QJsonObject controls_payload(const fs::path& game, const QJsonObject& before, const QJsonObject& desired) {
+  const auto hugin = [&] {
+    auto lock = value(lock_canvas_constraint_artifacts(game));
+    return value(stitch_artifact_preflight_generation_id_locked(game));
+  }();
+  const std::string generation = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin.size()) + "\n" +
+      hugin + "post-stitch-rotate-degrees:0\noutput-size:64x32\n";
+  auto config = YAML::LoadFile((game / "config.yaml").string());
+  config["rink"]["stitched_output_generation"] = generation;
+  config["rink"]["stitched_output_persisted_rotation_degrees"] = 0;
+  write(game / "config.yaml", YAML::Dump(config));
+  return {
+      {"version", 1},
+      {"source",
+       QJsonObject{
+           {"generation", QString::fromStdString(generation)}, {"config_sha256", digest(read(game / "config.yaml"))}}},
+      {"before_controls", before},
+      {"desired_controls", desired},
+      {"defaults", QJsonObject{}},
+      {"sources", QJsonArray{}}};
+}
+
+void controls_staging(const QString& binary, const fs::path& source) {
+  const auto original = read(source / "config.yaml");
+  for (const char* kind :
+       {"unchanged",
+        "width-alias",
+        "budget",
+        "camera",
+        "view",
+        "time",
+        "count",
+        "hash",
+        "unknown",
+        "cancel",
+        "cancel-after-commit",
+        "cancel-after-cleanup",
+        "roles"}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    // The form's hidden default differs from the actual accepted saved view.
+    // An unchanged leaf must not replace those accepted leveling angles.
+    QJsonObject before{
+        {"stitching",
+         QJsonObject{
+             {"control_point_limit", 1500},
+             {"calibration_frame_count", 2},
+             {"stitch_frame_time", "00:00:00"},
+             {"camera_fov", QJsonObject{{"horizontal_fov", 109}, {"vertical_fov", 64}}},
+             {"camera_automation", QJsonObject{{"fov", false}, {"lens", false}}},
+             {"projection_framing",
+              QJsonObject{{"rotation_degrees", QJsonArray{0, 0, 0}}, {"crop", QJsonArray{0, 1, 0, 1}}}}}}};
+    auto desired = before;
+    auto stitching = desired.value("stitching").toObject();
+    const std::string name(kind);
+    if (name == "budget" || name == "cancel-after-commit" || name == "cancel-after-cleanup")
+      stitching["control_point_limit"] = 1600;
+    if (name == "camera")
+      stitching["camera_fov"] = QJsonObject{{"horizontal_fov", 105}, {"vertical_fov", 64}};
+    if (name == "view") {
+      auto framing = stitching.value("projection_framing").toObject();
+      framing["crop"] = QJsonArray{0.1, 0.9, 0.1, 0.9};
+      stitching["projection_framing"] = framing;
+    }
+    if (name == "time")
+      stitching["stitch_frame_time"] = "00:00:01";
+    if (name == "count")
+      stitching["calibration_frame_count"] = 3;
+    desired["stitching"] = stitching;
+    if (name == "width-alias") {
+      auto config = YAML::LoadFile((game / "config.yaml").string());
+      config["stitching"].remove("max_output_width");
+      config["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 1280;
+      write(game / "config.yaml", YAML::Dump(config));
+      auto canvas_provenance = read(game / "stitching_canvas_provenance");
+      const std::string saved_limit = "max-output-width=0\n";
+      const auto limit = canvas_provenance.find(saved_limit);
+      expect(limit != std::string::npos, "Width-alias fixture needs published canvas provenance");
+      canvas_provenance.replace(limit, saved_limit.size(), "max-output-width=1280\n");
+      write(game / "stitching_canvas_provenance", canvas_provenance);
+    }
+    QJsonArray authorized;
+    if (name == "roles") {
+      auto config = YAML::LoadFile((game / "config.yaml").string());
+      for (const char* role : {"left", "right"}) {
+        const auto media = root / (std::string(role) + ".mp4");
+        write(media, "immutable media fixture");
+        fs::create_directories(game / "media");
+        const auto alias = "media/" + std::string(role) + ".mp4";
+        fs::create_symlink(media, game / alias);
+        config["game"]["videos"][role] = std::vector<std::string>{alias};
+        config["hstream_ui"]["video_roles"][role] = std::vector<std::string>{alias};
+        authorized.append(QString::fromStdString(media.string()));
+      }
+      config["stitching"]["camera_automation"]["fov"] = false;
+      config["stitching"]["camera_automation"]["lens"] = false;
+      config["rink"]["mask_frame"]["input_id"] = std::string(64, 'a');
+      write(game / "config.yaml", YAML::Dump(config));
+      fs::create_directories(game / "rink-mask-input" / "historical");
+      write(game / "rink-mask-input" / "historical" / "manifest.yaml", "historical source provenance");
+    }
+    auto payload = controls_payload(game, before, desired);
+    if (name == "roles") {
+      QJsonArray roles;
+      for (const char* role : {"left", "right"}) {
+        const QString alias = "media/" + QString::fromLatin1(role) + ".mp4";
+        roles.append(
+            QJsonObject{
+                {"id", QString::fromLatin1(role)},
+                {"before_role", QString::fromLatin1(role)},
+                {"after_role", std::string(role) == "left" ? "right" : "left"},
+                {"before_alias", alias},
+                {"after_alias", alias}});
+      }
+      payload["sources"] = roles;
+    }
+    const auto initial = read(game / "config.yaml");
+    if (name == "hash") {
+      auto identity = payload.value("source").toObject();
+      identity["config_sha256"] = QString(64, '0');
+      payload["source"] = identity;
+    }
+    if (name == "unknown")
+      payload["desired_controls"] = QJsonObject{{"hstream_ui", QJsonObject{{"job", "untrusted recipe"}}}};
+    if (name == "cancel") {
+      hm::web::Request request{root, game, "staging-cancellation", "calibration-controls-stage", payload, {}, {}};
+      for (const int cancel_at : {1, 3}) {
+        int checks = 0;
+        bool cancelled = false;
+        try {
+          hm::web::RunCalibrationControlsStage(request, [&] { return ++checks >= cancel_at; });
+        } catch (const std::exception& error) {
+          cancelled = std::string(error.what()).find("cancelled") != std::string::npos;
+        }
+        expect(
+            cancelled && read(game / "config.yaml") == initial && fs::exists(game / "mapping_0000.tif"),
+            "Cancellation before native commit must preserve the exact private source");
+      }
+      continue;
+    }
+    if (name == "cancel-after-commit" || name == "cancel-after-cleanup") {
+      hm::web::Request request{root, game, "staging-cancellation", "calibration-controls-stage", payload, {}, {}};
+      const bool cleaned = name == "cancel-after-cleanup";
+      int checks = 0;
+      bool cancelled = false;
+      try {
+        hm::web::RunCalibrationControlsStage(request, [&] { return ++checks >= (cleaned ? 5 : 4); });
+      } catch (const std::exception& error) {
+        cancelled = std::string(error.what()).find("cancelled") != std::string::npos;
+      }
+      const auto state = YAML::LoadFile((game / "config.yaml").string())["hstream_ui"]["stitching_calibration"];
+      expect(
+          cancelled && state["status"].as<std::string>() == "pending" &&
+              state["stale_from"].as<std::string>() == "features" && !state["artifacts_invalidated"].as<bool>() &&
+              fs::exists(game / "mapping_0000.tif") != cleaned && fs::exists(game / "left.png"),
+          "Postcommit cancellation must leave an incomplete private workspace without a completion receipt");
+      continue;
+    }
+    const bool success = name != "hash" && name != "unknown";
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload, success, authorized);
+    if (!success) {
+      expect(
+          read(game / "config.yaml") == initial && fs::exists(game / "mapping_0000.tif"),
+          "Rejected staging must preserve config and calibration artifacts");
+      continue;
+    }
+    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    expect(
+        result.value("staged").toBool() && result.value("cleanup_completed").toBool() &&
+            result.value("source") == payload.value("source") &&
+            result.value("config_sha256").toString() == digest(read(game / "config.yaml")) &&
+            result.value("invalidation_id").toString().toStdString() ==
+                stored["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>(),
+        "Native controls receipt must bind original source, new owner and exact final config bytes");
+    expect(
+        value(read_stitch_projection_framing(stored)).rotation_degrees == std::array<double, 3>{0, -15, 3},
+        "Ordinary controls staging must preserve accepted hidden leveling");
+    const bool unchanged = name == "unchanged" || name == "width-alias", reframe = name == "view";
+    expect(
+        result.value("pending").toBool() != unchanged && result.value("alignment_reused").toBool() == reframe,
+        "Native controls staging confused unchanged, reframe and fresh solve");
+    const QString stage = unchanged   ? ""
+        : reframe || name == "camera" ? "canvas"
+        : name == "budget"            ? "features"
+                                      : "input";
+    expect(
+        result.value("start_stage").toString() == stage, "Native controls adapter chose a different dependency stage");
+    expect(
+        fs::exists(game / "mapping_0000.tif") == (unchanged || reframe),
+        "Native cleanup retained the wrong mapping generation");
+    expect(
+        fs::exists(game / "left.png") == (unchanged || reframe || name == "budget"),
+        "Native cleanup lost or retained the wrong original frames");
+    if (name == "roles")
+      expect(
+          stored["game"]["videos"]["left"][0].as<std::string>() == "media/right.mp4" &&
+              (!stored["rink"]["mask_frame"] || !stored["rink"]["mask_frame"]["input_id"]) &&
+              read(game / "rink-mask-input" / "historical" / "manifest.yaml") == "historical source provenance",
+          "Role staging must rebind private playlists without rewriting historical source provenance");
+  }
+  expect(read(source / "config.yaml") == original, "Draft staging changed the immutable selected calibration");
+}
+
+void controls_staging_regressions(const QString& binary, const fs::path& source) {
+  for (const std::string name :
+       {"legacy-count",
+        "mask-time",
+        "generated-mask-time",
+        "angles",
+        "angles-null",
+        "angles-null-unchanged",
+        "angles-null-default",
+        "split-angles",
+        "unsupported-mask-time",
+        "blend-mode",
+        "blend-feather",
+        "added-group",
+        "removed-group",
+        "sync-view"}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    auto config = YAML::LoadFile((game / "config.yaml").string());
+    QJsonObject before, desired;
+    if (name == "legacy-count") {
+      config["stitching"].remove("calibration_frame_count");
+      before["stitching"] = QJsonObject{{"calibration_frame_count", 2}};
+      desired = before;
+    } else if (name == "mask-time") {
+      config["stitching"]["rink_mask_frame_time"] = "00:00:30";
+      before["stitching"] = QJsonObject{{"rink_mask_frame_time", "00:00:30"}};
+      desired["stitching"] = QJsonObject{{"rink_mask_frame_time", "00:01:00"}};
+    } else if (name == "generated-mask-time") {
+      config["stitching"]["rink_config"] = "vallco";
+      config["stitching"]["rink_configs"]["vallco"]["rink_mask_frame_time"] = "00:00:30";
+      config["stitching"]["rink_configs"]["sharks-ice"]["rink_mask_frame_time"] = "00:01:00";
+      config["stitching"]["rink_mask_frame_time"] = "00:00:30";
+      config["hstream_ui"]["generated_rink_mask_frame_time"]["generated"] = "00:00:30";
+      config["hstream_ui"]["generated_rink_mask_frame_time"]["previous"] = YAML::Node(YAML::NodeType::Null);
+      before["stitching"] = QJsonObject{{"rink_config", "vallco"}, {"rink_mask_frame_time", QJsonValue::Null}};
+      desired["stitching"] = QJsonObject{{"rink_config", "sharks-ice"}, {"rink_mask_frame_time", QJsonValue::Null}};
+    } else if (name == "angles") {
+      config["pipeline"]["hmplaycropper"]["fixed-edge-rotation-angle-left"] = 7;
+      before["rink"] = QJsonObject{{"camera", QJsonObject{{"fixed_edge_rotation_angle", 10}}}};
+      desired["rink"] = QJsonObject{{"camera", QJsonObject{{"fixed_edge_rotation_angle", QJsonArray{1, 2}}}}};
+    } else if (name == "angles-null" || name == "angles-null-unchanged") {
+      config["rink"]["camera"]["fixed_edge_rotation_angle"] =
+          name == "angles-null" ? YAML::Node(10) : YAML::Node(YAML::NodeType::Null);
+      before["rink"] = QJsonObject{
+          {"camera",
+           QJsonObject{
+               {"fixed_edge_rotation_angle", name == "angles-null" ? QJsonValue(10) : QJsonValue(QJsonValue::Null)}}}};
+      desired["rink"] = QJsonObject{{"camera", QJsonObject{{"fixed_edge_rotation_angle", QJsonValue::Null}}}};
+    } else if (name == "split-angles") {
+      desired["rink"] = QJsonObject{
+          {"camera", QJsonObject{{"fixed_edge_rotation_angle_left", 1}, {"fixed_edge_rotation_angle_right", 2}}}};
+    } else if (name == "unsupported-mask-time") {
+      desired["rink"] = QJsonObject{{"mask_frame", QJsonObject{{"time", "00:01:00"}}}};
+    } else if (name == "blend-mode" || name == "blend-feather") {
+      config["pipeline"]["hmstitcher"]["blend-mode"] = "alpha";
+      config["pipeline"]["hmstitcher"]["private-properties"]["blend-feather-fraction"] = 0.15;
+      before["stitching"] = QJsonObject{{"blend_mode", "alpha"}, {"blend_feather_fraction", 0.15}};
+      desired["stitching"] = QJsonObject{
+          {"blend_mode", name == "blend-mode" ? "laplacian" : "alpha"},
+          {"blend_feather_fraction", name == "blend-feather" ? 0.2 : 0.15}};
+    } else if (name == "added-group") {
+      desired["stitching"] = QJsonObject{{"blend_mode", "alpha"}};
+    } else if (name == "removed-group") {
+      config["stitching"]["blend_mode"] = "alpha";
+      before["stitching"] = QJsonObject{{"blend_mode", "alpha"}};
+    } else if (name == "sync-view") {
+      before["stitching"] =
+          QJsonObject{{"sync_method", "audio"}, {"projection_framing", QJsonObject{{"crop", QJsonArray{0, 1, 0, 1}}}}};
+      desired["stitching"] = QJsonObject{
+          {"sync_method", "imu"}, {"projection_framing", QJsonObject{{"crop", QJsonArray{0.1, 0.9, 0.1, 0.9}}}}};
+    }
+    write(game / "config.yaml", YAML::Dump(config));
+    write(game / "rink_mask_0.png", "old mask artifact");
+    auto payload = controls_payload(game, before, desired);
+    if (name == "angles-null-default")
+      payload["defaults"] =
+          QJsonObject{{"rink", QJsonObject{{"camera", QJsonObject{{"fixed_edge_rotation_angle", QJsonValue::Null}}}}}};
+    const auto original = read(game / "config.yaml");
+    const bool rejected = name == "split-angles" || name == "unsupported-mask-time";
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload, !rejected);
+    if (rejected) {
+      expect(
+          read(game / "config.yaml") == original && fs::exists(game / "rink_mask_0.png"),
+          "Unsupported calibration spellings must fail before changing private config or artifacts");
+      continue;
+    }
+    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    expect(
+        result.value("pending").toBool() == (name == "sync-view") && !result.value("alignment_reused").toBool(),
+        "Only synchronization plus view edits in this matrix should restart calibration");
+    if (name == "legacy-count")
+      expect(
+          stored["stitching"]["calibration_frame_count"].as<int>() == 2 &&
+              stored["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 2 &&
+              fs::exists(game / "left.png") && fs::exists(game / "mapping_0000.tif"),
+          "Unchanged legacy completed count must retain its actual two inputs and maps");
+    if (name == "mask-time" || name == "generated-mask-time")
+      expect(
+          value(read_rink_mask_frame_time(stored)) == "00:01:00" && result.value("output_changed").toBool() &&
+              fs::exists(game / "mapping_0000.tif") && !fs::exists(game / "rink_mask_0.png"),
+          "Canonical mask time and inherited rink edits must select the new time and retire only output artifacts");
+    if (name == "angles")
+      expect(
+          stored["rink"]["camera"]["fixed_edge_rotation_angle"].as<std::vector<double>>() ==
+                  std::vector<double>{1, 2} &&
+              !stored["pipeline"]["hmplaycropper"]["fixed-edge-rotation-angle-left"],
+          "Fixed-edge edits must persist the scalar-or-pair key consumed by the native runner");
+    if (name == "angles-null" || name == "angles-null-unchanged")
+      expect(
+          stored["rink"]["camera"]["fixed_edge_rotation_angle"].IsNull(),
+          "Explicit and unchanged null fixed-edge angles must retain the native disabled mapping");
+    if (name == "blend-mode" || name == "blend-feather") {
+      const auto blend = value(ResolveBlendSettings(value(hm::baseline_config::load()).values, YAML::Node(), stored));
+      expect(
+          blend.mode == (name == "blend-mode" ? "laplacian" : "alpha") &&
+              blend.feather_fraction == (name == "blend-feather" ? 0.2 : 0.15),
+          "Changing one blend control must preserve the other control's effective native alias");
+    }
+    if (name == "added-group" || name == "removed-group") {
+      const auto blend = value(ResolveBlendSettings(value(hm::baseline_config::load()).values, YAML::Node(), stored));
+      expect(
+          blend.mode == (name == "added-group" ? "alpha" : "laplacian") &&
+              YAML::Dump(stored["stitching"]["camera_fov"]) == YAML::Dump(config["stitching"]["camera_fov"]) &&
+              YAML::Dump(stored["stitching"]["projection_framing"]) ==
+                  YAML::Dump(config["stitching"]["projection_framing"]) &&
+              stored["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 2 &&
+              fs::exists(game / "mapping_0000.tif") && fs::exists(game / "left.png"),
+          "Sparse control group additions and removals must preserve unmentioned saved geometry and inputs");
+    }
+    if (name == "sync-view")
+      expect(
+          result.value("start_stage").toString() == "input" && result.value("cleanup").toString() == "all" &&
+              !fs::exists(game / "mapping_0000.tif") && !fs::exists(game / "left.png"),
+          "Changed synchronization cannot reuse the saved alignment for a simultaneous crop edit");
+  }
+}
 } // namespace
 int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
@@ -175,6 +530,8 @@ int main(int argc, char** argv) {
     provenance(game);
     write(game / "config.yaml", YAML::Dump(config));
     const auto opened = invoke(argv[1], root, "calibration-view-read", {{"kind", "leveling"}});
+    controls_staging(argv[1], game);
+    controls_staging_regressions(argv[1], game);
     const auto snap = opened.value("snapshot");
     expect(opened.value("image_sizes").toArray().size() == 2, "Original images must be exposed");
     // Reset only stages configuration. The selected source and its optimized

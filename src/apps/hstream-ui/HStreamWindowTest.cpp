@@ -779,6 +779,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
+YAML::Node test_selected_frame_plan(size_t count);
+
 bool expect(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << message << '\n';
@@ -11155,7 +11157,11 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                 !state["artifacts_invalidated"].as<bool>() && !state["invalidation_id"] &&
                 state["frame_count"].as<int>() ==
                     cancelled_reframe["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() &&
-                !invalidated["stitching"]["calibration_frame_selection"],
+                !invalidated["stitching"]["calibration_frame_selection"] &&
+                !invalidated["stitching"]["calibration_frame_inputs_fingerprint"] &&
+                !invalidated["stitching"]["manual_control_points"] &&
+                !invalidated["rink"]["mask_frame"]["input_id"] &&
+                fs::exists(config_path.parent_path() / "rink-mask-input" / "historical" / "manifest.yaml"),
             "Changing a video role must atomically clear the pending view and invalidate its input generation"))
       return false;
     automatic_crop_dialog->setChecked(!automatic_crop_dialog->isChecked());
@@ -11181,6 +11187,18 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       QTest::qWait(10);
     return ordinary_input;
   };
+  {
+    auto stale_inputs = YAML::LoadFile(config_path.string());
+    const auto selection = test_selected_frame_plan(
+        stale_inputs["hstream_ui"]["stitching_calibration"]["frame_count"].as<size_t>());
+    stale_inputs["stitching"]["calibration_frame_selection"] = selection;
+    stale_inputs["stitching"]["calibration_frame_inputs_fingerprint"] = selection["fingerprint"].as<std::string>();
+    stale_inputs["stitching"]["manual_control_points"] = std::string(64, 'a');
+    stale_inputs["rink"]["mask_frame"]["input_id"] = std::string(64, 'b');
+    std::ofstream(config_path) << YAML::Dump(stale_inputs) << '\n';
+    fs::create_directories(config_path.parent_path() / "rink-mask-input" / "historical");
+    std::ofstream(config_path.parent_path() / "rink-mask-input" / "historical" / "manifest.yaml") << "immutable evidence\n";
+  }
   activate(left_role);
   video_path->setText(reframe_video);
   activate(add_video);

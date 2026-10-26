@@ -480,13 +480,14 @@ absl::StatusOr<StitchingReframeIntent> ValidateStitchingReframeIntentLocked(
   }
 }
 
-absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
+static absl::StatusOr<bool> prepare_reframe_intent_locked(
     const fs::path& directory,
     const YAML::Node& before_config,
     const YAML::Node& desired_config,
     const std::string& desired_owner,
     YAML::Node& desired_private,
-    bool* solve_inputs_changed) {
+    bool* solve_inputs_changed,
+    bool resolved) {
   if (solve_inputs_changed)
     *solve_inputs_changed = false;
   try {
@@ -496,8 +497,13 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
       return false;
     YAML::Node before;
     YAML::Node desired;
-    HM_ASSIGN_OR_RETURN(before, effective_config(before_config));
-    HM_ASSIGN_OR_RETURN(desired, effective_config(desired_config));
+    if (resolved) {
+      before = YAML::Clone(before_config);
+      desired = YAML::Clone(desired_config);
+    } else {
+      HM_ASSIGN_OR_RETURN(before, effective_config(before_config));
+      HM_ASSIGN_OR_RETURN(desired, effective_config(desired_config));
+    }
     Snapshot original;
     Snapshot requested;
     HM_ASSIGN_OR_RETURN(original, snapshot(before, existing));
@@ -597,6 +603,26 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Cannot prepare stitching reframe: " + std::string(error.what()));
   }
+}
+
+absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
+    const fs::path& directory,
+    const YAML::Node& before,
+    const YAML::Node& desired,
+    const std::string& owner,
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed) {
+  return prepare_reframe_intent_locked(directory, before, desired, owner, desired_private, solve_inputs_changed, false);
+}
+
+absl::StatusOr<bool> PrepareResolvedStitchingReframeIntentLocked(
+    const fs::path& directory,
+    const YAML::Node& before,
+    const YAML::Node& desired,
+    const std::string& owner,
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed) {
+  return prepare_reframe_intent_locked(directory, before, desired, owner, desired_private, solve_inputs_changed, true);
 }
 
 } // namespace hm::stitching

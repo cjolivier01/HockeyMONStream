@@ -19,6 +19,7 @@
 #include "src/apps/hstream-ui/WebJobSpec.h"
 #include "src/apps/hstream-ui/WebRinkEditor.h"
 #include "src/apps/hstream-ui/WebRinkMap.h"
+#include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebSavedCalibration.h"
 
 #include <fcntl.h>
@@ -1167,7 +1168,8 @@ QJsonObject replay(const Request& request) {
 }
 
 void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts) {
-  if (request.operation != "calibration-complete" && request.operation.rfind("matches-", 0) != 0 &&
+  if (request.operation != "calibration-complete" && request.operation != "calibration-controls-stage" &&
+      request.operation.rfind("matches-", 0) != 0 &&
       request.operation.rfind("experiment-", 0) != 0 && request.operation.rfind("rink-map-", 0) != 0 &&
       request.operation.rfind("calibration-view-", 0) != 0)
     return;
@@ -1199,6 +1201,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
 }
 
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "calibration-controls-stage")
+    return hm::web::RunCalibrationControlsStage(request, [] { return interrupted != 0; });
   if (request.operation == "camera-experiment")
     return hm::web::RunCameraExperiment(request, artifacts, preview_port, [] { return interrupted != 0; });
   if (request.operation.rfind("calibration-view-", 0) == 0)
