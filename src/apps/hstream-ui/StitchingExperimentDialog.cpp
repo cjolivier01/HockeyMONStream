@@ -817,39 +817,41 @@ struct StitchingExperimentDialog::Impl {
         item->setToolTip(description);
     }
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
+    // QProcess can finish before the session fence and queued completion have
+    // released its workspace. Keep admissions closed through that interval.
+    const bool preview_owned = preview_process || preview_completion_pending || preview_shutdown_ticket.has_value();
     const bool promoting = promotion_worker != nullptr || preparation_worker != nullptr;
-    const bool stopping = pending_group_shutdowns > 0;
+    const bool stopping = pending_group_shutdowns > 0 || candidate_completion_pending || preview_completion_pending;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
     const bool selected_removable =
         row >= 0 && row < static_cast<int>(candidates.size()) && removable_candidate(candidates[row]);
     const bool editing_batch =
-        store && store_error.isEmpty() && !batch_active && !previewing && !promoting && !stopping && !closing;
+        store && store_error.isEmpty() && !batch_active && !preview_owned && !promoting && !stopping && !closing;
     const auto queued_count =
         std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
     remove_from_batch->setEnabled(
-        store && !batch_active && !previewing && !promoting && !stopping && !closing && selected_removable);
+        store && !batch_active && !preview_owned && !promoting && !stopping && !closing && selected_removable);
     clear_batch->setEnabled(
-        store && !batch_active && !previewing && !promoting && !stopping && !closing &&
+        store && !batch_active && !preview_owned && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
     start_batch->setEnabled(editing_batch && queued_count > 0);
     cancel->setEnabled(batch_active && !closing);
-    table->setEnabled(!batch_active && !previewing && !promoting && !closing);
+    table->setEnabled(!batch_active && !preview_owned && !promoting && !stopping && !closing);
     preview->setEnabled(
-        selected && !candidates[row].main_calibration && !batch_active && !previewing && !promoting && !stopping &&
+        selected && !candidates[row].main_calibration && !batch_active && !preview_owned && !promoting && !stopping &&
         !closing);
     stop_preview->setEnabled(previewing && !closing);
-    apply->setEnabled(
-        selected && !candidates[row].main_calibration && !batch_active && !previewing && !promoting && !closing);
+    apply->setEnabled(can_apply_selected() && !closing);
     inspect_frames->setEnabled(
         row >= 0 && row < static_cast<int>(candidates.size()) && candidate_has_inspection(candidates[row]) &&
-        !batch_active && !previewing && !promoting && !stopping && !closing);
+        !batch_active && !preview_owned && !promoting && !stopping && !closing);
     view_runner_log->setEnabled(
         row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].workspace &&
         QFileInfo::exists(
             QString::fromStdString((candidates[row].workspace->game_directory / "runner.log").string())) &&
-        !batch_active && !previewing && !promoting && !stopping && !closing);
+        !batch_active && !preview_owned && !promoting && !stopping && !closing);
     shared_rotation->setEnabled(editing_batch);
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
     prefer_player_frames->setEnabled(editing_batch);
