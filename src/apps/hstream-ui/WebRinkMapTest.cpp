@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include "hstream/src/libs/stitching/RinkMap.h"
+#include "src/apps/hstream-ui/RinkMapBackend.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 
 namespace fs = std::filesystem;
@@ -87,6 +88,15 @@ int main(int argc, char** argv) {
         << "version=3\nmax-output-width=1800\nmax-canvas-dimension=0\nsource-canvas-width=7200\nsource-canvas-height=3600\n"
            "canvas-width=1800\ncanvas-height=1200\nmax-output-width-applied=1\nmax-canvas-dimension-applied=0\n"
            "mapping-backend=nona\nprojection=equirectangular\n";
+    std::ofstream(game / "config.yaml") << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+                                           "stitching:\n  projection_framing:\n    auto_crop: false\n";
+    const auto unlevelled = CheckRinkMapSetup(QString::fromStdString(game.string()));
+    require(
+        unlevelled.code() == absl::StatusCode::kFailedPrecondition &&
+            std::string(unlevelled.message()).find("Level the rink first") != std::string::npos,
+        "Missing saved rotation must explain the leveling prerequisite, not throw a YAML error");
+    std::ofstream(game / "config.yaml") << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+                                           "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
     const auto opened = invoke(argv[1], root, "rink-map-read", {});
     require(opened.value("fit").toObject().value("state") == "partial", "Empty map must stay partial");
     auto document = opened.value("document").toObject();

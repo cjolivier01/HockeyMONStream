@@ -18,6 +18,7 @@
 #include "src/apps/hstream-ui/WebJobSpec.h"
 #include "src/apps/hstream-ui/WebRinkEditor.h"
 #include "src/apps/hstream-ui/WebRinkMap.h"
+#include "src/apps/hstream-ui/WebSavedCalibration.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -770,9 +771,13 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           sequence));
     }
     if (request.operation == "experiment-create" || request.operation == "experiment-edit") {
-      const auto selection = take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
-      return {{"workspace", workspace_json(request, created)}, {"state", "queued"},
-              {"selection_available", !selection.empty()}, {"selection_fingerprint", text(selection)}};
+      const auto selection =
+          take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
+      return {
+          {"workspace", workspace_json(request, created)},
+          {"state", "queued"},
+          {"selection_available", !selection.empty()},
+          {"selection_fingerprint", text(selection)}};
     }
     const bool recovering = request.operation == "experiment-recover";
     bool complete = false;
@@ -793,7 +798,8 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     result.insert("workspace", workspace_json(request, created));
     result.insert("state", complete ? "complete" : "editable");
     result.insert("calibration_complete", complete);
-    const auto selection = take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
+    const auto selection =
+        take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
     result.insert("selection_available", !selection.empty());
     result.insert("selection_fingerprint", text(selection));
     return result;
@@ -837,7 +843,10 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
         blend->feather_fraction = Number(object, "feather_fraction", 0, 1, 0);
     }
     check(PromoteStitchingExperiment(saved, request.game, blend));
-    return {{"workspace", workspace_json(request, saved)}, {"promoted", true}};
+    return {
+        {"workspace", workspace_json(request, saved)},
+        {"promoted", true},
+        {"setup_preview", hm::web::ExportSavedCalibrationPreview(request, artifacts)}};
   }
   const auto inspection = take(InspectStitchingExperimentFrames(saved));
   QString editable_snapshot;
@@ -1085,7 +1094,8 @@ QJsonObject replay(const Request& request) {
 
 void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts) {
   if (request.operation != "calibration-complete" && request.operation.rfind("matches-", 0) != 0 &&
-      request.operation.rfind("experiment-", 0) != 0 && request.operation.rfind("rink-map-", 0) != 0)
+      request.operation.rfind("experiment-", 0) != 0 && request.operation.rfind("rink-map-", 0) != 0 &&
+      request.operation.rfind("calibration-view-", 0) != 0)
     return;
   std::size_t count = 0;
   for (const auto& directory : {request.game, request.root / "experiments"}) {
@@ -1115,6 +1125,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
 }
 
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation.rfind("calibration-view-", 0) == 0)
+    return hm::web::RunSavedCalibration(request, artifacts, [] { return interrupted != 0; });
   if (request.operation.rfind("rink-map-", 0) == 0)
     return hm::web::RunRinkMap(request, artifacts, [] { return interrupted != 0; });
   if (request.operation == "calibration-complete") {

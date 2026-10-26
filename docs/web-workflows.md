@@ -365,3 +365,35 @@ and partial maps can be saved, matching Qt. Playback readiness is checked
 separately for a fitted saved map. `web_rink_map_test` uses actual Hugin ray
 transforms and covers read/fit/save, baseline precision, stale saved-map and
 calibration revisions, and rejection of browser-provided rays.
+
+### Saved leveling and projection crop
+
+`calibration-view-read`, `calibration-view-estimate`,
+`calibration-view-landmarks`, `calibration-view-preview` and
+`calibration-view-save` edit a cloned completed calibration. They use the same
+camera/projection compatibility check as Qt, original-image dimensions and
+native generation/revision fences. Point estimates share `RinkEditor`; saved
+landmark estimates share `UpdateRinkMap` and `RinkLandmarkLeveling`, including
+readonly reference marks. Previewing uses the published rotation delta and
+original stills. Crop previews show the full canvas and advisory automatic
+bounds; they do not change the saved crop.
+
+Leveling Save requires a completed preview for the exact snapshot and angles.
+The server freezes that receipt and checks it again at dispatch. Native Save
+prepares the shared `StitchingReframeIntent` and calls `reframe_stitching`,
+retaining the optimized camera alignment. Cancellation or a stale snapshot
+cannot publish over the source run. The completed child is staged by the
+browser; Save Preset adopts it atomically with the form, matching the desktop
+accept/save boundary. Only an accepted crop's `auto_crop` control changes the
+child's browser geometry snapshot.
+
+The dialog's `view-preview.png` remains separate from `game/setup-preview.png`.
+The latter is regenerated from the final panorama after view saves and
+experiment promotion, with final file identities captured after native
+publication. Its bounded still decode is independent of live GPU video.
+
+`web_saved_calibration_test` exercises installed Hugin tools, native absolute
+rotation recovery, saved-view preview acceptance, preserved-alignment saves,
+manual crop publication and stale snapshots. Its synthetic uniform stills
+explicitly allow the native hard-seam fallback because Enblend may reject
+featureless overlap; real media still require separate seam qualification.

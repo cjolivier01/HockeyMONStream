@@ -84,6 +84,11 @@ void WriteObject(const fs::path& path, const QJsonObject& value) {
 QJsonObject Capabilities() {
   const QJsonArray operations{
       "calibration-complete",
+      "calibration-view-read",
+      "calibration-view-estimate",
+      "calibration-view-landmarks",
+      "calibration-view-preview",
+      "calibration-view-save",
       "rink-map-read",
       "rink-map-update",
       "rink-map-save",
@@ -113,7 +118,13 @@ QJsonObject Capabilities() {
       {"request_schema", 1},
       {"receipt_schema", 1},
       {"operations", operations},
-      {"features", QJsonArray{"experiment-optics-filtering-v1", "match-editor-v1", "rink-editor-v1", "rink-map-v1"}},
+      {"features",
+       QJsonArray{
+           "experiment-optics-filtering-v1",
+           "match-editor-v1",
+           "rink-editor-v1",
+           "rink-map-v1",
+           "saved-calibration-view-v1"}},
       {"maximum_request_bytes", int(kMaximumRequestBytes)},
       {"maximum_result_bytes", int(kMaximumResultBytes)}};
 }

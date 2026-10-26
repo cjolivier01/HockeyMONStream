@@ -57,8 +57,8 @@ absl::Status CalibrationComplete(const QString& directory) {
         (!stale.empty() && stale != "rink-mask"))
       return absl::FailedPreconditionError("Complete stitching calibration before mapping the rink");
     const auto stitching = config["stitching"];
-    const auto framing = stitching.IsMap() ? stitching["projection_framing"] : YAML::Node();
-    const auto rotation = framing.IsMap() ? framing["rotation_degrees"] : YAML::Node();
+    const auto framing = stitching && stitching.IsMap() ? stitching["projection_framing"] : YAML::Node();
+    const auto rotation = framing && framing.IsMap() ? framing["rotation_degrees"] : YAML::Node();
     const auto provenance = rink::HuginProject::ReadCanvasProvenanceLocked(directory.toStdString());
     if (!provenance.ok() || !provenance->has_value() || (**provenance).mapping_backend != rink::MappingBackend::kNona)
       return absl::FailedPreconditionError("Rink mapping needs a completed NONA camera calibration");
@@ -66,11 +66,11 @@ absl::Status CalibrationComplete(const QString& directory) {
         (**provenance).projection_framing && (**provenance).projection_framing->has_leveling_rotation();
     // Explicitly accepted zero angles are valid too. A missing rotation with
     // no leveled venue calibration has not gone through the leveling step.
-    if (!published_leveling && (!rotation.IsSequence() || rotation.size() != 3))
+    if (!published_leveling && (!rotation || !rotation.IsSequence() || rotation.size() != 3))
       return absl::FailedPreconditionError(
           "Level the rink first, save the preset and finish calibration before opening Rink map. "
           "Changing leveling later invalidates the map.");
-    if (rotation.IsSequence() && rotation.size() == 3) {
+    if (rotation && rotation.IsSequence() && rotation.size() == 3) {
       for (size_t i = 0; i < 3; ++i) {
         const double angle = rotation[i].as<double>();
         if (!std::isfinite(angle) ||
