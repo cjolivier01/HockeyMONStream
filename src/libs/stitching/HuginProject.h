@@ -184,6 +184,18 @@ class HuginProject {
       const StitchProjectionFraming& projection_framing,
       const std::function<bool()>& is_cancelled = {});
 
+  // Normalize freshly generated private nona coordinate maps to each RGBA
+  // placement rectangle. Preserve the original uint16 values without resizing.
+  static absl::Status NormalizeNonaCoordinateMaps(const std::filesystem::path& staging_directory);
+
+  // Convert enblend's explicitly positioned grayscale TIFF mask into the
+  // canonical PNG canvas, preserving mask pixels and extending only its border.
+  static absl::Status NormalizeEnblendMask(
+      const std::filesystem::path& mask_path,
+      const std::filesystem::path& seam_path,
+      int canvas_width,
+      int canvas_height);
+
   // Validate a two-camera enblend seam and expand any pixel-offset crop to the
   // full mapping canvas expected by hm-cupano.
   static absl::Status ValidateAndNormalizeSeam(
