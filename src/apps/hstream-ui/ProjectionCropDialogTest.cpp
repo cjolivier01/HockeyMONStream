@@ -6,6 +6,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
+#include <QtGui/QWheelEvent>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -14,6 +15,7 @@
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QToolButton>
 
 #include <cmath>
 #include <iostream>
@@ -67,6 +69,46 @@ int main(int argc, char** argv) {
     return dialog.result() == QDialog::Accepted ? 0 : 1;
   }
   bool ok = true;
+  {
+    QTemporaryDir unavailable;
+    ProjectionCropDialog dialog(
+        unavailable.path(), framing, "general-panini", {100, 0, 0}, camera, "No saved preview for this control test.");
+    dialog.show();
+    QTest::qWait(20);
+    auto* size = dialog.findChild<QToolButton*>("projectionCropWindowSize");
+    ok &= expect(
+        dialog.windowType() == Qt::Window && dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint) &&
+            dialog.isSizeGripEnabled() && size && !size->icon().isNull(),
+        "Crop preview must expose normal resizable and maximizable window controls");
+    if (size) {
+      size->click();
+      ok &= expect(waitUntil([&]() { return dialog.isMaximized(); }), "Crop maximize action works");
+      size->click();
+      ok &= expect(waitUntil([&]() { return !dialog.isMaximized(); }), "Crop restore action works");
+    }
+    const auto wheel = [](QWidget* widget) {
+      widget->setFocus();
+      const QPointF center(widget->rect().center());
+      QWheelEvent event(
+          center,
+          widget->mapToGlobal(center.toPoint()),
+          {},
+          {0, -120},
+          Qt::NoButton,
+          Qt::NoModifier,
+          Qt::NoScrollPhase,
+          false);
+      QApplication::sendEvent(widget, &event);
+    };
+    const auto selected = dialog.framing();
+    wheel(dialog.findChild<QComboBox*>("projectionCropMode"));
+    wheel(dialog.findChild<QDoubleSpinBox*>("projectionCropTop"));
+    wheel(dialog.findChild<QCheckBox*>("projectionCropKeepWidth"));
+    ok &= expect(
+        dialog.framing() == selected && !dialog.findChild<QCheckBox*>("projectionCropKeepWidth")->isChecked(),
+        "Focused crop mode, trims and width lock never change through wheel input");
+    dialog.close();
+  }
   {
     QTemporaryDir partial;
     const auto check_unavailable = [&](const QString& expected) {

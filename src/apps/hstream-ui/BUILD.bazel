@@ -239,6 +239,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":preview_dialog_window",
+        ":value_control_wheel",
         ":rink_map_dialog",
         ":action_icons",
         ":scoreboard_selection_dialog",
@@ -296,6 +298,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":preview_dialog_window",
+        ":value_control_wheel",
         ":action_icons",
         ":rink_leveling_dialog",
         "//src/libs/stitching:canvas_constraint_check",

@@ -10,6 +10,7 @@
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDoubleSpinBox>
@@ -26,8 +27,10 @@
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "src/apps/hstream-ui/RinkMapBackend.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
 
 namespace {
 constexpr int kRendererDiagnosticTailBytes = 64 * 1024;
@@ -85,7 +88,7 @@ RinkLevelingDialog::RinkLevelingDialog(
     std::optional<hm::stitching::StitchProjection> preview_projection,
     std::vector<double> preview_projection_parameters,
     hm::stitching::StitchProjectionFraming preview_projection_framing)
-    : QDialog(parent),
+    : QDialog(parent, Qt::Window),
       game_directory_(game_directory),
       initial_rotation_(current_rotation),
       expected_camera_(std::move(expected_camera)),
@@ -96,10 +99,18 @@ RinkLevelingDialog::RinkLevelingDialog(
   setObjectName("rinkLevelingDialog");
   setWindowTitle("Level the rink");
   resize(1120, 820);
+  configure_preview_dialog_window(this);
+  qApp->installEventFilter(this);
   estimate_timer_.setSingleShot(true);
   estimate_timer_.setInterval(150);
   connect(&estimate_timer_, &QTimer::timeout, this, [this]() { estimate(); });
   auto* layout = new QVBoxLayout(this);
+  auto* window_actions = new QHBoxLayout();
+  auto* window_size = new PreviewDialogWindowSizeButton(this);
+  window_size->setObjectName("rinkLevelingWindowSize");
+  window_actions->addStretch();
+  window_actions->addWidget(window_size);
+  layout->addLayout(window_actions);
   post_method_check_ = new QCheckBox("Mark vertical posts");
   post_method_check_->setObjectName("markRinkPostsCheck");
   layout->addWidget(post_method_check_);
@@ -142,7 +153,8 @@ RinkLevelingDialog::RinkLevelingDialog(
       });
     }
     page_layout->addLayout(actions);
-    tabs_->addTab(page, tab_icon(camera == 0 ? "Left camera" : "Right camera"), camera == 0 ? "Left camera" : "Right camera");
+    tabs_->addTab(
+        page, tab_icon(camera == 0 ? "Left camera" : "Right camera"), camera == 0 ? "Left camera" : "Right camera");
   }
   preview_canvas_ = new ScoreboardSelectionCanvas();
   preview_canvas_->setObjectName("rinkLevelingPreview");
@@ -252,6 +264,7 @@ RinkLevelingDialog::RinkLevelingDialog(
 }
 
 RinkLevelingDialog::~RinkLevelingDialog() {
+  qApp->removeEventFilter(this);
   if (landmark_worker_) {
     landmark_job_->cancelled = true;
     landmark_worker_->disconnect(this);
@@ -263,6 +276,10 @@ RinkLevelingDialog::~RinkLevelingDialog() {
     process_->kill();
     process_->waitForFinished(3000);
   }
+}
+
+bool RinkLevelingDialog::eventFilter(QObject* watched, QEvent* event) {
+  return route_value_control_wheel(this, watched, event) || QDialog::eventFilter(watched, event);
 }
 
 QByteArray RinkLevelingDialog::sourceRevision(const QString& directory) {
