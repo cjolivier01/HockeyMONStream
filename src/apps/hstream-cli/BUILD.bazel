@@ -99,6 +99,7 @@ cc_library(
     hdrs = ["WebPreviewOptions.h"],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/program:rotation_controls",
         "//src/libs/tracking:playtracker_runtime_controls",
         "//src/apps/apps-common:preview_route_owner",
         "//src/libs/program:preview_overlay_config",

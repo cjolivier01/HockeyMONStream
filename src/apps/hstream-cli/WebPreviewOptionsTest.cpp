@@ -77,6 +77,37 @@ int main() {
   Check(!hm::preview::ReadWebPreviewOptions(changed).ok(), "Browser history exceeds native receipt retention");
 
   auto request = hm::preview::ParseWebPreviewRoute(kRequest);
+  const auto rotation_values = hm::program::ReadRotationControls(baseline);
+  Check(rotation_values.ok(), "Native rotation baseline was rejected");
+  const std::string rotation_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"9007199254740993","requestId":"1234","controls":{"Stitch_Rotate_Degrees":73,"Left_Fixed_Edge_Rotation_Angle_x10":127}})";
+  const auto rotation = hm::preview::ParseWebRotationControls(rotation_json, *rotation_values);
+  Check(rotation.ok() && rotation->controls.at("Stitch_Rotate_Degrees") == 73 &&
+            rotation->session.topology == 9007199254740993ULL,
+        "Typed rotation changed native units or topology precision");
+  for (const auto& [before, after] : {
+           std::pair{"\"Stitch_Rotate_Degrees\":73", "\"Stitch_Rotate_Degrees\":73.5"},
+           std::pair{"\"Stitch_Rotate_Degrees\":73", "\"Stitch_Rotate_Degrees\":181"},
+           std::pair{"\"Left_Fixed_Edge_Rotation_Angle_x10\":127", "\"Left_Fixed_Edge_Rotation_Angle_x10\":true"},
+           std::pair{"\"Left_Fixed_Edge_Rotation_Angle_x10\":127", "\"unknown\":127"},
+           std::pair{"\"version\":1", "\"version\":1,\"version\":1"},
+           std::pair{"\"requestId\":\"1234\"", "\"requestId\":1234"}}) {
+    auto unsafe = rotation_json;
+    unsafe.replace(unsafe.find(before), std::strlen(before), after);
+    Check(!hm::preview::ParseWebRotationControls(unsafe, *rotation_values).ok(),
+          "Invalid typed rotation escaped validation");
+  }
+  const std::string rotation_query =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"9007199254740993","requestId":"1234"})";
+  Check(hm::preview::ParseWebRotationControls(rotation_query, *rotation_values, true).ok() &&
+            !hm::preview::ParseWebRotationControls(rotation_query, *rotation_values).ok() &&
+            !hm::preview::ParseWebRotationControls(rotation_json, *rotation_values, true).ok(),
+        "Rotation query admitted mutation fields");
+  Check(hm::preview::WebRotationControlsReply(*rotation, "authorizing", "", *rotation_values)
+                .find("\"operation\":null") != std::string::npos &&
+            hm::preview::WebRotationControlsReply(*rotation, "applied", "", *rotation_values, 9007199254740994ULL)
+                .find("\"operation\":\"9007199254740994\"") != std::string::npos,
+        "Rotation phases did not distinguish authorization from exact presentation operation");
   Check(
       request.ok() && request->session.topology == UINT64_MAX && request->session.stage == -1 &&
           request->request_id == "1234",

@@ -431,3 +431,18 @@ cc_library(
     include_prefix = "hstream/src/libs/program",
     deps = [":preview_overlay_runtime", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
 )
+
+cc_library(
+    name = "rotation_controls",
+    srcs = ["RotationControls.cpp"],
+    hdrs = ["RotationControls.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_path", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "rotation_controls_test",
+    srcs = ["RotationControlsTest.cpp"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":rotation_controls"],
+)

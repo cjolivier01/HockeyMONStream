@@ -186,10 +186,11 @@ int main(int argc, char** argv) {
                 << '\n';
       return 0;
     }
-    if ((argc == 3 || argc == 6) && std::string(argv[1]) == "--make-fixture") {
+    if ((argc == 3 || argc == 6) &&
+        (std::string(argv[1]) == "--make-fixture" || std::string(argv[1]) == "--make-legacy-fixture")) {
       std::cout << fixture(
                        argv[2],
-                       false,
+                       std::string(argv[1]) == "--make-legacy-fixture",
                        false,
                        argc == 6 ? std::stoul(argv[3]) : 3840,
                        argc == 6 ? std::stoul(argv[4]) : 2160,

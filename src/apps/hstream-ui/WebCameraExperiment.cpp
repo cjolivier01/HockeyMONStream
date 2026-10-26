@@ -211,6 +211,31 @@ class Commands {
 };
 } // namespace
 
+void ValidateLegacyCameraFiles(const std::filesystem::path& manifest) {
+  require(
+      !std::filesystem::is_symlink(manifest) && std::filesystem::is_regular_file(manifest),
+      "Legacy camera manifest must be a regular staged file");
+  for (const auto& entry : std::filesystem::directory_iterator(manifest.parent_path()))
+    require(
+        !entry.is_symlink() && entry.is_regular_file(),
+        "Legacy camera companions must be regular files in the staged recording directory");
+}
+
+void CommitCameraExperimentTrials(
+    std::vector<replay::TrialResult>& trials,
+    std::vector<replay::TrialResult> additions,
+    const std::function<void()>& publish) {
+  const auto previous_count = trials.size();
+  try {
+    for (auto& result : additions)
+      trials.push_back(std::move(result));
+    publish();
+  } catch (...) {
+    trials.resize(previous_count);
+    throw;
+  }
+}
+
 QJsonObject RunCameraExperiment(
     const Request& request,
     QJsonArray& artifacts,
@@ -219,7 +244,24 @@ QJsonObject RunCameraExperiment(
   require(preview_port >= 1024 && preview_port <= 65535, "Camera experiments require a supervised signaling port");
   replay::PrepareOptions options;
   options.manifest_path = Contained(request.root, RequiredString(request.payload, "database")).string();
+  const auto extension = std::filesystem::path(options.manifest_path).extension();
+  if (extension != ".db" && extension != ".sqlite")
+    ValidateLegacyCameraFiles(options.manifest_path);
   options.run_id = RequiredString(request.payload, "run_id", 128).toStdString();
+  if (request.payload.contains("legacy_arena")) {
+    const auto arena = request.payload.value("legacy_arena").toArray();
+    require(arena.size() == 4, "Historical arena must contain left, top, right, bottom");
+    double coordinates[4];
+    for (int axis = 0; axis < 4; ++axis) {
+      require(arena[axis].isDouble(), "Historical arena coordinates must be numeric");
+      coordinates[axis] = arena[axis].toDouble();
+      require(std::isfinite(coordinates[axis]), "Historical arena coordinates must be finite");
+    }
+    options.legacy_arena = hm::BBox(coordinates[0], coordinates[1], coordinates[2], coordinates[3]);
+  }
+  if (request.payload.contains("legacy_config_path"))
+    options.legacy_config_path =
+        Contained(request.root, RequiredString(request.payload, "legacy_config_path")).string();
   options.start_seconds = number(request.payload, "start_seconds", 0, 1e8);
   options.duration_seconds = number(request.payload, "duration_seconds", .1, 120);
   const auto playback_start = number(request.payload, "playback_start_seconds", 0, 1e8);
@@ -319,18 +361,21 @@ QJsonObject RunCameraExperiment(
         QJsonObject{{"name", "Baseline replay"}, {"frames", frames(session->baseline())}}};
     for (const auto& trial : trials)
       catalog.append(QJsonObject{{"name", QString::fromStdString(trial.name)}, {"frames", frames(trial.frames)}});
-    WriteObject(
-        request.root / "camera-experiment-catalog.json",
-        {{"version", 1},
-         {"run", QString::fromStdString(request.run_id)},
-         {"revision", QString::number(++catalog_revision)},
-         {"canvas", QJsonArray{int(session->width()), int(session->height())}},
-         {"provenance", QString::fromStdString(session->provenance())},
-         {"views", catalog},
-         {"mask_available", bool(mask)},
-         {"source_confirmed", confirmed},
-         {"rink_available", bool(rink_map)},
-         {"rink_reason", QString::fromStdString(rink_reason)}});
+    const QJsonObject document{
+        {"version", 1},
+        {"run", QString::fromStdString(request.run_id)},
+        {"revision", QString::number(++catalog_revision)},
+        {"canvas", QJsonArray{int(session->width()), int(session->height())}},
+        {"provenance", QString::fromStdString(session->provenance())},
+        {"views", catalog},
+        {"mask_available", bool(mask)},
+        {"source_confirmed", confirmed},
+        {"rink_available", bool(rink_map)},
+        {"rink_reason", QString::fromStdString(rink_reason)}};
+    require(
+        std::size_t(QJsonDocument(document).toJson(QJsonDocument::Compact).size()) <= kMaximumResultBytes,
+        "Camera comparison history exceeds its transport limit. Prepare a shorter range or a new experiment.");
+    WriteObject(request.root / "camera-experiment-catalog.json", document);
     PublishEvent(request, {{"kind", "catalog"}, {"revision", QString::number(catalog_revision)}});
   };
   const auto seek = [&](std::size_t frame, bool playing, bool replace) {
@@ -466,10 +511,8 @@ QJsonObject RunCameraExperiment(
             while (trial.wait_for(std::chrono::milliseconds(30)) != std::future_status::ready)
               if (interrupted())
                 cancelled = true;
-            for (auto& result : take(trial.get()))
-              trials.push_back(std::move(result));
+            CommitCameraExperimentTrials(trials, take(trial.get()), publish_catalog);
             view = trials.size() + 1;
-            publish_catalog();
             seek(0, true, true);
           } else if (action == "save") {
             require(

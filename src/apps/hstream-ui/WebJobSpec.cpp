@@ -128,6 +128,7 @@ QJsonObject Capabilities() {
            "highlight-frame-inspection-v1",
            "highlight-pinned-archive-v1",
            "highlight-card-without-archive-v1",
+           "camera-legacy-recording-v1",
            "saved-calibration-view-v1"}},
       {"maximum_request_bytes", int(kMaximumRequestBytes)},
       {"maximum_result_bytes", int(kMaximumResultBytes)}};

@@ -2,6 +2,7 @@
 
 #include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
 #include "hstream/src/libs/program/PreviewOverlayRuntime.h"
+#include "hstream/src/libs/program/RotationControls.h"
 #include "hstream/src/libs/tracking/PlayTrackerRuntimeControls.h"
 
 #include <yaml-cpp/yaml.h>
@@ -83,6 +84,26 @@ std::string WebCameraControlsReply(
     const std::string& status,
     const std::string& reason,
     const std::optional<hm::tracking::CameraControlValues>& controls);
+
+struct WebRotationControlsRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  hm::program::RotationControlValues controls;
+  bool query{false};
+};
+absl::StatusOr<WebRotationControlsRequest> ParseWebRotationControls(
+    const std::string& json,
+    const hm::program::RotationControlValues& range_reference,
+    bool query = false);
+// Authorization/finalization phases are observable independently of runtime
+// property acknowledgement. A successful mutation returns the rearmed route
+// operation; only its exact decoded presentation can confirm visible output.
+std::string WebRotationControlsReply(
+    const WebRotationControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::program::RotationControlValues>& controls,
+    std::optional<uint64_t> operation = std::nullopt);
 
 struct WebScoreboardRequest {
   RouteOwner::Session session;

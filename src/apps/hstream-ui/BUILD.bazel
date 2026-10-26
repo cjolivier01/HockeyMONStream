@@ -822,6 +822,7 @@ cc_library(
         "//src/libs/tracking:playtracker_runtime_controls",
         "//src/libs/publication",
         "//src/libs/program:tone_controls",
+        "//src/libs/program:rotation_controls",
         "//src/libs/stitching:auto_input_lens",
         ":input_lens_widget",
         ":backend_options",
@@ -1316,6 +1317,14 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = ["@qt//:qt_core"],
+)
+
+cc_test(
+    name = "web_camera_experiment_history_test",
+    srcs = ["WebCameraExperimentHistoryTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_camera_experiment", ":web_job_spec", "//src/libs/playtracker_replay", "@qt//:qt_core"],
 )
 
 cc_binary(

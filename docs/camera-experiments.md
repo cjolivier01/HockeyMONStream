@@ -235,6 +235,22 @@ exact historical internal state from camera boxes alone, and refuses recordings
 whose missing inputs or mismatched trajectory prevent verification. Do not supply
 today's arena or policy unless it is also the one used for that recording.
 
+The browser's **Legacy** tab imports the manifest and its `.csv`, `.jsonl`,
+`.yaml`/`.yml`, and mask `.png` companions together. Select **Use an imported
+legacy recording**, choose the files, then select the historical arena and an
+optional imported policy. The service preserves their original filenames in an
+immutable private bundle and stages the same files for native reconstruction;
+the browser never sends server paths. Empty optional CSV/replay companions are
+preserved. Imports use the existing private asset size/quota limits, and do not
+start a replay until **Prepare historical start** is clicked.
+
+Browser **Screenshot** captures the dialog controls, timeline, and one frozen
+displayed frame into a PNG. This explicit action performs one browser video
+readback, bounded to 16 megapixels; ordinary preview still uses hardware WebRTC.
+The browser comparison catalog is bounded to 32 MiB. A trial that exceeds that
+bound is rejected while retaining the preceding views and preview; start a new
+experiment or shorten the range before adding further comparisons.
+
 ## Implementation and validation
 
 `src/libs/playtracker_replay` provides CPU preparation and trial computation using

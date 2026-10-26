@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/program/RotationControls.h"
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
@@ -22769,20 +22770,20 @@ bool HStreamWindow::publishRotationRuntimeControls(
         if (id == "Left_Fixed_Edge_Rotation_Angle_x10" || id == "Right_Fixed_Edge_Rotation_Angle_x10")
           value = 0;
     }
-    const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
-    const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    auto add_both_stages = [&](const QString& property, double angle) {
-      const QString runtime_value = QString::number(angle, 'f', 1);
-      commands.push_back({"dsplaytracker0", property, runtime_value});
-      commands.push_back({"playcropper0", property, runtime_value});
-    };
-    if (linked) {
-      add_both_stages("fixed-edge-rotation-angle", left_angle);
-    } else {
-      add_both_stages("fixed-edge-rotation-angle-left", left_angle);
-      add_both_stages("fixed-edge-rotation-angle-right", right_angle);
+    hm::program::RotationControlValues values;
+    for (const auto& spec : hm::program::kRotationControls)
+      values[spec.id] = cameraControlValue(spec.id);
+    std::set<std::string> changed;
+    for (const auto& [id, value] : controls)
+      changed.insert(id.toStdString());
+    const auto fixed_commands = hm::program::FixedEdgeRotationCommands(values, changed, cropRotationSuppressed());
+    if (!fixed_commands.ok()) {
+      appendLog("live rotation property conversion failed: " + QString::fromStdString(fixed_commands.status().ToString()));
+      return false;
     }
+    for (const auto& command : *fixed_commands)
+      commands.push_back({QString::fromStdString(command.element), QString::fromStdString(command.property),
+                          QString::fromStdString(command.value)});
   }
   if (epoch_command.has_value())
     commands.push_back(std::move(*epoch_command));

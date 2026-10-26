@@ -423,6 +423,92 @@ std::string WebCameraControlsReply(
   });
 }
 
+absl::StatusOr<WebRotationControlsRequest> ParseWebRotationControls(
+    const std::string& json,
+    const hm::program::RotationControlValues& range_reference,
+    bool query) {
+  if (json.empty() || json.size() > 4096 ||
+      !hm::program::ValidRotationControls(range_reference, true, &range_reference))
+    return absl::InvalidArgumentError("Rotation controls require bounded JSON and complete native ranges");
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(parser, "object-member", G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer value) {
+    ++*static_cast<unsigned*>(value);
+  }), &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebRotationControlsRequest request{};
+  request.query = query;
+  gint64 version = 0, stage = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  bool valid = object && json_object_get_size(object) == (query ? 5U : 6U) &&
+      Integer(object, "version", &version) && version == 1 &&
+      Integer(object, "stage", &stage) && stage >= INT_MIN && stage <= INT_MAX &&
+      String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64;
+  if (valid && !query) {
+    auto* node = json_object_get_member(object, "controls");
+    auto* controls = node && JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : nullptr;
+    valid = controls && json_object_get_size(controls) > 0 &&
+        json_object_get_size(controls) <= hm::program::kRotationControls.size();
+    if (valid) {
+      for (const auto& spec : hm::program::kRotationControls) {
+        gint64 value = 0;
+        if (!json_object_has_member(controls, spec.id))
+          continue;
+        if (!Integer(controls, spec.id, &value) || value < INT_MIN || value > INT_MAX) {
+          valid = false;
+          break;
+        }
+        request.controls[spec.id] = static_cast<int>(value);
+      }
+      valid = valid && request.controls.size() == json_object_get_size(controls) &&
+          hm::program::ValidRotationControls(request.controls, false, &range_reference);
+    }
+  }
+  valid = valid && members == (query ? 5U : 6U + request.controls.size());
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid native rotation control request");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebRotationControlsReply(
+    const WebRotationControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::program::RotationControlValues>& controls,
+    std::optional<uint64_t> operation) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "controls");
+    if (controls) {
+      json_builder_begin_object(builder);
+      for (const auto& [id, value] : *controls)
+        Add(builder, id.c_str(), static_cast<gint64>(value));
+      json_builder_end_object(builder);
+    } else {
+      json_builder_add_null_value(builder);
+    }
+    json_builder_set_member_name(builder, "operation");
+    if (operation)
+      json_builder_add_string_value(builder, std::to_string(*operation).c_str());
+    else
+      json_builder_add_null_value(builder);
+  });
+}
+
 std::string WebScoreboardSelectionPhase(const RouteOwner::Session& session, bool active) {
   return Serialize([&](JsonBuilder* builder) {
     Add(builder, "version", gint64{1});
