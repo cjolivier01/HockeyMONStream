@@ -457,6 +457,72 @@ void controls_staging(const QString& binary, const fs::path& source) {
   expect(read(source / "config.yaml") == original, "Draft staging changed the immutable selected calibration");
 }
 
+void frozen_optics_staging(const QString& binary, const fs::path& source) {
+  for (const bool cleaned : {false, true}) {
+    for (const bool release : {false, true}) {
+      QTemporaryDir temporary;
+      const fs::path root(temporary.path().toStdString()), game = root / "game";
+      fs::copy(source, game, fs::copy_options::recursive);
+      auto config = YAML::LoadFile((game / "config.yaml").string());
+      auto camera = value(read_stitch_camera_selection(config));
+      camera.auto_fov = false;
+      camera.auto_lens = true;
+      camera.input_lens.distortion[1] = 0.12345678;
+      write_stitch_camera_selection(config, camera);
+      config["stitching"]["auto_input_lens_frozen"] = true;
+      QJsonArray authorized;
+      for (const char* role : {"left", "right"}) {
+        const auto original = root / (std::string(role) + ".mp4");
+        write(original, "No original recording metadata");
+        const auto relative = std::string(role) + ".mp4";
+        fs::create_symlink(original, game / relative);
+        config["hstream_ui"]["video_roles"][role] = std::vector<std::string>{relative};
+        authorized.append(QString::fromStdString(original.string()));
+      }
+      config["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+      require(reserve_stitching_backend_generation_in_config(config, "completed-solve", choices(config)));
+      write(game / "config.yaml", YAML::Dump(config));
+      QJsonObject before{
+          {"stitching",
+           QJsonObject{
+               {"camera_config", "gopro-mission-1"},
+               {"camera_automation", QJsonObject{{"fov", false}, {"lens", true}}},
+               {"camera_fov", QJsonObject{{"horizontal_fov", 109}, {"vertical_fov", 64}}}}}};
+      auto desired = before;
+      auto stitching = desired.value("stitching").toObject();
+      stitching["camera_fov"] = QJsonObject{{"horizontal_fov", 111.1234}, {"vertical_fov", 64}};
+      if (release)
+        stitching["auto_input_lens_frozen"] = false;
+      desired["stitching"] = stitching;
+      auto payload = controls_payload(game, before, desired);
+      if (cleaned) {
+        invoke(
+            binary,
+            root,
+            "calibration-clean",
+            {{"config_sha256", digest(read(game / "config.yaml"))},
+             {"before_controls", before},
+             {"desired_controls", desired}},
+            true,
+            authorized);
+        payload["source"] = QJsonObject{
+            {"generation", QJsonValue::Null}, {"cleaned", true}, {"config_sha256", digest(read(game / "config.yaml"))}};
+        payload["before_controls"] = desired;
+      }
+      const auto staged = invoke(binary, root, "calibration-controls-stage", payload, true, authorized);
+      if (cleaned)
+        expect(
+            staged.value("start_stage").toString() == "input" && !staged.value("alignment_reused").toBool(),
+            "Cleaned optics staging must restart at input after retiring its saved alignment");
+      const auto result = value(read_stitch_camera_selection(YAML::LoadFile((game / "config.yaml").string())));
+      expect(result.horizontal_fov == 111.1234, "Manual FOV must survive frozen optics staging");
+      expect(
+          (result.input_lens.distortion[1] == 0.12345678) != release,
+          "Manual-only edits retain frozen automatic lens; explicit release rereads even after policy revert");
+    }
+  }
+}
+
 void controls_staging_regressions(const QString& binary, const fs::path& source) {
   for (const std::string name :
        {"legacy-count",
@@ -862,6 +928,7 @@ int main(int argc, char** argv) {
     write(game / "config.yaml", YAML::Dump(config));
     const auto opened = invoke(argv[1], root, "calibration-view-read", {{"kind", "leveling"}});
     controls_staging(argv[1], game);
+    frozen_optics_staging(argv[1], game);
     controls_staging_regressions(argv[1], game);
     clean_stitching(argv[1], game);
     const auto snap = opened.value("snapshot");

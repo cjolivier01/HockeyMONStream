@@ -40,6 +40,7 @@
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QSaveFile>
+#include <QtCore/QTemporaryDir>
 #include <QtGui/QGuiApplication>
 #include <algorithm>
 #include <atomic>
@@ -560,6 +561,99 @@ QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
       {"camera_fov", QJsonObject{{"horizontal_fov", camera.horizontal_fov}, {"vertical_fov", camera.vertical_fov}}},
       {"input_lens", input},
       {"camera_automation", automation}};
+}
+
+QJsonObject read_camera_optics(const Request& request) {
+  require(request.payload.size() == 1 && request.payload.value("camera").isObject(), "Expected camera optics controls");
+  const auto camera = request.payload.value("camera").toObject();
+  const std::set<QString> allowed{"camera_config", "camera_fov", "input_lens", "camera_automation"};
+  for (auto item = camera.begin(); item != camera.end(); ++item)
+    require(allowed.count(item.key()), "Unsupported camera optics control");
+  auto config = YAML::Clone(take(hm::baseline_config::load()).values);
+  YAML::Node controls;
+  controls["stitching"] = YAML::Load(QJsonDocument(camera).toJson().toStdString());
+  merge_settings(config, controls);
+  const auto current_selection = take(hm::stitching::read_stitch_camera_selection(config));
+  std::unique_ptr<hm::stitching::GameConfigTransactionLock> snapshot;
+  if (request.runtime.value("saved_optics").toBool()) {
+    snapshot = take(hm::stitching::GameConfigTransactionLock::TryAcquireSnapshot(request.game));
+    const auto path = Contained(request.game, "config.yaml");
+    require(fs::file_size(path) <= 4 * 1024 * 1024, "Saved optics config exceeds its input limit");
+    const auto saved = YAML::LoadFile(path.string())["stitching"];
+    require(saved && saved.IsMap() && saved["auto_input_lens_frozen"].as<bool>(false), "Saved optics are not frozen");
+    for (const auto& key : allowed)
+      if (const auto value = saved[key.toStdString()]; value)
+        config["stitching"][key.toStdString()] = YAML::Clone(value);
+    auto saved_selection = take(hm::stitching::read_stitch_camera_selection(config));
+    require(
+        saved_selection.automatic_fov() == current_selection.automatic_fov() &&
+            saved_selection.automatic_lens() == current_selection.automatic_lens(),
+        "Saved optics policy changed");
+    if (!current_selection.automatic_fov()) {
+      saved_selection.horizontal_fov = current_selection.horizontal_fov;
+      saved_selection.vertical_fov = current_selection.vertical_fov;
+    }
+    if (!current_selection.automatic_lens())
+      saved_selection.input_lens = current_selection.input_lens;
+    hm::stitching::write_stitch_camera_selection(config, saved_selection);
+    config["stitching"]["auto_input_lens_frozen"] = true;
+  }
+  const auto selection = take(hm::stitching::read_stitch_camera_selection(config));
+  require(request.runtime.value("optics_media").isArray(), "Expected private optics media");
+  const auto media = request.runtime.value("optics_media").toArray();
+  require(media.size() <= 10000 && media.size() == request.authorized_media.size(), "Invalid optics media count");
+  // The metadata reader follows only these private aliases to descriptor-pinned
+  // originals. It never decodes frames, copies video, or trusts a saved path.
+  QTemporaryDir temporary(qs(request.root / ".optics-inputs-XXXXXX"));
+  require(temporary.isValid(), "Cannot create private optics input aliases");
+  const fs::path game(temporary.path().toStdString());
+  std::vector<std::unique_ptr<PinnedArchive>> pinned;
+  std::set<QString> originals, aliases;
+  config["hstream_ui"]["video_roles"] = YAML::Node(YAML::NodeType::Map);
+  config["game"].remove("videos");
+  for (const auto& entry : media) {
+    require(!interrupted && entry.isObject(), "Optics metadata read cancelled or invalid");
+    const auto source = entry.toObject();
+    require(source.size() == 4, "Invalid private optics source");
+    const auto original = RequiredString(source, "path", 4096);
+    const auto relative = RequiredString(source, "relative", 1024);
+    const auto role = RequiredString(source, "role", 16);
+    require(
+        (role == "auto" || role == "left" || role == "right" || role == "center") &&
+            originals.insert(original).second && aliases.insert(relative).second &&
+            request.authorized_media.contains(original),
+        "Invalid authorized optics source");
+    Request input = request;
+    input.authorized_media = QJsonArray{original};
+    input.runtime =
+        QJsonObject{{"optics_source", QJsonObject{{"path", original}, {"identity", source.value("identity")}}}};
+    auto owner = std::make_unique<PinnedArchive>(input, "optics_source");
+    const auto destination = Contained(game, relative, false);
+    require(
+        destination != game && !fs::exists(destination) && !fs::is_symlink(destination), "Overlapping optics alias");
+    fs::create_directories(destination.parent_path());
+    fs::create_symlink(owner->path(), destination);
+    if (role != "auto")
+      config["hstream_ui"]["video_roles"][role.toStdString()].push_back(destination.string());
+    pinned.push_back(std::move(owner));
+  }
+  const auto resolved = hm::stitching::ReadAutoInputLensForGame(game, config, selection, true);
+  for (const auto& input : pinned)
+    input->Verify();
+  require(!interrupted, "Optics metadata read cancelled");
+  return {
+      {"version", 1},
+      {"camera", camera_json(resolved.camera)},
+      {"message", text(resolved.message)},
+      {"fov_message", text(resolved.fov_message)},
+      {"lens_message", text(resolved.lens_message)},
+      {"recording_message", text(resolved.recording_message)},
+      {"recording_metadata_found", resolved.recording_metadata_found},
+      {"horizontal_fov_from_mp4", resolved.horizontal_fov_from_mp4},
+      {"vertical_fov_from_mp4", resolved.vertical_fov_from_mp4},
+      {"lens_from_mp4", resolved.lens_from_mp4},
+      {"detected", resolved.detected},
+      {"mismatch", resolved.mismatch}};
 }
 
 QJsonObject filtering_json(const hm::stitching::ControlPointFiltering& filtering) {
@@ -1244,6 +1338,8 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
     require(config.IsMap(), "Detector configuration must be a map");
     return detector_state(config, backend == "hockeymon");
   }
+  if (request.operation == "camera-optics-read")
+    return read_camera_optics(request);
   if (request.operation == "calibration-still-read")
     return hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
   if (request.operation == "calibration-controls-stage")

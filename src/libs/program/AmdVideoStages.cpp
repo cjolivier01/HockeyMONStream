@@ -353,7 +353,7 @@ absl::StatusOr<std::unique_ptr<AmdProgramRenderer>> AmdProgramRenderer::Create(i
 }
 absl::Status AmdProgramRenderer::Render(
     const AmdPanoramaFrame& frame,
-    const hm::BBox& crop,
+    const std::optional<hm::BBox>& crop,
     GstBuffer* output,
     const GstVideoInfo& info,
     const ProgramRenderSettings& settings,
@@ -361,7 +361,8 @@ absl::Status AmdProgramRenderer::Render(
   auto& impl = *impl_;
   if (impl.retired || frame.device() != impl.device)
     return absl::FailedPreconditionError("AMD Program has no completed frame to render");
-  if (!output || !std::isfinite(settings.fixed_edge_rotation_angle_left) ||
+  if (!output || GST_VIDEO_INFO_WIDTH(&info) <= 0 || GST_VIDEO_INFO_HEIGHT(&info) <= 0 ||
+      !std::isfinite(settings.fixed_edge_rotation_angle_left) ||
       !std::isfinite(settings.fixed_edge_rotation_angle_right) || !std::isfinite(settings.shadow_lift_percent) ||
       settings.shadow_lift_percent < 0 || settings.shadow_lift_percent > 100 || !std::isfinite(settings.exposure) ||
       settings.exposure < 0 || settings.exposure > 1.3f)
@@ -372,10 +373,19 @@ absl::Status AmdProgramRenderer::Render(
   impl.retired = true;
   try {
     DeviceScope device(impl.device);
+    const auto tracking_box = Take(
+        playcropper::ResolveTrackingBox(
+            frame.image().width,
+            frame.image().height,
+            frame.image().width,
+            frame.image().height,
+            GST_VIDEO_INFO_WIDTH(&info),
+            GST_VIDEO_INFO_HEIGHT(&info),
+            crop));
     const auto transform = playcropper::CalculateFrameTransformGeometry(
         frame.image().width,
         frame.image().height,
-        crop,
+        tracking_box,
         settings.no_crop,
         settings.fixed_edge_rotation_angle_left,
         settings.fixed_edge_rotation_angle_right);

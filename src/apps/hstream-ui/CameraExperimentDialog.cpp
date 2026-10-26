@@ -712,7 +712,7 @@ struct CameraExperimentDialog::Impl {
     play->setText(playing ? "Pause" : "Play preview");
     play->setIcon(action_icon(playing ? ActionIcon::Pause : ActionIcon::Play));
     stop_preview->setEnabled((preview_open || preview_focused) && !closing_result);
-    save->setEnabled(editable && prepared && comparison->currentIndex() >= 2);
+    save->setEnabled(editable && prepared && uncropped->isChecked() && comparison->currentIndex() >= 2);
     capture->setEnabled(!active && prepared && frame_ready);
     loop->setEnabled(!calculating && !closing_result);
     progress->setVisible(active && !preview_focused);
@@ -1074,7 +1074,7 @@ struct CameraExperimentDialog::Impl {
     capture->setEnabled(false);
     timeline->setRange(0, selected->empty() ? 0 : static_cast<int>(selected->size() - 1));
     timeline->setValue(static_cast<int>(current));
-    save->setEnabled(index >= 2 && !source_dirty && !work.valid());
+    save->setEnabled(index >= 2 && uncropped->isChecked() && !source_dirty && !work.valid());
     update_frame();
     if (!source_dirty && (preview_open || replay_now)) {
       open_preview(replay_now, current);
@@ -1661,9 +1661,9 @@ CameraExperimentDialog::CameraExperimentDialog(
     connect(source, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->invalidate_source(); });
   connect(s.video_origin, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->close_preview(); });
   connect(s.uncropped, &QCheckBox::toggled, this, [this](bool checked) {
-    if (!checked) {
+    if (!checked)
       impl_->close_preview();
-    }
+    impl_->update_controls();
   });
   connect(s.comparison, &QComboBox::currentIndexChanged, this, [this](int) { impl_->select_comparison(); });
   connect(s.timeline, &QSlider::sliderReleased, this, [this]() { impl_->seek(impl_->timeline->value()); });
@@ -1718,7 +1718,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   connect(s.save, &QPushButton::clicked, this, [this]() {
     auto& state = *impl_;
     const int index = state.comparison->currentIndex() - 2;
-    if (!state.session || state.source_dirty || state.work.valid() || index < 0 ||
+    if (!state.session || state.source_dirty || state.work.valid() || !state.uncropped->isChecked() || index < 0 ||
         static_cast<std::size_t>(index) >= state.trials.size())
       return;
     const QString path =
@@ -1732,7 +1732,9 @@ CameraExperimentDialog::CameraExperimentDialog(
     }
     const auto status = state.session->SaveTrial(path.toStdString(), state.trials[index], media);
     state.show_status(
-        status.ok() ? "Trial and its source/video binding saved." : QString::fromStdString(status.ToString()),
+        status.ok() ? (media.path.empty() ? "Trial saved without a video binding."
+                                          : "Trial and its source/video binding saved.")
+                    : QString::fromStdString(status.ToString()),
         !status.ok());
   });
   connect(s.capture, &QPushButton::clicked, this, [this]() {

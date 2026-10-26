@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 #include <QtCore/QFile>
@@ -14,6 +15,7 @@
 #include <QtCore/QJsonParseError>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSaveFile>
+#include "hstream/src/libs/common/BaselineConfig.h"
 
 namespace hm::ui {
 namespace {
@@ -182,6 +184,18 @@ bool read_card(const QJsonObject& o, HighlightCard* c, QString* error) {
 }
 
 } // namespace
+
+HighlightPlan::HighlightPlan() {
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok())
+    throw std::runtime_error(baseline.status().ToString());
+  const auto value = baseline->values["hstream_ui"]["highlights"]["base_name"];
+  if (!value || !value.IsScalar())
+    throw std::runtime_error("Missing required hstream_ui.highlights.base_name baseline value");
+  base_name = QString::fromStdString(value.as<std::string>());
+  if (!valid_base_name(base_name))
+    throw std::runtime_error("Invalid hstream_ui.highlights.base_name baseline value");
+}
 
 bool ParseHighlightTime(const QString& text, qint64* milliseconds, QString* error) {
   if (!milliseconds)

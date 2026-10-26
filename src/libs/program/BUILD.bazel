@@ -144,7 +144,13 @@ cc_library(
     srcs = ["FrameGeometry.cpp"],
     hdrs = ["FrameGeometry.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["@hm//hockeymon/csrc/play_tracker"],
+    deps = ["@hm//hockeymon/csrc/play_tracker", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "frame_geometry_test",
+    srcs = ["FrameGeometryTest.cpp"],
+    deps = [":frame_geometry"],
 )
 
 cc_library(

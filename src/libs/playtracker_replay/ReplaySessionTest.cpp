@@ -553,6 +553,38 @@ int main(int argc, char** argv) {
         descriptor["frames"].size() == 150 &&
             descriptor["media"]["telemetry_origin_pts_ns"].as<uint64_t>() == 2000000000,
         "saved trial includes exact input range and manual media mapping");
+    MediaBinding no_media;
+    no_media.telemetry_origin_pts_ns = binding.telemetry_origin_pts_ns;
+    check(
+        (*session)->SaveTrial((directory / "without-media.yaml").string(), *candidate, no_media).ok(),
+        "CPU-only trial saves without a panorama");
+    const auto without_media = YAML::LoadFile((directory / "without-media.yaml").string());
+    check(
+        without_media["media"]["kind"].as<std::string>() == "none" &&
+            without_media["media"]["canvas_width"].as<unsigned>() == 3840 &&
+            without_media["media"]["canvas_height"].as<unsigned>() == 2160 && !without_media["media"]["path"] &&
+            !without_media["media"]["identity"] && !without_media["media"]["video_origin_pts_ns"] &&
+            YAML::Dump(without_media["frames"]) == YAML::Dump(descriptor["frames"]) &&
+            YAML::Dump(without_media["start_checkpoint"]) == YAML::Dump(descriptor["start_checkpoint"]),
+        "Unbound trial preserves trajectory and checkpoint without inventing media identity");
+    check(
+        !(*session)->SaveTrial((*session)->manifest_path(), *candidate, no_media).ok() &&
+            !(*session)->SaveTrial(runtime_config.string(), *candidate, no_media).ok(),
+        "Unbound trial still protects recording and configuration inputs");
+    for (int invalid = 0; invalid < 4; ++invalid) {
+      auto partial = no_media;
+      if (invalid == 0)
+        partial.width = 3840;
+      else if (invalid == 1)
+        partial.height = 2160;
+      else if (invalid == 2)
+        partial.stitching.emplace();
+      else
+        partial.path = (directory / "missing-panorama.mp4").string();
+      check(
+          !(*session)->SaveTrial((directory / "invalid-unbound.yaml").string(), *candidate, partial).ok(),
+          "Incomplete media binding must not silently become an unbound trial");
+    }
     binding.width = 1920;
     binding.height = 1080;
     check(

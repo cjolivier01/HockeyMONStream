@@ -1224,9 +1224,14 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
   try {
     require(
         trial.frames.size() == impl_->samples.size() && !trial.frames.empty(), "Trial does not belong to this range");
-    const auto geometry = ValidatePanoramaGeometry(media.width, media.height, impl_->width, impl_->height);
-    require(geometry.ok(), geometry.ToString());
-    require(fs::is_regular_file(media.path), "Bound source file is missing");
+    const bool has_media = !media.path.empty();
+    if (has_media) {
+      const auto geometry = ValidatePanoramaGeometry(media.width, media.height, impl_->width, impl_->height);
+      require(geometry.ok(), geometry.ToString());
+      require(fs::is_regular_file(media.path), "Bound source file is missing");
+    } else {
+      require(!media.width && !media.height && !media.stitching, "Media geometry requires a bound source file");
+    }
     const auto recording = YAML::Load(impl_->manifest_contents);
     const fs::path directory = fs::path(impl_->options.manifest_path).parent_path();
     const auto protects = [&path](const std::string& artifact) {
@@ -1307,18 +1312,20 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
       guide["scope"] = "Experimental replay framing adjustment; native tracking inputs and state unchanged";
     }
     auto binding = document["media"];
-    binding["path"] = fs::absolute(media.path).string();
-    binding["size_bytes"] = fs::file_size(media.path);
-    binding["modified_ticks"] = fs::last_write_time(media.path).time_since_epoch().count();
-    binding["width"] = media.width;
-    binding["height"] = media.height;
+    if (has_media) {
+      binding["path"] = fs::absolute(media.path).string();
+      binding["size_bytes"] = fs::file_size(media.path);
+      binding["modified_ticks"] = fs::last_write_time(media.path).time_since_epoch().count();
+      binding["width"] = media.width;
+      binding["height"] = media.height;
+      binding["video_origin_pts_ns"] = media.video_origin_pts_ns;
+      binding["identity"] =
+          "Manually bound sources, stitching geometry and time; content identity requires operator verification";
+    }
     binding["canvas_width"] = impl_->width;
     binding["canvas_height"] = impl_->height;
     binding["telemetry_origin_pts_ns"] = media.telemetry_origin_pts_ns;
-    binding["video_origin_pts_ns"] = media.video_origin_pts_ns;
-    binding["kind"] = media.stitching ? "original-cameras" : "panorama";
-    binding["identity"] =
-        "Manually bound sources, stitching geometry and time; content identity requires operator verification";
+    binding["kind"] = has_media ? (media.stitching ? "original-cameras" : "panorama") : "none";
     if (media.stitching) {
       auto stitching = binding["stitching"];
       stitching["directory"] = media.stitching->directory;

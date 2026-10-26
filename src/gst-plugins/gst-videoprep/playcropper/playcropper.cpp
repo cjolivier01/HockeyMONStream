@@ -110,20 +110,6 @@ size_t round_down_even(size_t value) {
   return (value / 2) * 2;
 }
 
-static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
-  BBox surf(0, 0, in_surf->width, in_surf->height);
-  double output_ar = double(out_surf->width) / out_surf->height;
-  double new_h = in_surf->height;
-  double new_w = in_surf->height * output_ar;
-  if (new_w > in_surf->width) {
-    new_w = in_surf->width;
-    new_h = double(in_surf->width) / output_ar;
-  }
-  assert(new_w <= in_surf->width);
-  assert(new_h <= in_surf->height);
-  return BBox(0, 0, new_w, new_h).at_center(surf.center());
-}
-
 Point rotate_point(const Point& point, const Point& anchor_point, float angle_degrees) {
   const float radians = angle_degrees * (M_PI / 180.0f);
   const float sin_theta = std::sin(radians);
@@ -680,19 +666,18 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // const size_t output_width = videoprep->output_width;
     // const size_t output_height = videoprep->output_width;
 
-    // Calculate scaling factors
-    FloatValue scale_w = float(input_width) / frame_meta->source_frame_width;
-    FloatValue scale_h = float(input_height) / frame_meta->source_frame_height;
-
-    // Get tracking box
-    BBox tbox = tracking_boxes[batch_nr].has_value()
-        ? *tracking_boxes[batch_nr]
-        : make_null_tracking_box(&in_surface->surfaceList[batch_nr], &out_surface->surfaceList[batch_nr]);
-
-    tbox.left *= scale_w;
-    tbox.right *= scale_w;
-    tbox.top *= scale_h;
-    tbox.bottom *= scale_h;
+    const auto tracking_box = ResolveTrackingBox(
+        input_width,
+        input_height,
+        frame_meta->source_frame_width,
+        frame_meta->source_frame_height,
+        output_width,
+        output_height,
+        tracking_boxes[batch_nr]);
+    HM_RETURN_IF_ERROR(tracking_box.status());
+    const BBox& tbox = *tracking_box;
+    const FloatValue scale_w = FloatValue(input_width) / frame_meta->source_frame_width;
+    const FloatValue scale_h = FloatValue(input_height) / frame_meta->source_frame_height;
 
     const FrameTransformGeometry transform = CalculateFrameTransformGeometry(
         input_width, input_height, tbox, no_crop_, fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_);

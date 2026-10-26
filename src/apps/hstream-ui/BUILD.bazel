@@ -651,7 +651,7 @@ cc_library(
     hdrs = ["HighlightPlan.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["@qt//:qt_core"],
+    deps = ["//src/libs/common:baseline_config", "@qt//:qt_core", "@yaml-cpp"],
 )
 
 cc_test(

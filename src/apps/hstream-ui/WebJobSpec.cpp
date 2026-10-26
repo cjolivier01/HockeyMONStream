@@ -87,6 +87,7 @@ QJsonObject Capabilities() {
       "calibration-clean",
       "calibration-still-read",
       "detector-controls-read",
+      "camera-optics-read",
       "calibration-view-read",
       "calibration-view-estimate",
       "calibration-view-landmarks",
@@ -131,6 +132,7 @@ QJsonObject Capabilities() {
        QJsonArray{
            "runtime-defaults-v1",
            "detector-controls-v1",
+           "camera-optics-read-v1",
            "experiment-optics-filtering-v1",
            "match-editor-v1",
            "rink-editor-v1",

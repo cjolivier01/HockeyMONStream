@@ -431,7 +431,12 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
     before_effective["stitching"]["max_output_width"] =
         take(st::ResolveStitchingCalibrationMaxWidth(original, before_defaults));
     st::PreserveLegacyInputLensSelection(before_effective, original);
-    const auto before = take(st::ReadStitchingCalibrationState(original, before_effective));
+    auto before = take(st::ReadStitchingCalibrationState(original, before_effective));
+    // Clean retires the saved alignment. A newly resolved automatic lens or
+    // another geometry edit must not narrow that fresh solve to the canvas.
+    // Seed its earliest stage without forcing release of retained input evidence.
+    if (cleaned_source)
+      before.stale_from = "input";
     const auto stale = at(original, {"hstream_ui", "stitching_calibration", "stale_from"});
     require(
         !stale.IsDefined() || stale.IsNull() || (stale.IsScalar() && stale.as<std::string>().empty()),
@@ -506,11 +511,31 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       effective["hstream_ui"]["stitching_calibration"]["control_points"] = points;
     }
     bool refresh_optics = sources_changed;
+    const bool explicitly_released = desired_stitching.contains("auto_input_lens_frozen") &&
+        desired_stitching.value("auto_input_lens_frozen").isBool() &&
+        !desired_stitching.value("auto_input_lens_frozen").toBool();
+    refresh_optics = refresh_optics || explicitly_released;
     for (const char* key : {"camera_config", "camera_fov", "camera_automation", "input_lens"})
       refresh_optics = refresh_optics || previous_stitching.value(key) != desired_stitching.value(key);
     if (refresh_optics) {
-      effective["stitching"]["auto_input_lens_frozen"] = false;
       auto camera = take(st::read_stitch_camera_selection(effective));
+      // Qt retains a saved automatic component while editing the other manual
+      // component. Profile/Auto edits release the snapshot even after an edit
+      // is reverted; the supervisor binds that explicit intent to its source.
+      if (sources_changed || explicitly_released ||
+          previous_stitching.value("camera_config") != desired_stitching.value("camera_config") ||
+          before.controls.camera.automatic_fov() != camera.automatic_fov() ||
+          before.controls.camera.automatic_lens() != camera.automatic_lens())
+        effective["stitching"]["auto_input_lens_frozen"] = false;
+      else if (at(effective, {"stitching", "auto_input_lens_frozen"}).as<bool>(false)) {
+        if (camera.automatic_fov()) {
+          camera.horizontal_fov = before.controls.camera.horizontal_fov;
+          camera.vertical_fov = before.controls.camera.vertical_fov;
+        }
+        if (camera.automatic_lens())
+          camera.input_lens = before.controls.camera.input_lens;
+        st::write_stitch_camera_selection(effective, camera);
+      }
       auto optics_config = YAML::Clone(effective);
       if (camera.automatic_fov() || camera.automatic_lens()) {
         auto roles = at(effective, {"hstream_ui", "video_roles"});

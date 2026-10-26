@@ -56,7 +56,7 @@ class AmdProgramRenderer {
   bool healthy() const;
   absl::Status Render(
       const AmdPanoramaFrame& frame,
-      const hm::BBox& crop,
+      const std::optional<hm::BBox>& crop,
       GstBuffer* output,
       const GstVideoInfo& info,
       const ProgramRenderSettings& settings,

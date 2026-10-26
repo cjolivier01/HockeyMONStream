@@ -12,6 +12,8 @@ import threading
 import time
 from pathlib import Path
 
+import yaml
+
 
 def check(binary, replay, root, *, selected_media):
     environment = dict(
@@ -200,6 +202,16 @@ def check(binary, replay, root, *, selected_media):
                 assert catalog["view_count"] == 3
                 rejected = command("play", "rejected")
                 assert "prepare the recording again" in rejected["error"]
+                saved = command("save")
+                descriptor = yaml.safe_load((root / saved["saved"]).read_text())
+                assert descriptor["media"]["kind"] == "none"
+                assert (
+                    "path" not in descriptor["media"]
+                    and "identity" not in descriptor["media"]
+                )
+                assert len(descriptor["frames"]) == catalog["frame_count"]
+                assert saved["artifact"]["path"] == saved["saved"]
+                assert command("save")["artifact"] == saved["artifact"]
             command("source-confirm", confirmed=False)
             rejected = command("save", "rejected")
             assert "confirm the source" in rejected["error"]
@@ -213,7 +225,9 @@ def check(binary, replay, root, *, selected_media):
             assert (
                 state["view"] == 1 and not state["open"] and state["operation"] == "0"
             )
-            assert not list(root.glob("camera-trial-*.yaml"))
+            assert len(list(root.glob("camera-trial-*.yaml"))) == (
+                0 if selected_media else 1
+            )
             command("close")
             assert process.wait(timeout=10) == 0, "".join(lines)
             thread.join(timeout=2)

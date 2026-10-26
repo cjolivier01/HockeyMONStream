@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 
 #include <unistd.h>
@@ -161,6 +162,54 @@ Bytes dji(bool eis, bool include_eis = true, bool empty_eis = false) {
 }
 } // namespace
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "--projection-limits") {
+    try {
+      const auto cases = YAML::LoadFile(argv[2]);
+      expect(cases.IsSequence() && cases.size() <= 10000, "Expected bounded projection cases");
+      YAML::Node results(YAML::NodeType::Sequence);
+      for (const auto& item : cases) {
+        const auto projection = ParseStitchProjection(item["projection"].as<std::string>());
+        expect(projection.ok(), projection.status().ToString().c_str());
+        const auto maximum =
+            MaximumStitchProjectionHorizontalFov(*projection, item["parameters"].as<std::vector<double>>());
+        expect(maximum.ok(), maximum.status().ToString().c_str());
+        results.push_back(*maximum);
+      }
+      std::cout << YAML::Dump(results) << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
+  if (argc == 3 && std::string(argv[1]) == "--layering") {
+    try {
+      const auto fixture = YAML::LoadFile(argv[2]);
+      const auto cases = fixture["cases"];
+      expect(cases.IsSequence() && cases.size() <= 10000, "Expected bounded optics layering cases");
+      YAML::Node results(YAML::NodeType::Sequence);
+      for (const auto& item : cases) {
+        auto effective = YAML::Clone(fixture["baseline"]);
+        for (const auto& layer : item["layers"]) {
+          effective = hm::config::MergeNodes(effective, layer, false);
+          PreserveLegacyInputLensSelection(effective, layer);
+        }
+        const auto camera = read_stitch_camera_selection(effective);
+        expect(camera.ok(), camera.status().ToString().c_str());
+        YAML::Node result;
+        result["id"] = item["id"].as<std::string>();
+        result["fov"] = camera->automatic_fov();
+        result["lens"] = camera->automatic_lens();
+        write_stitch_camera_selection(result, *camera);
+        results.push_back(result);
+      }
+      std::cout << YAML::Dump(results) << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
       const auto result = ReadVideoLensMetadata(argv[i]);

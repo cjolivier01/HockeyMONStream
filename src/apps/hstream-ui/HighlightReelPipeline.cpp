@@ -640,7 +640,10 @@ struct HighlightReelPipeline::Impl {
           nullptr);
       GstElement *parser = element(graph.value, hevc ? "h265parse" : "h264parse"),
                  *mux = element(graph.value, "mp4mux"), *file = element(graph.value, "filesink");
-      g_object_set(mux, "faststart", TRUE, nullptr);
+      // Each item joins its bounded audio producer before submitting the next
+      // item's video. Chunk interleaving can retain audio while waiting for
+      // that future video, so always mux the earliest available packet.
+      g_object_set(mux, "faststart", TRUE, "interleave-time", guint64(0), nullptr);
       g_object_set(file, "location", QFile::encodeName(request.output_path).constData(), nullptr);
       check(
           gst_element_link_many(vq, convert, filter, enc, parser, mux, file, nullptr),

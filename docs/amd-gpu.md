@@ -35,6 +35,13 @@ only. The shared replay policy, parameter catalog and trajectory data remain
 portable, while actual AMD moving-preview and historical-mask qualification are
 still required. No system-memory video fallback is added.
 
+Program crop selection shares `program/FrameGeometry::ResolveTrackingBox` with
+NVIDIA. A recorded follower is scaled into the decoded surface once. An absent
+follower selects the largest centered rectangle with the requested output aspect
+ratio; AMD retains that absence until each render output is known. CPU geometry
+regressions cover scaled canvases and wide/portrait/square outputs. This does not
+qualify AMD rendered pixels or add the missing AMD Camera preview path.
+
 `StitchingCalibrationControls` shares CPU dependency staging, source-reference
 invalidation and cleanup completion between Qt Play and the private web adapter.
 It changes no CUDA/HIP data path and adds no frame readback. Its CPU regressions

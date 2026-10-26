@@ -352,7 +352,24 @@ bool confirmation(const QString& manifest) {
     std::cerr << "Confirming the source did not allow the trial to be calculated\n";
     return false;
   }
-  std::cout << "PASS: unconfirmed replay creates no trial, message persists, confirmation allows a trial\n";
+  auto* save = widget<QPushButton>(dialog, "experimentSave");
+  auto* confirmed = widget<QCheckBox>(dialog, "experimentUncropped");
+  auto* comparison = widget<QComboBox>(dialog, "experimentComparison");
+  if (!save->isEnabled())
+    return false;
+  confirmed->setChecked(false);
+  comparison->setCurrentIndex(0);
+  comparison->setCurrentIndex(2);
+  if (!wait_until([&] { return prepare->isEnabled(); }) || save->isEnabled()) {
+    std::cerr << "Revoking source confirmation left the existing trial saveable\n";
+    return false;
+  }
+  confirmed->setChecked(true);
+  if (!wait_until([&] { return save->isEnabled(); })) {
+    std::cerr << "Restoring source confirmation did not enable the existing trial\n";
+    return false;
+  }
+  std::cout << "PASS: confirmation gates trial creation and saving, including revocation and reselection\n";
   return true;
 }
 

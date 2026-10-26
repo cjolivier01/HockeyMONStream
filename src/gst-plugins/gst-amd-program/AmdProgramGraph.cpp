@@ -214,7 +214,7 @@ class Crop final : public gst::Component {
     auto& render = *frame.render;
     Ok(stage_->Render(
         *frame.panorama,
-        frame.crop,
+        frame.observation.crop,
         render.target.get(),
         render.info,
         render.settings,

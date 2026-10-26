@@ -56,8 +56,9 @@ struct HighlightInterval {
 };
 
 struct HighlightPlan {
+  HighlightPlan();
   QVector<HighlightInterval> intervals;
-  QString base_name{"highlights"};
+  QString base_name;
   QString archive_path;
   // Intervals remain absolute source times; the editor presents offsets from
   // this origin. Missing in legacy plans, which inherit the main playback start.
