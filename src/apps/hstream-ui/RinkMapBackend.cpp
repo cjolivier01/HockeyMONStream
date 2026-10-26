@@ -22,6 +22,7 @@
 
 #include "absl/strings/numbers.h"
 #include "hstream/src/libs/assets/AssetManager.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
@@ -610,6 +611,27 @@ absl::Status CheckRinkMapSetup(const QString& game_directory) {
   if (!config_lock.ok())
     return config_lock.status();
   return CalibrationComplete(game_directory);
+}
+
+absl::StatusOr<rink::RinkLayout> ReadRinkMapDefaults() {
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok())
+    return baseline.status();
+  try {
+    const auto values = baseline->values["stitching"]["rink_map"]["dimensions_m"];
+    rink::RinkLayout result{
+        values["length"].as<double>(),
+        values["width"].as<double>(),
+        values["blue_line_distance"].as<double>(),
+        values["goal_inset"].as<double>(),
+        values["corner_radius"].as<double>()};
+    const auto status = rink::ValidateRinkLayout(result);
+    if (!status.ok())
+      return status;
+    return result;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid baseline rink-map dimensions: " + std::string(error.what()));
+  }
 }
 
 absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_directory) {

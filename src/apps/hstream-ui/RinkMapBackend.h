@@ -35,6 +35,7 @@ struct RinkMapWorkResult {
 
 using RinkMaskProgress = std::function<void(const QString&)>;
 using RinkMaskPreparation = std::function<absl::Status(const std::function<bool()>&, const RinkMaskProgress&)>;
+absl::StatusOr<hm::stitching::RinkLayout> ReadRinkMapDefaults();
 // Uses the same native calibration-only runner as the rest of the desktop.
 RinkMaskPreparation RinkMaskPreparer(
     const QString& runner,

@@ -17,6 +17,7 @@
 #include "src/apps/hstream-ui/WebExperimentFrames.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
 #include "src/apps/hstream-ui/WebRinkEditor.h"
+#include "src/apps/hstream-ui/WebRinkMap.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -741,11 +742,17 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
         require(value.isString() && !value.toString().contains(QChar(0)), "Invalid authorized media path");
         authorized_media.emplace_back(value.toString().toStdString());
       }
+      fs::path source_game = request.game;
+      if (request.operation == "experiment-create" && request.payload.contains("source_workspace")) {
+        auto source = request;
+        source.payload["workspace"] = request.payload.value("source_workspace");
+        source_game = workspace(source).game_directory;
+      }
       created = take(CreateStagedStitchingExperimentWorkspace(
-          request.game,
+          source_game,
           request.root / "experiments",
           settings(
-              request.payload.value("settings").toObject(), YAML::LoadFile((request.game / "config.yaml").string())),
+              request.payload.value("settings").toObject(), YAML::LoadFile((source_game / "config.yaml").string())),
           sequence,
           authorized_media,
           !request.payload.value("settings").toObject().value("camera").toObject().isEmpty()));
@@ -762,8 +769,11 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           matches(source, true),
           sequence));
     }
-    if (request.operation == "experiment-create" || request.operation == "experiment-edit")
-      return {{"workspace", workspace_json(request, created)}, {"state", "queued"}};
+    if (request.operation == "experiment-create" || request.operation == "experiment-edit") {
+      const auto selection = take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
+      return {{"workspace", workspace_json(request, created)}, {"state", "queued"},
+              {"selection_available", !selection.empty()}, {"selection_fingerprint", text(selection)}};
+    }
     const bool recovering = request.operation == "experiment-recover";
     bool complete = false;
     try {
@@ -1072,7 +1082,7 @@ QJsonObject replay(const Request& request) {
 
 void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts) {
   if (request.operation != "calibration-complete" && request.operation.rfind("matches-", 0) != 0 &&
-      request.operation.rfind("experiment-", 0) != 0)
+      request.operation.rfind("experiment-", 0) != 0 && request.operation.rfind("rink-map-", 0) != 0)
     return;
   std::size_t count = 0;
   for (const auto& directory : {request.game, request.root / "experiments"}) {
@@ -1102,6 +1112,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
 }
 
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation.rfind("rink-map-", 0) == 0)
+    return hm::web::RunRinkMap(request, artifacts, [] { return interrupted != 0; });
   if (request.operation == "calibration-complete") {
     const auto owner = RequiredString(request.payload, "invalidation_id").toStdString();
     require(!owner.empty(), "Calibration completion requires an invalidation owner");

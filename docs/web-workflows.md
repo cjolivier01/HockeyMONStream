@@ -346,3 +346,22 @@ read video frames back from the GPU.
 absolute leveling recovery, original-image bounds and escaped image references.
 The web rink-editor tests also run the actual helper and Hugin tools through
 the supervisor bridge when `HSTREAM_WORKFLOW_TEST_BIN` is set.
+
+### Saved rink-map editing
+
+`rink-map-read`, `rink-map-update` and `rink-map-save` share `RinkMapBackend`
+with the desktop. Each request owns a cloned completed calibration. Updates
+and saves require the exact native generation, calibration revision and saved
+map digest returned by Read. Drafts contain original-image pixels; supplied
+rays or matrices are rejected. The native backend recomputes every ray, fits
+all enabled observations, and returns the shared feature catalog, projected
+layout, detection contours, mask assistance and partial/inconsistent/ready
+state. Automatic suggestions must be reviewed before a separate Save.
+The canonical baseline supplies rink dimensions to both interfaces.
+
+Only a successful `rink-map-save` receipt can become the selected calibration;
+Read and Update retain drafts without replacing the original source. Empty
+and partial maps can be saved, matching Qt. Playback readiness is checked
+separately for a fitted saved map. `web_rink_map_test` uses actual Hugin ray
+transforms and covers read/fit/save, baseline precision, stale saved-map and
+calibration revisions, and rejection of browser-provided rays.

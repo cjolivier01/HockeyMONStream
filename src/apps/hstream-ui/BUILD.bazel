@@ -267,6 +267,7 @@ cc_library(
         ":value_control_wheel",
         ":action_icons",
         ":calibration_image",
+        "//src/libs/common:baseline_config",
         ":preview_dialog_window",
         "//src/libs/assets:asset_manager",
         "//src/libs/common:process",
@@ -1268,12 +1269,13 @@ cc_library(
 
 cc_binary(
     name = "hstream-web-job",
-    srcs = ["WebJobMain.cpp", "WebRinkEditor.cpp", "WebRinkEditor.h", "WebExperimentFrames.cpp", "WebExperimentFrames.h", "StitchingExperimentDefaults.h", "CameraControlSpecs.h"],
+    srcs = ["WebJobMain.cpp", "WebRinkEditor.cpp", "WebRinkEditor.h", "WebRinkMap.cpp", "WebRinkMap.h", "WebExperimentFrames.cpp", "WebExperimentFrames.h", "StitchingExperimentDefaults.h", "CameraControlSpecs.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
         ":highlight_web_preview",
+        ":rink_map_dialog",
         ":web_job_spec",
         "//src/libs/common:baseline_config",
         ":calibration_image",
@@ -1322,6 +1324,17 @@ sh_test(
     data = [":hstream-web-job"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local"],
+)
+
+cc_test(
+    name = "web_rink_map_test",
+    srcs = ["WebRinkMapTest.cpp"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_job_spec", ":rink_map_dialog", "@qt//:qt_gui"],
 )
 
 cc_test(

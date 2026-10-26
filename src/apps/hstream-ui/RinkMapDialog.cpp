@@ -616,7 +616,8 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent, Rin
   for (int camera = 0; camera < 2; ++camera) {
     cameras_[camera] = new RinkMapCanvas();
     cameras_[camera]->setObjectName(QString("rinkMapCamera%1").arg(camera));
-    tabs_->addTab(cameras_[camera], tab_icon(camera ? "Right camera" : "Left camera"), camera ? "Right camera" : "Left camera");
+    tabs_->addTab(
+        cameras_[camera], tab_icon(camera ? "Right camera" : "Left camera"), camera ? "Right camera" : "Left camera");
     cameras_[camera]->clicked = [this, camera](QPointF point) { addPoint(camera, point); };
     cameras_[camera]->selected = [this](int row) {
       if (busy_ || (row == table_->currentRow() && (row < 0 || table_->selectionModel()->isRowSelected(row, {}))))
@@ -715,6 +716,10 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent, Rin
   auto* layout_box = new QGroupBox("Rink dimensions (assumptions, metres)");
   auto* form = new QFormLayout(layout_box);
   const char* labels[]{"Length", "Width", "Centre to blue line", "Goal line from end", "Corner radius"};
+  const auto baseline_layout = ReadRinkMapDefaults();
+  if (!baseline_layout.ok())
+    throw std::runtime_error(baseline_layout.status().ToString());
+  state_.document.layout = *baseline_layout;
   const auto& layout = state_.document.layout;
   const double values[]{
       layout.length, layout.width, layout.blue_line_distance, layout.goal_inset, layout.corner_radius};
@@ -722,7 +727,7 @@ RinkMapDialog::RinkMapDialog(const QString& game_directory, QWidget* parent, Rin
     dimensions_[i] = new QDoubleSpinBox();
     dimensions_[i]->setObjectName(QString("rinkMapDimension%1").arg(i));
     dimensions_[i]->setRange(i == 4 ? 0 : 0.1, 80);
-    dimensions_[i]->setDecimals(3);
+    dimensions_[i]->setDecimals(4);
     dimensions_[i]->setValue(values[i]);
     form->addRow(labels[i], dimensions_[i]);
     connect(dimensions_[i], qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this] {
