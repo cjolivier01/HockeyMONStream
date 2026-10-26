@@ -121,6 +121,37 @@ int main(int argc, char** argv) {
       }
       ++index;
     }
+    const auto root = temporary.filePath("without-archive");
+    QDir().mkpath(root + "/game");
+    hm::ui::HighlightInterval card;
+    card.is_card = true;
+    card.card.heading = "A card before choosing an archive";
+    hm::ui::HighlightPlan plan;
+    plan.intervals = {card};
+    QString error;
+    if (!hm::ui::SaveHighlightPlan(root + "/source-plan.json", plan, &error))
+      return 1;
+    const QJsonObject request{
+        {"schema", 1},
+        {"run_id", "no-archive-card-test"},
+        {"operation", "highlight-card-preview"},
+        {"root", root},
+        {"game_dir", "game"},
+        {"payload", QJsonObject{{"plan", hm::web::ReadObject((root + "/source-plan.json").toStdString())}}}};
+    hm::web::WriteObject((root + "/operation-request.json").toStdString(), request);
+    if (!command(binary, {"--request", root + "/operation-request.json"}))
+      return 1;
+    QImage expected;
+    if (!hm::ui::RasterHighlightCard(card.card, root, &expected, &error, QSize()))
+      return 1;
+    const QImage actual(root + "/highlight-card.png");
+    const auto result = hm::web::ReadObject((root + "/operation-result.json").toStdString()).value("result").toObject();
+    if (actual.convertToFormat(QImage::Format_RGBA8888) != expected.convertToFormat(QImage::Format_RGBA8888) ||
+        result.value("source_width").toInt() != expected.width() ||
+        result.value("source_height").toInt() != expected.height()) {
+      std::cerr << "Card preview without an archive differs from the Qt editor\n";
+      return 1;
+    }
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

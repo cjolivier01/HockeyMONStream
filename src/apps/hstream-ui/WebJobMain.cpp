@@ -208,13 +208,20 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
         plan.intervals.size() == 1 && plan.intervals.front().is_card && !request.payload.contains("selected_indices"),
         "Card preview requires exactly one authored card");
     require(plan.archive_path.isEmpty(), "Card preview accepts only its frozen archive probe");
-    const auto media = card_archive(request);
+    QSize output_size;
+    if (request.runtime.contains("archive_probe")) {
+      const auto media = card_archive(request);
+      output_size = QSize(media.width, media.height);
+    }
     QImage image;
     QString error;
     require(!interrupted, "cancelled");
     if (!hm::ui::RasterHighlightCard(
-            plan.intervals.front().card, qs(request.root), &image, &error, QSize(media.width, media.height)))
+            plan.intervals.front().card, qs(request.root), &image, &error, output_size))
       throw std::runtime_error(error.toStdString());
+    // Without an archive, use the same intrinsic card canvas as the Qt editor.
+    if (!output_size.isValid())
+      output_size = image.size();
     require(!interrupted, "cancelled");
     const auto path = request.root / "highlight-card.png";
     require(!fs::exists(path), "Refusing to replace an existing card preview");
@@ -228,8 +235,8 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
         {"preview", "highlight-card.png"},
         {"width", image.width()},
         {"height", image.height()},
-        {"source_width", media.width},
-        {"source_height", media.height}};
+        {"source_width", output_size.width()},
+        {"source_height", output_size.height()}};
   }
   QVector<hm::ui::HighlightInterval> selected;
   if (request.payload.contains("selected_indices")) {
