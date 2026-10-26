@@ -14814,6 +14814,50 @@ bool test_detector_precision() {
       "explicit UI precision must shadow an inherited incompatible engine");
 }
 
+bool test_hockey_roles() {
+  QTemporaryDir root;
+  if (!root.isValid()) return false;
+  const auto previous = qgetenv("HM_GAME_DIR");
+  qputenv("HM_GAME_DIR", root.path().toLocal8Bit());
+  QDir().mkpath(root.path() + "/roles");
+  std::ofstream((root.path() + "/roles/config.yaml").toStdString()) << "game: {name: roles}\n";
+  bool ok = true;
+  {
+    HStreamWindow window;
+    auto* games = require_child<QComboBox>(&window, "gameSelector");
+    auto* model = require_child<QComboBox>(&window, "detectorModelCombo");
+    auto* refs = require_child<QCheckBox>(&window, "cameraCheck_Ignore_Referees");
+    auto* goalies = require_child<QCheckBox>(&window, "cameraCheck_Ignore_Goalies");
+    if (!games || !model || !refs || !goalies) return false;
+    games->setCurrentIndex(games->findText("roles"));
+    ok &= expect(!refs->isChecked() && !goalies->isChecked(), "Role exclusion defaults must be off");
+    model->setCurrentIndex(model->findData("hockey-roles"));
+    refs->setChecked(true);
+    auto args = HStreamWindowTestAccess::standaloneArguments(&window);
+    ok &= expect(args.contains("--options=pipeline.primary-gie.config-file=config_infer_yolov8m_hockey_roles.yaml") &&
+                 args.contains("--options=rink.tracking.cam_ignore_referees=true") &&
+                 args.contains("--options=rink.tracking.cam_ignore_goalies=false"), "Role model and independent flags must reach launch");
+    goalies->setChecked(true);
+    ok &= HStreamWindowTestAccess::savePreset(&window);
+    const auto saved = YAML::LoadFile((root.path() + "/roles/config.yaml").toStdString());
+    ok &= expect(saved["rink"]["tracking"]["cam_ignore_referees"].as<bool>() &&
+                 saved["rink"]["tracking"]["cam_ignore_goalies"].as<bool>(), "Both role flags must persist");
+    window.show();
+    QGuiApplication::sync();
+    const auto image = qEnvironmentVariable("HSTREAM_UI_ROLES_SCREENSHOT");
+    if (!image.isEmpty()) ok &= refs->parentWidget()->grab().save(image);
+  }
+  {
+    HStreamWindow reloaded;
+    auto* games = require_child<QComboBox>(&reloaded, "gameSelector");
+    games->setCurrentIndex(games->findText("roles"));
+    ok &= expect(reloaded.cameraControlValue("Ignore_Referees") == 1 &&
+                 reloaded.cameraControlValue("Ignore_Goalies") == 1, "Saved role controls must reload");
+  }
+  qputenv("HM_GAME_DIR", previous);
+  return ok;
+}
+
 bool test_detector_model() {
   QTemporaryDir model_games;
   if (!model_games.isValid())
@@ -18938,6 +18982,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ROLES_ONLY"))
+    return test_hockey_roles() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ICONS_ONLY")) {
     HStreamWindow window;
     window.resize(1600, 1000);

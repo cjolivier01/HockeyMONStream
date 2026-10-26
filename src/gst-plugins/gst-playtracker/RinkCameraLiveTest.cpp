@@ -68,6 +68,8 @@ int main() {
   std::ofstream(path) << R"(play-tracker:
   camera-name: GoPro
   no-wide-start: 0
+  ignore-referees: false
+  ignore-goalies: false
   ignore-largest-bbox: false
   max-speed-ratio-x: 1.0
   max-speed-ratio-y: 1.0

@@ -1,8 +1,9 @@
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
+#include "hstream/src/libs/common/PersonRoles.h"
 // #include "deepstream/sources/includes/nvll_osd_struct.h"
-#include "nvll_osd_struct.h"
 #include "hstream/src/libs/common/Status.h"
 #include "jetson-utils/cuda/cudaDraw.h"
+#include "nvll_osd_struct.h"
 
 namespace hm {
 namespace draw_display {
@@ -218,7 +219,7 @@ absl::Status draw_object_meta(
     XCUDA_RETURN_IF_ERROR(cudaDraw(
         surface.dataptr(), surface.width(), surface.height(), surface.get_image_format(), *rect_params, scale, stream));
 
-    if (*object_meta->obj_label) {
+    if (*hm::PersonRoleText(object_meta->obj_label)) {
       const NvOSD_TextParams& text = object_meta->text_params;
       float adapted_font_size = adaptFontSize(surface.width()) / 10.0 * scale;
       std::shared_ptr<Font> font;
@@ -231,7 +232,7 @@ absl::Status draw_object_meta(
       HM_ASSIGN_OR_RETURN(
           newpos,
           font->draw(
-              text.display_text,
+              hm::PersonRoleText(object_meta->obj_label),
               surface.dataptr(),
               surface.get_image_format(),
               surface.width(),

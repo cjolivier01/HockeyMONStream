@@ -7,6 +7,7 @@
 #include "hockeymon/csrc/play_tracker/TranslatingBox.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
 #include "hstream/src/libs/common/ConfigYaml.h"
+#include "hstream/src/libs/common/PersonRoles.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
 #include "hstream/src/libs/common/PlotContext.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
@@ -63,6 +64,8 @@ absl::Status apply_runtime_tuning_to_tracker(
   if (!status.ok()) {
     return status;
   }
+  tracker_context->ignore_referees = tuning.ignore_referees.value_or(tracker_context->ignore_referees);
+  tracker_context->ignore_goalies = tuning.ignore_goalies.value_or(tracker_context->ignore_goalies);
   auto* tracker = tracker_context->play_tracker.get();
   if (tuning.ignore_largest_bbox_count || tuning.ignore_oversized_bboxes || tuning.oversized_bbox_percent) {
     auto& applied = tracker_context->play_tracker_config;
@@ -183,6 +186,8 @@ void merge_detector_runtime_tuning(DsPlayTrackerRuntimeTuning* state, const DsPl
   state->apply_to_follower_box = false;
   merge_optional(&state->ignore_largest_bbox_count, update.ignore_largest_bbox_count);
   merge_optional(&state->ignore_oversized_bboxes, update.ignore_oversized_bboxes);
+  merge_optional(&state->ignore_referees, update.ignore_referees);
+  merge_optional(&state->ignore_goalies, update.ignore_goalies);
   merge_optional(&state->oversized_bbox_percent, update.oversized_bbox_percent);
   merge_optional(&state->overshoot_stop_delay_count, update.overshoot_stop_delay_count);
   merge_optional(&state->overshoot_scale_speed_ratio, update.overshoot_scale_speed_ratio);
@@ -216,7 +221,8 @@ void merge_box_runtime_tuning(
 
 void accumulate_runtime_tuning(DsPlayTrackerCtx* ctx, const DsPlayTrackerRuntimeTuning& tuning) {
   if (tuning.overshoot_stop_delay_count.has_value() || tuning.overshoot_scale_speed_ratio.has_value() ||
-      tuning.ignore_largest_bbox_count || tuning.ignore_oversized_bboxes || tuning.oversized_bbox_percent) {
+      tuning.ignore_largest_bbox_count || tuning.ignore_oversized_bboxes || tuning.oversized_bbox_percent ||
+      tuning.ignore_referees || tuning.ignore_goalies) {
     if (!ctx->detector_runtime_tuning.has_value()) {
       ctx->detector_runtime_tuning.emplace();
     }
@@ -669,7 +675,7 @@ bool DsPlayTrackerAttachPreviewSnapshot(DsPlayTrackerCtx* ctx, GstDsPlayTrackerF
     const auto& results = frame.play_tracker_results;
     for (auto* item = frame.frame_meta->obj_meta_list; item; item = item->next) {
       auto* object = static_cast<NvDsObjectMeta*>(item->data);
-      if (!object || object->class_id != 0 || object->object_id == UNTRACKED_OBJECT_ID)
+      if (!object || !hm::IsPerson(object->class_id, object->obj_label) || object->object_id == UNTRACKED_OBJECT_ID)
         continue;
       const auto matches = [object](const hm::play_tracker::Track& track) {
         return track.tracking_id == object->object_id;
@@ -729,6 +735,9 @@ absl::StatusOr<DsPlayTrackerCtx::PlayTracker> DsPlayTrackerCreateCpuTracker(
   try {
     DsPlayTrackerCtx::PlayTracker result;
     result.play_tracker_config = gst_hm_playtracker::create_play_tracker_config(arena, yaml);
+    // Archived replay configs predate role filtering; their observations were already selected.
+    result.ignore_referees = yaml["ignore-referees"] && yaml["ignore-referees"].as<bool>();
+    result.ignore_goalies = yaml["ignore-goalies"] && yaml["ignore-goalies"].as<bool>();
     result.base_play_tracker_config = result.play_tracker_config;
     if (!result.base_play_tracker_config.living_boxes.empty()) {
       const int zoom = yaml["zoom-in-aggressiveness"]
@@ -868,9 +877,12 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
 
   for (NvDsMetaList* l_obj = frame.frame_meta->obj_meta_list; l_obj != NULL; l_obj = l_obj->next) {
     NvDsObjectMeta* obj_meta = (NvDsObjectMeta*)(l_obj->data);
-    if (obj_meta->class_id != 0) {
+    if (!hm::IsPerson(obj_meta->class_id, obj_meta->obj_label)) {
       continue;
     }
+    if ((play_tracker_ctx->ignore_referees && hm::IsReferee(obj_meta->obj_label)) ||
+        (play_tracker_ctx->ignore_goalies && hm::IsGoalie(obj_meta->obj_label)))
+      continue;
     if (obj_meta->object_id == UNTRACKED_OBJECT_ID) {
       // ignore untracked objects
       continue;

@@ -1,4 +1,5 @@
 #include "PreviewOverlayScene.h"
+#include "hstream/src/libs/common/PersonRoles.h"
 
 #include "hstream/src/libs/draw_display/PlayerOverlays.h"
 #include "hstream/src/libs/draw_display/RinkMiniMap.h"
@@ -118,35 +119,47 @@ PreviewOverlayScene BuildPreviewOverlayScene(
 
   if (options.show_player_tracking &&
       (!program_transform || !(program_transform->baked_player_layers & hm::player_analytics::kDrawPlayerBoxes))) {
-    auto add_player_rect =
-        [&](const NvOSD_RectParams& rect, bool ignored, const hm::preview_overlay::PlayCropperTransform* transform) {
-          add_rect_paths(
-              &overlays,
-              rect.left,
-              rect.top,
-              rect.width,
-              rect.height,
-              std::max(2.0F, static_cast<float>(rect.border_width)),
-              overlay_color(ignored ? hm::preview_overlay::kIgnoredPlayerColor : rect.border_color),
-              false,
-              {},
-              transform);
-          if (ignored)
-            hm::draw_display::analytics::AddIgnoredPlayerLabel(
-                rect, transform, overlays.coordinate_width, overlays.coordinate_height, &commands);
-        };
+    auto add_player_rect = [&](const NvOSD_RectParams& rect,
+                               bool ignored,
+                               const hm::preview_overlay::PlayCropperTransform* transform,
+                               std::string_view role) {
+      add_rect_paths(
+          &overlays,
+          rect.left,
+          rect.top,
+          rect.width,
+          rect.height,
+          std::max(2.0F, static_cast<float>(rect.border_width)),
+          overlay_color(ignored ? hm::preview_overlay::kIgnoredPlayerColor : rect.border_color),
+          false,
+          {},
+          transform);
+      if (!role.empty()) {
+        const auto point = transform ? hm::preview_overlay::metadata_to_output(*transform, {rect.left, rect.top})
+                                     : hm::preview_overlay::Point{rect.left, rect.top};
+        const float height = 24 * std::clamp(overlays.coordinate_height / 1080.0F, 0.5F, 8.0F);
+        commands.AddText(point.x, std::max(0.0F, point.y - height), height, role, {1, 1, 1, 1});
+      }
+      if (ignored && role.empty())
+        hm::draw_display::analytics::AddIgnoredPlayerLabel(
+            rect, transform, overlays.coordinate_width, overlays.coordinate_height, &commands);
+    };
     if (snapshot) {
       for (const auto& player : snapshot->player_rects)
-        add_player_rect(player.rect, player.ignored, program_transform);
+        add_player_rect(player.rect, player.ignored, program_transform, player.role_label);
     } else {
       const auto* object_transform =
           program_transform && !program_transform->object_meta_transformed ? program_transform : nullptr;
       for (NvDsMetaList* item = frame_meta->obj_meta_list; item; item = item->next) {
         auto* object_meta = static_cast<NvDsObjectMeta*>(item->data);
-        if (!object_meta || object_meta->class_id != 0 || object_meta->object_id == UNTRACKED_OBJECT_ID)
+        if (!object_meta || !hm::IsPerson(object_meta->class_id, object_meta->obj_label) ||
+            object_meta->object_id == UNTRACKED_OBJECT_ID)
           continue;
         add_player_rect(
-            object_meta->rect_params, hm::preview_overlay::player_is_ignored(*object_meta), object_transform);
+            object_meta->rect_params,
+            hm::preview_overlay::player_is_ignored(*object_meta),
+            object_transform,
+            hm::PersonRoleText(object_meta->obj_label));
       }
     }
   }
