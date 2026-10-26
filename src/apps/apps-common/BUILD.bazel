@@ -625,6 +625,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":preview_route_graph",
         ":webrtc_signaling",
         ":archive_watermark",
         ":webrtc_endpoint",

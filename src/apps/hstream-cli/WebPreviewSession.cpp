@@ -161,8 +161,7 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
     const YAML::Node& resolved,
     RouteOwner::Session identity,
     const std::string& retained_selection,
-    const std::string& game_dir,
-    bool realtime) {
+    const std::string& game_dir) {
   auto options = ReadWebPreviewOptions(resolved);
   if (!options.ok())
     return options.status();
@@ -182,7 +181,6 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
   if (!gpu_preview::register_elements())
     return absl::FailedPreconditionError("Native preview gates are unavailable");
   auto session = std::unique_ptr<WebPreviewSession>(new WebPreviewSession(app, *options));
-  session->realtime_ = realtime;
   auto& paint = *session->paint_;
   // The configurator owns the selected game directory; this path is never
   // supplied by a runtime browser command.
@@ -357,11 +355,6 @@ void WebPreviewSession::DrainOverlayStatus() {
 absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_overlays) {
   reconcile_overlays_ = reconcile_overlays;
   auto& output = app_.pipeline.instance_bins[0].sink_bin;
-  if (realtime_) {
-    std::string error;
-    if (!AttachPlaybackClock({RouteTap::Kind::kExistingTee, output.bin, output.tee}, &error))
-      return absl::InternalError("Could not attach browser playback clock: " + error);
-  }
   auto status = AddRoute("program", {RouteTap::Kind::kExistingTee, output.bin, output.tee});
   if (!status.ok())
     return status;

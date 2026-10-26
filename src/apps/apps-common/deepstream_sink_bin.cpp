@@ -43,6 +43,7 @@
 #include "hstream/src/apps/apps-common/WebPreviewObserver.h"
 #include "hstream/src/apps/apps-common/WebRtcSignaling.h"
 #include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
+#include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
 
@@ -2181,6 +2182,18 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
     bin->num_bins++;
     if (config_array[i].type != NV_DS_SINK_ENCODE_STITCHED_FILE && config_array[i].type != NV_DS_SINK_MSG_CONV_BROKER) {
       normal_num_bins++;
+    }
+  }
+
+  if (render_playback_realtime() &&
+      std::any_of(config_array, config_array + num_sub_bins, [index](const NvDsSinkSubBinConfig& config) {
+        return config.enable && config.source_id == index && !config.link_to_demux && config.type == NV_DS_SINK_WEBRTC;
+      })) {
+    std::string error;
+    if (!hm::preview::AttachPlaybackClock(
+            {hm::preview::RouteTap::Kind::kExistingTee, bin->bin, bin->tee}, &error)) {
+      NVGSTDS_ERR_MSG_V("Could not attach WebRTC playback clock: %s", error.c_str());
+      goto done;
     }
   }
 

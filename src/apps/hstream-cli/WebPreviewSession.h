@@ -20,8 +20,7 @@ class WebPreviewSession {
       const YAML::Node& resolved,
       RouteOwner::Session identity,
       const std::string& retained_selection,
-      const std::string& game_dir,
-      bool realtime);
+      const std::string& game_dir);
   ~WebPreviewSession();
   absl::Status Attach(const std::function<bool()>& reconcile_overlays);
   void SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation);
@@ -56,7 +55,6 @@ class WebPreviewSession {
   RouteOwner routes_;
   bool stopped_{false};
   bool overlays_ready_{false};
-  bool realtime_{false};
   std::function<bool()> reconcile_overlays_;
 };
 

@@ -28,9 +28,9 @@ unsigned Sources(GstElement* element) {
 }
 } // namespace
 
-int main(int argc, char** argv) {
-  gst_init(&argc, &argv);
-  GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+void Test(bool realtime, bool calibration) {
+  set_render_playback_realtime(realtime, calibration);
+  const auto paced = realtime && !calibration;
   auto* target = gst_bin_new("shared-target");
   gst_object_ref_sink(target); // The target wrapper retains an independent ref.
   auto* endpoint = gst_element_factory_make("fakesink", "stable-audio-endpoint");
@@ -45,7 +45,11 @@ int main(int argc, char** argv) {
   Check(
       output.num_bins == 1 && output.sub_bins[0].bin == target && output.sub_bins[0].sink == endpoint,
       "Sink/audio ownership did not retain the supplied target");
-  Check(Sources(output.tee) == 0, "Shared target allocated a static encoder or fallback Program branch");
+  Check(Sources(output.tee) == unsigned(paced), "Shared target allocated an unexpected Program branch");
+  auto* clock = gst_bin_get_by_name(GST_BIN(output.bin), "playback_clock");
+  Check(bool(clock) == paced, "WebRTC pacing ignored playback or calibration selection");
+  if (clock)
+    gst_object_unref(clock);
   auto* pipeline = gst_pipeline_new("owner");
   Check(gst_bin_add(GST_BIN(pipeline), output.bin), "Could not parent output");
   auto* input = gst_element_get_static_pad(endpoint, "sink");
@@ -56,7 +60,7 @@ int main(int argc, char** argv) {
   auto attachment = hm::preview::RouteAttachment::Create(
       {hm::preview::RouteTap::Kind::kExistingTee, output.bin, output.tee}, {ingress, queue, drain}, input, &error);
   Check(attachment && attachment->Commit({}), "Could not attach the real Program tap to the shared consumer");
-  Check(Sources(output.tee) == 1, "Program acquired more than one consumer branch");
+  Check(Sources(output.tee) == 1U + unsigned(paced), "Program acquired an unexpected consumer branch");
   attachment.reset();
   gst_object_unref(input);
   gst_object_unref(pipeline);
@@ -64,5 +68,14 @@ int main(int argc, char** argv) {
       !GST_OBJECT_PARENT(target) && GST_OBJECT_PARENT(endpoint) == GST_OBJECT(target),
       "Graph teardown invalidated the target owner's stable endpoint");
   gst_object_unref(target);
+}
+
+int main(int argc, char** argv) {
+  gst_init(&argc, &argv);
+  GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+  Test(false, false);
+  Test(true, false);
+  Test(true, true);
+  set_render_playback_realtime(FALSE);
   return 0;
 }
