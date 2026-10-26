@@ -1239,6 +1239,36 @@ absl::StatusOr<ControlPointMatcher> resolve_control_point_matcher(
   }
 }
 
+absl::StatusOr<int> read_control_point_limit(const YAML::Node& config) {
+  auto declared = [](const YAML::Node& root) -> YAML::Node {
+    const auto missing = YAML::Node(YAML::NodeType::Undefined);
+    const auto ui = root && root.IsMap() ? root["hstream_ui"] : missing;
+    const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : missing;
+    const auto saved = calibration && calibration.IsMap() ? calibration["control_points"] : missing;
+    if (saved.IsDefined())
+      return saved;
+    const auto stitching = root && root.IsMap() ? root["stitching"] : missing;
+    return stitching && stitching.IsMap() ? stitching["control_point_limit"] : missing;
+  };
+  try {
+    YAML::Node selected = declared(config);
+    if (!selected.IsDefined()) {
+      const auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      selected.reset(declared(baseline->values));
+    }
+    if (!selected || !selected.IsScalar())
+      return absl::InvalidArgumentError("stitching.control_point_limit is required in the baseline configuration");
+    const int limit = selected.as<int>();
+    if (limit <= 0)
+      return absl::InvalidArgumentError("Stitching control-point limit must be positive");
+    return limit;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid stitching control-point limit: " + std::string(error.what()));
+  }
+}
+
 absl::StatusOr<ControlPointFiltering> read_control_point_filtering(const YAML::Node& config) {
   try {
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();

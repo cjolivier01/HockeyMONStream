@@ -250,6 +250,17 @@ int main() {
       YAML::Dump(filtering_private["stitching"]) == YAML::Dump(YAML::Load(before_filtering)["stitching"]),
       "Restoring filter choices must retain partial private overrides");
   using hm::stitching::resolve_control_point_matcher;
+  using hm::stitching::read_control_point_limit;
+  const auto inherited_limit = read_control_point_limit(YAML::Node());
+  ok &= expect(inherited_limit.ok() && *inherited_limit == 1500, "the bundled baseline owns the control-point budget");
+  YAML::Node limit_config = YAML::Load("stitching: {control_point_limit: 250}\n");
+  ok &= expect(read_control_point_limit(limit_config).value() == 250, "explicit canonical budget overrides baseline");
+  limit_config["hstream_ui"]["stitching_calibration"]["control_points"] = 75;
+  ok &= expect(read_control_point_limit(limit_config).value() == 75, "saved native calibration retains its budget");
+  limit_config["hstream_ui"]["stitching_calibration"]["control_points"] = 0;
+  ok &= expect(!read_control_point_limit(limit_config).ok(), "invalid saved budgets cannot silently use the baseline");
+  limit_config = YAML::Load("stitching: {control_point_limit: null}\n");
+  ok &= expect(!read_control_point_limit(limit_config).ok(), "an explicit null budget is a configuration error");
   // The shipped baseline owns the matcher default; there is no compiled-in
   // fallback, so dropping or renaming the key must fail loudly here.
   const auto shipped = resolve_control_point_matcher(YAML::Node());

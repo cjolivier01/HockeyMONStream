@@ -132,7 +132,6 @@ constexpr const char* kEnableFlagField = "enable";
 
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
-constexpr size_t kDefaultStitchingControlPoints = 1500;
 constexpr size_t kDefaultStitchingCalibrationFrameCount = 4;
 bool is_enabled(YAML::Node n);
 std::optional<std::string> local_video_path_from_uri(const std::string& uri);
@@ -8769,7 +8768,9 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       remove_yaml_key_path(latest, {"stitching", "stitch_frame_time"});
 
     if (changed) {
-      size_t control_points = kDefaultStitchingControlPoints;
+      int configured_default = 0;
+      HM_ASSIGN_OR_RETURN(configured_default, hm::stitching::read_control_point_limit(config_));
+      size_t control_points = static_cast<size_t>(configured_default);
       if (get_node(latest, "hstream_ui.stitching_calibration.control_points").has_value()) {
         HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(latest));
       } else if (const char* configured = g_getenv("HM_MAX_CONTROL_POINTS"); configured && *configured) {

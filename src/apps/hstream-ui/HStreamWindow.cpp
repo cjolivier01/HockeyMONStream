@@ -240,7 +240,6 @@ double nonnegative_percentage(const YAML::Node& node) {
 }
 
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
-constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr int kDefaultStitchCalibrationFrameCount = 4;
 constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
@@ -5051,6 +5050,13 @@ void HStreamWindow::loadBaselineDefaults() {
   require("hstream_ui.playback_start_time");
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
+  const auto control_points_default = hm::stitching::read_control_point_limit(baseline_config_);
+  if (!control_points_default.ok())
+    throw std::runtime_error(control_points_default.status().ToString());
+  default_stitch_control_points_ = *control_points_default;
+  if (default_stitch_control_points_ < hm::stitching::kMinimumCalibrationControlPoints ||
+      default_stitch_control_points_ > 5000)
+    throw std::runtime_error("Effective baseline stitching.control_point_limit must be in 10..5000");
 
   const YAML::Node stitch_frame_time = require("stitching.stitch_frame_time");
   if (!stitch_frame_time.IsScalar())
@@ -5702,7 +5708,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_points_spin_->setObjectName("controlPointsSpin");
   control_points_spin_->setRange(hm::stitching::kMinimumCalibrationControlPoints, 5000);
   control_points_spin_->setSingleStep(25);
-  control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
+  control_points_spin_->setValue(default_stitch_control_points_);
   control_points_spin_->setEnabled(true);
   control_points_spin_->setPrefix("CP ");
   control_points_spin_->setMinimumWidth(96);
@@ -8272,7 +8278,7 @@ void HStreamWindow::updateStitchedColorPrecisionControls() {
 }
 
 int HStreamWindow::stitchingCalibrationControlPoints() const {
-  return control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
+  return control_points_spin_ ? control_points_spin_->value() : default_stitch_control_points_;
 }
 
 int HStreamWindow::stitchingCalibrationFrameCount() const {
@@ -10502,7 +10508,7 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
   const int active_control_points = active_calibration_control_points_ > 0 ? active_calibration_control_points_
                                                                            : stitchingCalibrationControlPoints();
   const bool reduced_control_point_limit =
-      active_control_points > 0 && active_control_points < kDefaultStitchCalibrationControlPoints;
+      active_control_points > 0 && active_control_points < default_stitch_control_points_;
   const bool nondefault_camera_profile = active_camera_selection_ != default_camera_selection_;
   const bool generic_geometry_failure = evidence.contains("no stitching calibration frame pair") ||
       evidence.contains("usable solution") || evidence.contains("usable hugin solution") ||
@@ -10588,7 +10594,7 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
     if (reduced_control_point_limit) {
       settings << QString("CP limit is %1; the default calibration limit is %2")
                       .arg(active_control_points)
-                      .arg(kDefaultStitchCalibrationControlPoints);
+                      .arg(default_stitch_control_points_);
     }
     if (nondefault_camera_profile) {
       settings << QString("lens profile is %1 (HFOV %2, VFOV %3); default is %4 (HFOV %5, VFOV %6)")
@@ -19182,7 +19188,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     control_points_spin_->setValue(
         lookup_yaml_path(user_layer_, "hstream_ui.stitching_calibration.control_points", &inherited)
             ? inherited.as<int>()
-            : kDefaultStitchCalibrationControlPoints);
+            : default_stitch_control_points_);
     control_points_spin_->blockSignals(blocked);
   }
   if (calibration_frame_count_spin_) {
@@ -19478,7 +19484,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     bool normalized_nona_without_autooptimizer = false;
     bool normalized_inactive_autooptimizer = false;
     int staged_control_points =
-        control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
+        control_points_spin_ ? control_points_spin_->value() : default_stitch_control_points_;
     int staged_frame_count =
         calibration_frame_count_spin_ ? calibration_frame_count_spin_->value() : kDefaultStitchCalibrationFrameCount;
     int staged_max_output_width = default_stitch_max_output_width_;

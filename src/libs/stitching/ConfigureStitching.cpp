@@ -90,7 +90,6 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
   return entries;
 }
 
-constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 65536;
 constexpr uint64_t kHardMaximumArtifactPixels = 256ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 4 + 32ULL * 1024ULL * 1024ULL;
@@ -3165,7 +3164,7 @@ absl::Status create_control_points(
   if (frame_pairs.empty()) {
     return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
-  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
+  size_t max_control_points = 0;
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   StitchingBackendChoices backend_choices;
   std::optional<PlayerFrameSelectionPlan> selected_plan;
@@ -3173,6 +3172,9 @@ absl::Status create_control_points(
   try {
     if (fs::exists(game_config_path)) {
       const YAML::Node config = YAML::LoadFile(game_config_path.string());
+      int limit = 0;
+      HM_ASSIGN_OR_RETURN(limit, read_control_point_limit(config));
+      max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", static_cast<size_t>(limit));
       const auto baseline = hm::baseline_config::load();
       if (!baseline.ok())
         return baseline.status();
@@ -3199,6 +3201,9 @@ absl::Status create_control_points(
       const auto baseline = hm::baseline_config::load();
       if (!baseline.ok())
         return baseline.status();
+      int limit = 0;
+      HM_ASSIGN_OR_RETURN(limit, read_control_point_limit(baseline->values));
+      max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", static_cast<size_t>(limit));
       HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(baseline->values));
     }
   } catch (const YAML::Exception& exception) {

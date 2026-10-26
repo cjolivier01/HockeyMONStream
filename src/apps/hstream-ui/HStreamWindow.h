@@ -1021,6 +1021,7 @@ class HStreamWindow : public QMainWindow {
   int pipeline_kill_timeout_ms_;
   bool default_drivegpt_database_enabled_;
   QString default_stitch_frame_time_{"00:00:00"};
+  int default_stitch_control_points_{0};
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{true};
   hm::stitching::ControlPointFiltering default_control_point_filtering_;
