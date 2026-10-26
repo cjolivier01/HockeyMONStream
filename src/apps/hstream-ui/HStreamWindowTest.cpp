@@ -17255,19 +17255,23 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       if (!capture("program", "live-drawing.png"))
         return false;
       auto* speed = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
+      auto* delay = require_child<QSlider>(window, "cameraSlider_Overshoot_Stop_Delay_Frames");
       auto* ratio = require_child<QSlider>(window, "cameraSlider_Overshoot_Speed_Ratio_x100");
       auto* percentage = require_child<QDoubleSpinBox>(window, "cameraSpin_Oversized_Player_Percent");
       auto* ignore = require_child<QCheckBox>(window, "cameraCheck_Ignore_Oversized_Players");
       auto* fast = require_child<QCheckBox>(window, "cameraCheck_Apply_To_Fast_Box");
       auto* follower = require_child<QCheckBox>(window, "cameraCheck_Apply_To_Follower_Box");
       auto* reset = require_child<QPushButton>(window, "resetCameraButton");
-      if (!speed || !ratio || !percentage || !ignore || !fast || !follower || !reset)
+      if (!speed || !delay || !ratio || !percentage || !ignore || !fast || !follower || !reset)
         return false;
       activate(pause);
       if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses before camera edits"))
         return false;
       const auto before_edits = window->completeLogText().size();
       speed->setValue(123);
+      delay->setValue(0);
+      if (!expect(ratio->isEnabled(), "Qt enables Overshoot speed ratio only after its stop delay is zero"))
+        return false;
       ratio->setValue(125);
       ignore->setChecked(true);
       percentage->setValue(125.25);
@@ -17288,6 +17292,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
               [&] {
                 const auto log = window->completeLogText().mid(before_edits);
                 return log.contains("camera control Max_Speed_X_x10=123 apply=live") &&
+                    log.contains("camera control Overshoot_Stop_Delay_Frames=0 apply=live") &&
                     log.contains("camera control Overshoot_Speed_Ratio_x100=125 apply=live") &&
                     log.contains("camera control Oversized_Player_Percent=125.25 apply=live") &&
                     log.contains("player drawing layers=29 apply=live");
