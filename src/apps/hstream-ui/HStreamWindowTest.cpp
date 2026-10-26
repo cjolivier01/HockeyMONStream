@@ -14821,6 +14821,9 @@ bool test_hockey_roles() {
   qputenv("HM_GAME_DIR", root.path().toLocal8Bit());
   QDir().mkpath(root.path() + "/roles");
   std::ofstream((root.path() + "/roles/config.yaml").toStdString()) << "game: {name: roles}\n";
+  QDir().mkpath(root.path() + "/manual-roles");
+  std::ofstream((root.path() + "/manual-roles/config.yaml").toStdString())
+      << "game: {name: manual-roles}\nrink:\n  tracking:\n    cam_ignore_referees: true\n    cam_ignore_goalies: true\n";
   bool ok = true;
   {
     HStreamWindow window;
@@ -14853,6 +14856,29 @@ bool test_hockey_roles() {
     games->setCurrentIndex(games->findText("roles"));
     ok &= expect(reloaded.cameraControlValue("Ignore_Referees") == 1 &&
                  reloaded.cameraControlValue("Ignore_Goalies") == 1, "Saved role controls must reload");
+  }
+  {
+    HStreamWindow manual;
+    auto* games = require_child<QComboBox>(&manual, "gameSelector");
+    auto* refs = require_child<QCheckBox>(&manual, "cameraCheck_Ignore_Referees");
+    auto* goalies = require_child<QCheckBox>(&manual, "cameraCheck_Ignore_Goalies");
+    if (!games || !refs || !goalies) return false;
+    games->setCurrentIndex(games->findText("manual-roles"));
+    ok &= expect(refs->isChecked() && goalies->isChecked(), "Manual role exclusions must load");
+    refs->setChecked(false);
+    goalies->setChecked(false);
+    ok &= HStreamWindowTestAccess::savePreset(&manual);
+    const auto saved = YAML::LoadFile((root.path() + "/manual-roles/config.yaml").toStdString());
+    const auto tracking = saved["rink"]["tracking"];
+    ok &= expect(!tracking["cam_ignore_referees"].as<bool>(false) &&
+                 !tracking["cam_ignore_goalies"].as<bool>(false), "Saving unchecked roles must clear manual exclusions");
+  }
+  {
+    HStreamWindow reloaded;
+    auto* games = require_child<QComboBox>(&reloaded, "gameSelector");
+    games->setCurrentIndex(games->findText("manual-roles"));
+    ok &= expect(reloaded.cameraControlValue("Ignore_Referees") == 0 &&
+                 reloaded.cameraControlValue("Ignore_Goalies") == 0, "Cleared manual exclusions must stay off after reload");
   }
   qputenv("HM_GAME_DIR", previous);
   return ok;

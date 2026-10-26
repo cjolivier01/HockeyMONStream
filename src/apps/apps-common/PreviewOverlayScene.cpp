@@ -134,15 +134,8 @@ PreviewOverlayScene BuildPreviewOverlayScene(
           false,
           {},
           transform);
-      if (!role.empty()) {
-        const auto point = transform ? hm::preview_overlay::metadata_to_output(*transform, {rect.left, rect.top})
-                                     : hm::preview_overlay::Point{rect.left, rect.top};
-        const float height = 24 * std::clamp(overlays.coordinate_height / 1080.0F, 0.5F, 8.0F);
-        commands.AddText(point.x, std::max(0.0F, point.y - height), height, role, {1, 1, 1, 1});
-      }
-      if (ignored && role.empty())
-        hm::draw_display::analytics::AddIgnoredPlayerLabel(
-            rect, transform, overlays.coordinate_width, overlays.coordinate_height, &commands);
+      hm::draw_display::analytics::AddPlayerBoxLabel(
+          rect, role, ignored, transform, overlays.coordinate_width, overlays.coordinate_height, &commands);
     };
     if (snapshot) {
       for (const auto& player : snapshot->player_rects)

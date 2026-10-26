@@ -20243,6 +20243,8 @@ bool HStreamWindow::applySavedControlConfig(
            "rink.camera.stop_delay_cooldown_frames",
            "rink.camera.time_to_dest_speed_limit_frames",
            "rink.camera.zoom_in_aggressiveness",
+           "rink.tracking.cam_ignore_referees",
+           "rink.tracking.cam_ignore_goalies",
            "rink.tracking.cam_ignore_largest",
            "rink.tracking.cam_ignore_largest_count",
            "rink.tracking.cam_ignore_oversized",
