@@ -911,6 +911,7 @@ cc_binary(
     data = [
         "//src/apps/hstream-cli:hstream-cli",
         "//src/apps/hstream-job:hstream-job",
+        "//src/apps/hstream-prepared-model-validate:hstream-prepared-model-validate",
     ] + select({
         "//:use_hip": [],
         "//conditions:default": [
@@ -1108,6 +1109,7 @@ cc_library(
         "//src/libs/player_analytics:config",
         "//src/libs/player_analytics:model_catalog",
         "//src/libs/player_analytics:model_contract",
+        "//src/libs/player_analytics:prepared_model_validation",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],

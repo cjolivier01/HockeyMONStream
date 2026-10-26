@@ -417,3 +417,23 @@ rotation recovery, saved-view preview acceptance, preserved-alignment saves,
 manual crop publication and stale snapshots. Its synthetic uniform stills
 explicitly allow the native hard-seam fallback because Enblend may reject
 featureless overlap; real media still require separate seam qualification.
+
+## Prepared model imports
+
+The browser imports account-owned Pose, Jersey, Activity, Team and Appearance
+assets with `hstream-prepared-model-validate --request FILE`. This CPU-only
+validator shares `PreparedModelValidation` with the Qt Custom chooser. It parses
+the existing prepared manifest or ReID configuration, checks readable nonempty
+model files, and retains runtime SDK/GPU compatibility checks in inference.
+Its `prepared-model-validation-v1` request admits at most 64 files, streams SHA256
+checks, rejects symlinks and escaping paths, and publishes an exclusive
+`model-validation.yaml` only after the exact input set validates. Metadata reads
+are bounded to 1 MiB. The outer web supervisor owns timeout, cancellation and
+descendant retirement. A dispatcher therefore needs the matching CPU validator
+but does not need Qt, CUDA or a GPU allocation to validate an import.
+
+The web registry stores UUID selections and frozen identities. Each admitted run
+owns checked private copies, charged to its run allowance. A successful import
+receipt proves file/manifest validation; it does not qualify an engine against a
+different TensorRT release or GPU. Run the selected custom model on the intended
+compute host before claiming execution parity.
