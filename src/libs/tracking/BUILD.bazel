@@ -1,6 +1,33 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "camera_control_specs",
+    hdrs = ["CameraControlSpecs.h"],
+    include_prefix = "hstream/src/libs/tracking",
+)
+
+cc_library(
+    name = "playtracker_runtime_controls",
+    srcs = ["PlayTrackerRuntimeControls.cpp"],
+    hdrs = ["PlayTrackerRuntimeControls.h"],
+    include_prefix = "hstream/src/libs/tracking",
+    deps = [
+        ":camera_control_specs",
+        "//src/libs/common:config_path",
+        "//src/libs/common:playtracker_config_roles",
+        "@com_google_absl//absl/status:statusor",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "playtracker_runtime_controls_test",
+    srcs = ["PlayTrackerRuntimeControlsTest.cpp"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":playtracker_runtime_controls"],
+)
+
+cc_library(
     name = "program_camera_mapping",
     srcs = ["ProgramCameraMapping.cpp"],
     hdrs = ["ProgramCameraMapping.h"],

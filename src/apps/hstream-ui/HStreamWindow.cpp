@@ -122,6 +122,7 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
+#include "hstream/src/libs/tracking/PlayTrackerRuntimeControls.h"
 
 #include <QtCore/QUuid>
 
@@ -5261,12 +5262,14 @@ void HStreamWindow::loadBaselineDefaults() {
   // These selectors describe where a UI edit is applied, rather than a
   // HockeyMOM config value. A zero speed/acceleration means no UI override, so
   // the effective values continue to come from the baseline-backed pipeline.
-  camera_defaults_["Apply_To_Fast_Box"] = 0;
-  camera_defaults_["Apply_To_Follower_Box"] = 1;
-  camera_defaults_["Max_Speed_X_x10"] = 0;
-  camera_defaults_["Max_Speed_Y_x10"] = 0;
-  camera_defaults_["Max_Accel_X_x10"] = 0;
-  camera_defaults_["Max_Accel_Y_x10"] = 0;
+  for (const char* id :
+       {"Apply_To_Fast_Box",
+        "Apply_To_Follower_Box",
+        "Max_Speed_X_x10",
+        "Max_Speed_Y_x10",
+        "Max_Accel_X_x10",
+        "Max_Accel_Y_x10"})
+    camera_defaults_[id] = integer(QString("hstream_ui.camera_controls.%1").arg(id));
   for (const auto& spec : hm::program::kToneControls) {
     const int value = integer(QString("hstream_ui.camera_controls.%1").arg(spec.id));
     if (value < spec.minimum || value > spec.maximum)
@@ -22307,108 +22310,23 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
     YAML::Node play_tracker_config = QFileInfo::exists(base_playtracker_config)
         ? YAML::LoadFile(base_playtracker_config.toStdString())
         : YAML::Node(YAML::NodeType::Map);
-    if (!play_tracker_config["play-tracker"] || !play_tracker_config["play-tracker"].IsMap()) {
-      play_tracker_config["play-tracker"] = YAML::Node(YAML::NodeType::Map);
+    hm::tracking::CameraControlValues defaults, values;
+    for (const auto& [id, value] : camera_defaults_) {
+      defaults.emplace(id.toStdString(), value);
+      values.emplace(id.toStdString(), cameraControlValue(id));
     }
-    if (!play_tracker_config["play-tracker"]["live-boxes"] ||
-        !play_tracker_config["play-tracker"]["live-boxes"].IsSequence()) {
-      play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
-    }
-    YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
-    if (live_boxes.size() == 0) {
-      for (const char* name : {"current_roi", "current_roi_aspect"}) {
-        YAML::Node box(YAML::NodeType::Map);
-        box["name"] = name;
-        live_boxes.push_back(box);
-      }
-    }
-    const auto live_box_roles = hm::resolve_playtracker_live_box_roles(live_boxes);
-    if (!live_box_roles.ok()) {
-      appendLog(
-          QString("could not resolve playtracker live-box roles: %1").arg(live_box_roles.status().ToString().c_str()));
-      return {};
-    }
-
-    auto slider_value = [this](const QString& id) -> int { return cameraControlValue(id); };
-    auto slider_changed = [this, &slider_value](const QString& id) -> bool {
-      const auto default_it = camera_defaults_.find(id);
-      return default_it != camera_defaults_.end() && slider_value(id) != default_it->second;
-    };
-    auto apply_live_box = [&](size_t index) {
-      auto set_if_changed = [&](const QString& id, const char* key) {
-        if (slider_changed(id)) {
-          live_boxes[index][key] = static_cast<double>(slider_value(id)) / 10.0;
-        }
-      };
-      auto set_integer_if_changed = [&](const QString& id, const char* key) {
-        if (slider_changed(id)) {
-          live_boxes[index][key] = slider_value(id);
-        }
-      };
-      set_integer_if_changed("Stop_Direction_Change_Delay_Frames", "stop-translation-on-dir-change-delay");
-      if (slider_changed("Cancel_Stop_On_Opposite_Direction")) {
-        live_boxes[index]["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
-      }
-      set_integer_if_changed("Stop_Cancel_Hysteresis_Frames", "cancel-stop-hysteresis-frames");
-      set_integer_if_changed("Stop_Delay_Cooldown_Frames", "stop-delay-cooldown-frames");
-      set_integer_if_changed("Time_To_Dest_Speed_Limit_Frames", "time-to-dest-speed-limit-frames");
-      set_integer_if_changed("Post_Nonstop_Stop_Delay_Frames", "post-nonstop-stop-delay-count");
-      set_if_changed("Max_Speed_X_x10", "max-speed-x");
-      set_if_changed("Max_Speed_Y_x10", "max-speed-y");
-      set_if_changed("Max_Accel_X_x10", "max-accel-x");
-      set_if_changed("Max_Accel_Y_x10", "max-accel-y");
-    };
-    YAML::Node play_tracker = play_tracker_config["play-tracker"];
-    play_tracker["hstream-apply-to-fast-box"] =
-        publishing_playtracker_force_all_targets_ || slider_value("Apply_To_Fast_Box") != 0;
-    play_tracker["hstream-apply-to-follower-box"] =
-        publishing_playtracker_force_all_targets_ || slider_value("Apply_To_Follower_Box") != 0;
-    // Each command is an immutable sparse delta. Do not inherit a stale delta
-    // if a base file was previously generated by hstream-ui.
-    play_tracker["hstream-runtime-tuning"] = YAML::Node(YAML::NodeType::Map);
-    YAML::Node runtime_tuning = play_tracker["hstream-runtime-tuning"];
     const auto& publishing_controls = publishing_playtracker_controls_.has_value() ? *publishing_playtracker_controls_
                                                                                    : scheduled_playtracker_controls_;
-    auto set_changed_int = [&](const char* key, const char* control_id) {
-      if (publishing_controls.count(control_id))
-        runtime_tuning[key] = slider_value(control_id);
-    };
-    set_changed_int("stop-translation-on-dir-change-delay", "Stop_Direction_Change_Delay_Frames");
-    set_changed_int("zoom-in-aggressiveness", "Zoom_In_Aggressiveness");
-    set_changed_int("ignore-largest-bbox-count", "Ignore_Largest_Count");
-    if (publishing_controls.count("Oversized_Player_Percent"))
-      runtime_tuning["oversized-bbox-percent"] = cameraControlValue("Oversized_Player_Percent");
-    if (publishing_controls.count("Ignore_Oversized_Players"))
-      runtime_tuning["ignore-oversized-bboxes"] = slider_value("Ignore_Oversized_Players") != 0;
-    if (publishing_controls.count("Cancel_Stop_On_Opposite_Direction"))
-      runtime_tuning["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
-    set_changed_int("cancel-stop-hysteresis-frames", "Stop_Cancel_Hysteresis_Frames");
-    set_changed_int("stop-delay-cooldown-frames", "Stop_Delay_Cooldown_Frames");
-    set_changed_int("time-to-dest-speed-limit-frames", "Time_To_Dest_Speed_Limit_Frames");
-    set_changed_int("post-nonstop-stop-delay-count", "Post_Nonstop_Stop_Delay_Frames");
-    set_changed_int("overshoot-stop-delay-count", "Overshoot_Stop_Delay_Frames");
-    if (publishing_controls.count("Overshoot_Speed_Ratio_x100"))
-      runtime_tuning["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
-    if (publishing_controls.count("Max_Speed_X_x10"))
-      runtime_tuning["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
-    if (publishing_controls.count("Max_Speed_Y_x10"))
-      runtime_tuning["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
-    if (publishing_controls.count("Max_Accel_X_x10"))
-      runtime_tuning["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
-    if (publishing_controls.count("Max_Accel_Y_x10"))
-      runtime_tuning["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
-    if (slider_changed("Overshoot_Stop_Delay_Frames")) {
-      play_tracker["overshoot-stop-delay-count"] = slider_value("Overshoot_Stop_Delay_Frames");
+    std::set<std::string> changed;
+    for (const auto& [id, value] : publishing_controls)
+      changed.insert(id.toStdString());
+    const auto runtime = hm::tracking::BuildPlaytrackerRuntimeControls(
+        play_tracker_config, values, defaults, changed, publishing_playtracker_force_all_targets_);
+    if (!runtime.ok()) {
+      appendLog(QString("could not build playtracker runtime config: %1").arg(runtime.status().ToString().c_str()));
+      return {};
     }
-    if (slider_changed("Overshoot_Speed_Ratio_x100")) {
-      play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
-    }
-    if (slider_value("Apply_To_Fast_Box") != 0) {
-      apply_live_box(live_box_roles->fast_index);
-    }
-    if (slider_value("Apply_To_Follower_Box") != 0) {
-      apply_live_box(live_box_roles->follower_index);
-    }
+    play_tracker_config = *runtime;
 
     const absl::Status publish = hm::stitching::publish_named_file(
         fs::path(runtime_config_path.toStdString()), YAML::Dump(play_tracker_config) + "\n");

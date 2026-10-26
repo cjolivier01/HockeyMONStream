@@ -410,6 +410,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/tracking:camera_control_specs",
         ":value_control_wheel",
         "//src/apps/apps-common:rink_mask_image",
         ":native_preview_surface",
@@ -797,6 +798,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/tracking:playtracker_runtime_controls",
         "//src/libs/publication",
         "//src/libs/program:tone_controls",
         "//src/libs/stitching:auto_input_lens",
@@ -1280,6 +1282,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/tracking:camera_control_specs",
         ":highlight_web_preview",
         ":rink_map_dialog",
         ":projection_crop_dialog",
