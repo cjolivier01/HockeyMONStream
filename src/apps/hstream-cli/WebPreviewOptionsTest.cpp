@@ -173,6 +173,37 @@ int main() {
       "Seekable session lost its capability");
   g_object_unref(parser);
 
+  const std::string scoreboard_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","action":"position","position":"upper-center"})";
+  const auto scoreboard = hm::preview::ParseWebScoreboard(scoreboard_json);
+  Check(scoreboard.ok() && scoreboard->position == "upper-center", "Scoreboard placement was lost");
+  for (const auto& change :
+       {std::pair<std::string, std::string>{"upper-center", "lower-left"},
+        {"\"stage\":0", "\"stage\":false"},
+        {"\"requestId\":\"1234\"", "\"requestId\":1234"},
+        {"\"version\":1", "\"version\":1,\"version\":1"},
+        {"\"action\":\"position\"", "\"action\":\"reselect\""}}) {
+    auto invalid = scoreboard_json;
+    invalid.replace(invalid.find(change.first), change.first.size(), change.second);
+    Check(!hm::preview::ParseWebScoreboard(invalid).ok(), "Unsafe scoreboard request was admitted");
+  }
+  auto scoreboard_query = scoreboard_json.substr(0, scoreboard_json.find(",\"action\""));
+  Check(
+      hm::preview::ParseWebScoreboard(scoreboard_query + R"(,"action":"query"})").ok(),
+      "Scoreboard query was rejected");
+  Check(
+      hm::preview::ParseWebScoreboard(scoreboard_query + R"(,"action":"reselect"})").ok(),
+      "Scoreboard reselection was rejected");
+  const auto scoreboard_reply = hm::preview::WebScoreboardReply(*scoreboard, "applied", "", "upper-center");
+  Check(
+      scoreboard_reply.find("\"supported\":true") != std::string::npos &&
+          scoreboard_reply.find("\"position\":\"upper-center\"") != std::string::npos,
+      "Scoreboard response lost support or native placement");
+  Check(
+      hm::preview::WebScoreboardReply(*scoreboard, "failed", "stale-session", std::nullopt).find("\"position\":null") !=
+          std::string::npos,
+      "Unavailable scoreboard response invented a placement");
+
   const std::string drawing_json =
       R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","layers":31})";
   const auto drawing = hm::preview::ParseWebPlayerDrawing(drawing_json);

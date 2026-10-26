@@ -326,6 +326,64 @@ std::string WebPreviewSeekReply(
   });
 }
 
+absl::StatusOr<WebScoreboardRequest> ParseWebScoreboard(const std::string& json) {
+  if (json.empty() || json.size() > 1024)
+    return absl::InvalidArgumentError("Scoreboard JSON exceeds its limit");
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebScoreboardRequest request{};
+  gint64 version = 0, stage = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  const bool identity = object && json_object_get_size(object) == members && Integer(object, "version", &version) &&
+      version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN && stage <= INT_MAX &&
+      String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64 && String(object, "action", &request.action);
+  const bool valid = identity &&
+      (((request.action == "query" || request.action == "reselect") && members == 6) ||
+       (request.action == "position" && members == 7 && String(object, "position", &request.position) &&
+        (request.position == "upper-left" || request.position == "upper-center" || request.position == "upper-right")));
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid scoreboard identity or action");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebScoreboardReply(
+    const WebScoreboardRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<std::string>& position) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "action", request.action);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "supported");
+    json_builder_add_boolean_value(builder, position.has_value());
+    json_builder_set_member_name(builder, "position");
+    if (position)
+      json_builder_add_string_value(builder, position->c_str());
+    else
+      json_builder_add_null_value(builder);
+  });
+}
+
 absl::StatusOr<WebPlayerDrawingRequest> ParseWebPlayerDrawing(const std::string& json, bool query) {
   if (json.empty() || json.size() > 1024)
     return absl::InvalidArgumentError("Player drawing JSON exceeds its limit");

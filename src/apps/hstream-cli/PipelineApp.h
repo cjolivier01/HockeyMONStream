@@ -157,6 +157,7 @@ class PipelineApplication {
   bool set_player_drawing_runtime(guint64 generation, guint layers);
   bool apply_player_drawing_layers(guint layers);
   guint current_player_drawing_layers() const;
+  std::optional<std::string> current_scoreboard_position() const;
   bool apply_preview_overlay_state(
       const hm::pipeline_internal::PreviewOverlaySelection& selection,
       bool apply_sinks,

@@ -1872,6 +1872,10 @@ void PipelineApplication::publish_web_preview_capability() {
     g_print(
         "HSTREAM_WEB_PLAYER_DRAWING %s\n",
         hm::preview::WebPlayerDrawingReply(drawing, "state", "", current_player_drawing_layers()).c_str());
+    const hm::preview::WebScoreboardRequest scoreboard{web_preview_->identity(), "0", "query", ""};
+    g_print(
+        "HSTREAM_WEB_SCOREBOARD %s\n",
+        hm::preview::WebScoreboardReply(scoreboard, "state", "", current_scoreboard_position()).c_str());
   }
   std::fflush(stdout);
 }
@@ -2161,9 +2165,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     const auto& app_context = app_contexts.front();
     hm::preview::PreviewReferenceGeometry reference;
-    HM_ASSIGN_OR_RETURN(
-        reference,
-        hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
+    HM_ASSIGN_OR_RETURN(reference, hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
     NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
     const auto program_target = ui_preview_window_ids_.find("program");
     if (!sources_only && program_target != ui_preview_window_ids_.end()) {
@@ -2333,9 +2335,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
   const auto& app_context = app_contexts.front();
   hm::preview::PreviewReferenceGeometry reference;
-  HM_ASSIGN_OR_RETURN(
-      reference,
-      hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
+  HM_ASSIGN_OR_RETURN(reference, hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
   const gint kProgramPreviewWidth = reference.program_width;
   const gint kProgramPreviewHeight = reference.program_height;
   HM_RETURN_IF_ERROR(select_video_converter_for_element_creation(app_context->config, "source previews"));
@@ -6127,12 +6127,34 @@ bool PipelineApplication::reapply_runtime_properties() {
   return true;
 }
 
+std::optional<std::string> PipelineApplication::current_scoreboard_position() const {
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.size() != 1 || !stage->second.front() ||
+      !stage->second.front()->pipeline.pipeline)
+    return std::nullopt;
+  GstElement* cropper = gst_bin_get_by_name(GST_BIN(stage->second.front()->pipeline.pipeline), "playcropper0");
+  if (!cropper)
+    return std::nullopt;
+  auto cleanup = absl::MakeCleanup([&] { gst_object_unref(cropper); });
+  const auto* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(cropper), "scoreboard-position");
+  if (!spec || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_STRING)
+    return std::nullopt;
+  gchar* value = nullptr;
+  g_object_get(cropper, "scoreboard-position", &value, nullptr);
+  const std::string position = value ? value : "";
+  g_free(value);
+  if (position != "upper-left" && position != "upper-center" && position != "upper-right")
+    return std::nullopt;
+  return position;
+}
+
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   const std::string trimmed_line = trim_ascii(line);
   // Full browser seeks replace the preview on a worker. Readers must enter
   // through the same short fence as inspector queries before borrowing it.
   // Never wait for reconstruction: Stop must remain responsive.
-  const bool typed_preview = trimmed_line.rfind("preview-", 0) == 0 || trimmed_line.rfind("web-player-drawing", 0) == 0;
+  const bool typed_preview = trimmed_line.rfind("preview-", 0) == 0 ||
+      trimmed_line.rfind("web-player-drawing", 0) == 0 || trimmed_line.rfind("web-scoreboard", 0) == 0;
   std::unique_lock<std::mutex> preview_lock(pipeline_access_mu_, std::defer_lock);
   bool preview_reconstructing = false;
   if (typed_preview) {
@@ -6183,6 +6205,42 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     g_print("HSTREAM_PREVIEW_ROUTE %s\n", reply.c_str());
     std::fflush(stdout);
     return true;
+  }
+  if (trimmed_line.rfind("web-scoreboard ", 0) == 0) {
+    const auto request = hm::preview::ParseWebScoreboard(trim_ascii(trimmed_line.substr(15)));
+    if (!request.ok()) {
+      g_printerr("runtime scoreboard rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    std::string status = "failed", reason;
+    if (preview_reconstructing) {
+      reason = "reconstructing";
+    } else if (
+        !web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reason = "stale-session";
+    } else if (stitching_calibration_only_ || current_stage_ != 0 || !current_scoreboard_position()) {
+      reason = "program-unavailable";
+    } else if (request->action == "query") {
+      status = "state";
+    } else if (runtime_seek_pending_) {
+      reason = "seeking";
+    } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
+    } else if (!set_element_property_runtime(
+                   "playcropper0",
+                   request->action == "position" ? "scoreboard-position" : "scoreboard-reselect",
+                   request->action == "position" ? request->position : "1")) {
+      reason = "native-property-rejected";
+    } else {
+      status = "applied";
+    }
+    g_print(
+        "HSTREAM_WEB_SCOREBOARD %s\n",
+        hm::preview::WebScoreboardReply(
+            *request, status, reason, preview_reconstructing ? std::nullopt : current_scoreboard_position())
+            .c_str());
+    std::fflush(stdout);
+    return reason.empty();
   }
   if (trimmed_line.rfind("web-player-drawing ", 0) == 0 || trimmed_line.rfind("web-player-drawing-query ", 0) == 0) {
     const bool query = trimmed_line.rfind("web-player-drawing-query ", 0) == 0;

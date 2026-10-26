@@ -65,6 +65,19 @@ struct WebPlayerDrawingRequest {
   unsigned layers{0};
   bool query{false};
 };
+
+struct WebScoreboardRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  std::string action;
+  std::string position;
+};
+absl::StatusOr<WebScoreboardRequest> ParseWebScoreboard(const std::string& json);
+std::string WebScoreboardReply(
+    const WebScoreboardRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<std::string>& position);
 absl::StatusOr<WebPlayerDrawingRequest> ParseWebPlayerDrawing(const std::string& json, bool query = false);
 std::string WebPlayerDrawingReply(
     const WebPlayerDrawingRequest& request,
