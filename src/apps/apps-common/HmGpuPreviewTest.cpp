@@ -61,6 +61,43 @@ class TempDirectory {
   fs::path path_;
 };
 
+bool run_input_rate_caps_test() {
+  GstElement* sink = gst_element_factory_make("hmgpupreviewsink", "rate_caps_test");
+  GstPad* pad = sink ? gst_element_get_static_pad(sink, "sink") : nullptr;
+  if (!pad) {
+    if (sink)
+      gst_object_unref(sink);
+    std::cerr << "Could not construct preview input-rate test\n";
+    return false;
+  }
+  bool accepted = true;
+  for (const char* rate : {"0/1", "30000/1001", "60/1", "120/1", "150/1", "240/1"}) {
+    const std::string description =
+        std::string("video/x-raw(memory:NVMM),format=RGBA,width=1920,height=1080,framerate=") + rate;
+    GstCaps* caps = gst_caps_from_string(description.c_str());
+    if (!gst_pad_query_accept_caps(pad, caps)) {
+      std::cerr << "GPU preview rejected source frame rate " << rate << '\n';
+      accepted = false;
+    }
+    gst_caps_unref(caps);
+  }
+  // Widening source rates must retain the GPU-memory and format boundaries.
+  for (const char* description :
+       {"video/x-raw,format=RGBA,width=1920,height=1080,framerate=150/1",
+        "video/x-raw(memory:NVMM),format=NV12,width=1920,height=1080,framerate=150/1",
+        "video/x-raw(memory:NVMM),format=RGBA,width=8192,height=1080,framerate=150/1"}) {
+    GstCaps* caps = gst_caps_from_string(description);
+    if (gst_pad_query_accept_caps(pad, caps)) {
+      std::cerr << "GPU preview accepted incompatible caps: " << description << '\n';
+      accepted = false;
+    }
+    gst_caps_unref(caps);
+  }
+  gst_object_unref(pad);
+  gst_object_unref(sink);
+  return accepted;
+}
+
 bool run_flow_isolation_test() {
   GstElement* isolation = gst_element_factory_make("hmpreviewisolation", "test_isolation");
   GstElement* ingress = gst_element_factory_make("hmpreviewisolation", "test_ingress_isolation");
@@ -1131,6 +1168,8 @@ int main(int argc, char** argv) {
     std::cout << "GPU preview renderer unavailable; skipping\n";
     return 0;
   }
+  if (!run_input_rate_caps_test())
+    return 1;
   if (!run_flow_isolation_test())
     return 1;
   if (!run_deactivation_barrier_test())

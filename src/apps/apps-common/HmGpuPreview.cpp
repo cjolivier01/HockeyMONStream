@@ -1918,9 +1918,11 @@ void gst_hm_gpu_preview_sink_class_init(GstHmGpuPreviewSinkClass* klass) {
       kSinkPropertyRinkMaskFile,
       g_param_spec_string(
           "rink-mask-file", "Rink mask file", "Saved stitched-canvas rink mask", "", G_PARAM_READWRITE));
+  // Source rate is not a presentation-rate limit. Clocked playback uses buffer
+  // timestamps; the renderer can also receive individual paused seek frames.
   GstCaps* caps = gst_caps_from_string(
       "video/x-raw(memory:NVMM),format=(string)RGBA,width=(int)[1,4096],height=(int)[1,2160],"
-      "framerate=(fraction)[0/1,120/1]");
+      "framerate=" GST_VIDEO_FPS_RANGE);
   gst_element_class_add_pad_template(element_class, gst_pad_template_new("sink", GST_PAD_SINK, GST_PAD_ALWAYS, caps));
   gst_caps_unref(caps);
   gst_element_class_set_static_metadata(

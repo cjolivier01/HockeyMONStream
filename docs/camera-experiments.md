@@ -308,6 +308,10 @@ routine. Ordinary playback seek preparation leaves this work disabled. Archived
 mask PNGs use the existing bounded decoder once during background preparation;
 this is static recording data, not video readback.
 
+The GPU preview accepts source frame rates above 120 fps, as the browser replay
+does. This is input compatibility, not a guarantee of display throughput;
+normal-speed playback follows source timestamps and paused seeks show one frame.
+
 Relevant test targets:
 
 ```sh
