@@ -587,7 +587,7 @@ this adapter call `StitchingCalibrationControls` for the dependency stage,
 selected-frame/manual-match retention, reframe capture and cleanup owner. This
 operation does not reset framing or release optics merely because a form omitted
 hidden saved values. The outer service must validate and freeze its form before
-dispatch and supply exactly these payload fields:
+dispatch and supply these payload fields:
 
 ```json
 {
@@ -599,6 +599,31 @@ dispatch and supply exactly these payload fields:
   "sources": []
 }
 ```
+
+`calibration-controls-restart-v1` adds optional strict boolean
+`force_reconfigure`. Omission and `false` retain ordinary Play behavior; `true`
+uses Qt Restart's shared forced planner even when every control is unchanged.
+Restart begins at `input`, releases manual matches and clears any retained
+reframe. An unchanged selected-frame plan survives, so native cleanup retires
+control points while preserving its synchronized inputs. Without that selection,
+Restart performs full cleanup. Sampling, source roles and accepted framing keep
+their existing shared-planner rules. Null, numbers, strings and containers fail
+before changing config or artifacts. The outer service must require this exact
+capability before dispatching Restart to a native deployment.
+
+Restart can also consume an adopted pending Reset. The outer service first
+verifies its Reset receipt and source/settings fences, then adds
+`source.pending_reset` with the exact Reset `invalidation_id` and `start_stage`
+(`input` or `canvas`) to the ordinary source object. This variant requires
+`force_reconfigure: true`, null `generation`, the exact config hash, matching
+pending owner/stage, and no backend claim. Input Reset requires no reframe and
+unfinished cleanup; canvas Reset requires completed invalidation and the existing
+owner-bound native reframe, whose source artifacts and frozen controls are
+validated before replacement. Pending live output authorizations are rejected.
+The forced planner then reserves a new owner and completes its native cleanup;
+it does not complete or publish the Reset calibration. Ordinary pending Reset
+Play retains its existing launch path. A generic pending source without this
+receipt-backed marker remains inadmissible.
 
 `calibration-controls-fresh-v1` adds an explicit `source.fresh: true` variant
 for first manual Play/Prepare. `generation` must be null and `before_controls`
@@ -628,10 +653,11 @@ nullable identity contract; payload/result version 1 and the existing string
 contract remain compatible, so the adapter also advertises the v1 capability.
 
 The adapter applies only changed leaves between the two control snapshots over
-the actual saved private config. It verifies the exact source hash, completed
-nonstale state without a reframe or pending live authorization, and mandatory
-Hugin preflight identity under artifact/config locks. A saved output generation
-must additionally match that Hugin identity. Existing backend claims must match
+the actual saved private config. Ordinary completed-source staging verifies the
+exact source hash, completed nonstale state without a reframe or pending live
+authorization, and mandatory Hugin preflight identity under artifact/config
+locks. A saved output generation must additionally match that Hugin identity.
+Existing backend claims must match
 their original owner and frozen resolved controls; supported legacy completed
 sources without a claim do not acquire one merely for admission. The returned
 source preserves the exact nullable identity, and every accepted stage still

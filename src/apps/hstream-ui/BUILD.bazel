@@ -1512,7 +1512,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":web_job_spec", ":web_calibration_controls", "//src/libs/common:baseline_config", "//src/libs/stitching:auto_input_lens", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "//src/libs/stitching:stitching_reframe", "@qt//:qt_gui"],
+    deps = [":web_job_spec", ":web_calibration_controls", "//src/libs/common:baseline_config", "//src/libs/stitching:auto_input_lens", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "//src/libs/stitching:player_frame_selection", "//src/libs/stitching:stitching_reframe", "@qt//:qt_gui"],
 )
 
 cc_test(

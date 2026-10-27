@@ -411,8 +411,11 @@ void ApplySavedCalibrationControlEdits(YAML::Node& config, const QJsonObject& be
 
 QJsonObject RunCalibrationControlsStage(const Request& request, const std::function<bool()>& cancelled) {
   const auto& payload = request.payload;
+  const auto force = payload.value("force_reconfigure");
+  require(force.isUndefined() || force.isBool(), "Calibration force_reconfigure must be a boolean");
+  const bool force_reconfigure = force.toBool();
   require(
-      payload.size() == 6 && payload.value("before_controls").isObject() &&
+      payload.size() == (force.isUndefined() ? 6 : 7) && payload.value("before_controls").isObject() &&
           payload.value("desired_controls").isObject() && payload.value("defaults").isObject() &&
           payload.value("sources").isArray(),
       "Calibration staging requires exact source identities, frozen controls/defaults and source bindings");
@@ -421,14 +424,26 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   const auto source = payload.value("source").toObject();
   const bool cleaned_source = source.value("cleaned").isBool() && source.value("cleaned").toBool();
   const bool fresh_source = source.value("fresh").isBool() && source.value("fresh").toBool();
+  const bool pending_reset = source.contains("pending_reset");
   require(
-      !(cleaned_source && fresh_source) && source.size() == ((cleaned_source || fresh_source) ? 3 : 2),
+      int(cleaned_source) + int(fresh_source) + int(pending_reset) <= 1 &&
+          source.size() == ((cleaned_source || fresh_source || pending_reset) ? 3 : 2),
       "Calibration source requires generation, config_sha256 and one optional initial-state claim");
   std::optional<std::string> source_generation;
   if (!source.value("generation").isNull())
     source_generation = RequiredString(source, "generation", 1024 * 1024).toStdString();
   const auto source_hash = RequiredString(source, "config_sha256", 64);
   require(QRegularExpression("^[0-9a-f]{64}$").match(source_hash).hasMatch(), "Invalid calibration source config hash");
+  std::string reset_owner, reset_stage;
+  if (pending_reset) {
+    const auto reset = source.value("pending_reset").toObject();
+    require(
+        force_reconfigure && !source_generation && source.value("pending_reset").isObject() && reset.size() == 2,
+        "A pending Reset requires explicit Restart and its exact owner/stage without an output generation");
+    reset_owner = RequiredString(reset, "invalidation_id", 128).toStdString();
+    reset_stage = RequiredString(reset, "start_stage", 32).toStdString();
+    require(reset_stage == "input" || reset_stage == "canvas", "Invalid pending Reset dependency stage");
+  }
   const auto previous_controls = payload.value("before_controls").toObject(),
              desired_controls = payload.value("desired_controls").toObject();
   require(
@@ -475,10 +490,22 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
     if (fresh_source)
       validate_fresh_inputs(request, original, allowed, true);
     require(
-        ((cleaned_source || fresh_source) ? !status.IsDefined() && !source_generation
-                                          : status.IsScalar() && status.as<std::string>() == "complete") &&
-            !st::HasStitchingReframeIntent(original),
-        "Calibration staging requires completed calibration or an explicitly cleaned source without a pending reframe");
+        pending_reset ||
+            (((cleaned_source || fresh_source) ? !status.IsDefined() && !source_generation
+                                               : status.IsScalar() && status.as<std::string>() == "complete") &&
+             !st::HasStitchingReframeIntent(original)),
+        "Calibration staging requires completed calibration, an initial source or an owner-bound Reset Restart");
+    if (pending_reset) {
+      check(st::validate_pending_stitching_invalidation(original, reset_owner));
+      const auto invalidated = at(original, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"});
+      const auto claim = at(original, {"hstream_ui", "stitching_calibration", "backend_generation"});
+      require(
+          at(original, {"hstream_ui", "stitching_calibration", "stale_from"}).as<std::string>("") == reset_stage &&
+              invalidated.IsScalar() && invalidated.as<bool>() == (reset_stage == "canvas") &&
+              (!claim.IsDefined() || claim.IsNull()) &&
+              st::HasStitchingReframeIntent(original) == (reset_stage == "canvas"),
+          "Pending Reset state or cleanup ownership changed before Restart");
+    }
     const auto rink = at(original, {"rink"});
     for (const auto& item : rink)
       require(
@@ -496,7 +523,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       auto pruned = YAML::Clone(original);
       st::RemoveManualStitchingCleanConfigKeys(pruned);
       require(YAML::Dump(pruned) == YAML::Dump(original), "Cleaned calibration still contains retired solve state");
-    } else if (!fresh_source) {
+    } else if (!fresh_source && !pending_reset) {
       const auto generation = take(st::stitch_artifact_preflight_generation_id_locked(request.game));
       if (source_generation)
         check(st::validate_stitched_output_generation_hugin(*source_generation, generation));
@@ -509,6 +536,8 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
     before_effective["stitching"]["max_output_width"] =
         take(st::ResolveStitchingCalibrationMaxWidth(original, before_defaults));
     st::PreserveLegacyInputLensSelection(before_effective, original);
+    if (pending_reset && reset_stage == "canvas")
+      take(st::ValidateStitchingReframeIntentLocked(request.game, before_effective));
     auto before = take(st::ReadStitchingCalibrationState(original, before_effective));
     // Clean retires the saved alignment. A newly resolved automatic lens or
     // another geometry edit must not narrow that fresh solve to the canvas.
@@ -517,7 +546,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       before.stale_from = "input";
     const auto stale = at(original, {"hstream_ui", "stitching_calibration", "stale_from"});
     require(
-        !stale.IsDefined() || stale.IsNull() || (stale.IsScalar() && stale.as<std::string>().empty()),
+        pending_reset || !stale.IsDefined() || stale.IsNull() || (stale.IsScalar() && stale.as<std::string>().empty()),
         "Calibration staging cannot adopt stale calibration artifacts");
     const auto claim = at(original, {"hstream_ui", "stitching_calibration", "backend_generation"});
     if (claim.IsDefined() && !claim.IsNull()) {
@@ -658,7 +687,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
             before_effective,
             effective,
             owner,
-            false,
+            force_reconfigure,
             sources_changed,
             canvas_required,
             canvas_cleanup,

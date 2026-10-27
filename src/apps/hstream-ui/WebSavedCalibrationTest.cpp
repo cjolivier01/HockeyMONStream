@@ -10,6 +10,7 @@
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
@@ -190,6 +191,186 @@ QJsonObject controls_payload(const fs::path& game, const QJsonObject& before, co
       {"desired_controls", desired},
       {"defaults", QJsonObject{}},
       {"sources", QJsonArray{}}};
+}
+
+YAML::Node selected_frames() {
+  PlayerFrameSelectionPlan plan;
+  plan.settings.frame_count = 2;
+  plan.sources = {{"/selected/left.mp4", 1, 0}, {"/selected/right.mp4", 1, 0}};
+  for (const char* key :
+       {"source_context",
+        "baseline_generation",
+        "output_generation",
+        "detector_identity",
+        "rink_mask_sha256",
+        "rink_mask_revision",
+        "fieldmask_settings",
+        "output_rotation_degrees"})
+    plan.context[key] = "retained";
+  for (int i = 0; i < 2; ++i) {
+    PlayerFrameObservation frame;
+    frame.pair.timeline_pts_ns = i * kPlayerFrameSecond;
+    for (int camera = 0; camera < 2; ++camera)
+      frame.pair.cameras[camera] = {plan.sources[camera].path, frame.pair.timeline_pts_ns};
+    frame.coverage = {0};
+    frame.eligible_people = 1;
+    frame.size_band_counts = {1, 0, 0};
+    frame.quality = 1;
+    plan.selected.push_back(frame);
+  }
+  plan.fingerprint = value(PlayerFrameSelectionFingerprint(plan));
+  return PlayerFrameSelectionPlanYaml(plan);
+}
+
+void restart_controls_staging(const QString& binary, const fs::path& source) {
+  const auto original = read(source / "config.yaml");
+  expect(
+      hm::web::Capabilities().value("features").toArray().contains("calibration-controls-restart-v1"),
+      "Explicit Restart must advertise its deployment capability");
+  for (const std::string evidence : {"none", "manual", "selected-manual"}) {
+    for (const std::string action : {"play", "false", "restart", "null", "number", "string", "array", "object"}) {
+      if (evidence != "none" && action != "play" && action != "false" && action != "restart")
+        continue;
+      QTemporaryDir temporary;
+      const fs::path root(temporary.path().toStdString()), game = root / "game";
+      fs::copy(source, game, fs::copy_options::recursive);
+      auto config = YAML::LoadFile((game / "config.yaml").string());
+      const bool selected = evidence == "selected-manual", manual = evidence != "none";
+      if (selected) {
+        config["stitching"]["calibration_frame_selection"] = selected_frames();
+        config["stitching"]["calibration_frame_inputs_fingerprint"] =
+            config["stitching"]["calibration_frame_selection"]["fingerprint"].as<std::string>();
+      }
+      if (manual) {
+        config["stitching"]["manual_control_points"] = std::string(64, 'a');
+        config["hstream_ui"]["stitching_calibration"]["match_snapshot"] = "manual-evidence";
+      }
+      config["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+      require(reserve_stitching_backend_generation_in_config(config, "completed-solve", choices(config)));
+      write(game / "config.yaml", YAML::Dump(config));
+      auto payload = controls_payload(game, {}, {});
+      if (action == "false" || action == "restart")
+        payload["force_reconfigure"] = action == "restart";
+      else if (action == "null")
+        payload["force_reconfigure"] = QJsonValue::Null;
+      else if (action == "number")
+        payload["force_reconfigure"] = 1;
+      else if (action == "string")
+        payload["force_reconfigure"] = "true";
+      else if (action == "array")
+        payload["force_reconfigure"] = QJsonArray{true};
+      else if (action == "object")
+        payload["force_reconfigure"] = QJsonObject{{"value", true}};
+      const auto initial = read(game / "config.yaml");
+      const bool restart = action == "restart", success = restart || action == "play" || action == "false";
+      const auto result = invoke(binary, root, "calibration-controls-stage", payload, success);
+      if (!success) {
+        expect(
+            read(game / "config.yaml") == initial && fs::exists(game / "mapping_0000.tif") &&
+                fs::exists(game / "left.png"),
+            "A nonboolean Restart flag must fail before changing config or calibration artifacts");
+        continue;
+      }
+      const auto stored = YAML::LoadFile((game / "config.yaml").string());
+      const auto state = stored["hstream_ui"]["stitching_calibration"];
+      expect(
+          result.value("pending").toBool() == restart && !result.value("alignment_reused").toBool() &&
+              result.value("start_stage").toString() == (restart ? "input" : "") &&
+              result.value("cleanup").toString() == (restart ? (selected ? "control-points" : "all") : "none") &&
+              result.value("cleanup_completed").toBool() &&
+              state["status"].as<std::string>() == (restart ? "pending" : "complete") &&
+              (!restart || state["artifacts_invalidated"].as<bool>()),
+          "Unchanged Restart must own input regeneration while ordinary Play retains the completed solve");
+      expect(
+          result.value("retained_selected_frames").toBool() == selected &&
+              result.value("retained_manual_matches").toBool() == (manual && !restart) &&
+              value(player_frame_selection_fingerprint(stored)) == value(player_frame_selection_fingerprint(config)) &&
+              bool(stored["stitching"]["manual_control_points"]) == (manual && !restart) &&
+              bool(state["match_snapshot"]) == (manual && !restart) &&
+              fs::exists(game / "mapping_0000.tif") != restart &&
+              fs::exists(game / "left.png") == (!restart || selected),
+          "Restart must use native selected-frame retention and manual-match release/cleanup policy");
+      expect(
+          stored["stitching"]["calibration_frame_count"].as<int>() == 2 && state["frame_count"].as<int>() == 2 &&
+              state["control_points"].as<int>() == 1500 &&
+              YAML::Dump(stored["stitching"]["projection_framing"]) ==
+                  YAML::Dump(config["stitching"]["projection_framing"]) &&
+              result.value("config_sha256").toString() == digest(read(game / "config.yaml")),
+          "Restart must preserve sampling/framing and bind the final staged config");
+    }
+  }
+  expect(read(source / "config.yaml") == original, "Restart staging changed the immutable selected calibration");
+}
+
+void restart_pending_reset(const QString& binary, const fs::path& source, const QJsonObject& reset) {
+  const auto original = read(source / "config.yaml");
+  expect(
+      reset.value("config_sha256").toString() == digest(original), "Restart fixture must use the exact Reset receipt");
+  const auto saved = YAML::Load(original);
+  const auto stage = saved["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>();
+  for (const std::string failure :
+       {"", "no-force", "missing-marker", "owner", "stage", "status", "claim", "cleanup", "hash", "live", "reframe"}) {
+    if (failure == "reframe" && stage != "canvas")
+      continue;
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    auto config = YAML::Load(original);
+    auto state = config["hstream_ui"]["stitching_calibration"];
+    if (failure == "status")
+      state["status"] = "complete";
+    if (failure == "claim")
+      state["backend_generation"] = YAML::Node(YAML::NodeType::Map);
+    if (failure == "cleanup")
+      state["artifacts_invalidated"] = stage != "canvas";
+    if (failure == "live")
+      config["rink"]["stitched_output_pending_authorization_id"] = "live-transaction";
+    if (failure == "reframe")
+      state["reframe"]["desired_owner"] = "unrelated-reframe-owner";
+    write(game / "config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "config.yaml");
+    QJsonObject identity{
+        {"generation", QJsonValue::Null}, {"config_sha256", failure == "hash" ? QString(64, '0') : digest(initial)}};
+    if (failure != "missing-marker")
+      identity["pending_reset"] = QJsonObject{
+          {"invalidation_id", failure == "owner" ? QJsonValue("other-owner") : reset.value("invalidation_id")},
+          {"start_stage",
+           QString::fromStdString(failure == "stage" ? (stage == "input" ? "canvas" : "input") : stage)}};
+    const QJsonObject payload{
+        {"version", 1},
+        {"source", identity},
+        {"before_controls", QJsonObject{}},
+        {"desired_controls", QJsonObject{}},
+        {"defaults", QJsonObject{}},
+        {"sources", QJsonArray{}},
+        {"force_reconfigure", failure != "no-force"}};
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload, failure.empty());
+    if (!failure.empty()) {
+      expect(
+          read(game / "config.yaml") == initial &&
+              read(game / "mapping_0000.tif") == read(source / "mapping_0000.tif") &&
+              read(game / "left.png") == read(source / "left.png"),
+          "An unverified pending Reset Restart must preserve the exact config and artifacts");
+      continue;
+    }
+    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto pending = stored["hstream_ui"]["stitching_calibration"];
+    expect(
+        result.value("source").toObject() == identity && result.value("pending").toBool() &&
+            result.value("start_stage").toString() == "input" && !result.value("alignment_reused").toBool() &&
+            result.value("cleanup").toString() == "all" && result.value("cleanup_completed").toBool() &&
+            pending["status"].as<std::string>() == "pending" && pending["artifacts_invalidated"].as<bool>() &&
+            !pending["reframe"] && !fs::exists(game / "mapping_0000.tif") && !fs::exists(game / "left.png") &&
+            result.value("invalidation_id") != reset.value("invalidation_id") &&
+            result.value("config_sha256").toString() == digest(read(game / "config.yaml")),
+        "A verified pending Reset Restart must retire its exact owner/reframe and stage a new input solve");
+    expect(
+        YAML::Dump(stored["stitching"]["projection_framing"]) == YAML::Dump(saved["stitching"]["projection_framing"]) &&
+            stored["stitching"]["calibration_frame_count"].as<int>() ==
+                saved["stitching"]["calibration_frame_count"].as<int>(),
+        "Restarting a pending Reset must preserve its accepted framing and sampling choices");
+  }
+  expect(read(source / "config.yaml") == original, "Restart changed the selected pending Reset source");
 }
 
 void clean_stitching(const QString& binary, const fs::path& source) {
@@ -1062,6 +1243,7 @@ int main(int argc, char** argv) {
     write(game / "config.yaml", YAML::Dump(config));
     const auto opened = invoke(argv[1], root, "calibration-view-read", {{"kind", "leveling"}});
     controls_staging(argv[1], game);
+    restart_controls_staging(argv[1], game);
     frozen_optics_staging(argv[1], game);
     controls_staging_regressions(argv[1], game);
     clean_stitching(argv[1], game);
@@ -1124,6 +1306,7 @@ int main(int argc, char** argv) {
           reset.value("rotation_inherited").toBool() && reset.value("angles").toArray() == QJsonArray{0, -15, 0} &&
               stored["stitching"]["projection_framing"]["rotation_degrees"].IsNull(),
           "An OpenCV Reset must preserve inherited default framing");
+      restart_pending_reset(argv[1], reset_game, reset);
       const auto pending_bytes = YAML::Dump(stored);
       invoke(argv[1], reset_root, "calibration-view-reset", payload, false);
       expect(
@@ -1171,6 +1354,7 @@ int main(int argc, char** argv) {
               reset_config["rink"]["scoreboard"]["perspective_polygon"].IsNull(),
           "Reset owns pending regeneration and invalidates dependent scoreboard geometry");
       expect(reset.value("config_sha256").toString().size() == 64, "Reset receipt must bind the exact staged config");
+      restart_pending_reset(argv[1], reset_root / "game", reset);
       invoke(argv[1], reset_root, "calibration-view-read", {{"kind", "leveling"}}, false);
     }
     {
