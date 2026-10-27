@@ -600,6 +600,13 @@ struct HStreamWindowTestAccess {
   static QString pipelineEnvironmentValue(HStreamWindow* window, const QString& name) {
     return window->pipeline_process_ ? window->pipeline_process_->processEnvironment().value(name) : QString();
   }
+  static QString scoreboardPromptEnvironment(HStreamWindow* window, const std::optional<QString>& override = {}) {
+    QProcessEnvironment environment;
+    if (override.has_value())
+      environment.insert("HM_NO_SCOREBOARD", *override);
+    window->applyScoreboardPromptEnvironment(environment);
+    return environment.value("HM_NO_SCOREBOARD");
+  }
 
   // A live pipeline, without one of the real run paths. resetCameraControls only asks the process
   // for its state, so anything long-lived is enough to exercise the next-run guards.
@@ -15968,6 +15975,14 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
 }
 
 bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory) {
+  const QByteArray original_scoreboard_override = qgetenv("HM_NO_SCOREBOARD");
+  auto restore_scoreboard_override = absl::MakeCleanup([&] {
+    if (original_scoreboard_override.isNull())
+      qunsetenv("HM_NO_SCOREBOARD");
+    else
+      qputenv("HM_NO_SCOREBOARD", original_scoreboard_override);
+  });
+  qunsetenv("HM_NO_SCOREBOARD");
   const QByteArray original_home = qgetenv("HOME");
   const QByteArray original_config_root = qgetenv("HM_CONFIG_ROOT");
   QTemporaryDir user_home;
@@ -15995,6 +16010,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   user_config["stitching"]["sync_method"] = "auto";
   user_config["hstream_ui"]["show_crop_dialog"] = false;
   user_config["hstream_ui"]["show_leveling_dialog"] = false;
+  user_config["hstream_ui"]["show_scoreboard_dialog"] = false;
   user_config["hstream_ui"]["playback_start_time"] = "00:11:22.333";
   user_config["stitching"]["max_output_width"] = YAML::Node(YAML::NodeType::Null);
   user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
@@ -16197,6 +16213,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
         QTest::qWait(10);
       }
       const YAML::Node played_zero = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          HStreamWindowTestAccess::pipelineEnvironmentValue(&user_default_window, "HM_NO_SCOREBOARD") == "1",
+          "Actual Program startup must honor an inherited disabled scoreboard prompt");
       ok &= expect(
           user_default_window.logText().count("--stitch-frame-time=00:00:00") == zero_argument_count + 1 &&
               played_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
@@ -19362,6 +19381,108 @@ bool test_paused_preview_command_order() {
   return true;
 }
 
+bool test_scoreboard_prompt_defaults() {
+  const auto source = find_test_baseline_yaml();
+  QTemporaryDir config_root;
+  QTemporaryDir preferences;
+  if (!source.has_value() || !config_root.isValid() || !preferences.isValid())
+    return false;
+  const QByteArray original_root = qgetenv("HM_CONFIG_ROOT");
+  const QByteArray original_home = qgetenv("HOME");
+  auto restore = absl::MakeCleanup([&] {
+    if (original_root.isNull())
+      qunsetenv("HM_CONFIG_ROOT");
+    else
+      qputenv("HM_CONFIG_ROOT", original_root);
+    if (original_home.isNull())
+      qunsetenv("HOME");
+    else
+      qputenv("HOME", original_home);
+  });
+  qputenv("HM_CONFIG_ROOT", config_root.path().toLocal8Bit());
+  qputenv("HOME", preferences.path().toLocal8Bit());
+  const fs::path baseline_path = fs::path(config_root.path().toStdString()) / "baseline.yaml";
+  YAML::Node baseline = YAML::LoadFile(source->string());
+  std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+  {
+    HStreamWindow window;
+    if (!expect(
+            HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == "0",
+            "The canonical baseline must enable automatic scoreboard selection"))
+      return false;
+    const fs::path game = fs::path(qgetenv("HM_GAME_DIR").constData()) / "ui-scoreboard-policy";
+    fs::create_directories(game);
+    auto* game_id = require_child<QLineEdit>(&window, "gameIdEdit");
+    if (!game_id)
+      return false;
+    for (const bool enabled : {false, true}) {
+      YAML::Node config;
+      config["hstream_ui"]["show_scoreboard_dialog"] = enabled;
+      std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+      game_id->setText("ui-scoreboard-policy");
+      HStreamWindowTestAccess::reloadSavedControls(&window);
+      if (!expect(
+              HStreamWindowTestAccess::savedControlConfigLoaded(&window) &&
+                  HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == (enabled ? "0" : "1"),
+              "Explicit game true/false must override the inherited scoreboard prompt"))
+        return false;
+      for (const QString& override : QStringList{"", "0", "1"}) {
+        if (!expect(
+                HStreamWindowTestAccess::scoreboardPromptEnvironment(&window, override) == override,
+                "An explicit HM_NO_SCOREBOARD environment value must retain its existing precedence"))
+          return false;
+      }
+    }
+    std::ofstream(game / "config.yaml") << "hstream_ui: {show_scoreboard_dialog: invalid}\n";
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    if (!expect(
+            !HStreamWindowTestAccess::savedControlConfigLoaded(&window),
+            "An invalid saved scoreboard prompt must block launch with the failed-config guard"))
+      return false;
+    std::error_code ignored;
+    fs::remove_all(game, ignored);
+  }
+  baseline["hstream_ui"]["show_scoreboard_dialog"] = false;
+  std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+  {
+    HStreamWindow window;
+    if (!expect(
+            HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == "1",
+            "An explicit false canonical baseline must disable automatic scoreboard selection"))
+      return false;
+  }
+  const fs::path defaults_dir = fs::path(preferences.path().toStdString()) / ".config" / "hstream-ui";
+  fs::create_directories(defaults_dir);
+  std::ofstream(defaults_dir / "defaults.yaml") << "hstream_ui: {show_scoreboard_dialog: true}\n";
+  {
+    HStreamWindow window;
+    if (!expect(
+            HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == "0",
+            "A private default must override the canonical scoreboard prompt"))
+      return false;
+  }
+  for (const char* invalid : {"null", "[]", "{}", "invalid", "1"}) {
+    baseline["hstream_ui"]["show_scoreboard_dialog"] = YAML::Load(invalid);
+    std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+    bool rejected = false;
+    try {
+      HStreamWindow window;
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    if (!expect(rejected, "A private overlay must not hide an invalid canonical scoreboard default"))
+      return false;
+  }
+  baseline["hstream_ui"].remove("show_scoreboard_dialog");
+  std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+  try {
+    HStreamWindow window;
+  } catch (const std::exception&) {
+    return true;
+  }
+  return expect(false, "A private overlay must not supply a missing canonical scoreboard default");
+}
+
 bool test_active_process_destruction() {
   for (const QString& role : QStringList{"pipeline", "finalizer", "export"}) {
     auto window = std::make_unique<HStreamWindow>();
@@ -19543,6 +19664,10 @@ int main(int argc, char** argv) {
     return test_job_export() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PAUSED_PREVIEW_ONLY"))
     return test_paused_preview_command_order() ? 0 : 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SCOREBOARD_DEFAULT_ONLY"))
+    return test_scoreboard_prompt_defaults() ? 0 : 1;
+  if (!test_scoreboard_prompt_defaults())
+    return 1;
   if (!test_active_process_destruction())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_DESTRUCTION_ONLY"))

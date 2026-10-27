@@ -234,6 +234,7 @@ class HStreamWindow : public QMainWindow {
   void scrollLogToTail();
   void configureControlHelp();
   void loadBaselineDefaults();
+  void applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const;
 
   void startPipeline();
   void pauseOrResumePipeline();
@@ -706,6 +707,8 @@ class HStreamWindow : public QMainWindow {
   QString enabled_gyro_sync_method_{"auto"};
   hm::ui_internal::StitchingIterationSettings default_iteration_settings_;
   hm::ui_internal::StitchingIterationSettings saved_iteration_settings_;
+  bool default_show_scoreboard_dialog_;
+  bool show_scoreboard_dialog_;
   hm::ui_internal::StitchingIterationSettings active_iteration_settings_;
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};

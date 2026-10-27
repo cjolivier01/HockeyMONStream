@@ -4847,7 +4847,8 @@ void HStreamWindow::loadBaselineDefaults() {
     throw std::runtime_error(loaded.status().ToString());
   // A saved preference must not hide a broken canonical baseline. Validate
   // required prompt policy before applying the user overlay.
-  for (const char* path : {"hstream_ui.show_crop_dialog", "hstream_ui.show_leveling_dialog"}) {
+  for (const char* path :
+       {"hstream_ui.show_crop_dialog", "hstream_ui.show_leveling_dialog", "hstream_ui.show_scoreboard_dialog"}) {
     YAML::Node value;
     if (!lookup_yaml_path(loaded->values, path, &value) || !value.IsScalar())
       throw std::runtime_error(QString("Bundled baseline requires boolean UI default %1").arg(path).toStdString());
@@ -4925,6 +4926,7 @@ void HStreamWindow::loadBaselineDefaults() {
   hm::ui_internal::StitchingIterationSettings iteration_defaults;
   iteration_defaults.show_crop_dialog = boolean("hstream_ui.show_crop_dialog");
   iteration_defaults.show_leveling_dialog = boolean("hstream_ui.show_leveling_dialog");
+  default_show_scoreboard_dialog_ = boolean("hstream_ui.show_scoreboard_dialog");
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_, iteration_defaults);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
   default_playback_realtime_ = boolean("hstream_ui.playback_realtime");
@@ -11333,6 +11335,7 @@ void HStreamWindow::startPipeline() {
     return;
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  applyScoreboardPromptEnvironment(env);
   const QString working_dir = pipelineWorkingDirectory();
   env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   if (!baseline_config_root_.isEmpty())
@@ -19084,6 +19087,13 @@ bool HStreamWindow::ensureSavedControlConfigLoaded() {
   return false;
 }
 
+void HStreamWindow::applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const {
+  // Retain the explicit CLI/environment override while sharing the baseline,
+  // private defaults and saved-game prompt policy with browser launches.
+  if (!environment.contains("HM_NO_SCOREBOARD"))
+    environment.insert("HM_NO_SCOREBOARD", show_scoreboard_dialog_ ? "0" : "1");
+}
+
 void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   if (stitching_still_preview_)
     stitching_still_preview_->setSource({});
@@ -19095,6 +19105,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
   updateDefaultGpuMemoryProfile(YAML::Node(YAML::NodeType::Map));
   setStitchingIterationSettings(default_iteration_settings_);
+  show_scoreboard_dialog_ = default_show_scoreboard_dialog_;
   inherited_player_size_controls_.clear();
   unavailable_playtracker_config_error_.clear();
   if (!game_id_edit_) {
@@ -19414,6 +19425,11 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
         calibration_frame_count_spin_ ? calibration_frame_count_spin_->value() : kDefaultStitchCalibrationFrameCount;
     int staged_max_output_width = default_stitch_max_output_width_;
     const auto staged_iteration_settings = read_stitching_iteration_settings(config, default_iteration_settings_);
+    YAML::Node scoreboard_policy;
+    const bool staged_show_scoreboard_dialog =
+        lookup_yaml_path(config, "hstream_ui.show_scoreboard_dialog", &scoreboard_policy)
+        ? scoreboard_policy.as<bool>()
+        : default_show_scoreboard_dialog_;
     bool staged_run_autooptimizer = default_run_autooptimizer_;
     QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     QString staged_control_point_matcher = default_control_point_matcher_;
@@ -19746,6 +19762,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       }
     }
     setStitchingIterationSettings(staged_iteration_settings);
+    show_scoreboard_dialog_ = staged_show_scoreboard_dialog;
     if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
       staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
     }

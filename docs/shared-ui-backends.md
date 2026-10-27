@@ -45,6 +45,13 @@ Reset to Baseline stages the baseline values until Save Preset. Explicit game
 `false` prompt selections and a zero reference time retain precedence. The
 Python baseline carries the same keys; native calibration owns the dialogs.
 
+Automatic missing-scoreboard selection reads the required
+`hstream_ui.show_scoreboard_dialog` baseline and private/game overrides without
+adding a checkbox. Qt supplies that resolved policy to either Program runner
+unless `HM_NO_SCOREBOARD` is explicitly present in its environment. Browser
+startup uses the same generated default and retains explicit saved false values.
+The live Select scoreboard action remains independent of automatic prompts.
+
 ## Native normal-speed audio
 
 With `--render-realtime`, native NVIDIA and AMD Program playback use
