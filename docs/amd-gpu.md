@@ -867,7 +867,11 @@ transport consumer and a shared selectable-video timestamp mapper. It keeps
 physical monitor clock behavior while admitting each private PCM branch through
 its own bounded queue. CPU transport checks preserve every source sample across
 slow video, a stall and pause/resume, with explicit encoded silence in the
-presentation gaps. Preview-route cancellation wakes only that selection's
+presentation gaps. Private PCM admission rejects serialized allocation queries
+before the queue, allowing normal upstream CPU allocation without a query
+waiting behind the PCM whose mapping needs the producer's next input. The
+portable regression verifies query progress and exact retained samples without
+cancelling the mapping. Preview-route cancellation wakes only that selection's
 mapping waits before native gate retirement; shared PCM and playback epochs
 remain intact. A real-isolation-gate CPU regression covers paused switching,
 rearm, Render off/on and Stop, including a full ingress queue. Changes to this

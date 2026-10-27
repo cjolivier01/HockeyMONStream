@@ -464,6 +464,17 @@ struct AudioAdmission {
   }
 };
 GstPadProbeReturn AdmitAudio(GstPad* pad, GstPadProbeInfo* info, gpointer data) {
+  if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM) {
+    // These private queues retain ordinary CPU PCM and the mapper creates its
+    // own sliced buffer headers. A serialized allocation query must not wait
+    // behind PCM whose presentation needs the upstream producer's next input:
+    // that same producer can be waiting for this query before admitting it.
+    // Let upstream converters use their normal system-memory allocator. Other
+    // queries and every buffer/event keep the queue's existing ordering.
+    if (GST_QUERY_TYPE(GST_PAD_PROBE_INFO_QUERY(info)) == GST_QUERY_ALLOCATION)
+      return GST_PAD_PROBE_DROP;
+    return GST_PAD_PROBE_OK;
+  }
   auto& admission = *static_cast<AudioAdmission*>(data);
   auto& owner = admission.owner->impl();
   if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
@@ -948,7 +959,8 @@ bool PacedPlayback::AttachAudioElement(GstElement* sink, bool transport) {
     gst_pad_add_probe(
         queue_input,
         static_cast<GstPadProbeType>(
-            GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH),
+            GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH |
+            GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM),
         AdmitAudio,
         new AudioAdmission(shared_from_this(), admission_queue),
         +[](gpointer data) { delete static_cast<AudioAdmission*>(data); });

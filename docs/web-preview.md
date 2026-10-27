@@ -19,6 +19,13 @@ GPU. Bounds come from `runtime.local_playback`; unpaced playback retains its
 existing path. Pipeline pause uses the ordinary system-clock base adjustment
 when no physical audio device owns the clock.
 
+Private PCM queues reject downstream allocation queries before queueing them,
+so upstream converters use their ordinary CPU allocator. A serialized query
+cannot wait behind a PCM packet whose mapping needs the same producer's next
+audio or video input. This does not change buffer/event ordering or mapping
+history. The earlier WebRTC tee queue is also nonleaky for private normal-speed
+preview, so mapper backpressure cannot discard source samples there.
+
 The CPU transport regression checks steady playback, sustained slow video, a
 250 ms stall and cooperative pause/resume. It compares every unique source
 sample with the selected frame's exact presentation time, checks original PCM
@@ -30,6 +37,9 @@ its epoch and pending PCM. The real-isolation-gate regression checks paused
 switching, same-route rearm, Render off/on and Stop, rejects stale cancellation,
 and verifies fresh frame identity plus pending PCM after retirement. Separate
 selector and history tests cover operation fencing and shared cancellation.
+The allocation regression issues a real serialized query while PCM waits for a
+missing video interval, requires the query to return before that interval, then
+checks every retained sample without cancelling or resetting the mapper.
 The prior authenticated c5 run measured increasing
 audio lead because arrival-time video timestamps advanced faster than unchanged
 PCM. Actual decoded browser and independent monitor measurements must be rerun

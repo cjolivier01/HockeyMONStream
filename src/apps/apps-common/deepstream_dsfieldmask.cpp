@@ -479,6 +479,12 @@ bool create_webrtc_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& ta
       !make_audio_bin_element(bin, &rtppay, "rtpopuspay", branch_element_name("webrtc", target.config, "rtpopuspay"))) {
     return false;
   }
+  if (render_playback_realtime() && target.config->encoder_config.preview_endpoint) {
+    // The private paced mapper preserves every source sample. Its bounded
+    // backpressure must reach the producer without this earlier tee queue
+    // discarding PCM while video or the browser transport is delayed.
+    g_object_set(G_OBJECT(queue), "leaky", 0, NULL);
+  }
 
   GstCaps* raw_caps = gst_caps_new_simple(
       "audio/x-raw",

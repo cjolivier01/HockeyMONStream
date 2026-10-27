@@ -4,10 +4,13 @@
 #include <gst/app/gstappsrc.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <iostream>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -30,6 +33,131 @@ bool require(bool value, const char* detail) {
   if (!value)
     std::cerr << detail << '\n';
   return value;
+}
+
+bool run_allocation_query() {
+  // The first PCM packet spans a video interval which has not arrived yet.
+  // A converter's serialized allocation query must not wait behind that PCM:
+  // the shared source cannot produce the next video until its query returns.
+  constexpr unsigned kFrames = 960;
+  struct State {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<float> samples;
+    bool exact_stereo{true};
+  } state;
+  auto* pipeline = gst_pipeline_new("paced-allocation-query");
+  auto* video = gst_element_factory_make("appsrc", "video-source");
+  auto* video_sink = gst_element_factory_make("fakesink", "video-output");
+  auto* audio = gst_element_factory_make("appsrc", "audio-source");
+  auto* upstream = gst_element_factory_make("identity", "allocation-query-source");
+  auto* encoder = gst_element_factory_make("identity", "raw-encoder-boundary");
+  auto* audio_sink = gst_element_factory_make("fakesink", "audio-output");
+  gst_bin_add_many(GST_BIN(pipeline), video, video_sink, audio, upstream, encoder, audio_sink, nullptr);
+  const bool linked =
+      gst_element_link(video, video_sink) && gst_element_link_many(audio, upstream, encoder, audio_sink, nullptr);
+  auto* video_pad = gst_element_get_static_pad(video, "src");
+  auto owner = hm::gst::PacedPlayback::Create(
+      pipeline, video_pad, {20000, 5000, 0, 128, 2 * GST_SECOND, 1, 4096, 2, GST_SECOND});
+  gst_object_unref(video_pad);
+  if (!require(linked && owner && owner->AttachAudioTransport(encoder), "Could not construct allocation fixture")) {
+    gst_object_unref(pipeline);
+    return false;
+  }
+  for (auto* source : {video, audio})
+    g_object_set(source, "format", GST_FORMAT_TIME, "block", TRUE, "max-bytes", guint64{4096}, nullptr);
+  auto* caps = gst_caps_from_string("video/x-raw,format=RGB,width=2,height=2,framerate=100/1");
+  gst_app_src_set_caps(GST_APP_SRC(video), caps);
+  gst_caps_unref(caps);
+  caps = gst_caps_from_string("audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2");
+  gst_app_src_set_caps(GST_APP_SRC(audio), caps);
+  for (auto* sink : {video_sink, audio_sink})
+    g_object_set(sink, "sync", FALSE, "async", FALSE, "signal-handoffs", TRUE, nullptr);
+  g_signal_connect(
+      audio_sink,
+      "handoff",
+      G_CALLBACK(+[](GstElement*, GstBuffer* buffer, GstPad*, gpointer data) {
+        auto& state = *static_cast<State*>(data);
+        GstMapInfo bytes{};
+        if (!gst_buffer_map(buffer, &bytes, GST_MAP_READ))
+          return;
+        std::lock_guard<std::mutex> lock(state.mutex);
+        const auto* samples = reinterpret_cast<const float*>(bytes.data);
+        for (size_t i = 0; i < bytes.size / sizeof(float); i += 2) {
+          state.exact_stereo &= samples[i] == samples[i + 1];
+          if (samples[i] != 0) // A delayed video interval may add transport silence.
+            state.samples.push_back(samples[i]);
+        }
+        gst_buffer_unmap(buffer, &bytes);
+        state.changed.notify_all();
+      }),
+      &state);
+  const auto push_video = [&](GstClockTime pts) {
+    auto* buffer = gst_buffer_new_allocate(nullptr, 12, nullptr);
+    GST_BUFFER_PTS(buffer) = pts;
+    GST_BUFFER_DURATION(buffer) = 10 * GST_MSECOND;
+    return gst_app_src_push_buffer(GST_APP_SRC(video), buffer) == GST_FLOW_OK;
+  };
+  bool ok = gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE && push_video(0);
+  auto* buffer = gst_buffer_new_allocate(nullptr, kFrames * 2 * sizeof(float), nullptr);
+  GstMapInfo bytes{};
+  gst_buffer_map(buffer, &bytes, GST_MAP_WRITE);
+  auto* samples = reinterpret_cast<float*>(bytes.data);
+  for (unsigned i = 0; i < kFrames; ++i)
+    samples[2 * i] = samples[2 * i + 1] = float(i + 1);
+  gst_buffer_unmap(buffer, &bytes);
+  GST_BUFFER_PTS(buffer) = 0;
+  GST_BUFFER_DURATION(buffer) = 20 * GST_MSECOND;
+  ok &= gst_app_src_push_buffer(GST_APP_SRC(audio), buffer) == GST_FLOW_OK;
+  {
+    std::unique_lock<std::mutex> lock(state.mutex);
+    ok &= require(
+        state.changed.wait_for(lock, std::chrono::seconds(1), [&] { return state.samples.size() >= 480; }) &&
+            state.samples.size() == 480,
+        "First PCM interval did not stop at the missing video interval");
+  }
+  std::atomic<bool> query_finished{false};
+  bool query_result = true;
+  auto* query_pad = gst_element_get_static_pad(upstream, "src");
+  std::thread query([&] {
+    auto* allocation = gst_query_new_allocation(caps, TRUE);
+    query_result = gst_pad_peer_query(query_pad, allocation);
+    gst_query_unref(allocation);
+    query_finished.store(true, std::memory_order_release);
+  });
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  while (!query_finished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  const bool prompt = query_finished.load(std::memory_order_acquire);
+  ok &= require(prompt, "Serialized allocation query waited behind PCM which needs the next source video");
+  if (!prompt)
+    owner->Cancel(); // Failure-only teardown must release the pre-fix query.
+  query.join();
+  ok &= require(!query_result, "Private PCM allocation must return the bounded upstream fallback");
+  gst_object_unref(query_pad);
+  gst_caps_unref(caps);
+  if (ok) {
+    // No cancellation or epoch reset is permitted on the successful path.
+    ok &= push_video(10 * GST_MSECOND);
+    gst_app_src_end_of_stream(GST_APP_SRC(video));
+    gst_app_src_end_of_stream(GST_APP_SRC(audio));
+    auto* bus = gst_element_get_bus(pipeline);
+    auto* message =
+        gst_bus_timed_pop_filtered(bus, 2 * GST_SECOND, GstMessageType(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+    ok &= require(message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS, "Allocation fixture did not reach EOS");
+    if (message)
+      gst_message_unref(message);
+    gst_object_unref(bus);
+  }
+  owner->Cancel();
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  ok &= require(state.exact_stereo && state.samples.size() == kFrames, "Allocation query lost retained PCM");
+  for (unsigned i = 0; i < state.samples.size(); ++i)
+    ok &= require(state.samples[i] == float(i + 1), "Allocation query reordered or changed source PCM");
+  std::cout << "allocation query prompt=" << prompt << " fallback=" << !query_result
+            << " source-samples=" << state.samples.size() << '\n';
+  gst_object_unref(pipeline);
+  return ok;
 }
 
 bool run(bool stall, bool pause = false, GstClockTime origin = 0) {
@@ -289,5 +417,8 @@ bool run(bool stall, bool pause = false, GstClockTime origin = 0) {
 } // namespace
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
-  return run(false) && run(true) && run(true, true) && run(false, false, 5 * GST_SECOND) ? 0 : 1;
+  if (argc == 2 && std::string(argv[1]) == "--allocation-query-only")
+    return run_allocation_query() ? 0 : 1;
+  return run_allocation_query() && run(false) && run(true) && run(true, true) && run(false, false, 5 * GST_SECOND) ? 0
+                                                                                                                   : 1;
 }

@@ -1,8 +1,10 @@
+#include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
 #include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 
+#include <gst/app/gstappsrc.h>
 #include <gst/gst.h>
 
 #include <sys/wait.h>
@@ -10,6 +12,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -17,9 +20,11 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "gstnvdsmeta.h"
@@ -1016,6 +1021,194 @@ int run_render_audio_initial_mute(
   return 0;
 }
 
+int run_webrtc_audio_queue(bool realtime, bool calibration, bool private_preview, bool pressure = false) {
+  // Use the production builder and upstream queue. The source is CPU PCM and
+  // the endpoint drains Opus locally: no GPU, physical audio or signaling.
+  auto* pipeline = gst_pipeline_new("webrtc-audio-queue-test");
+  auto* endpoint = hstream::webrtc_endpoint_create("test-endpoint", nullptr);
+  auto* source_bin = gst_bin_new("test-source");
+  auto* source = gst_element_factory_make("appsrc", "source-pcm");
+  auto* source_tee = gst_element_factory_make("tee", "source-audio-tee");
+  auto* archive_queue = gst_element_factory_make("queue", "archive-queue");
+  auto* archive_sink = gst_element_factory_make("fakesink", "archive-output");
+  if (!pipeline || !endpoint || !source_bin || !source || !source_tee || !archive_queue || !archive_sink)
+    return 2;
+  gst_bin_add_many(GST_BIN(pipeline), source_bin, endpoint, nullptr);
+  gst_bin_add_many(GST_BIN(source_bin), source, source_tee, archive_queue, archive_sink, nullptr);
+  if (!gst_element_link(source, source_tee) ||
+      !gst_element_link_many(source_tee, archive_queue, archive_sink, nullptr)) {
+    gst_object_unref(pipeline);
+    return 2;
+  }
+  g_object_set(archive_sink, "sync", FALSE, "async", FALSE, nullptr);
+  g_object_set(source, "format", GST_FORMAT_TIME, "block", TRUE, "max-bytes", guint64{8192}, nullptr);
+  auto* caps = gst_caps_from_string("audio/x-raw,format=S16LE,layout=interleaved,rate=48000,channels=2");
+  gst_app_src_set_caps(GST_APP_SRC(source), caps);
+  gst_caps_unref(caps);
+  NvDsSourceConfig source_config{};
+  source_config.type = NV_DS_SOURCE_URI_MULTIPLE;
+  NvDsSrcBin sources[MAX_SOURCE_BINS]{};
+  sources[0].source_id = 0;
+  sources[0].config = &source_config;
+  sources[0].bin = source_bin;
+  sources[0].src_elem = source;
+  sources[0].uri_audio_tee = source_tee;
+  NvDsHmAudioConfig audio_config{};
+  audio_config.enable = TRUE;
+  audio_config.src = SRC_SOURCE_BIN;
+  audio_config.source_id = 0;
+  audio_config.dest = DEST_SINK;
+  audio_config.sink_id = 0;
+  NvDsSinkSubBinConfig sinks[MAX_SINK_BINS]{};
+  sinks[0].enable = TRUE;
+  sinks[0].sink_id = 0;
+  sinks[0].type = NV_DS_SINK_WEBRTC;
+  sinks[0].encoder_config.preview_endpoint = private_preview ? endpoint : nullptr;
+  NvDsSinkBin sink_bin{};
+  sink_bin.sub_bins[0].sink = endpoint;
+  NvDsHmAudioBin audio_bin{};
+  set_render_playback_realtime(realtime, calibration);
+  const bool paced = private_preview && render_playback_realtime();
+  const bool created = create_hmaudio_bin(GST_BIN(pipeline), &audio_config, &audio_bin, sources, sinks, &sink_bin);
+  set_render_playback_realtime(FALSE);
+  if (!created || !audio_bin.bin) {
+    gst_object_unref(pipeline);
+    return 3;
+  }
+  auto* queue = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_branch_sink0_queue");
+  auto* encoder = gst_bin_get_by_name(GST_BIN(audio_bin.bin), "hmaudio_webrtc_sink0_opusenc");
+  if (!queue || !encoder) {
+    if (queue)
+      gst_object_unref(queue);
+    if (encoder)
+      gst_object_unref(encoder);
+    gst_object_unref(pipeline);
+    return 3;
+  }
+  gint leaky = -1;
+  guint buffers = 0, bytes = 0;
+  guint64 time = 0;
+  g_object_get(
+      queue, "leaky", &leaky, "max-size-buffers", &buffers, "max-size-bytes", &bytes, "max-size-time", &time, nullptr);
+  bool ok = leaky == (paced ? 0 : 2) && buffers == 30 && bytes == 0 && time == 0;
+  if (!ok)
+    std::cerr << "WebRTC audio queue policy: realtime=" << realtime << " calibration=" << calibration
+              << " private=" << private_preview << " leaky=" << leaky << " capacity=" << buffers << '\n';
+  if (pressure) {
+    struct State {
+      std::mutex mutex;
+      std::condition_variable changed;
+      bool held{false}, release{false}, full{false}, valid{true};
+      std::vector<guint8> transport, archive;
+      std::vector<GstClockTime> transport_pts, archive_pts, transport_duration, archive_duration;
+    } state;
+    struct Capture {
+      State* state;
+      bool transport;
+    } transport{&state, true}, archive{&state, false};
+    auto capture = +[](GstPad*, GstPadProbeInfo* info, gpointer data) {
+      auto& capture = *static_cast<Capture*>(data);
+      auto& state = *capture.state;
+      auto* buffer = GST_PAD_PROBE_INFO_BUFFER(info);
+      std::unique_lock<std::mutex> lock(state.mutex);
+      if (capture.transport && !state.held) {
+        state.held = true;
+        state.changed.notify_all();
+        state.changed.wait(lock, [&] { return state.release; });
+      }
+      GstMapInfo mapped{};
+      if (!gst_buffer_map(buffer, &mapped, GST_MAP_READ)) {
+        state.valid = false;
+        return GST_PAD_PROBE_OK;
+      }
+      auto& contents = capture.transport ? state.transport : state.archive;
+      contents.insert(contents.end(), mapped.data, mapped.data + mapped.size);
+      (capture.transport ? state.transport_pts : state.archive_pts).push_back(GST_BUFFER_PTS(buffer));
+      (capture.transport ? state.transport_duration : state.archive_duration).push_back(GST_BUFFER_DURATION(buffer));
+      gst_buffer_unmap(buffer, &mapped);
+      return GST_PAD_PROBE_OK;
+    };
+    auto* raw_pad = gst_element_get_static_pad(encoder, "sink");
+    auto* archive_pad = gst_element_get_static_pad(archive_sink, "sink");
+    gst_pad_add_probe(raw_pad, GST_PAD_PROBE_TYPE_BUFFER, capture, &transport, nullptr);
+    gst_pad_add_probe(archive_pad, GST_PAD_PROBE_TYPE_BUFFER, capture, &archive, nullptr);
+    g_signal_connect(
+        queue,
+        "overrun",
+        G_CALLBACK(+[](GstElement*, gpointer data) {
+          auto& state = *static_cast<State*>(data);
+          std::lock_guard<std::mutex> lock(state.mutex);
+          state.full = true;
+          state.changed.notify_all();
+        }),
+        &state);
+    constexpr guint kBuffers = 200, kFrames = 1024;
+    std::vector<guint8> expected;
+    std::vector<GstClockTime> expected_pts, expected_duration;
+    for (guint frame = 0; frame < kBuffers * kFrames; ++frame) {
+      const guint16 left = frame % 30000 + 1, right = frame / 30000 + 1;
+      expected.insert(expected.end(), {guint8(left), guint8(left >> 8), guint8(right), guint8(right >> 8)});
+    }
+    for (guint i = 0; i < kBuffers; ++i) {
+      const auto start = gst_util_uint64_scale(i * kFrames, GST_SECOND, 48000);
+      expected_pts.push_back(start);
+      expected_duration.push_back(gst_util_uint64_scale((i + 1) * kFrames, GST_SECOND, 48000) - start);
+    }
+    ok &= gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
+    std::atomic<bool> pushed{true};
+    std::thread sender([&] {
+      for (guint i = 0; i < kBuffers; ++i) {
+        auto* buffer = gst_buffer_new_allocate(nullptr, kFrames * 4, nullptr);
+        gst_buffer_fill(buffer, 0, expected.data() + i * kFrames * 4, kFrames * 4);
+        GST_BUFFER_PTS(buffer) = expected_pts[i];
+        GST_BUFFER_DURATION(buffer) = expected_duration[i];
+        if (gst_app_src_push_buffer(GST_APP_SRC(source), buffer) != GST_FLOW_OK) {
+          pushed.store(false);
+          return;
+        }
+      }
+      gst_app_src_end_of_stream(GST_APP_SRC(source));
+    });
+    {
+      std::unique_lock<std::mutex> lock(state.mutex);
+      const bool pressure_reached =
+          state.changed.wait_for(lock, std::chrono::seconds(2), [&] { return state.held && state.full; });
+      ok &= pressure_reached;
+      if (!pressure_reached)
+        std::cerr << "Production WebRTC branch did not reach sustained bounded queue pressure\n";
+    }
+    // Hold the mapper boundary after the queue fills. The old leaky policy
+    // lets the same producer continue discarding PCM during this interval.
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.release = true;
+      state.changed.notify_all();
+    }
+    auto* bus = gst_element_get_bus(pipeline);
+    auto* message =
+        gst_bus_timed_pop_filtered(bus, 3 * GST_SECOND, GstMessageType(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
+    ok &= message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS;
+    if (message)
+      gst_message_unref(message);
+    gst_object_unref(bus);
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    sender.join();
+    ok &= pushed.load() && state.valid && state.transport == expected && state.archive == expected &&
+        state.transport_pts == expected_pts && state.archive_pts == expected_pts &&
+        state.transport_duration == expected_duration && state.archive_duration == expected_duration;
+    std::cout << "WebRTC queue pressure: source-bytes=" << expected.size()
+              << " transport-bytes=" << state.transport.size() << " archive-bytes=" << state.archive.size()
+              << " transport-packets=" << state.transport_pts.size() << " capacity=" << buffers << '\n';
+    gst_object_unref(raw_pad);
+    gst_object_unref(archive_pad);
+  }
+  gst_object_unref(queue);
+  gst_object_unref(encoder);
+  gst_object_unref(pipeline);
+  return ok ? 0 : 4;
+}
+
 int run_decode_compose_encode(
     const fs::path& tmpdir,
     const std::vector<std::string>& left_uris,
@@ -1532,6 +1725,16 @@ int main(int argc, char** argv) {
   g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+  if (argc == 2 && std::string(argv[1]) == "--webrtc-audio-pressure-only")
+    return run_webrtc_audio_queue(true, false, true, true);
+  if (argc == 2 && std::string(argv[1]) == "--webrtc-audio-queue-only") {
+    for (bool realtime : {false, true})
+      for (bool calibration : {false, true})
+        for (bool private_preview : {false, true})
+          if (const int rc = run_webrtc_audio_queue(realtime, calibration, private_preview))
+            return rc;
+    return run_webrtc_audio_queue(true, false, true, true);
+  }
   if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
     return run_headless_render_video_sink();
   const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
