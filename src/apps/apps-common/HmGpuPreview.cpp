@@ -2068,6 +2068,11 @@ bool quiesce(GstElement* sink, std::uint64_t generation) {
 #endif
 }
 
+// Bounded external diagnostics resolve this metadata-only getter from the linked
+// executable. Keep the x86 implementation even when playback has no direct caller.
+#if defined(__x86_64__)
+[[gnu::used, gnu::retain]]
+#endif
 bool presented_frame(GstElement* sink, std::uint64_t* generation, GstClockTime* pts) {
 #if defined(__x86_64__)
   if (!sink || !generation || !pts || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))

@@ -33,6 +33,14 @@ keep their existing command handling. The browser already retains route and
 overlay edits until native PLAYING confirmation. CPU tests cover both command
 orderings; displayed-frame and A/V qualification remain separate.
 
+External Qt timing diagnostics may read `hm::gpu_preview::presented_frame` from an
+exactly identified, unstripped executable. The existing getter returns only the last
+presented generation and PTS under the renderer mutex; it reads no pixels and
+does no I/O. Its x86 definition is retained through compiler and linker elimination
+even when ordinary playback has no direct caller. Diagnostics must still bind
+the executable identity and measure polling/lock uncertainty. Symbol retention
+adds no sampling or work to normal playback and does not itself qualify timing.
+
 Private PCM queues reject downstream allocation queries before queueing them,
 so upstream converters use their ordinary CPU allocator. A serialized query
 cannot wait behind a PCM packet whose mapping needs the same producer's next
