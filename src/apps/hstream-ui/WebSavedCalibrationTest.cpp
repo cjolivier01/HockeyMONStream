@@ -366,12 +366,26 @@ void fresh_controls_staging(const QString& binary) {
             !staged.value("alignment_reused").toBool() && staged.value("cleanup_completed").toBool(),
         "Fresh source must use the native planner and complete its input-stage cleanup");
     expect(
-        stored["stitching"]["auto_input_lens_frozen"].as<bool>() &&
+        !stored["stitching"]["auto_input_lens_frozen"].as<bool>() &&
             stored["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 2000 &&
             stored["stitching"]["calibration_frame_count"].as<int>() == 2 &&
             stored["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
                 staged.value("invalidation_id").toString().toStdString(),
         "Fresh source must publish checked controls, resolved optics and real native ownership");
+    auto reopen_config = YAML::Clone(value(hm::baseline_config::load()).values);
+    for (const auto& entry : stored["stitching"])
+      reopen_config["stitching"][entry.first.as<std::string>()] = YAML::Clone(entry.second);
+    reopen_config["game"] = YAML::Clone(stored["game"]);
+    reopen_config["hstream_ui"] = YAML::Clone(stored["hstream_ui"]);
+    const auto camera = value(read_stitch_camera_selection(reopen_config));
+    const auto reopened = ReadAutoInputLensForGame(game, reopen_config, camera, automatic);
+    auto qt_config = YAML::Clone(reopen_config);
+    qt_config["stitching"]["auto_input_lens_frozen"] = false;
+    const auto qt_reopened = ReadAutoInputLensForGame(game, qt_config, camera, automatic);
+    expect(
+        reopened.fov_message == qt_reopened.fov_message && reopened.lens_message == qt_reopened.lens_message &&
+            reopened.recording_message == qt_reopened.recording_message,
+        "Fresh automatic sources must reopen with Qt's metadata resolver, not an invented experiment snapshot");
     expect(
         stored["hstream_ui"]["video_roles"].size() == (automatic ? 0 : roles.size()),
         "Fresh staging must preserve Center metadata and leave Auto orientation to native discovery");
@@ -629,7 +643,11 @@ void frozen_optics_staging(const QString& binary, const fs::path& source) {
         expect(
             staged.value("start_stage").toString() == "input" && !staged.value("alignment_reused").toBool(),
             "Cleaned optics staging must restart at input after retiring its saved alignment");
-      const auto result = value(read_stitch_camera_selection(YAML::LoadFile((game / "config.yaml").string())));
+      const auto stored = YAML::LoadFile((game / "config.yaml").string());
+      const auto result = value(read_stitch_camera_selection(stored));
+      expect(
+          stored["stitching"]["auto_input_lens_frozen"].as<bool>() != release,
+          "Explicit Auto release must remain released on reopen; manual-only edits keep the saved snapshot");
       expect(result.horizontal_fov == 111.1234, "Manual FOV must survive frozen optics staging");
       expect(
           (result.input_lens.distortion[1] == 0.12345678) != release,

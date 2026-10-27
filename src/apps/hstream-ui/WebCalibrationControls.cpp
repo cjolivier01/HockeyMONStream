@@ -636,8 +636,11 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       camera = st::ReadAutoInputLensForGame(request.game, optics_config, camera, fresh_source).camera;
       st::write_stitch_camera_selection(prepared, camera);
       st::write_stitch_camera_selection(effective, camera);
-      prepared["stitching"]["auto_input_lens_frozen"] = true;
-      effective["stitching"]["auto_input_lens_frozen"] = true;
+      // Resolving automatic metadata before launch does not create an experiment
+      // snapshot. Match Qt: fresh sources and explicit profile/Auto releases stay
+      // automatic on reopen; manual-only edits retain an existing frozen component.
+      prepared["stitching"]["auto_input_lens_frozen"] =
+          at(effective, {"stitching", "auto_input_lens_frozen"}).as<bool>(false);
     }
     const auto desired = take(st::ReadStitchingCalibrationControls(effective));
     bool canvas_required = false, canvas_cleanup = false;
