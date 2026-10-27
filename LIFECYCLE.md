@@ -87,6 +87,14 @@ manifest alone cannot authorize a retry after a crash or unsuccessful exit.
 Managed encoding uses the configured working container, normally
 MKV; final publication produces MP4.
 
+Interactive Program sessions with telemetry capture and no video archive use
+`hstream-job --interactive-publication`. The saved recipe must explicitly request
+capture. The exporter passes `--telemetry-only` to the finalizer, which records
+that output contract at admission. Completion requires a telemetry database and
+forbids video outputs; the producer cannot clear telemetry capture. Ordinary
+archive admissions still require video. Both modes retain exact file checks,
+completed-database validation, runner-success fencing and retryable cleanup.
+
 Before encoding, `hstream-job-<run-id>.yaml` in the game directory records the
 admitted working directory and its identity. Retries follow that binding even if
 the configured output root changes; missing or replaced working data is an error.

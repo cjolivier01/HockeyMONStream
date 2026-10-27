@@ -41,12 +41,15 @@ void CompletePipeline(bool success, int64_t start_time_ms);
 // Retrying a published run verifies its destinations and resumes cleanup. A
 // receipt survives removal of the working directory and can itself be resumed.
 std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const Progress& progress = {});
+// Telemetry-only admission requires a recording and rejects video outputs.
+// Ordinary admission continues to require video, even when telemetry exists.
 int RunJob(
     const fs::path& game,
     const fs::path& output_root,
     const std::string& id,
     const std::vector<std::string>& command,
-    const Progress& progress = {});
+    const Progress& progress = {},
+    bool telemetry_only = false);
 
 // Shared by desktop legacy publication and the headless transaction.
 std::vector<std::string> RemuxArguments(const std::string& input, const std::string& output, bool hevc);

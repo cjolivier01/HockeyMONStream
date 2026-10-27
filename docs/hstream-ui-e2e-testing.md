@@ -374,3 +374,11 @@ Stitched preview captures for the rink and player circles matching detection-box
 preferences (also accepts `compact`/`standard` and `lower-left`). The fixture
 must match the copied game's calibration; partial/stale maps fail preparation.
 The ordinary archive geometry check still runs, since the map is preview-only.
+
+Interactive Program playback with only DriveGPT telemetry must use the same managed
+publication lifecycle as a run with video archives. `hstream-job
+--interactive-publication` accepts this case only when the saved recipe explicitly
+sets `hstream_ui.job.capture_telemetry: true`; it preserves the selected live sinks
+and does not add an encoder. Stop must publish a completed telemetry database and
+its native receipt before releasing the run. Calibration-only and experiment
+preview sessions remain excluded from telemetry capture.

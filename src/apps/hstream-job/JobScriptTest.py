@@ -316,6 +316,60 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertEqual(len(list(self.game.glob("*.mp4"))), 3)
 
+    def test_interactive_publication_finishes_telemetry_without_video_archives(self):
+        game = self.game.with_name("game")
+        self.game.rename(game)
+        self.game = game
+        self.command[self.command.index("--game-dir") + 1] = str(game)
+        arguments = ["--enable-sinks=WEBRTC", "--render-realtime"]
+        (game / "config.yaml").write_text(json.dumps({
+            "hstream_ui": {"job": {"arguments": arguments, "capture_telemetry": True}}
+        }))
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json,os,subprocess,sys\n"
+            "assert sys.stdin.readline() == 'q\\n'\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'],'w') as f:\n"
+            " json.dump({'argv':sys.argv[1:],'manifest':os.environ['HSTREAM_JOB_MANIFEST']},f)\n"
+            + "subprocess.run(" + repr([str(PUBLICATION), "--produce", str(self.root / "unused-video"), "--telemetry-only"])
+            + ",check=True)\n"
+        )
+        exported = self.generate("--interactive-publication", "--run-id", "telemetry-only-admitted-id")
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        script = game / "hstream-job.sh"
+        run = subprocess.run([str(script)], input="q\n", env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertIn("--enable-sinks=WEBRTC", actual["argv"])
+        self.assertIn("--render-realtime", actual["argv"])
+        self.assertIn("--options=hstream_ui.job.capture_telemetry=true", actual["argv"])
+        self.assertNotIn("--encode-job", actual["argv"])
+        self.assertFalse(any("ENCODE_" in arg for arg in actual["argv"]))
+        self.assertFalse(list(game.glob("*.mp4")))
+        self.assertFalse(list(game.glob("*.hstream-archive.json")))
+        self.assertEqual(len(list(game.glob("*.db"))), 1)
+        receipt = game / "hstream-job-telemetry-only-admitted-id.yaml"
+        self.assertIn("state: complete", receipt.read_text())
+        self.assertIn("runner_succeeded: true", receipt.read_text())
+        self.assertIn("kind: telemetry", receipt.read_text())
+        self.assertFalse(Path(actual["manifest"]).parent.exists())
+        self.runner.unlink()
+        retry = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(len(list(game.glob("*.db"))), 1)
+
+    def test_interactive_telemetry_requires_explicit_program_capture(self):
+        for capture, calibration in ((None, False), (False, False), (True, True)):
+            with self.subTest(capture=capture, calibration=calibration):
+                job = {"arguments": ["--enable-sinks=WEBRTC"]}
+                if capture is not None:
+                    job["capture_telemetry"] = capture
+                if calibration:
+                    job["arguments"].append("--stitching-calibration-only")
+                (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": job}}))
+                result = self.generate("--interactive-publication", "--force")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("explicitly selected Program telemetry", result.stderr)
+
     def test_interactive_publication_rejects_preview_only_or_program_calibration(self):
         for arguments in (
             ["--enable-sinks=WEBRTC"],

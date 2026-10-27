@@ -95,7 +95,7 @@ std::vector<std::string> encode_job_arguments(const YAML::Node& saved_args, cons
   return result;
 }
 
-void validate_interactive_publication(const std::vector<std::string>& args) {
+bool validate_interactive_publication(const std::vector<std::string>& args, bool capture_telemetry) {
   bool calibration = false, archive = false, program = false;
   for (size_t i = 0; i < args.size(); ++i) {
     const auto& arg = args[i];
@@ -117,10 +117,11 @@ void validate_interactive_publication(const std::vector<std::string>& args) {
       program = program || program_sink;
     }
   }
-  if (!archive)
-    throw std::runtime_error("--interactive-publication requires a selected archive encoder");
+  if (!archive && (!capture_telemetry || calibration))
+    throw std::runtime_error("--interactive-publication requires an archive or explicitly selected Program telemetry");
   if (calibration && program)
     throw std::runtime_error("Stitching Calibration sessions require only Archive Stitched");
+  return !archive;
 }
 
 std::string quote(const std::string& value) {
@@ -201,7 +202,9 @@ int main(int argc, char** argv) {
                      "runtime-info subcommands that cannot inherit a saved playback recipe.\n";
         std::cout
             << "--interactive-publication preserves interactive sinks and stdin through the managed finalizer.\n"
-               "Use it when an interactive session records archives; success requires the native output receipt.\n";
+               "Use it when an interactive session records archives or Program telemetry; success requires\n"
+               "the native output receipt.\n";
+        std::cout << "Capabilities: telemetry-only-publication-v1\n";
         return 0;
       }
       if (arg == "--force") {
@@ -302,8 +305,12 @@ int main(int argc, char** argv) {
     } else {
       job_args = encode_job_arguments(saved_args, requested_sinks);
     }
-    if (interactive_publication)
-      validate_interactive_publication(job_args);
+    bool telemetry_only = false;
+    if (interactive_publication) {
+      const bool capture_telemetry =
+          job && job.IsMap() && job["capture_telemetry"].IsDefined() && job["capture_telemetry"].as<bool>();
+      telemetry_only = validate_interactive_publication(job_args, capture_telemetry);
+    }
     args.insert(args.end(), job_args.begin(), job_args.end());
     if (std::find(job_args.begin(), job_args.end(), "--stitching-calibration-only") != job_args.end()) {
       args.push_back("--options=hstream_ui.job.capture_telemetry=false");
@@ -385,6 +392,8 @@ export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
         "\n";
     script += "exec " + quote(finalizer) + " --game-dir " + quote(game.string()) + " --run-id " +
         quote(requested_run_id ? *requested_run_id : hm::recording::NewGuid());
+    if (telemetry_only)
+      script += " --telemetry-only";
     // The supervisor resolves the same live config layers before it can admit
     // the runner. Forward option groups separately from the runner arguments.
     for (size_t i = 0; i < args.size(); ++i) {
