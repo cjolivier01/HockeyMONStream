@@ -110,20 +110,6 @@ size_t round_down_even(size_t value) {
   return (value / 2) * 2;
 }
 
-static BBox make_null_tracking_box(const NvBufSurfaceParams* in_surf, const NvBufSurfaceParams* out_surf) {
-  BBox surf(0, 0, in_surf->width, in_surf->height);
-  double output_ar = double(out_surf->width) / out_surf->height;
-  double new_h = in_surf->height;
-  double new_w = in_surf->height * output_ar;
-  if (new_w > in_surf->width) {
-    new_w = in_surf->width;
-    new_h = double(in_surf->width) / output_ar;
-  }
-  assert(new_w <= in_surf->width);
-  assert(new_h <= in_surf->height);
-  return BBox(0, 0, new_w, new_h).at_center(surf.center());
-}
-
 Point rotate_point(const Point& point, const Point& anchor_point, float angle_degrees) {
   const float radians = angle_degrees * (M_PI / 180.0f);
   const float sin_theta = std::sin(radians);
@@ -310,6 +296,16 @@ gint PlayCropperPriv::AllocateScratchBuffers(videoprep::GstVideoPrep* videoprep)
   return 0;
 }
 
+std::optional<std::pair<float, float>> PlayCropperPriv::FixedEdgeRotationAngles() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  return rotation_readback_;
+}
+
+void PlayCropperPriv::UpdateRotationReadback() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  rotation_readback_ = {fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_};
+}
+
 bool PlayCropperPriv::SetProperty(const Property& prop) {
   // These requests may arrive while the video worker is waiting in the selector.
   if (prop.key == "scoreboard-position") {
@@ -399,14 +395,17 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     }
     fixed_edge_rotation_angle_left_ = angle;
     fixed_edge_rotation_angle_right_ = angle;
+    UpdateRotationReadback();
   } else if (key == "fixed-edge-rotation-angle-left") {
     if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_left_)) {
       return false;
     }
+    UpdateRotationReadback();
   } else if (key == "fixed-edge-rotation-angle-right") {
     if (!parse_finite_float(prop.value, &fixed_edge_rotation_angle_right_)) {
       return false;
     }
+    UpdateRotationReadback();
   } else if (key == "shadow-lift") {
     float shadow_lift_percent = 0.0f;
     if (!parse_finite_float(prop.value, &shadow_lift_percent) || shadow_lift_percent < 0.0f ||
@@ -667,19 +666,18 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // const size_t output_width = videoprep->output_width;
     // const size_t output_height = videoprep->output_width;
 
-    // Calculate scaling factors
-    FloatValue scale_w = float(input_width) / frame_meta->source_frame_width;
-    FloatValue scale_h = float(input_height) / frame_meta->source_frame_height;
-
-    // Get tracking box
-    BBox tbox = tracking_boxes[batch_nr].has_value()
-        ? *tracking_boxes[batch_nr]
-        : make_null_tracking_box(&in_surface->surfaceList[batch_nr], &out_surface->surfaceList[batch_nr]);
-
-    tbox.left *= scale_w;
-    tbox.right *= scale_w;
-    tbox.top *= scale_h;
-    tbox.bottom *= scale_h;
+    const auto tracking_box = ResolveTrackingBox(
+        input_width,
+        input_height,
+        frame_meta->source_frame_width,
+        frame_meta->source_frame_height,
+        output_width,
+        output_height,
+        tracking_boxes[batch_nr]);
+    HM_RETURN_IF_ERROR(tracking_box.status());
+    const BBox& tbox = *tracking_box;
+    const FloatValue scale_w = FloatValue(input_width) / frame_meta->source_frame_width;
+    const FloatValue scale_h = FloatValue(input_height) / frame_meta->source_frame_height;
 
     const FrameTransformGeometry transform = CalculateFrameTransformGeometry(
         input_width, input_height, tbox, no_crop_, fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_);
@@ -716,6 +714,12 @@ absl::Status PlayCropperPriv::GenerateOutput(
         static_cast<float>(output_height),
         transform.angle,
         transform_object_meta_};
+    // GenerateOutput and SetProperty hold the same process lock. Retain the
+    // settings that produced this exact transform, rather than reading a newer
+    // control selection from the preview's encoder thread.
+    preview_transform.fixed_edge_rotation_left = fixed_edge_rotation_angle_left_;
+    preview_transform.fixed_edge_rotation_right = fixed_edge_rotation_angle_right_;
+    preview_transform.rotation_controls_valid = true;
 
     // Check if we can use our optimized path
     NvBufSurfaceColorFormat color_format = incoming_surface->colorFormat;
@@ -852,8 +856,9 @@ absl::Status PlayCropperPriv::GenerateOutput(
         }
       }
     }
-    if ((player_layers || preview_overlay::find_overlay_snapshot_meta(frame_meta)) &&
-        !preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) &&
+    // Rotation admission needs the exact applied crop even when every optional
+    // overlay is off. Keep this on each owned Program frame, never the tee input.
+    if (!preview_overlay::add_playcropper_transform_meta(frame_meta, preview_transform) &&
         !preview_transform_failure_reported_) {
       g_printerr("HSTREAM_PREVIEW_OVERLAY status=transform-meta-unavailable\n");
       preview_transform_failure_reported_ = true;
@@ -1048,8 +1053,11 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
               gst_structure_new("hstream-operator-selection-phase", "active", G_TYPE_BOOLEAN, selecting, nullptr)));
     }
   } activity(scoreboard_selection_active_, GST_ELEMENT(m_element));
-  const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled);
-  if (reselect && absl::IsCancelled(selection) && !is_cancelled()) {
+  const auto selection = stitching::configure_scoreboard(game_dir.string(), is_cancelled, reselect);
+  if (absl::IsCancelled(selection) && !is_cancelled()) {
+    // Cancelling an initial selection is also a valid choice: retain the
+    // empty polygon and let playback continue. A worker error here strands
+    // preroll instead of delivering another output frame.
     std::cout << "Scoreboard selection cancelled; keeping previous selection" << std::endl;
     return absl::OkStatus();
   }

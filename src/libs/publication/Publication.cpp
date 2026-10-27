@@ -134,10 +134,6 @@ YAML::Node load(const fs::path& path) {
     fail("Unsupported publication manifest");
   return node;
 }
-void validate_id(const std::string& id) {
-  if (!std::regex_match(id, std::regex("[a-zA-Z0-9_-]{8,100}")))
-    fail("Invalid run ID");
-}
 void private_directory(const fs::path& path) {
   if (::mkdir(path.c_str(), 0700) != 0 && errno != EEXIST)
     fail("Cannot create " + path.string() + ": " + std::strerror(errno));
@@ -389,8 +385,12 @@ void cleanup(YAML::Node& run, const Progress& progress, Fd& work_lock, std::vect
 }
 } // namespace
 
+void ValidateRunId(const std::string& id) {
+  if (!std::regex_match(id, std::regex("[a-zA-Z0-9_-]{8,100}")))
+    fail("Invalid run ID");
+}
 fs::path ReceiptPath(const fs::path& game, const std::string& id) {
-  validate_id(id);
+  ValidateRunId(id);
   return game / ("hstream-job-" + id + ".yaml");
 }
 fs::path EnvironmentManifest() {
@@ -425,7 +425,7 @@ void ValidatePipelineStart(bool supports_telemetry) {
     fail("This pipeline does not support the requested telemetry capture");
 }
 static fs::path create_run(const fs::path& game, const fs::path& output_root, const std::string& id) {
-  validate_id(id);
+  ValidateRunId(id);
   const fs::path logical_game = fs::absolute(game).lexically_normal();
   const std::string game_id = logical_game.filename();
   hm::recording::TelemetryDatabaseStem(game_id);
@@ -492,7 +492,7 @@ void RegisterOutput(const fs::path& path, const std::string& kind, bool hevc, in
     fail("Run output is not a regular file");
   const auto owned_identity = identity(absolute);
   if (expected_fd >= 0) {
-    struct stat expected {};
+    struct stat expected{};
     check(::fstat(expected_fd, &expected) == 0, "Cannot inspect owned output descriptor");
     if (uint64_t(expected.st_dev) != owned_identity["device"].as<uint64_t>() ||
         uint64_t(expected.st_ino) != owned_identity["inode"].as<uint64_t>())
@@ -579,6 +579,8 @@ void RequireTelemetry(bool required) {
     return;
   ManifestLock lock(manifest);
   auto run = load(manifest);
+  if (run["telemetry_only"].as<bool>(false) && !required)
+    fail("Telemetry-only publication requires telemetry capture");
   run["telemetry_required"] = required;
   save_run(run);
 }
@@ -604,7 +606,9 @@ void CompletePipeline(bool success, int64_t start_time_ms) {
       telemetry |= output["kind"].as<std::string>() == "telemetry";
       video |= output["kind"].as<std::string>() != "telemetry";
     }
-    if (!video || (run["telemetry_required"].as<bool>(false) && !telemetry))
+    const bool telemetry_only = run["telemetry_only"].as<bool>(false);
+    if ((telemetry_only ? (!telemetry || video) : !video) ||
+        (run["telemetry_required"].as<bool>(false) && !telemetry))
       fail("Pipeline did not produce all required outputs");
   }
   run["start_time_ms"] = start_time_ms;
@@ -948,7 +952,8 @@ int RunJob(
     const fs::path& output_root,
     const std::string& id,
     const std::vector<std::string>& command,
-    const Progress& progress) {
+    const Progress& progress,
+    bool telemetry_only) {
   Signals signals;
   YAML::Node launch_scratch(YAML::NodeType::Sequence);
   for (const char* key : {"HSTREAM_JOB_PLUGIN_STAGE", "HSTREAM_JOB_LIBRARY_STAGE"}) {
@@ -981,6 +986,8 @@ int RunJob(
   if (run["state"].as<std::string>() == "created") {
     run["state"] = "running";
     run["supervised"] = true;
+    run["telemetry_only"] = telemetry_only;
+    run["telemetry_required"] = telemetry_only;
     run["launch_scratch"] = launch_scratch;
     for (const auto& argument : command)
       run["command"].push_back(argument);

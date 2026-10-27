@@ -535,6 +535,9 @@ struct RendererState {
   guint64 ready_generation{G_MAXUINT64};
   guint64 presented_generation{G_MAXUINT64};
   GstClockTime presented_pts{GST_CLOCK_TIME_NONE};
+  int presented_window_width{0};
+  int presented_window_height{0};
+  guint64 presented_window_id{0};
   GstVideoInfo video_info{};
   bool have_caps{false};
   Display* display{nullptr};
@@ -1262,6 +1265,11 @@ void draw_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& overlays) {
   current_x_error_target = nullptr;
   if (state->failed.load())
     post_sink_failure(self, "preview window rejected OpenGL presentation");
+  else {
+    state->presented_window_width = attributes.width;
+    state->presented_window_height = attributes.height;
+    state->presented_window_id = state->window_id;
+  }
 }
 
 gboolean preview_sink_start(GstBaseSink* base_sink) noexcept {
@@ -1910,9 +1918,11 @@ void gst_hm_gpu_preview_sink_class_init(GstHmGpuPreviewSinkClass* klass) {
       kSinkPropertyRinkMaskFile,
       g_param_spec_string(
           "rink-mask-file", "Rink mask file", "Saved stitched-canvas rink mask", "", G_PARAM_READWRITE));
+  // Source rate is not a presentation-rate limit. Clocked playback uses buffer
+  // timestamps; the renderer can also receive individual paused seek frames.
   GstCaps* caps = gst_caps_from_string(
       "video/x-raw(memory:NVMM),format=(string)RGBA,width=(int)[1,4096],height=(int)[1,2160],"
-      "framerate=(fraction)[0/1,120/1]");
+      "framerate=" GST_VIDEO_FPS_RANGE);
   gst_element_class_add_pad_template(element_class, gst_pad_template_new("sink", GST_PAD_SINK, GST_PAD_ALWAYS, caps));
   gst_caps_unref(caps);
   gst_element_class_set_static_metadata(
@@ -2058,6 +2068,11 @@ bool quiesce(GstElement* sink, std::uint64_t generation) {
 #endif
 }
 
+// Bounded external diagnostics resolve this metadata-only getter from the linked
+// executable. Keep the x86 implementation even when playback has no direct caller.
+#if defined(__x86_64__)
+[[gnu::used, gnu::retain]]
+#endif
 bool presented_frame(GstElement* sink, std::uint64_t* generation, GstClockTime* pts) {
 #if defined(__x86_64__)
   if (!sink || !generation || !pts || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
@@ -2106,7 +2121,10 @@ bool capture_presented_frame(
     std::vector<std::uint8_t>* rgba,
     unsigned* width,
     unsigned* height,
-    std::string* error) {
+    std::string* error,
+    std::optional<CapturedFrameIdentity>* identity) {
+  if (identity)
+    identity->reset();
 #if defined(__x86_64__)
   try {
     if (!sink || !rgba || !width || !height || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type())) {
@@ -2223,6 +2241,11 @@ bool capture_presented_frame(
     rgba->swap(captured_rgba);
     *width = capture_width;
     *height = capture_height;
+    if (identity && !state->stopping.load() && GST_CLOCK_TIME_IS_VALID(state->presented_pts) &&
+        state->presented_generation == state->generation.load() && state->presented_window_id == state->window_id &&
+        attributes.width == state->presented_window_width && attributes.height == state->presented_window_height &&
+        attributes.map_state == IsViewable)
+      *identity = CapturedFrameIdentity{state->presented_generation, state->presented_pts};
     if (error)
       error->clear();
     return true;

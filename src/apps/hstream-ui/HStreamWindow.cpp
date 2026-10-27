@@ -2,11 +2,13 @@
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/program/RotationControls.h"
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
+#include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
@@ -28,6 +30,7 @@
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/RinkMapDialog.h"
+#include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
@@ -122,6 +125,7 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
+#include "hstream/src/libs/tracking/PlayTrackerRuntimeControls.h"
 
 #include <QtCore/QUuid>
 
@@ -240,7 +244,6 @@ double nonnegative_percentage(const YAML::Node& node) {
 }
 
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
-constexpr int kDefaultStitchCalibrationControlPoints = 1500;
 constexpr int kDefaultStitchCalibrationFrameCount = 4;
 constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
@@ -3792,22 +3795,7 @@ bool config_references_video_path(const YAML::Node& config, const QDir& game_dir
 }
 
 bool clear_stitching_frame_offsets(YAML::Node& config) {
-  bool changed = false;
-  if (config["stitching"].IsMap())
-    changed = config["stitching"].remove("manual_control_points");
-  if (config["hstream_ui"]["stitching_calibration"].IsMap())
-    changed = config["hstream_ui"]["stitching_calibration"].remove("match_snapshot") || changed;
-  YAML::Node game_stitching = config["game"]["stitching"];
-  if (game_stitching && game_stitching["frame_offsets"]) {
-    game_stitching.remove("frame_offsets");
-    changed = true;
-  }
-  YAML::Node stitching = config["stitching"];
-  if (stitching && stitching["frame_offsets"]) {
-    stitching.remove("frame_offsets");
-    changed = true;
-  }
-  return changed;
+  return hm::stitching::InvalidateStitchingSourceInputs(config);
 }
 
 bool invalidate_stitching_calibration(YAML::Node& config, const char* stale_from) {
@@ -3914,7 +3902,7 @@ bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   for (const auto& entry : parent) {
     if (entry.first.IsScalar() && entry.first.as<std::string>() == key) {
       if (value) {
-        *value = entry.second;
+        value->reset(entry.second);
       }
       return true;
     }
@@ -3983,57 +3971,14 @@ bool invalidate_scoreboard_geometry(YAML::Node& config) {
 }
 
 int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
-  int removed = 0;
-  // These are results of the previous calibration, including its crop-review
-  // acknowledgement. Leave the selected projection, camera, sampling and rink
-  // profile intact, but require new leveling/crop decisions after a manual clean.
-  removed += remove_yaml_path(config, {"hstream_ui", "projection_crop_geometry"}) ? 1 : 0;
-  for (const char* key : {"crop", "auto_crop", "rotation_degrees"}) {
-    removed += remove_yaml_path(config, {"stitching", "projection_framing", key}) ? 1 : 0;
-    // A generated backend override can restore its previous private framing
-    // during reload; neither copy may bring the cleaned calibration back.
-    if (remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices", "projection_framing", key}))
-      ++removed;
-    if (remove_yaml_path(
-            config, {"hstream_ui", "generated_stitching_backend_choices", "previous_projection_framing", key}))
-      ++removed;
-  }
-  YAML::Node stitching_config;
-  YAML::Node selected_frames;
-  if (!lookup_yaml_key(config, "stitching", &stitching_config) ||
-      !lookup_yaml_key(stitching_config, "calibration_frame_selection", &selected_frames) || selected_frames.IsNull()) {
-    removed += remove_yaml_path(config, {"stitching", "frame_offsets"}) ? 1 : 0;
-    removed += remove_yaml_path(config, {"game", "stitching", "frame_offsets"}) ? 1 : 0;
-  }
-  removed += remove_yaml_path(config, {"stitching", "control_points"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"game", "stitching", "control_points"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"stitching", "generated_field_mask_post_stitch_rotate_degrees"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_authorization_id"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_owner_process"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
-  removed += invalidate_scoreboard_geometry(config) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "status"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "rink_mask_status"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "stale_from"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "artifacts_invalidated"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "invalidation_id"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "backend_generation"}) ? 1 : 0;
-  removed += remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "reframe"}) ? 1 : 0;
-  return removed;
+  return hm::stitching::RemoveManualStitchingCleanConfigKeys(config);
 }
 
 bool lookup_yaml_path_at(const YAML::Node& node, const QStringList& parts, int index, YAML::Node* value) {
   if (index >= parts.size()) {
     if (value) {
-      *value = node;
+      // Rebind a reused lookup result without assigning through its old alias.
+      value->reset(node);
     }
     return true;
   }
@@ -4516,7 +4461,7 @@ bool read_stitch_frame_time(
 
 hm::ui_internal::StitchingIterationSettings read_stitching_iteration_settings(
     const YAML::Node& config,
-    hm::ui_internal::StitchingIterationSettings settings = {}) {
+    hm::ui_internal::StitchingIterationSettings settings) {
   YAML::Node node;
   if (lookup_yaml_path(config, "stitching.sync_method", &node)) {
     settings.sync_method = QString::fromStdString(node.as<std::string>()).trimmed().toLower();
@@ -4614,21 +4559,7 @@ struct ArtifactInvalidationResult {
 };
 
 ArtifactInvalidationResult invalidate_rotation_dependent_artifacts(YAML::Node& config) {
-  ArtifactInvalidationResult result;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_generation"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_persisted_rotation_degrees"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_generation"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_authorization_id"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_owner_process"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_generation"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_authorization_id"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "stitched_output_pending_previous_owner_process"}) ? 1 : 0;
-  result.invalidated += invalidate_scoreboard_geometry(config) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "mask_frame"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_count"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_mask_centroid"}) ? 1 : 0;
-  result.invalidated += remove_yaml_path(config, {"rink", "ice_contours_combined_bbox"}) ? 1 : 0;
-  return result;
+  return {hm::stitching::invalidate_rotation_dependent_artifacts(config)};
 }
 
 double ratio_x100(int value) {
@@ -4666,78 +4597,6 @@ bool hm::ui_internal::reconcile_cleanup_directory_for_test(const QString& direct
     *error = "cleanup reconciliation is unavailable on this platform";
   return false;
 #endif
-}
-
-std::optional<unsigned> hm::ui_internal::configured_pipeline_gpu(const YAML::Node& effective_config) {
-  YAML::Node configured;
-#ifdef HSTREAM_USE_HIP
-  if (!lookup_yaml_path(effective_config, "runtime.amd.gpu_id", &configured))
-    return std::nullopt;
-#else
-  if (!lookup_yaml_path(effective_config, "pipeline.application.global-gpu-id", &configured) &&
-      !lookup_yaml_path(effective_config, "pipeline.hmstitcher.gpu-id", &configured)) {
-    return 0;
-  }
-#endif
-  if (!configured.IsScalar())
-    return std::nullopt;
-  try {
-    const int ordinal = configured.as<int>();
-    return ordinal >= 0 ? std::optional<unsigned>(static_cast<unsigned>(ordinal)) : std::nullopt;
-  } catch (const YAML::Exception&) {
-    return std::nullopt;
-  }
-}
-
-QString hm::ui_internal::configured_gpu_memory_profile(
-    const YAML::Node& baseline_config,
-    const YAML::Node& user_config) {
-  struct ProfileAlias {
-    int rank{-1};
-    YAML::Node value;
-  } dashed, underscored;
-  const std::array<YAML::Node, 2> layers{baseline_config, user_config};
-  for (int rank = 0; rank < static_cast<int>(layers.size()); ++rank) {
-    YAML::Node runtime;
-    if (lookup_yaml_key(layers[rank], "runtime", &runtime) && !runtime.IsMap()) {
-      dashed = {};
-      underscored = {};
-      continue;
-    }
-    YAML::Node dashed_value;
-    if (lookup_yaml_path(layers[rank], "runtime.gpu-memory-profile", &dashed_value)) {
-      dashed = {rank, YAML::Clone(dashed_value)};
-    }
-    YAML::Node underscored_value;
-    if (lookup_yaml_path(layers[rank], "runtime.gpu_memory_profile", &underscored_value)) {
-      underscored = {rank, YAML::Clone(underscored_value)};
-    }
-  }
-  auto scalar_profile = [](const ProfileAlias& candidate) -> std::optional<QString> {
-    if (candidate.rank < 0 || !candidate.value.IsScalar())
-      return std::nullopt;
-    try {
-      return QString::fromStdString(candidate.value.as<std::string>()).trimmed().toLower().replace('_', '-');
-    } catch (const YAML::Exception&) {
-      return std::nullopt;
-    }
-  };
-  const ProfileAlias& preferred = dashed.rank >= underscored.rank ? dashed : underscored;
-  const ProfileAlias& fallback = dashed.rank >= underscored.rank ? underscored : dashed;
-  std::optional<QString> configured = scalar_profile(preferred);
-  if (!configured)
-    configured = scalar_profile(fallback);
-  if (!configured)
-    return "auto";
-  QString profile = *configured;
-  if (profile == "low-memory")
-    profile = "low";
-  if (profile == "full" || profile == "normal")
-    profile = "standard";
-  if (profile == "auto" || profile == "low" || profile == "standard") {
-    return profile;
-  }
-  return {};
 }
 
 void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous) {
@@ -4986,6 +4845,21 @@ void HStreamWindow::loadBaselineDefaults() {
   const auto loaded = hm::baseline_config::load();
   if (!loaded.ok())
     throw std::runtime_error(loaded.status().ToString());
+  static_cast<void>(hm::ui::ReadInt8PreparationDefaults(loaded->values));
+  // A saved preference must not hide a broken canonical baseline. Validate
+  // required prompt policy before applying the user overlay.
+  for (const char* path :
+       {"hstream_ui.show_crop_dialog", "hstream_ui.show_leveling_dialog", "hstream_ui.show_scoreboard_dialog"}) {
+    YAML::Node value;
+    if (!lookup_yaml_path(loaded->values, path, &value) || !value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline requires boolean UI default %1").arg(path).toStdString());
+    try {
+      static_cast<void>(value.as<bool>());
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid boolean UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  }
   const auto user_snapshot = editing_defaults_
       ? absl::StatusOr<hm::user_config::Snapshot>(hm::user_config::Snapshot{YAML::Node(YAML::NodeType::Map), {}})
       : hm::user_config::load_snapshot_or_create();
@@ -5049,8 +4923,22 @@ void HStreamWindow::loadBaselineDefaults() {
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
   require("hstream_ui.playback_start_time");
-  default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_);
+  require("stitching.sync_method");
+  hm::ui_internal::StitchingIterationSettings iteration_defaults;
+  iteration_defaults.show_crop_dialog = boolean("hstream_ui.show_crop_dialog");
+  iteration_defaults.show_leveling_dialog = boolean("hstream_ui.show_leveling_dialog");
+  default_show_scoreboard_dialog_ = boolean("hstream_ui.show_scoreboard_dialog");
+  static_cast<void>(hm::ui::ReadInt8PreparationDefaults(baseline_config_));
+  default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_, iteration_defaults);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
+  default_playback_realtime_ = boolean("hstream_ui.playback_realtime");
+  const auto control_points_default = hm::stitching::read_control_point_limit(baseline_config_);
+  if (!control_points_default.ok())
+    throw std::runtime_error(control_points_default.status().ToString());
+  default_stitch_control_points_ = *control_points_default;
+  if (default_stitch_control_points_ < hm::stitching::kMinimumCalibrationControlPoints ||
+      default_stitch_control_points_ > 5000)
+    throw std::runtime_error("Effective baseline stitching.control_point_limit must be in 10..5000");
 
   const YAML::Node stitch_frame_time = require("stitching.stitch_frame_time");
   if (!stitch_frame_time.IsScalar())
@@ -5254,12 +5142,14 @@ void HStreamWindow::loadBaselineDefaults() {
   // These selectors describe where a UI edit is applied, rather than a
   // HockeyMOM config value. A zero speed/acceleration means no UI override, so
   // the effective values continue to come from the baseline-backed pipeline.
-  camera_defaults_["Apply_To_Fast_Box"] = 0;
-  camera_defaults_["Apply_To_Follower_Box"] = 1;
-  camera_defaults_["Max_Speed_X_x10"] = 0;
-  camera_defaults_["Max_Speed_Y_x10"] = 0;
-  camera_defaults_["Max_Accel_X_x10"] = 0;
-  camera_defaults_["Max_Accel_Y_x10"] = 0;
+  for (const char* id :
+       {"Apply_To_Fast_Box",
+        "Apply_To_Follower_Box",
+        "Max_Speed_X_x10",
+        "Max_Speed_Y_x10",
+        "Max_Accel_X_x10",
+        "Max_Accel_Y_x10"})
+    camera_defaults_[id] = integer(QString("hstream_ui.camera_controls.%1").arg(id));
   for (const auto& spec : hm::program::kToneControls) {
     const int value = integer(QString("hstream_ui.camera_controls.%1").arg(spec.id));
     if (value < spec.minimum || value > spec.maximum)
@@ -5305,6 +5195,15 @@ HStreamWindow::~HStreamWindow() {
   // child widgets lose their lifetime. Descendant dialogs own their processes.
   for (QProcess* process : findChildren<QProcess*>(QString(), Qt::FindDirectChildrenOnly))
     disconnect(process, nullptr, this, nullptr);
+  if (live_rotation_config_owner_) {
+    if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
+      pipeline_process_->kill();
+      pipeline_process_->waitForFinished(-1);
+    }
+    const auto status = live_rotation_config_owner_->Shutdown();
+    if (!status.ok())
+      qWarning("live rotation cleanup failed: %s", status.ToString().c_str());
+  }
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
   finishArchiveJobLog();
@@ -5702,7 +5601,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   control_points_spin_->setObjectName("controlPointsSpin");
   control_points_spin_->setRange(hm::stitching::kMinimumCalibrationControlPoints, 5000);
   control_points_spin_->setSingleStep(25);
-  control_points_spin_->setValue(kDefaultStitchCalibrationControlPoints);
+  control_points_spin_->setValue(default_stitch_control_points_);
   control_points_spin_->setEnabled(true);
   control_points_spin_->setPrefix("CP ");
   control_points_spin_->setMinimumWidth(96);
@@ -6200,6 +6099,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   realtime_playback_toggle_ = new QCheckBox("Play at normal speed");
   realtime_playback_toggle_->setObjectName("realtimePlaybackCheck");
+  realtime_playback_toggle_->setChecked(default_playback_realtime_);
   realtime_playback_toggle_->setToolTip(
       "Pace video and local audio using the output timestamps. Slow processing keeps every video frame. "
       "Archives keep their frame rate and content, but encoding progresses at playback speed. "
@@ -6913,6 +6813,32 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 }
 
 void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
+  const auto network_routes = baseline_config_["hstream_ui"]["network_routes"];
+  if (!network_routes || !network_routes.IsSequence())
+    throw std::runtime_error("Baseline hstream_ui.network_routes must be a sequence");
+  std::set<QString> initial_routes;
+  for (const auto& route : network_routes) {
+    if (!route.IsScalar())
+      throw std::runtime_error("Baseline hstream_ui.network_routes must contain route names");
+    const auto name = QString::fromStdString(route.as<std::string>());
+    if (name != "youtube-primary" && name != "rtsp-local" && name != "spare-rtmp")
+      throw std::runtime_error("Baseline hstream_ui.network_routes contains an unsupported route");
+    initial_routes.insert(name);
+  }
+  const auto archive_routes = baseline_config_["hstream_ui"]["archive_routes"];
+  if (!archive_routes || !archive_routes.IsSequence())
+    throw std::runtime_error("Baseline hstream_ui.archive_routes must be a sequence");
+  for (const auto& route : archive_routes) {
+    const auto name = route.as<std::string>();
+    if (name == "program")
+      initial_routes.insert("archive-file");
+    else if (name == "program_4k")
+      initial_routes.insert("archive-program-4k");
+    else if (name == "stitched")
+      initial_routes.insert("archive-stitched");
+    else
+      throw std::runtime_error("Baseline hstream_ui.archive_routes contains an unsupported archive");
+  }
   auto* group = new QGroupBox("Output Routing");
   group->setObjectName("outputRoutingGroup");
   group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
@@ -6933,8 +6859,8 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
     auto* row = new QHBoxLayout();
     auto* toggle = new QCheckBox(label);
     toggle->setObjectName("outputToggle_" + id);
-    toggle->setChecked(false);
-    auto* state = make_value_label("outputState_" + id, "STOPPED");
+    toggle->setChecked(initial_routes.count(id) != 0);
+    auto* state = make_value_label("outputState_" + id, toggle->isChecked() ? "ENABLED" : "STOPPED");
     output_toggles_[id] = toggle;
     output_states_[id] = state;
     connect(toggle, &QCheckBox::toggled, this, [this, id](bool enabled) { toggleOutput(id, enabled); });
@@ -8169,7 +8095,24 @@ QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
     sinks.push_front("RENDER");
   }
   if (sinks.isEmpty()) {
-    sinks.push_back(job_export ? "ENCODE_PROGRAM_4K_FILE" : "FAKE");
+    if (job_export) {
+      const auto routes = baseline_config_["hstream_ui"]["export_archive_routes"];
+      if (!routes.IsSequence() || routes.size() == 0)
+        throw std::runtime_error("Baseline hstream_ui.export_archive_routes must select an archive");
+      for (const auto& route : routes) {
+        const auto name = route.as<std::string>();
+        if (name == "program")
+          sinks.push_back("ENCODE_FILE");
+        else if (name == "program_4k")
+          sinks.push_back("ENCODE_PROGRAM_4K_FILE");
+        else if (name == "stitched")
+          sinks.push_back("ENCODE_STITCHED_FILE");
+        else
+          throw std::runtime_error("Baseline hstream_ui.export_archive_routes contains an unsupported archive");
+      }
+    } else {
+      sinks.push_back("FAKE");
+    }
   }
   sinks.removeDuplicates();
   return sinks;
@@ -8272,7 +8215,7 @@ void HStreamWindow::updateStitchedColorPrecisionControls() {
 }
 
 int HStreamWindow::stitchingCalibrationControlPoints() const {
-  return control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
+  return control_points_spin_ ? control_points_spin_->value() : default_stitch_control_points_;
 }
 
 int HStreamWindow::stitchingCalibrationFrameCount() const {
@@ -9598,6 +9541,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool clean_all = false;
   bool clean_from_control_points = false;
   bool replay_selected_frames = false;
+  hm::stitching::StitchingCalibrationPlan calibration_plan;
+  YAML::Node prepared_calibration_config;
   auto width_constraint_check = lockStitchingCanvasConstraint(active_run_game_id_);
   if (!width_constraint_check.has_value())
     return false;
@@ -9757,19 +9702,6 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required;
     const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count;
     replay_selected_frames = retain_selected_frames;
-    if (stitch_frame_time_changed && retain_selected_frames) {
-      calibration_failure_message_ =
-          "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
-          "reference time, or explicitly change the frame count to select a new frame set.";
-      appendLog(calibration_failure_message_);
-      return false;
-    }
-    // Changing the count explicitly requests a new set; other stitching edits
-    // must retain the experiment's exact chosen pairs.
-    if (saved_frame_count != frame_count) {
-      remove_yaml_path(config, {"stitching", "calibration_frame_selection"});
-      remove_yaml_path(config, {"stitching", "calibration_frame_inputs_fingerprint"});
-    }
     if (!retain_selected_frames)
       remove_yaml_path(config, {"stitching", "stitch_frame_time"});
     remove_yaml_path(config, {"stitching", "control_point_matcher"});
@@ -9825,39 +9757,84 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     active_calibration_invalidation_id_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     config["hstream_ui"]["stitching_calibration"]["control_points"] = control_points;
     config["hstream_ui"]["stitching_calibration"]["frame_count"] = frame_count;
-    if (active_force_reconfigure_ || stitch_frame_time_changed || control_points_changed || frame_count_changed ||
-        control_point_matcher_changed || camera_changed) {
-      remove_yaml_path(config, {"stitching", "manual_control_points"});
-      remove_yaml_path(config, {"hstream_ui", "stitching_calibration", "match_snapshot"});
-    }
-    if (active_force_reconfigure_ || saved_frame_count != frame_count) {
-      hm::stitching::ClearStitchingReframeIntent(config);
-    } else {
+    {
+      hm::stitching::StitchingCalibrationState before;
+      before.control_points_present = saved_found;
+      before.frame_count_present = saved_frame_count_found;
+      before.frame_time_valid = saved_stitch_frame_time_valid;
+      before.selected_frame_count = selected_plan_frame_count;
+      before.status = saved_status.toStdString();
+      before.stale_from = saved_stale_from.toStdString();
+      before.artifacts_invalidated = saved_artifacts_invalidated;
+      auto& previous = before.controls;
+      previous.control_points = saved_control_points;
+      previous.frame_count = saved_frame_count;
+      previous.max_output_width = saved_max_output_width;
+      previous.frame_time = saved_stitch_frame_time.toStdString();
+      previous.sync_method = saved_sync_method.toStdString();
+      previous.matcher = saved_control_point_matcher.toStdString();
+      previous.resolution = saved_resolution.toStdString();
+      previous.filtering = saved_filtering;
+      previous.backend = saved_mapping_backend.toStdString();
+      previous.camera = saved_camera_selection;
+      previous.autooptimizer = saved_run_autooptimizer;
+      previous.projection = saved_projection.toStdString();
+      previous.projection_parameters = saved_projection_parameters;
+      previous.framing = saved_projection_framing;
+      hm::stitching::StitchingCalibrationControls desired;
+      desired.control_points = control_points;
+      desired.frame_count = frame_count;
+      desired.max_output_width = active_stitch_max_output_width_;
+      desired.frame_time = active_stitch_frame_time_.toStdString();
+      desired.sync_method = active_iteration_settings_.sync_method.toStdString();
+      desired.matcher = active_control_point_matcher_.toStdString();
+      desired.resolution = active_control_point_resolution_.toStdString();
+      desired.filtering = active_control_point_filtering_;
+      desired.backend = active_mapping_backend_.toStdString();
+      desired.camera = active_camera_selection_;
+      desired.autooptimizer = active_run_autooptimizer_;
+      desired.projection = active_projection_.toStdString();
+      desired.projection_parameters = active_projection_parameters_;
+      desired.framing = active_projection_framing_;
       YAML::Node before_effective = merge_yaml_maps(baseline_config_, before_config);
       YAML::Node desired_effective = merge_yaml_maps(baseline_config_, config);
+      const auto previous_provider = hm::stitching::read_control_point_execution_provider(before_effective);
+      const auto desired_provider = hm::stitching::read_control_point_execution_provider(desired_effective);
+      if (!previous_provider.ok() || !desired_provider.ok()) {
+        appendLog("Cannot resolve the calibration control-point execution provider");
+        return false;
+      }
+      previous.execution_provider = hm::onnx::ExecutionProviderName(*previous_provider);
+      desired.execution_provider = hm::onnx::ExecutionProviderName(*desired_provider);
       // The UI resolves canonical/native width aliases with explicit layer
       // precedence; freeze that resolved value in the shared comparison.
       before_effective["stitching"]["max_output_width"] = saved_max_output_width;
       desired_effective["stitching"]["max_output_width"] = active_stitch_max_output_width_;
-      const auto reframe = hm::stitching::PrepareStitchingReframeIntentLocked(
+      const auto plan = hm::stitching::PrepareStitchingCalibrationControlsLocked(
           config_path.parent_path(),
+          before,
+          desired,
           before_effective,
           desired_effective,
           active_calibration_invalidation_id_.toStdString(),
+          active_force_reconfigure_,
+          false,
+          canvas_constraint.calibration_required,
+          canvas_constraint.cleanup_required,
           config);
-      if (!reframe.ok()) {
-        appendLog(
-            QString("could not preserve the saved stitching alignment: %1").arg(reframe.status().ToString().c_str()));
+      if (!plan.ok()) {
+        calibration_failure_message_ = QString::fromStdString(plan.status().ToString());
+        appendLog(QString("could not preserve the saved stitching alignment: %1").arg(calibration_failure_message_));
         return false;
       }
-      active_stitching_reframe_ = *reframe;
+      calibration_plan = *plan;
+      active_stitching_reframe_ = plan->alignment_reused;
+      replay_selected_frames = plan->retain_selected_frames;
+      clean_all = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kAll;
+      clean_from_control_points = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kControlPoints;
+      active_calibration_start_stage_ = QString::fromStdString(plan->start_stage);
     }
-    const bool needs_calibration = active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed ||
-        control_points_changed || frame_count_changed || control_point_matcher_changed || mapping_backend_changed ||
-        camera_changed || projection_changed || projection_parameters_changed || projection_framing_changed ||
-        run_autooptimizer_changed || canvas_constraint.calibration_required || saved_status != "complete" ||
-        active_stitching_reframe_;
-    if (!needs_calibration) {
+    if (!calibration_plan.required) {
       active_calibration_start_stage_.clear();
       // Reserve one generation owner before the process starts. Program can
       // discover a missing artifact only after the first stitched frame; this
@@ -9917,71 +9894,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       reasons << QString("saved calibration status=%1").arg(saved_status.isEmpty() ? "missing" : saved_status);
     appendLog("stitching calibration required: " + reasons.join("; "));
 
-    QString stale_from = saved_stale_from;
-    if (!calibration_stage_index(stale_from).has_value()) {
-      stale_from =
-          (mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
-           projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) &&
-              !control_point_matcher_changed && !control_points_changed && !frame_count_changed
-          ? QString("canvas")
-          : QString("input");
-    }
-    const size_t features_index = *calibration_stage_index("features");
-    if ((control_points_changed || control_point_matcher_changed) && saved_status == "complete") {
-      stale_from = "features";
-    } else if (
-        (control_points_changed || control_point_matcher_changed) && saved_found &&
-        features_index < *calibration_stage_index(stale_from)) {
-      stale_from = "features";
-    }
-    const size_t canvas_index = *calibration_stage_index("canvas");
-    if ((mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
-         projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required) &&
-        !control_point_matcher_changed && !control_points_changed && !frame_count_changed &&
-        canvas_index < *calibration_stage_index(stale_from)) {
-      stale_from = "canvas";
-    }
-    if (active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed || frame_count_changed)
-      stale_from = "input";
-    active_calibration_start_stage_ = stale_from;
-
-    clean_from_control_points = !active_force_reconfigure_ && !stitch_frame_time_changed && stale_from == "features" &&
-        (control_points_changed || control_point_matcher_changed || !saved_artifacts_invalidated);
-    clean_all = active_force_reconfigure_ || stitch_frame_time_changed || sync_method_changed ||
-        (stale_from != "features" &&
-         (!saved_artifacts_invalidated || control_points_changed || control_point_matcher_changed ||
-          mapping_backend_changed || projection_changed || projection_parameters_changed || run_autooptimizer_changed ||
-          camera_changed || projection_framing_changed || canvas_constraint.cleanup_required));
-    const bool width_only_change_from_complete_state = saved_status == "complete" && max_output_width_changed &&
-        !active_force_reconfigure_ && !stitch_frame_time_changed && !sync_method_changed && !frame_count_changed &&
-        !control_point_matcher_changed && !mapping_backend_changed && !projection_changed && !camera_changed &&
-        !projection_parameters_changed && !projection_framing_changed && !run_autooptimizer_changed;
-    if (width_only_change_from_complete_state && !canvas_constraint.cleanup_required)
-      clean_all = false;
-    const bool retain_manual_matches = config["stitching"]["manual_control_points"].IsScalar();
-    if ((retain_selected_frames || retain_manual_matches) && clean_all) {
-      // Retained matches/plans own synchronization and exact input images.
-      // Geometry-only solves must not discard their input offsets.
-      clean_all = false;
-      clean_from_control_points = true;
-    }
-
-    if (active_stitching_reframe_) {
-      clean_all = false;
-      clean_from_control_points = false;
-      stale_from = "canvas";
-      active_calibration_start_stage_ = stale_from;
+    if (active_stitching_reframe_)
       appendLog("Reusing the saved stitching alignment to generate the edited view");
-    }
-
-    YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
-    calibration["control_points"] = control_points;
-    calibration["frame_count"] = frame_count;
-    calibration["status"] = "pending";
-    calibration["rink_mask_status"] = "pending";
-    calibration["stale_from"] = stale_from.toStdString();
-    calibration["artifacts_invalidated"] = !(clean_all || clean_from_control_points);
-    calibration["invalidation_id"] = active_calibration_invalidation_id_.toStdString();
+    prepared_calibration_config = YAML::Clone(config);
     const auto publish = publish_yaml_config(config_path, config);
     if (!publish.ok()) {
       appendLog(QString("failed to write stitching calibration settings %1: %2")
@@ -10034,20 +9949,13 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
 
   if (clean_all || clean_from_control_points) {
-    bool state_applied = false;
-    if (!saveStitchingCalibrationState(
-            active_run_game_id_,
-            control_points,
-            "pending",
-            active_calibration_start_stage_,
-            active_calibration_invalidation_id_,
-            true,
-            /*require_matching_pending=*/true,
-            &state_applied)) {
-      return false;
-    }
-    if (!state_applied) {
-      appendLog("stitching calibration cleanup was superseded by a newer dependency invalidation");
+    const auto completed = hm::stitching::CompleteStitchingCalibrationCleanup(
+        config_path.parent_path(), calibration_plan, prepared_calibration_config);
+    if (!completed.ok()) {
+      if (absl::IsAborted(completed))
+        appendLog("stitching calibration cleanup was superseded by a newer dependency invalidation");
+      else
+        appendLog(QString("stitching calibration cleanup failed: %1").arg(completed.ToString().c_str()));
       return false;
     }
   }
@@ -10502,7 +10410,7 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
   const int active_control_points = active_calibration_control_points_ > 0 ? active_calibration_control_points_
                                                                            : stitchingCalibrationControlPoints();
   const bool reduced_control_point_limit =
-      active_control_points > 0 && active_control_points < kDefaultStitchCalibrationControlPoints;
+      active_control_points > 0 && active_control_points < default_stitch_control_points_;
   const bool nondefault_camera_profile = active_camera_selection_ != default_camera_selection_;
   const bool generic_geometry_failure = evidence.contains("no stitching calibration frame pair") ||
       evidence.contains("usable solution") || evidence.contains("usable hugin solution") ||
@@ -10588,7 +10496,7 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
     if (reduced_control_point_limit) {
       settings << QString("CP limit is %1; the default calibration limit is %2")
                       .arg(active_control_points)
-                      .arg(kDefaultStitchCalibrationControlPoints);
+                      .arg(default_stitch_control_points_);
     }
     if (nondefault_camera_profile) {
       settings << QString("lens profile is %1 (HFOV %2, VFOV %3); default is %4 (HFOV %5, VFOV %6)")
@@ -10810,6 +10718,16 @@ void HStreamWindow::closeStitchingCalibrationDialog() {
   active_calibration_stage_.clear();
 }
 
+std::optional<int> HStreamWindow::stitchRotationOverride() const {
+  const auto saved = saved_camera_controls_.find("Stitch_Rotate_Degrees");
+  const int selected = static_cast<int>(cameraControlValue("Stitch_Rotate_Degrees"));
+  // Preserve untouched null/inherited and fractional configuration values;
+  // the integer slider is authoritative only after an actual draft change.
+  if (saved == saved_camera_controls_.end() || saved->second == selected)
+    return std::nullopt;
+  return 90 - selected;
+}
+
 QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) const {
   const QString game_id = !standalone && !active_run_game_id_.isEmpty()
       ? active_run_game_id_
@@ -10906,6 +10824,14 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
     }
   }
   args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1").arg(highBitDepthMode());
+  const auto stitch_rotation =
+      !standalone && !active_run_game_id_.isEmpty() ? active_stitch_rotation_override_ : stitchRotationOverride();
+  if (!job_export && stitch_rotation.has_value()) {
+    // The native startup planner owns output-generation, mask and scoreboard
+    // invalidation. Exported jobs resolve rotation from the completed saved
+    // config, preserving its exact fractional and inherited values.
+    args << QString("--options=stitching.post_stitch_rotate_degrees=%1").arg(*stitch_rotation);
+  }
   // A mode the live path cannot run stays whatever the config layers resolve to; overriding it
   // here would silently run something else.
   if (blendMode() != kUnrepresentableBlendData) {
@@ -10980,30 +10906,7 @@ double HStreamWindow::blendFeatherFraction() const {
 }
 
 std::vector<HStreamWindow::DetectorModel> HStreamWindow::detectorModels() const {
-  std::vector<DetectorModel> models;
-  YAML::Node configured;
-  if (lookup_yaml_path(baseline_config_, "hstream_ui.detector_models", &configured) && configured.IsSequence()) {
-    for (const YAML::Node& entry : configured) {
-      if (!entry.IsMap())
-        continue;
-      try {
-        if (!entry["id"] || !entry["config_prefix"])
-          continue;
-        const QString id = QString::fromStdString(entry["id"].as<std::string>());
-        const QString prefix = QString::fromStdString(entry["config_prefix"].as<std::string>());
-        if (id.isEmpty() || prefix.isEmpty())
-          continue;
-        models.push_back(
-            {id, entry["label"] ? QString::fromStdString(entry["label"].as<std::string>()) : id, prefix});
-      } catch (const YAML::Exception&) {
-        // A malformed catalog entry must not cost the user the other models.
-      }
-    }
-  }
-  // The bundled detector stays selectable when baseline.yaml declares no catalog.
-  if (models.empty())
-    models.push_back({"default", "Default", "config_infer_yolov8_hockey"});
-  return models;
+  return hm::ui::ReadDetectorModels(baseline_config_);
 }
 
 QString HStreamWindow::detectorModel() const {
@@ -11047,7 +10950,8 @@ void HStreamWindow::prepareRecordedInt8() {
     return;
   }
   hm::ui::Int8PreparationDialog dialog(
-      {backend_.isHockeyMon() ? backend_.runner : nativeRunnerPath(),
+      {hm::ui::ReadInt8PreparationDefaults(baseline_config_),
+       backend_.isHockeyMon() ? backend_.runner : nativeRunnerPath(),
        pipelineWorkingDirectory(),
        development_bazel_bin_.isEmpty() ? QDir(pipelineWorkingDirectory()).filePath("bazel-bin")
                                         : development_bazel_bin_,
@@ -11082,12 +10986,13 @@ QString HStreamWindow::detectorConfigName() const {
 }
 
 QString HStreamWindow::detectorEnginePath() const {
-  // A prepared engine belongs to the model it was built from. Pairing it with
-  // another model's inference config silently runs the wrong network.
-  if (detectorPrecision() == "int8" && !prepared_int8_engine_.isEmpty() && prepared_int8_model_ == detectorModel())
-    return prepared_int8_engine_;
-  const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(detectorConfigName()).toStdString());
-  return QString::fromStdString(inference["property"]["model-engine-file"].as<std::string>());
+  const auto models = detectorModels();
+  const auto model =
+      std::find_if(models.begin(), models.end(), [this](const auto& entry) { return entry.id == detectorModel(); });
+  return hm::ui::DetectorEnginePath(
+      model == models.end() ? models.front() : *model,
+      {detectorModel(), detectorPrecision(), prepared_int8_engine_, prepared_int8_manifest_, prepared_int8_model_},
+      [this](const QString& name) { return pipelineConfigPath(name); });
 }
 
 void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config) {
@@ -11110,13 +11015,10 @@ void HStreamWindow::updateDefaultGpuMemoryProfile(const YAML::Node& game_config)
   const YAML::Node effective = merge_yaml_maps(defaults, game_config);
   QString profile = hm::ui_internal::configured_gpu_memory_profile(baseline_layer_, user_layer_);
   const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
-  if (profile == "auto" && gpu.has_value()) {
-    const auto total_memory_bytes = hm::inference::GpuTotalMemoryBytes(*gpu);
-    if (total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes))
-      profile = "low";
-  }
-  if (profile == "auto" || profile.isEmpty())
-    profile = "standard";
+  const auto resolved = hm::ui_internal::resolve_gpu_memory_profile(profile, gpu);
+  // Preserve the desktop's conservative display when the device is unavailable.
+  // An untouched combo still emits no launch override.
+  profile = resolved.ok() ? *resolved : QStringLiteral("standard");
   const QSignalBlocker blocker(gpu_memory_profile_combo_);
   set_combo_to_data(gpu_memory_profile_combo_, profile);
 }
@@ -11186,93 +11088,20 @@ void HStreamWindow::loadBlendMode(const YAML::Node& config) {
 void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   if (!detector_precision_combo_)
     return;
-  const QSignalBlocker blocker(detector_precision_combo_);
-  const YAML::Node effective = merge_yaml_maps(baseline_config_, config);
-  const QString prepared_prefix = backend_.isHockeyMon() ? "hstream_ui.hockeymon.detector" : "hstream_ui.detector_int8";
-  const auto prepared_value = [&](const QString& suffix) {
-    YAML::Node value;
-    return lookup_yaml_path(effective, prepared_prefix + "." + suffix, &value)
-        ? QString::fromStdString(value.as<std::string>())
-        : QString();
-  };
-  prepared_int8_engine_ = prepared_value("engine");
-  prepared_int8_manifest_ = prepared_value("manifest");
-  const auto models = detectorModels();
-  prepared_int8_model_ = prepared_value("model");
-  // Engines prepared before the model catalog existed were built from the
-  // detector that was then the only one.
-  if (prepared_int8_model_.isEmpty() && !prepared_int8_engine_.isEmpty())
-    prepared_int8_model_ = models.front().id;
-  YAML::Node prepared_precision;
-  if (backend_.isHockeyMon() && lookup_yaml_path(effective, prepared_prefix + ".precision", &prepared_precision)) {
-    const QString precision = QString::fromStdString(prepared_precision.as<std::string>());
-    YAML::Node model;
-    if (!lookup_yaml_path(effective, prepared_prefix + ".model", &model) ||
-        detector_precision_combo_->findData(precision) < 0 ||
-        detector_model_combo_->findData(QString::fromStdString(model.as<std::string>())) < 0)
-      throw std::runtime_error("Invalid saved HockeyMON detector model or precision");
-    const QSignalBlocker model_blocker(detector_model_combo_);
-    set_combo_to_data(detector_model_combo_, QString::fromStdString(model.as<std::string>()));
-    set_combo_to_data(detector_precision_combo_, precision);
-    updateDetectorPrecisionStatus();
-    return;
-  }
-  YAML::Node configured;
-  QString file;
-  if (lookup_yaml_path(effective, "pipeline.primary-gie.config-file", &configured))
-    file = QString::fromStdString(configured.as<std::string>());
-  else {
-    try {
-      const YAML::Node app = YAML::LoadFile(pipelineConfigPath("ds_hockey_app_config.yaml").toStdString());
-      file = QString::fromStdString(app["primary-gie"]["config-file"].as<std::string>());
-    } catch (const std::exception&) {
-      file.clear();
-    }
-  }
-  // An explicit engine is part of the custom detector choice. Preserve it
-  // even when its inference config has a familiar filename.
-  auto config_matches = [&](const DetectorModel& model, const QString& name, const QString& mode) {
-    if (file != name && !same_file_path(file, pipelineConfigPath(name)))
-      return false;
-    YAML::Node engine;
-    if (lookup_yaml_path(effective, "pipeline.primary-gie.model-engine-file", &engine)) {
-      try {
-        const YAML::Node inference = YAML::LoadFile(pipelineConfigPath(name).toStdString());
-        // The prepared engine only explains this config for the model it was
-        // built from; against any other model it is a custom detector.
-        const bool prepared_for_this_model = mode == "int8" && prepared_int8_model_ == model.id &&
-            QString::fromStdString(engine.as<std::string>()) == prepared_int8_engine_;
-        if (engine.as<std::string>() != inference["property"]["model-engine-file"].as<std::string>() &&
-            !prepared_for_this_model)
-          return false;
-      } catch (const std::exception&) {
-        return false;
-      }
-    }
-    return true;
-  };
-  QString selected;
-  QString selected_model;
-  for (const DetectorModel& model : models) {
-    for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
-      const QString name =
-          mode == "fp32" ? model.config_prefix + ".yaml" : QString("%1_%2.yaml").arg(model.config_prefix, mode);
-      if (!config_matches(model, name, mode))
-        continue;
-      selected = mode;
-      selected_model = model.id;
-      break;
-    }
-    if (!selected.isEmpty())
-      break;
-  }
+  const auto selected = hm::ui::ReadDetectorSelection(
+      merge_yaml_maps(baseline_config_, config),
+      detectorModels(),
+      [this](const QString& name) { return pipelineConfigPath(name); },
+      backend_.isHockeyMon());
+  prepared_int8_engine_ = selected.prepared_engine;
+  prepared_int8_manifest_ = selected.prepared_manifest;
+  prepared_int8_model_ = selected.prepared_model;
+  const QSignalBlocker precision_blocker(detector_precision_combo_);
   if (detector_model_combo_) {
-    // Setting the model must not drag the precision to FP32 the way an
-    // interactive choice does; an unrecognized config keeps "use saved".
     const QSignalBlocker model_blocker(detector_model_combo_);
-    set_combo_to_data(detector_model_combo_, selected_model.isEmpty() ? models.front().id : selected_model);
+    set_combo_to_data(detector_model_combo_, selected.model);
   }
-  set_combo_to_data(detector_precision_combo_, selected);
+  set_combo_to_data(detector_precision_combo_, selected.precision);
   updateDetectorPrecisionStatus();
 }
 
@@ -11438,6 +11267,7 @@ void HStreamWindow::startPipeline() {
   }
   managed_archive_manifest_.clear();
   active_run_game_id_ = game_id_edit_->text().trimmed();
+  active_stitch_rotation_override_ = stitchRotationOverride();
   active_run_is_calibration_ = isCalibrationRun();
   active_hockeymon_program_ = hockeyMonProgram();
   active_backend_initial_launch_ = active_hockeymon_program_ && !backend_.initial_launch.isEmpty();
@@ -11527,6 +11357,7 @@ void HStreamWindow::startPipeline() {
     return;
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  applyScoreboardPromptEnvironment(env);
   const QString working_dir = pipelineWorkingDirectory();
   env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   if (!baseline_config_root_.isEmpty())
@@ -12062,6 +11893,7 @@ void HStreamWindow::stopPipeline() {
     return;
   }
   appendLog("pipeline stop requested");
+  clearDeferredPreviewCommands();
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = true;
@@ -12079,10 +11911,20 @@ void HStreamWindow::stopPipeline() {
     pipeline_cooperative_pause_ = false;
   }
 #endif
-  // The Python supervisor must let its worker drain archives and telemetry.
-  // Signalling the whole group also signals its process guard, which treats
-  // that as forced cancellation and kills the worker before publication.
-  const bool cooperative_stop = active_hockeymon_program_ && pipeline_process_->write("q\n") == 2;
+  // Native q drains playback without marking its publication receipt
+  // interrupted. SIGINT remains cancellation during startup/calibration and a
+  // local-render seek, whose reconstruction worker cannot consume stdin yet.
+  // Preview readiness proves the command poll was installed; processed stage-0
+  // progress also covers archive runs with Render off.
+  const bool native_playback_ready = preview_runtime_ready_ || (playback_stage_ == "0" && playback_position_ns_ > 0);
+  // Calibration-only mode continues as Stitched playback after the pending
+  // calibration (including its manual selection/restart phases) completes.
+  const bool finish_native_playback = native_playback_ready && !calibration_pending_ &&
+      pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
+  // Python also needs q: signalling its process guard cancels the worker before
+  // it can drain archives and telemetry.
+  const bool cooperative_stop =
+      (active_hockeymon_program_ || finish_native_playback) && pipeline_process_->write("q\n") == 2;
   if (!cooperative_stop) {
 #ifdef Q_OS_UNIX
     if (pid > 0)
@@ -12416,6 +12258,7 @@ void HStreamWindow::clearPreviewFrames() {
   preview_disable_attempts_ = 0;
   preview_runtime_ready_ = false;
   preview_overlay_deferred_ = false;
+  clearDeferredPreviewCommands();
   updatePreviewTabResolution("program", 0, 0);
   updatePreviewTabResolution("stitched", 0, 0);
 }
@@ -12740,6 +12583,8 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
     if (generation == pending_process_resume_generation_) {
       pending_process_resume_generation_ = 0;
       updateRunControls();
+      flushDeferredPreviewCommands();
+      flushScheduledRuntimeControls();
     }
     return true;
   }
@@ -12766,6 +12611,9 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
   preview_status_->setText("Pipeline paused");
   appendLog("pipeline paused");
   updateRunControls();
+  // A cooperative backend keeps reading commands while paused. Native pauses
+  // instead retain these requests until the matching Resume acknowledgement.
+  flushDeferredPreviewCommands();
 #endif
   return true;
 }
@@ -16783,6 +16631,12 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       preview_overlay_deferred_ = false;
       setRuntimePreviewOverlays();
     }
+    if (deferred_preview_run_generation_ == pipeline_run_generation_ && !deferred_preview_channel_.isEmpty()) {
+      // This startup announcement predates an unsent operator route choice.
+      // Its native target must remain hidden until that choice can be sent.
+      flushDeferredPreviewCommands();
+      return true;
+    }
     const bool render_video = !render_video_toggle_ || render_video_toggle_->isChecked();
     const QString selected_channel = selectedPipelinePreviewChannel();
     if (!render_video) {
@@ -16825,6 +16679,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
       appendLog(
           QString("could not activate selected GPU preview channel %1 after backend startup").arg(selected_channel));
     }
+    flushDeferredPreviewCommands();
     return true;
   }
   static const QRegularExpression pattern(
@@ -16840,6 +16695,14 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
   const QString message = match.captured(4);
   if (!generation_valid || generation < preview_generation_)
     return true;
+
+  if ((status == "ready" || status == "activated") &&
+      ((render_video_toggle_ && !render_video_toggle_->isChecked()) ||
+       (deferred_preview_run_generation_ == pipeline_run_generation_ && !deferred_preview_channel_.isEmpty()))) {
+    // Deferred commands have not advanced the backend generation yet. A late
+    // frame from the old route cannot undo Render off or re-arm that route.
+    return true;
+  }
 
   QLabel* status_label = previewStatusForChannel(channel);
   QWidget* surface = previewSurfaceForChannel(channel);
@@ -17061,6 +16924,8 @@ bool HStreamWindow::handlePreviewOverlayResponse(const QString& line) {
   const QRegularExpressionMatch match = pattern.match(line);
   if (!match.hasMatch())
     return false;
+  if (!preview_runtime_ready_ || pipeline_stop_requested_)
+    return true;
 
   bool generation_valid = false;
   const quint64 generation = match.captured(2).toULongLong(&generation_valid);
@@ -17187,6 +17052,19 @@ bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, Previe
       channel.isEmpty() || !preview_runtime_ready_) {
     return false;
   }
+  if (previewCommandsBlockedByPause()) {
+    if (deferred_preview_run_generation_ != pipeline_run_generation_)
+      clearDeferredPreviewCommands();
+    deferred_preview_run_generation_ = pipeline_run_generation_;
+    // A watchdog for an old request must not replace a newer operator choice.
+    if (reason != PreviewRequestReason::kRecovery || deferred_preview_channel_.isEmpty()) {
+      deferred_preview_channel_ = channel;
+    }
+    setAllPreviewFocusAvailable(false);
+    if (channel == "none" && preview_status_)
+      preview_status_->setText("GPU preview will finish disabling when the paused pipeline resumes");
+    return true;
+  }
   const bool force = reason != PreviewRequestReason::kTabChange;
   if (!force &&
       (channel == pending_preview_channel_ ||
@@ -17225,7 +17103,9 @@ bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, Previe
                         ? "startup"
                         : (reason == PreviewRequestReason::kRecovery
                                ? "recovery"
-                               : (reason == PreviewRequestReason::kRenderToggle ? "render-toggle" : "tab-change"))));
+                               : (reason == PreviewRequestReason::kRenderToggle
+                                      ? "render-toggle"
+                                      : (reason == PreviewRequestReason::kDeferred ? "deferred" : "tab-change")))));
   if (channel != "none")
     schedulePreviewReadyTimeout(channel, generation, previewReadyTimeoutMs());
   else
@@ -17234,12 +17114,16 @@ bool HStreamWindow::requestPipelinePreviewChannel(const QString& channel, Previe
 }
 
 void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 generation, int timeout_ms) {
-  QTimer::singleShot(timeout_ms, this, [this, channel, generation]() {
+  QTimer::singleShot(timeout_ms, this, [this, channel, generation, timeout_ms]() {
     if (pending_preview_channel_ != channel || pending_preview_generation_ != generation || !pipeline_process_ ||
         pipeline_process_->state() == QProcess::NotRunning) {
       return;
     }
     if (selectedPipelinePreviewChannel() != channel) {
+      return;
+    }
+    if (previewCommandsBlockedByPause()) {
+      schedulePreviewReadyTimeout(channel, generation, timeout_ms);
       return;
     }
     constexpr int kRapidRecoveryAttempts = 3;
@@ -17283,7 +17167,7 @@ void HStreamWindow::schedulePreviewDisableTimeout(quint64 generation, int timeou
         (!render_video_toggle_ || render_video_toggle_->isChecked()) && selectedPipelinePreviewChannel().isEmpty();
     if (!render_disabled && !inspector_idle)
       return;
-    if (pipeline_paused_) {
+    if (previewCommandsBlockedByPause()) {
       const QString paused_status = inspector_idle
           ? "Pipeline inspector will finish quiescing GPU preview when playback resumes"
           : "GPU preview will finish disabling when the paused pipeline resumes";
@@ -17385,6 +17269,13 @@ bool HStreamWindow::setRuntimeRenderAudioMuted(bool muted) {
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
     return false;
   }
+  if (previewCommandsBlockedByPause()) {
+    if (deferred_preview_run_generation_ != pipeline_run_generation_)
+      clearDeferredPreviewCommands();
+    deferred_preview_run_generation_ = pipeline_run_generation_;
+    deferred_render_audio_muted_ = muted;
+    return true;
+  }
   const QByteArray command = QString("@set-render-audio-muted %1\n").arg(muted ? 1 : 0).toUtf8();
   if (pipeline_process_->write(command) != command.size()) {
     appendLog(muted ? "could not mute local render audio" : "could not restore local render audio");
@@ -17395,7 +17286,70 @@ bool HStreamWindow::setRuntimeRenderAudioMuted(bool muted) {
   return true;
 }
 
+bool HStreamWindow::previewCommandsBlockedByPause() const {
+  return pending_process_pause_generation_ != 0 || pending_process_resume_generation_ != 0 ||
+      (pipeline_paused_ && !pipeline_cooperative_pause_);
+}
+
+void HStreamWindow::clearDeferredPreviewCommands() {
+  deferred_preview_run_generation_ = 0;
+  deferred_preview_channel_.clear();
+  deferred_render_audio_muted_.reset();
+  deferred_preview_overlays_.reset();
+}
+
+void HStreamWindow::flushDeferredPreviewCommands() {
+  if (deferred_preview_run_generation_ == 0)
+    return;
+  if (deferred_preview_run_generation_ != pipeline_run_generation_ || pipeline_stop_requested_ || !pipeline_process_ ||
+      pipeline_process_->state() != QProcess::Running) {
+    clearDeferredPreviewCommands();
+    return;
+  }
+  if (previewCommandsBlockedByPause())
+    return;
+  // The paced graph must be PLAYING before a preview route can close its
+  // in-flight-buffer barrier. Queuing it ahead of process-resume deadlocks the
+  // runner's command thread against a sink waiting in PAUSED preroll.
+  if (deferred_render_audio_muted_.has_value()) {
+    const bool muted = *deferred_render_audio_muted_;
+    deferred_render_audio_muted_.reset();
+    setRuntimeRenderAudioMuted(muted);
+  }
+  if (!preview_runtime_ready_)
+    return;
+  const QString channel = deferred_preview_channel_;
+  const auto overlays = deferred_preview_overlays_;
+  clearDeferredPreviewCommands();
+  // Even a final selection of the old route must re-arm it: Render or a tab
+  // change may have hidden or cleared its native surface during the pause.
+  if (!channel.isEmpty())
+    requestPipelinePreviewChannel(channel, PreviewRequestReason::kDeferred);
+  if (overlays.has_value()) {
+    setPreviewOverlayControls(overlays->players, overlays->play, overlays->rink);
+    setRuntimePreviewOverlays(overlays->reconciliation);
+  }
+}
+
 void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
+  if (pipeline_render_embedded_ && pipeline_process_ && pipeline_process_->state() == QProcess::Running &&
+      previewCommandsBlockedByPause()) {
+    if (deferred_preview_run_generation_ != pipeline_run_generation_)
+      clearDeferredPreviewCommands();
+    deferred_preview_run_generation_ = pipeline_run_generation_;
+    // Replies to requests sent before Pause may still change confirmed state.
+    // Keep the complete unsent draft separate, and never let a reconciliation
+    // for an older request replace the operator's newer choice.
+    if (!reconciliation || !deferred_preview_overlays_.has_value()) {
+      deferred_preview_overlays_ = DeferredPreviewOverlays{
+          show_player_tracking_toggle_ && show_player_tracking_toggle_->isChecked(),
+          show_play_tracking_toggle_ && show_play_tracking_toggle_->isChecked(),
+          show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked(),
+          reconciliation};
+    }
+    appendLog("preview overlays apply=waiting-for-resume");
+    return;
+  }
   constexpr int kMaxReconciliationAttempts = 1;
   if (reconciliation) {
     if (preview_overlay_reconciliation_attempts_ >= kMaxReconciliationAttempts) {
@@ -17465,10 +17419,7 @@ void HStreamWindow::setRuntimePreviewOverlays(bool reconciliation) {
       runtimeControlAckTimeoutMs(), this, [this, generation]() { timeoutPreviewOverlayRequest(generation); });
 }
 
-void HStreamWindow::setConfirmedPreviewOverlays(bool players, bool play, bool rink) {
-  confirmed_show_player_tracking_ = players;
-  confirmed_show_play_tracking_ = play;
-  confirmed_show_rink_mask_ = rink;
+void HStreamWindow::setPreviewOverlayControls(bool players, bool play, bool rink) {
   const QSignalBlocker player_blocker(show_player_tracking_toggle_);
   const QSignalBlocker play_blocker(show_play_tracking_toggle_);
   const QSignalBlocker rink_blocker(show_rink_mask_toggle_);
@@ -17478,6 +17429,18 @@ void HStreamWindow::setConfirmedPreviewOverlays(bool players, bool play, bool ri
     show_play_tracking_toggle_->setChecked(play);
   if (show_rink_mask_toggle_)
     show_rink_mask_toggle_->setChecked(rink);
+}
+
+void HStreamWindow::setConfirmedPreviewOverlays(bool players, bool play, bool rink) {
+  confirmed_show_player_tracking_ = players;
+  confirmed_show_play_tracking_ = play;
+  confirmed_show_rink_mask_ = rink;
+  if (deferred_preview_run_generation_ == pipeline_run_generation_ && deferred_preview_overlays_.has_value()) {
+    const auto& desired = *deferred_preview_overlays_;
+    setPreviewOverlayControls(desired.players, desired.play, desired.rink);
+  } else {
+    setPreviewOverlayControls(players, play, rink);
+  }
 }
 
 void HStreamWindow::preparePreviewOverlayUserRequest() {
@@ -17519,15 +17482,8 @@ bool HStreamWindow::adoptPreviewOverlayReconciliationFallback(const QString& rea
 }
 
 void HStreamWindow::restoreConfirmedPreviewOverlays(const QString& reason) {
-  const QSignalBlocker player_blocker(show_player_tracking_toggle_);
-  const QSignalBlocker play_blocker(show_play_tracking_toggle_);
-  const QSignalBlocker rink_blocker(show_rink_mask_toggle_);
-  if (show_player_tracking_toggle_)
-    show_player_tracking_toggle_->setChecked(confirmed_show_player_tracking_);
-  if (show_play_tracking_toggle_)
-    show_play_tracking_toggle_->setChecked(confirmed_show_play_tracking_);
-  if (show_rink_mask_toggle_)
-    show_rink_mask_toggle_->setChecked(confirmed_show_rink_mask_);
+  setConfirmedPreviewOverlays(
+      confirmed_show_player_tracking_, confirmed_show_play_tracking_, confirmed_show_rink_mask_);
   appendLog(QString("preview overlays players=%1 play=%2 rink=%3 apply=failed reason=%4")
                 .arg(confirmed_show_player_tracking_ ? 1 : 0)
                 .arg(confirmed_show_play_tracking_ ? 1 : 0)
@@ -17538,6 +17494,11 @@ void HStreamWindow::restoreConfirmedPreviewOverlays(const QString& reason) {
 void HStreamWindow::timeoutPreviewOverlayRequest(quint64 generation) {
   if (generation != pending_preview_overlay_generation_)
     return;
+  if (previewCommandsBlockedByPause()) {
+    QTimer::singleShot(
+        runtimeControlAckTimeoutMs(), this, [this, generation]() { timeoutPreviewOverlayRequest(generation); });
+    return;
+  }
   const bool reconcile_stale_apply = preview_overlay_stale_apply_observed_;
   const bool timed_out_reconciliation = pending_preview_overlay_is_reconciliation_;
   preview_overlay_stale_apply_observed_ = false;
@@ -19158,6 +19119,13 @@ bool HStreamWindow::ensureSavedControlConfigLoaded() {
   return false;
 }
 
+void HStreamWindow::applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const {
+  // Retain the explicit CLI/environment override while sharing the baseline,
+  // private defaults and saved-game prompt policy with browser launches.
+  if (!environment.contains("HM_NO_SCOREBOARD"))
+    environment.insert("HM_NO_SCOREBOARD", show_scoreboard_dialog_ ? "0" : "1");
+}
+
 void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   if (stitching_still_preview_)
     stitching_still_preview_->setSource({});
@@ -19169,6 +19137,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   loadPlayerAnalyticsConfig(YAML::Node(YAML::NodeType::Map));
   updateDefaultGpuMemoryProfile(YAML::Node(YAML::NodeType::Map));
   setStitchingIterationSettings(default_iteration_settings_);
+  show_scoreboard_dialog_ = default_show_scoreboard_dialog_;
   inherited_player_size_controls_.clear();
   unavailable_playtracker_config_error_.clear();
   if (!game_id_edit_) {
@@ -19182,7 +19151,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     control_points_spin_->setValue(
         lookup_yaml_path(user_layer_, "hstream_ui.stitching_calibration.control_points", &inherited)
             ? inherited.as<int>()
-            : kDefaultStitchCalibrationControlPoints);
+            : default_stitch_control_points_);
     control_points_spin_->blockSignals(blocked);
   }
   if (calibration_frame_count_spin_) {
@@ -19477,12 +19446,22 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     }
     bool normalized_nona_without_autooptimizer = false;
     bool normalized_inactive_autooptimizer = false;
-    int staged_control_points =
-        control_points_spin_ ? control_points_spin_->value() : kDefaultStitchCalibrationControlPoints;
+    const auto configured_control_points =
+        hm::stitching::read_control_point_limit(merge_yaml_maps(baseline_config_, config));
+    if (!configured_control_points.ok())
+      throw std::invalid_argument(configured_control_points.status().ToString());
+    const int staged_control_points = *configured_control_points;
+    if (staged_control_points < hm::stitching::kMinimumCalibrationControlPoints || staged_control_points > 5000)
+      throw std::invalid_argument("Stitching control-point limit must be in 10..5000");
     int staged_frame_count =
         calibration_frame_count_spin_ ? calibration_frame_count_spin_->value() : kDefaultStitchCalibrationFrameCount;
     int staged_max_output_width = default_stitch_max_output_width_;
     const auto staged_iteration_settings = read_stitching_iteration_settings(config, default_iteration_settings_);
+    YAML::Node scoreboard_policy;
+    const bool staged_show_scoreboard_dialog =
+        lookup_yaml_path(config, "hstream_ui.show_scoreboard_dialog", &scoreboard_policy)
+        ? scoreboard_policy.as<bool>()
+        : default_show_scoreboard_dialog_;
     bool staged_run_autooptimizer = default_run_autooptimizer_;
     QTime staged_stitch_frame_time = *parse_stitch_frame_time(default_stitch_frame_time_);
     QString staged_control_point_matcher = default_control_point_matcher_;
@@ -19505,12 +19484,6 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       if (!configured_projection_framing.ok())
         throw std::invalid_argument(std::string(configured_projection_framing.status().message()));
       staged_projection_framing = *configured_projection_framing;
-    }
-    YAML::Node control_points;
-    if (control_points_spin_ &&
-        lookup_yaml_path(config, "hstream_ui.stitching_calibration.control_points", &control_points) &&
-        control_points.IsScalar()) {
-      staged_control_points = control_points.as<int>();
     }
     YAML::Node frame_count;
     const auto selected_plan_frame_count = selected_calibration_frame_count(config);
@@ -19821,6 +19794,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       }
     }
     setStitchingIterationSettings(staged_iteration_settings);
+    show_scoreboard_dialog_ = staged_show_scoreboard_dialog;
     if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
       staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
     }
@@ -22257,108 +22231,23 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
     YAML::Node play_tracker_config = QFileInfo::exists(base_playtracker_config)
         ? YAML::LoadFile(base_playtracker_config.toStdString())
         : YAML::Node(YAML::NodeType::Map);
-    if (!play_tracker_config["play-tracker"] || !play_tracker_config["play-tracker"].IsMap()) {
-      play_tracker_config["play-tracker"] = YAML::Node(YAML::NodeType::Map);
+    hm::tracking::CameraControlValues defaults, values;
+    for (const auto& [id, value] : camera_defaults_) {
+      defaults.emplace(id.toStdString(), value);
+      values.emplace(id.toStdString(), cameraControlValue(id));
     }
-    if (!play_tracker_config["play-tracker"]["live-boxes"] ||
-        !play_tracker_config["play-tracker"]["live-boxes"].IsSequence()) {
-      play_tracker_config["play-tracker"]["live-boxes"] = YAML::Node(YAML::NodeType::Sequence);
-    }
-    YAML::Node live_boxes = play_tracker_config["play-tracker"]["live-boxes"];
-    if (live_boxes.size() == 0) {
-      for (const char* name : {"current_roi", "current_roi_aspect"}) {
-        YAML::Node box(YAML::NodeType::Map);
-        box["name"] = name;
-        live_boxes.push_back(box);
-      }
-    }
-    const auto live_box_roles = hm::resolve_playtracker_live_box_roles(live_boxes);
-    if (!live_box_roles.ok()) {
-      appendLog(
-          QString("could not resolve playtracker live-box roles: %1").arg(live_box_roles.status().ToString().c_str()));
-      return {};
-    }
-
-    auto slider_value = [this](const QString& id) -> int { return cameraControlValue(id); };
-    auto slider_changed = [this, &slider_value](const QString& id) -> bool {
-      const auto default_it = camera_defaults_.find(id);
-      return default_it != camera_defaults_.end() && slider_value(id) != default_it->second;
-    };
-    auto apply_live_box = [&](size_t index) {
-      auto set_if_changed = [&](const QString& id, const char* key) {
-        if (slider_changed(id)) {
-          live_boxes[index][key] = static_cast<double>(slider_value(id)) / 10.0;
-        }
-      };
-      auto set_integer_if_changed = [&](const QString& id, const char* key) {
-        if (slider_changed(id)) {
-          live_boxes[index][key] = slider_value(id);
-        }
-      };
-      set_integer_if_changed("Stop_Direction_Change_Delay_Frames", "stop-translation-on-dir-change-delay");
-      if (slider_changed("Cancel_Stop_On_Opposite_Direction")) {
-        live_boxes[index]["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
-      }
-      set_integer_if_changed("Stop_Cancel_Hysteresis_Frames", "cancel-stop-hysteresis-frames");
-      set_integer_if_changed("Stop_Delay_Cooldown_Frames", "stop-delay-cooldown-frames");
-      set_integer_if_changed("Time_To_Dest_Speed_Limit_Frames", "time-to-dest-speed-limit-frames");
-      set_integer_if_changed("Post_Nonstop_Stop_Delay_Frames", "post-nonstop-stop-delay-count");
-      set_if_changed("Max_Speed_X_x10", "max-speed-x");
-      set_if_changed("Max_Speed_Y_x10", "max-speed-y");
-      set_if_changed("Max_Accel_X_x10", "max-accel-x");
-      set_if_changed("Max_Accel_Y_x10", "max-accel-y");
-    };
-    YAML::Node play_tracker = play_tracker_config["play-tracker"];
-    play_tracker["hstream-apply-to-fast-box"] =
-        publishing_playtracker_force_all_targets_ || slider_value("Apply_To_Fast_Box") != 0;
-    play_tracker["hstream-apply-to-follower-box"] =
-        publishing_playtracker_force_all_targets_ || slider_value("Apply_To_Follower_Box") != 0;
-    // Each command is an immutable sparse delta. Do not inherit a stale delta
-    // if a base file was previously generated by hstream-ui.
-    play_tracker["hstream-runtime-tuning"] = YAML::Node(YAML::NodeType::Map);
-    YAML::Node runtime_tuning = play_tracker["hstream-runtime-tuning"];
     const auto& publishing_controls = publishing_playtracker_controls_.has_value() ? *publishing_playtracker_controls_
                                                                                    : scheduled_playtracker_controls_;
-    auto set_changed_int = [&](const char* key, const char* control_id) {
-      if (publishing_controls.count(control_id))
-        runtime_tuning[key] = slider_value(control_id);
-    };
-    set_changed_int("stop-translation-on-dir-change-delay", "Stop_Direction_Change_Delay_Frames");
-    set_changed_int("zoom-in-aggressiveness", "Zoom_In_Aggressiveness");
-    set_changed_int("ignore-largest-bbox-count", "Ignore_Largest_Count");
-    if (publishing_controls.count("Oversized_Player_Percent"))
-      runtime_tuning["oversized-bbox-percent"] = cameraControlValue("Oversized_Player_Percent");
-    if (publishing_controls.count("Ignore_Oversized_Players"))
-      runtime_tuning["ignore-oversized-bboxes"] = slider_value("Ignore_Oversized_Players") != 0;
-    if (publishing_controls.count("Cancel_Stop_On_Opposite_Direction"))
-      runtime_tuning["cancel-stop-on-opposite-dir"] = slider_value("Cancel_Stop_On_Opposite_Direction") != 0;
-    set_changed_int("cancel-stop-hysteresis-frames", "Stop_Cancel_Hysteresis_Frames");
-    set_changed_int("stop-delay-cooldown-frames", "Stop_Delay_Cooldown_Frames");
-    set_changed_int("time-to-dest-speed-limit-frames", "Time_To_Dest_Speed_Limit_Frames");
-    set_changed_int("post-nonstop-stop-delay-count", "Post_Nonstop_Stop_Delay_Frames");
-    set_changed_int("overshoot-stop-delay-count", "Overshoot_Stop_Delay_Frames");
-    if (publishing_controls.count("Overshoot_Speed_Ratio_x100"))
-      runtime_tuning["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
-    if (publishing_controls.count("Max_Speed_X_x10"))
-      runtime_tuning["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
-    if (publishing_controls.count("Max_Speed_Y_x10"))
-      runtime_tuning["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
-    if (publishing_controls.count("Max_Accel_X_x10"))
-      runtime_tuning["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
-    if (publishing_controls.count("Max_Accel_Y_x10"))
-      runtime_tuning["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
-    if (slider_changed("Overshoot_Stop_Delay_Frames")) {
-      play_tracker["overshoot-stop-delay-count"] = slider_value("Overshoot_Stop_Delay_Frames");
+    std::set<std::string> changed;
+    for (const auto& [id, value] : publishing_controls)
+      changed.insert(id.toStdString());
+    const auto runtime = hm::tracking::BuildPlaytrackerRuntimeControls(
+        play_tracker_config, values, defaults, changed, publishing_playtracker_force_all_targets_);
+    if (!runtime.ok()) {
+      appendLog(QString("could not build playtracker runtime config: %1").arg(runtime.status().ToString().c_str()));
+      return {};
     }
-    if (slider_changed("Overshoot_Speed_Ratio_x100")) {
-      play_tracker["overshoot-scale-speed-ratio"] = ratio_x100(slider_value("Overshoot_Speed_Ratio_x100"));
-    }
-    if (slider_value("Apply_To_Fast_Box") != 0) {
-      apply_live_box(live_box_roles->fast_index);
-    }
-    if (slider_value("Apply_To_Follower_Box") != 0) {
-      apply_live_box(live_box_roles->follower_index);
-    }
+    play_tracker_config = *runtime;
 
     const absl::Status publish = hm::stitching::publish_named_file(
         fs::path(runtime_config_path.toStdString()), YAML::Dump(play_tracker_config) + "\n");
@@ -22524,14 +22413,14 @@ void HStreamWindow::resolveLiveRotationRuntimeBatch(quint64 batch_id) {
     return;
   }
 
-  auto result = std::make_shared<absl::Status>();
-  enqueueLiveRotationConfigTask(
-      [authorization, result]() {
-        *result = hm::stitching::commit_live_stitched_output_rotation(
-            authorization.game_dir, authorization.pending_generation, authorization.authorization_id);
-      },
-      [this, batch_id, authorization, result]() {
-        if (result->ok()) {
+  liveRotationConfigOwner().Commit(
+      {authorization.game_dir,
+       {authorization.pending_generation,
+        authorization.authorization_id,
+        authorization.invalidate_scoreboard,
+        authorization.scoreboard_property_value.toStdString()}},
+      [this, batch_id, authorization](hm::stitching::LiveRotationConfigOwner::Result result) {
+        if (result.status.ok()) {
           if (!authorization.invalidate_scoreboard && active_live_rotation_authorization_.has_value() &&
               active_live_rotation_authorization_->authorization_id == authorization.authorization_id) {
             active_live_rotation_authorization_.reset();
@@ -22541,7 +22430,7 @@ void HStreamWindow::resolveLiveRotationRuntimeBatch(quint64 batch_id) {
         }
         finishRuntimeControlBatch(batch_id, true, "authorization-finalization");
         appendLog(QString("live rotation finalization failed; stopping pipeline for reconciliation: %1")
-                      .arg(QString::fromStdString(result->ToString())));
+                      .arg(QString::fromStdString(result.status.ToString())));
         stopPipeline();
       });
 }
@@ -22800,20 +22689,20 @@ bool HStreamWindow::publishRotationRuntimeControls(
         if (id == "Left_Fixed_Edge_Rotation_Angle_x10" || id == "Right_Fixed_Edge_Rotation_Angle_x10")
           value = 0;
     }
-    const bool linked = cameraControlValue("Link_Fixed_Edge_Rotation_Left_Right") != 0;
-    const double left_angle = cameraControlValue("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    const double right_angle = cameraControlValue("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0;
-    auto add_both_stages = [&](const QString& property, double angle) {
-      const QString runtime_value = QString::number(angle, 'f', 1);
-      commands.push_back({"dsplaytracker0", property, runtime_value});
-      commands.push_back({"playcropper0", property, runtime_value});
-    };
-    if (linked) {
-      add_both_stages("fixed-edge-rotation-angle", left_angle);
-    } else {
-      add_both_stages("fixed-edge-rotation-angle-left", left_angle);
-      add_both_stages("fixed-edge-rotation-angle-right", right_angle);
+    hm::program::RotationControlValues values;
+    for (const auto& spec : hm::program::kRotationControls)
+      values[spec.id] = cameraControlValue(spec.id);
+    std::set<std::string> changed;
+    for (const auto& [id, value] : controls)
+      changed.insert(id.toStdString());
+    const auto fixed_commands = hm::program::FixedEdgeRotationCommands(values, changed, cropRotationSuppressed());
+    if (!fixed_commands.ok()) {
+      appendLog("live rotation property conversion failed: " + QString::fromStdString(fixed_commands.status().ToString()));
+      return false;
     }
+    for (const auto& command : *fixed_commands)
+      commands.push_back({QString::fromStdString(command.element), QString::fromStdString(command.property),
+                          QString::fromStdString(command.value)});
   }
   if (epoch_command.has_value())
     commands.push_back(std::move(*epoch_command));
@@ -22821,81 +22710,65 @@ bool HStreamWindow::publishRotationRuntimeControls(
       publishRuntimeControlBatch({controls.begin(), controls.end()}, commands, live_rotation_authorization);
 }
 
-void HStreamWindow::enqueueLiveRotationConfigTask(std::function<void()> work, std::function<void()> complete) {
-  live_rotation_config_tasks_.push_back({std::move(work), std::move(complete)});
+hm::stitching::LiveRotationConfigOwner& HStreamWindow::liveRotationConfigOwner() {
+  if (!live_rotation_config_owner_) {
+    live_rotation_config_owner_ = std::make_unique<hm::stitching::LiveRotationConfigOwner>([this]() {
+      QMetaObject::invokeMethod(this, [this]() { pollLiveRotationConfigOwner(); }, Qt::QueuedConnection);
+    });
+  }
   live_rotation_authorization_pending_ = true;
   updateRunControls();
-  startNextLiveRotationConfigTask();
+  return *live_rotation_config_owner_;
 }
 
-void HStreamWindow::startNextLiveRotationConfigTask() {
-  if (live_rotation_authorization_worker_ || live_rotation_config_tasks_.empty())
+void HStreamWindow::pollLiveRotationConfigOwner() {
+  if (!live_rotation_config_owner_)
     return;
-  LiveRotationConfigTask task = std::move(live_rotation_config_tasks_.front());
-  live_rotation_config_tasks_.pop_front();
-  QThread* worker = QThread::create(std::move(task.work));
-  live_rotation_authorization_worker_ = worker;
-  connect(worker, &QThread::finished, this, [this, complete = std::move(task.complete)]() mutable {
-    live_rotation_authorization_worker_ = nullptr;
-    if (complete)
-      complete();
-    startNextLiveRotationConfigTask();
-    if (!live_rotation_authorization_worker_ && live_rotation_config_tasks_.empty()) {
-      live_rotation_authorization_pending_ = false;
-      updateRunControls();
-      flushScheduledRuntimeControls();
-      if (close_waiting_for_live_rotation_authorization_) {
-        close_waiting_for_live_rotation_authorization_ = false;
-        deferred_restart_requested_ = false;
-        calibration_restart_requested_ = false;
-        QTimer::singleShot(0, this, &QWidget::close);
-      } else {
-        maybeStartDeferredRestart();
-      }
-    }
-  });
-  connect(worker, &QThread::finished, worker, &QObject::deleteLater);
-  worker->start();
+  live_rotation_config_owner_->Poll();
+  if (live_rotation_config_owner_->pending())
+    return;
+  live_rotation_authorization_pending_ = false;
+  updateRunControls();
+  flushScheduledRuntimeControls();
+  if (close_waiting_for_live_rotation_authorization_) {
+    close_waiting_for_live_rotation_authorization_ = false;
+    deferred_restart_requested_ = false;
+    calibration_restart_requested_ = false;
+    QTimer::singleShot(0, this, &QWidget::close);
+  } else {
+    maybeStartDeferredRestart();
+  }
 }
 
 void HStreamWindow::rollbackLiveRotationAuthorization(
     const LiveRotationAuthorization& authorization,
     const QString& reason,
     std::function<void(bool, const std::optional<LiveRotationAuthorization>&, const QString&)> complete) {
-  struct Result {
-    bool ok{false};
-    std::optional<hm::stitching::LiveStitchedOutputAuthorization> restored;
-    QString error;
-  };
-  auto result = std::make_shared<Result>();
-  enqueueLiveRotationConfigTask(
-      [authorization, result]() {
-        const auto rollback = hm::stitching::rollback_live_stitched_output_rotation(
-            authorization.game_dir, authorization.pending_generation, authorization.authorization_id);
-        result->ok = rollback.ok();
-        if (rollback.ok()) {
-          result->restored = *rollback;
-        } else {
-          result->error = QString::fromStdString(rollback.status().ToString());
-        }
-      },
-      [this, authorization, reason, result, complete = std::move(complete)]() mutable {
+  liveRotationConfigOwner().Rollback(
+      {authorization.game_dir,
+       {authorization.pending_generation,
+        authorization.authorization_id,
+        authorization.invalidate_scoreboard,
+        authorization.scoreboard_property_value.toStdString()}},
+      [this, authorization, reason, complete = std::move(complete)](
+          hm::stitching::LiveRotationConfigOwner::Result result) mutable {
         std::optional<LiveRotationAuthorization> restored;
-        if (result->restored.has_value()) {
+        if (result.status.ok() && result.authorization.has_value()) {
+          const auto& value = result.authorization->value;
           restored = LiveRotationAuthorization{
               authorization.game_id,
               authorization.game_dir,
-              result->restored->pending_generation,
-              result->restored->authorization_id,
-              result->restored->invalidate_scoreboard,
-              QString::fromStdString(result->restored->scoreboard_property_value)};
+              value.pending_generation,
+              value.authorization_id,
+              value.invalidate_scoreboard,
+              QString::fromStdString(value.scoreboard_property_value)};
         }
-        if (!result->ok) {
-          appendLog(
-              QString("could not roll back abandoned live rotation authorization (%1): %2").arg(reason, result->error));
+        const QString error = result.status.ok() ? QString() : QString::fromStdString(result.status.ToString());
+        if (!result.status.ok()) {
+          appendLog(QString("could not roll back abandoned live rotation authorization (%1): %2").arg(reason, error));
         }
         if (complete)
-          complete(result->ok, restored, result->error);
+          complete(result.status.ok(), restored, error);
       });
 }
 
@@ -22928,42 +22801,32 @@ void HStreamWindow::rollbackActiveLiveRotationAuthorization(const QString& reaso
 }
 
 void HStreamWindow::startLiveRotationAuthorization(std::map<QString, int> controls, int rotation) {
-  struct Result {
-    bool authorized{false};
-    hm::stitching::LiveStitchedOutputAuthorization authorization;
-    QString error;
-  };
   const quint64 generation = scheduled_rotation_control_generation_;
   const quint64 pipeline_run_generation = pipeline_run_generation_;
   const QString game_id = active_run_game_id_;
   const std::string game_dir = gameDirectory(game_id).toStdString();
   const std::string authorization_id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-  auto result = std::make_shared<Result>();
-  enqueueLiveRotationConfigTask(
-      [game_dir, rotation, authorization_id, result]() {
-        const auto authorization =
-            hm::stitching::authorize_live_stitched_output_rotation(game_dir, rotation, authorization_id);
-        result->authorized = authorization.ok();
-        if (authorization.ok()) {
-          result->authorization = *authorization;
-        } else {
-          result->error = QString::fromStdString(authorization.status().ToString());
-        }
-      },
-      [this, controls, generation, pipeline_run_generation, game_id, game_dir, rotation, result]() mutable {
+  liveRotationConfigOwner().Authorize(
+      game_dir,
+      rotation,
+      authorization_id,
+      [this, controls, generation, pipeline_run_generation, game_id, game_dir, rotation](
+          hm::stitching::LiveRotationConfigOwner::Result result) mutable {
+        const auto authorization = result.authorization.has_value() ? result.authorization->value
+                                                                    : hm::stitching::LiveStitchedOutputAuthorization{};
         completeLiveRotationAuthorization(
             std::move(controls),
             generation,
             pipeline_run_generation,
             game_id,
             rotation,
-            result->authorized,
-            result->authorization.pending_generation,
-            result->authorization.authorization_id,
-            result->authorization.invalidate_scoreboard,
-            QString::fromStdString(result->authorization.scoreboard_property_value),
+            result.status.ok(),
+            authorization.pending_generation,
+            authorization.authorization_id,
+            authorization.invalidate_scoreboard,
+            QString::fromStdString(authorization.scoreboard_property_value),
             game_dir,
-            result->error);
+            result.status.ok() ? QString() : QString::fromStdString(result.status.ToString()));
       });
 }
 
@@ -22984,7 +22847,7 @@ void HStreamWindow::completeLiveRotationAuthorization(
       ? std::optional<LiveRotationAuthorization>(LiveRotationAuthorization{
             game_id, game_dir, pending_generation, authorization_id, invalidate_scoreboard, scoreboard_property_value})
       : std::nullopt;
-  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning ||
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || pipeline_stop_requested_ ||
       pipeline_run_generation_ != pipeline_run_generation || active_run_game_id_ != game_id) {
     if (authorization.has_value()) {
       active_live_rotation_authorization_ = authorization;
@@ -22999,6 +22862,34 @@ void HStreamWindow::completeLiveRotationAuthorization(
     for (auto& [id, value] : controls)
       scheduled_rotation_controls_.try_emplace(id, value);
     flushScheduledRuntimeControls();
+    return;
+  }
+  if (pipeline_paused_ || pending_process_pause_generation_ != 0 || pending_process_resume_generation_ != 0 ||
+      pending_playback_seek_generation_ != 0 || playback_seek_recovery_generation_ != 0) {
+    // Authorization runs off-thread. Playback can stop accepting properties
+    // while it waits for the config lock, so retire this exact epoch before
+    // letting the scheduler authorize the retained draft after recovery.
+    for (const auto& [id, value] : controls)
+      scheduled_rotation_controls_.try_emplace(id, value);
+    scheduled_rotation_controls_ready_ = true;
+    if (authorization.has_value()) {
+      active_live_rotation_authorization_ = authorization;
+      rollbackLiveRotationAuthorization(
+          *authorization,
+          "playback transition before publication",
+          [this, authorization](
+              bool rolled_back, const std::optional<LiveRotationAuthorization>& restored, const QString&) {
+            if (rolled_back && active_live_rotation_authorization_.has_value() &&
+                active_live_rotation_authorization_->authorization_id == authorization->authorization_id) {
+              active_live_rotation_authorization_.reset();
+            }
+            adoptRestoredLiveRotationAuthorization(restored, "pipeline no longer owns deferred live rotation");
+            if (!rolled_back) {
+              appendLog("deferred live rotation authorization could not be reconciled; stopping pipeline");
+              stopPipeline();
+            }
+          });
+    }
     return;
   }
   if (!authorized) {
@@ -23028,9 +22919,10 @@ void HStreamWindow::completeLiveRotationAuthorization(
 }
 
 void HStreamWindow::flushScheduledRuntimeControls() {
-  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !runtime_control_batches_.empty() ||
-      live_rotation_authorization_pending_ || pending_playback_seek_generation_ != 0 ||
-      playback_seek_recovery_generation_ != 0) {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || pipeline_paused_ ||
+      pending_process_pause_generation_ != 0 || pending_process_resume_generation_ != 0 || pipeline_stop_requested_ ||
+      !runtime_control_batches_.empty() || live_rotation_authorization_pending_ ||
+      pending_playback_seek_generation_ != 0 || playback_seek_recovery_generation_ != 0) {
     return;
   }
   if (scheduled_rotation_controls_ready_ && !scheduled_rotation_controls_.empty()) {

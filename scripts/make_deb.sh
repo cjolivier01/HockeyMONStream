@@ -140,6 +140,7 @@ HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 HSTREAM_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-job/hstream-job"
 HSTREAM_FINALIZE="${TOPDIR}/bazel-bin/src/apps/hstream-finalize/hstream-finalize"
 HSTREAM_CALIBRATION_EXPORT="${TOPDIR}/bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export"
+HSTREAM_PREPARED_MODEL_VALIDATE="${TOPDIR}/bazel-bin/src/apps/hstream-prepared-model-validate/hstream-prepared-model-validate"
 HSTREAM_MODEL_PREPARE="${TOPDIR}/bazel-bin/src/apps/hstream-model-prepare/hstream-model-prepare"
 HSTREAM_MODEL_INFER="${TOPDIR}/bazel-bin/src/apps/hstream-model-infer/hstream-model-infer"
 HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
@@ -168,6 +169,10 @@ if [[ ! -f "${HSTREAM_FINALIZE}" ]]; then
 fi
 if [[ ! -f "${HSTREAM_CALIBRATION_EXPORT}" ]]; then
   echo "ERROR: ${HSTREAM_CALIBRATION_EXPORT} not found. Run make hstream-calibration-export first." >&2
+  exit 1
+fi
+if [[ ! -f "${HSTREAM_PREPARED_MODEL_VALIDATE}" ]]; then
+  echo "ERROR: ${HSTREAM_PREPARED_MODEL_VALIDATE} not found. Run make hstream-prepared-model-validate first." >&2
   exit 1
 fi
 if [[ ! -f "${HSTREAM_MODEL_PREPARE}" ]]; then
@@ -389,6 +394,9 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize")
 cp "${HSTREAM_CALIBRATION_EXPORT}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-calibration-export"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-calibration-export"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-calibration-export")
+cp "${HSTREAM_PREPARED_MODEL_VALIDATE}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-prepared-model-validate"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-prepared-model-validate"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-prepared-model-validate")
 cp "${HSTREAM_MODEL_PREPARE}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-model-prepare"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-model-prepare"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-model-prepare")
@@ -717,9 +725,8 @@ prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
 # marks them instead; without it this launcher would inject a config, sources
 # and a sink into a session that asked for exactly its own arguments.
 if [ "${HSTREAM_JOB_MANAGED_RUNTIME:-}" = 1 ]; then
-  # Scope the marker to the launch it describes. A descendant reaching this
-  # launcher by absolute path is an ordinary run and still wants rewriting.
-  unset HSTREAM_JOB_MANAGED_RUNTIME
+  # Native readers and managed descendants also need this marker so loading
+  # preferences cannot create execution-host settings during an owned job.
   exec "${INSTALL_DIR}/bin/hstream-cli" "$@"
 fi
 for arg in "$@"; do
@@ -1119,6 +1126,7 @@ ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hstream-job" "${STAGING}/usr/bin/hstream-job"
 ln -s "${INSTALL_PREFIX}/bin/hstream-finalize" "${STAGING}/usr/bin/hstream-finalize"
 ln -s "${INSTALL_PREFIX}/bin/hstream-calibration-export" "${STAGING}/usr/bin/hstream-calibration-export"
+ln -s "${INSTALL_PREFIX}/bin/hstream-prepared-model-validate" "${STAGING}/usr/bin/hstream-prepared-model-validate"
 ln -s "${INSTALL_PREFIX}/bin/hstream-model-prepare" "${STAGING}/usr/bin/hstream-model-prepare"
 ln -s "${INSTALL_PREFIX}/bin/hstream-model-infer" "${STAGING}/usr/bin/hstream-model-infer"
 ln -s "${INSTALL_PREFIX}/bin/hstream-assets" "${STAGING}/usr/bin/hstream-assets"

@@ -90,7 +90,6 @@ absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
   return entries;
 }
 
-constexpr size_t kDefaultMaxControlPoints = 1500;
 constexpr size_t kHardMaximumArtifactDimension = 65536;
 constexpr uint64_t kHardMaximumArtifactPixels = 256ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 4 + 32ULL * 1024ULL * 1024ULL;
@@ -3165,7 +3164,7 @@ absl::Status create_control_points(
   if (frame_pairs.empty()) {
     return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
-  size_t max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", kDefaultMaxControlPoints);
+  size_t max_control_points = 0;
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   StitchingBackendChoices backend_choices;
   std::optional<PlayerFrameSelectionPlan> selected_plan;
@@ -3173,6 +3172,9 @@ absl::Status create_control_points(
   try {
     if (fs::exists(game_config_path)) {
       const YAML::Node config = YAML::LoadFile(game_config_path.string());
+      int limit = 0;
+      HM_ASSIGN_OR_RETURN(limit, read_control_point_limit(config));
+      max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", static_cast<size_t>(limit));
       const auto baseline = hm::baseline_config::load();
       if (!baseline.ok())
         return baseline.status();
@@ -3199,6 +3201,9 @@ absl::Status create_control_points(
       const auto baseline = hm::baseline_config::load();
       if (!baseline.ok())
         return baseline.status();
+      int limit = 0;
+      HM_ASSIGN_OR_RETURN(limit, read_control_point_limit(baseline->values));
+      max_control_points = utils::getenv("HM_MAX_CONTROL_POINTS", static_cast<size_t>(limit));
       HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(baseline->values));
     }
   } catch (const YAML::Exception& exception) {
@@ -4927,7 +4932,10 @@ absl::Status save_rink_profile_locked(
     const std::string& expected_invalidation_id,
     const std::optional<double>& expected_persisted_rotation,
     const cv::Mat* stitched_image = nullptr,
-    const RinkMaskFrameProvenance& frame = {}) {
+    const RinkMaskFrameProvenance& frame = {},
+    const std::function<bool()>& is_cancelled = {}) {
+  if (is_cancelled && is_cancelled())
+    return absl::CancelledError("Rink-mask calibration cancelled before publication");
   if (game_dir.empty() || profile.masks.empty()) {
     return absl::InvalidArgumentError("A game directory and at least one rink mask are required");
   }
@@ -5138,6 +5146,27 @@ absl::Status save_rink_profile_locked(
       camera["seconds"] = source.seconds;
       provenance["sources"].push_back(camera);
     }
+    if (!frame.input_id.empty()) {
+      // The large immutable payload is outside this journal. Validate its
+      // binding before atomically adopting the small reference with the mask.
+      RinkMaskInputLimits limits;
+      HM_ASSIGN_OR_RETURN(limits, ReadRinkMaskInputLimits(config));
+      RinkMaskInput input;
+      HM_ASSIGN_OR_RETURN(input, InspectRinkMaskInput(root, frame.input_id, limits, is_cancelled));
+      const auto& retained = input.description;
+      StitchArtifactContentIdentity identity;
+      HM_ASSIGN_OR_RETURN(identity, stitch_artifact_content_identity_locked(root));
+      if (retained.hugin_generation != hugin_generation || identity.generation_id != hugin_generation ||
+          retained.hugin_fingerprint != identity.fingerprint ||
+          retained.width != static_cast<uint32_t>(expected_size.width) ||
+          retained.height != static_cast<uint32_t>(expected_size.height) ||
+          retained.frame.selection != frame.selection || retained.frame.recording_time_ns != frame.recording_time_ns)
+        return absl::AbortedError("Retained rink-mask input belongs to another calibration or sampled frame");
+      for (size_t i = 0; i < 2; ++i)
+        if (retained.frame.sources[i].seconds != frame.sources[i].seconds)
+          return absl::AbortedError("Retained rink-mask input camera positions do not match publication");
+      provenance["input_id"] = frame.input_id;
+    }
     config["rink"]["mask_frame"] = provenance;
     config["rink"]["ice_contours_mask_count"] = profile.masks.size();
     config["rink"]["ice_contours_mask_centroid"] = std::vector<double>{profile.centroid.x, profile.centroid.y};
@@ -5231,6 +5260,10 @@ absl::Status save_rink_profile_locked(
   sync_status = fsync_path(staging, true);
   if (!sync_status.ok())
     return sync_status;
+  // Stop may arrive during the payload hash or staging. Once PREPARED is
+  // durable, finish the existing commit/recovery protocol without interruption.
+  if (is_cancelled && is_cancelled())
+    return absl::CancelledError("Rink-mask calibration cancelled before durable publication");
   sync_status = publish_transaction_state(staging, "PREPARED\n");
   if (!sync_status.ok())
     return sync_status;
@@ -5286,6 +5319,9 @@ absl::Status save_rink_profile_locked(
   sync_status = complete_transaction_recovery(root, TransactionJournalKind::kRink);
   if (!sync_status.ok())
     return sync_status;
+  const absl::Status prune = PruneRinkMaskInputs(root, frame.input_id);
+  if (!prune.ok())
+    std::cerr << "Retained rink-mask input cleanup deferred: " << prune << '\n';
   return absl::OkStatus();
 }
 
@@ -5446,7 +5482,8 @@ absl::Status create_field_mask(
         expected_invalidation_id,
         expected_persisted_rotation,
         &stitched,
-        frame);
+        frame,
+        is_cancelled);
   }
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
@@ -5467,7 +5504,8 @@ absl::Status create_field_mask(
       expected_invalidation_id,
       expected_persisted_rotation,
       &stitched,
-      frame);
+      frame,
+      is_cancelled);
 }
 
 absl::Status configure_orientation(
@@ -5507,8 +5545,11 @@ bool is_scoreboard_configured(const std::string& game_dir) {
   }
 }
 
-absl::Status configure_scoreboard(const std::string& game_dir, const std::function<bool()>& is_cancelled) {
-  HM_RETURN_IF_ERROR(ScoreboardSelector::Run(game_dir, is_cancelled));
+absl::Status configure_scoreboard(
+    const std::string& game_dir,
+    const std::function<bool()>& is_cancelled,
+    bool explicit_request) {
+  HM_RETURN_IF_ERROR(ScoreboardSelector::Run(game_dir, is_cancelled, explicit_request));
   if (!is_scoreboard_configured(game_dir)) {
     return absl::InternalError("Scoreboard selector completed without writing perspective_polygon");
   }

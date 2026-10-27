@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
@@ -96,6 +97,7 @@ cv::Point2d sourcePoint(cv::Point2d rink_point) {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  install_button_icon_style();
   if (argc == 6 && QString(argv[1]) == "--prepare-mask") {
     const QString game = QString::fromLocal8Bit(argv[2]);
     RinkMapDialog dialog(
@@ -211,16 +213,50 @@ int main(int argc, char** argv) {
         ? 0
         : 1;
   }
-  if (argc == 4 && QString(argv[1]) == "--inspect-mask") {
+  if (argc == 4 && (QString(argv[1]) == "--inspect-mask" || QString(argv[1]) == "--inspect-mask-boards")) {
     RinkMapDialog dialog(QString::fromLocal8Bit(argv[2]));
     dialog.show();
     if (!idle(dialog))
       return 1;
+    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    const int initial_rows = table->rowCount();
     dialog.findChild<QPushButton*>("suggestRinkMaskButton")->click();
     if (!idle(dialog, 60000))
       return 1;
     std::cout << dialog.findChild<QLabel*>("rinkMapStatus")->text().toStdString() << '\n';
-    auto* table = dialog.findChild<QTableWidget*>("rinkMapObservationsTable");
+    if (QString(argv[1]) == "--inspect-mask-boards") {
+      const int suggested_rows = table->rowCount();
+      if (!expect(suggested_rows > initial_rows, "A real saved mask must add a supported board suggestion"))
+        return 1;
+      const int board_row = suggested_rows - 1;
+      if (!expect(
+              table->item(board_row, 0)->checkState() == Qt::Unchecked &&
+                  table->item(board_row, 2)->text().contains("mask"),
+              "Automatic board evidence starts unchecked and identifies its source"))
+        return 1;
+      dialog.findChild<QPushButton*>("rinkMapUndoButton")->click();
+      if (!expect(idle(dialog) && table->rowCount() == initial_rows, "Undo retains the original manual evidence"))
+        return 1;
+      dialog.findChild<QPushButton*>("rinkMapRedoButton")->click();
+      if (!expect(idle(dialog) && table->rowCount() == suggested_rows, "Redo restores the board suggestion"))
+        return 1;
+      table->item(board_row, 0)->setCheckState(Qt::Checked);
+      if (!expect(
+              idle(dialog) && dialog.findChild<QPushButton*>("saveRinkMapButton")->isEnabled(),
+              "Reviewed board evidence can be saved even while the map remains partial"))
+        return 1;
+      dialog.findChild<QPushButton*>("rinkMapUndoButton")->click();
+      if (!expect(
+              idle(dialog) && table->item(board_row, 0)->checkState() == Qt::Unchecked,
+              "Undo restores review state"))
+        return 1;
+      dialog.findChild<QPushButton*>("suggestRinkMaskButton")->click();
+      if (!expect(
+              idle(dialog, 60000) && table->rowCount() == suggested_rows,
+              "Repeated assistance replaces its evidence"))
+        return 1;
+      return dialog.grab().save(QString::fromLocal8Bit(argv[3])) ? 0 : 1;
+    }
     for (int row = 0; row < table->rowCount(); ++row) {
       const auto* identity = qobject_cast<QComboBox*>(table->cellWidget(row, 1));
       if (identity && identity->currentData() == "near-boards" && table->item(row, 2)->text().contains("mask")) {
@@ -495,6 +531,8 @@ int main(int argc, char** argv) {
     ok &= expect(idle(dialog), "Partial reopen completes");
     const auto* fit = dialog.findChild<QPushButton*>("rinkMapFitImagesButton");
     ok &= expect(fit && !fit->icon().isNull(), "Fit images retains its action icon");
+    for (const auto* button : dialog.findChildren<QPushButton*>())
+      ok &= expect(!button->icon().isNull(), "Rink map buttons retain their action icons");
     auto wheel = [](QWidget* widget, bool pixels = false, bool include_angle = false) {
       const QPoint position = widget->rect().center();
       QWheelEvent event(

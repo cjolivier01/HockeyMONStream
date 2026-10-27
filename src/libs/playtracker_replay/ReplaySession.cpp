@@ -477,7 +477,35 @@ absl::Status ValidatePanoramaGeometry(uint32_t width, uint32_t height, uint32_t 
   if (!width || !height || !canvas_width || !canvas_height)
     return absl::InvalidArgumentError("Panorama and recorded canvas dimensions must be positive");
   const double scale = std::min(double(width) / canvas_width, double(height) / canvas_height);
-  if (std::abs(width - canvas_width * scale) > 2.0 || std::abs(height - canvas_height * scale) > 2.0)
+  if (std::abs(width - canvas_width * scale) <= 2.0 && std::abs(height - canvas_height * scale) <= 2.0)
+    return absl::OkStatus();
+  const uint64_t width_product = uint64_t(width) * canvas_height;
+  const uint64_t height_product = uint64_t(height) * canvas_width;
+  // EncoderDimensions independently rounds each scaled dimension down to an
+  // even value. A shared scale must lie in both [output/input, (output+2)/input)
+  // intervals. Anchoring to the smaller axis ratio instead would magnify that
+  // axis's rounding on wide or tall canvases. Cross-products keep the open
+  // upper boundaries exact; promoting before +2 also covers uint32 dimensions.
+  const uint64_t width_upper = (uint64_t(height) + 2) * canvas_width;
+  const uint64_t height_upper = (uint64_t(width) + 2) * canvas_height;
+  const bool even = ((width | height) & 1U) == 0;
+  bool encoder_aligned = even && width_product < width_upper && height_product < height_upper;
+  if (!encoder_aligned && even && width_product <= width_upper && height_product <= height_upper) {
+    // Native double multiplication can land just below an exact even boundary:
+    // 8415x1122 at a 7680 width limit produces 7680x1022, not 7680x1024.
+    // At touching intervals, require an actual common floating-point scale to
+    // reproduce both dimensions, rather than accepting every closed endpoint.
+    // Half a product ULP divided by its input is at most one scale ULP, so the
+    // nearest boundary scale and its adjacent doubles cover these roundings.
+    const auto matches = [&](double candidate) {
+      return std::floor(canvas_width * candidate / 2) * 2 == width &&
+          std::floor(canvas_height * candidate / 2) * 2 == height;
+    };
+    const double boundary = std::max(double(width) / canvas_width, double(height) / canvas_height);
+    encoder_aligned = matches(boundary) || matches(std::nextafter(boundary, 0.0)) ||
+        matches(std::nextafter(boundary, std::numeric_limits<double>::infinity()));
+  }
+  if (!encoder_aligned)
     return absl::InvalidArgumentError("Select the corresponding uncropped panorama with the same aspect ratio");
   return absl::OkStatus();
 }
@@ -1196,9 +1224,14 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
   try {
     require(
         trial.frames.size() == impl_->samples.size() && !trial.frames.empty(), "Trial does not belong to this range");
-    const auto geometry = ValidatePanoramaGeometry(media.width, media.height, impl_->width, impl_->height);
-    require(geometry.ok(), geometry.ToString());
-    require(fs::is_regular_file(media.path), "Bound source file is missing");
+    const bool has_media = !media.path.empty();
+    if (has_media) {
+      const auto geometry = ValidatePanoramaGeometry(media.width, media.height, impl_->width, impl_->height);
+      require(geometry.ok(), geometry.ToString());
+      require(fs::is_regular_file(media.path), "Bound source file is missing");
+    } else {
+      require(!media.width && !media.height && !media.stitching, "Media geometry requires a bound source file");
+    }
     const auto recording = YAML::Load(impl_->manifest_contents);
     const fs::path directory = fs::path(impl_->options.manifest_path).parent_path();
     const auto protects = [&path](const std::string& artifact) {
@@ -1279,18 +1312,20 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
       guide["scope"] = "Experimental replay framing adjustment; native tracking inputs and state unchanged";
     }
     auto binding = document["media"];
-    binding["path"] = fs::absolute(media.path).string();
-    binding["size_bytes"] = fs::file_size(media.path);
-    binding["modified_ticks"] = fs::last_write_time(media.path).time_since_epoch().count();
-    binding["width"] = media.width;
-    binding["height"] = media.height;
+    if (has_media) {
+      binding["path"] = fs::absolute(media.path).string();
+      binding["size_bytes"] = fs::file_size(media.path);
+      binding["modified_ticks"] = fs::last_write_time(media.path).time_since_epoch().count();
+      binding["width"] = media.width;
+      binding["height"] = media.height;
+      binding["video_origin_pts_ns"] = media.video_origin_pts_ns;
+      binding["identity"] =
+          "Manually bound sources, stitching geometry and time; content identity requires operator verification";
+    }
     binding["canvas_width"] = impl_->width;
     binding["canvas_height"] = impl_->height;
     binding["telemetry_origin_pts_ns"] = media.telemetry_origin_pts_ns;
-    binding["video_origin_pts_ns"] = media.video_origin_pts_ns;
-    binding["kind"] = media.stitching ? "original-cameras" : "panorama";
-    binding["identity"] =
-        "Manually bound sources, stitching geometry and time; content identity requires operator verification";
+    binding["kind"] = has_media ? (media.stitching ? "original-cameras" : "panorama") : "none";
     if (media.stitching) {
       auto stitching = binding["stitching"];
       stitching["directory"] = media.stitching->directory;

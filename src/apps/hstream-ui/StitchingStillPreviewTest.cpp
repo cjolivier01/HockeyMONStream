@@ -3,6 +3,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
+#include "src/apps/hstream-ui/StitchingStillImage.h"
 
 #include <tiffio.h>
 #include <QtCore/QDir>
@@ -74,6 +75,51 @@ void tiff_fixture(const QString& path) {
   for (int y = 0; y < 64; ++y)
     require(TIFFWriteScanline(file, row.data(), y) >= 0, "Cannot write TIFF row");
   TIFFClose(file);
+}
+
+SavedStitchingStill read_still(
+    const QString& directory,
+    const QByteArray& settings = {},
+    const std::function<bool()>& cancelled = {},
+    const std::function<void()>& decoding = {}) {
+  std::mutex gate;
+  return ReadSavedStitchingStill(
+      directory, {}, settings, StitchingStillRevision(directory), gate, cancelled, {}, decoding);
+}
+
+void exercise_synchronous_reader() {
+  QTemporaryDir game;
+  const QByteArray complete = "hstream_ui: {stitching_calibration: {status: complete}}\n";
+  write(game.filePath("config.yaml"), complete);
+  QImage png(4096, 64, QImage::Format_RGB32);
+  png.fill(Qt::red);
+  require(png.save(game.filePath("s.png")), "Cannot save synchronous PNG fixture");
+  const auto original = read_still(game.path());
+  require(
+      original.name == "s.png" && original.image.size() == QSize(2048, 32) &&
+          original.image.pixelColor(0, 0) == QColor(Qt::red) && !original.retry,
+      "The synchronous reader must accept and bound PNG-only legacy calibrations");
+  require(original.revision == StitchingStillRevision(game.path()), "Still must bind its checked source revision");
+  bool decoded_without_locks = false;
+  const auto replaced = read_still(game.path(), {}, {}, [&] {
+    auto writer = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+    decoded_without_locks = writer.ok() && bool(*writer);
+    write(game.filePath("config.yaml"), complete + "changed: true\n");
+  });
+  require(decoded_without_locks, "Synchronous decoding must release publication locks");
+  require(replaced.image.isNull() && replaced.retry, "A revision replaced during decoding must never be returned");
+  write(game.filePath("config.yaml"), complete);
+  bool cancelled = true;
+  int decodes = 0;
+  const auto before = read_still(game.path(), {}, [&] { return cancelled; }, [&] { ++decodes; });
+  require(before.image.isNull() && decodes == 0, "Cancelled synchronous reads must not enter decoding");
+  cancelled = false;
+  const auto during = read_still(game.path(), {}, [&] { return cancelled; }, [&] { cancelled = true; });
+  require(during.image.isNull() && !during.retry, "Cancellation during decoding must retire the bounded result");
+  auto writer = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
+  require(writer.ok() && *writer, "Cannot hold synchronous writer fixture");
+  const auto busy = read_still(game.path());
+  require(busy.image.isNull() && busy.retry, "An optional synchronous read must not wait for an active writer");
 }
 
 void exercise_metadata_cancellation() {
@@ -374,11 +420,20 @@ void exercise() {
       "Cannot prepare generation claim");
   const auto claimed = QByteArray::fromStdString(YAML::Dump(config));
   write(game.filePath("config.yaml"), claimed);
+  const auto isolated_home = qgetenv("HOME");
+  qunsetenv("HOME");
+  require(
+      !read_still(game.path()).image.isNull(), "An explicit saved game must remain readable without a user HOME layer");
+  qputenv("HOME", isolated_home);
   require(wait_for([&] { return preview.isVisible(); }), "Matching generation claim must allow the still");
   config["stitching"]["projection"] = "rectilinear";
   write(game.filePath("config.yaml"), QByteArray::fromStdString(YAML::Dump(config)));
   require(wait_for([&] { return preview.isHidden(); }), "Editing settings must invalidate an old generation claim");
   write(game.filePath("config.yaml"), claimed);
+  preview.setSource({});
+  require(
+      read_still(game.path(), "stitching: {projection: rectilinear}").image.isNull(),
+      "Synchronous readers must reject changed frozen effective settings too");
   preview.setSource(game.path(), {}, "stitching: {projection: rectilinear}");
   timer.restart();
   while (timer.elapsed() < 1200) {
@@ -386,6 +441,10 @@ void exercise() {
     QThread::msleep(10);
   }
   require(preview.isHidden(), "Changed effective UI defaults must reject an old saved calibration");
+  preview.setSource({});
+  require(
+      !read_still(game.path(), "stitching: {projection: cylindrical}").image.isNull(),
+      "Synchronous readers must accept the same matching parameter claim as Qt");
   preview.setSource(game.path(), {}, "stitching: {projection: cylindrical}");
   require(wait_for([&] { return preview.isVisible(); }), "Matching effective UI choices must restore the still");
   // A completed canvas is usable before the downstream PNG/mask has been rebuilt.
@@ -401,7 +460,10 @@ void exercise() {
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  QTemporaryDir user_home;
+  qputenv("HOME", QFile::encodeName(user_home.path()));
   try {
+    exercise_synchronous_reader();
     exercise_metadata_cancellation();
     exercise_pending_recovery();
     exercise_advisory_generation();

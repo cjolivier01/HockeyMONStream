@@ -6,6 +6,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/ImuSynchronization.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
+#include "hstream/src/libs/stitching/RinkMaskInputStore.h"
 
 /* clang-format off */
 #include "hstream/src/libs/common/StatusMacros.h"
@@ -306,12 +307,6 @@ absl::StatusOr<cv::Mat> load_field_mask_for_loaded_generation(
     const std::string& loaded_hugin_generation,
     const std::string& expected_invalidation_id = {});
 
-struct RinkMaskFrameProvenance {
-  std::string selection{"auto"};
-  std::optional<uint64_t> recording_time_ns;
-  std::array<CalibrationFrameSource, 2> sources;
-};
-
 absl::Status create_field_mask(
     const std::string& game_dir,
     const CalibrationImageWriter& write_image,
@@ -373,7 +368,10 @@ absl::Status configure_orientation(
 
 bool is_scoreboard_configured(const std::string& game_dir);
 
-absl::Status configure_scoreboard(const std::string& game_dir, const std::function<bool()>& is_cancelled = {});
+absl::Status configure_scoreboard(
+    const std::string& game_dir,
+    const std::function<bool()>& is_cancelled = {},
+    bool explicit_request = false);
 
 // The fingerprint is frozen before frame capture. Empty explicitly identifies ordinary
 // frame spacing; a changed, cleared, or newly added selection aborts before extraction

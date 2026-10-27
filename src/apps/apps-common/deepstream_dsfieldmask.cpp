@@ -5,6 +5,7 @@
 #include "hstream/src/apps/apps-common/deepstream_config.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
+#include "hstream/src/libs/program/RotationControls.h"
 
 #include <glib-2.0/glib.h>
 #include <gst/gstelement.h>
@@ -478,6 +479,12 @@ bool create_webrtc_audio_branch(NvDsHmAudioBin* bin, const HmAudioSinkTarget& ta
       !make_audio_bin_element(bin, &rtppay, "rtpopuspay", branch_element_name("webrtc", target.config, "rtpopuspay"))) {
     return false;
   }
+  if (render_playback_realtime() && target.config->encoder_config.preview_endpoint) {
+    // The private paced mapper preserves every source sample. Its bounded
+    // backpressure must reach the producer without this earlier tee queue
+    // discarding PCM while video or the browser transport is delayed.
+    g_object_set(G_OBJECT(queue), "leaky", 0, NULL);
+  }
 
   GstCaps* raw_caps = gst_caps_new_simple(
       "audio/x-raw",
@@ -563,10 +570,9 @@ bool create_render_audio_branch(
     // Apply backpressure only in explicitly paced playback. Archive audio
     // retains its own lossless queue and unchanged sample timestamps.
     g_object_set(G_OBJECT(queue), "leaky", 0, NULL);
-    // Exact-pair gating releases audio only after its matching video frames.
-    // An ALSA clock stops while its ring buffer is priming after a source seek;
-    // video waiting on that clock would then prevent the audio needed to start
-    // it. Keep both paced branches on the pipeline's monotonic system clock.
+    // Shared paced presentation installs the monitor's physical clock only
+    // after resolving its device bounds and bounded video retention. Until
+    // then the incomplete graph cannot provide a presentation clock.
     g_object_set(G_OBJECT(audiosink), "provide-clock", FALSE, NULL);
   }
   g_object_set(G_OBJECT(audiosink), "sync", realtime, "async", FALSE, "max-lateness", gint64{-1}, "qos", FALSE, NULL);
@@ -1013,13 +1019,16 @@ gboolean create_dsplaytracker_bin(NvDsDsPlayTrackerConfig* config, NvDsDsPlayTra
   ppc << ";color-players=" << config->color_players;
   ppc << ";show=" << config->show;
   if (config->fixed_edge_rotation_angle_set) {
-    ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
+    ppc << ";fixed-edge-rotation-angle="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle);
   }
   if (config->fixed_edge_rotation_angle_left_set) {
-    ppc << ";fixed-edge-rotation-angle-left=" << config->fixed_edge_rotation_angle_left;
+    ppc << ";fixed-edge-rotation-angle-left="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_left);
   }
   if (config->fixed_edge_rotation_angle_right_set) {
-    ppc << ";fixed-edge-rotation-angle-right=" << config->fixed_edge_rotation_angle_right;
+    ppc << ";fixed-edge-rotation-angle-right="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_right);
   }
   ppc << ";dynamic-acceleration-scaling=" << config->dynamic_acceleration_scaling;
   if (config->fixed_edge_rotation_angle_set) {
@@ -1245,13 +1254,16 @@ gboolean create_hmplaycropper_bin(HmPlayCropperConfig* config, NvDsHmVideoPrepBi
     ppc << ";runtime-output-max-height=" << config->runtime_output_max_height;
   }
   if (config->fixed_edge_rotation_angle_set) {
-    ppc << ";fixed-edge-rotation-angle=" << config->fixed_edge_rotation_angle;
+    ppc << ";fixed-edge-rotation-angle="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle);
   }
   if (config->fixed_edge_rotation_angle_left_set) {
-    ppc << ";fixed-edge-rotation-angle-left=" << config->fixed_edge_rotation_angle_left;
+    ppc << ";fixed-edge-rotation-angle-left="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_left);
   }
   if (config->fixed_edge_rotation_angle_right_set) {
-    ppc << ";fixed-edge-rotation-angle-right=" << config->fixed_edge_rotation_angle_right;
+    ppc << ";fixed-edge-rotation-angle-right="
+        << hm::program::SerializeFixedEdgeRotationAngle(config->fixed_edge_rotation_angle_right);
   }
   ppc << ";no-crop=" << config->no_crop;
 

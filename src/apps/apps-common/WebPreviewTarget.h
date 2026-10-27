@@ -2,6 +2,7 @@
 
 #include "hstream/src/apps/apps-common/PreviewGpuSurface.h"
 #include "hstream/src/apps/apps-common/PreviewTransportMonitor.h"
+#include "hstream/src/apps/apps-common/SelectedPreviewStream.h"
 #include "hstream/src/apps/apps-common/WebPreviewObserver.h"
 
 #include <map>
@@ -58,6 +59,9 @@ class WebPreviewTarget {
   void RemoveRoute(GstPad* route);
   bool Select(GstPad* route, std::uint64_t operation);
   bool Active(GstPad* route, std::uint64_t operation) const;
+  bool SetFrameAdmission(FrameAdmission admission);
+  bool SetPresentationMapper(PresentationMapper mapper, std::function<void()> wake);
+  bool CancelRoutePresentation(GstPad* route, std::uint64_t operation);
   // Sole peer lifecycle entry points, called on the signaling owner. Do not
   // detach/reset endpoint() directly. These close compressed output, release
   // old downstream waits, drain accepted pushes, then retire/replace the peer.

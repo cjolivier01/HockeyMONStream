@@ -53,6 +53,8 @@ cc_library(
         "//src/libs/stitching:calibration_frame_exif",
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:player_frame_input_store",
+        "//src/libs/stitching:rink_mask_input_store",
+        "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:stitching_reframe",
         "//src/libs/stitching:player_frame_selection",

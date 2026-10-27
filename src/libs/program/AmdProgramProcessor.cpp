@@ -8,7 +8,7 @@ struct AmdProgramProcessor::Impl {
   std::unique_ptr<tracking::ProgramTracking> tracking;
   std::unique_ptr<AmdProgramRenderer> renderer;
   std::shared_ptr<const AmdPanoramaFrame> frame;
-  hm::BBox crop;
+  std::optional<hm::BBox> crop;
   bool retired{false};
 };
 AmdProgramProcessor::AmdProgramProcessor(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -52,9 +52,9 @@ absl::StatusOr<AmdProgramFrame> AmdProgramProcessor::Process(uint64_t sequence, 
   if (!observed.ok())
     return observed.status();
   impl.frame = std::move(*frame);
-  impl.crop = observed->crop.value_or(hm::BBox(0, 0, width(), height()));
+  impl.crop = observed->crop;
   impl.retired = false;
-  return AmdProgramFrame{detected->size(), std::move(*observed), impl.crop};
+  return AmdProgramFrame{detected->size(), std::move(*observed), impl.crop.value_or(hm::BBox(0, 0, width(), height()))};
 }
 absl::Status AmdProgramProcessor::Render(
     GstBuffer* output,

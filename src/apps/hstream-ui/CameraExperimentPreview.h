@@ -9,6 +9,12 @@
 #include <string>
 #include <vector>
 
+// Resolve the executable's own plugin before using cached system factories.
+// GStreamer must be initialized; loading factories does not allocate a GPU graph.
+bool LoadCameraExperimentPlugin(std::string* error);
+
+class CameraExperimentPreviewOutput;
+
 // Owns a small decode/crop/render graph. It never runs inference or camera
 // policy, and keeps only a few GPU video buffers regardless of clip length.
 class CameraExperimentPreview {
@@ -34,7 +40,8 @@ class CameraExperimentPreview {
       double left_rotation,
       double right_rotation,
       std::string* error,
-      std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask = {});
+      std::shared_ptr<const hm::gpu_preview::RinkMaskImage> rink_mask = {},
+      std::shared_ptr<CameraExperimentPreviewOutput> output = {});
   bool SetTrajectory(
       std::shared_ptr<const std::vector<Frame>> frames,
       std::uint64_t end_pts_ns,

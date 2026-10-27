@@ -16,9 +16,29 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QVBoxLayout>
 
+#include <stdexcept>
+
 namespace hm::ui {
+Int8PreparationDefaults ReadInt8PreparationDefaults(const YAML::Node& config) {
+  const auto ui = config["hstream_ui"];
+  const auto values = ui.IsMap() ? ui["int8_preparation"] : YAML::Node();
+  if (!values.IsMap() || !values["samples"].IsScalar() || !values["play_when_ready"].IsScalar())
+    throw std::runtime_error("Baseline requires hstream_ui.int8_preparation samples and play_when_ready");
+  for (const char* key : {"samples", "play_when_ready"}) {
+    const auto tag = values[key].Tag();
+    if (tag == "!" || tag == "tag:yaml.org,2002:str")
+      throw std::runtime_error("INT8 preparation defaults require an integer and boolean, not quoted strings");
+  }
+  const int samples = values["samples"].as<int>();
+  if (samples < 16 || samples > 256)
+    throw std::runtime_error("hstream_ui.int8_preparation.samples must be in 16..256");
+  return {samples, values["play_when_ready"].as<bool>()};
+}
+
 Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWidget* parent)
     : QDialog(parent), request_(std::move(request)) {
+  if (request_.defaults.samples < 16 || request_.defaults.samples > 256)
+    throw std::runtime_error("INT8 dialog requires resolved samples in 16..256");
   qApp->installEventFilter(this);
   setObjectName("int8PreparationDialog");
   setWindowTitle("Prepare INT8 from recording");
@@ -34,11 +54,11 @@ Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWi
   count_ = new QSpinBox;
   count_->setObjectName("int8SampleCount");
   count_->setRange(16, 256);
-  count_->setValue(64);
+  count_->setValue(request_.defaults.samples);
   layout->addWidget(count_);
   play_ = new QCheckBox("Play from the beginning when ready");
   play_->setObjectName("int8PlayWhenReady");
-  play_->setChecked(true);
+  play_->setChecked(request_.defaults.play_when_ready);
   layout->addWidget(play_);
   status_ = new QLabel("The current detector stays selected until preparation succeeds.");
   status_->setObjectName("int8PreparationStatus");

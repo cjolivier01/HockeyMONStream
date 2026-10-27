@@ -50,6 +50,9 @@ struct ConfiguratorTestAccess {
   static const std::string& active_stitching_generation(const Configurator& configurator) {
     return configurator.active_stitching_invalidation_id_;
   }
+  static absl::Status invalidate_rotation_dependent_cache(Configurator* configurator) {
+    return configurator->invalidate_rotation_dependent_cache_if_needed(configurator->resolved_game_dir());
+  }
   static absl::Status configure_source_bit_depth(Configurator* configurator, bool stitching_calibration_only) {
     YAML::Node pipeline = configurator->config_["pipeline"];
     return configurator->configure_source_bit_depth(pipeline, {}, stitching_calibration_only);
@@ -1040,13 +1043,36 @@ int main() {
             mapped["fixed-edge-rotation-angle-left"].as<double>() == 0.0 &&
                 mapped["fixed-edge-rotation-angle-right"].as<double>() == 0.0,
             "Both sides must be zero even for null canonical crop rotation");
-        if (test.native_overrides)
+        if (test.native_overrides) {
+          bool native_bag_rotation_absent = true;
+          for (const char* key :
+               {"fixed-edge-rotation-angle",
+                "fixed-edge-rotation-angle-left",
+                "fixed-edge-rotation-angle-right",
+                "fixed_edge_rotation_angle",
+                "fixed_edge_rotation_angle_left",
+                "fixed_edge_rotation_angle_right"}) {
+            native_bag_rotation_absent &=
+                !mapped["properties"][key].IsDefined() && !mapped["private-properties"][key].IsDefined();
+          }
           ok &= expect(
-              mapped["properties"].size() == 0 && mapped["private-properties"].size() == 0 &&
-                  !mapped["fixed_edge_rotation_angle"].IsDefined() &&
+              native_bag_rotation_absent && !mapped["fixed_edge_rotation_angle"].IsDefined() &&
                   !mapped["fixed_edge_rotation_angle_left"].IsDefined() &&
                   !mapped["fixed_edge_rotation_angle_right"].IsDefined(),
               "Native bags and legacy aliases must not reintroduce crop rotation");
+          if (std::string(stage) == "ds-playtracker") {
+            for (const char* key :
+                 {"rink-camera-enable",
+                  "rink-camera-anticipate",
+                  "rink-camera-frame-goals",
+                  "rink-camera-adaptive-zoom"}) {
+              ok &= expect(
+                  mapped["private-properties"][key].as<int>() ==
+                      test_baseline["pipeline"][stage]["private-properties"][key].as<int>(),
+                  "Crop rotation suppression must retain unrelated inherited framing controls");
+            }
+          }
+        }
       }
     }
     ok &= expect(
@@ -1702,6 +1728,54 @@ int main() {
       stale_runtime_polygon_cleared,
       "Rotation invalidation must clear a canonical polygon already materialized into the active native pipeline");
 
+  // Qt supplies an unsaved Rotation draft as a CLI option. It must invalidate
+  // output-dependent geometry without turning the draft into a saved setting.
+  const fs::path draft_rotation_dir = games / "mapping-draft-rotation";
+  fs::create_directories(draft_rotation_dir);
+  YAML::Node draft_rotation = YAML::Clone(stale_runtime_polygon);
+  draft_rotation["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
+  std::ofstream(draft_rotation_dir / "config.yaml") << YAML::Dump(draft_rotation) << '\n';
+  std::ofstream(draft_rotation_dir / "rink_mask_0.png") << "stale output mask";
+  std::ofstream(draft_rotation_dir / "s.png") << "stale output still";
+  hm::Configurator draft_rotation_configurator(
+      "mapping-draft-rotation", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  absl::Status draft_rotation_status = draft_rotation_configurator.configure();
+  if (draft_rotation_status.ok() &&
+      !draft_rotation_configurator.underlay_config("pipeline", stale_runtime_structure_path.string()))
+    draft_rotation_status = absl::InternalError("unsaved rotation fixture pipeline did not load");
+  if (draft_rotation_status.ok())
+    draft_rotation_status = draft_rotation_configurator.apply_config_item("stitching.post_stitch_rotate_degrees", "-1");
+  if (draft_rotation_status.ok())
+    draft_rotation_status = draft_rotation_configurator.apply_supported_baseline_mappings();
+  const auto draft_polygon_before =
+      hm::get_node(draft_rotation_configurator.config(), "pipeline.hmplaycropper.scoreboard-perspective-polygon");
+  const bool draft_polygon_materialized = draft_polygon_before.has_value() && draft_polygon_before->IsScalar() &&
+      draft_polygon_before->as<std::string>() == "1,2,3,4,5,6,7,8";
+  // Exercise the startup invalidation operation itself. This fixture has no
+  // videos or models and does not claim a complete_configuration startup pass.
+  if (draft_rotation_status.ok())
+    draft_rotation_status =
+        hm::ConfiguratorTestAccess::invalidate_rotation_dependent_cache(&draft_rotation_configurator);
+  const YAML::Node draft_rotation_after = YAML::LoadFile((draft_rotation_dir / "config.yaml").string());
+  const auto draft_effective_rotation =
+      hm::configurator_internal::effective_stitch_output_rotation(draft_rotation_configurator.config());
+  const auto draft_native_polygon =
+      hm::get_node(draft_rotation_configurator.config(), "pipeline.hmplaycropper.scoreboard-perspective-polygon");
+  const auto draft_native_rotation =
+      hm::get_node(draft_rotation_configurator.config(), "pipeline.hmstitcher.post-stitch-rotate-degrees");
+  const bool draft_output_invalidated = draft_rotation_status.ok() && draft_polygon_materialized &&
+      draft_effective_rotation.ok() && *draft_effective_rotation == -1.0 && draft_native_rotation.has_value() &&
+      draft_native_rotation->as<double>(0.0) == -1.0 &&
+      draft_rotation_after["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
+      draft_rotation_after["stitching"]["generated_field_mask_post_stitch_rotate_degrees"].as<double>(0.0) == -1.0 &&
+      draft_rotation_after["rink"]["scoreboard"]["perspective_polygon"].IsNull() && !draft_native_polygon.has_value() &&
+      !fs::exists(draft_rotation_dir / "rink_mask_0.png") && !fs::exists(draft_rotation_dir / "s.png");
+  if (!draft_output_invalidated)
+    std::cerr << "unsaved rotation configuration status: " << draft_rotation_status << '\n';
+  ok &= expect(
+      draft_output_invalidated,
+      "An unsaved CLI rotation must drive native output and retire masks/scoreboard while retaining the saved null preference");
+
   const fs::path canonical_null_game_dir = games / "mapping-canonical-null";
   fs::create_directories(canonical_null_game_dir);
   YAML::Node native_width(YAML::NodeType::Map);
@@ -1862,8 +1936,14 @@ int main() {
   std::ofstream(root / "mapping-malformed-properties.yaml") << YAML::Dump(malformed_properties) << '\n';
   hm::Configurator mapping_malformed_properties(
       "mapping-malformed-properties", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  // Baseline now owns native properties (high-bit-depth). Overlay the malformed
+  // value so merging a valid higher layer cannot repair the fixture first.
   const bool mapping_malformed_properties_loaded = mapping_malformed_properties.configure().ok() &&
-      mapping_malformed_properties.underlay_config("pipeline", (root / "mapping-malformed-properties.yaml").string());
+      mapping_malformed_properties.overlay_config("pipeline", (root / "mapping-malformed-properties.yaml").string());
+  ok &= expect(
+      mapping_malformed_properties_loaded &&
+          mapping_malformed_properties.config()["pipeline"]["hmstitcher"]["properties"].IsScalar(),
+      "Malformed-properties regression must reach validation with an invalid effective node");
   const absl::Status mapping_malformed_properties_status = mapping_malformed_properties_loaded
       ? mapping_malformed_properties.apply_supported_baseline_mappings()
       : absl::InternalError("mapping malformed-properties fixture did not load");
@@ -2564,8 +2644,14 @@ game:
       ::setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
       hm::Configurator managed_tracker(
           "materialize-incomplete", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
-      const bool loaded =
-          managed_tracker.configure().ok() && managed_tracker.underlay_config("pipeline", incomplete_pipeline.string());
+      const bool loaded = managed_tracker.configure().ok() &&
+          managed_tracker.underlay_config("pipeline", incomplete_pipeline.string()) &&
+          managed_tracker.apply_config_item("pipeline.sink4.enable", "1").ok() &&
+          managed_tracker.apply_config_item("pipeline.sink4.type", std::to_string(NV_DS_SINK_WEBRTC)).ok() &&
+          managed_tracker.apply_config_item("pipeline.ds-playtracker.show", "1").ok() &&
+          managed_tracker.apply_config_item("pipeline.ds-playtracker.properties.plugin-private-config", "show=1")
+              .ok() &&
+          managed_tracker.apply_config_item("hstream_ui.job.capture_telemetry", "true").ok();
       const auto status = loaded ? managed_tracker.complete_configuration(
                                        false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path())
                                  : absl::InternalError("managed tracker fixture did not load");
@@ -2576,6 +2662,29 @@ game:
           status.ok() && fs::is_regular_file(effective_path) &&
               effective_path.parent_path() == manifest.parent_path() / "playtracker-runtime",
           "Managed tracker runtime configuration belongs to the private run workspace");
+      const auto managed_pipeline = managed_tracker.config()["pipeline"];
+      ok &= expect(
+          status.ok() &&
+              managed_pipeline["ds-playtracker"]["private-properties"]["telemetry-db-dir"].as<std::string>() ==
+                  manifest.parent_path().string() &&
+              managed_pipeline["ds-playtracker"]["private-properties"]["telemetry-game-id"].as<std::string>() ==
+                  "materialize-incomplete" &&
+              YAML::LoadFile(manifest.string())["telemetry_required"].as<bool>() &&
+              managed_pipeline["sink4"]["enable"].as<int>() == 1 &&
+              managed_pipeline["ds-playtracker"]["show"].as<int>() == 1 &&
+              managed_pipeline["ds-playtracker"]["properties"]["plugin-private-config"].as<std::string>() ==
+                  "show=1;telemetry-db-dir=" + manifest.parent_path().string() +
+                      ";telemetry-game-id=materialize-incomplete",
+          "Managed interactive archives must require run-local telemetry while retaining WebRTC and native previews");
+      managed_tracker.apply_config_item("hstream_ui.job.capture_telemetry", "false").IgnoreError();
+      const auto unchecked = managed_tracker.complete_configuration(
+          false, false, false, {}, false, -1.0, incomplete_pipeline.parent_path());
+      ok &= expect(
+          unchecked.ok() &&
+              managed_pipeline["ds-playtracker"]["private-properties"]["telemetry-db-dir"].as<std::string>().empty() &&
+              !YAML::LoadFile(manifest.string())["telemetry_required"].as<bool>() &&
+              managed_pipeline["sink4"]["enable"].as<int>() == 1,
+          "Managed interactive archives must honor telemetry opt-out without disabling WebRTC");
       if (previous_manifest)
         ::setenv("HSTREAM_JOB_MANIFEST", previous_manifest->c_str(), 1);
       else

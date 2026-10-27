@@ -41,6 +41,8 @@ filegroup(
         "CalibrationImage.h",
         "StitchingStillPreview.cpp",
         "StitchingStillPreview.h",
+        "StitchingStillImage.cpp",
+        "StitchingStillImage.h",
         "CalibrationFrameView.cpp",
         "CalibrationFrameView.h",
         "HStreamWindow.cpp",
@@ -74,6 +76,10 @@ filegroup(
         "PipelineInspectorWidget.h",
         "PlayerAnalyticsControls.cpp",
         "PlayerAnalyticsControls.h",
+        "DetectorOptions.cpp",
+        "DetectorOptions.h",
+        "RuntimeOptions.cpp",
+        "RuntimeOptions.h",
         "RinkFramingControls.cpp",
         "RinkFramingControls.h",
         "PreviewDialogWindow.h",
@@ -168,19 +174,31 @@ cc_library(
 )
 
 cc_library(
+    name = "stitching_still_image",
+    srcs = ["StitchingStillImage.cpp"],
+    hdrs = ["StitchingStillImage.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":calibration_image",
+        "//src/libs/common:baseline_config",
+        "//src/libs/common:user_config",
+        "//src/libs/stitching:auto_input_lens",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "//src/libs/stitching:transaction_state",
+        "@qt//:qt_gui",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "stitching_still_preview",
     srcs = ["StitchingStillPreview.cpp"],
     hdrs = ["StitchingStillPreview.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [
-        ":calibration_image",
-        "//src/libs/stitching:canvas_constraint_check",
-        "//src/libs/stitching:game_config",
-        "//src/libs/stitching:transaction_state",
-        "@qt//:qt_widgets",
-        "@yaml-cpp",
-    ],
+    deps = [":stitching_still_image", "@qt//:qt_widgets"],
 )
 
 cc_test(
@@ -189,7 +207,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":calibration_image", ":stitching_still_preview", "//src/libs/stitching:game_config", "@qt//:qt_widgets"],
+    deps = [":calibration_image", ":stitching_still_image", ":stitching_still_preview", "//src/libs/stitching:game_config", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -239,6 +257,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":preview_dialog_window",
+        ":value_control_wheel",
         ":rink_map_dialog",
         ":action_icons",
         ":scoreboard_selection_dialog",
@@ -267,6 +287,7 @@ cc_library(
         ":value_control_wheel",
         ":action_icons",
         ":calibration_image",
+        "//src/libs/common:baseline_config",
         ":preview_dialog_window",
         "//src/libs/assets:asset_manager",
         "//src/libs/common:process",
@@ -295,6 +316,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":preview_dialog_window",
+        ":value_control_wheel",
         ":action_icons",
         ":rink_leveling_dialog",
         "//src/libs/stitching:canvas_constraint_check",
@@ -315,6 +338,8 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":highlight_plan",
+        "//src/libs/recording",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:hugin_project",
         "//src/libs/common:baseline_config",
@@ -354,12 +379,31 @@ cc_test(
 )
 
 cc_library(
+    name = "camera_experiment_web_preview",
+    srcs = ["CameraExperimentWebPreview.cpp"],
+    hdrs = ["CameraExperimentWebPreview.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":camera_experiment_preview",
+        ":highlight_web_preview",
+        "//src/apps/apps-common:preview_overlay_painter",
+        "//src/apps/apps-common:preview_overlay_scene_data",
+        "//src/apps/apps-common:web_preview_target",
+        "//src/apps/apps-common:webrtc_signaling",
+        "@deepstream//:deepstream_lib",
+        "@gstreamer",
+    ],
+)
+
+cc_library(
     name = "camera_experiment_preview",
-    srcs = ["CameraExperimentPreview.cpp", "CameraExperimentPreviewWorker.cpp"],
-    hdrs = ["CameraExperimentPreview.h", "CameraExperimentPreviewWorker.h"],
+    srcs = ["CameraExperimentPreview.cpp", "CameraExperimentPreviewOutput.cpp", "CameraExperimentPreviewWorker.cpp"],
+    hdrs = ["CameraExperimentPreview.h", "CameraExperimentPreviewOutput.h", "CameraExperimentPreviewWorker.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
+    data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
     deps = [
         "//src/apps/apps-common:rink_mask_image",
         "//src/libs/common:preview_overlay_meta",
@@ -405,6 +449,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/tracking:camera_control_specs",
+        "//src/libs/common:baseline_config",
         ":value_control_wheel",
         "//src/apps/apps-common:rink_mask_image",
         ":native_preview_surface",
@@ -509,7 +555,7 @@ cc_test(
 cc_library(
     name = "stitching_experiment_dialog",
     srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp"],
-    hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h"],
+    hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h", "StitchingExperimentDefaults.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
@@ -605,7 +651,7 @@ cc_library(
     hdrs = ["HighlightPlan.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["@qt//:qt_core"],
+    deps = ["//src/libs/common:baseline_config", "@qt//:qt_core", "@yaml-cpp"],
 )
 
 cc_test(
@@ -784,6 +830,46 @@ cc_test(
 )
 
 cc_library(
+    name = "detector_options",
+    srcs = ["DetectorOptions.cpp"],
+    hdrs = ["DetectorOptions.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["//src/libs/common:config_path", "@qt//:qt_core", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "detector_options_test",
+    srcs = ["DetectorOptionsTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":detector_options", "@qt//:qt_core", "@yaml-cpp"],
+)
+
+cc_library(
+    name = "runtime_options",
+    srcs = ["RuntimeOptions.cpp"],
+    hdrs = ["RuntimeOptions.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/libs/common:config_path",
+        "//src/libs/common:gpu_memory_profile",
+        "@qt//:qt_core",
+        "@yaml-cpp",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_test(
+    name = "runtime_options_test",
+    srcs = ["RuntimeOptionsTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":runtime_options", "@qt//:qt_core", "@yaml-cpp"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
     hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h", "CameraControlSpecs.h"],
@@ -792,8 +878,12 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":detector_options",
+        ":runtime_options",
+        "//src/libs/tracking:playtracker_runtime_controls",
         "//src/libs/publication",
         "//src/libs/program:tone_controls",
+        "//src/libs/program:rotation_controls",
         "//src/libs/stitching:auto_input_lens",
         ":input_lens_widget",
         ":backend_options",
@@ -827,8 +917,10 @@ cc_library(
         "//src/libs/stitching:rink_mask_frame_time",
         "//src/libs/stitching:live_output_epoch",
         "//src/libs/stitching:live_stitching_generation",
+        "//src/libs/stitching:live_rotation_config_owner",
         "//src/libs/stitching:stitching_algorithms",
         "//src/libs/stitching:stitching_reframe",
+        "//src/libs/stitching:stitching_calibration_controls",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ] + select({
@@ -861,7 +953,15 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":action_icons", "//src/libs/stitching:playback_rink_map", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
+    deps = [":action_icons", "//src/libs/common:baseline_config", "//src/libs/stitching:playback_rink_map", "@qt//:qt_widgets", "@qt//:qt_test", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "camera_experiment_plugin_test",
+    srcs = ["CameraExperimentPluginTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":camera_experiment_preview", "@gstreamer", "@qt//:qt_core"],
 )
 
 cc_test(
@@ -906,6 +1006,7 @@ cc_binary(
     data = [
         "//src/apps/hstream-cli:hstream-cli",
         "//src/apps/hstream-job:hstream-job",
+        "//src/apps/hstream-prepared-model-validate:hstream-prepared-model-validate",
     ] + select({
         "//:use_hip": [],
         "//conditions:default": [
@@ -979,6 +1080,7 @@ cc_test(
         ":scoreboard_selection_dialog",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "//src/libs/common:gpu_memory_profile",
+        "//src/libs/publication",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:player_frame_selection",
         "@com_google_absl//absl/cleanup",
@@ -994,7 +1096,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":action_icons", "@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = [":action_icons", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
 )
 
 cc_test(
@@ -1103,6 +1205,7 @@ cc_library(
         "//src/libs/player_analytics:config",
         "//src/libs/player_analytics:model_catalog",
         "//src/libs/player_analytics:model_contract",
+        "//src/libs/player_analytics:prepared_model_validation",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
@@ -1182,6 +1285,15 @@ cc_test(
     deps = [":highlight_scene", "@qt//:qt_gui"],
 )
 
+sh_test(
+    name = "highlight_raster_policy_test",
+    srcs = ["HighlightRasterPolicyTest.py"],
+    args = ["$(location :highlight_scene_test)"],
+    data = [":highlight_scene_test"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
 cc_test(
     name = "highlight_reel_pipeline_test",
     srcs = ["HighlightReelPipelineTest.cpp"],
@@ -1258,6 +1370,28 @@ cc_test(
 
 # Headless workflows share the native dialog libraries, without desktop windows.
 cc_library(
+    name = "web_camera_experiment",
+    srcs = ["WebCameraExperiment.cpp", "CameraControlSpecs.h"],
+    hdrs = ["WebCameraExperiment.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        "//src/libs/tracking:camera_control_specs",
+        ":archive_catalog",
+        ":camera_experiment_preview",
+        ":camera_experiment_source",
+        ":camera_experiment_web_preview",
+        ":web_job_spec",
+        "//src/libs/common:baseline_config",
+        "//src/libs/playtracker_replay",
+        "//src/libs/stitching:playback_rink_map",
+        "@gstreamer",
+        "@qt//:qt_core",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "web_job_spec",
     srcs = ["WebJobSpec.cpp"],
     hdrs = ["WebJobSpec.h"],
@@ -1266,14 +1400,50 @@ cc_library(
     deps = ["@qt//:qt_core"],
 )
 
+cc_test(
+    name = "web_camera_experiment_history_test",
+    srcs = ["WebCameraExperimentHistoryTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_camera_experiment", ":web_job_spec", "//src/libs/playtracker_replay", "@qt//:qt_core"],
+)
+
+cc_library(
+    name = "web_calibration_controls",
+    srcs = ["WebCalibrationControls.cpp"],
+    hdrs = ["WebCalibrationControls.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":web_job_spec", "//src/libs/common:baseline_config",
+        "//src/libs/stitching:auto_input_lens", "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config", "//src/libs/stitching:stitching_core",
+        "//src/libs/stitching:live_stitching_generation", "//src/libs/stitching:stitching_calibration_controls",
+        "//src/libs/stitching:transaction_state", "@qt//:qt_core", "@yaml-cpp",
+    ],
+)
+
 cc_binary(
     name = "hstream-web-job",
-    srcs = ["WebJobMain.cpp", "CameraControlSpecs.h"],
+    srcs = ["WebJobMain.cpp", "WebRinkEditor.cpp", "WebRinkEditor.h", "WebRinkMap.cpp", "WebRinkMap.h", "WebSavedCalibration.cpp", "WebSavedCalibration.h", "WebExperimentFrames.cpp", "WebExperimentFrames.h", "StitchingExperimentDefaults.h", "CameraControlSpecs.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":detector_options",
+        ":runtime_options",
+        "//src/libs/stitching:transaction_state",
+        "//src/libs/common:user_config",
+        "//src/libs/common:config_layers",
+        ":stitching_still_image",
+        "//src/libs/tracking:camera_control_specs",
+        ":web_calibration_controls",
+        ":web_camera_experiment",
         ":highlight_web_preview",
+        ":rink_map_dialog",
+        ":projection_crop_dialog",
+        "//src/libs/stitching:stitching_reframe",
+        "//src/libs/stitching:stitching_calibration_controls",
         ":web_job_spec",
         "//src/libs/common:baseline_config",
         ":calibration_image",
@@ -1288,6 +1458,9 @@ cc_binary(
         "//src/libs/stitching:auto_input_lens",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",
+        "//src/libs/stitching:live_stitching_generation",
+        "//src/libs/stitching:rink_leveling",
+        "//src/libs/stitching:hugin_project",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "@local_cuda//:cuda",
         "@qt//:qt_core",
@@ -1311,6 +1484,57 @@ sh_test(
     data = [":hstream-web-job"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local"],
+)
+
+sh_test(
+    name = "web_camera_metadata_test",
+    srcs = ["WebCameraMetadataTest.py"],
+    args = ["$(location :hstream-web-job)", "$(location //src/libs/playtracker_replay:playtracker_replay_test)"],
+    data = [":hstream-web-job", "//src/libs/playtracker_replay:playtracker_replay_test"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
+sh_test(
+    name = "web_rink_editor_test",
+    srcs = ["WebRinkEditorTest.py"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    tags = ["local"],
+)
+
+cc_test(
+    name = "web_saved_calibration_test",
+    srcs = ["WebSavedCalibrationTest.cpp"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_job_spec", ":web_calibration_controls", "//src/libs/common:baseline_config", "//src/libs/stitching:auto_input_lens", "//src/libs/stitching:canvas_constraint_check", "//src/libs/stitching:game_config", "//src/libs/stitching:player_frame_selection", "//src/libs/stitching:stitching_reframe", "@qt//:qt_gui"],
+)
+
+cc_test(
+    name = "web_rink_map_test",
+    srcs = ["WebRinkMapTest.cpp"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_job_spec", ":rink_map_dialog", "@qt//:qt_gui"],
+)
+
+cc_test(
+    name = "web_matches_test",
+    srcs = ["WebMatchesTest.cpp"],
+    args = ["$(location :hstream-web-job)"],
+    data = [":hstream-web-job"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":web_job_spec", "//src/libs/common:baseline_config", "//src/libs/stitching:calibration_matches", "@qt//:qt_gui", "@yaml-cpp"],
 )
 
 cc_test(
@@ -1339,7 +1563,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":rink_map_dialog", ":rink_leveling_dialog", ":scoreboard_selection_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = [":action_icons", ":rink_map_dialog", ":rink_leveling_dialog", ":scoreboard_selection_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
 
 cc_binary(

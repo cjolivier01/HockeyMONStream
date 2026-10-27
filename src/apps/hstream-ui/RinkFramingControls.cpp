@@ -10,6 +10,8 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QVBoxLayout>
 #include <atomic>
+#include <stdexcept>
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 
@@ -19,7 +21,6 @@ constexpr const char* keys[]{
     "rink-camera-anticipate",
     "rink-camera-frame-goals",
     "rink-camera-adaptive-zoom"};
-constexpr bool defaults[]{false, true, false, false};
 const char* map_files[]{
     "rink-map.yaml",
     "config.yaml",
@@ -48,6 +49,12 @@ YAML::Node options(const YAML::Node& root) {
   }
   return result;
 }
+bool flag(const YAML::Node& node) {
+  if (!node.IsScalar())
+    throw std::invalid_argument("Rink framing requires a boolean or 0/1 for every baseline option");
+  const auto value = node.as<std::string>();
+  return value == "0" ? false : value == "1" ? true : node.as<bool>();
+}
 } // namespace
 
 struct RinkFramingControls::MapJob {
@@ -56,6 +63,12 @@ struct RinkFramingControls::MapJob {
 };
 
 RinkFramingControls::RinkFramingControls(QWidget* parent, MapCheck check) : QWidget(parent), check_(std::move(check)) {
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok())
+    throw std::runtime_error(baseline.status().ToString());
+  const auto settings = options(baseline->values);
+  for (size_t i = 0; i < defaults_.size(); ++i)
+    loaded_[i] = defaults_[i] = flag(settings[keys[i]]);
   if (!check_)
     check_ = [](const QString& path, const std::function<bool()>& cancelled) {
       if (cancelled && cancelled())
@@ -89,7 +102,7 @@ RinkFramingControls::RinkFramingControls(QWidget* parent, MapCheck check) : QWid
   for (size_t i = 0; i < choices_.size(); ++i) {
     choices_[i] = new QCheckBox(labels[i]);
     choices_[i]->setObjectName(names[i]);
-    choices_[i]->setChecked(defaults[i]);
+    choices_[i]->setChecked(defaults_[i]);
     layout->addWidget(choices_[i]);
     connect(choices_[i], &QCheckBox::toggled, this, [this] {
       if (!loading_) {
@@ -127,16 +140,11 @@ RinkFramingControls::RinkFramingControls(QWidget* parent, MapCheck check) : QWid
 void RinkFramingControls::loadConfig(const YAML::Node& baseline, const YAML::Node& user, const YAML::Node& game) {
   loading_ = true;
   for (size_t i = 0; i < choices_.size(); ++i) {
-    bool value = defaults[i];
+    bool value = defaults_[i];
     for (const auto& layer : {baseline, user, game}) {
       const auto config = options(layer);
       if (config.IsMap() && config[keys[i]].IsDefined()) {
-        const auto node = config[keys[i]];
-        const auto text = node.as<std::string>();
-        if (text == "0" || text == "1")
-          value = text == "1";
-        else
-          value = node.as<bool>();
+        value = flag(config[keys[i]]);
       }
     }
     choices_[i]->setChecked(value);
@@ -148,7 +156,7 @@ void RinkFramingControls::loadConfig(const YAML::Node& baseline, const YAML::Nod
 
 void RinkFramingControls::resetToDefaults() {
   for (size_t i = 0; i < choices_.size(); ++i)
-    choices_[i]->setChecked(defaults[i]);
+    choices_[i]->setChecked(defaults_[i]);
 }
 bool RinkFramingControls::isDirty() const {
   for (size_t i = 0; i < choices_.size(); ++i)

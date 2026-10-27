@@ -40,6 +40,7 @@
 #include "PreviewOverlayRuntime.h"
 #include "TerminalProgressUi.h"
 #include "WebPreviewSession.h"
+#include "WebRotationTransaction.h"
 #include "configurator.h"
 #include "deepstream_app.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
@@ -116,6 +117,7 @@ class PipelineApplication {
 
  private:
   friend struct PipelineToneControlsTestAccess;
+  friend struct PipelineSeekAdmissionTestAccess;
   // Callback and helper functions.
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static void _intr_handler(int signum);
@@ -156,6 +158,8 @@ class PipelineApplication {
   // wholesale because one preview channel is not in use.
   bool set_player_drawing_runtime(guint64 generation, guint layers);
   bool apply_player_drawing_layers(guint layers);
+  guint current_player_drawing_layers() const;
+  std::optional<std::string> current_scoreboard_position() const;
   bool apply_preview_overlay_state(
       const hm::pipeline_internal::PreviewOverlaySelection& selection,
       bool apply_sinks,
@@ -214,7 +218,8 @@ class PipelineApplication {
   void finish_runtime_seek(
       const char* status,
       const char* reason = nullptr,
-      uint64_t achieved_position_ns = GST_CLOCK_TIME_NONE);
+      uint64_t achieved_position_ns = GST_CLOCK_TIME_NONE,
+      uint64_t source_pts_ns = GST_CLOCK_TIME_NONE);
   static void handle_fatal_pipeline_error_static(AppCtx* app_ctx);
   void handle_fatal_pipeline_error(AppCtx* app_ctx);
   static gboolean should_defer_eos_static(AppCtx* app_ctx);
@@ -253,7 +258,10 @@ class PipelineApplication {
   };
   void runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation);
   gboolean seek_runtime_sources(AppCtx* app_ctx, uint64_t target_ns);
-  void seed_runtime_playtracker(HmApp* app_ctx, uint64_t absolute_position_ns);
+  void seed_runtime_playtracker(
+      HmApp* app_ctx,
+      uint64_t absolute_position_ns,
+      const std::function<bool(const std::string&)>& apply_checkpoint = {});
   void position_initial_sources_if_ready(AppCtx* app_ctx);
   bool dispatch_runtime_seek_recreation_completion();
   gboolean complete_runtime_seek_recreation(RuntimeSeekRecreationResult result);
@@ -332,6 +340,16 @@ class PipelineApplication {
   // rebuilt so a seek or stage restart does not silently restore the
   // launch-time choice.
   std::optional<guint> player_drawing_layers_;
+  std::optional<hm::tracking::CameraControlValues> web_camera_defaults_, web_camera_controls_;
+  YAML::Node web_camera_base_;
+  std::unique_ptr<hm::preview::WebRotationTransaction> web_rotation_;
+  absl::Status initialize_web_rotation_controls();
+  std::string web_rotation_block_reason(const hm::preview::RouteOwner::Session& session, bool mutation) const;
+  absl::StatusOr<uint64_t> apply_web_rotation_controls(
+      const hm::program::RotationControlValues& controls,
+      const std::set<std::string>& changed,
+      const std::optional<hm::preview::WebRotationTransaction::Authorization>& authorization);
+
   guint64 player_drawing_generation_{0};
   bool rink_map_preview_requested_{false};
   bool rink_map_preview_active_{false};
@@ -373,6 +391,8 @@ class PipelineApplication {
   std::map<long, std::map<int, hm::PlaybackProgressMetrics>> ui_progress_by_stage_;
   uint64_t playback_progress_generation_{0};
   uint64_t process_pause_generation_{0};
+  std::vector<std::weak_ptr<HmApp>> process_clock_paused_;
+  bool process_pause_active_{false};
   std::unique_ptr<hm::TerminalProgressUi> progress_ui_;
   std::mutex playback_timing_mu_;
   std::chrono::steady_clock::time_point timed_run_last_progress_wall_;
@@ -424,6 +444,7 @@ class PipelineApplication {
     std::chrono::steady_clock::time_point started{std::chrono::steady_clock::now()};
   };
   std::optional<RuntimeSeekPending> runtime_seek_pending_;
+  std::optional<hm::preview::WebPreviewSeekRequest> web_seek_pending_;
   std::thread runtime_seek_recreation_thread_;
   std::mutex runtime_seek_recreation_result_mu_;
   std::optional<RuntimeSeekRecreationResult> runtime_seek_recreation_result_;

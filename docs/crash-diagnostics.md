@@ -31,6 +31,13 @@ paths, media URIs and values already present in application output; inspect
 reports before sharing them. The collector does not dump the environment or
 arguments, or record text typed into controls.
 
+If the pipeline fails its model-initialization PAUSED transition before the bus
+watch starts, the CLI includes the queued GStreamer error's source and message
+in its returned failure. Qt and browser runs receive that same diagnostic, such
+as a prepared engine's SDK/GPU identity mismatch. This reads only an already
+queued error with zero timeout; it does not dispatch events or change startup
+cancellation. If no error is queued, the generic state-transition failure remains.
+
 ## Determining which process failed
 
 Look for nonempty `crash.txt` files, then read the adjacent `process.txt` and the

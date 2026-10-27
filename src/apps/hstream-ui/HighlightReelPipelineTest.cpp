@@ -401,6 +401,33 @@ int main(int argc, char** argv) {
   }
   // Cards work with no archive, and cancellation unblocks bounded queues.
   r.archive_path.clear();
+  // A card ending between MP4 chunk boundaries must finish without video
+  // from a following item. Default mux interleaving deadlocks its bounded
+  // audio producer here, preventing both selected exports and mixed reels.
+  auto partial_card = r;
+  auto short_card = card;
+  short_card.card.duration_ms = 700;
+  partial_card.items = {short_card};
+  partial_card.media.frame_rate = 60000.0 / 1001;
+  for (const QString& codec : {QString("h264"), QString("hevc")}) {
+    partial_card.media.video_codec = codec;
+    partial_card.output_path = dir.filePath("partial-card-" + codec + ".mp4");
+    if (!pipeline.Start(partial_card, &error) || !wait(pipeline) ||
+        !increasing_timestamps(partial_card.output_path))
+      return 1;
+    QByteArray durations;
+    if (!run(
+            "ffprobe",
+            {"-v", "error", "-show_entries", "stream=duration", "-of", "csv=p=0", partial_card.output_path},
+            &durations))
+      return 1;
+    const auto streams = durations.trimmed().split('\n');
+    if (streams.size() != 2 || std::abs(streams[0].toDouble() - .7) > .002 ||
+        std::abs(streams[1].toDouble() - .7) > .002) {
+      std::cerr << "Partial card changed video/audio duration: " << durations.constData();
+      return 1;
+    }
+  }
   r.items = {card};
   r.output_path = dir.filePath("card.mp4");
   if (!pipeline.Start(r, &error) || !wait(pipeline))
@@ -448,8 +475,13 @@ int main(int argc, char** argv) {
     r.output_path.clear();
     r.window_id = window.winId();
     r.inspect_game_ms = 10750;
-    if (!pipeline.Start(r, &error) || !wait(pipeline))
+    if (!pipeline.Start(r, &error) || !wait(pipeline) || pipeline.Poll().position_ms != 200)
       return 1;
+    QThread::msleep(100);
+    if (pipeline.Poll().position_ms != 200) {
+      std::cerr << "A held authored frame advanced its source position\n";
+      return 1;
+    }
     window.resize(800, 450);
     app->processEvents();
     pipeline.Cancel();

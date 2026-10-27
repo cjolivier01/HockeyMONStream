@@ -1,0 +1,13 @@
+cc_binary(
+    name = "hstream-prepared-model-validate",
+    srcs = ["main.cpp"],
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/player_analytics:prepared_model_validation", "@glib", "@yaml-cpp"],
+)
+
+sh_test(
+    name = "prepared_model_validation_test",
+    srcs = ["PreparedModelValidationTest.py"],
+    args = ["$(rootpath :hstream-prepared-model-validate)"],
+    data = [":hstream-prepared-model-validate"],
+)

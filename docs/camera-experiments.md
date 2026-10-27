@@ -27,10 +27,13 @@ saved trials record them alongside the other stitching settings. Unsupported ble
 modes fail preparation before the GPU graph starts.
 
 An **uncropped Stitched archive** is also supported. It may be proportionally
-downsized, with up to two pixels of encoder alignment rounding, provided it has no
-padding or cropping. Camera coordinates remain in the recorded canvas and the
-cropper scales them to the archive's resolution. A Program archive contains only
-the old camera view and cannot reveal pixels outside that crop.
+downsized. Geometry validation keeps the two-pixel allowance for uniform-resize
+rounding and also accepts independent rounding down to even dimensions when both
+axes share one encoder scale. The archive must have no padding or cropping;
+matching dimensions alone do not prove its provenance. Camera coordinates remain
+in the recorded canvas and the cropper scales them to the archive's resolution.
+A Program archive contains only the old camera view and cannot reveal pixels
+outside that crop.
 
 ## Try a camera change
 
@@ -230,10 +233,59 @@ if its archived copy is unavailable. Reconstruction replays the recorded player
 tracks and configuration events from the actual initialization boundary. Both
 camera trajectories must match the recording within the stated tolerance.
 
+SQLite recordings keep their historical arena and policy in the database. Their
+Legacy controls are disabled and do not affect preparation. Switching back to a
+legacy manifest restores the retained arena and policy drafts.
+
 This mode is labeled trajectory-verified reconstruction. It cannot promise an
 exact historical internal state from camera boxes alone, and refuses recordings
 whose missing inputs or mismatched trajectory prevent verification. Do not supply
 today's arena or policy unless it is also the one used for that recording.
+
+The browser's **Legacy** tab imports the manifest and its `.csv`, `.jsonl`,
+`.yaml`/`.yml`, and mask `.png` companions together. Select **Use an imported
+legacy recording**, choose the files, then select the historical arena and an
+optional imported policy. The service preserves their original filenames in an
+immutable private bundle and stages the same files for native reconstruction;
+the browser never sends server paths. Empty optional CSV/replay companions are
+preserved. Imports use the existing private asset size/quota limits, and do not
+start a replay until **Prepare historical start** is clicked.
+
+Browser **Screenshot** captures the dialog controls, timeline, and one frozen
+displayed frame into a PNG. This explicit action performs one browser video
+readback, bounded to 16 megapixels; ordinary preview still uses hardware WebRTC.
+The browser requires `camera-view-catalog-v3`. Its constant-size catalog head
+anchors immutable 64-view history pages through native file-identity receipts.
+Each view has an immutable manifest of frame chunks, bounded to 4 MiB and 1,024
+records. A dense frame's player list can span records and chunks; no points or
+frames are dropped. The browser fetches only Recorded and the selected trajectory,
+retains their exact values, and uses the native frame count for seeking while data
+loads. Plot columns retain Qt's integer bucketing, extrema, gaps and first
+available player sample. Adding trials never rewrites earlier trajectories, and
+there is no separate 128-trial cap or cumulative trajectory/catalog byte ceiling.
+A failed publication removes its new files and retains the prior selectable
+history. Saved YAML downloads use bounded reads of the exact native receipt's
+pinned descriptor, including trials larger than 32 MiB.
+
+Both interfaces still share native replay bounds: 120 seconds, 18,000 samples,
+1,000,000 tracks and 128 MiB of drawing storage per overlay builder. CPU validation
+of a synthetic native-admitted 18,000-sample/989,792-track passage published both
+36,982,032-byte trajectories in 18 chunks each and streamed its 109,843,925-byte
+trial. This establishes dense transport coverage, not full-game replay support
+or new GPU/browser workflow qualification.
+
+Camera preview loads `libnvdsgst_videoprep.so` from its executable's Bazel
+runfiles or installed bundle before accepting cached GStreamer factories. The
+preview library carries that data dependency into `hstream-web-job`; a copied
+executable must retain its adjacent runfiles. Loader checks compare both
+`videoprep` and `playcropper` factory provenance with the selected plugin.
+
+When an archive has a lower frame rate than the recording, Repeat and end pause
+use the actual last decoded image after its presentation receipt. They do not
+invent a receipt for a telemetry-only sample. An explicit seek still requires
+its selected timestamp and reports an error within the existing seek deadline
+when no matching image is available. GPU comparison of this boundary handling
+remains required; matching control data alone does not qualify it.
 
 ## Implementation and validation
 
@@ -255,6 +307,10 @@ into bounded, immutable drawing snapshots through the shared native drawing
 routine. Ordinary playback seek preparation leaves this work disabled. Archived
 mask PNGs use the existing bounded decoder once during background preparation;
 this is static recording data, not video readback.
+
+The GPU preview accepts source frame rates above 120 fps, as the browser replay
+does. This is input compatibility, not a guarantee of display throughput;
+normal-speed playback follows source timestamps and paused seeks show one frame.
 
 Relevant test targets:
 

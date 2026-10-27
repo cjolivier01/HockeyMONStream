@@ -190,7 +190,8 @@ bool exercise_http_selector(
     bool remote = false,
     int cancel_mode = 0,
     bool invalid_proposal = false,
-    const std::optional<hm::stitching::ScoreboardSelector::Polygon>& expected_saved = std::nullopt) {
+    const std::optional<hm::stitching::ScoreboardSelector::Polygon>& expected_saved = std::nullopt,
+    bool explicit_request = false) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
   cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
   if (!cv::imwrite((directory / "s.png").string(), image))
@@ -212,7 +213,10 @@ bool exercise_http_selector(
     ::close(cancellation_pipe[1]);
     ::dup2(output_pipe[1], STDERR_FILENO);
     ::close(output_pipe[1]);
-    ::unsetenv("HM_NO_SCOREBOARD");
+    if (explicit_request)
+      ::setenv("HM_NO_SCOREBOARD", "1", 1);
+    else
+      ::unsetenv("HM_NO_SCOREBOARD");
     if (remote) {
       ::setenv("HM_SCOREBOARD_BIND_HOST", "0.0.0.0", 1);
       ::setenv("HM_SCOREBOARD_ALLOW_REMOTE", "1", 1);
@@ -225,11 +229,14 @@ bool exercise_http_selector(
     ::setenv("HM_SCOREBOARD_CLIENT_TIMEOUT_MS", cancel_mode ? "60000" : expected_saved ? "5000" : "250", 1);
     reject_proposal = invalid_proposal;
     bool cancelled = false;
-    const auto status = hm::stitching::ScoreboardSelector::Run(directory, [&] {
-      char value;
-      cancelled = cancelled || ::read(cancellation_pipe[0], &value, 1) == 1;
-      return cancelled;
-    });
+    const auto status = hm::stitching::ScoreboardSelector::Run(
+        directory,
+        [&] {
+          char value;
+          cancelled = cancelled || ::read(cancellation_pipe[0], &value, 1) == 1;
+          return cancelled;
+        },
+        explicit_request);
     const bool expected_calls = proposal_calls == (expected_saved.has_value() ? 0 : 1);
     _exit((cancel_mode ? absl::IsCancelled(status) : status.ok()) && expected_calls ? 0 : 1);
   }
@@ -463,6 +470,9 @@ int main() {
       !hm::stitching::is_scoreboard_configured(directory.string()),
       "cancelled selectors must not save scoreboard coordinates");
   ok &= expect(exercise_http_selector(directory), "native HTTP selector must enforce its token and save a choice");
+  ok &= expect(
+      exercise_http_selector(directory, false, 0, false, Selector::Polygon{}, true),
+      "Explicit reselection must open the authenticated selector even when automatic startup prompts are disabled");
   if (std::filesystem::is_regular_file(directory / "config.yaml")) {
     const YAML::Node polygon =
         YAML::LoadFile((directory / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];

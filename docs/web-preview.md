@@ -8,6 +8,123 @@ presentation contract; ordinary `WEBRTC` launches retain the static output.
 This opt-in is not full Qt workflow parity: archived replay-mask ownership and
 audio/seek timeline qualification remain unfinished.
 
+Completed Stitching Calibration playback shares Program's private browser seek
+admission. The native capability still requires one file-based pipeline with only
+the owned WebRTC preview; archives, other network outputs, active telemetry and
+active calibration work reject seeks. The browser must wait for the native
+capability and timeline, and confirm the replacement generation with an exact
+decoded frame. Calibration seek hardware qualification remains pending until the
+paired Qt/browser workflow passes.
+
+Normal-speed selectable preview now binds video headers and the raw Opus input
+through the shared `common/PacedPlayback` source-interval mapping. This owner is
+also installed when the browser is the only audio consumer; a physical monitor
+is optional. A slow completed video interval delays its matching PCM. The
+transport inserts bounded chunks of silence for positive presentation gaps,
+then emits every original sample once in source order on a continuous encoded
+timeline. Source and archive headers remain unchanged, and video stays on the
+GPU. Bounds come from `runtime.local_playback`; unpaced playback retains its
+existing path. Pipeline pause uses the ordinary system-clock base adjustment
+when no physical audio device owns the clock.
+
+Qt retains Render, preview-tab and diagnostic-overlay edits while its native
+process pause is preparing, SIGSTOP-paused or waiting for Resume confirmation.
+Render off hides the local native windows immediately. After the matching
+Resume acknowledgement, Qt sends only the latest audio, route and overlay
+choices for that run. Overlay replies sent before Pause still update confirmed
+backend state without replacing the retained checkbox draft. Readiness from a
+route superseded by an unsent choice cannot remap its hidden native target.
+Closing a preview gate before the paced graph resumes
+would block its command thread behind a sink's PAUSED preroll. Stop and run
+retirement discard retained commands; confirmed cooperative backend pauses
+keep their existing command handling. The browser already retains route and
+overlay edits until native PLAYING confirmation. CPU tests cover both command
+orderings; displayed-frame and A/V qualification remain separate.
+
+External Qt timing diagnostics may read `hm::gpu_preview::presented_frame` from an
+exactly identified, unstripped executable. The existing getter returns only the last
+presented generation and PTS under the renderer mutex; it reads no pixels and
+does no I/O. Its x86 definition is retained through compiler and linker elimination
+even when ordinary playback has no direct caller. Diagnostics must still bind
+the executable identity and measure polling/lock uncertainty. Symbol retention
+adds no sampling or work to normal playback and does not itself qualify timing.
+
+Private PCM queues reject downstream allocation queries before queueing them,
+so upstream converters use their ordinary CPU allocator. A serialized query
+cannot wait behind a PCM packet whose mapping needs the same producer's next
+audio or video input. This does not change buffer/event ordering or mapping
+history. The earlier WebRTC tee queue is also nonleaky for private normal-speed
+preview, so mapper backpressure cannot discard source samples there.
+
+The CPU transport regression checks steady playback, sustained slow video, a
+250 ms stall and cooperative pause/resume. It compares every unique source
+sample with the selected frame's exact presentation time, checks original PCM
+headers and continuous transport timestamps, and bounds alignment to one audio
+sample. Each selection has a separate cancellation token. Route changes and
+Stop retire that token and wake its mapper before either native gate barrier,
+including when a paused drain has filled the ingress queue. Shared audio keeps
+its epoch and pending PCM. The real-isolation-gate regression checks paused
+switching, same-route rearm, Render off/on and Stop, rejects stale cancellation,
+and verifies fresh frame identity plus pending PCM after retirement. Separate
+selector and history tests cover operation fencing and shared cancellation.
+The allocation regression issues a real serialized query while PCM waits for a
+missing video interval, requires the query to return before that interval, then
+checks every retained sample without cancelling or resetting the mapper.
+The prior authenticated c5 run measured increasing
+audio lead because arrival-time video timestamps advanced faster than unchanged
+PCM. Actual decoded browser and independent monitor measurements must be rerun
+with the shared mapping before claiming that drift resolved. Restarted playback,
+seek epochs, route switching and AMD browser preview remain separate hardware
+qualification requirements.
+
+Live Rotation uses `@web-rotation-controls` and its `-query` counterpart, with
+the same four integer control IDs, linked-angle rules and NONA leveling
+suppression as Qt. Requests bind run, stage, topology and an increasing decimal
+request ID. `HSTREAM_WEB_ROTATION_CONTROLS` replies retain mutation ownership
+through `authorizing`, `applying`, `committing` and `rolling-back`; only settled
+`state`/`applied` replies carry an operation. `fixedEdgeSuppressed` reports the
+native enabled state. An ambiguous property or durable commit failure returns
+`retire-required` with null controls and operation, then stops the graph before
+the process-owned disk authorization is retired.
+
+Qt and this adapter use `LiveRotationConfigOwner`'s serial disk worker. Stop,
+pause and supersession cannot let a late authorization overtake rollback or a
+new run. Program admission compares the producer's exact stitched authorization
+and, after fixed-angle edits, exact crop float metadata. Stitched compares the
+authorization; source routes retain their unchanged pixels. The cropper publishes
+its applied transform on every owned Program frame, including when all player
+drawing and diagnostic overlays are off. The check runs
+inside the selected stream's flow mutex before frame identity assignment, so a
+frame admitted under an old setting cannot receive the new operation. Video
+remains on the GPU. These native ownership/admission tests do not qualify AMD
+browser presentation or replace real decoded-frame workflow comparisons.
+
+Timed rink masks retain their original unrotated, ungraded panorama in
+`rink-mask-input/<manifest-sha256>/`. The immutable manifest binds the logical
+Hugin generation and content fingerprint, selected recording time, original
+camera samples and encoded-payload checksum. `rink.mask_frame.input_id` is
+adopted with the mask/provenance transaction; the large TIFF stays outside its
+rollback snapshot. Private copies preserve manifest bytes and historical source
+paths. Failed or cancelled publication preserves the previous reference.
+
+The selected-time preparation pass captures one panorama through bounded row
+buffers: RGBA8, or exact half4 encodings before rotation and tone conversion.
+Live rotation reloads that original and uses the existing GPU rotation and
+calibration conversion before inference. Repeated angles never resample an
+already rotated mask. This requires one D2H capture per retained input generation
+and one bounded H2D reload per mask regeneration; steady-state video stays on
+the GPU. The half4 path reuses the completed live frame's blend workspace after
+its output conversion; RGBA8 uses a separate calibration canvas. Required
+`stitching.rink_mask_input` limits come from the shared baseline. Capture/reload
+logs report raw bytes, TIFF bytes and elapsed milliseconds; inference/publication
+has a separate timing. Legacy timed masks without valid retained input enter
+the existing selected-time preparation pass before normal playback. Runs that
+do not need a rink mask skip this work. Superseded publication drops output
+batches until a valid mask owns the advertised generation. Property acknowledgments
+retain their existing transaction timing; browser admission still requires a
+fresh matching frame. Full-size paired Qt/browser and hardware qualification
+must verify regeneration latency, cancellation and repeated-angle presentation.
+
 `PreviewRouteOwner` owns logical route selection and its operation generation.
 The desktop CLI registers its existing gates and renderer callbacks, retaining
 the legacy `HSTREAM_PREVIEW` acknowledgments. Selection closes ingress before
@@ -108,7 +225,13 @@ check; these attachment tests do not qualify AMD consumers.
 
 `SelectedPreviewStream` isolates inactive route events, preserves original NVMM
 memory and source-buffer pool ownership, and assigns a monotonic presentation
-clock without changing source PTS. `PreviewGpuSurface` bounds cadence and pool
+clock without changing source PTS. It admits frames only while its current and
+target states are PLAYING. Non-live preroll can arrive between clock assignment
+and playback base-time assignment; accepting that clock would seed the timeline
+with absolute uptime and leave subsequent frames in one GPU sampling slot.
+Paused inputs likewise cannot advance the timeline. The CPU regression covers
+that startup interval, pause/resume and a paused route replacement with backwards
+source PTS. `PreviewGpuSurface` bounds cadence and pool
 ownership, fits differing source shapes into one GPU RGBA canvas, and lends only
 that owned surface to a painter. After fitting, `OpaqueVideoCanvas` clears bars
 and forces alpha255 in one shared CUDA/HIP pass, replacing the preceding memset.

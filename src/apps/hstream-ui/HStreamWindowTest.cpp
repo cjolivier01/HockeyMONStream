@@ -4,6 +4,7 @@
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
@@ -96,6 +97,93 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static QString managedArchiveManifest(const HStreamWindow* window) {
+    return window->managed_archive_manifest_;
+  }
+
+  static bool stopProtocolChecks() {
+#ifdef Q_OS_UNIX
+    HStreamWindow window;
+    window.capture_complete_log_ = true;
+    window.pipeline_stop_timeout_ms_ = 1000;
+    window.pipeline_kill_timeout_ms_ = 1000;
+    const QString child = R"PY(
+import signal, sys, time
+def interrupted(signum, frame):
+    print('STOP_TEST interrupted', flush=True)
+    sys.exit(0)
+signal.signal(signal.SIGINT, interrupted)
+signal.signal(signal.SIGCONT, lambda signum, frame: print('STOP_TEST continued', flush=True))
+print('STOP_TEST ready', flush=True)
+while True:
+    line = sys.stdin.readline()
+    if line.strip() == 'q':
+        print('STOP_TEST finish', flush=True)
+        if sys.argv[1] != 'ignore-finish':
+            sys.exit(0)
+    if not line:
+        time.sleep(.01)
+)PY";
+    const auto exercise = [&](const QString& name, bool finish, bool paused = false) {
+      {
+        const QSignalBlocker blocker(window.render_video_toggle_);
+        window.render_video_toggle_->setChecked(name == "preview-ready");
+      }
+      window.pipeline_process_->start("python3", {"-u", "-c", child, name});
+      if (!window.pipeline_process_->waitForStarted(5000) ||
+          !QTest::qWaitFor([&] { return window.completeLogText().contains("STOP_TEST ready"); }, 5000))
+        return false;
+      window.preview_runtime_ready_ = name == "preview-ready";
+      const bool preparing = name == "startup" || name == "python-preparation";
+      window.playback_stage_ = preparing ? "models" : "0";
+      window.playback_position_ns_ = preparing || name == "preview-ready" ? 0 : 1'000'000'000;
+      window.active_hockeymon_program_ = name == "python-preparation";
+      window.active_run_is_calibration_ =
+          name == "calibration" || name == "calibration-restart" || name == "stitched-playback";
+      window.calibration_pending_ =
+          name == "calibration" || name == "one-pass-calibration" || name == "calibration-restart";
+      window.calibration_waiting_for_playback_restart_ = name == "calibration-restart";
+      window.pending_playback_seek_generation_ = name == "seek-reconstruction" ? 17 : 0;
+      window.playback_seek_recovery_generation_ = name == "seek-recovery" ? 18 : 0;
+      if (name == "closed-input")
+        window.pipeline_process_->closeWriteChannel();
+      if (paused) {
+        const qint64 pid = window.pipeline_process_->processId();
+        if (::kill(static_cast<pid_t>(pid), SIGSTOP) != 0 || !QTest::qWaitFor([&] {
+              QFile status(QString("/proc/%1/status").arg(pid));
+              return status.open(QIODevice::ReadOnly) && status.readAll().contains("T (stopped)");
+            }))
+          return false;
+        window.pipeline_paused_ = true;
+      }
+      window.stopPipeline();
+      const QString output = window.completeLogText();
+      const bool killed = name == "ignore-finish";
+      const bool ok = window.pipeline_process_->state() == QProcess::NotRunning &&
+          (killed ? window.pipeline_process_->exitStatus() == QProcess::CrashExit
+                  : window.pipeline_process_->exitStatus() == QProcess::NormalExit &&
+                   window.pipeline_process_->exitCode() == 0) &&
+          output.contains("STOP_TEST finish") == finish && output.contains("STOP_TEST interrupted") == !finish &&
+          (!paused || output.contains("STOP_TEST continued"));
+      if (!ok)
+        std::cerr << "Stop protocol failed for " << name.toStdString() << '\n' << output.toStdString();
+      window.log_->clear();
+      window.complete_log_.clear();
+      return ok;
+    };
+    if (!exercise("preview-ready", true) || !exercise("render-off-archive", true) ||
+        !exercise("stitched-playback", true) || !exercise("paused-render-off-archive", true, true) ||
+        !exercise("startup", false) || !exercise("calibration", false) || !exercise("one-pass-calibration", false) ||
+        !exercise("calibration-restart", false) || !exercise("seek-reconstruction", false) ||
+        !exercise("seek-recovery", false) || !exercise("closed-input", false) || !exercise("python-preparation", true))
+      return false;
+    window.pipeline_stop_timeout_ms_ = 50;
+    return exercise("ignore-finish", true);
+#else
+    return true;
+#endif
+  }
+
   static bool previewOverlayStartupChecks() {
     const QByteArray old_timeout = qgetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
     const bool had_timeout = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
@@ -569,6 +657,9 @@ struct HStreamWindowTestAccess {
   static hm::stitching::StitchProjectionFraming cropFraming(HStreamWindow* window) {
     return window->stitchProjectionFraming();
   }
+  static hm::stitching::StitchProjectionFraming defaultCropFraming(HStreamWindow* window) {
+    return window->default_projection_framing_;
+  }
 
   static void handleProjectionCropOutput(HStreamWindow* window, const QString& line) {
     window->handleProjectionCropOutput(line);
@@ -596,6 +687,13 @@ struct HStreamWindowTestAccess {
 
   static QString pipelineEnvironmentValue(HStreamWindow* window, const QString& name) {
     return window->pipeline_process_ ? window->pipeline_process_->processEnvironment().value(name) : QString();
+  }
+  static QString scoreboardPromptEnvironment(HStreamWindow* window, const std::optional<QString>& override = {}) {
+    QProcessEnvironment environment;
+    if (override.has_value())
+      environment.insert("HM_NO_SCOREBOARD", *override);
+    window->applyScoreboardPromptEnvironment(environment);
+    return environment.value("HM_NO_SCOREBOARD");
   }
 
   // A live pipeline, without one of the real run paths. resetCameraControls only asks the process
@@ -639,6 +737,107 @@ struct HStreamWindowTestAccess {
     return window->pipeline_stop_requested_;
   }
 
+  static QProcess* startPreviewCommandRecorder(HStreamWindow* window) {
+    window->preview_tabs_->setCurrentIndex(0);
+    window->pipeline_process_ = new QProcess(window);
+    window->pipeline_process_->start("cat");
+    if (!window->pipeline_process_->waitForStarted(5000))
+      return nullptr;
+    ++window->pipeline_run_generation_;
+    window->pipeline_uses_process_group_ = false;
+    window->pipeline_render_embedded_ = true;
+    window->preview_runtime_ready_ = true;
+    window->active_preview_channel_ = "program";
+    return window->pipeline_process_;
+  }
+  static void previewRenderChoice(HStreamWindow* window, bool enabled) {
+    const QSignalBlocker blocker(window->render_video_toggle_);
+    window->render_video_toggle_->setChecked(enabled);
+    window->setRuntimeVideoRendering(enabled);
+  }
+  static void previewOverlayChoice(HStreamWindow* window, bool enabled) {
+    const QSignalBlocker blocker(window->show_player_tracking_toggle_);
+    window->show_player_tracking_toggle_->setChecked(enabled);
+    window->setRuntimePreviewOverlays();
+  }
+  static void previewOverlayChoice(HStreamWindow* window, const std::array<bool, 3>& selection) {
+    window->setPreviewOverlayControls(selection[0], selection[1], selection[2]);
+    window->setRuntimePreviewOverlays();
+  }
+  static void confirmPreviewOverlays(HStreamWindow* window, const std::array<bool, 3>& selection) {
+    window->setConfirmedPreviewOverlays(selection[0], selection[1], selection[2]);
+  }
+  static std::array<bool, 3> previewOverlaySelection(HStreamWindow* window) {
+    return {
+        window->show_player_tracking_toggle_->isChecked(),
+        window->show_play_tracking_toggle_->isChecked(),
+        window->show_rink_mask_toggle_->isChecked()};
+  }
+  static std::array<bool, 3> confirmedPreviewOverlaySelection(HStreamWindow* window) {
+    return {
+        window->confirmed_show_player_tracking_,
+        window->confirmed_show_play_tracking_,
+        window->confirmed_show_rink_mask_};
+  }
+  static quint64 pendingPreviewOverlay(HStreamWindow* window) {
+    return window->pending_preview_overlay_generation_;
+  }
+  static bool pendingPreviewOverlayIsReconciliation(HStreamWindow* window) {
+    return window->pending_preview_overlay_is_reconciliation_;
+  }
+  static void reportPreviewOverlay(
+      HStreamWindow* window,
+      const QString& status,
+      quint64 generation,
+      const std::array<bool, 3>& selection) {
+    window->handlePreviewOverlayResponse(
+        QString("HSTREAM_PREVIEW_OVERLAYS status=%1 generation=%2 players=%3 play=%4 rink=%5")
+            .arg(status)
+            .arg(generation)
+            .arg(selection[0] ? 1 : 0)
+            .arg(selection[1] ? 1 : 0)
+            .arg(selection[2] ? 1 : 0));
+  }
+  static void reportOldProgramPreviewReady(HStreamWindow* window, bool runtime = false) {
+    window->pending_preview_channel_ = "program";
+    window->pending_preview_generation_ = window->preview_generation_;
+    window->handleGpuPreviewStatus(
+        runtime ? QString("HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=%1")
+                      .arg(window->preview_generation_)
+                : QString(
+                      "HSTREAM_PREVIEW channel=program status=ready generation=%1 message=first-frame "
+                      "resolution=1280x720")
+                      .arg(window->preview_generation_));
+  }
+  static bool previewRenderingLayoutCompacted(HStreamWindow* window) {
+    return window->preview_layout_compacted_;
+  }
+  static void selectPreviewTab(HStreamWindow* window, int tab) {
+    window->preview_tabs_->setCurrentIndex(tab);
+  }
+  static bool previewTargetsHidden(HStreamWindow* window) {
+    return window->preview_render_target_->isHidden() && window->stitched_render_target_->isHidden();
+  }
+  static bool previewCommandsDeferred(HStreamWindow* window) {
+    return !window->deferred_preview_channel_.isEmpty() || window->deferred_render_audio_muted_.has_value() ||
+        window->deferred_preview_overlays_.has_value() || window->preview_overlay_deferred_;
+  }
+  static void retirePreviewCommandRun(HStreamWindow* window) {
+    window->clearPreviewFrames();
+    ++window->pipeline_run_generation_;
+    window->pipeline_paused_ = false;
+    window->pending_process_pause_generation_ = 0;
+    window->pending_process_resume_generation_ = 0;
+  }
+  static bool cooperativePreviewCommandsRemainAvailable(HStreamWindow* window) {
+    window->pipeline_paused_ = true;
+    window->pipeline_cooperative_pause_ = true;
+    const bool available = !window->previewCommandsBlockedByPause();
+    window->pipeline_paused_ = false;
+    window->pipeline_cooperative_pause_ = false;
+    return available;
+  }
+
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
     window->active_run_is_calibration_ = active;
     window->active_run_high_bit_depth_ = false;
@@ -656,6 +855,23 @@ struct HStreamWindowTestAccess {
 
   static bool liveRotationAuthorizationPending(HStreamWindow* window) {
     return window->live_rotation_authorization_pending_;
+  }
+
+  static void holdRuntimeControlsForPause(HStreamWindow* window) {
+    window->pipeline_paused_ = true;
+  }
+
+  static void beginRuntimeControlsResume(HStreamWindow* window, quint64 generation) {
+    window->pipeline_paused_ = false;
+    window->pending_process_resume_generation_ = generation;
+    window->flushScheduledRuntimeControls();
+  }
+
+  static bool rotationDraftRetained(HStreamWindow* window, int value) {
+    const auto draft = window->scheduled_rotation_controls_.find("Stitch_Rotate_Degrees");
+    return draft != window->scheduled_rotation_controls_.end() && draft->second == value &&
+        window->scheduled_rotation_controls_ready_ && window->runtime_control_batches_.empty() &&
+        window->pending_runtime_controls_.empty() && !window->active_live_rotation_authorization_.has_value();
   }
 
   static void beginPendingPlaybackSeek(HStreamWindow* window, quint64 generation) {
@@ -716,6 +932,14 @@ struct HStreamWindowTestAccess {
     return window->pipelineArguments();
   }
 
+  static QStringList launchedArguments(HStreamWindow* window) {
+    return window->pipeline_process_ ? window->pipeline_process_->arguments() : QStringList();
+  }
+
+  static bool pipelineRetired(HStreamWindow* window) {
+    return !window->pipeline_process_ || window->pipeline_process_->state() == QProcess::NotRunning;
+  }
+
   static void refreshRunControls(HStreamWindow* window) {
     window->updateRunControls();
   }
@@ -758,6 +982,8 @@ struct HStreamWindowTestAccess {
 namespace fs = std::filesystem;
 
 namespace {
+
+YAML::Node test_selected_frame_plan(size_t count);
 
 bool expect(bool condition, const std::string& message) {
   if (!condition) {
@@ -1782,6 +2008,8 @@ bool write_fake_runner(const QString& path) {
       "runtime_control_delay_seconds, "
       "reject_next_runtime_control\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
+  file.write("    if line.strip() == 'q':\n");
+  file.write("        sys.exit(0)\n");
   file.write("    if line.startswith('@test-exit'):\n");
   file.write("        print('test process exit requested', flush=True)\n");
   file.write("        sys.exit(0)\n");
@@ -4248,6 +4476,24 @@ bool test_preview_remap_geometry(HStreamWindow* window) {
   return true;
 }
 
+bool expect_application_identity(HStreamWindow* window) {
+  const QPixmap application_icon = window->windowIcon().pixmap(256, 256);
+  const QImage application_icon_image = application_icon.toImage().convertToFormat(QImage::Format_ARGB32);
+  if (!expect(
+          QCoreApplication::applicationName() == "hstream-ui" &&
+              QGuiApplication::applicationDisplayName() == "HStream" &&
+              QGuiApplication::desktopFileName() == "hstream-ui" && !window->windowIcon().isNull() &&
+              !application_icon.isNull() &&
+              application_icon.size() / application_icon.devicePixelRatio() == QSize(256, 256) &&
+              qAlpha(application_icon_image.pixel(0, 0)) == 0 &&
+              qAlpha(application_icon_image.pixel(
+                  application_icon_image.width() / 2, application_icon_image.height() / 2)) == 255,
+          "HStream should expose matching desktop identity and a scalable application icon with transparent corners")) {
+    return false;
+  }
+  return true;
+}
+
 bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -4384,17 +4630,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
 
-  const QPixmap application_icon = window->windowIcon().pixmap(256, 256);
-  const QImage application_icon_image = application_icon.toImage().convertToFormat(QImage::Format_ARGB32);
-  if (!expect(
-          QCoreApplication::applicationName() == "hstream-ui" &&
-              QGuiApplication::applicationDisplayName() == "HStream" &&
-              QGuiApplication::desktopFileName() == "hstream-ui" && !window->windowIcon().isNull() &&
-              !application_icon.isNull() && application_icon.size() == QSize(256, 256) &&
-              qAlpha(application_icon_image.pixel(0, 0)) == 0 && qAlpha(application_icon_image.pixel(128, 128)) == 255,
-          "HStream should expose matching desktop identity and a scalable application icon with transparent corners")) {
+  if (!expect_application_identity(window))
     return false;
-  }
   if (!expect_x11_application_icon(window))
     return false;
   if (!expect(
@@ -4409,7 +4646,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   const QString icon_artifact_dir = qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR");
   if (!icon_artifact_dir.isEmpty() &&
       (!QDir().mkpath(icon_artifact_dir) ||
-       !application_icon.save(QDir(icon_artifact_dir).filePath("hstream-app-icon.png")))) {
+       !window->windowIcon().pixmap(256, 256).save(QDir(icon_artifact_dir).filePath("hstream-app-icon.png")))) {
     return expect(false, "Could not save the HStream application-icon test artifact");
   }
 
@@ -7295,6 +7532,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     responsiveness_timer.start();
     qint64 responsive_callback_ms = -1;
     QTimer::singleShot(180, window, [&]() { responsive_callback_ms = responsiveness_timer.elapsed(); });
+    const int paused_rotation_commands_before =
+        window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=");
     rotate->setValue(73);
     for (int i = 0; i < 80 && responsive_callback_ms < 0; ++i) {
       QApplication::processEvents();
@@ -7303,7 +7542,34 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     const bool authorization_was_async = !config_lock_failed && config_lock_acquired &&
         HStreamWindowTestAccess::liveRotationAuthorizationPending(window) && responsive_callback_ms >= 0 &&
         responsive_callback_ms < 325;
+    HStreamWindowTestAccess::holdRuntimeControlsForPause(window);
     config_locker.join();
+    for (int i = 0; i < 200 && HStreamWindowTestAccess::liveRotationAuthorizationPending(window); ++i)
+      QTest::qWait(10);
+    const YAML::Node paused_rotation_config = YAML::LoadFile(config.string());
+    if (!expect(
+            !HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
+                HStreamWindowTestAccess::rotationDraftRetained(window, 73) &&
+                window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
+                    paused_rotation_commands_before &&
+                !paused_rotation_config["rink"]["stitched_output_pending_generation"].IsDefined(),
+            "Authorization completed after Pause must roll back its epoch and retain the draft without an ACK timer")) {
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+      activate(stop);
+      return false;
+    }
+    HStreamWindowTestAccess::beginRuntimeControlsResume(window, 113);
+    QTest::qWait(180);
+    if (!expect(
+            HStreamWindowTestAccess::rotationDraftRetained(window, 73) &&
+                window->logText().count("stdin:@set-property hmstitcher0 stitched-output-epoch=") ==
+                    paused_rotation_commands_before,
+            "Rotation authorization must wait for the matching Resume acknowledgement")) {
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+      activate(stop);
+      return false;
+    }
+    HStreamWindowTestAccess::reportProcessPause(window, "resumed", 113);
     for (int i = 0; i < 50 && !window->logText().contains("camera control Stitch_Rotate_Degrees=73 apply=live"); ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
@@ -10344,10 +10610,23 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
   ok &= expect(
       suppressed() && YAML::LoadFile(path.string())["rink"]["camera"]["fixed_edge_rotation_angle"].IsNull(),
       "Suppression must preserve explicit null crop rotation through save");
+  const auto before_reset = YAML::Dump(YAML::LoadFile(path.string()));
   activate(reset);
   ok &= expect(
       left->isEnabled() && left->value() == 100 && right->value() == 100,
       "Reset must clear game leveling and restore baseline crop angles");
+  const auto reset_framing = HStreamWindowTestAccess::cropFraming(window);
+  const auto default_framing = HStreamWindowTestAccess::defaultCropFraming(window);
+  ok &= expect(
+      reset_framing == default_framing && reset_framing.rotation_inherited == default_framing.rotation_inherited &&
+          YAML::Dump(YAML::LoadFile(path.string())) == before_reset,
+      "Reset stages default framing and inheritance without changing saved calibration");
+  activate(save);
+  const auto reset_saved = hm::stitching::read_stitch_projection_framing(YAML::LoadFile(path.string()));
+  ok &= expect(
+      reset_saved.ok() && *reset_saved == reset_framing &&
+          reset_saved->rotation_inherited == reset_framing.rotation_inherited,
+      "Save Preset publishes the staged default framing with inherited leveling intact");
   game->setText(original_game);
   activate(create);
   return ok;
@@ -11084,7 +11363,11 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                 !state["artifacts_invalidated"].as<bool>() && !state["invalidation_id"] &&
                 state["frame_count"].as<int>() ==
                     cancelled_reframe["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() &&
-                !invalidated["stitching"]["calibration_frame_selection"],
+                !invalidated["stitching"]["calibration_frame_selection"] &&
+                !invalidated["stitching"]["calibration_frame_inputs_fingerprint"] &&
+                !invalidated["stitching"]["manual_control_points"] &&
+                !invalidated["rink"]["mask_frame"]["input_id"] &&
+                fs::exists(config_path.parent_path() / "rink-mask-input" / "historical" / "manifest.yaml"),
             "Changing a video role must atomically clear the pending view and invalidate its input generation"))
       return false;
     automatic_crop_dialog->setChecked(!automatic_crop_dialog->isChecked());
@@ -11110,6 +11393,18 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       QTest::qWait(10);
     return ordinary_input;
   };
+  {
+    auto stale_inputs = YAML::LoadFile(config_path.string());
+    const auto selection = test_selected_frame_plan(
+        stale_inputs["hstream_ui"]["stitching_calibration"]["frame_count"].as<size_t>());
+    stale_inputs["stitching"]["calibration_frame_selection"] = selection;
+    stale_inputs["stitching"]["calibration_frame_inputs_fingerprint"] = selection["fingerprint"].as<std::string>();
+    stale_inputs["stitching"]["manual_control_points"] = std::string(64, 'a');
+    stale_inputs["rink"]["mask_frame"]["input_id"] = std::string(64, 'b');
+    std::ofstream(config_path) << YAML::Dump(stale_inputs) << '\n';
+    fs::create_directories(config_path.parent_path() / "rink-mask-input" / "historical");
+    std::ofstream(config_path.parent_path() / "rink-mask-input" / "historical" / "manifest.yaml") << "immutable evidence\n";
+  }
   activate(left_role);
   video_path->setText(reframe_video);
   activate(add_video);
@@ -13694,16 +13989,16 @@ bool test_camera_controls(HStreamWindow* window) {
   fixed_edge_link->setChecked(true);
   fixed_edge_left->setValue(300);
   for (int i = 0; i < 50 &&
-       (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle=30.0") ||
-        !window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle=30.0"));
+       (!window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-left=30.0") ||
+        !window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-left=30.0"));
        ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
   if (!expect(fixed_edge_right->value() == 300, "Linked fixed-edge control should update both sides") ||
       !expect(
-          window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle=30.0") &&
-              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle=30.0"),
+          window->logText().contains("stdin:@set-property dsplaytracker0 fixed-edge-rotation-angle-left=30.0") &&
+              window->logText().contains("stdin:@set-property playcropper0 fixed-edge-rotation-angle-left=30.0"),
           "Linked fixed-edge control should update tracker and cropper live")) {
     std::cerr << window->logText().toStdString() << '\n';
     activate(stop);
@@ -14849,6 +15144,15 @@ bool test_detector_model() {
           "an unrecognized detector config must keep the default model and the saved precision"))
     return false;
 
+  if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    return false;
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  const bool next_run_editable = model->isEnabled() && precision->isEnabled();
+  HStreamWindowTestAccess::killStubPipelineProcess(&window);
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  if (!expect(next_run_editable, "Detector model and precision remain next-run edits during playback"))
+    return false;
+
   // A model choice alone writes nothing while precision keeps the saved config,
   // so selecting one must pin the bundled FP32 to make the change reachable.
   model->setCurrentIndex(model->findData("distilled-s"));
@@ -14930,6 +15234,31 @@ bool test_detector_model() {
       require_child<QComboBox>(&reload, "detectorModelCombo")->currentData().toString() == "default" &&
           require_child<QComboBox>(&reload, "detectorPrecisionCombo")->currentData().toString() == "fp16",
       "switching back to the default model must reload as the default model");
+}
+
+bool test_control_point_limit_precedence() {
+  const QString game_name = "control-point-limit-precedence";
+  const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
+  if (!QDir().mkpath(game_directory))
+    return false;
+  const auto config_path = QDir(game_directory).filePath("config.yaml").toStdString();
+  std::ofstream(config_path) << "stitching: {control_point_limit: 250}\n";
+  HStreamWindow window;
+  auto* selector = require_child<QComboBox>(&window, "gameSelector");
+  auto* points = require_child<QSpinBox>(&window, "controlPointsSpin");
+  if (!selector || !points)
+    return false;
+  selector->setCurrentIndex(selector->findText(game_name));
+  if (!expect(points->value() == 250, "Qt must load the game-local canonical control-point limit"))
+    return false;
+  std::ofstream(config_path) << "stitching: {control_point_limit: 250}\n"
+                                "hstream_ui: {stitching_calibration: {control_points: 450}}\n";
+  HStreamWindowTestAccess::reloadSavedControls(&window);
+  if (!expect(points->value() == 450, "Explicit saved calibration limits must override the canonical limit"))
+    return false;
+  std::ofstream(config_path) << "{}\n";
+  HStreamWindowTestAccess::reloadSavedControls(&window);
+  return expect(points->value() == 1500, "Removing both overrides must restore the baseline control-point limit");
 }
 
 bool test_preset_reload_with_missing_tracker() {
@@ -15744,6 +16073,14 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
 }
 
 bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory) {
+  const QByteArray original_scoreboard_override = qgetenv("HM_NO_SCOREBOARD");
+  auto restore_scoreboard_override = absl::MakeCleanup([&] {
+    if (original_scoreboard_override.isNull())
+      qunsetenv("HM_NO_SCOREBOARD");
+    else
+      qputenv("HM_NO_SCOREBOARD", original_scoreboard_override);
+  });
+  qunsetenv("HM_NO_SCOREBOARD");
   const QByteArray original_home = qgetenv("HOME");
   const QByteArray original_config_root = qgetenv("HM_CONFIG_ROOT");
   QTemporaryDir user_home;
@@ -15771,6 +16108,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   user_config["stitching"]["sync_method"] = "auto";
   user_config["hstream_ui"]["show_crop_dialog"] = false;
   user_config["hstream_ui"]["show_leveling_dialog"] = false;
+  user_config["hstream_ui"]["show_scoreboard_dialog"] = false;
   user_config["hstream_ui"]["playback_start_time"] = "00:11:22.333";
   user_config["stitching"]["max_output_width"] = YAML::Node(YAML::NodeType::Null);
   user_config["stitching"]["post_stitch_rotate_degrees"] = 20;
@@ -15973,6 +16311,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
         QTest::qWait(10);
       }
       const YAML::Node played_zero = YAML::LoadFile(copied_config.string());
+      ok &= expect(
+          HStreamWindowTestAccess::pipelineEnvironmentValue(&user_default_window, "HM_NO_SCOREBOARD") == "1",
+          "Actual Program startup must honor an inherited disabled scoreboard prompt");
       ok &= expect(
           user_default_window.logText().count("--stitch-frame-time=00:00:00") == zero_argument_count + 1 &&
               played_zero["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
@@ -16637,6 +16978,14 @@ bool prepare_real_e2e_game(const QString& game_id) {
         }
       }
     }
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD")) {
+      config["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
+      for (const char* key : {"scoreboard-perspective-polygon", "scoreboard_perspective_polygon"}) {
+        config["pipeline"]["hmplaycropper"].remove(key);
+        config["pipeline"]["hmplaycropper"]["properties"].remove(key);
+        config["pipeline"]["hmplaycropper"]["private-properties"].remove(key);
+      }
+    }
     const auto published = hm::stitching::publish_game_config(game_dir, YAML::Dump(config) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not prepare E2E game config: " << published << '\n';
@@ -16736,6 +17085,211 @@ bool write_e2e_text(const QString& path, const QString& contents) {
   const QByteArray bytes = contents.toUtf8();
   QFile file(path);
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
+}
+
+struct ManagedTelemetryReceipt {
+  QString path;
+  YAML::Node binding;
+};
+
+YAML::Node read_owned_e2e_publication(const QString& path) {
+#ifdef Q_OS_UNIX
+  const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0)
+    throw std::runtime_error("Publication evidence is unavailable: " + path.toStdString());
+  const auto close_fd = absl::MakeCleanup([fd] { ::close(fd); });
+  struct stat st{};
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != ::geteuid() || st.st_size <= 0 ||
+      st.st_size > 16 * 1024 * 1024)
+    throw std::runtime_error("Publication evidence must be a bounded owned regular file");
+  QFile file;
+  if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle))
+    throw std::runtime_error("Cannot read publication evidence");
+  const QByteArray contents = file.read(st.st_size + 1);
+  if (contents.size() != st.st_size)
+    throw std::runtime_error("Publication evidence changed while reading");
+  const auto run = YAML::Load(contents.toStdString());
+  if (run["schema"].as<int>(0) != 1)
+    throw std::runtime_error("Unsupported publication evidence schema");
+  return run;
+#else
+  throw std::runtime_error("Owned publication evidence requires Unix file identities");
+#endif
+}
+
+ManagedTelemetryReceipt capture_managed_telemetry_receipt(const QString& manifest, const QString& game) {
+  if (manifest.isEmpty())
+    throw std::runtime_error("The current run has no managed publication manifest");
+  const auto run = read_owned_e2e_publication(manifest);
+  const std::string game_dir = run["game_dir"].as<std::string>();
+  if (fs::canonical(game.toStdString()) != fs::path(game_dir) ||
+      fs::path(manifest.toStdString()) != fs::path(run["work"].as<std::string>()) / "run.yaml" ||
+      !run["telemetry_required"].as<bool>(false))
+    throw std::runtime_error("The managed telemetry manifest does not match this game and run");
+  ManagedTelemetryReceipt captured;
+  captured.path = QString::fromStdString(hm::publication::ReceiptPath(game_dir, run["id"].as<std::string>()).string());
+  for (const char* key : {"id", "game_dir", "game_id", "work", "work_identity"})
+    captured.binding[key] = YAML::Clone(run[key]);
+  for (const char* key : {"device", "inode"})
+    captured.binding["work_identity"][key].as<uint64_t>();
+  return captured;
+}
+
+bool completed_managed_telemetry_receipt(
+    const ManagedTelemetryReceipt& captured,
+    QString* telemetry_path,
+    QString* error) {
+  telemetry_path->clear();
+  try {
+    const auto run = read_owned_e2e_publication(captured.path);
+    for (const char* key : {"id", "game_dir", "game_id", "work"})
+      if (run[key].as<std::string>() != captured.binding[key].as<std::string>())
+        throw std::runtime_error("Publication receipt belongs to a different run");
+    for (const char* key : {"device", "inode"})
+      if (run["work_identity"][key].as<uint64_t>() != captured.binding["work_identity"][key].as<uint64_t>())
+        throw std::runtime_error("Publication receipt has a different working identity");
+    if (run["state"].as<std::string>() != "complete" || !run["telemetry_required"].as<bool>(false))
+      throw std::runtime_error("Telemetry publication is not complete");
+    if (!run["artifacts"].IsSequence())
+      throw std::runtime_error("Publication receipt has no artifacts");
+    QString published;
+    for (const auto artifact : run["artifacts"]) {
+      if (artifact["kind"].as<std::string>() != "telemetry")
+        continue;
+      const fs::path destination = artifact["destination"].as<std::string>();
+      if (!published.isEmpty() || !artifact["published"].as<bool>(false) ||
+          destination.parent_path() != fs::path(captured.binding["game_dir"].as<std::string>()) ||
+          destination.extension() != ".db")
+        throw std::runtime_error("Telemetry artifact is not a unique published game database");
+#ifdef Q_OS_UNIX
+      const auto expected = artifact["prepared_identity"];
+      struct stat st{};
+      if (::lstat(destination.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != ::geteuid() ||
+          st.st_size <= 0 || uint64_t(st.st_dev) != expected["device"].as<uint64_t>() ||
+          uint64_t(st.st_ino) != expected["inode"].as<uint64_t>() ||
+          int64_t(st.st_size) != expected["size"].as<int64_t>() ||
+          int64_t(st.st_mtim.tv_sec) != expected["mtime"].as<int64_t>() ||
+          int64_t(st.st_mtim.tv_nsec) != expected["mtime_ns"].as<int64_t>() || expected["directory"].as<bool>())
+        throw std::runtime_error("Published telemetry file does not match its receipt identity");
+#else
+      throw std::runtime_error("Owned telemetry evidence requires Unix file identities");
+#endif
+      published = QString::fromStdString(destination.string());
+    }
+    if (published.isEmpty())
+      throw std::runtime_error("Publication receipt has no published telemetry database");
+    *telemetry_path = published;
+    error->clear();
+    return true;
+  } catch (const std::exception& failure) {
+    *error = QString::fromUtf8(failure.what());
+    return false;
+  }
+}
+
+bool test_managed_telemetry_receipt_acceptance() {
+#ifndef Q_OS_UNIX
+  return true;
+#else
+  QTemporaryDir root;
+  if (!root.isValid() || !QDir(root.path()).mkdir("game") || !QDir(root.path()).mkdir("work"))
+    return false;
+  const QString game = root.filePath("game");
+  const QString work = root.filePath("work");
+  const QString manifest = QDir(work).filePath("run.yaml");
+  const QString database = QDir(game).filePath("game-telemetry-1.db");
+  const auto identity = [](const QString& path) {
+    struct stat st{};
+    if (::lstat(QFile::encodeName(path).constData(), &st) != 0)
+      throw std::runtime_error("Cannot inspect telemetry acceptance fixture");
+    YAML::Node result;
+    result["device"] = uint64_t(st.st_dev);
+    result["inode"] = uint64_t(st.st_ino);
+    result["size"] = int64_t(st.st_size);
+    result["mtime"] = int64_t(st.st_mtim.tv_sec);
+    result["mtime_ns"] = int64_t(st.st_mtim.tv_nsec);
+    result["directory"] = bool(S_ISDIR(st.st_mode));
+    return result;
+  };
+  YAML::Node run;
+  run["schema"] = 1;
+  run["id"] = "telemetry-e2e-fixture";
+  run["game_id"] = "game";
+  run["game_dir"] = fs::canonical(game.toStdString()).string();
+  run["work"] = work.toStdString();
+  run["work_identity"] = identity(work);
+  run["state"] = "running";
+  run["telemetry_required"] = true;
+  if (!write_e2e_text(manifest, QString::fromStdString(YAML::Dump(run))))
+    return false;
+  const auto captured = capture_managed_telemetry_receipt(manifest, game);
+  QString published;
+  QString error;
+  const auto check = [&](const YAML::Node& receipt, bool accepted, const std::string& detail) {
+    if (!write_e2e_text(captured.path, QString::fromStdString(YAML::Dump(receipt))))
+      return false;
+    const bool completed = completed_managed_telemetry_receipt(captured, &published, &error);
+    return expect(
+        completed == accepted && (accepted ? published == database && error.isEmpty() : published.isEmpty()), detail);
+  };
+  if (!expect(
+          !completed_managed_telemetry_receipt(captured, &published, &error),
+          "Missing receipt must not satisfy telemetry publication") ||
+      !write_e2e_text(database, "owned published telemetry fixture"))
+    return false;
+  YAML::Node artifact;
+  artifact["kind"] = "telemetry";
+  artifact["destination"] = database.toStdString();
+  artifact["prepared_identity"] = identity(database);
+  artifact["published"] = true;
+  run["artifacts"].push_back(artifact);
+  for (const char* state : {"admitted", "encoded", "publishing", "published"}) {
+    run["state"] = state;
+    if (!check(run, false, "Pending receipts must not satisfy telemetry publication"))
+      return false;
+  }
+  run["state"] = "complete";
+  if (!check(run, true, "Exact completed receipt and owned telemetry file must satisfy publication"))
+    return false;
+  // Completion must remain verifiable after the native finalizer retires work.
+  if (!QFile::remove(manifest) || !QDir().rmdir(work) ||
+      !check(run, true, "Completed receipt must survive working-manifest cleanup"))
+    return false;
+  for (const char* key : {"id", "game_dir", "game_id", "work"}) {
+    auto wrong = YAML::Clone(run);
+    wrong[key] = "different-run";
+    if (!check(wrong, false, "A different run must not satisfy this run's telemetry publication"))
+      return false;
+  }
+  for (const char* key : {"device", "inode"}) {
+    auto wrong = YAML::Clone(run);
+    wrong["work_identity"][key] = wrong["work_identity"][key].as<uint64_t>() + 1;
+    if (!check(wrong, false, "A replaced working identity must not satisfy telemetry publication"))
+      return false;
+  }
+  auto unpublished = YAML::Clone(run);
+  unpublished["artifacts"][0]["published"] = false;
+  auto missing = YAML::Clone(run);
+  missing["artifacts"] = YAML::Node(YAML::NodeType::Sequence);
+  if (!check(unpublished, false, "Unpublished telemetry must fail even in a completed receipt") ||
+      !check(missing, false, "A completed receipt without telemetry must fail"))
+    return false;
+  for (const char* key : {"device", "inode", "size", "mtime", "mtime_ns"}) {
+    auto wrong = YAML::Clone(run);
+    wrong["artifacts"][0]["prepared_identity"][key] =
+        wrong["artifacts"][0]["prepared_identity"][key].as<uint64_t>() + 1;
+    if (!check(wrong, false, "Every recorded telemetry file-identity component must match"))
+      return false;
+  }
+  const QString retained = database + ".retained";
+  if (!QFile::rename(database, retained) ||
+      ::symlink(QFile::encodeName(retained).constData(), QFile::encodeName(database).constData()) != 0 ||
+      !check(run, false, "Symlink telemetry must not satisfy the recorded file identity") || !QFile::remove(database) ||
+      !write_e2e_text(database, "owned published telemetry fixture") ||
+      !check(run, false, "A replaced database must not satisfy the recorded file identity"))
+    return false;
+  return true;
+#endif
 }
 
 struct NativePreviewCapture {
@@ -17213,6 +17767,85 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       return false;
     if (!capture("program", "transitions-program.png") || !compare_overlays("program"))
       return false;
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_LIVE_CAMERA_CONTROLS")) {
+      const std::array<const char*, 5> drawing_ids{
+          "playerDrawBoxes", "playerDrawPose", "playerDrawJerseys", "playerDrawActions", "playerDrawTeams"};
+      for (const auto* id : drawing_ids) {
+        auto* toggle = require_child<QCheckBox>(window, id);
+        if (!toggle)
+          return false;
+        toggle->setChecked(false);
+        toggle->setChecked(true);
+      }
+      if (!wait_for(
+              [&] { return window->completeLogText().contains("player drawing layers=31 apply=live"); },
+              "Qt confirms all five live Players drawing layers"))
+        return false;
+      if (!capture("program", "live-drawing.png"))
+        return false;
+      auto* speed = require_child<QSlider>(window, "cameraSlider_Max_Speed_X_x10");
+      auto* delay = require_child<QSlider>(window, "cameraSlider_Overshoot_Stop_Delay_Frames");
+      auto* ratio = require_child<QSlider>(window, "cameraSlider_Overshoot_Speed_Ratio_x100");
+      auto* percentage = require_child<QDoubleSpinBox>(window, "cameraSpin_Oversized_Player_Percent");
+      auto* ignore = require_child<QCheckBox>(window, "cameraCheck_Ignore_Oversized_Players");
+      auto* fast = require_child<QCheckBox>(window, "cameraCheck_Apply_To_Fast_Box");
+      auto* follower = require_child<QCheckBox>(window, "cameraCheck_Apply_To_Follower_Box");
+      auto* reset = require_child<QPushButton>(window, "resetCameraButton");
+      if (!speed || !delay || !ratio || !percentage || !ignore || !fast || !follower || !reset)
+        return false;
+      activate(pause);
+      if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses before camera edits"))
+        return false;
+      const auto before_edits = window->completeLogText().size();
+      speed->setValue(123);
+      delay->setValue(0);
+      if (!expect(ratio->isEnabled(), "Qt enables Overshoot speed ratio only after its stop delay is zero"))
+        return false;
+      ratio->setValue(125);
+      ignore->setChecked(true);
+      percentage->setValue(125.25);
+      fast->setChecked(true);
+      follower->setChecked(true);
+      require_child<QCheckBox>(window, "playerDrawPose")->setChecked(false);
+      // Exceed the normal runtime acknowledgment budget: paused drafts must
+      // not start that budget or enter the frozen process's stdin pipe.
+      QTest::qWait(5000);
+      const auto paused_log = window->completeLogText().mid(before_edits);
+      if (!expect(
+              !paused_log.contains("apply=pending") && !paused_log.contains("acknowledgement-timeout") &&
+                  !paused_log.contains("player drawing layers=29 apply=scheduled"),
+              "Qt retains paused camera and drawing edits without starting an acknowledgment timeout"))
+        return false;
+      activate(pause);
+      if (!wait_for(
+              [&] {
+                const auto log = window->completeLogText().mid(before_edits);
+                return log.contains("camera control Max_Speed_X_x10=123 apply=live") &&
+                    log.contains("camera control Overshoot_Stop_Delay_Frames=0 apply=live") &&
+                    log.contains("camera control Overshoot_Speed_Ratio_x100=125 apply=live") &&
+                    log.contains("camera control Oversized_Player_Percent=125.25 apply=live") &&
+                    log.contains("player drawing layers=29 apply=live");
+              },
+              "Qt applies sparse camera units and Drawing only after confirmed Resume"))
+        return false;
+      if (!capture("program", "live-camera-tuning.png"))
+        return false;
+      const auto before_reset = window->completeLogText().size();
+      activate(reset);
+      if (!wait_for(
+              [&] {
+                return window->completeLogText()
+                    .mid(before_reset)
+                    .contains("camera control Max_Speed_X_x10=0 apply=live");
+              },
+              "Qt confirms live camera Reset"))
+        return false;
+      if (!expect(
+              !require_child<QCheckBox>(window, "playerDrawPose")->isChecked() && !fast->isChecked() &&
+                  follower->isChecked(),
+              "Qt live Reset preserves Drawing and restores native tracker target choices"))
+        return false;
+    }
     const auto before_pause = generation(program);
     activate(pause);
     if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses native playback"))
@@ -17450,7 +18083,21 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return false;
     toggle->setChecked(requested_outputs.contains(output));
   }
-  activate(start);
+  start->click();
+  std::optional<ManagedTelemetryReceipt> telemetry_receipt;
+  QString published_telemetry_path;
+  QString telemetry_publication_error;
+  if (require_standalone_telemetry) {
+    try {
+      // Finalization clears the window's manifest. Keep this run's immutable
+      // admission binding before processing any more events.
+      telemetry_receipt = capture_managed_telemetry_receipt(
+          HStreamWindowTestAccess::managedArchiveManifest(window), window->gameDirectoryText());
+    } catch (const std::exception& error) {
+      telemetry_publication_error = QString::fromUtf8(error.what());
+    }
+  }
+  QApplication::processEvents();
   const auto stop_and_preserve_failure = [&]() {
     activate(stop);
     for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -17467,6 +18114,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   timer.start();
   bool observed_first_frame = false;
   bool submitted_scoreboard = false;
+  const bool cancel_initial_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD");
+  int scoreboard_cancel_log_offset = -1;
+  QStringList scoreboard_positions_after_cancel;
+  qint64 scoreboard_last_position_ns = -1;
   bool checked_scoreboard_controls = false;
   const bool require_scoreboard_controls = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_SCOREBOARD_CONTROLS");
   qint64 first_frame_at_ms = -1;
@@ -17603,11 +18254,32 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return false;
     }
     if (!require_scoreboard_controls && !submitted_scoreboard && !window->scoreboardSelectorUrl().isEmpty()) {
-      submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+      if (cancel_initial_scoreboard) {
+        auto* dialog = window->findChild<QDialog*>("scoreboardSelectionDialog");
+        auto* cancel = dialog ? dialog->findChild<QPushButton*>("scoreboardCancelButton") : nullptr;
+        if (cancel && cancel->isEnabled()) {
+          scoreboard_cancel_log_offset = window->completeLogText().size();
+          cancel->click();
+          submitted_scoreboard = true;
+        } else {
+          interaction_error = "initial scoreboard Cancel is unavailable";
+        }
+      } else {
+        submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+      }
       if (!submitted_scoreboard) {
         std::cerr << "Could not submit the scoreboard selector: " << interaction_error.toStdString() << '\n';
         stop_and_preserve_failure();
         return false;
+      }
+    }
+    if (cancel_initial_scoreboard && submitted_scoreboard) {
+      // HSTREAM_PROGRESS is consumed by the UI and omitted from its log. Read
+      // the accepted completed-output position that drives the actual controls.
+      const qint64 position = HStreamWindowTestAccess::playbackPositionNs(window);
+      if (position > 0 && position > scoreboard_last_position_ns) {
+        scoreboard_positions_after_cancel.push_back(QString::number(position));
+        scoreboard_last_position_ns = position;
       }
     }
     auto match = positive_fps.globalMatch(log);
@@ -17634,9 +18306,10 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       capture_x11_previews();
     }
     const int configured_record_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_RECORD_MS");
-    const int record_ms = configured_record_ms > 0 ? configured_record_ms : 6000;
+    const int record_ms = configured_record_ms > 0 ? configured_record_ms : (cancel_initial_scoreboard ? 12000 : 6000);
     if (!wait_for_eos && observed_first_frame && timer.elapsed() - first_frame_at_ms >= record_ms &&
-        (!verify_x11_preview || x11_previews_captured)) {
+        (!verify_x11_preview || x11_previews_captured) &&
+        (!cancel_initial_scoreboard || scoreboard_positions_after_cancel.size() >= 2)) {
       break;
     }
     if (window->pipelineStateText() == "STOPPED") {
@@ -17675,9 +18348,6 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       playback_progress->toolTip().contains("ETA:") && playback_progress->format().contains("ETA ") &&
       playback_fps_label.match(playback_progress->format()).hasMatch();
   const bool require_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR");
-  QMap<QString, QString> working_outputs;
-  for (const QString& output : requested_outputs)
-    working_outputs[output] = HStreamWindowTestAccess::activeArchivePath(window, output);
   if (window->pipelineStateText() != "STOPPED")
     activate(stop);
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -17688,13 +18358,15 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   finalize_timer.start();
   const auto outputs_saved = [&]() {
     if (require_standalone_telemetry &&
-        !window->completeLogText().contains("DriveGPT database copied to the game directory:"))
+        (!telemetry_receipt ||
+         !completed_managed_telemetry_receipt(
+             *telemetry_receipt, &published_telemetry_path, &telemetry_publication_error)))
       return false;
     return std::all_of(requested_outputs.cbegin(), requested_outputs.cend(), [&](const QString& output) {
       return window->outputStateText(output) == "SAVED";
     });
   };
-  while (wait_for_eos && !outputs_saved() && finalize_timer.elapsed() < 120000) {
+  while (!outputs_saved() && finalize_timer.elapsed() < 120000) {
     QApplication::processEvents();
     QTest::qWait(100);
   }
@@ -17719,6 +18391,27 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   write_e2e_text(QDir(artifact_dir).filePath("log-issues.txt"), log_issues);
   const bool fatal_log_issue = has_fatal_pipeline_log_issue(final_log);
 
+  if (cancel_initial_scoreboard) {
+    // A closed dialog alone misses the regression: preroll used to strand the
+    // output worker after the initial selector returned CANCELLED. Require
+    // distinct processed-video positions after Cancel, then normal teardown.
+    const QString after_cancel = scoreboard_cancel_log_offset >= 0 ? final_log.mid(scoreboard_cancel_log_offset) : "";
+    write_e2e_text(
+        QDir(artifact_dir).filePath("scoreboard-cancel-progress.txt"), scoreboard_positions_after_cancel.join('\n'));
+    const YAML::Node config = YAML::LoadFile((window->gameDirectoryText() + "/config.yaml").toStdString());
+    const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
+    QProcess* process = HStreamWindowTestAccess::ownedProcess(window, false);
+    if (!expect(
+            submitted_scoreboard && scoreboard_positions_after_cancel.size() >= 2 &&
+                after_cancel.count("Scoreboard selection cancelled; keeping previous selection") == 1 &&
+                !after_cancel.contains("scoreboard selector opened in Qt:") &&
+                (!polygon.IsDefined() || polygon.IsNull()) &&
+                !window->findChild<QDialog*>("scoreboardSelectionDialog") &&
+                (!process || process->state() == QProcess::NotRunning) && window->pipelineStateText() == "STOPPED",
+            "Initial scoreboard Cancel must preserve the empty polygon, resume output, avoid reprompting and stop"))
+      return false;
+  }
+
   QString output_path;
   const QMap<QString, QString> output_labels = {
       {"archive-file", "archiveOutputPath"},
@@ -17728,8 +18421,6 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     auto* label = window->findChild<QLabel*>(output_labels.value(output));
     if (label && label->text().startsWith("Completed archive: "))
       output_path = label->text().mid(QString("Completed archive: ").size());
-    else if (!wait_for_eos)
-      output_path = working_outputs.value(output);
   }
   const QString panorama_path = QDir(window->gameDirectoryText()).filePath("panorama.tif");
   bool visual_match = false;
@@ -17759,6 +18450,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   report += QString("run_mode: %1\noutputs: %2\n").arg(run_mode, requested_outputs.join(','));
   report += QString("preview_overlays: %1\n").arg(preview_overlays.join(','));
   report += QString("output: %1\n").arg(output_path);
+  if (require_standalone_telemetry) {
+    report += QString("telemetry_receipt: %1\n").arg(telemetry_receipt ? telemetry_receipt->path : QString());
+    report += QString("published_telemetry: %1\n").arg(published_telemetry_path);
+    report += QString("telemetry_publication_error: %1\n").arg(telemetry_publication_error);
+  }
   report += QString("panorama: %1\n").arg(panorama_path);
   report += QString("scoreboard_selector_observed: %1\n").arg(submitted_scoreboard ? "true" : "false");
   report += QString("positive_fps_observed: %1\n").arg(observed_first_frame ? "true" : "false");
@@ -17821,8 +18517,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           "Program, Stitched, and Camera 1 must be supplied by their distinct backend preview channels") ||
       !expect(!fatal_log_issue, "Real UI run should not emit a fatal pipeline log signature") ||
       !expect(
-          (!wait_for_eos || outputs_saved()) && QFileInfo(output_path).size() > 64 * 1024,
-          "Archives must contain video; completed runs must finish MP4 publication") ||
+          outputs_saved() && QFileInfo(output_path).size() > 64 * 1024,
+          "Normal Stop and natural completion must publish every selected archive") ||
       !expect(visual_match, "Encoded output should geometrically match panorama.tif")) {
     std::cerr << final_log.toStdString() << '\n';
     return false;
@@ -18724,6 +19420,291 @@ bool test_stitching_still() {
   return expect(wait_visible(), "Selecting the externally completed settings must show the new calibration");
 }
 
+bool test_stitch_rotation_launch_draft() {
+  QTemporaryDir games;
+  if (!games.isValid())
+    return false;
+  const QByteArray original_root = qgetenv("HM_GAME_DIR");
+  const QByteArray original_completion = qgetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  auto restore = absl::MakeCleanup([&] {
+    if (original_root.isNull())
+      qunsetenv("HM_GAME_DIR");
+    else
+      qputenv("HM_GAME_DIR", original_root);
+    if (original_completion.isNull())
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    else
+      qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", original_completion);
+  });
+  qputenv("HM_GAME_DIR", games.path().toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  const QString game = "rotation-launch-draft";
+  const QString directory = QDir(games.path()).filePath(game);
+  if (!QDir().mkpath(directory))
+    return false;
+  const fs::path config = fs::path(directory.toStdString()) / "config.yaml";
+  const QString prefix = "--options=stitching.post_stitch_rotate_degrees=";
+  HStreamWindow window;
+  window.show();
+  auto* rotate = require_child<QSlider>(&window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* start = require_child<QPushButton>(&window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(&window, "stopPipelineButton");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  auto* mode = require_child<QComboBox>(&window, "runModeCombo");
+  auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
+  auto* telemetry = require_child<QCheckBox>(&window, "drivegptCsvCheck");
+  if (!rotate || !start || !stop || !save || !mode || !render || !telemetry)
+    return false;
+  const auto options = [&] { return HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix); };
+  // A displayed integer must not round an untouched fractional saved angle or
+  // replace an automatic/null setting with a numeric zero override.
+  for (const char* saved_rotation : {"null", "7.5"}) {
+    std::ofstream(config) << "stitching: {post_stitch_rotate_degrees: " << saved_rotation << "}\n";
+    window.openGame(game, false);
+    const int saved_slider = rotate->value();
+    if (!expect(options().isEmpty(), "Untouched null and fractional rotations must retain native config resolution"))
+      return false;
+    rotate->setValue(saved_slider + 1);
+    if (!expect(
+            options() == QStringList{prefix + QString::number(89 - saved_slider)},
+            "An edited rotation must override the native launch without rounding an untouched saved value"))
+      return false;
+    if (saved_slider != 90) {
+      rotate->setValue(90);
+      if (!expect(
+              options() == QStringList{prefix + "0"},
+              "An explicit neutral draft against a saved angle must remain numeric zero"))
+        return false;
+    }
+    rotate->setValue(saved_slider);
+    if (!expect(options().isEmpty(), "Reverting the draft must restore null/fractional inheritance"))
+      return false;
+  }
+  std::ofstream(config) << "hstream_ui: {show_crop_dialog: false, show_leveling_dialog: false}\n";
+  window.openGame(game, false);
+  for (auto* output : window.findChildren<QCheckBox*>())
+    if (output->objectName().startsWith("outputToggle_"))
+      output->setChecked(false);
+  render->setChecked(false);
+  telemetry->setChecked(false);
+  mode->setCurrentIndex(mode->findData("program"));
+  // Prepare ordinary calibration bookkeeping, then make the unsaved edit.
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  QFile saved_file(QString::fromStdString(config.string()));
+  if (!saved_file.open(QIODevice::ReadOnly))
+    return false;
+  const QByteArray saved_bytes = saved_file.readAll();
+  saved_file.close();
+  rotate->setFocus();
+  QTest::keyClick(rotate, Qt::Key_Right);
+  if (!expect(
+          rotate->value() == 91 && save->isEnabled() && saved_file.open(QIODevice::ReadOnly) &&
+              saved_file.readAll() == saved_bytes,
+          "The ordinary 90 to 91 slider edit must remain unsaved before Play"))
+    return false;
+  saved_file.close();
+  auto cleanup = absl::MakeCleanup([&] {
+    if (!HStreamWindowTestAccess::pipelineRetired(&window)) {
+      stop->click();
+      QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000);
+    }
+  });
+  activate(start);
+  if (!expect(
+          QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000),
+          "The ordinary Program Play must start the test runner") ||
+      !expect(
+          HStreamWindowTestAccess::launchedArguments(&window).count(prefix + "-1") == 1,
+          "The actual admitted process must receive the unsaved negative rotation exactly once"))
+    return false;
+  // Later live/draft changes must not rewrite the admitted launch snapshot.
+  {
+    const QSignalBlocker blocker(rotate);
+    rotate->setValue(92);
+  }
+  if (!expect(
+          HStreamWindowTestAccess::pipelineArguments(&window).filter(prefix) == QStringList{prefix + "-1"},
+          "A later slider value must not mutate the admitted rotation snapshot"))
+    return false;
+  {
+    const QSignalBlocker blocker(rotate);
+    rotate->setValue(91);
+  }
+  activate(stop);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] {
+                return HStreamWindowTestAccess::pipelineRetired(&window) && window.pipelineStateText() == "STOPPED";
+              },
+              5000),
+          "Ordinary Stop must retire the admitted Program process"))
+    return false;
+  YAML::Node after_stop = YAML::LoadFile(config.string());
+  if (!expect(
+          !lookup_yaml_path(after_stop, {"stitching", "post_stitch_rotate_degrees"}, nullptr) &&
+              !lookup_yaml_path(after_stop, {"hstream_ui", "camera_controls", "Stitch_Rotate_Degrees"}, nullptr) &&
+              rotate->value() == 91 && save->isEnabled() && options() == QStringList{prefix + "-1"},
+          "Stop must retain the unsaved draft while keeping the saved rotation preference absent"))
+    return false;
+  window.openGame(game, false);
+  if (!expect(
+          rotate->value() == 90 && options().isEmpty() && !save->isEnabled(),
+          "Reopening must restore the saved neutral preference and release the run override"))
+    return false;
+  auto* selector = require_child<QComboBox>(&window, "gameSelector");
+  auto* reset_baseline = require_child<QPushButton>(&window, "resetDefaultsButton");
+  if (!selector || !reset_baseline)
+    return false;
+  selector->setCurrentIndex(selector->findText("Defaults"));
+  rotate->setValue(91);
+  activate(reset_baseline);
+  return expect(
+      rotate->value() == 90 && options().isEmpty(),
+      "Defaults Reset to Baseline must preserve automatic rotation without pinning numeric zero");
+}
+
+bool test_stitch_rotation_export_inheritance() {
+  QTemporaryDir preferences;
+  QTemporaryDir games;
+  QTemporaryDir outputs;
+  if (!preferences.isValid() || !games.isValid() || !outputs.isValid())
+    return false;
+  const QByteArray original_home = qgetenv("HOME");
+  const QByteArray original_root = qgetenv("HM_GAME_DIR");
+  const QByteArray original_completion = qgetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  auto restore = absl::MakeCleanup([&] {
+    if (original_home.isNull())
+      qunsetenv("HOME");
+    else
+      qputenv("HOME", original_home);
+    if (original_root.isNull())
+      qunsetenv("HM_GAME_DIR");
+    else
+      qputenv("HM_GAME_DIR", original_root);
+    if (original_completion.isNull())
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    else
+      qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", original_completion);
+  });
+  qputenv("HOME", preferences.path().toLocal8Bit());
+  qputenv("HM_GAME_DIR", games.path().toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  const fs::path defaults = fs::path(preferences.path().toStdString()) / ".config/hstream-ui/defaults.yaml";
+  fs::create_directories(defaults.parent_path());
+  std::ofstream(defaults) << "stitching: {post_stitch_rotate_degrees: 7.5}\n"
+                             "hstream_ui: {show_crop_dialog: false, show_leveling_dialog: false}\n";
+  const QString game = "rotation-export-inheritance";
+  const fs::path directory = fs::path(games.path().toStdString()) / game.toStdString();
+  fs::create_directories(directory);
+  const fs::path config = directory / "config.yaml";
+  std::ofstream(config) << "stitching: {post_stitch_rotate_degrees: 15}\n";
+  HStreamWindow window;
+  window.show();
+  if (!HStreamWindowTestAccess::useMatchingDevelopmentRuntime(&window))
+    return false;
+  window.openGame(game, false);
+  auto* rotate = require_child<QSlider>(&window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* start = require_child<QPushButton>(&window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(&window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(&window, "runModeCombo");
+  auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
+  auto* telemetry = require_child<QCheckBox>(&window, "drivegptCsvCheck");
+  auto* action = require_child<QAction>(&window, "saveJobScriptAction");
+  if (!rotate || !start || !stop || !mode || !render || !telemetry || !action)
+    return false;
+  for (auto* output : window.findChildren<QCheckBox*>())
+    if (output->objectName().startsWith("outputToggle_"))
+      output->setChecked(false);
+  mode->setCurrentIndex(mode->findData("program"));
+  render->setChecked(false);
+  telemetry->setChecked(false);
+  const QString prefix = "--options=stitching.post_stitch_rotate_degrees=";
+  if (!expect(rotate->value() == 75, "The game angle must initially override the fractional user default"))
+    return false;
+  rotate->setValue(83); // The integer presentation of the inherited 7.5 degrees.
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix) == QStringList{prefix + "7"},
+          "Before Save, a deliberate slider edit must remain the integer launch draft"))
+    return false;
+  for (int save_index = 0; save_index < 2; ++save_index) {
+    const QString path = outputs.filePath(QString("rotation-%1.sh").arg(save_index));
+    QString error_message;
+    QTimer dialogs;
+    QObject::connect(&dialogs, &QTimer::timeout, [&] {
+      QWidget* modal = QApplication::activeModalWidget();
+      if (auto* file = qobject_cast<QFileDialog*>(modal)) {
+        if (file->property("rotationExportHandled").toBool())
+          return;
+        file->setProperty("rotationExportHandled", true);
+        QTimer::singleShot(200, file, [file, path] {
+          auto* filename = file->findChild<QLineEdit*>("fileNameEdit");
+          if (!filename)
+            return;
+          filename->setFocus();
+          filename->selectAll();
+          QTest::keyClicks(filename, path);
+          QMetaObject::invokeMethod(file, "accept");
+        });
+      } else if (auto* input = qobject_cast<QInputDialog*>(modal)) {
+        input->accept();
+      } else if (auto* message = qobject_cast<QMessageBox*>(modal)) {
+        if (message->icon() == QMessageBox::Warning || message->icon() == QMessageBox::Critical)
+          error_message = message->text();
+        message->accept();
+      }
+    });
+    dialogs.start(20);
+    action->trigger(); // Includes the ordinary Save Preset before hstream-job.
+    if (!expect(
+            QTest::qWaitFor([&] { return window.logText().contains("job script saved: " + path); }, 10000),
+            "Both the first export and unchanged second export must complete"))
+      return false;
+    QFile script(path);
+    if (!script.open(QIODevice::ReadOnly))
+      return false;
+    const QString text = QString::fromUtf8(script.readAll());
+    const YAML::Node saved = YAML::LoadFile(config.string());
+    const YAML::Node arguments = saved["hstream_ui"]["job"]["arguments"];
+    QStringList recipe;
+    if (arguments.IsSequence())
+      for (const auto& argument : arguments)
+        recipe << QString::fromStdString(argument.as<std::string>());
+    if (!expect(
+            error_message.isEmpty() && text.contains("--encode-job") && !text.contains(prefix) &&
+                arguments.IsSequence() && recipe.filter(prefix).isEmpty() &&
+                !lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, nullptr) &&
+                !lookup_yaml_path(saved, {"hstream_ui", "camera_controls", "Stitch_Rotate_Degrees"}, nullptr) &&
+                YAML::LoadFile(defaults.string())["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5 &&
+                HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix).isEmpty(),
+            "Save and both exported recipes must inherit exact 7.5 degrees without a rounded CLI authority"))
+      return false;
+  }
+  window.openGame(game, false);
+  if (!expect(
+          rotate->value() == 83 && HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix).isEmpty(),
+          "Reopening the saved game must retain fractional inheritance instead of a rounded override"))
+    return false;
+  auto cleanup = absl::MakeCleanup([&] {
+    if (!HStreamWindowTestAccess::pipelineRetired(&window)) {
+      stop->click();
+      QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000);
+    }
+  });
+  activate(start);
+  if (!expect(
+          QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000) &&
+              HStreamWindowTestAccess::launchedArguments(&window).filter(prefix).isEmpty(),
+          "Ordinary reopened Play must leave the exact inherited angle to native configuration resolution"))
+    return false;
+  activate(stop);
+  return expect(
+      QTest::qWaitFor(
+          [&] { return HStreamWindowTestAccess::pipelineRetired(&window) && window.pipelineStateText() == "STOPPED"; },
+          5000),
+      "The reopened inherited-rotation test run must retire on ordinary Stop");
+}
+
 bool test_realtime_playback_selection() {
   HStreamWindow window;
   auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
@@ -18817,6 +19798,295 @@ bool test_process_pause_protocol() {
   return true;
 }
 
+bool test_paused_preview_command_order() {
+#ifdef Q_OS_UNIX
+  HStreamWindow window;
+  auto* process = HStreamWindowTestAccess::startPreviewCommandRecorder(&window);
+  if (!process)
+    return false;
+  auto cleanup = absl::MakeCleanup([&] { HStreamWindowTestAccess::killStubPipelineProcess(&window); });
+  int checkpoint = 0;
+  auto recorded = [&]() {
+    const QByteArray marker = QString("checkpoint-%1\n").arg(++checkpoint).toUtf8();
+    process->write(marker);
+    process->waitForBytesWritten(1000);
+    QByteArray output;
+    QElapsedTimer timeout;
+    timeout.start();
+    while (!output.contains(marker) && timeout.elapsed() < 2000) {
+      output += process->readAllStandardOutput();
+      if (!output.contains(marker))
+        process->waitForReadyRead(100);
+    }
+    return output.contains(marker) ? QString::fromUtf8(output) : QString();
+  };
+  auto no_preview_commands = [](const QString& commands) {
+    return !commands.isEmpty() && !commands.contains("@set-preview-") && !commands.contains("@set-render-audio-muted");
+  };
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  const quint64 generation = HStreamWindowTestAccess::pendingProcessPause(&window);
+  // Exercise the interval before the prepare ACK, while the process can still
+  // read stdin but the paced graph may already be entering PAUSED.
+  HStreamWindowTestAccess::previewRenderChoice(&window, false);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window, true);
+  if (!expect(
+          HStreamWindowTestAccess::previewTargetsHidden(&window) &&
+              !HStreamWindowTestAccess::previewRenderingLayoutCompacted(&window),
+          "Late frame and runtime readiness must not undo Render off during pause preparation"))
+    return false;
+  HStreamWindowTestAccess::previewRenderChoice(&window, true);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window, true);
+  if (!expect(
+          HStreamWindowTestAccess::previewTargetsHidden(&window),
+          "Old readiness must not present a deferred route even when its final channel is unchanged"))
+    return false;
+  HStreamWindowTestAccess::previewOverlayChoice(&window, true);
+  const auto preparing = recorded();
+  if (!expect(
+          preparing.contains(QString("@process-pause %1").arg(generation)) && no_preview_commands(preparing),
+          "Preview changes during pause preparation must not queue behind a pausing graph"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "prepared", generation);
+  HStreamWindowTestAccess::previewRenderChoice(&window, false);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  if (!expect(
+          HStreamWindowTestAccess::processPaused(&window) && HStreamWindowTestAccess::previewTargetsHidden(&window),
+          "Paused Render off must hide the native targets immediately"))
+    return false;
+  HStreamWindowTestAccess::previewRenderChoice(&window, true);
+  HStreamWindowTestAccess::previewOverlayChoice(&window, false);
+  HStreamWindowTestAccess::selectPreviewTab(&window, 2);
+  HStreamWindowTestAccess::selectPreviewTab(&window, 1);
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  if (!expect(
+          HStreamWindowTestAccess::previewTargetsHidden(&window),
+          "Old readiness must not present a superseded route while Resume is awaiting confirmation"))
+    return false;
+  const auto resuming = recorded();
+  if (!expect(
+          resuming.contains(QString("@process-resume %1").arg(generation)) && no_preview_commands(resuming),
+          "Resume must reach the runner before any paused preview mutation"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation + 1);
+  if (!expect(
+          no_preview_commands(recorded()) && HStreamWindowTestAccess::previewCommandsDeferred(&window),
+          "A stale Resume ACK must not release paused preview requests"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation);
+  const auto resumed = recorded();
+  if (!expect(
+          resumed.count("@set-preview-active stitched ") == 1 && !resumed.contains("@set-preview-active none ") &&
+              !resumed.contains("@set-preview-active program ") && !resumed.contains("@set-preview-active source0 ") &&
+              resumed.count("@set-render-audio-muted 0") == 1 && !resumed.contains("@set-render-audio-muted 1") &&
+              resumed.count("@set-preview-overlays ") == 1 &&
+              QRegularExpression("@set-preview-overlays [0-9]+ 0 [01] [01]").match(resumed).hasMatch() &&
+              !HStreamWindowTestAccess::previewCommandsDeferred(&window),
+          "Matching Resume must apply only the latest Render and overlay choices once"))
+    return false;
+
+  // A request sent before Pause can acknowledge after a newer unsent edit.
+  // Confirmed backend state and the operator's draft must remain independent.
+  const std::array<bool, 3> initial_overlay = {false, true, false};
+  const std::array<bool, 3> older_overlay = {false, false, true};
+  const std::array<bool, 3> desired_overlay = {true, false, false};
+  for (const bool resume_wait : {false, true}) {
+    for (const QString& status : QStringList{"applied", "failed"}) {
+      HStreamWindowTestAccess::confirmPreviewOverlays(&window, initial_overlay);
+      HStreamWindowTestAccess::previewOverlayChoice(&window, older_overlay);
+      const quint64 older = HStreamWindowTestAccess::pendingPreviewOverlay(&window);
+      if (!expect(
+              recorded().contains(QString("@set-preview-overlays %1 0 0 1").arg(older)),
+              "The delayed response regression needs an actual overlay request before Pause"))
+        return false;
+      HStreamWindowTestAccess::toggleProcessPause(&window);
+      const quint64 pause = HStreamWindowTestAccess::pendingProcessPause(&window);
+      if (resume_wait) {
+        HStreamWindowTestAccess::reportProcessPause(&window, "prepared", pause);
+        HStreamWindowTestAccess::toggleProcessPause(&window);
+      }
+      HStreamWindowTestAccess::previewOverlayChoice(&window, std::array<bool, 3>{false, true, true});
+      HStreamWindowTestAccess::previewOverlayChoice(&window, desired_overlay);
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", older + 1, older_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::pendingPreviewOverlay(&window) == older &&
+                  HStreamWindowTestAccess::previewOverlaySelection(&window) == desired_overlay &&
+                  HStreamWindowTestAccess::confirmedPreviewOverlaySelection(&window) == initial_overlay,
+              "An unknown overlay generation must not change the pending request, confirmation or paused draft"))
+        return false;
+      // An even older successful request requires reconciliation if this one
+      // fails. That recovery must not supersede the newer deferred user edit.
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", older - 1, older_overlay);
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, status, older, older_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::pendingPreviewOverlay(&window) == 0 &&
+                  HStreamWindowTestAccess::previewOverlaySelection(&window) == desired_overlay &&
+                  HStreamWindowTestAccess::confirmedPreviewOverlaySelection(&window) ==
+                      (status == "applied" ? older_overlay : initial_overlay) &&
+                  no_preview_commands(recorded()),
+              "Old applied/failed ACKs must settle backend state without replacing or sending the paused draft"))
+        return false;
+      if (!resume_wait) {
+        HStreamWindowTestAccess::reportProcessPause(&window, "prepared", pause);
+        HStreamWindowTestAccess::toggleProcessPause(&window);
+      }
+      HStreamWindowTestAccess::reportProcessPause(&window, "resumed", pause + 1);
+      if (!expect(
+              no_preview_commands(recorded()) && HStreamWindowTestAccess::previewCommandsDeferred(&window),
+              "A stale Resume ACK must retain the overlay draft after an older request settles"))
+        return false;
+      HStreamWindowTestAccess::reportProcessPause(&window, "resumed", pause);
+      const quint64 latest = HStreamWindowTestAccess::pendingPreviewOverlay(&window);
+      const QString commands = recorded();
+      if (!expect(
+              latest > older && commands.count("@set-preview-overlays ") == 1 &&
+                  commands.contains(QString("@set-preview-overlays %1 1 0 0").arg(latest)) &&
+                  !HStreamWindowTestAccess::pendingPreviewOverlayIsReconciliation(&window) &&
+                  !HStreamWindowTestAccess::previewCommandsDeferred(&window),
+              "Resume must send the latest complete overlay draft once after old applied/failed ACKs"))
+        return false;
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", older, older_overlay);
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "failed", older, older_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::pendingPreviewOverlay(&window) == latest &&
+                  HStreamWindowTestAccess::previewOverlaySelection(&window) == desired_overlay &&
+                  no_preview_commands(recorded()),
+              "Stale overlay replies after Resume must not replace or resend the newer request"))
+        return false;
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", latest, desired_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::confirmedPreviewOverlaySelection(&window) == desired_overlay,
+              "The matching overlay ACK must confirm the latest resumed selection"))
+        return false;
+    }
+  }
+  HStreamWindowTestAccess::previewOverlayChoice(&window, older_overlay);
+  const quint64 retired_overlay = HStreamWindowTestAccess::pendingPreviewOverlay(&window);
+  recorded();
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  const quint64 retired = HStreamWindowTestAccess::pendingProcessPause(&window);
+  HStreamWindowTestAccess::previewRenderChoice(&window, false);
+  HStreamWindowTestAccess::previewOverlayChoice(&window, desired_overlay);
+  HStreamWindowTestAccess::retirePreviewCommandRun(&window);
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", retired);
+  HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", retired_overlay, older_overlay);
+  HStreamWindowTestAccess::reportPreviewOverlay(&window, "failed", retired_overlay, older_overlay);
+  if (!expect(
+          no_preview_commands(recorded()) && !HStreamWindowTestAccess::previewCommandsDeferred(&window),
+          "Retiring a run must discard its deferred preview commands before late acknowledgements"))
+    return false;
+  if (!expect(
+          HStreamWindowTestAccess::cooperativePreviewCommandsRemainAvailable(&window),
+          "A confirmed cooperative pause must retain its existing typed preview commands"))
+    return false;
+#endif
+  return true;
+}
+
+bool test_scoreboard_prompt_defaults() {
+  const auto source = find_test_baseline_yaml();
+  QTemporaryDir config_root;
+  QTemporaryDir preferences;
+  if (!source.has_value() || !config_root.isValid() || !preferences.isValid())
+    return false;
+  const QByteArray original_root = qgetenv("HM_CONFIG_ROOT");
+  const QByteArray original_home = qgetenv("HOME");
+  auto restore = absl::MakeCleanup([&] {
+    if (original_root.isNull())
+      qunsetenv("HM_CONFIG_ROOT");
+    else
+      qputenv("HM_CONFIG_ROOT", original_root);
+    if (original_home.isNull())
+      qunsetenv("HOME");
+    else
+      qputenv("HOME", original_home);
+  });
+  qputenv("HM_CONFIG_ROOT", config_root.path().toLocal8Bit());
+  qputenv("HOME", preferences.path().toLocal8Bit());
+  const fs::path baseline_path = fs::path(config_root.path().toStdString()) / "baseline.yaml";
+  YAML::Node baseline = YAML::LoadFile(source->string());
+  std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+  {
+    HStreamWindow window;
+    if (!expect(
+            HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == "0",
+            "The canonical baseline must enable automatic scoreboard selection"))
+      return false;
+    const fs::path game = fs::path(qgetenv("HM_GAME_DIR").constData()) / "ui-scoreboard-policy";
+    fs::create_directories(game);
+    auto* game_id = require_child<QLineEdit>(&window, "gameIdEdit");
+    if (!game_id)
+      return false;
+    for (const bool enabled : {false, true}) {
+      YAML::Node config;
+      config["hstream_ui"]["show_scoreboard_dialog"] = enabled;
+      std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+      game_id->setText("ui-scoreboard-policy");
+      HStreamWindowTestAccess::reloadSavedControls(&window);
+      if (!expect(
+              HStreamWindowTestAccess::savedControlConfigLoaded(&window) &&
+                  HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == (enabled ? "0" : "1"),
+              "Explicit game true/false must override the inherited scoreboard prompt"))
+        return false;
+      for (const QString& override : QStringList{"", "0", "1"}) {
+        if (!expect(
+                HStreamWindowTestAccess::scoreboardPromptEnvironment(&window, override) == override,
+                "An explicit HM_NO_SCOREBOARD environment value must retain its existing precedence"))
+          return false;
+      }
+    }
+    std::ofstream(game / "config.yaml") << "hstream_ui: {show_scoreboard_dialog: invalid}\n";
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    if (!expect(
+            !HStreamWindowTestAccess::savedControlConfigLoaded(&window),
+            "An invalid saved scoreboard prompt must block launch with the failed-config guard"))
+      return false;
+    std::error_code ignored;
+    fs::remove_all(game, ignored);
+  }
+  baseline["hstream_ui"]["show_scoreboard_dialog"] = false;
+  std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+  {
+    HStreamWindow window;
+    if (!expect(
+            HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == "1",
+            "An explicit false canonical baseline must disable automatic scoreboard selection"))
+      return false;
+  }
+  const fs::path defaults_dir = fs::path(preferences.path().toStdString()) / ".config" / "hstream-ui";
+  fs::create_directories(defaults_dir);
+  std::ofstream(defaults_dir / "defaults.yaml") << "hstream_ui: {show_scoreboard_dialog: true}\n";
+  {
+    HStreamWindow window;
+    if (!expect(
+            HStreamWindowTestAccess::scoreboardPromptEnvironment(&window) == "0",
+            "A private default must override the canonical scoreboard prompt"))
+      return false;
+  }
+  for (const char* invalid : {"null", "[]", "{}", "invalid", "1"}) {
+    baseline["hstream_ui"]["show_scoreboard_dialog"] = YAML::Load(invalid);
+    std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+    bool rejected = false;
+    try {
+      HStreamWindow window;
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    if (!expect(rejected, "A private overlay must not hide an invalid canonical scoreboard default"))
+      return false;
+  }
+  baseline["hstream_ui"].remove("show_scoreboard_dialog");
+  std::ofstream(baseline_path) << YAML::Dump(baseline) << '\n';
+  try {
+    HStreamWindow window;
+  } catch (const std::exception&) {
+    return true;
+  }
+  return expect(false, "A private overlay must not supply a missing canonical scoreboard default");
+}
+
 bool test_active_process_destruction() {
   for (const QString& role : QStringList{"pipeline", "finalizer", "export"}) {
     auto window = std::make_unique<HStreamWindow>();
@@ -18884,9 +20154,11 @@ int main(int argc, char** argv) {
         ? 0
         : 1;
   }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_TELEMETRY_RECEIPT_ONLY"))
+    return test_managed_telemetry_receipt_acceptance() ? 0 : 1;
   if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
       !test_stitching_canvas_constraint_decisions() || !test_diagnostic_capture_attempt_paths() ||
-      !test_pipeline_log_issue_classification()) {
+      !test_pipeline_log_issue_classification() || !test_managed_telemetry_receipt_acceptance()) {
     return 1;
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");
@@ -18938,11 +20210,20 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ROTATION_LAUNCH_ONLY"))
+    return test_stitch_rotation_launch_draft() && test_stitch_rotation_export_inheritance() ? 0 : 1;
+  // The focused detector suite does not need the unrelated hardware memory probe.
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
+    return test_detector_precision() && test_detector_model() ? 0 : 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_CONTROL_POINT_LIMIT_ONLY"))
+    return test_control_point_limit_precedence() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ICONS_ONLY")) {
     HStreamWindow window;
     window.resize(1600, 1000);
     window.show();
     QGuiApplication::sync();
+    if (!expect_application_identity(&window))
+      return 1;
     int count = 0;
     for (auto* tabs : window.findChildren<QTabWidget*>()) {
       for (int index = 0; index < tabs->count(); ++index) {
@@ -18964,6 +20245,10 @@ int main(int argc, char** argv) {
       return 1;
     return 0;
   }
+  if (!HStreamWindowTestAccess::stopProtocolChecks())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STOP_PROTOCOL_ONLY"))
+    return 0;
   if (!HStreamWindowTestAccess::previewOverlayStartupChecks())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY"))
@@ -18979,12 +20264,22 @@ int main(int argc, char** argv) {
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PATHS_ONLY"))
     return 0;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RESET_FRAMING_ONLY")) {
+    HStreamWindow window;
+    return test_leveled_crop_rotation(&window) ? 0 : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GAME_SETUP_ONLY")) {
     HStreamWindow window;
     return test_game_setup(&window, source_root.path()) ? 0 : 1;
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
     return test_job_export() ? 0 : 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PAUSED_PREVIEW_ONLY"))
+    return test_paused_preview_command_order() ? 0 : 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SCOREBOARD_DEFAULT_ONLY"))
+    return test_scoreboard_prompt_defaults() ? 0 : 1;
+  if (!test_scoreboard_prompt_defaults())
+    return 1;
   if (!test_active_process_destruction())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_DESTRUCTION_ONLY"))
@@ -18993,9 +20288,13 @@ int main(int argc, char** argv) {
     std::cerr << "test_process_pause_protocol failed\n";
     return 1;
   }
+  if (!test_paused_preview_command_order())
+    return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PAUSE_ONLY"))
     return 0;
   if (!test_realtime_playback_selection())
+    return 1;
+  if (!test_stitch_rotation_launch_draft() || !test_stitch_rotation_export_inheritance())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_REALTIME_ONLY"))
     return 0;
@@ -19012,8 +20311,6 @@ int main(int argc, char** argv) {
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BLEND_ONLY"))
     return test_blend_mode() ? 0 : 1;
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
-    return test_detector_precision() && test_detector_model() ? 0 : 1;
   if (!test_blend_mode())
     return 1;
   if (!test_detector_precision())
@@ -19034,7 +20331,8 @@ int main(int argc, char** argv) {
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRESET_RELOAD_ONLY")) {
     HStreamWindow window;
-    return test_preset_reload_with_missing_tracker() && test_game_setup(&window, source_root.path()) &&
+    return test_control_point_limit_precedence() && test_preset_reload_with_missing_tracker() &&
+            test_game_setup(&window, source_root.path()) &&
             test_nonzero_user_stitch_frame_default(window.gameDirectoryText()) && test_camera_controls(&window)
         ? 0
         : 1;
@@ -19120,7 +20418,8 @@ int main(int argc, char** argv) {
   if (!test_rink_mask_time(window.gameDirectoryText()) ||
       !(test_control_point_resolution(window.gameDirectoryText()) &&
         test_control_point_filtering(window.gameDirectoryText())) ||
-      !test_preset_reload_with_missing_tracker() || !test_stitching_iteration_controls(window.gameDirectoryText()))
+      !test_control_point_limit_precedence() || !test_preset_reload_with_missing_tracker() ||
+      !test_stitching_iteration_controls(window.gameDirectoryText()))
     return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";

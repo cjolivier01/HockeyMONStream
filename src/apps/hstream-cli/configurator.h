@@ -206,6 +206,7 @@ class Configurator {
 
  private:
   absl::Status configure_encode_job(YAML::Node& pipeline, bool stitching_calibration_only);
+  absl::Status configure_job_telemetry(YAML::Node& pipeline, bool stitching_calibration_only);
   bool encode_job_{false};
   absl::Status save_private_config_with_backend_claim(
       const YAML::Node& private_config,
@@ -236,6 +237,7 @@ class Configurator {
       const std::filesystem::path& game_dir,
       bool force,
       bool& has_hmstitcher);
+  absl::Status finalize_rink_mask_input_precision(YAML::Node& pipeline);
   absl::Status map_common_config_keys();
   absl::Status materialize_playtracker_config(
       YAML::Node& pipeline,
@@ -321,6 +323,8 @@ class Configurator {
   std::string stitching_calibration_start_stage_;
   bool stitching_calibration_required_{false};
   bool rink_mask_required_{false};
+  std::optional<std::string> retained_rink_mask_input_format_;
+  bool retained_rink_mask_skip_pending_{false};
   bool stitching_matcher_model_required_{false};
   bool scoreboard_perspective_materialized_from_rink_{false};
   bool loaded_generated_stitching_backend_choices_{false};

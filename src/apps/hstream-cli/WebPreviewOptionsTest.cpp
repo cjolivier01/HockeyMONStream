@@ -5,6 +5,7 @@
 #include <json-glib/json-glib.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 
 namespace {
@@ -76,6 +77,37 @@ int main() {
   Check(!hm::preview::ReadWebPreviewOptions(changed).ok(), "Browser history exceeds native receipt retention");
 
   auto request = hm::preview::ParseWebPreviewRoute(kRequest);
+  const auto rotation_values = hm::program::ReadRotationControls(baseline);
+  Check(rotation_values.ok(), "Native rotation baseline was rejected");
+  const std::string rotation_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"9007199254740993","requestId":"1234","controls":{"Stitch_Rotate_Degrees":73,"Left_Fixed_Edge_Rotation_Angle_x10":127}})";
+  const auto rotation = hm::preview::ParseWebRotationControls(rotation_json, *rotation_values);
+  Check(rotation.ok() && rotation->controls.at("Stitch_Rotate_Degrees") == 73 &&
+            rotation->session.topology == 9007199254740993ULL,
+        "Typed rotation changed native units or topology precision");
+  for (const auto& [before, after] : {
+           std::pair{"\"Stitch_Rotate_Degrees\":73", "\"Stitch_Rotate_Degrees\":73.5"},
+           std::pair{"\"Stitch_Rotate_Degrees\":73", "\"Stitch_Rotate_Degrees\":181"},
+           std::pair{"\"Left_Fixed_Edge_Rotation_Angle_x10\":127", "\"Left_Fixed_Edge_Rotation_Angle_x10\":true"},
+           std::pair{"\"Left_Fixed_Edge_Rotation_Angle_x10\":127", "\"unknown\":127"},
+           std::pair{"\"version\":1", "\"version\":1,\"version\":1"},
+           std::pair{"\"requestId\":\"1234\"", "\"requestId\":1234"}}) {
+    auto unsafe = rotation_json;
+    unsafe.replace(unsafe.find(before), std::strlen(before), after);
+    Check(!hm::preview::ParseWebRotationControls(unsafe, *rotation_values).ok(),
+          "Invalid typed rotation escaped validation");
+  }
+  const std::string rotation_query =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"9007199254740993","requestId":"1234"})";
+  Check(hm::preview::ParseWebRotationControls(rotation_query, *rotation_values, true).ok() &&
+            !hm::preview::ParseWebRotationControls(rotation_query, *rotation_values).ok() &&
+            !hm::preview::ParseWebRotationControls(rotation_json, *rotation_values, true).ok(),
+        "Rotation query admitted mutation fields");
+  Check(hm::preview::WebRotationControlsReply(*rotation, "authorizing", "", *rotation_values)
+                .find("\"operation\":null") != std::string::npos &&
+            hm::preview::WebRotationControlsReply(*rotation, "applied", "", *rotation_values, 9007199254740994ULL)
+                .find("\"operation\":\"9007199254740994\"") != std::string::npos,
+        "Rotation phases did not distinguish authorization from exact presentation operation");
   Check(
       request.ok() && request->session.topology == UINT64_MAX && request->session.stage == -1 &&
           request->request_id == "1234",
@@ -164,7 +196,163 @@ int main() {
       json_object_get_int_member(limits, "maxFrames") == 23 && !json_object_get_boolean_member(object, "seek") &&
           std::string(json_object_get_string_member(object, "channel")) == "source127",
       "Capability did not reflect resolved limits and active route");
+  const auto seek_capability = hm::preview::WebPreviewCapability(
+      *custom, owner, hm::pipeline_internal::PreviewOverlayRuntimeState(*defaults), true);
+  Check(
+      json_parser_load_from_data(parser, seek_capability.data(), seek_capability.size(), nullptr) &&
+          json_object_get_boolean_member(json_node_get_object(json_parser_get_root(parser)), "seek"),
+      "Seekable session lost its capability");
   g_object_unref(parser);
+
+  const std::string scoreboard_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","action":"position","position":"upper-center"})";
+  const auto scoreboard = hm::preview::ParseWebScoreboard(scoreboard_json);
+  Check(scoreboard.ok() && scoreboard->position == "upper-center", "Scoreboard placement was lost");
+  for (const auto& change :
+       {std::pair<std::string, std::string>{"upper-center", "lower-left"},
+        {"\"stage\":0", "\"stage\":false"},
+        {"\"requestId\":\"1234\"", "\"requestId\":1234"},
+        {"\"version\":1", "\"version\":1,\"version\":1"},
+        {"\"action\":\"position\"", "\"action\":\"reselect\""}}) {
+    auto invalid = scoreboard_json;
+    invalid.replace(invalid.find(change.first), change.first.size(), change.second);
+    Check(!hm::preview::ParseWebScoreboard(invalid).ok(), "Unsafe scoreboard request was admitted");
+  }
+  auto scoreboard_query = scoreboard_json.substr(0, scoreboard_json.find(",\"action\""));
+  Check(
+      hm::preview::ParseWebScoreboard(scoreboard_query + R"(,"action":"query"})").ok(),
+      "Scoreboard query was rejected");
+  Check(
+      hm::preview::ParseWebScoreboard(scoreboard_query + R"(,"action":"reselect"})").ok(),
+      "Scoreboard reselection was rejected");
+  const auto scoreboard_reply = hm::preview::WebScoreboardReply(*scoreboard, "applied", "", "upper-center");
+  Check(
+      scoreboard_reply.find("\"supported\":true") != std::string::npos &&
+          scoreboard_reply.find("\"position\":\"upper-center\"") != std::string::npos,
+      "Scoreboard response lost support or native placement");
+  Check(
+      hm::preview::WebScoreboardReply(*scoreboard, "failed", "stale-session", std::nullopt).find("\"position\":null") !=
+          std::string::npos,
+      "Unavailable scoreboard response invented a placement");
+
+  const auto camera_defaults = hm::tracking::ReadPlaytrackerControlValues(baseline);
+  Check(camera_defaults.ok(), "Required camera control baseline was rejected");
+  const std::string camera_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","forceAllTargets":false,"controls":{"Max_Speed_X_x10":123,"Oversized_Player_Percent":125.25,"Cancel_Stop_On_Opposite_Direction":1}})";
+  const auto camera = hm::preview::ParseWebCameraControls(camera_json, *camera_defaults);
+  Check(
+      camera.ok() && !camera->force_all_targets && camera->controls.size() == 3 &&
+          camera->controls.at("Oversized_Player_Percent") == 125.25,
+      "Camera controls lost identity or fractional percentage");
+  for (const auto& replacement :
+       {std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":2001"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":1.5"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":true"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"unknown\":123"),
+        std::make_pair("\"Max_Speed_X_x10\":123", "\"Max_Speed_X_x10\":123,\"Max_Speed_X_x10\":0"),
+        std::make_pair("\"Oversized_Player_Percent\":125.25", "\"Oversized_Player_Percent\":-1"),
+        std::make_pair("\"requestId\":\"1234\"", "\"requestId\":\"01234\""),
+        std::make_pair("\"forceAllTargets\":false", "\"forceAllTargets\":1"),
+        std::make_pair("\"forceAllTargets\":false", "\"forceAllTargets\":false,\"forceAllTargets\":true"),
+        std::make_pair("\"forceAllTargets\":false,", "")}) {
+    auto invalid = camera_json;
+    invalid.replace(invalid.find(replacement.first), std::strlen(replacement.first), replacement.second);
+    Check(!hm::preview::ParseWebCameraControls(invalid, *camera_defaults).ok(), "Unsafe camera controls were admitted");
+  }
+  auto camera_reset = camera_json;
+  camera_reset.replace(camera_reset.find("\"forceAllTargets\":false"), 23, "\"forceAllTargets\":true");
+  const auto reset_request = hm::preview::ParseWebCameraControls(camera_reset, *camera_defaults);
+  Check(reset_request.ok() && reset_request->force_all_targets, "Camera Reset lost all-target publication");
+  auto camera_query = camera_json;
+  camera_query.erase(camera_query.find(",\"forceAllTargets\""));
+  camera_query += "}";
+  Check(
+      hm::preview::ParseWebCameraControls(camera_query, *camera_defaults, true).ok() &&
+          !hm::preview::ParseWebCameraControls(camera_json, *camera_defaults, true).ok() &&
+          !hm::preview::ParseWebCameraControls(camera_query, *camera_defaults).ok(),
+      "Camera mutation and readback envelopes were interchangeable");
+  const auto camera_reply = hm::preview::WebCameraControlsReply(*camera, "applied", "", camera->controls);
+  Check(
+      camera_reply.find("125.25") != std::string::npos &&
+          camera_reply.find("\"requestId\":\"1234\"") != std::string::npos,
+      "Camera reply lost exact readback or request correlation");
+
+  const std::string drawing_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","layers":31})";
+  const auto drawing = hm::preview::ParseWebPlayerDrawing(drawing_json);
+  Check(
+      drawing.ok() && drawing->layers == 31 && drawing->session.topology == 7,
+      "Player drawing identity or full selection was lost");
+  for (const auto& replacement :
+       {std::make_pair("\"layers\":31", "\"layers\":32"),
+        std::make_pair("\"layers\":31", "\"layers\":true"),
+        std::make_pair("\"layers\":31", "\"layers\":1.5"),
+        std::make_pair("\"requestId\":\"1234\"", "\"requestId\":\"0\""),
+        std::make_pair("\"layers\":31", "\"layers\":31,\"layers\":0"),
+        std::make_pair("\"topology\":\"7\"", "\"topology\":\"07\"")}) {
+    auto invalid = drawing_json;
+    invalid.replace(invalid.find(replacement.first), std::strlen(replacement.first), replacement.second);
+    Check(!hm::preview::ParseWebPlayerDrawing(invalid).ok(), "Unsafe player drawing request was admitted");
+  }
+  auto drawing_query = drawing_json;
+  drawing_query.erase(drawing_query.find(",\"layers\""));
+  drawing_query += "}";
+  Check(
+      hm::preview::ParseWebPlayerDrawing(drawing_query, true).ok() &&
+          !hm::preview::ParseWebPlayerDrawing(drawing_query).ok() &&
+          !hm::preview::ParseWebPlayerDrawing(drawing_json, true).ok(),
+      "Player drawing query and mutation envelopes were interchangeable");
+  const auto drawing_reply = hm::preview::WebPlayerDrawingReply(*drawing, "applied", "", 31);
+  Check(
+      drawing_reply.find("\"layers\":31") != std::string::npos &&
+          drawing_reply.find("\"requestId\":\"1234\"") != std::string::npos,
+      "Player drawing reply lost readback or correlation");
+
+  const std::string seek_json =
+      R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":0,"topology":"7","requestId":"1234","positionNs":"9223372036854775807"})";
+  const auto seek = hm::preview::ParseWebPreviewSeek(seek_json);
+  Check(
+      seek.ok() && seek->position_ns == INT64_MAX && seek->request_id == 1234 && seek->session.topology == 7,
+      "Seek identity or nanosecond time lost precision");
+  for (const auto& invalid :
+       {std::pair{std::string("\"version\":1"), std::string("\"version\":true")},
+        {"\"stage\":0", "\"stage\":0.0"},
+        {"\"topology\":\"7\"", "\"topology\":7"},
+        {"\"topology\":\"7\"", "\"topology\":\"0\""},
+        {"\"requestId\":\"1234\"", "\"requestId\":\"0\""},
+        {"\"requestId\":\"1234\"", "\"requestId\":\"9223372036854775808\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":\"9223372036854775808\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":\"-1\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":\"01\""},
+        {"\"positionNs\":\"9223372036854775807\"", "\"positionNs\":1"},
+        {"\"version\":1", "\"version\":1,\"version\":1"},
+        {"\"stage\":0", "\"stage\":0,\"extra\":0"}}) {
+    auto input = seek_json;
+    input.replace(input.find(invalid.first), invalid.first.size(), invalid.second);
+    Check(!hm::preview::ParseWebPreviewSeek(input).ok(), "Malformed seek envelope admitted");
+  }
+  auto zero_seek = seek_json;
+  zero_seek.replace(zero_seek.find("9223372036854775807"), 19, "0");
+  Check(hm::preview::ParseWebPreviewSeek(zero_seek).ok(), "Seek to start rejected");
+  auto relative_seek = zero_seek;
+  relative_seek.replace(relative_seek.find("\"positionNs\":\"0\""), 16, "\"deltaNs\":\"-10000000000\"");
+  const auto relative = hm::preview::ParseWebPreviewSeek(relative_seek);
+  Check(relative.ok() && relative->delta_ns == -10000000000LL, "Relative seek lost its signed native offset");
+  for (const auto& delta : {"0", "-0", "01", "+1", "-01", "9223372036854775808", "-9223372036854775809"}) {
+    auto input = relative_seek;
+    input.replace(input.find("-10000000000"), 12, delta);
+    Check(!hm::preview::ParseWebPreviewSeek(input).ok(), "Noncanonical relative seek admitted");
+  }
+  Check(!hm::preview::ParseWebPreviewSeek(std::string(4097, ' ')).ok(), "Oversize seek admitted");
+  const auto completed_seek = hm::preview::WebPreviewSeekReply(*seek, "completed", "", 8, 4000000000ULL, 0);
+  Check(
+      completed_seek.find("\"resultTopology\":\"8\"") != std::string::npos &&
+          completed_seek.find("\"positionNs\":\"4000000000\"") != std::string::npos &&
+          completed_seek.find("\"sourcePtsNs\":\"0\"") != std::string::npos,
+      "Seek reply lost replacement topology or first completed frame");
+  Check(
+      hm::preview::WebPreviewSeekReply(*seek, "accepted", "", 7).find("\"sourcePtsNs\":null") != std::string::npos,
+      "Seek admission invented first-frame evidence");
 
   const std::string overlay_json =
       R"({"version":1,"run":"01234567-89ab-cdef-0123-456789abcdef","stage":-1,"topology":"18446744073709551615","requestId":"overlay-1","generation":"18446744073709551615","players":true,"play":false,"rink":true})";

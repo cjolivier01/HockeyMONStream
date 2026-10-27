@@ -14,6 +14,16 @@ hstream-ui --backend=hockeymon --backend-runner=/absolute/path/to/hm-cli \
 initial-launch document so `hmtrack --camera-ui=1` can preserve explicit Python
 arguments. It applies once, to the game selected at startup, and is not copied
 into exported jobs. A later Play uses the current saved and unsaved UI choices.
+An edited Stitched Rotation is frozen at Play and passed as a per-run
+`stitching.post_stitch_rotate_degrees` override. Native startup invalidates
+rotation-dependent masks and scoreboard geometry for that output without saving
+the draft as a preference. Stop retains the draft; reopening the game reloads
+the saved value. Untouched null and fractional settings keep their configuration
+semantics. Save job script first saves the preset; exported jobs resolve
+rotation from that saved configuration, including inherited fractional values.
+The browser stages the same edit in its private calibration copy before launch.
+AMD Program still rejects unsupported nonzero post-stitch
+rotation; this launch handoff does not add an AMD rotation implementation.
 Initial Program envelopes include source ownership resolved by the Python
 adapter before Qt opens, bound to the same game, arguments and working directory.
 Qt checks it before calibration cleanup or crop admission. A single-source CLI
@@ -36,6 +46,64 @@ custom contracts; hockey pose/action models remain native-only. Its appearance
 menu retains both DeepStream and NVIDIA ReIdentificationNet selections. Encoded
 rink mini-maps currently require native Program processing; Python launch rejects
 `output.rink-map.enable` instead of silently omitting the requested overlay.
+
+Calibration prompt preferences are required baseline keys:
+`hstream_ui.show_crop_dialog` and `hstream_ui.show_leveling_dialog`, both shipped
+as `true`. Qt and browser Defaults permit editing these preferences and the
+`stitching.stitch_frame_time` reference time. Save Preset stores their overrides;
+Reset to Baseline stages the baseline values until Save Preset. Explicit game
+`false` prompt selections and a zero reference time retain precedence. The
+Python baseline carries the same keys; native calibration owns the dialogs.
+
+Automatic missing-scoreboard selection reads the required
+`hstream_ui.show_scoreboard_dialog` baseline and private/game overrides without
+adding a checkbox. Qt supplies that resolved policy to either Program runner
+unless `HM_NO_SCOREBOARD` is explicitly present in its environment. Browser
+startup uses the same generated default and retains explicit saved false values.
+The live Select scoreboard action remains independent of automatic prompts.
+
+## Native normal-speed audio
+
+With `--render-realtime`, native NVIDIA and AMD Program playback use
+`common/PacedPlayback` when a source-correlated local audio monitor is enabled.
+One bounded epoch maps original video intervals to a common presentation
+clock. Processing stalls delay both video and matching PCM; archive headers,
+PCM and original timestamps stay unchanged. The private audio branch shares
+PCM memory and splits only its headers at video/sample boundaries. Its sample
+positions use one consistent nanosecond rounding rule, so a rounded AAC packet
+PTS cannot move a boundary sample under the previous video's stall offset. Video
+buffers are neither mapped nor read back.
+
+The sole monitor provides the physical clock. The upstream latency reply retains
+producer requirements and includes negotiated device lead for both sinks.
+`runtime.local_playback` supplies required device requests, queue/history bounds,
+preview retention, mapping deadline and pause-quiescence deadline. Device lead
+that cannot fit retained video buffers, unknown source durations and missing
+epoch mappings fail explicitly. Preview queues retain scaled images after
+conversion within the existing image budget.
+
+PCM admission retains one actual video interval plus the configured
+`audio_queue_buffers`/`audio_queue_bytes` headroom. Both finite queue limits derive
+from that interval and the negotiated sample format, so low-rate video cannot
+wait for PCM blocked behind its own queue. Admission uses the same ceiling
+sample cells as monitor splitting; audio EOS releases a genuinely shorter tail.
+
+Before native desktop SIGSTOP or CLI/X11 pause, the runner finishes any active private PCM push,
+holds pending PCM and pauses the GStreamer graph and device. Resume starts the
+preserved physical cursor before releasing those pushes. The pipeline keeps its
+base time through that physical-clock pause: a device period published after
+the pause snapshot must not move video behind PCM retained by the device.
+Resume and cancellation restore ordinary start-time bookkeeping. Seek/READY
+cancels old waits and the next serialized source segment creates a fresh history. These
+changes do not qualify the independent HockeyMON Python Program backend or
+browser audio transport. CPU sample-conservation tests and backend compilation
+are prerequisites; sustained source-correlated hardware playback, native frame
+receipts, pause, seek and graceful Stop still require qualification.
+
+Same-stage calibration restarts preserve a surviving peer's PCM and clock through
+the shared asynchronous pause/resume requests. The GLib restart loop polls PCM
+quiescence under its existing deadline; it never waits for a device push to finish
+inside that callback. A failed restart cancels peer mappings before retirement.
 
 ## Ownership
 

@@ -172,6 +172,65 @@ bool same_frames(const std::vector<Frame>& a, const std::vector<Frame>& b, float
   }
   return true;
 }
+
+void check_panorama_geometry() {
+  const auto accepted = [](uint32_t width, uint32_t height, uint32_t canvas_width, uint32_t canvas_height) {
+    const auto status = ValidatePanoramaGeometry(width, height, canvas_width, canvas_height);
+    check(
+        status.ok(),
+        std::to_string(width) + "x" + std::to_string(height) + " from " + std::to_string(canvas_width) + "x" +
+            std::to_string(canvas_height) + ": " + status.ToString());
+  };
+  const auto rejected = [](uint32_t width, uint32_t height, uint32_t canvas_width, uint32_t canvas_height) {
+    check(
+        !ValidatePanoramaGeometry(width, height, canvas_width, canvas_height).ok(),
+        "Incompatible panorama accepted: " + std::to_string(width) + "x" + std::to_string(height) + " from " +
+            std::to_string(canvas_width) + "x" + std::to_string(canvas_height));
+  };
+
+  accepted(3840, 2160, 3840, 2160);
+  accepted(1920, 1080, 3840, 2160);
+  accepted(1919, 1079, 1919, 1079);
+  accepted(1919, 1079, 3838, 2158);
+  // Preserve the existing uniform-rescale allowance, including odd dimensions.
+  accepted(1919, 1080, 1920, 1080);
+  accepted(100, 98, 100, 100);
+  accepted(98, 100, 100, 100);
+  accepted(3840, 1660, 7680, 3321);
+  // These are the production encoder's independently even-rounded outputs.
+  // Short-axis rounding must not become a larger error on the long axis.
+  accepted(8192, 2456, 10000, 3000);
+  accepted(2456, 8192, 3000, 10000);
+  accepted(4096, 1228, 10000, 3000);
+  accepted(8192, 2732, 13802, 4606);
+  accepted(2732, 8192, 4606, 13802);
+  // Actual encoder floating-point products can round just below an even edge.
+  accepted(8190, 6144, 8860, 6645);
+  accepted(7680, 1022, 8415, 1122);
+  accepted(1022, 7680, 1122, 8415);
+
+  // At a common scale of 1/3, the short dimension rounds down from 33 2/3.
+  accepted(100, 32, 300, 101);
+  accepted(32, 100, 101, 300);
+  // Here no common floating-point scale produces both requested dimensions:
+  // at width 100 the short dimension advances to 34; just below it width is 98.
+  rejected(100, 32, 300, 102);
+  rejected(32, 100, 102, 300);
+  rejected(100, 32, 300, 103);
+  rejected(8192, 2454, 10000, 3000);
+  rejected(8192, 2460, 10000, 3000);
+  rejected(8192, 2456, 3000, 10000);
+  rejected(1920, 720, 3840, 2160);
+  rejected(0, 1080, 3840, 2160);
+  rejected(1920, 0, 3840, 2160);
+  rejected(1920, 1080, 0, 2160);
+  rejected(1920, 1080, 3840, 0);
+
+  const auto maximum = std::numeric_limits<uint32_t>::max();
+  accepted(maximum, maximum, maximum, maximum);
+  accepted(maximum - 1, maximum - 3, maximum, maximum - 1);
+  rejected(maximum - 1, maximum - 5, maximum, maximum - 1);
+}
 } // namespace
 int main(int argc, char** argv) {
   try {
@@ -186,10 +245,11 @@ int main(int argc, char** argv) {
                 << '\n';
       return 0;
     }
-    if ((argc == 3 || argc == 6) && std::string(argv[1]) == "--make-fixture") {
+    if ((argc == 3 || argc == 6) &&
+        (std::string(argv[1]) == "--make-fixture" || std::string(argv[1]) == "--make-legacy-fixture")) {
       std::cout << fixture(
                        argv[2],
-                       false,
+                       std::string(argv[1]) == "--make-legacy-fixture",
                        false,
                        argc == 6 ? std::stoul(argv[3]) : 3840,
                        argc == 6 ? std::stoul(argv[4]) : 2160,
@@ -221,6 +281,7 @@ int main(int argc, char** argv) {
                 << (*session)->rink_mask_png().size() << "\n";
       return 0;
     }
+    check_panorama_geometry();
     char tmp[] = "/tmp/hstream-replay-test-XXXXXX";
     check(mkdtemp(tmp), "temporary directory");
     const fs::path directory(tmp);
@@ -492,6 +553,38 @@ int main(int argc, char** argv) {
         descriptor["frames"].size() == 150 &&
             descriptor["media"]["telemetry_origin_pts_ns"].as<uint64_t>() == 2000000000,
         "saved trial includes exact input range and manual media mapping");
+    MediaBinding no_media;
+    no_media.telemetry_origin_pts_ns = binding.telemetry_origin_pts_ns;
+    check(
+        (*session)->SaveTrial((directory / "without-media.yaml").string(), *candidate, no_media).ok(),
+        "CPU-only trial saves without a panorama");
+    const auto without_media = YAML::LoadFile((directory / "without-media.yaml").string());
+    check(
+        without_media["media"]["kind"].as<std::string>() == "none" &&
+            without_media["media"]["canvas_width"].as<unsigned>() == 3840 &&
+            without_media["media"]["canvas_height"].as<unsigned>() == 2160 && !without_media["media"]["path"] &&
+            !without_media["media"]["identity"] && !without_media["media"]["video_origin_pts_ns"] &&
+            YAML::Dump(without_media["frames"]) == YAML::Dump(descriptor["frames"]) &&
+            YAML::Dump(without_media["start_checkpoint"]) == YAML::Dump(descriptor["start_checkpoint"]),
+        "Unbound trial preserves trajectory and checkpoint without inventing media identity");
+    check(
+        !(*session)->SaveTrial((*session)->manifest_path(), *candidate, no_media).ok() &&
+            !(*session)->SaveTrial(runtime_config.string(), *candidate, no_media).ok(),
+        "Unbound trial still protects recording and configuration inputs");
+    for (int invalid = 0; invalid < 4; ++invalid) {
+      auto partial = no_media;
+      if (invalid == 0)
+        partial.width = 3840;
+      else if (invalid == 1)
+        partial.height = 2160;
+      else if (invalid == 2)
+        partial.stitching.emplace();
+      else
+        partial.path = (directory / "missing-panorama.mp4").string();
+      check(
+          !(*session)->SaveTrial((directory / "invalid-unbound.yaml").string(), *candidate, partial).ok(),
+          "Incomplete media binding must not silently become an unbound trial");
+    }
     binding.width = 1920;
     binding.height = 1080;
     check(
@@ -507,8 +600,6 @@ int main(int argc, char** argv) {
     check(
         !(*session)->SaveTrial((directory / "bad-scale.yaml").string(), *candidate, binding).ok(),
         "different panorama aspect ratio rejected");
-    check(ValidatePanoramaGeometry(3840, 1660, 7680, 3321).ok(), "encoder even-dimension rounding accepted");
-    check(!ValidatePanoramaGeometry(0, 1080, 3840, 2160).ok(), "zero media dimensions rejected");
     binding.width = 3840;
     binding.height = 2160;
     binding.path = (directory / "config.yaml").string();

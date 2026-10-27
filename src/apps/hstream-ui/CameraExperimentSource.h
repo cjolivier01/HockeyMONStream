@@ -4,7 +4,11 @@
 
 #include <gst/gst.h>
 #include <yaml-cpp/yaml.h>
+#include <QtCore/QtGlobal>
 #include <memory>
+
+// Archived camera launch origin, shared by Qt and authenticated replay.
+std::optional<qint64> CameraExperimentRecordingSourceOrigin(const hm::playtracker_replay::PrepareOptions& options);
 
 // Resolve persisted aliases/null defaults with the production configuration
 // semantics. Automatic grading requires every original chapter to be >=10 bit.

@@ -8,6 +8,14 @@ launch uses the same pipeline; additional preview channels, live controls
 and other optional application features remain unfinished. This is
 not yet a complete AMD application release.
 
+Desktop Stop sends the shared `q` finish command once native playback is ready,
+including with Render off. The AMD control parser accepts both `q` and `@quit`;
+portable control tests cover both commands while playing and paused. The AMD
+lifecycle hardware suite also checks desktop `q`, including SIGSTOP/SIGCONT before
+a paused finish. Both cases passed on `ripper` using a compatible paced-audio
+runtime: each published 21 HEVC/AAC frames and passed full decode. This checks
+unmanaged file output; it does not qualify managed receipts or full AMD parity.
+
 `src/apps/apps-common/PreviewRouteOwner.*` is portable CPU control code and does
 not depend on CUDA, HIP, Qt or X11. The NVIDIA CLI uses it for existing desktop
 route activation. It does not add AMD source/Stitched branches or WebRTC;
@@ -26,6 +34,27 @@ but no HIP/VA target or AMD browser capability is registered. The new explicit
 `--web-preview-run-id` CLI path remains NVIDIA-only; the AMD CLI does not admit
 that option or advertise selectable browser routes. Jetson cross-build
 success likewise does not qualify Jetson surface-array input or runtime encoding.
+
+Camera Experiments retain the existing NVIDIA decoder/stitch/crop preview path.
+The headless `camera-experiment` adapter now uses that same worker with a bounded
+held NVMM sample and `WebPreviewTarget`; it does not add an AMD replay decoder or
+HIP/VA browser target. Qt and authenticated Chromium qualification cover NVIDIA
+only. The shared replay policy, parameter catalog and trajectory data remain
+portable, while actual AMD moving-preview and historical-mask qualification are
+still required. No system-memory video fallback is added.
+
+Program crop selection shares `program/FrameGeometry::ResolveTrackingBox` with
+NVIDIA. A recorded follower is scaled into the decoded surface once. An absent
+follower selects the largest centered rectangle with the requested output aspect
+ratio; AMD retains that absence until each render output is known. CPU geometry
+regressions cover scaled canvases and wide/portrait/square outputs. This does not
+qualify AMD rendered pixels or add the missing AMD Camera preview path.
+
+`StitchingCalibrationControls` shares CPU dependency staging, source-reference
+invalidation and cleanup completion between Qt Play and the private web adapter.
+It changes no CUDA/HIP data path and adds no frame readback. Its CPU regressions
+do not qualify an AMD calibration run or enable the missing HIP/VA browser target;
+paired AMD/native workflow validation remains required on `ripper`.
 
 ## Implemented paths
 
@@ -294,7 +323,7 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 
 | Boundary | Current implementation | Remaining AMD work |
 | --- | --- | --- |
-| Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Additional application sink modes |
+| Decode and encode | VA H.264/HEVC stereo readers and HEVC/MP4 output in the ROCm CLI | Additional application sink modes, including RTMP/RTSP network output and its configured branch dimensions |
 | Allocation and pairing | Bounded VA DMA-BUF pools, HIP imports and exact stereo clock | Broader codec/device qualification |
 | Stitching | Saved calibration with HIP `hm-cupano` and shared conversion | Automatic calibration, rotated generations and live controls |
 | Model execution | Native MIGraphX inference in the ROCm CLI | Broader numerical qualification and optional analytics |
@@ -469,8 +498,13 @@ this stage converts YUV matrices/ranges but is not a tone mapper.
 The owner pins and validates saved control maps and the exact-generation rink
 mask before GPU preparation. It currently requires the current unrotated saved
 geometry; calibration, post-stitch rotation and reconstruction on changed
-source caps remain application work. The caller owns source identity, stereo
-pairing, timestamps, output pools and decoder/sink lifecycles.
+source caps remain application work. The shared `RinkMaskInputStore` validates
+and copies exact retained selected-time panoramas without a GPU dependency.
+NVIDIA's selected-time capture and live mask regeneration use it, but this does
+not add AMD live post-stitch rotation: AMD still rejects that unsupported request.
+HIP capture/reload and actual AMD rotated-mask presentation remain unimplemented
+and unqualified. The caller owns source identity, stereo pairing, timestamps,
+output pools and decoder/sink lifecycles.
 
 `Reset` clears camera/object histories and the last renderable frame after a
 seek, preserving model compilation and stitch allocations. Object IDs are not
@@ -816,10 +850,41 @@ from blocking the next video submission. The mux selects the earliest packet
 without chunk batching, so it cannot hold audio waiting for a future video chunk
 past the bounded producer. Preview uses
 ALSA, the configured `alsa-dest-device`, and `HSTREAM_RENDER_AUDIO_MUTED` for the
-initial mute. Normal-speed preview shares the system presentation clock (ALSA follows it); an unpaced
+initial mute. Normal-speed preview uses the same `common/PacedPlayback` owner
+as native NVIDIA playback: video and PCM follow the sole monitor's physical
+clock, including processing stalls and pause/resume. Required bounds come from
+`runtime.local_playback` in the canonical baseline. Negotiated device lead must
+fit the retained preview frames; an oversized device fails explicitly. The
+presentation probe attaches to the concrete renderer inside `glimagesink`;
+the wrapping bin retains window and visibility ownership. An unpaced
 preview drops old monitor-only PCM when its bounded appsrc fills. Archive audio
 always retains samples. Blocking audio pushes and mux EOS have cancellable
 waits. All PCM work is CPU audio work; video stays GPU-resident.
+
+The shared CPU device regression checks every unique PCM sample across AAC/video
+boundaries, processing stalls, queued pause/resume and READY reconstruction. It
+also verifies exact archive samples/PTS, cancellation and history/device bounds.
+PCM placement is compared to video targets in device sample positions, separately
+from wall-time skew; late device-period publication is scheduled explicitly.
+ROCm compilation and CPU checks on `ripper` do not qualify audible AMD hardware
+playback. Sustained real-device pause/seek/Stop and source-correlated PCM remain
+required before claiming normal-speed audio parity.
+
+The same `common/PacedPlayback` implementation also supports a raw-audio
+transport consumer and a shared selectable-video timestamp mapper. It keeps
+physical monitor clock behavior while admitting each private PCM branch through
+its own bounded queue. CPU transport checks preserve every source sample across
+slow video, a stall and pause/resume, with explicit encoded silence in the
+presentation gaps. Private PCM admission rejects serialized allocation queries
+before the queue, allowing normal upstream CPU allocation without a query
+waiting behind the PCM whose mapping needs the producer's next input. The
+portable regression verifies query progress and exact retained samples without
+cancelling the mapping. Preview-route cancellation wakes only that selection's
+mapping waits before native gate retirement; shared PCM and playback epochs
+remain intact. A real-isolation-gate CPU regression covers paused switching,
+rearm, Render off/on and Stop, including a full ingress queue. Changes to this
+common owner require the physical-device regression on AMD as well as NVIDIA. This does not implement or qualify the
+remaining AMD selectable-browser preview path.
 
 `media/Mp4AudioEdit` now owns the fixed-size MP4 edits previously local to
 `HighlightMp4Audio`. Both callers preserve avenc_aac's 1024-sample decoder preroll

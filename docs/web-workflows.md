@@ -25,6 +25,47 @@ operations the request parser rejects. HockeyMONWeb checks its required operatio
 against this deployed executable in addition to checking the generated startup
 catalog. Deploy changes to this contract with the matching web worker.
 
+`hstream-web-job --detector-defaults` resolves both native and HockeyMON detector
+selection without a display or GPU query. It uses `DetectorOptions`, canonical
+baseline and the read-only user snapshot. The browser readiness check validates
+its model catalog before caching the result. The same classifier powers
+`detector-controls-read` for owned saved game configs. A familiar inference
+filename with a custom engine remains “Use saved detector configuration”; a
+prepared INT8 engine explains only the model it was prepared for.
+Historical architecture IDs `yolov8m` and `yolov8s` normalize to `default` and
+`distilled-s`. `prepared` reports any remembered engine; an unrecognized prepared
+model is returned as an empty ID, without echoing its private value. The worker
+can reuse this operation for a bounded config-only inheritance check before
+cloning/preflight, fenced by the deployment identity captured at INT8 admission.
+Only verified owned preparation artifacts authorize engine reuse.
+
+`hstream-web-job --runtime-defaults` is a separate read-only readiness probe
+advertised by `runtime-defaults-v1`. It loads the canonical baseline and active
+user overlay without creating preferences, and uses Qt's shared `RuntimeOptions`
+resolver for the configured GPU. Its bounded JSON contains `version: 1`, the
+requested `auto`/`standard`/`low` profile, the resolved `standard`/`low` profile and
+the GPU ordinal. Failed automatic device queries fail the probe. The outer service
+runs it only during explicit compute validation, then binds the cached result to
+that deployment. Browser polling never invokes it. The shipped profile is
+`runtime.gpu_memory_profile: auto`; an explicit UI selection lasts for the session
+and does not enter presets.
+
+All `hstream-job` exports set `HSTREAM_JOB_MANAGED_RUNTIME=1`, including
+unattended encoding, interactive publication, ordinary interactive sessions and
+`--runtime-only` sampling. The installed CLI launcher preserves this marker
+through the native executable and its managed children. `common/UserConfig`
+then reads existing `~/.hstream/hstream.yaml` and
+`~/.config/hstream-ui/defaults.yaml` with their usual precedence, but does not
+create a missing first-run preferences file or its directory. NVIDIA and AMD
+readers use the same policy. Managed jobs own their private runtime scratch;
+execution-host preferences remain owned by the operator.
+
+This also keeps a managed sample from changing preference-file identities used
+by the web service's validated deployment signature. The readiness probes keep
+their existing read-only loader, and signature checks still invalidate actual
+operator edits. Baseline values, path resolution and ordinary Qt/CLI first-run
+preference creation are unchanged.
+
 ```json
 {
   "schema": 1,
@@ -71,11 +112,17 @@ contract, then testing both interfaces against the same native checkout.
 | `highlight-preview`, `highlight-render` | Native schema-2 `plan`, optional `archive_path`, `archive_offset_ms`, and `selected_indices`. The existing GPU reel pipeline encodes cards, clips, overlays and audio to `highlights.mp4`. Preview is bounded to 30 seconds; export to 24 hours. Cards alone need no archive. Asset and recorded-binding paths must be run-relative. |
 | `highlight-live-preview` | The same plan/assets/selection, plus required boolean `loop`. Plays the shared native authored reel through hardware H.264/Opus WebRTC, without an MP4 artifact. The supervisor supplies `--preview-port=N`; payloads cannot select ports. Finite completion publishes only `operation-data.json`; Stop/cancellation publishes no artifact. |
 | `highlight-card-preview` | One authored card in a native schema-2 `plan`, with no `archive_path` or `selected_indices`. Uses the desktop's `RasterHighlightCard` to publish `highlight-card.png`, fitted to the selected archive's aspect inside the existing 1920×1080 raster bound. Returns `preview`, `width`, `height`, `source_width`, and `source_height`. Requires the frozen metadata probe described below. |
-| `calibration-complete` | Trusted setup postprocessor after a successful bounded calibration-only CLI run. Requires nonempty `invalidation_id` matching the persisted owner and optional boolean `require_ice_mask`. Validates the native generation, completes its calibration state, and publishes `game/setup-preview.png` from the existing panorama using the shared bounded (1920-pixel maximum) reader. Missing panorama or generation fails the operation. Returns `state`, `invalidation_id`, and `preview`; the receipt retains calibration artifacts for adoption. |
+| `calibration-complete` | Trusted setup postprocessor after a successful bounded calibration-only CLI run. Requires nonempty `invalidation_id` matching the persisted owner and optional boolean `require_ice_mask`. Validates the native generation, completes its calibration state, and publishes `game/setup-preview.png` through the shared Qt saved-still reader (2048-pixel maximum). Prefers a current `s.png`, falling back to `panorama.tif`; a missing valid image or generation fails completion. Returns `state`, `invalidation_id`, and `preview`; the receipt retains calibration artifacts for adoption. |
+| `detector-controls-read` | Read-only detector metadata (`detector-controls-v1`). Payload is exactly `{"backend":"native"}` or `{"backend":"hockeymon"}`. Reads owned `game/config.yaml` with a 4 MiB regular-file/no-follow bound, then uses the same baseline/user/game classifier as Qt. Publishes only `operation-data.json` with version 1, model IDs/labels, selected model/precision and prepared-model availability. No engine path or calibration mutation is returned. |
+| `camera-optics-read` | Read-only source optics (`camera-optics-read-v1`). Public payload contains only `camera` controls. Private `runtime.optics_media` binds each authorized original path, alias, role and dev/ino/size/mtime/ctime; held no-follow descriptors are checked before and after Qt’s bounded MP4 reader. No video copy or decode occurs. Optional `saved_optics` requires a transaction-fenced private config with frozen automatic optics; current manual components overlay it. Returns exact camera values, recording/FOV/lens provenance and source flags in `operation-data.json`; publishes no calibration. |
+| `calibration-still-read` | Read-only idle preview (`saved-calibration-still-v1`). Requires a `config` object containing frozen effective settings; optional `expected_generation` binds an exact native generation. Returns `calibration_still_version: 1`, `available`, and `retryable`. Available results also contain `preview: "saved-stitching-preview.png"`, `width`, `height`, `source_image` (`s.png` or `panorama.tif`), and `source_revision` (SHA-256 of the native stat revision). The receipt contains only this run-root PNG and `operation-data.json`; unavailable results publish metadata alone. No calibration adoption, invalidation completion, reframe or source-config write occurs. |
 | `matches-read` | Optional `fingerprint`; omission reads the current native match snapshot. Optional trusted `workspace` selects an experiment instead of the main game. Returns original camera images, dimensions and endpoints. |
 | `matches-publish` | Existing `fingerprint` and `frames` containing `index` and `matches` (`left`, `right`, optional `score`). Validates original-image endpoints and publishes an immutable manual snapshot. This does not activate new maps; use the candidate edit/solve/promote sequence. |
 | `experiment-create` | `settings` with `control_points`, `frame_count`, `stitch_frame_time`, optional matcher/resolution/rotation/camera/filtering, plus optional `sequence`. Creates a native isolated pending candidate. |
 | `experiment-edit` | Saved `workspace`, inspected `fingerprint`, replacement `frames`, and optional `sequence`. Creates a new candidate from immutable edited matches without changing the inspected candidate. |
+| `experiment-prepare-edit` | Saved `workspace` (or completed main calibration) and `sequence`. Uses the desktop editable-copy primitive, then solves and returns the original-image match editor receipt under one supervisor owner. |
+| `experiment-save-matches` | Saved `workspace`, expected `fingerprint`, edited `frames`, and `sequence`. Creates the desktop edited candidate and solves it before releasing ownership. Stale snapshot/generation, cancellation and solve failure publish no successful result. |
+| `experiment-recover` | Worker-staged immutable failed-run settings/media and `sequence`. Captures a new private editable snapshot. A failed automatic solve may still return verified original images with zero correspondences; its result is `state: editable`, `calibration_complete: false`, never a solved calibration. |
 | `experiment-run` | Saved `workspace` and optional `require_ice_mask`. Runs native calibration through `hstream-job --interactive`, then validates native completion before returning success. |
 | `experiment-inspect` | Saved `workspace`. Returns versioned saved-frame inspection, exact source identities, coverage, images and source validation; see below. |
 | `experiment-complete` | Saved `workspace`, optional `require_ice_mask`. Validates already-generated native calibration; it does not run a solve. |
@@ -84,6 +131,45 @@ contract, then testing both interfaces against the same native checkout.
 | `track-choices` | `database`, `run_id`, `route` (`program`, `stitched`, `program-full`), `game_ms`, optional `pts_offset_ms`. Returns native segment-bound track choices. |
 | `track-capture` | Track choice fields plus `plan`, `archive_path`, `archive_offset_ms`, `item_index`, `cue_index`, and `choice`. Uses native track capture and returns a portable plan and `tracked-plan.json`. |
 | `camera-replay` | `database`, `run_id`, bounded `start_seconds` and `duration_seconds`, native `tuning`, and optional fast/follower target booleans. Returns original, baseline and trial trajectories from `ReplaySession`. This operation does not encode a moving camera-preview video. |
+| `camera-experiment` | A completed `database`/`run_id`, `media_kind` (`original-cameras` or `panorama`), bounded `start_seconds`, `duration_seconds` (0.1–120), `playback_start_seconds`, `video_origin_seconds`, and explicit source-confirmation/playback/overlay booleans. Original cameras use the worker-staged game calibration; panoramas use `archive_path` and validated media dimensions when selected. An empty `archive_path` with omitted dimensions prepares trajectories without video (`camera-optional-panorama-v1`). Uses the shared `ReplaySession`, decoder/cropper and preview worker with hardware WebRTC output. The supervisor assigns `--preview-port=N`. |
+
+The outer Camera selector may bind either a published panorama artifact or one
+completed owner-scoped upload. Uploaded bytes are frozen by file identity and
+SHA-256, copied through a pinned descriptor within the run storage reservation,
+and probed before this adapter receives its private `archive_path`. They remain
+normal run inputs for cancellation and cleanup; no archive publication is invented.
+With no selected panorama, preparation, full trajectory inspection and trial
+computation use the shared CPU replay engine without creating an encoder or
+signaling listener. Play reports that video must be selected and prepared; Save
+uses the same media-binding validator as Qt. No video presentation is claimed.
+Selected media also stays metadata-only until Play or a trial opens playback.
+Unconfirmed prepared controls remain available like Qt, with command errors
+retained for the user. Revoking confirmation closes the preview; switching
+comparison views pauses it. Each command acknowledgment follows a current
+worker-state event so the browser can retire and reopen video in order.
+
+Camera Experiments accept sequential typed stdin commands for play/pause, Stop,
+frame seek, comparison view, overlays, repeat, real-time playback, source
+confirmation, parameter/rink-aware trials, Save and Close. Native events use
+`HSTREAM_CAMERA_EXPERIMENT ` and fence run, stage, generation and request. The
+browser presentation receipt must match the operation and original source PTS
+before a seek is ready. Stop retires the source while retaining the browser peer;
+Close retires the worker before server ownership is released. A bounded client
+lease sends abandoned sessions through the same supervised cleanup.
+
+The native adapter writes a revisioned trajectory catalog separately from its
+frequent state messages. Save publishes `camera-trial-N.yaml` with an exact
+file-identity receipt, allowing an immediate authenticated download before Close;
+final publication rechecks the same artifacts. A CPU-only trial can also be
+saved without a selected panorama: `media.kind: none` retains the recorded canvas
+and telemetry origin, with no claimed video path, identity or time mapping.
+Partially specified media bindings still fail. Both interfaces resolve defaults
+from `camera_experiments` in the bundled baseline and share the archived recording
+source-origin calculation and immutable historical mask. Legacy manifest import
+is still unavailable in the browser. Scaled-panorama mask rendering, reconnect,
+abandonment and authenticated rink-aware paired trials remain
+qualification gaps; the presence of this operation does not establish full
+Camera workflow parity.
 
 Workspace descriptors returned in `result.workspace` contain `root`,
 `game_directory`, `game_id`, `invalidation_id`, and `settings`. Their paths are
@@ -92,6 +178,26 @@ reconstruct authorized camera aliases when staging a subsequent operation.
 Immutable match/source metadata must never be rewritten to bypass provenance
 checks. Camera aliases should resolve to stable authorized upload identities;
 per-run hardlink paths change the native canonical-path fingerprint.
+
+The `match-editor-v1` feature adds `match_editor_version: 1`, `automatic`,
+`automatic_compatible`, and `editor_limits` to `matches-read` and editable-copy
+results. Current and automatic frames retain native image dimensions, exact
+source times, opaque source-path identities, and original PNG artifact references.
+The browser displays only the selected pair and edits original-camera coordinates.
+Inspection reports `editable_snapshot` and `editable`; match JPEGs alone do not
+establish editability. The current snapshot and workspace generation are checked
+again by `CreateEditedStitchingExperimentWorkspace` before saving. Reset uses the
+same input/frame compatibility checks as the desktop editor.
+
+The web server permits recovery only from an owned terminal run after cleanup
+has released it. It freezes the original settings, source order and upload IDs,
+then verifies their digest again at staging. A cleaned failure is regenerated
+from those uploads; no deleted intermediate is assumed to remain available.
+The failed source stays failed. Recovery evidence and any subsequent read/inspect
+results cannot be promoted, completed or automatically solved through the old
+candidate commands; Save and recalibrate must produce a successful new candidate.
+The ordinary workflow quota, time limit, process containment and cancellation
+rules apply to the complete copy/capture/edit/solve operation.
 
 Experiment settings use the desktop's canonical camera map: `camera` contains
 `camera_config`, `camera_fov`, `input_lens`, and `camera_automation`.
@@ -266,6 +372,26 @@ pending calibration, start-stage and invalidation identity variables. Without
 this flag managed exports clear both flow variables, preserving unattended
 behavior. The managed finalizer and publication protocol remain active.
 
+Interactive Program sessions that select an archive use
+`hstream-job --interactive-publication`. The exporter preserves WebRTC, network
+and file sinks, pacing, and inherited stdin without adding `--encode-job`.
+Its frozen finalizer run ID owns the existing manifest, runtime directory and
+publication transaction. Supervisor arguments, including the reserved signaling
+port and private preview run ID, pass through to the CLI unchanged. The bridge
+reads `work/game/runs/<native-id>/pipeline.log` while the finalizer owns stdout.
+Graceful Stop drains completed files into exact native receipts; cancellation
+or failed encoding cannot publish them. Preview-only sessions continue to use
+`--interactive` and require no archive receipt.
+
+The baseline's `hstream_ui.archive_routes` initializes both interfaces; the
+shipped empty list permits preview-only Play. A separate
+`hstream_ui.export_archive_routes` supplies the explicit file-export fallback.
+Calibration may record Archive Stitched while retaining disabled Program route
+choices for a later Program session. Its worker verifies both the native
+archive receipt and the subsequent `calibration-complete` receipt before
+adopting either output set. Shared sidecars must agree in both receipts and are
+retained once.
+
 ### Validation on 2026-10-15
 
 After rebasing onto `cfca9029`, the x86 optimized CLI build passed, along with
@@ -304,3 +430,350 @@ allows the web worker to publish and adopt calibration. The preview is a
 single bounded decode of the saved panorama; no video frame is read back from
 the GPU. The outer worker must retain its Slurm reservation, timeout, disk
 quota, and cancellation enforcement through this postprocessing step.
+
+### Live rink leveling and crop editing
+
+The private `hstream-web-job --rink-editor REQUEST.json` CPU helper advertises
+`rink-editor-v1`. It validates the same original camera PTO and image geometry
+as Qt and runs the shared point formatting, ray parsing and corner/post
+estimators. The supervisor supplies the bounded JSON and runs `pano_trafo` in
+its owned child process group; the helper does not publish calibration files.
+Live browser prompts expose the original left/right images and preserve
+rectangle mismatch confirmation, exact preview-angle acceptance and optional
+seam blending. Crop previews cover the full projection and report advisory
+automatic bounds. Skip leveling and Use crop retire any pending preview before
+writing the generation-bound native response. These still-image tools do not
+read video frames back from the GPU.
+
+`web_rink_editor_test` checks real Hugin transforms with nonzero camera rotation,
+absolute leveling recovery, original-image bounds and escaped image references.
+The web rink-editor tests also run the actual helper and Hugin tools through
+the supervisor bridge when `HSTREAM_WORKFLOW_TEST_BIN` is set.
+
+### Saved rink-map editing
+
+`rink-map-read`, `rink-map-update` and `rink-map-save` share `RinkMapBackend`
+with the desktop. Each request owns a cloned completed calibration. Updates
+and saves require the exact native generation, calibration revision and saved
+map digest returned by Read. Drafts contain original-image pixels; supplied
+rays or matrices are rejected. The native backend recomputes every ray, fits
+all enabled observations, and returns the shared feature catalog, projected
+layout, detection contours, mask assistance and partial/inconsistent/ready
+state. Automatic suggestions must be reviewed before a separate Save.
+The canonical baseline supplies rink dimensions to both interfaces.
+
+Only a successful `rink-map-save` receipt can become the selected calibration;
+Read and Update retain drafts without replacing the original source. Empty
+and partial maps can be saved, matching Qt. Playback readiness is checked
+separately for a fitted saved map. `web_rink_map_test` uses actual Hugin ray
+transforms and covers read/fit/save, baseline precision, stale saved-map and
+calibration revisions, and rejection of browser-provided rays.
+
+`rink-map-check` (feature `rink-map-check-v1`) accepts an empty payload and
+runs the same `LoadPlaybackRinkMap` used by Qt and Program startup in a private
+CPU workspace. It returns `rink_map_check_version: 1`, a boolean `ready`, and a
+bounded `message`. Only `operation-data.json` is published; calibration inputs
+are deliberately excluded from retained artifacts. The outer service binds and
+caches this result by source, calibration file identities and native deployment,
+then removes the cloned inputs after contained completion and receipt verification.
+It is advisory: enabled Program framing is checked again by native startup.
+
+### Saved leveling and projection crop
+
+`calibration-view-read`, `calibration-view-estimate`,
+`calibration-view-landmarks`, `calibration-view-preview` and
+`calibration-view-save` edit a cloned completed calibration. They use the same
+camera/projection compatibility check as Qt, original-image dimensions and
+native generation/revision fences. Point estimates share `RinkEditor`; saved
+landmark estimates share `UpdateRinkMap` and `RinkLandmarkLeveling`, including
+readonly reference marks. Previewing uses the published rotation delta and
+original stills. Crop previews show the full canvas and advisory automatic
+bounds; they do not change the saved crop.
+
+Leveling Save requires a completed preview for the exact snapshot and angles.
+The server freezes that receipt and checks it again at dispatch. Native Save
+prepares the shared `StitchingReframeIntent` and calls `reframe_stitching`,
+retaining the optimized camera alignment. Cancellation or a stale snapshot
+cannot publish over the source run. The completed child is staged by the
+browser; Save Preset adopts it atomically with the form, matching the desktop
+accept/save boundary. Only an accepted crop's `auto_crop` control changes the
+child's browser geometry snapshot.
+
+`calibration-view-reset` stages the main window's Reset Controls in another
+private descendant. Admission validates the ordinary settings form and freezes
+the account defaults separately. The adapter reads default framing from the
+bundled baseline plus that overlay, including null/inherited rink rotation; the
+browser never supplies hidden angles or an invented full-canvas crop. It uses
+`PrepareStitchingReframeIntentLocked` to retain alignment for a view change or
+marks changed solve inputs for ordinary calibration. Output geometry changes
+retire masks and scoreboard coordinates through the native transaction.
+
+The `saved-calibration-reset-v1` receipt binds the staged config by SHA-256 and
+states whether regeneration is pending. Reset does not render or run matching.
+Save Preset adopts the receipt and matching form controls atomically; changed
+defaults, selected source, inputs or geometry reject adoption. Playback alone
+consumes its native reframe or solve invalidation. Its supervisor retires every
+pipeline descendant before invoking `calibration-complete`; publication verifies
+that exact receipt alongside any selected archives. The completed successor
+becomes the selected calibration only while the saved source and preset revision
+still match. Cancellation and newer settings retain the previous selection.
+Pending Reset results cannot open editors that require completed images. Cancel waits for supervised cleanup
+and restores the previous draft; a no-op retains the current calibration.
+
+The dialog's `view-preview.png` remains separate from `game/setup-preview.png`.
+The latter is regenerated from the final panorama after view saves and
+experiment promotion, with final file identities captured after native
+publication. Its bounded still decode is independent of live GPU video.
+
+`web_saved_calibration_test` exercises installed Hugin tools, native absolute
+rotation recovery, saved-view preview acceptance, preserved-alignment saves,
+manual crop publication and stale snapshots. Its synthetic uniform stills
+explicitly allow the native hard-seam fallback because Enblend may reject
+featureless overlap; real media still require separate seam qualification.
+It also verifies inherited nonzero Reset defaults, unchanged source bytes,
+no-op behavior, pending reframe and changed-solver invalidation. The Qt window
+test clicks Reset and Save Preset and verifies the same staged framing and
+inheritance boundary.
+
+The Highlights source description uses `highlight-archive-info` and the
+`highlight-archive-info-v1` capability. Its only browser input is a recording-owned
+archive artifact ID. The supervisor freezes its exact file identity; the native
+adapter shares the card preview's pinned read-only descriptor and bounded
+metadata-only probe (30 seconds, 1 MiB probe output). It returns measured codec,
+audio presence, frame rate, duration and dimensions, publishing only checked
+completion metadata. No video is copied, decoded or mapped to the CPU for this
+description. Active readers retain the source's cleanup exclusion until the
+supervisor retires them.
+
+`calibration-view-rotation-stage` is an internal prelaunch operation advertised
+by `calibration-view-rotation-stage-v1`. Its payload contains the private copy's
+exact `source_generation` and finite `post_stitch_rotate_degrees`. It locks the
+Hugin artifacts and config, requires a completed matching output/Hugin
+generation, and rejects every pending live authorization. It retains alignment
+and mapping bytes while writing canonical rotation and retiring the dependent
+output marker, panorama snapshot, rink masks and scoreboard geometry through
+the same recoverable transaction used by Qt Save Preset. The selected immutable
+calibration is never modified. An unchanged rotation preserves config bytes,
+including inherited null values. Its result returns `source_generation`,
+`desired_generation`, `hugin_generation` and `changed`, with final artifact
+identity receipts. `desired_generation` describes the source dimensions with
+the requested rotation; startup owns publication of the actual output geometry
+and regenerated downstream artifacts.
+
+`calibration-clean` (`calibration-clean-v1`) runs the desktop Clean Stitching
+policy in a private successor. Its payload contains the exact `config_sha256`
+and, when saved controls changed since the selected source, paired
+`before_controls` and `desired_controls` objects using the controls-stage schema.
+It calls native artifact cleanup and the same config-pruning function used by
+Qt. Sampling, iteration settings, selected frame plans and frozen optics survive;
+the solved geometry, crop/leveling review, output identities and scoreboard
+corners do not. Directory/calibration aliases are rejected before deletion;
+only explicitly authorized recording-file aliases may remain. The result binds
+`calibration_clean_version: 1`, `cleaned: true`, the removed-key count and final
+config hash to the ordinary file-identity receipt.
+
+The outer service adopts this successor only after supervised cleanup and
+verified publication, while the source/settings admission fences still match.
+Cancellation or newer source/settings choices keep the previous selection.
+Next Play passes `source.cleaned: true` to controls staging only after verifying
+that Clean receipt. Native staging requires absent retired state and solve
+artifacts, then owns a fresh pending input solve. An incomplete source without
+this explicit receipt-backed marker is still rejected. Historical published
+calibrations are never deleted by cleaning a successor.
+
+`calibration-controls-stage` (`calibration-controls-stage-v2`) stages ordinary
+unsaved Play controls in a private copy of a completed calibration. Qt Play and
+this adapter call `StitchingCalibrationControls` for the dependency stage,
+selected-frame/manual-match retention, reframe capture and cleanup owner. This
+operation does not reset framing or release optics merely because a form omitted
+hidden saved values. The outer service must validate and freeze its form before
+dispatch and supply these payload fields:
+
+```json
+{
+  "version": 1,
+  "source": {"generation": null, "config_sha256": "64 lowercase hex characters"},
+  "before_controls": {},
+  "desired_controls": {},
+  "defaults": {},
+  "sources": []
+}
+```
+
+`calibration-controls-restart-v1` adds optional strict boolean
+`force_reconfigure`. Omission and `false` retain ordinary Play behavior; `true`
+uses Qt Restart's shared forced planner even when every control is unchanged.
+Restart begins at `input`, releases manual matches and clears any retained
+reframe. An unchanged selected-frame plan survives, so native cleanup retires
+control points while preserving its synchronized inputs. Without that selection,
+Restart performs full cleanup. Sampling, source roles and accepted framing keep
+their existing shared-planner rules. Null, numbers, strings and containers fail
+before changing config or artifacts. The outer service must require this exact
+capability before dispatching Restart to a native deployment.
+
+Restart can also consume an adopted pending Reset. The outer service first
+verifies its Reset receipt and source/settings fences, then adds
+`source.pending_reset` with the exact Reset `invalidation_id` and `start_stage`
+(`input` or `canvas`) to the ordinary source object. This variant requires
+`force_reconfigure: true`, null `generation`, the exact config hash, matching
+pending owner/stage, and no backend claim. Input Reset requires no reframe and
+unfinished cleanup; canvas Reset requires completed invalidation and the existing
+owner-bound native reframe, whose source artifacts and frozen controls are
+validated before replacement. Pending live output authorizations are rejected.
+The forced planner then reserves a new owner and completes its native cleanup;
+it does not complete or publish the Reset calibration. Ordinary pending Reset
+Play retains its existing launch path. A generic pending source without this
+receipt-backed marker remains inadmissible.
+
+`calibration-controls-fresh-v1` adds an explicit `source.fresh: true` variant
+for first manual Play/Prepare. `generation` must be null and `before_controls`
+empty. The exact hashed initial config contains only `game.videos` and
+`hstream_ui.video_roles`; every admitted source has an unchanged identity/role/alias
+binding. The adapter rejects prior calibration state, artifacts and indirect
+directories before acquiring native transaction locks. It validates again under
+those locks, allowing only the known journal files they create. Explicit Center
+metadata is retained; Auto aliases keep native discovery and orientation instead
+of acquiring Left/Right roles from upload order. Automatic optics and input-stage
+planning use the existing native implementations. The ordinary stage receipt
+owns the new invalidation; it does not claim a completed calibration.
+
+The outer manual-Play persistence barrier follows verified staging, retired
+descendants and sealed native script export. It saves Qt's calibration subset
+under the original project/default/source fences and durably acknowledges that
+exact launch binding before the supervisor starts playback. Ordinary Program
+drafts and account Defaults remain independent. Completion still requires the
+existing native validator and owned artifact receipts after playback has stopped.
+
+`source.generation` is the exact nonempty saved `rink.stitched_output_generation`
+string, or explicit JSON null only when that field is absent or YAML null. Saved
+crop/leveling reframes can legitimately complete while retiring that rendered
+output identity. Empty strings, omitted request keys and mismatched presence
+fail; the caller must never synthesize a generation. Version 2 advertises this
+nullable identity contract; payload/result version 1 and the existing string
+contract remain compatible, so the adapter also advertises the v1 capability.
+
+The adapter applies only changed leaves between the two control snapshots over
+the actual saved private config. Ordinary completed-source staging verifies the
+exact source hash, completed nonstale state without a reframe or pending live
+authorization, and mandatory Hugin preflight identity under artifact/config
+locks. A saved output generation must additionally match that Hugin identity.
+Existing backend claims must match
+their original owner and frozen resolved controls; supported legacy completed
+sources without a claim do not acquire one merely for admission. The returned
+source preserves the exact nullable identity, and every accepted stage still
+claims a fresh invalidation owner. The old tuple resolves from bundled baseline,
+source-owned `before_controls`, then the original private config. That last layer
+preserves hidden framing and saved optics. New account Defaults cannot change
+the claim being authenticated. Desired controls resolve against the bundled
+baseline plus the supplied current frozen calibration overlay; staging never
+reloads the process user's defaults. Legacy private width aliases retain precedence over baseline
+values. `defaults`, `before_controls` and `desired_controls` accept these canonical
+calibration roots:
+
+- `stitching`: `control_point_limit`, `calibration_frame_count`, `stitch_frame_time`,
+  `sync_method`, `control_point_matcher`, `control_point_resolution`,
+  `control_point_filtering`, `control_point_execution_provider`, `mapping_backend`,
+  `camera_config`, `camera_fov`, `camera_automation`, `input_lens`,
+  `auto_input_lens_frozen`, `run_autooptimizer`, `projection`,
+  `projection_parameters`, `projection_framing`, `max_output_width`,
+  `post_stitch_rotate_degrees`, `rink_config`, `rink_mask_frame_time`, `rink_mask_frame_time_default`,
+  `blend_mode`, `blend_feather_fraction`, `dtype`.
+- `rink.camera.fixed_edge_rotation_angle`, as one number or `[left, right]`.
+- `hstream_ui.stitching_calibration.control_points`, `frame_count`,
+  `hstream_ui.show_crop_dialog` and `hstream_ui.show_leveling_dialog`.
+
+Map controls accept their native fields only. Projection parameter keys must be
+native projection names. Arbitrary pipeline settings, paths, commands and custom
+camera/rink catalogs are excluded; any required custom catalog must already be
+frozen in the verified private config.
+
+`stitching.rink_mask_frame_time` is the native mask-time control; the adapter
+rejects `rink.mask_frame.time` and split canonical fixed-edge keys. Rink/time
+edits restore generated mask-time bookkeeping before applying the new choice,
+so an inherited old rink time does not override the newly selected rink. Each
+blend edit retires only that field's aliases. Unchanged blend controls keep their
+effective native values.
+
+The supplied defaults are frozen for this staging comparison. The outer launch
+must also preserve that snapshot: its effective calibration values must resolve
+from the same baseline/defaults with the staged private config taking precedence.
+It must disable or override mutable process-user defaults and must not merge the
+entire desired form over the staged config again, which would erase hidden saved
+leveling/crop values. A staging receipt alone does not prove that runner
+configuration equality; the outer integration must verify it before playback.
+The shared native reframe consumer compares finite numeric settings by their
+exact resolved double values, so Python's shorter YAML float spellings survive
+the stage-to-launch boundary. It uses no numeric tolerance; changed values,
+source paths, fingerprints, owners and artifact identities remain fenced.
+
+Managed publication can reserve its archive identity before staging and export
+afterward with `hstream-job --run-id ID`. The exporter and finalizer share the
+same ID validation; ordinary exports still generate a fresh ID when it is
+omitted. Plain `--interactive` and `--runtime-only` sessions reject this option
+because they have no publication receipt. This archive identity is separate from
+the calibration invalidation owner returned by the staging operation.
+
+An empty `sources` retains the admitted playlists. A nonempty list supplies every
+ordered chapter from both roles as `{id, before_role, after_role, before_alias,
+after_alias}`. Roles are `left` or `right`; aliases are private relative paths.
+Both aliases must exist and resolve to the same regular recording listed in the
+request's `authorized_media`. Same-role entries retain the same alias. Source
+changes release selected/manual input references, synchronization and the active
+mask-input reference; immutable historical bundles remain intact. Automatic
+optics resolve only through those validated private playlists before freezing.
+
+Every successful stage reserves a new `invalidation_id`, including unchanged
+Play. Matching/budget/provider changes restart `features`; compatible view edits
+reuse alignment at `canvas`; source/time/count changes restart `input`. A retained
+selected-frame plan rejects a changed reference time until its count is explicitly
+changed. Native cleanup preserves synchronized inputs when the retained plan or
+manual matches owns them. Cleanup completion checks the owner, pending stage and
+unchanged controls/selection, allowing only the cache removals that cleanup owns.
+Legacy completed frame counts remain authoritative when the canonical count is
+absent and the form count is unchanged. Synchronization edits always restart
+input alignment, including when the same request changes crop/projection.
+
+The result includes `calibration_controls_stage_version: 1`, `staged`, the exact
+original `source`, `invalidation_id`, `pending`, `start_stage`, `cleanup`
+(`none`, `all` or `control-points`), `cleanup_completed`, `alignment_reused`,
+`retained_selected_frames`, `retained_manual_matches`, `output_changed` and final
+`config_sha256`, alongside the standard exact file-identity receipts. Cancellation
+before publication preserves the clone; cancellation afterward leaves a private
+incomplete workspace without a completion receipt. The supervisor must verify
+staging, bind the launch to that owner, retire all descendants and then run
+`calibration-complete`. A staging receipt alone never proves a completed solve or
+authorizes changing the project's saved preset or selected calibration.
+
+`stitching_calibration_controls_test` covers the shared dependency/retention
+matrix and stale cleanup owners. `web_saved_calibration_test` adds actual native
+cleanup and Hugin reframe fixtures, exact receipts, hidden leveling preservation,
+source roles and cancellation around publication/cleanup. The Qt window test
+exercises source replacement through its real actions. These regressions do not
+replace paired Qt/authenticated-browser workflow tests against one native build;
+retain the web parity limitations until those comparisons pass.
+
+## Prepared model imports
+
+The browser imports account-owned Pose, Jersey, Activity, Team and Appearance
+assets with `hstream-prepared-model-validate --request FILE`. This CPU-only
+validator shares `PreparedModelValidation` with the Qt Custom chooser. It parses
+the existing prepared manifest or ReID configuration, checks readable nonempty
+model files, and retains runtime SDK/GPU compatibility checks in inference.
+Its `prepared-model-validation-v1` request admits at most 64 files, streams SHA256
+checks, rejects symlinks and escaping paths, and publishes an exclusive
+`model-validation.yaml` only after the exact input set validates. Metadata reads
+are bounded to 1 MiB. The outer web supervisor owns timeout, cancellation and
+descendant retirement. A dispatcher therefore needs the matching CPU validator
+but does not need Qt, CUDA or a GPU allocation to validate an import.
+
+The web registry stores UUID selections and frozen identities. Each admitted run
+owns checked private copies, charged to its run allowance. A successful import
+receipt proves file/manifest validation; it does not qualify an engine against a
+different TensorRT release or GPU. Run the selected custom model on the intended
+compute host before claiming execution parity.
+
+Clean applies saved sampling edits through the same native input transition as Play.
+It resolves historical native frame-count aliases before applying edits, synchronizes
+the next-run count, and releases selected frames and affected manual matches when
+that count changes. A reference-time edit with an unchanged retained selection
+fails before cleanup; restore its time or explicitly select a different frame count.

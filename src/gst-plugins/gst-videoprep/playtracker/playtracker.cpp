@@ -25,6 +25,7 @@
 #include "hstream/src/libs/common/TempFile.h"
 #include "hstream/src/libs/draw_display/DrawDisplayMeta.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/tracking/CameraSeekState.h"
 #include "nvbufsurface.h"
 #include "nvdsmeta.h"
 
@@ -36,6 +37,35 @@
 namespace hm {
 namespace playtracker {
 namespace {
+
+absl::Status rearm_camera_seek_state(GstBaseTransform* element, DsPlayTrackerCtx* context) {
+  // The app retains this immutable handoff until the first post-seek output.
+  // Duplicate under GObject's data lock because acknowledgement can release it
+  // on the main context while caps or a positioning flush rebuilds this one.
+  std::unique_ptr<tracking::CameraSeekState> handoff(
+      element ? static_cast<tracking::CameraSeekState*>(g_object_dup_data(
+                    G_OBJECT(element),
+                    tracking::kCameraSeekState,
+                    [](gpointer value, gpointer) -> gpointer {
+                      if (!value)
+                        return nullptr;
+                      const auto* state = static_cast<const tracking::CameraSeekState*>(value);
+                      if (state->checkpoint.size() <= tracking::kMaximumCameraSeekStateBytes)
+                        return new tracking::CameraSeekState(*state);
+                      auto rejected = std::make_unique<tracking::CameraSeekState>();
+                      rejected->status =
+                          absl::ResourceExhaustedError("Camera seek checkpoint exceeds its metadata bound");
+                      return rejected.release();
+                    },
+                    nullptr))
+              : nullptr);
+  if (!handoff)
+    return absl::OkStatus();
+  HM_RETURN_IF_ERROR(handoff->status);
+  context->pending_seek_checkpoint = std::move(handoff->checkpoint);
+  context->pending_seek_has_tracks = handoff->has_received_tracks;
+  return absl::OkStatus();
+}
 
 bool parse_finite_float(const std::string& value, float* out) {
   if (!out || value.empty()) {
@@ -121,10 +151,40 @@ void PlayTrackerPriv::Shutdown() {
   // property only after that transition, so a later child-element stop failure
   // cannot race behind an already committed telemetry generation.
   Super::Shutdown();
+  // The retiring element is retained by the seek owner through NULL. Capture
+  // only after its worker has stopped; ordinary Stop and calibration teardown
+  // do not request or serialize camera state.
+  if (m_element && g_object_steal_data(G_OBJECT(m_element), tracking::kCaptureCameraSeekState)) {
+    auto handoff = std::make_unique<tracking::CameraSeekState>();
+    {
+      std::lock_guard<std::mutex> lock(context_mu_);
+      if (pt_context_ && !pt_context_->play_trackers.empty()) {
+        if (pt_context_->play_trackers.size() != 1) {
+          handoff->status = absl::FailedPreconditionError("Camera seek requires one play tracker");
+        } else {
+          const auto& tracker = pt_context_->play_trackers.begin()->second;
+          auto captured = tracker.play_tracker
+              ? tracking::CaptureCameraSeekState(*tracker.play_tracker)
+              : absl::StatusOr<std::string>(absl::FailedPreconditionError("Camera tracker has no policy state"));
+          if (captured.ok()) {
+            handoff->checkpoint = std::move(*captured);
+            handoff->has_received_tracks = tracker.has_received_tracks;
+          } else {
+            handoff->status = captured.status();
+          }
+        }
+      }
+    }
+    g_object_set_data_full(G_OBJECT(m_element), tracking::kCameraSeekState, handoff.release(), [](gpointer value) {
+      delete static_cast<tracking::CameraSeekState*>(value);
+    });
+  }
   telemetry_shutdown_ready_.store(true, std::memory_order_release);
 }
 
 absl::Status PlayTrackerPriv::PreCapsInit(DSCustom_CreateParams* params) {
+  // A seek may retire PLAYING before caps initialized a camera context.
+  m_element = params->m_element;
   return Super::PreCapsInit(params);
 };
 
@@ -290,6 +350,11 @@ absl::Status PlayTrackerPriv::ReloadContextFromConfig(const std::string& config_
   if (!next_context) {
     return absl::InternalError("Failed to reload vpplaytracker context");
   }
+  const auto seek_status = rearm_camera_seek_state(m_element, next_context);
+  if (!seek_status.ok()) {
+    DsPlayTrackerCtxDeinit(next_context);
+    return seek_status;
+  }
   DsPlayTrackerCtxSetPreviewOverlayFlags(next_context, preview_overlay_flags_);
   for (const DsPlayTrackerRuntimeTuning& tuning : runtime_tuning_history_) {
     const absl::Status status = DsPlayTrackerCtxApplyRuntimeTuning(next_context, tuning);
@@ -325,6 +390,16 @@ void PlayTrackerPriv::RememberRuntimeTuning(DsPlayTrackerRuntimeTuning tuning, T
   if (telemetry_csv_.active()) {
     telemetry_csv_.TryRecordConfigEvent(std::move(provenance));
   }
+}
+
+std::optional<std::pair<float, float>> PlayTrackerPriv::FixedEdgeRotationAngles() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  return rotation_readback_;
+}
+
+void PlayTrackerPriv::UpdateRotationReadback() {
+  std::lock_guard<std::mutex> lock(rotation_readback_mutex_);
+  rotation_readback_ = {fixed_edge_rotation_angle_left_, fixed_edge_rotation_angle_right_};
 }
 
 bool PlayTrackerPriv::SetProperty(const Property& prop) {
@@ -422,6 +497,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
     }
     fixed_edge_rotation_angle_left_ = angle;
     fixed_edge_rotation_angle_right_ = angle;
+    UpdateRotationReadback();
     RememberRuntimeTuning(
         std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-left") {
@@ -436,6 +512,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     fixed_edge_rotation_angle_left_ = angle;
+    UpdateRotationReadback();
     RememberRuntimeTuning(
         std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "fixed-edge-rotation-angle-right") {
@@ -450,6 +527,7 @@ bool PlayTrackerPriv::SetProperty(const Property& prop) {
       return false;
     }
     fixed_edge_rotation_angle_right_ = angle;
+    UpdateRotationReadback();
     RememberRuntimeTuning(
         std::move(tuning), {"property", key, prop.value, /*artifact_stem=*/{}, /*artifact_contents=*/{}});
   } else if (key == "dynamic-acceleration-scaling") {
@@ -525,32 +603,14 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
     if (!checkpoint || !pt_context_ || pt_context_->play_trackers.size() != 1)
       return false;
     try {
-      auto seed = hm::play_tracker::deserialize_snapshot(checkpoint);
       auto& tracker = pt_context_->play_trackers.begin()->second;
-      const auto current = tracker.play_tracker->snapshot();
-      if (seed.living_boxes.size() != current.living_boxes.size())
+      const auto restored = DsPlayTrackerRestoreCameraSeekState(&tracker, checkpoint);
+      if (!restored.ok()) {
+        g_printerr("Could not seed play tracker: %s\n", restored.ToString().c_str());
         return false;
-      for (size_t i = 0; i < seed.living_boxes.size(); ++i) {
-        const auto& a = seed.living_boxes[i].config.arena_box;
-        const auto& b = current.living_boxes[i].config.arena_box;
-        if (!a || !b || a->left != b->left || a->top != b->top || a->right != b->right || a->bottom != b->bottom ||
-            seed.living_boxes[i].config.name != current.living_boxes[i].config.name)
-          return false;
-        seed.living_boxes[i].config = current.living_boxes[i].config;
       }
-      // The recorded camera dynamics are a useful starting guess; today's
-      // controls still own the policy. Object IDs belong to a different native
-      // tracker epoch, so historical player velocities must not be reused.
-      seed.config = current.config;
-      seed.detector = current.detector;
-      seed.detector.tracks.clear();
-      auto restored = hm::play_tracker::PlayTracker::from_snapshot(seed);
-      tracker.play_tracker = std::move(restored);
-      tracker.rink_guide.reset();
-      tracker.rink_width = 0;
-      tracker.has_received_tracks = true;
       prev_play_tracker_results_ = {};
-      for (const auto& box : seed.living_boxes)
+      for (const auto& box : tracker.play_tracker->snapshot().living_boxes)
         prev_play_tracker_results_.tracking_boxes.push_back(box.bbox);
       frame_counter_ = 0;
       return true;
@@ -581,6 +641,16 @@ bool PlayTrackerPriv::HandleEvent(GstEvent* event) {
     if (!structure || !gst_structure_get_boolean(structure, "hstream-preserve-playtracker", &preserve) || !preserve) {
       DsPlayTrackerCtxResetTracking(pt_context_);
       prev_play_tracker_results_ = hm::play_tracker::PlayTrackerResults{};
+      if (pt_context_) {
+        // Non-playlist startup positions sources after an initial preroll.
+        // Discard that preroll's camera advancement and reapply the original
+        // handoff before the first frame of the positioned source segment.
+        const auto seek_status = rearm_camera_seek_state(m_element, pt_context_);
+        if (!seek_status.ok()) {
+          g_printerr("Could not retain seek camera through source positioning: %s\n", seek_status.ToString().c_str());
+          return false;
+        }
+      }
     } else if (pt_context_) {
       pt_context_->player_colors.Reset();
       for (auto& [source, tracker] : pt_context_->play_trackers) {

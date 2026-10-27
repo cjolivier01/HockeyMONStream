@@ -5,6 +5,29 @@
 #include <utility>
 
 namespace hm::preview {
+
+bool AttachPlaybackClock(RouteTap program, std::string* error) {
+  auto* queue = gst_element_factory_make("queue", "playback_clock_queue");
+  auto* sink = gst_element_factory_make("fakesink", "playback_clock");
+  if (queue)
+    g_object_set(queue, "max-size-buffers", 1U, "max-size-bytes", 0U, "max-size-time", guint64{0}, "leaky", 0, nullptr);
+  if (sink)
+    g_object_set(
+        sink,
+        "sync",
+        TRUE,
+        "async",
+        TRUE,
+        "max-lateness",
+        gint64{-1},
+        "qos",
+        FALSE,
+        "enable-last-sample",
+        FALSE,
+        nullptr);
+  auto attachment = RouteAttachment::Create(program, {queue, sink}, nullptr, error);
+  return attachment && attachment->Commit([] { return true; });
+}
 namespace {
 struct PadPair {
   GstPad *source, *sink;

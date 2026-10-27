@@ -50,6 +50,9 @@ recording manifest, exact selected inputs, trial overrides/results, and the
 explicit uncropped-panorama PTS mapping and file identity. This descriptor is
 separate from the original training telemetry. Media content binding is manual;
 matching dimensions alone cannot verify the panorama depicts the recording.
+CPU-only trials may be saved before selecting video. Their `media.kind` is
+`none`, with recorded canvas dimensions and telemetry origin but no path,
+file identity or video-time mapping. A partial media binding is rejected.
 
 Verification:
 

@@ -1,0 +1,695 @@
+#include "src/apps/hstream-ui/WebSavedCalibration.h"
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QElapsedTimer>
+#include <QtCore/QFile>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QProcess>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QSaveFile>
+#include <QtCore/QTemporaryDir>
+#include <QtCore/QUuid>
+#include <QtGui/QImageReader>
+#include <cmath>
+#include <fstream>
+#include <set>
+#include <stdexcept>
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/stitching/AutoInputLens.h"
+#include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
+#include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
+#include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
+#include "hstream/src/libs/stitching/StitchingReframe.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
+#include "src/apps/hstream-ui/CalibrationImage.h"
+#include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include "src/apps/hstream-ui/RinkMapBackend.h"
+#include "src/apps/hstream-ui/StitchingStillImage.h"
+#include "src/apps/hstream-ui/WebCalibrationControls.h"
+#include "src/apps/hstream-ui/WebRinkEditor.h"
+
+namespace hm::web {
+namespace {
+namespace rink = hm::stitching;
+namespace fs = std::filesystem;
+QString text(const std::string& value) {
+  return QString::fromStdString(value);
+}
+void require(bool value, const std::string& message) {
+  if (!value)
+    throw std::runtime_error(message);
+}
+void check(const absl::Status& status) {
+  require(status.ok(), status.ToString());
+}
+template <typename T>
+T take(absl::StatusOr<T> value) {
+  check(value.status());
+  return std::move(*value);
+}
+void merge(YAML::Node target, const YAML::Node& source) {
+  for (const auto& entry : source) {
+    const auto key = entry.first.as<std::string>();
+    if (entry.second.IsMap() && target[key].IsMap())
+      merge(target[key], entry.second);
+    else
+      target[key] = YAML::Clone(entry.second);
+  }
+}
+QJsonArray values(const std::array<double, 3>& array) {
+  return {array[0], array[1], array[2]};
+}
+QJsonArray values(const std::array<double, 4>& array) {
+  return {array[0], array[1], array[2], array[3]};
+}
+template <size_t N>
+std::array<double, N> array(const QJsonObject& object, const char* key, double low, double high) {
+  const auto input = object.value(key).toArray();
+  require(input.size() == N, "Incomplete calibration view coordinates");
+  std::array<double, N> result;
+  for (size_t index = 0; index < N; ++index) {
+    const auto value = input[int(index)];
+    require(
+        value.isDouble() && std::isfinite(value.toDouble()) && value.toDouble() >= low && value.toDouble() <= high,
+        "Calibration view coordinate is outside its range");
+    result[index] = value.toDouble();
+  }
+  return result;
+}
+QByteArray tool(
+    const QString& name,
+    const QStringList& arguments,
+    const fs::path& directory,
+    const std::function<bool()>& cancelled,
+    const QByteArray& input = {}) {
+  QProcess process;
+  process.setWorkingDirectory(text(directory.string()));
+  process.start(name, arguments);
+  require(process.waitForStarted(5000), "Could not start native calibration tool");
+  process.write(input);
+  process.closeWriteChannel();
+  QElapsedTimer timer;
+  timer.start();
+  QByteArray output, errors;
+  while (process.state() != QProcess::NotRunning) {
+    process.waitForFinished(50);
+    output += process.readAllStandardOutput();
+    errors += process.readAllStandardError();
+    if ((cancelled && cancelled()) || timer.elapsed() > 120000 || output.size() + errors.size() > 4 * 1024 * 1024) {
+      process.kill();
+      process.waitForFinished(3000);
+      throw std::runtime_error("Calibration tool cancelled or exceeded its limits");
+    }
+  }
+  output += process.readAllStandardOutput();
+  errors += process.readAllStandardError();
+  require(
+      process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0,
+      "Native calibration tool failed: " + errors.right(2000).toStdString());
+  return output;
+}
+struct Snapshot {
+  YAML::Node config, effective;
+  rink::StitchProjectionFraming framing;
+  rink::StitchProjection projection;
+  std::vector<double> parameters;
+  std::array<double, 3> published;
+  std::string project;
+  QJsonObject identity;
+};
+Snapshot configuration_snapshot_locked(const Request& request) {
+  Snapshot result;
+  result.config = YAML::Load(take(
+      rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "calibration config")));
+  const auto calibration = result.config["hstream_ui"]["stitching_calibration"];
+  require(
+      calibration.IsMap() && calibration["status"].as<std::string>("") == "complete" &&
+          !rink::HasStitchingReframeIntent(result.config),
+      "Finish calibration before editing its saved view");
+  result.effective = YAML::Clone(take(hm::baseline_config::load()).values);
+  merge(result.effective, result.config);
+  rink::PreserveLegacyInputLensSelection(result.effective, result.config);
+  result.framing = take(rink::read_stitch_projection_framing(result.effective));
+  const auto projection_name = result.effective["stitching"]["projection"].as<std::string>();
+  result.projection = take(rink::ParseStitchProjection(projection_name));
+  result.parameters = take(rink::read_stitch_projection_parameters(result.effective, result.projection));
+  return result;
+}
+Snapshot snapshot_locked(const Request& request) {
+  auto result = configuration_snapshot_locked(request);
+  const auto projection_name = result.effective["stitching"]["projection"].as<std::string>();
+  const auto camera = take(rink::read_stitch_camera_selection(result.effective));
+  const auto error = ProjectionCropDialog::savedCalibrationPreviewError(
+      text(request.game.string()), result.framing, text(projection_name), result.parameters, camera);
+  require(error.isEmpty(), error.toStdString());
+  const auto provenance = take(rink::HuginProject::ReadCanvasProvenanceLocked(request.game));
+  require(provenance && provenance->projection_framing, "Saved view has no published rotation");
+  result.published = provenance->projection_framing->rotation_degrees;
+  result.project = take(rink::HuginProject::ReadProject(request.game / "autooptimiser_out.pto"));
+  const auto generation = take(rink::stitch_artifact_preflight_generation_id_locked(request.game));
+  result.identity = {
+      {"generation",
+       QString::fromLatin1(
+           QCryptographicHash::hash(QByteArray::fromStdString(generation), QCryptographicHash::Sha256).toHex())},
+      {"revision", text(take(rink::RinkMapCalibrationRevision(request.game)))}};
+  return result;
+}
+Snapshot snapshot(const Request& request) {
+  auto lock = take(rink::try_lock_canvas_constraint_artifacts(request.game));
+  require(bool(lock), "Calibration is changing; reopen the saved view");
+  auto config_lock = take(rink::GameConfigTransactionLock::Acquire(request.game));
+  return snapshot_locked(request);
+}
+
+QJsonObject reset_view(const Request& request, const std::function<bool()>& cancelled) {
+  require(
+      request.payload.size() == 5 && request.payload.value("config").isObject() &&
+          request.payload.value("defaults").isObject() && request.payload.value("source_changed").isBool() &&
+          request.payload.value("settings_changed").isBool() && request.payload.value("output_changed").isBool(),
+      "Saved Reset requires frozen controls and account defaults");
+  auto lock = take(rink::lock_canvas_constraint_artifacts(request.game));
+  auto config_lock = take(rink::GameConfigTransactionLock::Acquire(request.game));
+  // Reset can replace an OpenCV solve with the default backend. Such a source
+  // has no optimized Hugin project to preview. Only alignment reuse below
+  // requires those artifacts; saved image editors retain the full snapshot.
+  const auto source = configuration_snapshot_locked(request);
+  const auto decode = [&](const char* key) {
+    return YAML::Load(QJsonDocument(request.payload.value(key).toObject()).toJson().toStdString());
+  };
+  const auto controls = decode("config");
+  auto defaults = YAML::Clone(take(hm::baseline_config::load()).values);
+  merge(defaults, decode("defaults"));
+  const auto default_framing = take(rink::read_stitch_projection_framing(defaults));
+  auto desired = YAML::Clone(source.config);
+  rink::restore_generated_stitching_backend_choices(desired);
+  rink::restore_generated_stitch_rink_context(desired);
+  rink::restore_generated_rink_mask_frame_time(desired);
+  // A reset releases the old automatic-optics snapshot just as Qt does. Manual
+  // fields absent from the form must inherit the selected camera, not the solve.
+  for (const char* key : {"camera_fov", "input_lens"})
+    desired["stitching"].remove(key);
+  desired["stitching"]["auto_input_lens_frozen"] = false;
+  rink::write_stitch_projection_framing(desired, default_framing);
+  if (default_framing.rotation_inherited)
+    desired["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Node(YAML::NodeType::Null);
+  merge(desired, controls);
+  // Canonical reset controls replace any same-layer aliases frozen by a run.
+  for (const char* stage : {"hmstitcher", "hmplaycropper", "ds-playtracker"}) {
+    auto node = desired["pipeline"][stage];
+    for (const char* section : {"", "properties", "private-properties"}) {
+      auto values = *section ? node[section] : node;
+      if (!values.IsMap())
+        continue;
+      for (const char* name :
+           {"post-stitch-rotate-degrees",
+            "post_stitch_rotate_degrees",
+            "fixed-edge-rotation-angle",
+            "fixed_edge_rotation_angle",
+            "fixed-edge-rotation-angle-left",
+            "fixed_edge_rotation_angle_left",
+            "fixed-edge-rotation-angle-right",
+            "fixed_edge_rotation_angle_right"})
+        values.remove(name);
+    }
+  }
+  auto effective = YAML::Clone(take(hm::baseline_config::load()).values);
+  merge(effective, desired);
+  auto camera = take(rink::read_stitch_camera_selection(effective));
+  camera = rink::ReadAutoInputLensForGame(request.game, effective, camera).camera;
+  rink::write_stitch_camera_selection(desired, camera);
+  rink::write_stitch_camera_selection(effective, camera);
+  const auto framing = take(rink::read_stitch_projection_framing(effective));
+  QJsonObject rink_profiles;
+  for (const auto& profile : take(rink::read_stitch_rink_configurations(effective)))
+    rink_profiles[text(profile.id)] = profile.rotation_degrees[1] != 0 || profile.rotation_degrees[2] != 0;
+  const auto selected_rink = take(rink::read_stitch_rink_selection(effective));
+  const auto count = effective["stitching"]["calibration_frame_count"].as<size_t>();
+  auto calibration = desired["hstream_ui"]["stitching_calibration"];
+  const bool count_changed = count != source.config["hstream_ui"]["stitching_calibration"]["frame_count"].as<size_t>();
+  if (count_changed) {
+    desired["stitching"].remove("calibration_frame_selection");
+    desired["stitching"].remove("calibration_frame_inputs_fingerprint");
+    effective["stitching"].remove("calibration_frame_selection");
+    effective["stitching"].remove("calibration_frame_inputs_fingerprint");
+  } else if (
+      desired["stitching"]["calibration_frame_selection"] &&
+      YAML::Dump(effective["stitching"]["stitch_frame_time"]) !=
+          YAML::Dump(source.effective["stitching"]["stitch_frame_time"])) {
+    throw std::runtime_error(
+        "Restore the saved reference time or change the frame count before resetting selected frames");
+  }
+  calibration["frame_count"] = count;
+  effective["hstream_ui"]["stitching_calibration"]["frame_count"] = count;
+  const auto owner = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+  bool solve_changed = false;
+  const bool force_solve = request.payload.value("source_changed").toBool() ||
+      YAML::Dump(source.effective["stitching"]["sync_method"]) != YAML::Dump(effective["stitching"]["sync_method"]);
+  const bool reframe = !force_solve &&
+      take(
+          rink::PrepareStitchingReframeIntentLocked(
+              request.game, source.effective, effective, owner, desired, &solve_changed));
+  solve_changed = solve_changed || force_solve;
+  const bool pending = reframe || solve_changed;
+  const bool output_changed = request.payload.value("output_changed").toBool();
+  const bool changed = pending || output_changed || request.payload.value("settings_changed").toBool() ||
+      framing != source.framing || framing.rotation_inherited != source.framing.rotation_inherited;
+  if (pending) {
+    calibration["status"] = "pending";
+    calibration["rink_mask_status"] = "pending";
+    calibration["stale_from"] = reframe ? "canvas" : "input";
+    calibration["artifacts_invalidated"] = reframe;
+    calibration["invalidation_id"] = owner;
+    calibration.remove("backend_generation");
+    desired["hstream_ui"].remove("projection_crop_geometry");
+    if (solve_changed) {
+      rink::ClearStitchingReframeIntent(desired);
+      desired["stitching"].remove("manual_control_points");
+      calibration.remove("match_snapshot");
+    }
+    if (reframe)
+      take(rink::ValidateStitchingReframeIntentLocked(request.game, desired));
+  }
+  if (pending || output_changed) {
+    rink::invalidate_rotation_dependent_artifacts(desired);
+    calibration["rink_mask_status"] = "pending";
+  }
+  require(!cancelled || !cancelled(), "Saved Reset cancelled");
+  if (changed) {
+    if (pending || output_changed)
+      take(rink::publish_game_config_without_rink_masks(request.game, YAML::Dump(desired), true));
+    else
+      check(rink::publish_game_config(request.game, YAML::Dump(desired)));
+  }
+  const auto bytes =
+      take(rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "reset config"));
+  return {
+      {"calibration_reset_version", 1},
+      {"staged", true},
+      {"changed", changed},
+      {"pending", pending},
+      {"alignment_reused", reframe},
+      {"invalidation_id", pending ? text(owner) : QString()},
+      {"config_sha256",
+       QString::fromLatin1(
+           QCryptographicHash::hash(QByteArray::fromStdString(bytes), QCryptographicHash::Sha256).toHex())},
+      {"angles", values(framing.rotation_degrees)},
+      {"rotation_inherited", framing.rotation_inherited},
+      {"rink_config", text(selected_rink)},
+      {"rink_profiles", rink_profiles},
+      {"crop", values(framing.crop)},
+      {"automatic", framing.auto_crop}};
+}
+QJsonObject render(
+    const Request& request,
+    const Snapshot& source,
+    const rink::StitchProjectionFraming& selected,
+    const QString& kind,
+    const fs::path& work,
+    bool blend,
+    QJsonArray& artifacts,
+    const std::function<bool()>& cancelled) {
+  const auto localized = take(rink::LocalizeCalibrationPreviewImages(source.project, request.game));
+  std::ofstream(work / "source.pto") << localized;
+  for (const char* name : {"left.png", "right.png"})
+    fs::copy_file(request.game / name, work / name);
+  QStringList framing;
+  if (kind == "leveling") {
+    const auto delta = take(rink::RinkLevelingRotationDelta(source.published, selected.rotation_degrees));
+    framing
+        << QString("--rotate=%1,%2,%3").arg(delta[0], 0, 'g', 17).arg(delta[1], 0, 'g', 17).arg(delta[2], 0, 'g', 17);
+  } else
+    framing << "--crop=0,100,0,100%";
+  framing << "--output=framed.pto" << "source.pto";
+  tool("pano_modify", framing, work, cancelled);
+  const auto size =
+      take(rink::HuginProject::ParseCanvasSize(take(rink::HuginProject::ReadProject(work / "framed.pto"))));
+  require(
+      size.first && size.second && size.first <= 65536 && size.second <= size.first * 4ULL,
+      "Preview canvas exceeds its limit");
+  const double scale = std::min(1.0, 1600.0 / (kind == "crop" ? std::max(size.first, size.second) : size.first));
+  const int width = std::max(1, int(std::lround(size.first * scale))),
+            height = std::max(1, int(std::lround(size.second * scale)));
+  tool(
+      "pano_modify",
+      {QString("--canvas=%1x%2").arg(width).arg(height), "--output=preview.pto", "framed.pto"},
+      work,
+      cancelled);
+  tool(
+      "nona",
+      {"-v",
+       "-m",
+       "PNG",
+       "--ignore-exposure",
+       blend ? "--seam=blend" : "--seam=hard",
+       "-o",
+       "preview.png",
+       "preview.pto"},
+      work,
+      cancelled);
+  QImageReader reader(text((work / "preview.png").string()), "png");
+  require(reader.size().width() > 0 && reader.size().height() > 0, "Native preview image is unavailable");
+  const auto path = request.root / "view-preview.png";
+  fs::copy_file(work / "preview.png", path, fs::copy_options::overwrite_existing);
+  artifacts.append(Artifact(request, path, "image"));
+  QJsonObject result{{"preview", text(Relative(request, path))}, {"blend", blend}};
+  if (kind == "crop") {
+    try {
+      tool("pano_modify", {"--crop=AUTO", "--output=auto.pto", "preview.pto"}, work, cancelled);
+      const auto automatic = text(take(rink::HuginProject::ReadProject(work / "auto.pto")));
+      const auto found = QRegularExpression("(?m)^p .*?\\bS(\\d+),(\\d+),(\\d+),(\\d+)").match(automatic);
+      if (found.hasMatch()) {
+        QJsonArray crop;
+        for (int index = 0; index < 4; ++index)
+          crop.append(found.captured(index + 1).toDouble() / (index < 2 ? width : height));
+        result.insert("auto_crop", crop);
+      }
+    } catch (const std::exception&) {
+      require(!cancelled || !cancelled(), "Crop preview cancelled");
+    }
+  }
+  return result;
+}
+} // namespace
+
+namespace {
+SavedStitchingStill read_still(
+    const Request& request,
+    const QString& generation,
+    const QByteArray& settings,
+    const std::function<bool()>& cancelled) {
+  require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
+  const auto directory = text(request.game.string());
+  const auto revision = StitchingStillRevision(directory);
+  std::mutex metadata_mutex;
+  auto result = ReadSavedStitchingStill(directory, generation, settings, revision, metadata_mutex, cancelled);
+  require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
+  return result;
+}
+
+bool publish_still(
+    const Request& request,
+    const SavedStitchingStill& still,
+    const fs::path& path,
+    QJsonArray& artifacts,
+    const std::function<bool()>& cancelled) {
+  require(!fs::is_symlink(fs::symlink_status(path)), "Saved preview must not be a symbolic link");
+  QSaveFile output(text(path.string()));
+  require(
+      output.open(QIODevice::WriteOnly) && still.image.save(&output, "PNG") && output.size() <= 32 * 1024 * 1024,
+      "Cannot encode the bounded saved stitching preview");
+  require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
+  // Encoding also happens outside metadata locks. Do not publish a decoded
+  // predecessor if the selected source changed while producing its proxy.
+  if (StitchingStillRevision(text(request.game.string())) != still.revision)
+    return false;
+  require(output.commit(), "Cannot publish the saved stitching preview");
+  artifacts.append(Artifact(request, path, "image"));
+  return true;
+}
+} // namespace
+
+QJsonObject ReadSavedCalibrationStill(
+    const Request& request,
+    QJsonArray& artifacts,
+    const std::function<bool()>& cancelled) {
+  require(
+      request.payload.value("config").isObject() &&
+          request.payload.size() == (request.payload.contains("expected_generation") ? 2 : 1),
+      "Saved stitching preview requires frozen effective settings");
+  const auto generation = request.payload.contains("expected_generation")
+      ? RequiredString(request.payload, "expected_generation", 1024 * 1024)
+      : QString();
+  const auto settings = QJsonDocument(request.payload.value("config").toObject()).toJson(QJsonDocument::Compact);
+  const auto still = read_still(request, generation, settings, cancelled);
+  QJsonObject result{{"calibration_still_version", 1}, {"available", false}, {"retryable", still.retry}};
+  if (still.image.isNull())
+    return result;
+  require(
+      !fs::is_symlink(fs::symlink_status(request.root / "saved-stitching-preview.png")),
+      "Saved preview must not be a symbolic link");
+  const auto path = Contained(request.root, "saved-stitching-preview.png", false);
+  if (!publish_still(request, still, path, artifacts, cancelled)) {
+    result.insert("retryable", true);
+    return result;
+  }
+  result.insert("available", true);
+  result.insert("preview", text(Relative(request, path)));
+  result.insert("width", still.image.width());
+  result.insert("height", still.image.height());
+  result.insert("source_image", still.name);
+  result.insert(
+      "source_revision",
+      QString::fromLatin1(QCryptographicHash::hash(still.revision, QCryptographicHash::Sha256).toHex()));
+  return result;
+}
+
+QString ExportSavedCalibrationPreview(
+    const Request& request,
+    QJsonArray& artifacts,
+    const std::function<bool()>& cancelled) {
+  const auto still = read_still(request, {}, {}, cancelled);
+  require(!still.image.isNull(), "Saved calibration image is unavailable or changing");
+  require(
+      !fs::is_symlink(fs::symlink_status(request.game / "setup-preview.png")),
+      "Saved preview must not be a symbolic link");
+  const auto path = Contained(
+      request.root,
+      text((request.game / "setup-preview.png").lexically_relative(request.root).generic_string()),
+      false);
+  require(
+      publish_still(request, still, path, artifacts, cancelled),
+      "Saved calibration changed while exporting its preview");
+  return text(Relative(request, path));
+}
+
+QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, const std::function<bool()>& cancelled) {
+  if (request.operation == "calibration-clean") {
+    const bool controls = request.payload.contains("before_controls") && request.payload.contains("desired_controls");
+    require(request.payload.size() == (controls ? 3 : 1), "Clean Stitching requires its exact private config identity");
+    if (controls)
+      require(
+          request.payload.value("before_controls").isObject() && request.payload.value("desired_controls").isObject(),
+          "Clean Stitching requires saved control objects");
+    const auto expected = RequiredString(request.payload, "config_sha256", 64);
+    require(QRegularExpression("^[0-9a-f]{64}$").match(expected).hasMatch(), "Invalid Clean Stitching config identity");
+    const auto read_config = [&] {
+      return take(
+          rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "clean config"));
+    };
+    const auto digest = [](const std::string& bytes) {
+      return QString::fromLatin1(
+          QCryptographicHash::hash(QByteArray::fromStdString(bytes), QCryptographicHash::Sha256).toHex());
+    };
+    require(digest(read_config()) == expected, "Clean Stitching config changed before cleanup");
+    // Cleanup can remove extracted camera PNGs. Camera directories must be
+    // private real directories; only admitted recording files may be aliases.
+    std::set<fs::path> media;
+    for (const auto& value : request.authorized_media) {
+      require(value.isString(), "Invalid Clean Stitching recording authorization");
+      const fs::path path(value.toString().toStdString());
+      require(path.is_absolute() && fs::is_regular_file(path), "Missing authorized Clean Stitching recording");
+      media.insert(fs::canonical(path));
+    }
+    size_t entries = 0;
+    for (fs::recursive_directory_iterator entry(request.game), end; entry != end; ++entry) {
+      require(++entries <= 100000, "Clean Stitching workspace exceeds its entry bound");
+      if (entry->is_symlink()) {
+        const auto extension = QString::fromStdString(entry->path().extension().string()).toLower();
+        require(
+            extension == ".mp4" && entry->is_regular_file() && media.count(fs::canonical(entry->path())),
+            "Clean Stitching cannot follow a directory or calibration artifact alias");
+      }
+    }
+    require(!cancelled || !cancelled(), "Clean Stitching cancelled");
+    if (controls) {
+      auto transaction = take(rink::GameConfigTransactionLock::Acquire(request.game));
+      const auto bytes = read_config();
+      require(digest(bytes) == expected, "Clean Stitching config changed before applying saved controls");
+      auto config = YAML::Load(bytes);
+      ApplySavedCalibrationControlEdits(
+          config,
+          request.payload.value("before_controls").toObject(),
+          request.payload.value("desired_controls").toObject());
+      check(rink::publish_game_config(request.game, YAML::Dump(config) + "\n"));
+    }
+    check(rink::clean_stitching_artifacts(request.game.string()));
+    int removed = 0;
+    {
+      auto transaction = take(rink::GameConfigTransactionLock::Acquire(request.game));
+      auto config = YAML::Load(read_config());
+      require(config.IsMap(), "Clean Stitching config must be a map");
+      removed = rink::RemoveManualStitchingCleanConfigKeys(config);
+      require(!cancelled || !cancelled(), "Clean Stitching cancelled");
+      check(rink::publish_game_config(request.game, YAML::Dump(config) + "\n"));
+    }
+    return {
+        {"calibration_clean_version", 1},
+        {"cleaned", true},
+        {"removed_config_keys", removed},
+        {"config_sha256", digest(read_config())}};
+  }
+  if (request.operation == "calibration-view-reset")
+    return reset_view(request, cancelled);
+  if (request.operation == "calibration-view-rotation-stage") {
+    require(
+        request.payload.size() == 2 && request.payload.contains("source_generation") &&
+            request.payload.contains("post_stitch_rotate_degrees"),
+        "Saved rotation staging requires an exact source and rotation");
+    const auto source = RequiredString(request.payload, "source_generation", 1024 * 1024);
+    const auto rotation = request.payload.value("post_stitch_rotate_degrees");
+    require(rotation.isDouble() && std::isfinite(rotation.toDouble()), "Saved rotation must be finite");
+    require(!cancelled || !cancelled(), "Saved rotation staging cancelled");
+    const auto staged = take(
+        rink::stage_saved_stitched_output_rotation(request.game.string(), source.toStdString(), rotation.toDouble()));
+    return {
+        {"source_generation", text(staged.source_generation)},
+        {"desired_generation", text(staged.desired_generation)},
+        {"hugin_generation", text(staged.hugin_generation)},
+        {"changed", staged.changed}};
+  }
+  auto source = snapshot(request);
+  const auto kind = RequiredString(request.payload, "kind", 16);
+  require(kind == "leveling" || kind == "crop", "Unknown saved calibration editor");
+  const bool reading = request.operation == "calibration-view-read";
+  if (!reading)
+    require(
+        request.payload.value("snapshot").toObject() == source.identity,
+        "Saved calibration changed; reopen the editor");
+  auto selected = source.framing;
+  if (!reading && kind == "leveling") {
+    selected.rotation_degrees = array<3>(request.payload, "angles", -180, 180);
+    selected.rotation_inherited = false;
+  }
+  if (!reading && kind == "crop") {
+    selected.crop = array<4>(request.payload, "crop", 0, 1);
+    require(request.payload.value("automatic").isBool(), "Expected automatic crop selection");
+    selected.auto_crop = request.payload.value("automatic").toBool();
+    require(
+        selected.crop[0] < selected.crop[1] && selected.crop[2] < selected.crop[3] &&
+            (!selected.auto_crop || selected.crop == std::array<double, 4>{{0, 1, 0, 1}}),
+        "Invalid saved crop selection");
+  }
+  check(rink::ValidateStitchProjectionFraming(source.projection, source.parameters, selected));
+  fs::create_directories(request.root / "work");
+  QTemporaryDir temporary(text((request.root / "work" / "view-XXXXXX").string()));
+  require(temporary.isValid(), "Cannot create private saved-view snapshot");
+  const fs::path work(temporary.path().toStdString());
+  auto prepared = RinkEditor({{"pto", text(source.project)}, {"sourceDirectory", text(request.game.string())}});
+  QJsonArray images;
+  for (int camera = 0; camera < 2; ++camera) {
+    const auto path = request.game / (camera ? "right.png" : "left.png");
+    QImageReader reader(text(path.string()), "png");
+    const auto size = prepared.value("imageSizes").toArray()[camera].toArray();
+    require(
+        reader.size() == QSize(size[0].toInt(), size[1].toInt()),
+        "Original image dimensions differ from saved camera geometry");
+    images.append(text(Relative(request, path)));
+  }
+  QJsonObject result{
+      {"calibration_view_version", 1},
+      {"kind", kind},
+      {"snapshot", source.identity},
+      {"images", images},
+      {"image_sizes", prepared.value("imageSizes")},
+      {"angles", values(selected.rotation_degrees)},
+      {"crop", values(selected.crop)},
+      {"automatic", selected.auto_crop},
+      {"saved_landmarks_available", fs::is_regular_file(request.game / "rink-map.yaml")}};
+  if (request.operation == "calibration-view-estimate") {
+    require(kind == "leveling", "Only leveling estimates original-image points");
+    auto value = request.payload;
+    value.insert("pto", text(source.project));
+    value.insert("sourceDirectory", text(request.game.string()));
+    value.insert("publishedAngles", values(source.published));
+    prepared = RinkEditor(value);
+    std::ofstream(work / "sphere.pto") << prepared.value("sphere").toString().toStdString();
+    value.insert(
+        "rays",
+        QString::fromUtf8(
+            tool("pano_trafo", {"sphere.pto"}, work, cancelled, prepared.value("input").toString().toUtf8())));
+    const auto estimate = RinkEditor(value);
+    for (auto item = estimate.begin(); item != estimate.end(); ++item)
+      result.insert(item.key(), item.value());
+    if (estimate.contains("rectangleMismatch"))
+      result.insert("rectangle_mismatch", estimate.value("rectangleMismatch"));
+  } else if (request.operation == "calibration-view-landmarks") {
+    require(kind == "leveling", "Saved landmarks estimate leveling only");
+    const auto map = take(LoadRinkMapSnapshot(text(request.game.string())));
+    require(map.saved_map.has_value(), "Save a partial or reviewed rink map first");
+    const auto marks = take(rink::ParseRinkMap(*map.saved_map));
+    require(
+        marks.generation == map.generation && marks.calibration_revision == map.revision.toStdString(),
+        "Saved landmarks belong to another calibration");
+    const auto updated = take(UpdateRinkMap(map, marks, false, cancelled));
+    QJsonArray reference_marks;
+    for (int camera = 0; camera < 2; ++camera) {
+      QJsonArray marks;
+      for (const auto& observation : updated.document.observations) {
+        if (!observation.enabled || observation.camera != camera)
+          continue;
+        QJsonArray points;
+        for (const auto& point : observation.pixels)
+          points.append(QJsonArray{point.x, point.y});
+        marks.append(QJsonObject{{"pixels", points}, {"arc", observation.arc}});
+      }
+      reference_marks.append(marks);
+    }
+    result.insert("reference_marks", reference_marks);
+    const auto estimate = take(RinkLandmarkLeveling(updated, source.published, selected.rotation_degrees[0]));
+    result.insert("angles", values(estimate.rotation_degrees));
+    result.insert("rectangle_mismatch", estimate.orthogonality_error_degrees);
+    result.insert("message", "Reused saved rink landmarks. Inspect the preview before applying angles.");
+  } else if (request.operation == "calibration-view-save") {
+    if (kind == "leveling")
+      require(request.payload.value("preview_verified").toBool(false), "Preview the selected angles before saving");
+    bool reframe = false;
+    const auto owner = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    size_t width = 0;
+    {
+      auto lock = take(rink::lock_canvas_constraint_artifacts(request.game));
+      auto config_lock = take(rink::GameConfigTransactionLock::Acquire(request.game));
+      const auto current = snapshot_locked(request);
+      require(current.identity == source.identity, "Saved calibration changed while selecting its view");
+      auto desired = YAML::Clone(current.config);
+      rink::write_stitch_projection_framing(desired, selected);
+      auto effective = YAML::Clone(current.effective);
+      rink::write_stitch_projection_framing(effective, selected);
+      reframe =
+          take(rink::PrepareStitchingReframeIntentLocked(request.game, current.effective, effective, owner, desired));
+      if (reframe) {
+        auto calibration = desired["hstream_ui"]["stitching_calibration"];
+        calibration["status"] = "pending";
+        calibration["rink_mask_status"] = "pending";
+        calibration["stale_from"] = "canvas";
+        calibration["artifacts_invalidated"] = true;
+        calibration["invalidation_id"] = owner;
+        calibration.remove("backend_generation");
+        width = take(rink::ValidateStitchingReframeIntentLocked(request.game, desired)).desired_max_output_width;
+      }
+      check(rink::publish_game_config(request.game, YAML::Dump(desired)));
+    }
+    if (reframe)
+      check(rink::reframe_stitching(request.game.string(), owner, cancelled, width));
+    source = snapshot(request);
+    result.insert("snapshot", source.identity);
+    result.insert("saved", true);
+    result.insert("calibration_complete", true);
+    result.insert("alignment_reused", reframe);
+    result.insert("setup_preview", ExportSavedCalibrationPreview(request, artifacts, cancelled));
+  }
+  if (request.operation == "calibration-view-preview" || request.operation == "calibration-view-save" ||
+      (reading && kind == "crop")) {
+    const bool blend = request.payload.value("blend").toBool(false);
+    const auto preview = render(request, source, selected, kind, work, blend, artifacts, cancelled);
+    for (auto item = preview.begin(); item != preview.end(); ++item)
+      result.insert(item.key(), item.value());
+  }
+  require(!cancelled || !cancelled(), "Saved view cancelled");
+  require(snapshot(request).identity == source.identity, "Saved calibration changed during editing");
+  // Reframing republishes even unchanged original stills; capture their final file identities.
+  for (const char* name : {"left.png", "right.png"})
+    artifacts.append(Artifact(request, request.game / name, "image"));
+  return result;
+}
+} // namespace hm::web

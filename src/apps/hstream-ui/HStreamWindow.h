@@ -2,6 +2,7 @@
 
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
+#include "src/apps/hstream-ui/DetectorOptions.h"
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -29,6 +30,7 @@
 
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/LiveRotationConfigOwner.h"
 
 #include <array>
 #include <deque>
@@ -67,9 +69,11 @@ class BackendPreview;
 namespace hm::ui_internal {
 
 struct StitchingIterationSettings {
-  QString sync_method{"audio"};
-  bool show_crop_dialog{true};
-  bool show_leveling_dialog{true};
+  // Startup resolves all four values from the required baseline. Empty storage
+  // must never supply policy for an absent configuration key.
+  QString sync_method;
+  bool show_crop_dialog{};
+  bool show_leveling_dialog{};
   QString playback_start_time;
 
   bool operator!=(const StitchingIterationSettings& other) const {
@@ -163,11 +167,7 @@ class HStreamWindow : public QMainWindow {
   };
 
   // A program detector offered in the Detection tab, from hstream_ui.detector_models.
-  struct DetectorModel {
-    QString id;
-    QString label;
-    QString config_prefix;
-  };
+  using DetectorModel = hm::ui::DetectorModel;
 
   struct LiveRotationAuthorization {
     QString game_id;
@@ -176,11 +176,6 @@ class HStreamWindow : public QMainWindow {
     std::string authorization_id;
     bool invalidate_scoreboard{false};
     QString scoreboard_property_value;
-  };
-
-  struct LiveRotationConfigTask {
-    std::function<void()> work;
-    std::function<void()> complete;
   };
 
   struct RuntimeControlBatch {
@@ -201,6 +196,7 @@ class HStreamWindow : public QMainWindow {
     kTabChange,
     kRecovery,
     kRenderToggle,
+    kDeferred,
   };
 
   enum class PlaybackProgressState {
@@ -238,6 +234,7 @@ class HStreamWindow : public QMainWindow {
   void scrollLogToTail();
   void configureControlHelp();
   void loadBaselineDefaults();
+  void applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const;
 
   void startPipeline();
   void pauseOrResumePipeline();
@@ -352,7 +349,11 @@ class HStreamWindow : public QMainWindow {
   void recoverPreviewDisableFailure(const QString& reason, bool force = false);
   int previewDisableTimeoutMs() const;
   bool setRuntimeRenderAudioMuted(bool muted);
+  bool previewCommandsBlockedByPause() const;
+  void clearDeferredPreviewCommands();
+  void flushDeferredPreviewCommands();
   void setRuntimePreviewOverlays(bool reconciliation = false);
+  void setPreviewOverlayControls(bool players, bool play, bool rink);
   void setConfirmedPreviewOverlays(bool players, bool play, bool rink);
   void preparePreviewOverlayUserRequest();
   void resetPreviewOverlayReconciliationState();
@@ -448,6 +449,7 @@ class HStreamWindow : public QMainWindow {
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments(bool standalone = false, bool job_export = false) const;
+  std::optional<int> stitchRotationOverride() const;
   QString highBitDepthMode() const;
   QString detectorPrecision() const;
   // Seam blend mode for the next run.
@@ -566,8 +568,8 @@ class HStreamWindow : public QMainWindow {
       std::map<QString, int> controls,
       const std::optional<int>& authorized_stitch_rotation,
       const std::optional<LiveRotationAuthorization>& live_rotation_authorization);
-  void enqueueLiveRotationConfigTask(std::function<void()> work, std::function<void()> complete);
-  void startNextLiveRotationConfigTask();
+  hm::stitching::LiveRotationConfigOwner& liveRotationConfigOwner();
+  void pollLiveRotationConfigOwner();
   void rollbackLiveRotationAuthorization(
       const LiveRotationAuthorization& authorization,
       const QString& reason,
@@ -706,6 +708,8 @@ class HStreamWindow : public QMainWindow {
   QString enabled_gyro_sync_method_{"auto"};
   hm::ui_internal::StitchingIterationSettings default_iteration_settings_;
   hm::ui_internal::StitchingIterationSettings saved_iteration_settings_;
+  bool default_show_scoreboard_dialog_;
+  bool show_scoreboard_dialog_;
   hm::ui_internal::StitchingIterationSettings active_iteration_settings_;
   QLineEdit* game_id_edit_{nullptr};
   QLineEdit* video_path_edit_{nullptr};
@@ -834,6 +838,7 @@ class HStreamWindow : public QMainWindow {
   quint64 playback_seek_recovery_generation_{0};
   bool playback_seek_channel_available_{false};
   bool active_run_local_render_only_{false};
+  std::optional<int> active_stitch_rotation_override_;
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   QString calibration_failure_message_;
@@ -860,6 +865,16 @@ class HStreamWindow : public QMainWindow {
   int preview_disable_attempts_{0};
   bool preview_runtime_ready_{false};
   bool preview_overlay_deferred_{false};
+  quint64 deferred_preview_run_generation_{0};
+  QString deferred_preview_channel_;
+  std::optional<bool> deferred_render_audio_muted_;
+  struct DeferredPreviewOverlays {
+    bool players;
+    bool play;
+    bool rink;
+    bool reconciliation;
+  };
+  std::optional<DeferredPreviewOverlays> deferred_preview_overlays_;
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
   QString active_archive_output_path_;
@@ -1020,7 +1035,9 @@ class HStreamWindow : public QMainWindow {
   int pipeline_stop_timeout_ms_;
   int pipeline_kill_timeout_ms_;
   bool default_drivegpt_database_enabled_;
+  bool default_playback_realtime_;
   QString default_stitch_frame_time_{"00:00:00"};
+  int default_stitch_control_points_{0};
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{true};
   hm::stitching::ControlPointFiltering default_control_point_filtering_;
@@ -1094,8 +1111,7 @@ class HStreamWindow : public QMainWindow {
   quint64 deferred_restart_pipeline_generation_{0};
   QString deferred_restart_game_id_;
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
-  QThread* live_rotation_authorization_worker_{nullptr};
-  std::deque<LiveRotationConfigTask> live_rotation_config_tasks_;
+  std::unique_ptr<hm::stitching::LiveRotationConfigOwner> live_rotation_config_owner_;
   bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};

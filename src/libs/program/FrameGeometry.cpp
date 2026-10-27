@@ -1,6 +1,26 @@
 #include "hstream/src/libs/program/FrameGeometry.h"
 
 namespace hm::playcropper {
+absl::StatusOr<BBox> ResolveTrackingBox(
+    size_t input_width,
+    size_t input_height,
+    size_t metadata_width,
+    size_t metadata_height,
+    size_t output_width,
+    size_t output_height,
+    const std::optional<BBox>& tracking_box) {
+  if (!input_width || !input_height || !metadata_width || !metadata_height || !output_width || !output_height)
+    return absl::InvalidArgumentError("Program crop dimensions must be positive");
+  if (tracking_box)
+    return tracking_box->make_canvas_scaled(
+        FloatValue(input_width) / metadata_width, FloatValue(input_height) / metadata_height);
+
+  const double output_aspect = double(output_width) / output_height;
+  const double width = std::min(double(input_width), input_height * output_aspect);
+  const double height = width / output_aspect;
+  return BBox(0, 0, width, height).at_center(BBox(0, 0, input_width, input_height).center());
+}
+
 FrameTransformGeometry CalculateFrameTransformGeometry(
     size_t input_width,
     size_t input_height,

@@ -67,12 +67,22 @@ The UI acceptance test exercises the same Qt button handlers as an operator:
 3. click **Play**;
 4. observe the private native scoreboard-selector URL and submit **No scoreboard**;
 5. wait for positive pipeline FPS while recording several seconds;
-6. click **Stop** and inspect the working MKV, or wait for completion and require published MP4s;
+6. click **Stop**, or wait for natural completion, and require every selected archive to publish as MP4;
 7. compare sampled encoded frames with `panorama.tif` using SIFT features and a RANSAC homography.
 
 Positive FPS alone is deliberately insufficient. The visual check requires square pixels and at
 least 20 geometrically consistent feature matches and a 35% inlier fraction,
 so a healthy pipeline processing the wrong game fails.
+
+Set `HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD=1` on a private fixture to exercise
+Cancel instead of No scoreboard. With `HSTREAM_UI_E2E_PREPARE_GAME=1`, preparation
+clears canonical and legacy scoreboard geometry. Allow at least 12 seconds of
+recording: the check requires distinct processed-video positions after Cancel,
+no replacement selector, an unchanged empty polygon, and normal process teardown,
+in addition to the ordinary rendered-output checks. Initial Cancel continues
+playback without a scoreboard; it does not save the No scoreboard sentinel.
+Run `HSTREAM_UI_E2E_SCOREBOARD_CONTROLS=1` separately for cancellation/reselection
+of an already saved polygon and acknowledged placement changes.
 
 The **Play at normal speed** checkbox beside **Render video** is an opt-in,
 session-only playback choice. Select it before Play; it is disabled when rendering
@@ -177,6 +187,23 @@ Program or Stitched surface is blank:
 DISPLAY=:0 scripts/test_hstream_ui_e2e.sh --x11-preview short
 ```
 
+For timestamp-qualified comparisons, the explicit runner command
+`@capture-preview-frame program /absolute/path/frame.png` also logs a
+`runtime preview frame identity` line with the renderer generation and
+`pipeline-pts-ns`. This is the rendered buffer's PTS after native playlist/seek
+rebasing, not a raw chapter-local timestamp. The image and identity are captured
+under the same render lock.
+The identity is omitted if the current window, generation or size differs from
+the last render, or while the window is hidden. Native WebRTC's accepted
+`sourcePts` is also the buffer PTS before transport rebasing. Compare these only
+after verifying identical source identities, chapter order, synchronization and
+playback start/seek epochs. The alternate HockeyMON decoder's chapter-local PTS
+needs an explicit timeline mapping; numeric equality alone cannot identify the
+same media frame. An ordinary screenshot has no timestamp evidence.
+This uses the existing bounded, one-shot diagnostic readback and adds no video
+readback to normal playback. A window that Qt cleared still needs a newly
+presented frame before comparison.
+
 `HM_GAME_DIR` selects the source game root, as it does for the application. An
 optional second argument selects the artifact directory:
 
@@ -244,13 +271,23 @@ requires complete live acknowledgments and captures each combined selection.
 It ends each route with all three off. These are diagnostic framebuffer captures;
 ordinary playback does not read video back to the CPU.
 
+With `HSTREAM_UI_E2E_LIVE_CAMERA_CONTROLS=1`, the transition check also changes
+all five Players drawing layers, pauses before editing tracker controls, and
+holds those drafts beyond the runtime acknowledgment timeout. Resume must
+confirm the queued controls with their native units before capturing another
+frame. Live Reset restores the camera defaults while preserving Drawing.
+The focused `tone_controls_window_test` covers the same pause/resume deferral
+without a GPU.
+
 On X11, the backend renders NVMM video through CUDA/OpenGL into the native
 preview windows. The acceptance test requests bounded diagnostic captures of
 the presented GPU framebuffer; ordinary playback performs no CPU frame readback.
 The test requires distinct channel acknowledgements and non-blank images, then
-checks the recorded working MKV after Stop. With
-`HSTREAM_UI_E2E_WAIT_FOR_EOS=1`, it waits for natural completion and requires all
-selected outputs to finish MP4 publication. It selects the CLI
+requires all selected outputs to finish MP4 publication after Stop. With
+`HSTREAM_UI_E2E_WAIT_FOR_EOS=1`, it waits for natural completion before the same
+publication checks. Ready playback finishes through the native `q` command;
+Stop during startup, pending calibration or seek reconstruction still cancels.
+It selects the CLI
 and plugins from the same Bazel build as the test executable.
 
 `HSTREAM_UI_E2E_OUTPUTS` selects comma-separated `archive-file`,
@@ -260,6 +297,12 @@ with `HSTREAM_UI_E2E_OUTPUTS=archive-stitched`; the omitted Program preview is
 excluded from that mode's checks. Set `HSTREAM_UI_E2E_STANDALONE_TELEMETRY=1`
 with 4K-only output and `HSTREAM_UI_E2E_WAIT_FOR_EOS=1` to enable DriveGPT
 and require its independent database publication after video completion.
+The test captures the current managed run's receipt identity immediately after
+Play. Stop and EOS both require that exact receipt to reach `complete` and its
+published telemetry database to match the recorded file identity; log messages
+and pending receipts do not satisfy publication.
+`HSTREAM_UI_TEST_TELEMETRY_RECEIPT_ONLY=1` runs the CPU acceptance fixtures without
+launching a window or pipeline.
 
 ## Evidence retained
 
@@ -331,3 +374,11 @@ Stitched preview captures for the rink and player circles matching detection-box
 preferences (also accepts `compact`/`standard` and `lower-left`). The fixture
 must match the copied game's calibration; partial/stale maps fail preparation.
 The ordinary archive geometry check still runs, since the map is preview-only.
+
+Interactive Program playback with only DriveGPT telemetry must use the same managed
+publication lifecycle as a run with video archives. `hstream-job
+--interactive-publication` accepts this case only when the saved recipe explicitly
+sets `hstream_ui.job.capture_telemetry: true`; it preserves the selected live sinks
+and does not add an encoder. Stop must publish a completed telemetry database and
+its native receipt before releasing the run. Calibration-only and experiment
+preview sessions remain excluded from telemetry capture.

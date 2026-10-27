@@ -8,7 +8,7 @@ HSTREAM_CLI_SRCS = glob(
         "*.cpp",
         "*.h",
     ],
-    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h"],
+    exclude = ["*Test.cpp", "PlayerModelCache.cpp", "AmdPipelineApp.cpp", "AmdPipelineOptions.cpp", "WebPreviewOptions.cpp", "WebPreviewOptions.h", "WebRotationTransaction.cpp", "WebRotationTransaction.h"],
 )
 
 HSTREAM_CLI_COPTS = [
@@ -32,8 +32,17 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/tracking:camera_seek_state",
+    "//src/libs/common:paced_playback",
+    "//src/libs/common:paced_playback_config",
+    "//src/libs/stitching:rink_mask_input_store",
+    "//src/apps/apps-common:pipeline_startup_error",
     ":web_preview_options",
+    ":web_rotation_transaction",
+    "//src/libs/tracking:playtracker_runtime_controls",
     "//src/apps/apps-common:web_preview_target",
+    "//src/apps/apps-common:rotation_frame_fence",
+    "//src/libs/stitching:stitched_output_generation_meta",
     "//src/apps/apps-common:preview_overlay_painter",
     "//src/apps/apps-common:preview_overlay_scene",
     "//src/libs/program:preview_overlay_config",
@@ -93,11 +102,36 @@ HSTREAM_CLI_DEPS = [
 ]
 
 cc_library(
+    name = "web_rotation_transaction",
+    srcs = ["WebRotationTransaction.cpp"],
+    hdrs = ["WebRotationTransaction.h"],
+    deps = [
+        ":web_preview_options",
+        "//src/libs/program:rotation_controls",
+        "//src/libs/stitching:live_rotation_config_owner",
+    ],
+)
+
+cc_test(
+    name = "web_rotation_transaction_test",
+    srcs = ["WebRotationTransactionTest.cpp"],
+    deps = [
+        ":web_rotation_transaction",
+        "//src/libs/stitching:canvas_constraint_check",
+        "//src/libs/stitching:game_config",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
+    ],
+)
+
+cc_library(
     name = "web_preview_options",
     srcs = ["WebPreviewOptions.cpp"],
     hdrs = ["WebPreviewOptions.h"],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/program:rotation_controls",
+        "//src/libs/tracking:playtracker_runtime_controls",
         "//src/apps/apps-common:preview_route_owner",
         "//src/libs/program:preview_overlay_config",
         "@yaml-cpp",
@@ -203,6 +237,22 @@ cc_test(
 )
 
 cc_test(
+    name = "configurator_rink_mask_precision_test",
+    srcs = [
+        "ConfiguratorRinkMaskPrecisionTest.cpp",
+        "StitcherOnePassConfig.h",
+        "StitchingCalibrationMode.h",
+        "configurator.cpp",
+        "configurator.h",
+        "deepstream_app.h",
+    ],
+    copts = HSTREAM_CLI_COPTS,
+    linkopts = HSTREAM_CLI_LINKOPTS + ["-ltiff"],
+    deps = HSTREAM_CLI_DEPS,
+    tags = ["local"],
+)
+
+cc_test(
     name = "configurator_persistence_test",
     srcs = [
         "ConfiguratorPersistenceTest.cpp",
@@ -292,11 +342,26 @@ cc_library(
 )
 
 cc_test(
+    name = "pipeline_seek_admission_test",
+    srcs = ["PipelineSeekAdmissionTest.cpp"],
+    data = ["//configs:baseline.yaml"],
+    copts = HSTREAM_CLI_COPTS,
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [":pipeline_application_test_library"],
+)
+
+cc_test(
     name = "pipeline_process_output_test",
     size = "small",
     srcs = ["PipelineRuntimeControlTest.cpp"],
     args = ["--test-output-reader"],
-    deps = ["//src/libs/recording"],
+    deps = [
+        "//src/libs/publication",
+        "//src/libs/recording",
+    ],
 )
 
 cc_test(
@@ -304,7 +369,10 @@ cc_test(
     srcs = ["PipelineRuntimeControlTest.cpp"],
     args = ["$(location :hstream-cli)"],
     data = [":hstream-cli"],
-    deps = ["//src/libs/recording"],
+    deps = [
+        "//src/libs/publication",
+        "//src/libs/recording",
+    ],
     size = "medium",
     tags = [
         "local",

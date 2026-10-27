@@ -12,6 +12,7 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QPainterPath>
+#include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialogButtonBox>
@@ -29,7 +30,9 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkLeveling.h"
+#include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
 
 namespace {
 constexpr int kLeft = 1, kRight = 2, kTop = 4, kBottom = 8, kMove = 16;
@@ -217,7 +220,7 @@ ProjectionCropDialog::ProjectionCropDialog(
     QWidget* parent,
     bool in_progress_calibration,
     bool apply_on_accept)
-    : QDialog(parent),
+    : QDialog(parent, Qt::Window),
       game_directory_(game_directory),
       in_progress_calibration_(in_progress_calibration),
       initial_(framing),
@@ -229,7 +232,15 @@ ProjectionCropDialog::ProjectionCropDialog(
   setObjectName("projectionCropDialog");
   setWindowTitle("Frame the stitched rink");
   resize(1080, 760);
+  configure_preview_dialog_window(this);
+  qApp->installEventFilter(this);
   auto* layout = new QVBoxLayout(this);
+  auto* window_actions = new QHBoxLayout();
+  auto* window_size = new PreviewDialogWindowSizeButton(this);
+  window_size->setObjectName("projectionCropWindowSize");
+  window_actions->addStretch();
+  window_actions->addWidget(window_size);
+  layout->addLayout(window_actions);
   auto* instructions = new QLabel(
       "Choose Auto, keep the full canvas, or trim each edge yourself. In Manual, drag an edge or corner to resize "
       "the rectangle; drag inside to move it. Dimmed areas will be removed. Black corners may remain.");
@@ -343,7 +354,12 @@ ProjectionCropDialog::ProjectionCropDialog(
 }
 
 ProjectionCropDialog::~ProjectionCropDialog() {
+  qApp->removeEventFilter(this);
   stopTool();
+}
+
+bool ProjectionCropDialog::eventFilter(QObject* watched, QEvent* event) {
+  return route_value_control_wheel(this, watched, event) || QDialog::eventFilter(watched, event);
 }
 
 hm::stitching::StitchProjectionFraming ProjectionCropDialog::framing() const {
@@ -534,8 +550,8 @@ void ProjectionCropDialog::loadPreview() {
       previewFailed("The saved calibration changed. Reopen the crop editor.");
       return;
     }
-    const QString preview_error = savedCalibrationPreviewError(
-        temporary_.path(), initial_, projection_, projection_parameters_, camera_);
+    const QString preview_error =
+        savedCalibrationPreviewError(temporary_.path(), initial_, projection_, projection_parameters_, camera_);
     if (!preview_error.isEmpty()) {
       previewFailed(preview_error);
       return;

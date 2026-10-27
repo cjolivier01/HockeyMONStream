@@ -680,8 +680,19 @@ absl::StatusOr<TiffPlacement> read_tiff_placement(
   if (pixels_valid) {
     std::vector<unsigned char> scanline(static_cast<size_t>(scanline_size));
     pixels_valid = TIFFReadScanline(tif, scanline.data(), 0, 0) >= 0;
-    if (pixels_valid && height > 1)
-      pixels_valid = TIFFReadScanline(tif, scanline.data(), height - 1, 0) >= 0;
+    if (pixels_valid && height > 1) {
+      uint16_t compression = COMPRESSION_NONE;
+      uint32_t rows_per_strip = 0;
+      TIFFGetFieldDefaulted(tif, TIFFTAG_COMPRESSION, &compression);
+      TIFFGetFieldDefaulted(tif, TIFFTAG_ROWSPERSTRIP, &rows_per_strip);
+      // Compressed scanlines cannot jump within the current strip. Decode the
+      // last strip in order (continuing after row zero for a single-strip TIFF).
+      uint32_t first_row = height - 1;
+      if (compression != COMPRESSION_NONE && rows_per_strip > 0)
+        first_row = std::max<uint32_t>(1, ((height - 1) / rows_per_strip) * rows_per_strip);
+      for (uint32_t row = first_row; pixels_valid && row < height; ++row)
+        pixels_valid = TIFFReadScanline(tif, scanline.data(), row, 0) >= 0;
+    }
   }
   HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, path));
   if (!dimensions_status.ok())
@@ -888,7 +899,12 @@ absl::StatusOr<cv::Mat> decode_nonuniform_seam(const fs::path& path, const PngLa
   return seam;
 }
 
-absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, int canvas_width, int canvas_height) {
+absl::Status publish_normalized_seam(
+    const fs::path& path,
+    const cv::Mat& seam,
+    int canvas_width,
+    int canvas_height,
+    const fs::path& source_mode_path = {}) {
   std::vector<unsigned char> encoded;
   if (!cv::imencode(".png", seam, encoded) || encoded.empty())
     return absl::InternalError("Unable to encode normalized seam: " + path.string());
@@ -915,7 +931,7 @@ absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, 
   } cleanup{descriptor, temporary};
 
   struct stat source_metadata{};
-  if (::stat(path.c_str(), &source_metadata) != 0)
+  if (::stat((source_mode_path.empty() ? path : source_mode_path).c_str(), &source_metadata) != 0)
     return absl::InternalError("Unable to read normalized seam source mode: " + std::string(std::strerror(errno)));
   if (!S_ISREG(source_metadata.st_mode))
     return absl::FailedPreconditionError("Normalized seam source is not a regular file: " + path.string());
@@ -961,6 +977,54 @@ absl::Status publish_normalized_seam(const fs::path& path, const cv::Mat& seam, 
     return absl::InternalError("Unable to atomically publish normalized seam: " + error.message());
   cleanup.path.clear();
   return fsync_stitch_path(parent, true);
+}
+
+absl::Status normalize_enblend_mask(
+    const fs::path& mask_path,
+    const fs::path& seam_path,
+    int canvas_width,
+    int canvas_height) {
+  HM_RETURN_IF_ERROR(validate_decoded_dimensions(canvas_width, canvas_height, std::nullopt, "Enblend seam canvas"));
+  auto placement = read_tiff_placement(mask_path, std::nullopt);
+  if (!placement.ok())
+    return placement.status();
+  auto opened = open_bounded_tiff(mask_path, kMaximumParserPngBytes);
+  if (!opened.ok())
+    return opened.status();
+  uint16_t samples = 0, bits = 0, photo = 0, orientation = 0, sample_format = 0;
+  TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_SAMPLESPERPIXEL, &samples);
+  TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_BITSPERSAMPLE, &bits);
+  TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_PHOTOMETRIC, &photo);
+  TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_ORIENTATION, &orientation);
+  TIFFGetFieldDefaulted((*opened)->tiff, TIFFTAG_SAMPLEFORMAT, &sample_format);
+  if (samples != 1 || bits != 8 || photo != PHOTOMETRIC_MINISBLACK || orientation != ORIENTATION_TOPLEFT ||
+      sample_format != SAMPLEFORMAT_UINT)
+    return absl::FailedPreconditionError("Enblend mask must be an unsigned 8-bit grayscale TIFF");
+  const double x = std::round(placement->x), y = std::round(placement->y);
+  if (x < 0 || y < 0 || std::abs(x - placement->x) > 0.0625 || std::abs(y - placement->y) > 0.0625 ||
+      x + placement->width > canvas_width || y + placement->height > canvas_height)
+    return absl::FailedPreconditionError("Enblend TIFF mask crop lies outside its mapping canvas");
+  cv::Mat mask;
+  HM_ASSIGN_OR_RETURN(mask, decode_bounded_image(mask_path, cv::IMREAD_UNCHANGED, kMaximumParserPngBytes));
+  HM_RETURN_IF_ERROR(verify_opened_tiff(**opened, mask_path));
+  if (mask.empty() || mask.type() != CV_8UC1 || mask.cols != placement->width || mask.rows != placement->height)
+    return absl::FailedPreconditionError("Enblend TIFF mask pixels do not match its bounded header");
+  try {
+    cv::Mat normalized;
+    cv::copyMakeBorder(
+        mask,
+        normalized,
+        static_cast<int>(y),
+        canvas_height - static_cast<int>(y) - mask.rows,
+        static_cast<int>(x),
+        canvas_width - static_cast<int>(x) - mask.cols,
+        cv::BORDER_REPLICATE);
+    return publish_normalized_seam(seam_path, normalized, canvas_width, canvas_height, mask_path);
+  } catch (const cv::Exception& exception) {
+    return absl::ResourceExhaustedError("Unable to normalize enblend TIFF mask: " + std::string(exception.what()));
+  } catch (const std::bad_alloc&) {
+    return absl::ResourceExhaustedError("Unable to allocate normalized enblend TIFF mask");
+  }
 }
 
 absl::Status validate_and_normalize_seam(const fs::path& path, int canvas_width, int canvas_height) {
@@ -1572,16 +1636,113 @@ absl::Status scale_optimized_canvas(
   return absl::OkStatus();
 }
 
+absl::Status normalize_nona_coordinate_maps(const fs::path& directory, const std::function<bool()>& is_cancelled = {}) {
+  for (int camera = 0; camera < 2; ++camera) {
+    const std::string prefix = "mapping_000" + std::to_string(camera);
+    TiffPlacement rgba;
+    HM_ASSIGN_OR_RETURN(rgba, read_tiff_placement(directory / (prefix + ".tif"), std::nullopt));
+    for (const char* axis : {"_x.tif", "_y.tif"}) {
+      const fs::path path = directory / (prefix + axis);
+      auto input = open_bounded_tiff(path, kMaximumParserRemapTiffBytes);
+      if (!input.ok())
+        return input.status();
+      uint32_t width = 0, height = 0;
+      if (!TIFFGetField((*input)->tiff, TIFFTAG_IMAGEWIDTH, &width) ||
+          !TIFFGetField((*input)->tiff, TIFFTAG_IMAGELENGTH, &height))
+        return absl::FailedPreconditionError("Nona coordinate map dimensions are missing");
+      if (width == static_cast<uint32_t>(rgba.width) && height == static_cast<uint32_t>(rgba.height)) {
+        HM_RETURN_IF_ERROR(validate_remap_tiff_header((*input)->tiff, path, rgba, std::nullopt));
+        continue;
+      }
+      // With an explicit PTO crop, nona crops RGBA but can leave -c coordinate
+      // images at the full PTO canvas. Crop those integer coordinates to RGBA's
+      // explicit TIFF rectangle; never resize or reinterpret their values.
+      TiffPlacement coordinates;
+      HM_ASSIGN_OR_RETURN(coordinates, read_tiff_placement(path, std::nullopt));
+      HM_RETURN_IF_ERROR(validate_remap_tiff_header((*input)->tiff, path, coordinates, std::nullopt));
+      const double dx = static_cast<double>(rgba.x) - coordinates.x;
+      const double dy = static_cast<double>(rgba.y) - coordinates.y;
+      const double x = std::round(dx), y = std::round(dy);
+      if (x < 0 || y < 0 || std::abs(x - dx) > 0.0625 || std::abs(y - dy) > 0.0625 ||
+          x + rgba.width > coordinates.width || y + rgba.height > coordinates.height)
+        return absl::FailedPreconditionError("Nona coordinate map does not contain its RGBA placement rectangle");
+      if (TIFFScanlineSize((*input)->tiff) != static_cast<tmsize_t>(width) * static_cast<tmsize_t>(sizeof(uint16_t)))
+        return absl::FailedPreconditionError("Nona coordinate map has an invalid CV_16U scanline layout");
+      std::string pattern = (directory / ("." + prefix + axis + ".crop-XXXXXX.tif")).string();
+      std::vector<char> writable(pattern.begin(), pattern.end());
+      writable.push_back('\0');
+      const int descriptor = ::mkstemps(writable.data(), 4);
+      if (descriptor < 0)
+        return absl::InternalError("Unable to create cropped nona map: " + std::string(std::strerror(errno)));
+      const fs::path temporary(writable.data());
+      struct RemoveCrop {
+        fs::path path;
+        ~RemoveCrop() {
+          std::error_code ignored;
+          fs::remove(path, ignored);
+        }
+      } cleanup{temporary};
+      TIFF* output = TIFFFdOpen(descriptor, temporary.c_str(), "w");
+      if (!output) {
+        ::close(descriptor);
+        return absl::InternalError("Unable to open cropped nona TIFF");
+      }
+      struct CloseTiff {
+        TIFF* value;
+        ~CloseTiff() {
+          if (value)
+            TIFFClose(value);
+        }
+      } close{output};
+      TIFFSetField(output, TIFFTAG_IMAGEWIDTH, static_cast<uint32_t>(rgba.width));
+      TIFFSetField(output, TIFFTAG_IMAGELENGTH, static_cast<uint32_t>(rgba.height));
+      TIFFSetField(output, TIFFTAG_SAMPLESPERPIXEL, 1);
+      TIFFSetField(output, TIFFTAG_BITSPERSAMPLE, 16);
+      TIFFSetField(output, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_UINT);
+      TIFFSetField(output, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+      TIFFSetField(output, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+      TIFFSetField(output, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK);
+      TIFFSetField(output, TIFFTAG_ROWSPERSTRIP, std::min<uint32_t>(rgba.height, 64));
+      TIFFSetField(output, TIFFTAG_XRESOLUTION, 1.0f);
+      TIFFSetField(output, TIFFTAG_YRESOLUTION, 1.0f);
+      TIFFSetField(output, TIFFTAG_XPOSITION, rgba.x);
+      TIFFSetField(output, TIFFTAG_YPOSITION, rgba.y);
+      std::vector<uint16_t> scanline(width);
+      for (uint32_t row = 0; row < static_cast<uint32_t>(y) + rgba.height; ++row) {
+        if (is_cancelled && is_cancelled())
+          return absl::CancelledError("Nona coordinate map normalization cancelled");
+        if (TIFFReadScanline((*input)->tiff, scanline.data(), row, 0) < 0)
+          return absl::FailedPreconditionError("Unable to read cropped nona coordinate scanline");
+        if (row >= static_cast<uint32_t>(y) &&
+            TIFFWriteScanline(output, scanline.data() + static_cast<size_t>(x), row - static_cast<uint32_t>(y), 0) < 0)
+          return absl::InternalError("Unable to write cropped nona coordinate scanline");
+      }
+      HM_RETURN_IF_ERROR(verify_opened_tiff(**input, path));
+      if (!TIFFFlush(output))
+        return absl::InternalError("Unable to flush cropped nona coordinates");
+      TIFFClose(output);
+      close.value = nullptr;
+      HM_RETURN_IF_ERROR(fsync_stitch_path(temporary));
+      std::error_code error;
+      fs::rename(temporary, path, error);
+      if (error)
+        return absl::InternalError("Unable to publish cropped nona coordinates: " + error.message());
+    }
+  }
+  return fsync_stitch_path(directory, true);
+}
+
 absl::Status run_nona(
     const std::string& nona,
     const fs::path& directory,
     const std::function<bool()>& is_cancelled = {}) {
   remove_mapping_outputs(directory);
-  return run_checked(
+  HM_RETURN_IF_ERROR(run_checked(
       {nona, "-m", "TIFF_m", "-z", "NONE", "--bigtiff", "-c", "-o", "mapping_", "autooptimiser_out.pto"},
       directory,
       nullptr,
-      is_cancelled);
+      is_cancelled));
+  return normalize_nona_coordinate_maps(directory, is_cancelled);
 }
 
 absl::Status render_staged_project(
@@ -1857,6 +2018,18 @@ absl::StatusOr<std::unique_ptr<HuginProject::ArtifactLock>> HuginProject::Recove
 absl::Status HuginProject::Recover(const fs::path& game_dir) {
   auto lock = RecoverAndLock(game_dir);
   return lock.ok() ? absl::OkStatus() : lock.status();
+}
+
+absl::Status HuginProject::NormalizeNonaCoordinateMaps(const fs::path& directory) {
+  return normalize_nona_coordinate_maps(directory);
+}
+
+absl::Status HuginProject::NormalizeEnblendMask(
+    const fs::path& mask_path,
+    const fs::path& seam_path,
+    int canvas_width,
+    int canvas_height) {
+  return normalize_enblend_mask(mask_path, seam_path, canvas_width, canvas_height);
 }
 
 absl::Status HuginProject::ValidateAndNormalizeSeam(const fs::path& seam_path, int canvas_width, int canvas_height) {
@@ -2886,10 +3059,20 @@ absl::Status render_staged_project(
   auto enblend = executable("HM_ENBLEND", "enblend");
   if (enblend.ok()) {
     status = run_checked(
-        {*enblend, "--save-masks=seam_file.png", "-o", "panorama.tif", "mapping_0000.tif", "mapping_0001.tif"},
+        {*enblend, "--save-masks=seam_file.tif", "-o", "panorama.tif", "mapping_0000.tif", "mapping_0001.tif"},
         staging,
         nullptr,
         options.is_cancelled);
+    if (status.ok()) {
+      // Enblend can crop its mask more tightly than the output panorama. PNG
+      // drops the explicit zero origin, making that crop indistinguishable from
+      // a stale canvas. TIFF retains the placement; normalize those exact pixels.
+      const auto canvas = measure_staged_remap_canvas(staging, std::nullopt);
+      if (!canvas.ok())
+        return canvas.status();
+      status =
+          normalize_enblend_mask(staging / "seam_file.tif", staging / "seam_file.png", canvas->first, canvas->second);
+    }
     if (!status.ok()) {
       if (absl::IsCancelled(status))
         return status;

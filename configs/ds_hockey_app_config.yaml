@@ -225,7 +225,7 @@ sink3:
   sync: 0
   bitrate: 4000000
   # bitrate: 200000
-  # RTSP preview is resized only inside the RTSP sink branch.
+  # Network output is resized only inside the RTSP/RTMP sink branch.
   compute-hw: 1
   width: 1280
   height: 720

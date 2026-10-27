@@ -62,6 +62,7 @@ class RinkLevelingDialog : public QDialog {
 
  protected:
   void reject() override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
  private:
   void loadSnapshot();

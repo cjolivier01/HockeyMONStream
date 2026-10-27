@@ -2,6 +2,7 @@
 
 #include <optional>
 
+#include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
 #include "hstream/src/libs/media/Mp4AudioReader.h"
 
@@ -13,6 +14,7 @@ struct VaProgramAudioConfig {
   int bitrate;
   std::string alsa_device;
   bool muted;
+  std::optional<hm::gst::PacedPlaybackSettings> paced_playback;
 };
 struct VaProgramSinkConfig {
   VaProgramSinkKind kind;

@@ -9,6 +9,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QImage>
+#include <QtGui/QWheelEvent>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -17,7 +18,9 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
+#include <QtWidgets/QToolButton>
 
 #include <cmath>
 #include <functional>
@@ -237,6 +240,51 @@ int main(int argc, char** argv) {
   qputenv("HM_NONA", bin.filePath("nona").toUtf8());
   qputenv("RINK_PREVIEW_ARGS", bin.filePath("rink-preview-arguments").toUtf8());
   qputenv("RINK_NONA_ARGS", bin.filePath("rink-nona-arguments").toUtf8());
+  {
+    RinkLevelingDialog dialog(game.path(), {0, -33, 2});
+    dialog.show();
+    QTest::qWait(20);
+    auto* size = dialog.findChild<QToolButton*>("rinkLevelingWindowSize");
+    ok &= expect(
+        dialog.windowType() == Qt::Window && dialog.windowFlags().testFlag(Qt::WindowMaximizeButtonHint) &&
+            dialog.isSizeGripEnabled() && size && !size->icon().isNull(),
+        "Leveling preview must expose normal resizable and maximizable window controls");
+    if (size) {
+      size->click();
+      ok &= expect(waitUntil([&]() { return dialog.isMaximized(); }), "Leveling maximize action works");
+      size->click();
+      ok &= expect(waitUntil([&]() { return !dialog.isMaximized(); }), "Leveling restore action works");
+    }
+    const auto wheel = [](QWidget* widget) {
+      widget->setFocus();
+      const QPointF center(widget->rect().center());
+      QWheelEvent event(
+          center,
+          widget->mapToGlobal(center.toPoint()),
+          {},
+          {0, -120},
+          Qt::NoButton,
+          Qt::NoModifier,
+          Qt::NoScrollPhase,
+          false);
+      QApplication::sendEvent(widget, &event);
+    };
+    auto* pitch = dialog.findChild<QDoubleSpinBox*>("rinkLevelingPitch");
+    auto* method = dialog.findChild<QCheckBox*>("markRinkPostsCheck");
+    auto* tabs = dialog.findChild<QTabWidget*>("rinkLevelingTabs");
+    const auto angles = dialog.rotationDegrees();
+    wheel(pitch);
+    wheel(method);
+    wheel(tabs->findChild<QTabBar*>());
+    ok &= expect(
+        dialog.rotationDegrees() == angles && !method->isChecked() && tabs->currentIndex() == 0,
+        "Focused leveling angles, methods and tabs never change through wheel input");
+    auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("rinkLevelingCamera0"));
+    const auto scale = canvas->viewScale();
+    wheel(canvas);
+    ok &= expect(canvas->viewScale() != scale, "Leveling image wheel zoom remains available");
+    dialog.close();
+  }
   {
     QByteArray large_pto = pto;
     for (size_t i = 0; i < 16 * 2000; ++i)

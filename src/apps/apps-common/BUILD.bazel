@@ -1,6 +1,21 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "pipeline_startup_error",
+    srcs = ["PipelineStartupError.cpp"],
+    hdrs = ["PipelineStartupError.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer", "@com_google_absl//absl/status"],
+)
+
+cc_test(
+    name = "pipeline_startup_error_test",
+    srcs = ["PipelineStartupErrorTest.cpp"],
+    deps = [":pipeline_startup_error", "@gstreamer"],
+)
+
+cc_library(
     name = "decoder_pad_link",
     hdrs = ["DecoderPadLink.h"],
     include_prefix = INCLUDE_PREFIX,
@@ -61,6 +76,30 @@ cc_test(
     name = "selected_preview_stream_test",
     srcs = ["SelectedPreviewStreamTest.cpp"],
     deps = [":selected_preview_stream", "@gstreamer"],
+)
+
+cc_test(
+    name = "paced_preview_transport_test",
+    srcs = ["PacedPreviewTransportTest.cpp"],
+    deps = [":selected_preview_stream", "//src/libs/common:paced_playback", "@gstreamer"],
+)
+
+cc_test(
+    name = "paced_preview_retirement_test",
+    srcs = ["PacedPreviewRetirementTest.cpp"],
+    # The real native isolation gate still belongs to the NVIDIA preview path.
+    # Shared token/epoch and transport coverage stays in portable common tests.
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        ":hm_gpu_preview",
+        ":preview_route_owner",
+        ":selected_preview_stream",
+        "//src/libs/common:paced_playback",
+        "@gstreamer",
+    ],
 )
 
 cc_test(
@@ -625,6 +664,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":preview_route_graph",
         ":webrtc_signaling",
         ":archive_watermark",
         ":webrtc_endpoint",
@@ -645,6 +685,7 @@ cc_library(
         "//src/libs/common:fs",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:utils",
+        "//src/libs/program:rotation_controls",
         "//src/libs/stitching:stitching",
         "//toolchains/jetson:cuda_runtime",
         "@com_google_absl//absl/status:status",
@@ -704,6 +745,7 @@ cc_test(
     timeout = "moderate",
     deps = [
         ":deepstream_apps_common",
+        ":webrtc_endpoint",
         "@gstreamer",
     ],
 )
@@ -833,4 +875,17 @@ cc_test(
     srcs = ["WebPreviewSignalingTest.cpp"],
     tags = ["local"],
     deps = [":deepstream_apps_common", ":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@libsoup"],
+)
+
+cc_library(
+    name = "rotation_frame_fence",
+    hdrs = ["RotationFrameFence.h"],
+    include_prefix = "hstream/src/apps/apps-common",
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "rotation_frame_fence_test",
+    srcs = ["RotationFrameFenceTest.cpp"],
+    deps = [":rotation_frame_fence"],
 )

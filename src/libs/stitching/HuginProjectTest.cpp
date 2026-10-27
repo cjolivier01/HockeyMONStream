@@ -98,6 +98,22 @@ bool write_remap_pair(
       cv::imwrite((directory / (prefix + "_y.tif")).string(), y);
 }
 
+bool write_positioned_tiff(const std::filesystem::path& path, const cv::Mat& pixels, float x, float y) {
+  if (!cv::imwrite(path.string(), pixels))
+    return false;
+  TIFF* tif = TIFFOpen(path.c_str(), "r+");
+  if (!tif)
+    return false;
+  TIFFSetField(tif, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);
+  TIFFSetField(tif, TIFFTAG_XRESOLUTION, 1.0f);
+  TIFFSetField(tif, TIFFTAG_YRESOLUTION, 1.0f);
+  TIFFSetField(tif, TIFFTAG_XPOSITION, x);
+  TIFFSetField(tif, TIFFTAG_YPOSITION, y);
+  const bool ok = TIFFRewriteDirectory(tif) != 0;
+  TIFFClose(tif);
+  return ok;
+}
+
 // Native OpenCV fits can round an integer translation to either side of a pixel boundary.
 // Like enblend, size this fixture from the emitted TIFF rectangles, not a guessed fitted canvas.
 bool write_native_enblend_fixture() {
@@ -130,7 +146,7 @@ bool write_native_enblend_fixture() {
   const cv::Rect canvas = bounds[0] | bounds[1];
   cv::Mat seam(canvas.size(), CV_8UC1, cv::Scalar(0));
   seam.colRange(seam.cols / 2, seam.cols).setTo(cv::Scalar(255));
-  return cv::imwrite("seam_file.png", seam) &&
+  return write_positioned_tiff("seam_file.tif", seam, 0.0f, 0.0f) &&
       cv::imwrite("panorama.tif", cv::Mat(canvas.size(), CV_8UC3, cv::Scalar(1, 2, 3)));
 }
 
@@ -979,6 +995,7 @@ int main(int argc, char** argv) {
   ok &= expect(
       add_png_pixel_offset(fixtures / "seam_file.png", 1, 1), "fake cropped enblend seam must carry an oFFs origin");
 
+  ok &= expect(write_positioned_tiff(fixtures / "seam_file.tif", seam, 1.0f, 1.0f), "positioned TIFF mask must exist");
   const fs::path seam_validation = root / "seam-validation";
   fs::create_directories(seam_validation);
   const fs::path corrupt_offset = seam_validation / "corrupt-offset.png";
@@ -1052,6 +1069,88 @@ int main(int argc, char** argv) {
   ok &= expect(
       absl::IsFailedPrecondition(hm::stitching::HuginProject::ValidateAndNormalizeSeam(missing_offset_large, 42, 32)),
       "larger origin-zero enblend seam mismatch without oFFs metadata must still fail closed");
+  const fs::path cropped_maps = root / "cropped-nona-coordinates";
+  fs::create_directories(cropped_maps);
+  cv::Mat full_x(365, 730, CV_16U), full_y(365, 730, CV_16U);
+  for (int row = 0; row < full_x.rows; ++row)
+    for (int column = 0; column < full_x.cols; ++column) {
+      full_x.at<uint16_t>(row, column) = static_cast<uint16_t>(column);
+      full_y.at<uint16_t>(row, column) = static_cast<uint16_t>(row);
+    }
+  full_x.at<uint16_t>(50, 80) = full_y.at<uint16_t>(50, 80) = 65535;
+  for (int camera = 0; camera < 2; ++camera) {
+    const std::string prefix = "mapping_000" + std::to_string(camera);
+    ok &= expect(
+        write_positioned_tiff(
+            cropped_maps / (prefix + ".tif"), cv::Mat(292, 584, CV_8UC4, cv::Scalar(1, 2, 3, 255)), 73, 36) &&
+            write_positioned_tiff(cropped_maps / (prefix + "_x.tif"), full_x, 0, 0) &&
+            write_positioned_tiff(cropped_maps / (prefix + "_y.tif"), full_y, 0, 0),
+        "explicit PTO crop must have full-canvas coordinate fixtures");
+  }
+  const auto rgba_before_crop = read_binary_file(cropped_maps / "mapping_0000.tif");
+  const auto normalized_coordinates = hm::stitching::HuginProject::NormalizeNonaCoordinateMaps(cropped_maps);
+  if (!normalized_coordinates.ok())
+    std::cerr << normalized_coordinates << '\n';
+  ok &= expect(normalized_coordinates.ok(), "nona full-canvas coordinate maps must crop to their RGBA rectangle");
+  for (int camera = 0; camera < 2; ++camera) {
+    const std::string prefix = "mapping_000" + std::to_string(camera);
+    for (const auto& axis : {std::make_pair("_x.tif", full_x), std::make_pair("_y.tif", full_y)}) {
+      const auto path = cropped_maps / (prefix + axis.first);
+      const auto actual = cv::imread(path.string(), cv::IMREAD_UNCHANGED);
+      const cv::Mat expected = axis.second(cv::Rect(73, 36, 584, 292));
+      ok &= expect(
+          actual.type() == CV_16U && actual.size() == expected.size() && cv::norm(actual, expected, cv::NORM_INF) == 0,
+          "coordinate crop must preserve all uint16 pixels, including unmapped sentinels");
+      TIFF* tif = TIFFOpen(path.c_str(), "r");
+      float x = -1, y = -1;
+      const bool positioned =
+          tif && TIFFGetField(tif, TIFFTAG_XPOSITION, &x) && TIFFGetField(tif, TIFFTAG_YPOSITION, &y);
+      if (tif)
+        TIFFClose(tif);
+      ok &= expect(positioned && x == 73 && y == 36, "normalized coordinate TIFFs must carry the RGBA placement");
+    }
+  }
+  ok &= expect(
+      read_binary_file(cropped_maps / "mapping_0000.tif") == rgba_before_crop,
+      "coordinate normalization must not rewrite the generated RGBA image");
+  const auto normalized_before = read_binary_file(cropped_maps / "mapping_0000_x.tif");
+  ok &= expect(
+      hm::stitching::HuginProject::NormalizeNonaCoordinateMaps(cropped_maps).ok() &&
+          read_binary_file(cropped_maps / "mapping_0000_x.tif") == normalized_before,
+      "already normalized coordinate maps must remain byte-for-byte unchanged");
+  ok &= expect(
+      write_positioned_tiff(
+          cropped_maps / "mapping_0000.tif", cv::Mat(292, 584, CV_8UC4, cv::Scalar(1, 2, 3, 255)), 700, 36) &&
+          write_positioned_tiff(cropped_maps / "mapping_0000_x.tif", full_x, 0, 0),
+      "out-of-bounds coordinate crop fixture must exist");
+  const auto invalid_before = read_binary_file(cropped_maps / "mapping_0000_x.tif");
+  ok &= expect(
+      !hm::stitching::HuginProject::NormalizeNonaCoordinateMaps(cropped_maps).ok() &&
+          read_binary_file(cropped_maps / "mapping_0000_x.tif") == invalid_before,
+      "a crop outside its coordinate canvas must fail without changing its map");
+
+  const fs::path positioned_mask = seam_validation / "enblend-origin-zero.tif";
+  const fs::path positioned_png = seam_validation / "enblend-normalized.png";
+  ok &= expect(
+      write_positioned_tiff(positioned_mask, large_mismatch_seam, 0.0f, 0.0f),
+      "cropped mask TIFF must retain its explicit zero origin");
+  const auto positioned_status =
+      hm::stitching::HuginProject::NormalizeEnblendMask(positioned_mask, positioned_png, 48, 32);
+  cv::Mat positioned_expected;
+  cv::copyMakeBorder(large_mismatch_seam, positioned_expected, 0, 2, 0, 8, cv::BORDER_REPLICATE);
+  ok &= expect(
+      positioned_status.ok() &&
+          cv::norm(cv::imread(positioned_png.string(), cv::IMREAD_GRAYSCALE), positioned_expected, cv::NORM_INF) == 0,
+      "explicit TIFF crop must preserve every mask pixel and normalize the actual mapping canvas");
+  const auto prior_positioned = read_binary_file(positioned_png);
+  ok &= expect(
+      write_positioned_tiff(positioned_mask, large_mismatch_seam, 20.0f, 0.0f),
+      "outside-canvas TIFF fixture must exist");
+  ok &= expect(
+      !hm::stitching::HuginProject::NormalizeEnblendMask(positioned_mask, positioned_png, 48, 32).ok() &&
+          prior_positioned == read_binary_file(positioned_png),
+      "invalid TIFF placement must never replace the accepted seam PNG");
+
   ok &= expect(
       cv::imwrite((fixtures / "panorama.tif").string(), cv::Mat(32, 42, CV_8UC3, cv::Scalar(1, 2, 3))),
       "fake panorama must exist");
@@ -1147,7 +1246,7 @@ int main(int argc, char** argv) {
               "'\n"
               "cp '" +
               fixtures.string() +
-              "/seam_file.png' seam_file.png\n"
+              "/seam_file.tif' seam_file.tif\n"
               "cp '" +
               fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "fake enblend must be created");
@@ -1779,7 +1878,7 @@ int main(int argc, char** argv) {
   cv::Mat retry_seam(32, 100, CV_8U, cv::Scalar(0));
   retry_seam.colRange(50, retry_seam.cols).setTo(255);
   ok &= expect(
-      cv::imwrite((retry_capped_fixtures / "seam_file.png").string(), retry_seam) &&
+      write_positioned_tiff(retry_capped_fixtures / "seam_file.tif", retry_seam, 0.0f, 0.0f) &&
           cv::imwrite(
               (retry_capped_fixtures / "panorama.tif").string(), cv::Mat(32, 100, CV_8UC3, cv::Scalar(1, 2, 3))),
       "Nona retry preview fixtures must match the capped canvas");
@@ -1796,7 +1895,7 @@ int main(int argc, char** argv) {
           write_tool(
               enblend,
               "cp '" + retry_capped_fixtures.string() +
-                  "/seam_file.png' seam_file.png\n"
+                  "/seam_file.tif' seam_file.tif\n"
                   "cp '" +
                   retry_capped_fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "Nona retry tools must switch from measured native output to capped output");
@@ -1829,7 +1928,7 @@ int main(int argc, char** argv) {
           write_tool(
               enblend,
               "cp '" + fixtures.string() +
-                  "/seam_file.png' seam_file.png\n"
+                  "/seam_file.tif' seam_file.tif\n"
                   "cp '" +
                   fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "working fake Nona and enblend tools must be restored after retry provenance validation");
@@ -2014,7 +2113,7 @@ int main(int argc, char** argv) {
       write_tool(
           enblend,
           "cp '" + fixtures.string() +
-              "/seam_file.png' seam_file.png\n"
+              "/seam_file.tif' seam_file.tif\n"
               "cp '" +
               fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "working fake enblend must be restored");
@@ -2097,7 +2196,7 @@ int main(int argc, char** argv) {
       write_tool(
           enblend,
           "cp '" + fixtures.string() +
-              "/seam_file.png' seam_file.png\n"
+              "/seam_file.tif' seam_file.tif\n"
               "cp '" +
               fixtures.string() + "/panorama.tif' panorama.tif\n"),
       "working fake enblend must be restored after OpenCV backend test");

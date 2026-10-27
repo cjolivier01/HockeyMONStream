@@ -9,8 +9,10 @@
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QSpinBox>
 
 #include <functional>
 #include <iostream>
@@ -52,10 +54,42 @@ int main(int argc, char** argv) {
   environment.insert("HSTREAM_INT8_BUILDER", assets);
   environment.insert("HSTREAM_INT8_PYTHON", "/bin/sh");
   hm::ui::Int8PreparationRequest request{
-      assets, root.path(), root.path(), "app.yaml", "detector.yaml", "game", environment};
+      hm::ui::ReadInt8PreparationDefaults(
+          YAML::Load("hstream_ui: {int8_preparation: {samples: 64, play_when_ready: true}}")),
+      assets,
+      root.path(),
+      root.path(),
+      "app.yaml",
+      "detector.yaml",
+      "game",
+      environment};
   const QByteArray ready = "HSTREAM_INT8_READY " +
       QJsonDocument(QJsonObject{{"engine", engine}, {"manifest", manifest}}).toJson(QJsonDocument::Compact);
   bool ok = true;
+  for (const char* invalid :
+       {"{}",
+        "hstream_ui: {int8_preparation: {samples: 15, play_when_ready: true}}",
+        "hstream_ui: {int8_preparation: {samples: 257, play_when_ready: true}}",
+        "hstream_ui: {int8_preparation: {samples: 64, play_when_ready: broken}}",
+        "hstream_ui: {int8_preparation: {samples: '64', play_when_ready: true}}",
+        "hstream_ui: {int8_preparation: {samples: 64, play_when_ready: 'true'}}"}) {
+    bool rejected = false;
+    try {
+      hm::ui::ReadInt8PreparationDefaults(YAML::Load(invalid));
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    ok &= check(rejected, "invalid INT8 baseline must fail rather than silently default");
+  }
+  {
+    auto custom = request;
+    custom.defaults = hm::ui::ReadInt8PreparationDefaults(
+        YAML::Load("hstream_ui: {int8_preparation: {samples: 32, play_when_ready: false}}"));
+    hm::ui::Int8PreparationDialog dialog(custom);
+    ok &= check(
+        dialog.findChild<QSpinBox*>("int8SampleCount")->value() == 32 && !dialog.playWhenReady(),
+        "dialog must resolve INT8 defaults from the baseline");
+  }
   for (int code : {0, 1}) {
     // A result may span several stdout chunks. Even a valid ready message must
     // never select an artifact after a nonzero exit.

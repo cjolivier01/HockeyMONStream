@@ -466,3 +466,9 @@ lens settings to edit them. Candidate creation freezes the displayed numbers,
 including an automatic-fit fallback, and promotion preserves that snapshot.
 Selecting another camera profile and then Auto requests a fresh import.
 See [automatic input lens](auto-input-lens.md) for camera-specific support.
+
+Preview completion retains admission ownership after QProcess reaches
+NotRunning, until its queued completion and process-group shutdown release the
+durable session fence. Play, Apply, candidate edits and inspection remain
+disabled through this interval. Apply uses the same admission predicate as the
+close guard, so opening Close cannot capture a transiently unavailable promotion.

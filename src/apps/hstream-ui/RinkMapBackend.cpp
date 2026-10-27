@@ -22,6 +22,7 @@
 
 #include "absl/strings/numbers.h"
 #include "hstream/src/libs/assets/AssetManager.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
@@ -56,8 +57,8 @@ absl::Status CalibrationComplete(const QString& directory) {
         (!stale.empty() && stale != "rink-mask"))
       return absl::FailedPreconditionError("Complete stitching calibration before mapping the rink");
     const auto stitching = config["stitching"];
-    const auto framing = stitching.IsMap() ? stitching["projection_framing"] : YAML::Node();
-    const auto rotation = framing.IsMap() ? framing["rotation_degrees"] : YAML::Node();
+    const auto framing = stitching && stitching.IsMap() ? stitching["projection_framing"] : YAML::Node();
+    const auto rotation = framing && framing.IsMap() ? framing["rotation_degrees"] : YAML::Node();
     const auto provenance = rink::HuginProject::ReadCanvasProvenanceLocked(directory.toStdString());
     if (!provenance.ok() || !provenance->has_value() || (**provenance).mapping_backend != rink::MappingBackend::kNona)
       return absl::FailedPreconditionError("Rink mapping needs a completed NONA camera calibration");
@@ -65,11 +66,11 @@ absl::Status CalibrationComplete(const QString& directory) {
         (**provenance).projection_framing && (**provenance).projection_framing->has_leveling_rotation();
     // Explicitly accepted zero angles are valid too. A missing rotation with
     // no leveled venue calibration has not gone through the leveling step.
-    if (!published_leveling && (!rotation.IsSequence() || rotation.size() != 3))
+    if (!published_leveling && (!rotation || !rotation.IsSequence() || rotation.size() != 3))
       return absl::FailedPreconditionError(
           "Level the rink first, save the preset and finish calibration before opening Rink map. "
           "Changing leveling later invalidates the map.");
-    if (rotation.IsSequence() && rotation.size() == 3) {
+    if (rotation && rotation.IsSequence() && rotation.size() == 3) {
       for (size_t i = 0; i < 3; ++i) {
         const double angle = rotation[i].as<double>();
         if (!std::isfinite(angle) ||
@@ -610,6 +611,27 @@ absl::Status CheckRinkMapSetup(const QString& game_directory) {
   if (!config_lock.ok())
     return config_lock.status();
   return CalibrationComplete(game_directory);
+}
+
+absl::StatusOr<rink::RinkLayout> ReadRinkMapDefaults() {
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok())
+    return baseline.status();
+  try {
+    const auto values = baseline->values["stitching"]["rink_map"]["dimensions_m"];
+    rink::RinkLayout result{
+        values["length"].as<double>(),
+        values["width"].as<double>(),
+        values["blue_line_distance"].as<double>(),
+        values["goal_inset"].as<double>(),
+        values["corner_radius"].as<double>()};
+    const auto status = rink::ValidateRinkLayout(result);
+    if (!status.ok())
+      return status;
+    return result;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError("Invalid baseline rink-map dimensions: " + std::string(error.what()));
+  }
 }
 
 absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_directory) {

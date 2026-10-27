@@ -2,7 +2,6 @@
 #include "ActionIcons.h"
 
 #include <QtCore/QDir>
-#include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
 #include <QtWidgets/QCheckBox>
@@ -22,6 +21,7 @@
 #include "hstream/src/libs/player_analytics/Config.h"
 #include "hstream/src/libs/player_analytics/ModelCatalog.h"
 #include "hstream/src/libs/player_analytics/ModelContract.h"
+#include "hstream/src/libs/player_analytics/PreparedModelValidation.h"
 
 namespace {
 namespace pa = hm::player_analytics;
@@ -156,16 +156,6 @@ bool ProgramBoxes(const std::vector<YAML::Node>& layers) {
 }
 QString Absolute(const QString& path, const QString& directory) {
   return QDir::cleanPath(QFileInfo(path).isAbsolute() ? path : QDir(directory).absoluteFilePath(path));
-}
-bool ReadableFile(const QString& path) {
-  const QFileInfo info(path);
-  return info.isFile() && info.isReadable() && info.size() > 0;
-}
-YAML::Node Document(const QString& path) {
-  QFile file(path);
-  if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > 1024 * 1024)
-    throw std::invalid_argument(("Cannot read bounded model/config metadata: " + path).toStdString());
-  return YAML::Load(file.readAll().toStdString());
 }
 } // namespace
 
@@ -633,21 +623,13 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
         return "This unsaved custom model path cannot be passed in runner arguments (comma, equals sign, NUL or newline). Save Preset first.";
       if (!inspect_files)
         continue;
-      if (!QFileInfo(path).isDir())
-        return QString("Missing %1 custom model folder: %2").arg(name, path);
-      const auto manifest = pa::ParseModelManifest(Document(QDir(path).filePath("manifest.json")));
-      if (!manifest.ok())
-        return QString("Invalid %1 prepared manifest: %2")
-            .arg(name, QString::fromUtf8(manifest.status().message().data(), manifest.status().message().size()));
       const auto expected = std::string(name) == "pose" ? pa::ModelFeature::kPose
           : std::string(name) == "jersey"               ? pa::ModelFeature::kJersey
           : std::string(name) == "action"               ? pa::ModelFeature::kAction
                                                         : pa::ModelFeature::kTeam;
-      if (manifest->feature != expected || manifest->maximum_batch < parsed->batch_size)
-        return QString("The %1 custom model has the wrong feature or insufficient batch capacity.").arg(name);
-      for (const auto& file : {manifest->engine_file, manifest->onnx_file})
-        if (!ReadableFile(QDir(path).filePath(QString::fromStdString(file))))
-          return QString("Missing or unreadable prepared %1 file: %2").arg(name, QString::fromStdString(file));
+      const auto checked = pa::ValidatePreparedModelBundle(path.toStdString(), expected, parsed->batch_size);
+      if (!checked.ok())
+        return QString::fromUtf8(checked.status().message().data(), checked.status().message().size());
     }
     if (reid) {
       const auto model = selectedModel("pipeline.tracker.reid-model");
@@ -664,11 +646,9 @@ QString PlayerAnalyticsControls::validation(bool inspect_files) const {
           (path.contains(',') || path.contains('=') || path.contains(QChar::Null) || path.contains('\n')))
         return "This unsaved ReID path cannot be passed in runner arguments (comma, equals sign, NUL or newline). Save Preset first.";
       if (inspect_files) {
-        const auto document = Document(path);
-        const auto engine = Get(document, "ReID.modelEngineFile");
-        if (!engine.IsDefined() || !engine.IsScalar() || engine.as<std::string>().empty() ||
-            !ReadableFile(Absolute(QString::fromStdString(engine.as<std::string>()), QFileInfo(path).absolutePath())))
-          return "The ReID configuration requires a readable, nonempty prepared modelEngineFile.";
+        const auto checked = pa::ValidatePreparedReidConfig(path.toStdString());
+        if (!checked.ok())
+          return QString::fromUtf8(checked.status().message().data(), checked.status().message().size());
       }
     }
     return {};

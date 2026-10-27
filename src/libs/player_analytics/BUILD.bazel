@@ -69,6 +69,15 @@ cc_binary(
 )
 
 cc_library(
+    name = "prepared_model_validation",
+    srcs = ["PreparedModelValidation.cpp"],
+    hdrs = ["PreparedModelValidation.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":model_contract", "@com_google_absl//absl/status:statusor", "@yaml-cpp"],
+)
+
+cc_library(
     name = "temporal_state",
     srcs = ["TemporalState.cpp"],
     hdrs = ["TemporalState.h"],

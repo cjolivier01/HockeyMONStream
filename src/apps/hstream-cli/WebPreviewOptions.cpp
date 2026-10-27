@@ -258,6 +258,378 @@ std::string WebPreviewRouteReply(const RouteOwner::Request& request, const Route
   });
 }
 
+absl::StatusOr<WebPreviewSeekRequest> ParseWebPreviewSeek(const std::string& json) {
+  if (json.size() > 4096)
+    return absl::InvalidArgumentError("Preview seek JSON exceeds its limit");
+  auto* parser = json_parser_new();
+  unsigned member_count = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &member_count);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebPreviewSeekRequest request{};
+  gint64 version = 0, stage = 0;
+  std::string topology, identifier, position, delta;
+  const bool valid = object && member_count == 6 && json_object_get_size(object) == 6 &&
+      Integer(object, "version", &version) && version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN &&
+      stage <= INT_MAX && String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &identifier) && Decimal(identifier, &request.request_id) &&
+      request.request_id <= G_MAXINT64;
+  bool valid_position = false;
+  if (valid && String(object, "positionNs", &position)) {
+    valid_position =
+        ((position == "0" && (request.position_ns = 0, true)) || Decimal(position, &request.position_ns)) &&
+        request.position_ns <= G_MAXINT64;
+  } else if (valid && String(object, "deltaNs", &delta) && !delta.empty()) {
+    int64_t value = 0;
+    const auto parsed = std::from_chars(delta.data(), delta.data() + delta.size(), value);
+    valid_position = parsed.ec == std::errc{} && parsed.ptr == delta.data() + delta.size() && value != 0 &&
+        std::to_string(value) == delta;
+    if (valid_position)
+      request.delta_ns = value;
+  }
+  g_object_unref(parser);
+  if (!valid || !valid_position)
+    return absl::InvalidArgumentError("Invalid preview seek identity or position");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebPreviewSeekReply(
+    const WebPreviewSeekRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    uint64_t resulting_topology,
+    std::optional<uint64_t> position_ns,
+    std::optional<uint64_t> source_pts_ns) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", std::to_string(request.request_id));
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    Add(builder, "resultTopology", std::to_string(resulting_topology));
+    for (const auto& item : {std::pair{"positionNs", position_ns}, {"sourcePtsNs", source_pts_ns}}) {
+      json_builder_set_member_name(builder, item.first);
+      if (item.second)
+        json_builder_add_string_value(builder, std::to_string(*item.second).c_str());
+      else
+        json_builder_add_null_value(builder);
+    }
+  });
+}
+
+absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
+    const std::string& json,
+    const hm::tracking::CameraControlValues& defaults,
+    bool query) {
+  if (json.empty() || json.size() > 4096)
+    return absl::InvalidArgumentError("Camera controls JSON exceeds its limit");
+  const auto specs = hm::tracking::PlaytrackerControlSpecs(defaults);
+  if (!specs.ok())
+    return specs.status();
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebCameraControlsRequest request{};
+  request.query = query;
+  gint64 version = 0, stage = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  bool valid = object && json_object_get_size(object) == (query ? 5U : 7U) && Integer(object, "version", &version) &&
+      version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN && stage <= INT_MAX &&
+      String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64;
+  unsigned count = 0;
+  if (valid && !query) {
+    auto* controls_node = json_object_get_member(object, "controls");
+    auto* controls =
+        controls_node && JSON_NODE_HOLDS_OBJECT(controls_node) ? json_node_get_object(controls_node) : nullptr;
+    valid = controls && Boolean(object, "forceAllTargets", &request.force_all_targets) &&
+        json_object_get_size(controls) > 0 && json_object_get_size(controls) <= specs->size();
+    if (valid) {
+      count = json_object_get_size(controls);
+      for (const auto& spec : *specs) {
+        auto* node = json_object_get_member(controls, spec.id);
+        if (!node)
+          continue;
+        const bool integer = JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_INT64;
+        const bool real = JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_DOUBLE;
+        if (!integer && !(real && std::string(spec.id) == "Oversized_Player_Percent")) {
+          valid = false;
+          break;
+        }
+        const double value = integer ? static_cast<double>(json_node_get_int(node)) : json_node_get_double(node);
+        if (!hm::tracking::ValidPlaytrackerControlValue(spec, value)) {
+          valid = false;
+          break;
+        }
+        request.controls.emplace(spec.id, value);
+      }
+      valid = valid && request.controls.size() == count;
+    }
+  }
+  valid = valid && members == (query ? 5U : 7U + count);
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid camera control identity or values");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebCameraControlsReply(
+    const WebCameraControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::tracking::CameraControlValues>& controls) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "controls");
+    if (!controls) {
+      json_builder_add_null_value(builder);
+      return;
+    }
+    json_builder_begin_object(builder);
+    for (const auto& [id, value] : *controls) {
+      json_builder_set_member_name(builder, id.c_str());
+      if (id == "Oversized_Player_Percent")
+        json_builder_add_double_value(builder, value);
+      else
+        json_builder_add_int_value(builder, static_cast<gint64>(value));
+    }
+    json_builder_end_object(builder);
+  });
+}
+
+absl::StatusOr<WebRotationControlsRequest> ParseWebRotationControls(
+    const std::string& json,
+    const hm::program::RotationControlValues& range_reference,
+    bool query) {
+  if (json.empty() || json.size() > 4096 ||
+      !hm::program::ValidRotationControls(range_reference, true, &range_reference))
+    return absl::InvalidArgumentError("Rotation controls require bounded JSON and complete native ranges");
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(parser, "object-member", G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer value) {
+    ++*static_cast<unsigned*>(value);
+  }), &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebRotationControlsRequest request{};
+  request.query = query;
+  gint64 version = 0, stage = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  bool valid = object && json_object_get_size(object) == (query ? 5U : 6U) &&
+      Integer(object, "version", &version) && version == 1 &&
+      Integer(object, "stage", &stage) && stage >= INT_MIN && stage <= INT_MAX &&
+      String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64;
+  if (valid && !query) {
+    auto* node = json_object_get_member(object, "controls");
+    auto* controls = node && JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : nullptr;
+    valid = controls && json_object_get_size(controls) > 0 &&
+        json_object_get_size(controls) <= hm::program::kRotationControls.size();
+    if (valid) {
+      for (const auto& spec : hm::program::kRotationControls) {
+        gint64 value = 0;
+        if (!json_object_has_member(controls, spec.id))
+          continue;
+        if (!Integer(controls, spec.id, &value) || value < INT_MIN || value > INT_MAX) {
+          valid = false;
+          break;
+        }
+        request.controls[spec.id] = static_cast<int>(value);
+      }
+      valid = valid && request.controls.size() == json_object_get_size(controls) &&
+          hm::program::ValidRotationControls(request.controls, false, &range_reference);
+    }
+  }
+  valid = valid && members == (query ? 5U : 6U + request.controls.size());
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid native rotation control request");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebRotationControlsReply(
+    const WebRotationControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::program::RotationControlValues>& controls,
+    std::optional<uint64_t> operation,
+    bool fixed_edge_suppressed) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "fixedEdgeSuppressed");
+    json_builder_add_boolean_value(builder, fixed_edge_suppressed);
+    json_builder_set_member_name(builder, "controls");
+    if (controls) {
+      json_builder_begin_object(builder);
+      for (const auto& [id, value] : *controls)
+        Add(builder, id.c_str(), static_cast<gint64>(value));
+      json_builder_end_object(builder);
+    } else {
+      json_builder_add_null_value(builder);
+    }
+    json_builder_set_member_name(builder, "operation");
+    if (operation)
+      json_builder_add_string_value(builder, std::to_string(*operation).c_str());
+    else
+      json_builder_add_null_value(builder);
+  });
+}
+
+std::string WebScoreboardSelectionPhase(const RouteOwner::Session& session, bool active) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", session.run);
+    Add(builder, "stage", session.stage);
+    Add(builder, "topology", std::to_string(session.topology));
+    json_builder_set_member_name(builder, "active");
+    json_builder_add_boolean_value(builder, active);
+  });
+}
+
+absl::StatusOr<WebScoreboardRequest> ParseWebScoreboard(const std::string& json) {
+  if (json.empty() || json.size() > 1024)
+    return absl::InvalidArgumentError("Scoreboard JSON exceeds its limit");
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebScoreboardRequest request{};
+  gint64 version = 0, stage = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  const bool identity = object && json_object_get_size(object) == members && Integer(object, "version", &version) &&
+      version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN && stage <= INT_MAX &&
+      String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64 && String(object, "action", &request.action);
+  const bool valid = identity &&
+      (((request.action == "query" || request.action == "reselect") && members == 6) ||
+       (request.action == "position" && members == 7 && String(object, "position", &request.position) &&
+        (request.position == "upper-left" || request.position == "upper-center" || request.position == "upper-right")));
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid scoreboard identity or action");
+  request.session.stage = static_cast<int>(stage);
+  return request;
+}
+
+std::string WebScoreboardReply(
+    const WebScoreboardRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<std::string>& position) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "action", request.action);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    json_builder_set_member_name(builder, "supported");
+    json_builder_add_boolean_value(builder, position.has_value());
+    json_builder_set_member_name(builder, "position");
+    if (position)
+      json_builder_add_string_value(builder, position->c_str());
+    else
+      json_builder_add_null_value(builder);
+  });
+}
+
+absl::StatusOr<WebPlayerDrawingRequest> ParseWebPlayerDrawing(const std::string& json, bool query) {
+  if (json.empty() || json.size() > 1024)
+    return absl::InvalidArgumentError("Player drawing JSON exceeds its limit");
+  auto* parser = json_parser_new();
+  unsigned members = 0;
+  g_signal_connect(
+      parser,
+      "object-member",
+      G_CALLBACK(+[](JsonParser*, JsonObject*, const gchar*, gpointer data) { ++*static_cast<unsigned*>(data); }),
+      &members);
+  const bool loaded = json_parser_load_from_data(parser, json.data(), json.size(), nullptr);
+  auto* root = loaded ? json_parser_get_root(parser) : nullptr;
+  auto* object = root && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : nullptr;
+  WebPlayerDrawingRequest request{};
+  request.query = query;
+  gint64 version = 0, stage = 0, layers = 0;
+  uint64_t request_id = 0;
+  std::string topology;
+  const bool valid = object && members == (query ? 5U : 6U) && json_object_get_size(object) == members &&
+      Integer(object, "version", &version) && version == 1 && Integer(object, "stage", &stage) && stage >= INT_MIN &&
+      stage <= INT_MAX && String(object, "run", &request.session.run) && ValidWebPreviewRun(request.session.run) &&
+      String(object, "topology", &topology) && Decimal(topology, &request.session.topology) &&
+      String(object, "requestId", &request.request_id) && Decimal(request.request_id, &request_id) &&
+      request_id <= G_MAXINT64 && (query || (Integer(object, "layers", &layers) && layers >= 0 && layers <= 31));
+  g_object_unref(parser);
+  if (!valid)
+    return absl::InvalidArgumentError("Invalid player drawing identity or layers");
+  request.session.stage = static_cast<int>(stage);
+  request.layers = static_cast<unsigned>(layers);
+  return request;
+}
+
+std::string WebPlayerDrawingReply(
+    const WebPlayerDrawingRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    unsigned layers) {
+  return Serialize([&](JsonBuilder* builder) {
+    Add(builder, "version", gint64{1});
+    Add(builder, "run", request.session.run);
+    Add(builder, "stage", request.session.stage);
+    Add(builder, "topology", std::to_string(request.session.topology));
+    Add(builder, "requestId", request.request_id);
+    Add(builder, "status", status);
+    Add(builder, "reason", reason);
+    Add(builder, "layers", static_cast<gint64>(layers));
+  });
+}
+
 absl::StatusOr<WebPreviewOverlayRequest> ParseWebPreviewOverlays(const std::string& json, bool query) {
   if (json.empty() || json.size() > 1024)
     return absl::InvalidArgumentError("Preview overlay JSON exceeds its limit");
@@ -378,7 +750,8 @@ std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& arti
 std::string WebPreviewCapability(
     const WebPreviewOptions& options,
     const RouteOwner& owner,
-    const pipeline_internal::PreviewOverlayRuntimeState& overlays) {
+    const pipeline_internal::PreviewOverlayRuntimeState& overlays,
+    bool seek) {
   return Serialize([&](JsonBuilder* builder) {
     Identity(
         builder,
@@ -395,7 +768,7 @@ std::string WebPreviewCapability(
     Add(builder, "width", options.width);
     Add(builder, "height", options.height);
     json_builder_set_member_name(builder, "seek");
-    json_builder_add_boolean_value(builder, FALSE);
+    json_builder_add_boolean_value(builder, seek);
     json_builder_set_member_name(builder, "receiptLimits");
     json_builder_begin_object(builder);
     Add(builder, "maxFrames", options.browser_max_frames);

@@ -23,6 +23,9 @@ void rejected(Function function) {
 } // namespace
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
+  require(
+      hm::web::Capabilities().value("features").toArray().contains("highlight-frame-inspection-v1"),
+      "Authored frame inspection must be advertised before browser admission");
   QTemporaryDir temporary;
   require(temporary.isValid(), "Temporary directory unavailable");
   const fs::path root(temporary.path().toStdString());

@@ -23,6 +23,9 @@ QFont font(double height, int weight) {
   QFont f("DejaVu Sans");
   f.setPixelSize(std::max(8, static_cast<int>(height)));
   f.setWeight(static_cast<QFont::Weight>(weight));
+  // Cards and cues are media pixels. Desktop and headless font settings must
+  // not change their raster, including fractional text baselines.
+  f.setHintingPreference(QFont::PreferNoHinting);
   return f;
 }
 void fitted_text(QPainter& p, const QRectF& r, const QString& text, double size, int weight) {

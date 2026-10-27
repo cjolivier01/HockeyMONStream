@@ -4,6 +4,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFileInfo>
+#include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
@@ -51,6 +52,54 @@ bool wait_until(const std::function<bool()>& ready, int timeout_ms = 60000) {
     QThread::msleep(20);
   }
   return false;
+}
+
+bool legacy_source_controls() {
+  QTemporaryDir directory;
+  if (!directory.isValid())
+    return false;
+  CameraExperimentDialog dialog;
+  auto* manifest = widget<QLineEdit>(dialog, "experimentManifest");
+  auto* arena = widget<QLineEdit>(dialog, "experimentLegacyArena");
+  auto* config = widget<QLineEdit>(dialog, "experimentLegacyConfig");
+  auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
+  auto* status = widget<QLabel>(dialog, "experimentStatus");
+  manifest->clear();
+  if (arena->isEnabled() || config->isEnabled())
+    return false;
+  const QString legacy = directory.filePath("hstream_telemetry.json");
+  manifest->setText(legacy);
+  if (!arena->isEnabled() || !config->isEnabled())
+    return false;
+  arena->setText("unfinished arena draft");
+  config->setText(directory.filePath("historical.yaml"));
+  for (const QString& extension : {QString("db"), QString("sqlite")}) {
+    manifest->setText(directory.filePath("recording." + extension));
+    if (arena->isEnabled() || config->isEnabled()) {
+      std::cerr << "SQLite recording exposes unused Legacy controls\n";
+      return false;
+    }
+    prepare->click();
+    // The missing database must reach native preparation, rather than fail
+    // immediately on the unrelated retained arena draft.
+    if (prepare->isEnabled() || !wait_until([&] { return prepare->isEnabled(); }, 5000) ||
+        status->text().contains("Historical arena")) {
+      std::cerr << "SQLite preparation validated an irrelevant Legacy arena\n";
+      return false;
+    }
+  }
+  manifest->setText(legacy);
+  if (!arena->isEnabled() || !config->isEnabled() || arena->text() != "unfinished arena draft" ||
+      config->text() != directory.filePath("historical.yaml")) {
+    std::cerr << "Switching recording kinds lost the Legacy drafts\n";
+    return false;
+  }
+  prepare->click();
+  if (!prepare->isEnabled() || !status->text().contains("Historical arena")) {
+    std::cerr << "Legacy preparation skipped its arena validation\n";
+    return false;
+  }
+  return true;
 }
 
 bool smoke() {
@@ -339,12 +388,25 @@ bool confirmation(const QString& manifest) {
   CameraExperimentDialog dialog;
   dialog.show();
   widget<QLineEdit>(dialog, "experimentManifest")->setText(manifest);
+  if (manifest.endsWith(".db") || manifest.endsWith(".sqlite")) {
+    // Retained Legacy drafts must not prevent a valid database preparation.
+    widget<QLineEdit>(dialog, "experimentLegacyArena")->setText("unfinished arena draft");
+    widget<QLineEdit>(dialog, "experimentLegacyConfig")->setText("/missing/historical.yaml");
+  }
   widget<QDoubleSpinBox>(dialog, "experimentDuration")->setValue(1);
   auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
   auto* apply = widget<QPushButton>(dialog, "experimentApply");
   prepare->click();
   if (!wait_until([&]() { return prepare->isEnabled(); }) || !apply->isEnabled() || !require_confirmation(dialog))
     return false;
+  if (manifest.endsWith(".db") || manifest.endsWith(".sqlite")) {
+    widget<QLineEdit>(dialog, "experimentLegacyArena")->clear();
+    widget<QLineEdit>(dialog, "experimentLegacyConfig")->clear();
+    if (!apply->isEnabled()) {
+      std::cerr << "Inactive Legacy drafts invalidated the prepared database\n";
+      return false;
+    }
+  }
   apply->click();
   if (!wait_until([&]() { return prepare->isEnabled(); }) ||
       widget<QComboBox>(dialog, "experimentComparison")->count() != 3 ||
@@ -352,7 +414,24 @@ bool confirmation(const QString& manifest) {
     std::cerr << "Confirming the source did not allow the trial to be calculated\n";
     return false;
   }
-  std::cout << "PASS: unconfirmed replay creates no trial, message persists, confirmation allows a trial\n";
+  auto* save = widget<QPushButton>(dialog, "experimentSave");
+  auto* confirmed = widget<QCheckBox>(dialog, "experimentUncropped");
+  auto* comparison = widget<QComboBox>(dialog, "experimentComparison");
+  if (!save->isEnabled())
+    return false;
+  confirmed->setChecked(false);
+  comparison->setCurrentIndex(0);
+  comparison->setCurrentIndex(2);
+  if (!wait_until([&] { return prepare->isEnabled(); }) || save->isEnabled()) {
+    std::cerr << "Revoking source confirmation left the existing trial saveable\n";
+    return false;
+  }
+  confirmed->setChecked(true);
+  if (!wait_until([&] { return save->isEnabled(); })) {
+    std::cerr << "Restoring source confirmation did not enable the existing trial\n";
+    return false;
+  }
+  std::cout << "PASS: confirmation gates trial creation and saving, including revocation and reselection\n";
   return true;
 }
 
@@ -481,8 +560,8 @@ bool e2e(const QStringList& args) {
   heartbeat.start();
   qint64 longest_gap = 0;
   QTimer responsiveness;
-  QObject::connect(
-      &responsiveness, &QTimer::timeout, [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); });
+  const auto record_heartbeat = [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); };
+  QObject::connect(&responsiveness, &QTimer::timeout, record_heartbeat);
   responsiveness.start(10);
   CameraExperimentDialog dialog(
       QFileInfo(args[2]).absolutePath(), nullptr, {}, args.size() > 10 ? std::llround(args[10].toDouble() * 1000) : 0);
@@ -536,11 +615,20 @@ bool e2e(const QStringList& args) {
     return false;
   }
   const auto capture = [&](const char* name) {
+    // GPU readback plus full-dialog PNG encoding is an explicit test-driver
+    // operation. Count any application gap before it, then exclude only that
+    // synchronous capture from the playback responsiveness measurement.
+    record_heartbeat();
+    QElapsedTimer screenshot_time;
+    screenshot_time.start();
     QString error;
-    if (!dialog.captureScreenshot(QDir(artifacts).filePath(name), &error)) {
+    const bool captured = dialog.captureScreenshot(QDir(artifacts).filePath(name), &error);
+    heartbeat.restart();
+    if (!captured) {
       std::cerr << error.toStdString() << '\n';
       return false;
     }
+    std::cout << "Test screenshot " << name << " took " << screenshot_time.elapsed() << " ms\n";
     return true;
   };
   // Require visible frame progress before using screenshots as playback evidence.
@@ -558,6 +646,40 @@ bool e2e(const QStringList& args) {
           10000)) {
     std::cerr << "Video made no presented-frame progress: " << status->text().toStdString() << '\n';
     return false;
+  }
+  if (args.contains("--unequal-cadence")) {
+    auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
+    int previous = timeline->value();
+    if (!wait_until(
+            [&] {
+              const int current = timeline->value();
+              const bool wrapped = previous > timeline->maximum() / 2 && current < previous;
+              previous = current;
+              return wrapped;
+            },
+            15000)) {
+      std::cerr << "Unequal-cadence replay did not loop on its actual final decoded image\n";
+      return false;
+    }
+    widget<QCheckBox>(dialog, "experimentLoop")->setChecked(false);
+    if (!wait_until([&] { return play->text() != "Pause" && screenshot->isEnabled(); }, 15000) ||
+        timeline->value() >= timeline->maximum() || status->styleSheet().contains("#b42318") ||
+        !capture("unequal-cadence-end.png")) {
+      std::cerr << "Unequal-cadence replay did not pause at its actual final image: " << status->text().toStdString()
+                << '\n';
+      return false;
+    }
+    timeline->setValue(timeline->maximum());
+    QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
+    if (!wait_until([&] { return status->text().contains("No matching frame was presented"); }, 20000) ||
+        play->text() == "Pause") {
+      std::cerr << "A seek to a missing telemetry sample did not fail visibly within its deadline\n";
+      return false;
+    }
+    dialog.reject();
+    std::cout
+        << "PASS: unequal-cadence repeat and end pause use actual decoded images; missing-sample seek fails bounded\n";
+    return true;
   }
   if (play->text() == "Pause")
     play->click();
@@ -586,8 +708,10 @@ bool e2e(const QStringList& args) {
               const double scale = double(screenshot_image.width()) / dialog.width();
               const QPoint origin = target->mapTo(&dialog, QPoint(0, 0));
               const QImage image = screenshot_image.copy(QRect(
-                  qRound(origin.x() * scale), qRound(origin.y() * scale),
-                  qRound(target->width() * scale), qRound(target->height() * scale)));
+                  qRound(origin.x() * scale),
+                  qRound(origin.y() * scale),
+                  qRound(target->width() * scale),
+                  qRound(target->height() * scale)));
               int bright = 0, samples = 0;
               for (int y = 0; y < image.height(); y += 8)
                 for (int x = 0; x < image.width(); x += 8) {
@@ -698,16 +822,16 @@ bool e2e(const QStringList& args) {
     if (!wait_until([&] { return screenshot->isEnabled(); }))
       return false;
     const QString path = QDir(artifacts).filePath(QString::fromLatin1(name) + ".png");
-    QString error;
-    if (!dialog.captureScreenshot(path, &error)) {
-      std::cerr << "Overlay capture failed: " << error.toStdString() << '\n';
+    if (!capture((QString::fromLatin1(name) + ".png").toUtf8().constData()))
       return false;
-    }
+    QElapsedTimer comparison_time;
+    comparison_time.start();
     const QImage drawn = QImage(path).copy(video_rect);
     int different = 0;
     for (int y = 0; y < clean.height(); ++y)
       for (int x = 0; x < clean.width(); ++x)
         different += clean.pixel(x, y) != drawn.pixel(x, y);
+    std::cout << "Test overlay pixel comparison " << name << " took " << comparison_time.elapsed() << " ms\n";
     if (different < 50 || timeline->value() != comparison_frame) {
       std::cerr << "Paused overlay did not draw on the same GPU frame: " << name << " changed=" << different << '\n';
       return false;
@@ -719,13 +843,14 @@ bool e2e(const QStringList& args) {
   }
   // The plot paints on the CPU, so its layers can be checked directly: flipping
   // one must change what the plot draws on the same paused frame.
-  for (const char* name : {"experimentPlotLayer_Recorded",
-                           "experimentPlotLayer_Program",
-                           "experimentPlotLayer_Crop",
-                           "experimentPlotLayer_Fast",
-                           "experimentPlotLayer_Players",
-                           "experimentPlotLayer_Cluster",
-                           "experimentPlotLayer_Breakaway"}) {
+  for (const char* name :
+       {"experimentPlotLayer_Recorded",
+        "experimentPlotLayer_Program",
+        "experimentPlotLayer_Crop",
+        "experimentPlotLayer_Fast",
+        "experimentPlotLayer_Players",
+        "experimentPlotLayer_Cluster",
+        "experimentPlotLayer_Breakaway"}) {
     auto* toggle = widget<QCheckBox>(dialog, name);
     const QImage before = plot->grab().toImage();
     toggle->toggle();
@@ -841,7 +966,7 @@ int main(int argc, char** argv) {
       return e2e(app.arguments()) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments()[1] == "--confirmation")
       return confirmation(app.arguments()[2]) ? 0 : 1;
-    return smoke() && responsive_worker() ? 0 : 1;
+    return legacy_source_controls() && smoke() && responsive_worker() ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

@@ -2,6 +2,8 @@
 
 #include "hstream/src/apps/apps-common/PreviewRouteOwner.h"
 #include "hstream/src/libs/program/PreviewOverlayRuntime.h"
+#include "hstream/src/libs/program/RotationControls.h"
+#include "hstream/src/libs/tracking/PlayTrackerRuntimeControls.h"
 
 #include <yaml-cpp/yaml.h>
 #include "absl/status/statusor.h"
@@ -40,12 +42,89 @@ absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolv
 bool ValidWebPreviewRun(const std::string& run);
 absl::StatusOr<RouteOwner::Request> ParseWebPreviewRoute(const std::string& json);
 std::string WebPreviewRouteReply(const RouteOwner::Request& request, const RouteOwner::Result& result);
+struct WebPreviewSeekRequest {
+  RouteOwner::Session session;
+  uint64_t request_id, position_ns;
+  std::optional<int64_t> delta_ns;
+};
+absl::StatusOr<WebPreviewSeekRequest> ParseWebPreviewSeek(const std::string& json);
+std::string WebPreviewSeekReply(
+    const WebPreviewSeekRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    uint64_t resulting_topology,
+    std::optional<uint64_t> position_ns = std::nullopt,
+    std::optional<uint64_t> source_pts_ns = std::nullopt);
 struct WebPreviewOverlayRequest {
   RouteOwner::Session session;
   std::string request_id;
   pipeline_internal::PreviewOverlayCommand command;
   bool query{false};
 };
+struct WebPlayerDrawingRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  unsigned layers{0};
+  bool query{false};
+};
+
+struct WebCameraControlsRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  hm::tracking::CameraControlValues controls;
+  bool force_all_targets{false};
+  bool query{false};
+};
+absl::StatusOr<WebCameraControlsRequest> ParseWebCameraControls(
+    const std::string& json,
+    const hm::tracking::CameraControlValues& defaults,
+    bool query = false);
+std::string WebCameraControlsReply(
+    const WebCameraControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::tracking::CameraControlValues>& controls);
+
+struct WebRotationControlsRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  hm::program::RotationControlValues controls;
+  bool query{false};
+};
+absl::StatusOr<WebRotationControlsRequest> ParseWebRotationControls(
+    const std::string& json,
+    const hm::program::RotationControlValues& range_reference,
+    bool query = false);
+// Authorization/finalization phases are observable independently of runtime
+// property acknowledgement. A successful mutation returns the rearmed route
+// operation; only its exact decoded presentation can confirm visible output.
+std::string WebRotationControlsReply(
+    const WebRotationControlsRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<hm::program::RotationControlValues>& controls,
+    std::optional<uint64_t> operation = std::nullopt,
+    bool fixed_edge_suppressed = false);
+
+struct WebScoreboardRequest {
+  RouteOwner::Session session;
+  std::string request_id;
+  std::string action;
+  std::string position;
+};
+absl::StatusOr<WebScoreboardRequest> ParseWebScoreboard(const std::string& json);
+std::string WebScoreboardSelectionPhase(const RouteOwner::Session& session, bool active);
+std::string WebScoreboardReply(
+    const WebScoreboardRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    const std::optional<std::string>& position);
+absl::StatusOr<WebPlayerDrawingRequest> ParseWebPlayerDrawing(const std::string& json, bool query = false);
+std::string WebPlayerDrawingReply(
+    const WebPlayerDrawingRequest& request,
+    const std::string& status,
+    const std::string& reason,
+    unsigned layers);
 absl::StatusOr<WebPreviewOverlayRequest> ParseWebPreviewOverlays(const std::string& json, bool query = false);
 // Validates session and generation before invoking the same native transaction
 // used by Qt. Failed/stale requests never mutate or advance committed state.
@@ -81,6 +160,7 @@ class WebPreviewOverlayArtifactMailbox {
 std::string WebPreviewCapability(
     const WebPreviewOptions& options,
     const RouteOwner& owner,
-    const pipeline_internal::PreviewOverlayRuntimeState& overlays);
+    const pipeline_internal::PreviewOverlayRuntimeState& overlays,
+    bool seek = false);
 
 } // namespace hm::preview

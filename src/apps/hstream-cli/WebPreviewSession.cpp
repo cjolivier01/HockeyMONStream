@@ -1,6 +1,10 @@
 #include "WebPreviewSession.h"
+
 #include "WebPreviewRuntime.h"
+#include "hstream/src/libs/common/PacedPlayback.h"
+#include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
+#include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
@@ -11,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <limits>
 #include <utility>
 
 namespace hm::preview {
@@ -30,11 +35,31 @@ struct WebPreviewSession::PaintState {
   draw_display::analytics::CommandList commands;
   std::map<std::string, std::shared_ptr<RouteState>> channels;
   unsigned program_width, program_height, source_width, source_height;
-  unsigned analytics_layers;
+  std::atomic<unsigned> analytics_layers{0};
   float joint_confidence;
   // One immutable snapshot binds the three flags and their acknowledged epoch.
   std::shared_ptr<const pipeline_internal::PreviewOverlayCommand> overlays =
       std::make_shared<const pipeline_internal::PreviewOverlayCommand>();
+  std::shared_ptr<const RotationFrameFence> rotation;
+  bool Admit(const char* channel, GstBuffer* frame) const {
+    const auto fence = std::atomic_load(&rotation);
+    if (!fence)
+      return true;
+    RotationFrameObservation observation;
+    auto* batch = frame ? gst_buffer_get_nvds_batch_meta(frame) : nullptr;
+    const auto* metadata =
+        batch && batch->frame_meta_list ? static_cast<const NvDsFrameMeta*>(batch->frame_meta_list->data) : nullptr;
+    if (const auto* epoch = stitching::find_stitched_output_generation_meta(metadata)) {
+      observation.epoch_present = true;
+      observation.authorization_id = epoch->authorization_id();
+    }
+    if (const auto* crop = preview_overlay::find_playcropper_transform_meta(metadata)) {
+      observation.crop_present = crop->rotation_controls_valid;
+      observation.left = crop->fixed_edge_rotation_left;
+      observation.right = crop->fixed_edge_rotation_right;
+    }
+    return fence->Matches(channel ? channel : "", observation);
+  }
   RouteOwner::Session session;
   WebPreviewOverlayArtifactMailbox artifacts;
   void ReportArtifact(const FrameIdentityMeta& identity, uint64_t generation, bool ready, const char* reason) {
@@ -129,7 +154,7 @@ struct WebPreviewSession::PaintState {
         route->second->height.load(std::memory_order_acquire),
         (flags & 1U) != 0,
         (flags & 2U) != 0,
-        analytics_layers,
+        analytics_layers.load(std::memory_order_acquire),
         joint_confidence};
     const auto scene = gpu_preview::BuildPreviewOverlayScene(metadata, options, commands, nullptr);
     EnsureMask(scene, flags);
@@ -224,6 +249,9 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
       &error);
   if (!session->target_)
     return absl::FailedPreconditionError("Could not construct selectable preview: " + error);
+  if (!session->target_->SetFrameAdmission(
+          [state = session->paint_](const char* channel, GstBuffer* frame) { return state->Admit(channel, frame); }))
+    return absl::InternalError("Could not install exact rotation frame admission");
   // Establish the disconnected draining generation before any media enters.
   // Raw identities require a peer epoch even before the first browser arrives;
   // this also lets the real encoder publish its negotiated RTP caps for offers.
@@ -294,10 +322,14 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
         return routes_.register_route(
             channel,
             {
-                [state, this](bool active, uint64_t operation) {
+                [state, target, this](bool active, uint64_t operation) {
+                  if (!active || !overlays_ready_)
+                    target->CancelRoutePresentation(state->input, operation);
                   gpu_preview::set_isolation_active(state->ingress, active && overlays_ready_, operation);
                 },
-                [state, this](bool active, uint64_t operation) {
+                [state, target, this](bool active, uint64_t operation) {
+                  if (!active || !overlays_ready_)
+                    target->CancelRoutePresentation(state->input, operation);
                   gpu_preview::set_isolation_active(state->drain, active && overlays_ready_, operation);
                 },
                 [state, target] {
@@ -322,6 +354,22 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
   channels_.emplace(channel, state);
   paint_->channels.emplace(channel, std::move(state));
   return absl::OkStatus();
+}
+
+absl::StatusOr<uint64_t> WebPreviewSession::RearmRotation(RotationFrameFence fence) {
+  if (!available() || routes_.operation_generation() == std::numeric_limits<uint64_t>::max())
+    return absl::FailedPreconditionError("Preview cannot rearm this rotation");
+  // Retain an established exact crop fence across later Stitch-only edits.
+  const auto previous = std::atomic_load(&paint_->rotation);
+  if (!fence.angles && previous)
+    fence.angles = previous->angles;
+  std::atomic_store(&paint_->rotation, std::make_shared<const RotationFrameFence>(std::move(fence)));
+  const auto operation = routes_.operation_generation() + 1;
+  const auto channel = routes_.selected_channel().empty() ? "none" : routes_.selected_channel();
+  const auto result = routes_.select_current(channel, operation, []() {});
+  if (result.status != RouteOwner::Status::kActivated && result.status != RouteOwner::Status::kDeactivated)
+    return absl::FailedPreconditionError("Could not rearm exact rotation preview: " + result.reason);
+  return operation;
 }
 
 void WebPreviewSession::SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation) {
@@ -354,6 +402,15 @@ void WebPreviewSession::DrainOverlayStatus() {
 
 absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_overlays) {
   reconcile_overlays_ = reconcile_overlays;
+  if (auto owner = gst::PacedPlayback::Find(app_.pipeline.pipeline)) {
+    if (!target_->SetPresentationMapper(
+            [owner](
+                const GstSegment& segment, GstClockTime pts, const std::atomic<bool>& cancelled, GstClockTime* output) {
+              return owner->PresentationTime(segment, pts, output, &cancelled);
+            },
+            [owner] { owner->WakePresentationWaiters(); }))
+      return absl::InternalError("Could not bind the browser's shared audio/video presentation clock");
+  }
   auto& output = app_.pipeline.instance_bins[0].sink_bin;
   auto status = AddRoute("program", {RouteTap::Kind::kExistingTee, output.bin, output.tee});
   if (!status.ok())
@@ -426,6 +483,8 @@ void WebPreviewSession::Stop() {
   // permitted by the target; there is no counter increment to overflow.
   const auto operation = routes_.operation_generation() ? routes_.operation_generation() : 1;
   for (const auto& entry : channels_) {
+    if (target_)
+      target_->CancelRoutePresentation(entry.second->input, operation);
     gpu_preview::set_isolation_active(entry.second->ingress, false, operation);
     gpu_preview::set_isolation_active(entry.second->drain, false, operation);
   }
@@ -463,17 +522,22 @@ WebPreviewSession::~WebPreviewSession() {
   }
 }
 
+void WebPreviewSession::SetPlayerDrawingLayers(unsigned layers) {
+  paint_->analytics_layers.store(layers, std::memory_order_release);
+}
+
 std::string WebPreviewSession::selection() const {
   return routes_.selected_channel().empty() ? "none" : routes_.selected_channel();
 }
-std::string WebPreviewSession::Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays) const {
-  return WebPreviewCapability(options_, routes_, overlays);
+std::string WebPreviewSession::Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays, bool seek)
+    const {
+  return WebPreviewCapability(options_, routes_, overlays, seek);
 }
 std::string WebPreviewSession::Command(const RouteOwner::Request& request) {
-  const auto result = stopped_
-      ? RouteOwner::Result{RouteOwner::Status::kFailed, "preview-stopped"}
-      : SelectWebPreviewRoute(app_.pipeline.pipeline, routes_, request,
-            [this] { overlays_ready_ = reconcile_overlays_ && reconcile_overlays_(); });
+  const auto result = stopped_ ? RouteOwner::Result{RouteOwner::Status::kFailed, "preview-stopped"}
+                               : SelectWebPreviewRoute(app_.pipeline.pipeline, routes_, request, [this] {
+                                   overlays_ready_ = reconcile_overlays_ && reconcile_overlays_();
+                                 });
   return WebPreviewRouteReply(request, result);
 }
 std::string WebPreviewSession::MutationBlockReason() const {

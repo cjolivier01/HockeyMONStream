@@ -48,7 +48,7 @@ cc_library(
     srcs = ["ProgramAudioConfig.cpp"],
     hdrs = ["ProgramAudioConfig.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/media:mp4_audio_reader"],
+    deps = ["//src/libs/common:paced_playback", "//src/libs/common:paced_playback_config", "//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/media:mp4_audio_reader"],
 )
 cc_test(
     name = "audio_config_test",
@@ -107,7 +107,7 @@ cc_library(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = ["@mesa_interop//:gstreamer_gl", ":encoded_colorimetry", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_audio_reader", "//src/libs/media:mp4_audio_edit"],
+    deps = ["@mesa_interop//:gstreamer_gl", ":encoded_colorimetry", "//src/libs/common:paced_playback", "//src/libs/gpu/vaapi:va_output_pool", "//src/libs/gpu/vaapi:va_element", "//src/libs/media:mp4_audio_reader", "//src/libs/media:mp4_audio_edit"],
 )
 
 cc_test(
@@ -144,7 +144,13 @@ cc_library(
     srcs = ["FrameGeometry.cpp"],
     hdrs = ["FrameGeometry.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["@hm//hockeymon/csrc/play_tracker"],
+    deps = ["@hm//hockeymon/csrc/play_tracker", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "frame_geometry_test",
+    srcs = ["FrameGeometryTest.cpp"],
+    deps = [":frame_geometry"],
 )
 
 cc_library(
@@ -430,4 +436,19 @@ cc_library(
     hdrs = ["PreviewOverlayConfig.h"],
     include_prefix = "hstream/src/libs/program",
     deps = [":preview_overlay_runtime", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
+    name = "rotation_controls",
+    srcs = ["RotationControls.cpp"],
+    hdrs = ["RotationControls.h"],
+    include_prefix = "hstream/src/libs/program",
+    deps = ["//src/libs/common:config_path", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "rotation_controls_test",
+    srcs = ["RotationControlsTest.cpp"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":rotation_controls"],
 )

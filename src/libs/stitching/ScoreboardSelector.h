@@ -53,7 +53,10 @@ class ScoreboardSelector {
       const std::filesystem::path& single_source_reference = {},
       const std::function<bool()>& is_cancelled = {});
   // Wait for the operator, but release the video worker promptly on pipeline stop.
-  static absl::Status Run(const std::filesystem::path& game_dir, const std::function<bool()>& is_cancelled = {});
+  static absl::Status Run(
+      const std::filesystem::path& game_dir,
+      const std::function<bool()>& is_cancelled = {},
+      bool explicit_request = false);
 };
 
 } // namespace hm::stitching

@@ -54,11 +54,13 @@
 #include <xcb/xcb.h>
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -75,6 +77,26 @@ void require(bool condition, const char* message) {
   if (!condition)
     throw std::runtime_error(message);
 }
+
+class AdmissionOwnershipObserver : public QObject {
+ public:
+  explicit AdmissionOwnershipObserver(std::function<bool()> owned) : owned_(std::move(owned)) {}
+
+  bool admitted_before_release{false};
+
+ protected:
+  bool eventFilter(QObject* object, QEvent* event) override {
+    if (event->type() == QEvent::EnabledChange) {
+      const auto* control = qobject_cast<QWidget*>(object);
+      if (control && control->isEnabled() && owned_())
+        admitted_before_release = true;
+    }
+    return false;
+  }
+
+ private:
+  std::function<bool()> owned_;
+};
 
 bool wait_until(const std::function<bool()>& ready, int timeout_ms) {
   QElapsedTimer timer;
@@ -2247,6 +2269,24 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   const WId target = video->winId();
   auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
   auto* stop = widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton");
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open completed history");
+  const auto preview_owned = [&]() {
+    const auto catalog = LoadStitchingExperimentStore(*store);
+    require(catalog.ok(), "Cannot inspect preview ownership");
+    return std::any_of(catalog->experiments.begin(), catalog->experiments.end(), [](const auto& candidate) {
+      return candidate.process_session_id != 0 || !candidate.process_token.empty();
+    });
+  };
+  // EnabledChange observes the synchronous NotRunning -> queued-completion
+  // interval; an ordinary processEvents loop can drain it before assertions.
+  AdmissionOwnershipObserver ownership(preview_owned);
+  for (auto* control :
+       {play,
+        remove,
+        widget<QPushButton>(dialog, "applyStitchExperimentButton"),
+        widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")})
+    control->installEventFilter(&ownership);
   widget<QCheckBox>(dialog, "stitchExperimentLoop")->setChecked(false);
   for (int exit_code : {0, 7, -1}) {
     QFile::remove(preview_release);
@@ -2268,14 +2308,15 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
     } else
       write(preview_release, QByteArray::number(exit_code));
     require(wait_until([&] { return play->isEnabled(); }, 10000), "Preview did not release the native target");
+    require(
+        !preview_owned() && !ownership.admitted_before_release,
+        "Preview completion must release durable ownership before enabling another preview, edit or promotion");
     require(remove->isEnabled(), "Removal must return after playback ends, fails, or is stopped");
     check_idle_preview(dialog);
     dialog.resize(dialog.size() + QSize(20, 10));
     check_idle_preview(dialog);
     require(video->winId() == target, "Finishing a preview must preserve its native target");
   }
-  const auto store = OpenStitchingExperimentStore(game.toStdString());
-  require(store.ok(), "Cannot open completed history");
   const auto before = LoadStitchingExperimentStore(*store);
   require(before.ok() && before->experiments.size() == 2, "Completed history must be durable");
   const auto removed_directory = before->experiments.front().workspace.game_directory;
@@ -2627,12 +2668,16 @@ void exercise(
         widget<QTableWidget>(dialog, "stitchExperimentCandidates")->rowCount() == rows_before,
         "Nine control points must fail validation");
   }
-  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText(gpu ? "100,150" : "10,150");
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")
+      ->setText(gpu ? qEnvironmentVariable("HSTREAM_TEST_STITCHING_CONTROL_POINTS", "100,150") : "10,150");
   widget<QLineEdit>(dialog, "stitchExperimentFrameCounts")->setText(player_selection ? "2" : "1");
   widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText(anchor);
   if (player_selection) {
     widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(true);
-    widget<QSpinBox>(dialog, "stitchExperimentPlayerScanDuration")->setValue(10);
+    bool parsed_duration = false;
+    const int scan_seconds = qEnvironmentVariable("HSTREAM_TEST_PLAYER_SCAN_SECONDS", "10").toInt(&parsed_duration);
+    require(parsed_duration && scan_seconds >= 1 && scan_seconds <= 300, "Invalid test player scan duration");
+    widget<QSpinBox>(dialog, "stitchExperimentPlayerScanDuration")->setValue(scan_seconds);
   }
   auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");

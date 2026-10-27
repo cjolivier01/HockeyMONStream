@@ -116,6 +116,47 @@ std::string canonical_text(const YAML::Node& node) {
   return YAML::Dump(canonical(node));
 }
 
+// Python and yaml-cpp emit different spellings of the same binary double
+// (for example 0.05 and 0.050000000000000003). Normalize only numeric settings;
+// filenames, fingerprints and other identity strings must still match exactly.
+void normalize_numbers(YAML::Node node, size_t depth = 0) {
+  if (depth > 24)
+    throw YAML::RepresentationException(YAML::Mark::null_mark(), "Reframe data is too deeply nested");
+  if (!node || node.IsNull())
+    return;
+  if (node.IsMap()) {
+    for (auto entry : node)
+      normalize_numbers(entry.second, depth + 1);
+  } else if (node.IsSequence()) {
+    for (size_t i = 0; i < node.size(); ++i)
+      normalize_numbers(node[i], depth + 1);
+  } else {
+    const double number = node.as<double>();
+    if (!std::isfinite(number))
+      throw YAML::RepresentationException(YAML::Mark::null_mark(), "Reframe numbers must be finite");
+    node = number;
+  }
+}
+
+std::string solver_text(const YAML::Node& solver) {
+  // Rebuild each leaf independently so YAML aliases cannot couple a numeric
+  // setting to a filename or fingerprint outside this allowlist.
+  auto normalized = canonical(solver);
+  for (const char* key : {"camera_fov", "frame_offsets", "offsets", "source_rotation"})
+    normalize_numbers(node_at(normalized, {key}));
+  for (const char* key : {"distortion", "center_offset"})
+    normalize_numbers(node_at(normalized, {"input_lens", key}));
+  return canonical_text(normalized);
+}
+
+std::string view_text(const YAML::Node& view) {
+  auto normalized = canonical(view);
+  normalize_numbers(node_at(normalized, {"projection_parameters"}));
+  for (const char* key : {"horizontal_fov", "crop", "rotation_degrees"})
+    normalize_numbers(node_at(normalized, {"projection_framing", key}));
+  return canonical_text(normalized);
+}
+
 absl::StatusOr<size_t> nonnegative_size(const YAML::Node& node, const char* label, size_t fallback = 0) {
   if (!node || node.IsNull())
     return fallback;
@@ -400,8 +441,8 @@ absl::StatusOr<StitchingReframeIntent> validate_intent(const fs::path& directory
   Snapshot current;
   HM_ASSIGN_OR_RETURN(current, snapshot(effective));
   HM_RETURN_IF_ERROR(supported(current));
-  if (canonical_text(current.solver) != canonical_text(record["source_solver"]) ||
-      canonical_text(current.view) != canonical_text(record["desired_view"]))
+  if (solver_text(current.solver) != solver_text(record["source_solver"]) ||
+      view_text(current.view) != view_text(record["desired_view"]))
     return absl::FailedPreconditionError(
         "Stitching reframe settings or selected inputs changed after the request was saved");
   YAML::Node original = YAML::Clone(effective);
@@ -480,12 +521,16 @@ absl::StatusOr<StitchingReframeIntent> ValidateStitchingReframeIntentLocked(
   }
 }
 
-absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
+static absl::StatusOr<bool> prepare_reframe_intent_locked(
     const fs::path& directory,
     const YAML::Node& before_config,
     const YAML::Node& desired_config,
     const std::string& desired_owner,
-    YAML::Node& desired_private) {
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed,
+    bool resolved) {
+  if (solve_inputs_changed)
+    *solve_inputs_changed = false;
   try {
     const bool existing = HasStitchingReframeIntent(before_config);
     const auto previous_state = calibration(before_config);
@@ -493,8 +538,13 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
       return false;
     YAML::Node before;
     YAML::Node desired;
-    HM_ASSIGN_OR_RETURN(before, effective_config(before_config));
-    HM_ASSIGN_OR_RETURN(desired, effective_config(desired_config));
+    if (resolved) {
+      before = YAML::Clone(before_config);
+      desired = YAML::Clone(desired_config);
+    } else {
+      HM_ASSIGN_OR_RETURN(before, effective_config(before_config));
+      HM_ASSIGN_OR_RETURN(desired, effective_config(desired_config));
+    }
     Snapshot original;
     Snapshot requested;
     HM_ASSIGN_OR_RETURN(original, snapshot(before, existing));
@@ -518,11 +568,13 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
         }
       }
     }
-    if (canonical_text(comparable_original) != canonical_text(comparable_requested)) {
+    if (solver_text(comparable_original) != solver_text(comparable_requested)) {
+      if (solve_inputs_changed)
+        *solve_inputs_changed = true;
       ClearStitchingReframeIntent(desired_private);
       return false;
     }
-    if (!existing && canonical_text(original.view) == canonical_text(requested.view)) {
+    if (!existing && view_text(original.view) == view_text(requested.view)) {
       // Both snapshots see the current process environment. Compare against
       // the published limits as well, or an environment-only canvas change
       // would fall through to the generic regeneration/cleanup path.
@@ -592,6 +644,26 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Cannot prepare stitching reframe: " + std::string(error.what()));
   }
+}
+
+absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
+    const fs::path& directory,
+    const YAML::Node& before,
+    const YAML::Node& desired,
+    const std::string& owner,
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed) {
+  return prepare_reframe_intent_locked(directory, before, desired, owner, desired_private, solve_inputs_changed, false);
+}
+
+absl::StatusOr<bool> PrepareResolvedStitchingReframeIntentLocked(
+    const fs::path& directory,
+    const YAML::Node& before,
+    const YAML::Node& desired,
+    const std::string& owner,
+    YAML::Node& desired_private,
+    bool* solve_inputs_changed) {
+  return prepare_reframe_intent_locked(directory, before, desired, owner, desired_private, solve_inputs_changed, true);
 }
 
 } // namespace hm::stitching

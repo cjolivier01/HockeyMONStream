@@ -20,7 +20,7 @@ void require(bool value, const std::string& message) {
   if (!value)
     throw std::runtime_error(message);
 }
-void produce(const fs::path& fixture, bool broken_database, bool calibration = false) {
+void produce(const fs::path& fixture, bool broken_database, bool calibration = false, bool telemetry_only = false) {
   const fs::path work = pub::EnvironmentWorkingDirectory();
   pub::RequireTelemetry(true);
   if (calibration) {
@@ -30,6 +30,8 @@ void produce(const fs::path& fixture, bool broken_database, bool calibration = f
     pub::RetireOutput(old);
   }
   for (const char* kind : {"program", "program-4k", "stitched"}) {
+    if (telemetry_only)
+      break;
     const auto path = work / (std::string(kind) + ".mkv");
     std::ofstream(path.string() + ".hstream-owner-lock").close();
     fs::copy_file(fixture, path);
@@ -58,10 +60,23 @@ size_t count(const fs::path& game, const std::string& extension) {
 int main(int argc, char** argv) {
   try {
     if (argc >= 3 && std::string(argv[1]) == "--produce") {
+      const std::string mode = argc > 3 ? argv[3] : "";
+      if (mode == "--empty" || mode == "--video-only" || mode == "--disable-telemetry") {
+        if (mode == "--disable-telemetry")
+          pub::RequireTelemetry(false);
+        if (mode == "--video-only") {
+          const auto path = pub::EnvironmentWorkingDirectory() / "program.mkv";
+          fs::copy_file(argv[2], path);
+          pub::RegisterOutput(path, "program");
+        }
+        pub::CompletePipeline(true, 0);
+        return 0;
+      }
       produce(
           argv[2],
           argc > 3 && std::string(argv[3]) == "--broken-db",
-          argc > 3 && std::string(argv[3]) == "--calibration");
+          argc > 3 && std::string(argv[3]) == "--calibration",
+          argc > 3 && std::string(argv[3]) == "--telemetry-only");
       return argc > 3 && std::string(argv[3]) == "--fail-after-completion" ? 42 : 0;
     }
     const fs::path base = fs::path(std::getenv("TEST_TMPDIR") ? std::getenv("TEST_TMPDIR") : "/tmp") /
@@ -153,6 +168,35 @@ int main(int argc, char** argv) {
       std::cout << "Bind-mount regression skipped: unprivileged mount namespaces unavailable\n";
     }
     exercise("success", base / "work-success", nullptr);
+    {
+      const auto game = base / "telemetry-only/game";
+      const auto root = game.parent_path() / "work";
+      const std::string id = "run-telemetry-only";
+      fs::create_directories(game);
+      auto runner = command;
+      runner.push_back("--telemetry-only");
+      require(pub::RunJob(game, root, id, runner, {}, true) == 0, "publish requested telemetry without video");
+      const auto receipt = YAML::LoadFile(pub::ReceiptPath(game, id).string());
+      require(
+          receipt["state"].as<std::string>() == "complete" && receipt["telemetry_only"].as<bool>() &&
+              receipt["artifacts"].size() == 1 && receipt["artifacts"][0]["kind"].as<std::string>() == "telemetry",
+          "telemetry-only receipt contains exactly one completed recording");
+      require(count(game, ".db") == 1 && count(game, ".mp4") == 0, "no video or extra telemetry published");
+      require(!fs::exists(root / "game/runs" / id), "telemetry-only scratch removed after publication");
+      require(pub::RunJob(game, root, id, {"/bin/false"}, {}, true) == 0, "telemetry-only retry is idempotent");
+      require(count(game, ".db") == 1, "telemetry-only retry does not republish");
+    }
+    for (const char* mode : {"--telemetry-only", "--empty", "--video-only", "--disable-telemetry", "--calibration"}) {
+      const bool telemetry_only = std::string(mode) != "--telemetry-only";
+      const auto game = base / (std::string("required-outputs") + mode) / "game";
+      fs::create_directories(game);
+      auto runner = command;
+      runner.push_back(mode);
+      require(
+          pub::RunJob(game, game.parent_path() / "work", "run-required-outputs", runner, {}, telemetry_only) != 0,
+          "archive and telemetry-only admissions retain their required output sets");
+      require(count(game, ".db") == 0 && count(game, ".mp4") == 0, "invalid output set cannot publish");
+    }
     {
       const auto game = base / "producer-admission/game";
       fs::create_directories(game);

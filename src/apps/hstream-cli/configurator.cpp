@@ -1,6 +1,5 @@
-#include "hstream/src/libs/common/ConfigLayers.h"
 #include "configurator.h"
-#include "hstream/src/libs/tracking/ProgramCameraMapping.h"
+#include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
@@ -8,6 +7,7 @@
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
+#include "hstream/src/libs/tracking/ProgramCameraMapping.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -75,6 +75,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/RinkMaskInputStore.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 
@@ -132,7 +133,6 @@ constexpr const char* kEnableFlagField = "enable";
 
 constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
-constexpr size_t kDefaultStitchingControlPoints = 1500;
 constexpr size_t kDefaultStitchingCalibrationFrameCount = 4;
 bool is_enabled(YAML::Node n);
 std::optional<std::string> local_video_path_from_uri(const std::string& uri);
@@ -5303,9 +5303,35 @@ absl::Status Configurator::setup_stitcher_and_masks(
         field_mask_configured = stitching::is_field_mask_configured_for_stitching_config(
             game_dir.string(), max_output_width, post_stitch_rotate_degrees, {}, validated_stitching_artifacts_);
       }
-      rink_mask_required_ = calibrate_field_mask && !field_mask_configured;
       std::string mask_time;
       HM_ASSIGN_OR_RETURN(mask_time, stitching::read_rink_mask_frame_time(config_));
+      if (calibrate_field_mask && mask_time != "auto") {
+        stitching::RinkMaskInputLimits input_limits;
+        HM_ASSIGN_OR_RETURN(input_limits, stitching::ReadRinkMaskInputLimits(config_));
+        pipeline["hmstitcher"]["private-properties"]["rink-mask-input-max-raw-bytes"] = input_limits.max_raw_bytes;
+        pipeline["hmstitcher"]["private-properties"]["rink-mask-input-max-file-bytes"] = input_limits.max_file_bytes;
+        if (field_mask_configured) {
+          auto lock = stitching::HuginProject::RecoverAndLock(game_dir);
+          if (!lock.ok())
+            return lock.status();
+          auto generation = stitching::HuginProject::GenerationId(game_dir, **lock);
+          if (!generation.ok())
+            return generation.status();
+          stitching::StitchArtifactContentIdentity identity;
+          HM_ASSIGN_OR_RETURN(identity, stitching::stitch_artifact_content_identity_locked(game_dir));
+          auto retained = stitching::LoadRinkMaskInputForConfig(game_dir, config_, *generation, identity.fingerprint);
+          if (retained.ok())
+            retained_rink_mask_input_format_ = retained->description.format;
+          if (!retained.ok()) {
+            // A legacy mask can remain valid for its old view, but cannot
+            // regenerate a timed mask after live rotation. Prepare the actual
+            // selected frame before normal playback makes controls available.
+            std::cout << "Preparing selected rink-mask input: " << retained.status() << "\n";
+            field_mask_configured = false;
+          }
+        }
+      }
+      rink_mask_required_ = calibrate_field_mask && !field_mask_configured;
       const bool timed_mask_preparation = configure_only && rink_mask_required_ && mask_time != "auto";
       if (timed_mask_preparation) {
         // Legacy calibration stages must reach the bounded preparation path
@@ -5327,7 +5353,11 @@ absl::Status Configurator::setup_stitcher_and_masks(
       if (stitching_calibration_required_)
         stitching_calibration_start_stage_ = is_configured ? "rink-mask" : "input";
       if (configure_only && is_configured && !force && !timed_mask_preparation) {
-        return absl::CancelledError("Stitching is already configured.");
+        if (!retained_rink_mask_input_format_)
+          return absl::CancelledError("Stitching is already configured.");
+        // Auto depth and UI/native precedence are resolved after source discovery.
+        // Do not skip a selected-frame preparation that a precision change needs.
+        retained_rink_mask_skip_pending_ = true;
       }
     }
     pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
@@ -5336,6 +5366,31 @@ absl::Status Configurator::setup_stitcher_and_masks(
     pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
   }
   return absl::OkStatus();
+}
+
+absl::Status Configurator::finalize_rink_mask_input_precision(YAML::Node& pipeline) {
+  if (!retained_rink_mask_input_format_)
+    return absl::OkStatus();
+  // configure_source_bit_depth has already applied source probing and ranked
+  // UI/native overrides, and owns the final numeric property used by the graph.
+  const int high_bit_depth = pipeline["hmstitcher"]["properties"]["high-bit-depth"].as<int>();
+  const std::string expected_format = high_bit_depth ? "half4-bits" : "rgba8";
+  const bool changed = *retained_rink_mask_input_format_ != expected_format;
+  retained_rink_mask_input_format_.reset();
+  if (changed) {
+    std::cout << "Preparing selected rink-mask input: resolved precision requires " << expected_format << "\n";
+    rink_mask_required_ = true;
+    stitching_calibration_required_ = true;
+    stitching_calibration_start_stage_ = "rink-mask";
+    stitching_matcher_model_required_ = false;
+    if (get_node_value(pipeline, "hmstitcher.configure-only", FALSE)) {
+      pipeline["hmstitcher"]["configure-only"] = 0;
+      pipeline["hmstitcher"]["one-pass-mode"] = 1;
+    }
+  }
+  const bool skip = retained_rink_mask_skip_pending_ && !changed;
+  retained_rink_mask_skip_pending_ = false;
+  return skip ? absl::CancelledError("Stitching is already configured.") : absl::OkStatus();
 }
 
 absl::Status Configurator::map_stitch_max_output_width() {
@@ -6255,10 +6310,13 @@ absl::Status Configurator::materialize_playtracker_config(
     user_directory = user_config_snapshot_path_.parent_path();
   }
   fs::path base_path;
-  HM_ASSIGN_OR_RETURN(base_path, hm::config::ResolveReference(
-      configured_file.as<std::string>(), configured_file_rank,
-      {pipeline_config_dir, config_root_dir_, game_dir, user_directory, fs::current_path()},
-      "pipeline.ds-playtracker.config-file"));
+  HM_ASSIGN_OR_RETURN(
+      base_path,
+      hm::config::ResolveReference(
+          configured_file.as<std::string>(),
+          configured_file_rank,
+          {pipeline_config_dir, config_root_dir_, game_dir, user_directory, fs::current_path()},
+          "pipeline.ds-playtracker.config-file"));
 
   YAML::Node base;
   try {
@@ -7316,7 +7374,20 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
     element["show"] = 0;
     if (element["private-properties"].IsMap() && element["private-properties"]["show"].IsDefined())
       element["private-properties"]["show"] = 0;
+    auto typed = element["properties"];
+    if (!typed.IsMap())
+      continue;
+    for (auto entry : typed) {
+      auto key = entry.first.as<std::string>();
+      std::replace(key.begin(), key.end(), '_', '-');
+      if (key == "plugin-private-config")
+        entry.second = entry.second.as<std::string>() + ";show=0";
+    }
   }
+  return configure_job_telemetry(pipeline, stitching_calibration_only);
+}
+
+absl::Status Configurator::configure_job_telemetry(YAML::Node& pipeline, bool stitching_calibration_only) {
   bool capture = true;
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.drivegpt_database.enabled", true));
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.job.capture_telemetry", capture));
@@ -7363,7 +7434,7 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
   }
   if (capture) {
     if (!get_node_value(pipeline, "ds-playtracker.enable", false))
-      return absl::InvalidArgumentError("DriveGPT capture requires the Program camera tracker in an encoding job");
+      return absl::InvalidArgumentError("DriveGPT capture requires the Program camera tracker in a managed job");
     if (telemetry_directory.empty()) {
       auto root = user_config::output_root(config_);
       if (!root.ok())
@@ -7381,19 +7452,15 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
     return absl::InternalError(error.what());
   }
   properties["telemetry-db-dir"] = telemetry_directory;
-  // Typed private strings are applied last by the bin builders. Keep their
-  // unrelated settings, but reassert the job invariants after every override.
-  for (const char* name : {"hmstitcher", "ds-playtracker", "hmplaycropper"}) {
-    auto typed = pipeline[name]["properties"];
-    if (!typed.IsMap())
-      continue;
+  // Typed private strings are applied last by the bin builders. Reassert the
+  // telemetry selection without changing a live session's preview controls.
+  auto typed = pipeline["ds-playtracker"]["properties"];
+  if (typed.IsMap()) {
     for (auto entry : typed) {
       if (normalized_key(entry.first.as<std::string>()) != "plugin-private-config")
         continue;
-      std::string value = entry.second.as<std::string>() + ";show=0";
-      if (std::string(name) == "ds-playtracker")
-        value += ";telemetry-db-dir=" + telemetry_directory + ";telemetry-game-id=" + game_id_;
-      entry.second = value;
+      entry.second = entry.second.as<std::string>() + ";telemetry-db-dir=" + telemetry_directory +
+          ";telemetry-game-id=" + game_id_;
     }
   }
   return absl::OkStatus();
@@ -8769,7 +8836,9 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
       remove_yaml_key_path(latest, {"stitching", "stitch_frame_time"});
 
     if (changed) {
-      size_t control_points = kDefaultStitchingControlPoints;
+      int configured_default = 0;
+      HM_ASSIGN_OR_RETURN(configured_default, hm::stitching::read_control_point_limit(config_));
+      size_t control_points = static_cast<size_t>(configured_default);
       if (get_node(latest, "hstream_ui.stitching_calibration.control_points").has_value()) {
         HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(latest));
       } else if (const char* configured = g_getenv("HM_MAX_CONTROL_POINTS"); configured && *configured) {
@@ -9110,6 +9179,8 @@ absl::Status Configurator::complete_configuration(
   validated_stitching_artifacts_.reset();
   stitching_calibration_required_ = false;
   rink_mask_required_ = false;
+  retained_rink_mask_input_format_.reset();
+  retained_rink_mask_skip_pending_ = false;
   stitching_matcher_model_required_ = false;
   scoreboard_perspective_materialized_from_rink_ = false;
   const bool clean_requested = clean_stitching_artifacts || clean_stitching_from_control_points;
@@ -9131,6 +9202,8 @@ absl::Status Configurator::complete_configuration(
     if (encode_job_) {
       HM_RETURN_IF_ERROR(configure_encode_job(pipeline, stitching_calibration_only));
       show_render_sink = false;
+    } else if (!hm::publication::EnvironmentManifest().empty()) {
+      HM_RETURN_IF_ERROR(configure_job_telemetry(pipeline, stitching_calibration_only));
     }
     HM_RETURN_IF_ERROR(apply_gpu_memory_profile(pipeline));
   }
@@ -9557,7 +9630,9 @@ absl::Status Configurator::complete_configuration(
   // the one-pass startup position only after the effective runtime rotation
   // and canvas constraints have been applied.
   HM_RETURN_IF_ERROR(setup_stitcher_and_masks(pipeline, game_dir, force, pipeline_has_hmstitcher));
-  if (stitching_calibration_required_) {
+  const auto claim_runtime_calibration = [&]() -> absl::Status {
+    if (!stitching_calibration_required_)
+      return absl::OkStatus();
     if (!loaded_control_points.has_value() && loaded_status == "complete") {
       size_t control_points = 0;
       HM_ASSIGN_OR_RETURN(control_points, persisted_stitching_control_points(config_));
@@ -9627,7 +9702,9 @@ absl::Status Configurator::complete_configuration(
     if (loaded_frame_count.has_value() && !frame_count_environment_enforced) {
       HM_RETURN_IF_ERROR(enforce_stitching_calibration_frame_count_environment(*loaded_frame_count));
     }
-  }
+    return absl::OkStatus();
+  };
+  HM_RETURN_IF_ERROR(claim_runtime_calibration());
 
   YAML::Node offsets = ensure_game_frame_offsets_node(config_);
 
@@ -9693,6 +9770,10 @@ absl::Status Configurator::complete_configuration(
   if (stitching_calibration_only)
     HM_RETURN_IF_ERROR(configure_stitching_calibration_archive_name(pipeline));
   HM_RETURN_IF_ERROR(configure_source_bit_depth(pipeline, source_bit_depth_paths, stitching_calibration_only));
+  const bool calibration_required_before_precision = stitching_calibration_required_;
+  HM_RETURN_IF_ERROR(finalize_rink_mask_input_precision(pipeline));
+  if (!calibration_required_before_precision && stitching_calibration_required_)
+    HM_RETURN_IF_ERROR(claim_runtime_calibration());
   HM_RETURN_IF_ERROR(configure_encode_file_outputs(pipeline, source_video_paths));
 
   if (show_render_sink) {

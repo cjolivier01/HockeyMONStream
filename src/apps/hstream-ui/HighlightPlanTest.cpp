@@ -34,6 +34,46 @@ int main() {
 
   bool ok = true;
   QString error;
+  {
+    const bool had_root = qEnvironmentVariableIsSet("HM_CONFIG_ROOT");
+    const QByteArray previous_root = qgetenv("HM_CONFIG_ROOT");
+    QTemporaryDir defaults;
+    qputenv("HM_CONFIG_ROOT", defaults.path().toUtf8());
+    const QString baseline = defaults.filePath("baseline.yaml");
+    try {
+      ok &= expect(
+          write_text(baseline, "hstream_ui:\n  highlights:\n    base_name: season-reel\n"),
+          "custom Highlights baseline written");
+      HighlightPlan initial;
+      ok &= expect(initial.base_name == "season-reel", "new plans must resolve their name from the baseline");
+      initial.base_name = "Saved reel";
+      const QString saved_path = defaults.filePath("highlights.json");
+      ok &= expect(SaveHighlightPlan(saved_path, initial, &error), "explicit plan name saved");
+      HighlightPlan reopened;
+      ok &= expect(
+          LoadHighlightPlan(saved_path, &reopened, &error) && reopened.base_name == "Saved reel",
+          "saved plan names must override the baseline");
+      for (const auto& invalid : {QByteArray("hstream_ui: {}\n"),
+                                 QByteArray("hstream_ui:\n  highlights:\n    base_name: []\n"),
+                                 QByteArray("hstream_ui:\n  highlights:\n    base_name: '../outside'\n")}) {
+        ok &= expect(write_text(baseline, invalid), "invalid Highlights baseline written");
+        bool rejected = false;
+        try {
+          HighlightPlan invalid_plan;
+        } catch (const std::exception&) {
+          rejected = true;
+        }
+        ok &= expect(rejected, "missing or invalid baseline names must fail without a literal fallback");
+      }
+    } catch (const std::exception& failure) {
+      std::cerr << failure.what() << '\n';
+      ok = false;
+    }
+    if (had_root)
+      qputenv("HM_CONFIG_ROOT", previous_root);
+    else
+      qunsetenv("HM_CONFIG_ROOT");
+  }
   qint64 milliseconds = -1;
   ok &= expect(
       ParseHighlightTime("123:04:05.006", &milliseconds, &error) && milliseconds == 443045006,

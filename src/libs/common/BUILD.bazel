@@ -1,6 +1,59 @@
 INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
+    name = "paced_playback_config",
+    srcs = ["PacedPlaybackConfig.cpp"],
+    hdrs = ["PacedPlaybackConfig.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":paced_playback", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "paced_playback_config_test",
+    srcs = ["PacedPlaybackConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    deps = [":paced_playback_config"],
+)
+
+cc_library(
+    name = "paced_playback",
+    srcs = ["PacedPlayback.cpp"],
+    hdrs = ["PacedPlayback.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":paced_audio_latency", "@gstreamer"],
+)
+
+cc_test(
+    name = "paced_playback_test",
+    srcs = ["PacedPlaybackTest.cpp"],
+    deps = [":paced_playback", "@gstreamer"],
+)
+
+cc_test(
+    name = "paced_playback_bounds_test",
+    srcs = ["PacedPlaybackBoundsTest.cpp"],
+    deps = [":paced_playback", "@gstreamer"],
+)
+
+cc_library(
+    name = "paced_audio_latency",
+    srcs = ["PacedAudioLatency.cpp"],
+    hdrs = ["PacedAudioLatency.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "paced_audio_latency_test",
+    srcs = ["PacedAudioLatencyTest.cpp"],
+    deps = [":paced_audio_latency", "@gstreamer"],
+)
+
+cc_library(
     name = "config_path",
     srcs = ["ConfigPath.cpp"],
     hdrs = ["ConfigPath.h"],
@@ -155,6 +208,20 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "user_config_read_test",
+    srcs = ["UserConfigReadTest.cpp"],
+    copts = ["-std=c++17"],
+    deps = [":user_config", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "user_config_managed_test",
+    srcs = ["UserConfigManagedTest.cpp"],
+    copts = ["-std=c++17"],
+    deps = [":user_config", "@yaml-cpp"],
 )
 
 cc_library(

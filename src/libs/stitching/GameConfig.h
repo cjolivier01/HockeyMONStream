@@ -139,6 +139,11 @@ absl::StatusOr<ControlPointMatcher> resolve_control_point_matcher(
     const YAML::Node& config,
     const YAML::Node& baseline = YAML::Node());
 
+// Saved UI budgets override the canonical setting; absent overlays inherit the
+// required bundled baseline value. Explicit runtime environment overrides are
+// handled by the caller.
+absl::StatusOr<int> read_control_point_limit(const YAML::Node& config);
+
 absl::StatusOr<ControlPointFiltering> read_control_point_filtering(const YAML::Node& config);
 void write_control_point_filtering(YAML::Node& config, ControlPointFiltering filtering);
 bool restore_generated_control_point_filtering(YAML::Node& config);

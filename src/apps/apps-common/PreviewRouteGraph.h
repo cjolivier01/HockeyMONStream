@@ -21,6 +21,13 @@ struct RouteTap {
   std::string tee_name;
 };
 
+// Pace the whole graph on original Program timestamps, independently of any
+// selected preview route, connected peer or monitor visibility. The bounded
+// non-leaky queue retains frames and backpressures the existing Program tee.
+// The caller admits this branch only for an explicitly paced playback graph;
+// calibration and exported jobs retain their existing unrestricted behavior.
+bool AttachPlaybackClock(RouteTap program, std::string* error);
+
 // Transactional construction at a stopped native graph tap. No window IDs,
 // rendering, encoding, defaults or frame memory live here. The owner serializes
 // graph mutations and keeps the tap's parent at NULL/READY during attachment.

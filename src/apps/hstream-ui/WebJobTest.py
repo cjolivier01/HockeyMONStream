@@ -10,6 +10,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import zlib
 from pathlib import Path
 
 
@@ -123,9 +124,126 @@ def calibration_fixture(game, owner="owner"):
     )
 
 
+def png_fixture(path, width=4096, height=64):
+    def chunk(kind, content):
+        return (
+            struct.pack("!I", len(content))
+            + kind
+            + content
+            + struct.pack("!I", zlib.crc32(kind + content))
+        )
+
+    pixels = (b"\0" + bytes([255, 0, 0]) * width) * height
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack("!2I5B", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(pixels))
+        + chunk(b"IEND", b"")
+    )
+
+
+def calibration_still_contract(binary, root):
+    for case, source in (
+        ("png-only", "s.png"),
+        ("prefer-png", "s.png"),
+        ("tiff-fallback", "panorama.tif"),
+        ("broken-png", "panorama.tif"),
+        ("invalidated-png", "panorama.tif"),
+        ("stale-still", None),
+        ("pending-still", None),
+        ("missing-still", None),
+        ("wrong-generation-still", None),
+        ("pending-recovery-still", None),
+    ):
+        directory = root / case
+        directory.mkdir()
+        game = directory / "game"
+        calibration_fixture(game)
+        config = "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+        if case == "stale-still":
+            config += "    stale_from: canvas\n"
+        elif case == "pending-still":
+            config = config.replace("complete", "pending")
+        elif case == "invalidated-png":
+            config += "    artifacts_invalidated: true\n"
+        (game / "config.yaml").write_text(config)
+        if case not in {"missing-still", "tiff-fallback"}:
+            png_fixture(game / "s.png")
+        if case in {"png-only", "missing-still"}:
+            (game / "panorama.tif").unlink()
+        if case == "broken-png":
+            (game / "s.png").write_bytes(b"broken PNG")
+        if case == "pending-recovery-still":
+            journal = game / ".hstream-stitch-Ab12CD"
+            journal.mkdir()
+            (journal / "journal_version").write_text("2\n")
+            (journal / "state").write_text("PREPARED\n")
+            (journal / "rollback-payload").write_text("Must not recover")
+        before = {
+            path: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+            for path in game.rglob("*")
+            if path.is_file()
+        }
+        payload = {"config": {}}
+        if case == "wrong-generation-still":
+            payload["expected_generation"] = "another-generation"
+        run(binary, request(directory, "calibration-still-read", payload))
+        receipt = json.loads((directory / "operation-result.json").read_text())
+        assert_artifacts(directory, receipt)
+        result = receipt["result"]
+        assert result["calibration_still_version"] == 1
+        assert result["available"] is bool(source), (case, result)
+        assert result["retryable"] is (case == "pending-recovery-still")
+        expected_paths = {"operation-data.json"}
+        if source:
+            assert result["source_image"] == source
+            assert result["preview"] == "saved-stitching-preview.png"
+            assert len(result["source_revision"]) == 64
+            int(result["source_revision"], 16)
+            image = (directory / result["preview"]).read_bytes()
+            assert image.startswith(b"\x89PNG")
+            width, height = struct.unpack("!II", image[16:24])
+            assert [width, height] == [result["width"], result["height"]]
+            assert [width, height] == ([2048, 32] if source == "s.png" else [8, 8])
+            expected_paths.add(result["preview"])
+        else:
+            assert "preview" not in result
+            assert not (directory / "saved-stitching-preview.png").exists()
+        assert {item["path"] for item in receipt["artifacts"]} == expected_paths
+        assert json.loads((directory / "operation-data.json").read_text()) == result
+        for path, identity in before.items():
+            assert (
+                path.read_bytes(),
+                path.stat().st_ino,
+                path.stat().st_mtime_ns,
+            ) == identity
+        assert not (game / "setup-preview.png").exists()
+
+    directory = root / "still-output-symlink"
+    directory.mkdir()
+    game = directory / "game"
+    game.mkdir()
+    (game / "config.yaml").write_text(
+        "hstream_ui: {stitching_calibration: {status: complete}}\n"
+    )
+    source = game / "s.png"
+    png_fixture(source)
+    before = (source.read_bytes(), source.stat().st_ino, source.stat().st_mtime_ns)
+    (directory / "saved-stitching-preview.png").symlink_to(source)
+    run(binary, request(directory, "calibration-still-read", {"config": {}}), 1)
+    receipt = json.loads((directory / "operation-result.json").read_text())
+    assert receipt["state"] == "failed" and not receipt["artifacts"]
+    assert (
+        source.read_bytes(),
+        source.stat().st_ino,
+        source.stat().st_mtime_ns,
+    ) == before
+
+
 def calibration_contract(binary, root):
     for case in (
         "valid",
+        "valid-png-only",
         "missing-owner",
         "wrong-owner",
         "missing-generation",
@@ -143,10 +261,14 @@ def calibration_contract(binary, root):
             (directory / "game" / "mapping_0001.tif").unlink()
         elif case == "missing-preview":
             (directory / "game" / "panorama.tif").unlink()
+        elif case == "valid-png-only":
+            (directory / "game" / "panorama.tif").unlink()
+            png_fixture(directory / "game" / "s.png")
         path = request(directory, "calibration-complete", payload)
-        run(binary, path, 0 if case == "valid" else 1)
+        valid = case in {"valid", "valid-png-only"}
+        run(binary, path, 0 if valid else 1)
         receipt = json.loads((directory / "operation-result.json").read_text())
-        if case != "valid":
+        if not valid:
             assert receipt["state"] == "failed" and not receipt["artifacts"]
             continue
         assert_artifacts(directory, receipt)
@@ -513,6 +635,206 @@ def confined_experiment_optics_contract(binary, root):
             os.close(events)
 
 
+def pinned_archive_contract(binary, root):
+    for case in (
+        "valid",
+        "changed",
+        "final-link",
+        "parent-link",
+        "unauthorized",
+        "wrong-marker",
+    ):
+        directory = root / ("pinned-" + case)
+        directory.mkdir()
+        original = root / ("archive-" + case)
+        original.mkdir()
+        archive = original / "archive.mp4"
+        archive.write_bytes(b"owned archive")
+        info = archive.stat()
+        identity = {
+            "dev": str(info.st_dev),
+            "ino": str(info.st_ino),
+            "size": str(info.st_size),
+            "mtime_ns": str(info.st_mtime_ns),
+            "ctime_ns": str(info.st_ctime_ns),
+        }
+        with sqlite3.connect(directory / "telemetry.db") as database:
+            database.executescript("""
+                PRAGMA application_id=1213027156;
+                PRAGMA user_version=1;
+                CREATE TABLE frames(run_id TEXT, sample_id INTEGER, pts_ns INTEGER,
+                    geometry_id INTEGER, seek_epoch INTEGER, reset_epoch INTEGER, source_id INTEGER);
+                CREATE TABLE tracks(run_id TEXT, sample_id INTEGER, tracking_id TEXT,
+                    left REAL, top REAL, width REAL, height REAL, ordinal INTEGER);
+                CREATE TABLE geometries(run_id TEXT, geometry_id INTEGER, width INTEGER, height INTEGER);
+                CREATE TABLE cameras(run_id TEXT, sample_id INTEGER, role TEXT,
+                    left REAL, top REAL, width REAL, height REAL);
+                CREATE TABLE replay_frames(run_id TEXT, sample_id INTEGER,
+                    edge_rotation_left REAL, edge_rotation_right REAL);
+                INSERT INTO frames VALUES('recorded',1,1000000000,9,3,4,5);
+                INSERT INTO frames VALUES('recorded',2,1033000000,9,3,4,5);
+                INSERT INTO tracks VALUES('recorded',1,'17',200,100,100,200,0);
+                INSERT INTO tracks VALUES('recorded',2,'17',220,100,100,200,0);
+                INSERT INTO geometries VALUES('recorded',9,1000,500);
+            """)
+        authored = plan()
+        cue = {
+            "kind": "arrow",
+            "text": "",
+            "start_ms": 1000,
+            "end_ms": 2000,
+            "x": 0.5,
+            "y": 0.35,
+            "dx": 0,
+            "dy": 0.12,
+            "size": 0.055,
+            "thickness": 0.008,
+            "weight": 900,
+            "color": "#ffff00",
+            "blink": True,
+            "blink_ms": 250,
+            "motion": "fixed",
+            "positions": [],
+        }
+        cue.update(
+            {key: "" for key in ("database", "run_id", "track_id", "archive_path")}
+        )
+        cue.update(
+            {
+                key: 0
+                for key in (
+                    "geometry_id",
+                    "seek_epoch",
+                    "reset_epoch",
+                    "source_id",
+                    "telemetry_offset_ms",
+                    "archive_origin_ms",
+                    "archive_size",
+                    "archive_mtime_ms",
+                )
+            }
+        )
+        authored["intervals"][0].update(
+            is_card=False, start_ms=1000, end_ms=2000, annotations=[cue]
+        )
+        path = request(
+            directory,
+            "track-capture",
+            {
+                "plan": authored,
+                "archive_path": "inputs/archive.mp4",
+                "database": "telemetry.db",
+                "run_id": "recorded",
+                "route": "stitched",
+                "item_index": 0,
+                "cue_index": 0,
+                "choice": {
+                    "id": "17",
+                    "geometry": 9,
+                    "seek": 3,
+                    "reset": 4,
+                    "source": 5,
+                },
+            },
+        )
+        document = json.loads(path.read_text())
+        document["authorized_media"] = [str(archive)]
+        document["runtime"] = {
+            "archive_input": {"path": str(archive), "identity": identity}
+        }
+        if case == "changed":
+            archive.write_bytes(b"other archive")
+        elif case == "final-link":
+            target = original / "saved.mp4"
+            archive.rename(target)
+            archive.symlink_to(target)
+        elif case == "parent-link":
+            target = original.with_name(original.name + "-saved")
+            original.rename(target)
+            original.symlink_to(target, target_is_directory=True)
+        elif case == "unauthorized":
+            document["authorized_media"] = []
+        elif case == "wrong-marker":
+            document["payload"]["archive_path"] = "other.mp4"
+        path.write_text(json.dumps(document))
+        run(binary, path, 0 if case == "valid" else 1)
+        receipt = json.loads((directory / "operation-result.json").read_text())
+        assert not (directory / "inputs/archive.mp4").exists()
+        if case == "valid":
+            saved = receipt["result"]["plan"]
+            cue = saved["intervals"][0]["annotations"][0]
+            assert saved["archive_path"] == cue["archive_path"] == "inputs/archive.mp4"
+            assert (
+                cue["database"] == "telemetry.db"
+                and cue["archive_size"] == info.st_size
+            )
+            assert (
+                cue["geometry_id"] == 9
+                and cue["seek_epoch"] == 3
+                and cue["source_id"] == 5
+            )
+            assert [point["time_ms"] for point in cue["positions"]] == [1000, 1033]
+            assert abs(cue["positions"][0]["x"] - 0.25) < 1e-9
+            assert_artifacts(directory, receipt)
+        else:
+            assert receipt["state"] == "failed" and not receipt["artifacts"]
+
+
+def runtime_defaults_contract(binary, root):
+    config = root / "runtime-config"
+    config.mkdir()
+    home = root / "runtime-home"
+    (config / "baseline.yaml").write_text(
+        "runtime: {gpu_memory_profile: standard, amd: {gpu_id: 2}}\n"
+    )
+    (config / "ds_hockey_app_config.yaml").write_text(
+        "application: {global-gpu-id: 2}\n"
+    )
+    environment = {
+        **os.environ,
+        "HOME": str(home),
+        "HM_CONFIG_ROOT": str(config),
+        "QT_QPA_PLATFORM": "invalid-readiness-platform",
+    }
+    probe = subprocess.run(
+        [str(binary), "--runtime-defaults"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    assert json.loads(probe.stdout) == {
+        "version": 1,
+        "requested": "standard",
+        "resolved": "standard",
+        "gpu": 2,
+    }
+    assert not home.exists(), "Readiness must not create first-run preferences"
+    defaults = home / ".config/hstream-ui/defaults.yaml"
+    defaults.parent.mkdir(parents=True)
+    defaults.write_text("runtime: {gpu-memory-profile: low}\n")
+    probe = subprocess.run(
+        [str(binary), "--runtime-defaults"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+    )
+    assert json.loads(probe.stdout)["resolved"] == "low"
+    assert not (home / ".hstream").exists()
+    (config / "baseline.yaml").write_text("runtime: {}\n")
+    probe = subprocess.run(
+        [str(binary), "--runtime-defaults"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert probe.returncode != 0 and not probe.stdout
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("binary", type=Path)
@@ -535,12 +857,18 @@ def main():
         == 1
     )
     assert "calibration-complete" in capabilities["operations"]
+    assert "calibration-still-read" in capabilities["operations"]
+    assert "saved-calibration-still-v1" in capabilities["features"]
     assert "experiment-optics-filtering-v1" in capabilities["features"]
+    assert "highlight-pinned-archive-v1" in capabilities["features"]
     assert len(capabilities["operations"]) == len(set(capabilities["operations"]))
     assert capabilities["maximum_request_bytes"] < capabilities["maximum_result_bytes"]
     with tempfile.TemporaryDirectory(prefix="hstream-web-contract-") as temporary:
         root = Path(temporary)
+        runtime_defaults_contract(args.binary, root)
+        pinned_archive_contract(args.binary, root)
         calibration_contract(args.binary, root)
+        calibration_still_contract(args.binary, root)
         missing_matches = root / "missing-matches"
         missing_matches.mkdir()
         calibration_fixture(missing_matches / "game")
@@ -625,6 +953,8 @@ def main():
         receipt = json.loads((experiments / "operation-result.json").read_text())
         assert_artifacts(experiments, receipt)
         assert receipt["result"]["state"] == "queued"
+        assert receipt["result"]["selection_available"] is False
+        assert receipt["result"]["selection_fingerprint"] == ""
         assert not any(item["path"].endswith(".mp4") for item in receipt["artifacts"])
         candidate = receipt["result"]["workspace"]
         assert (experiments / candidate["game_directory"] / "config.yaml").is_file()
@@ -641,8 +971,52 @@ def main():
             "epipolar_ransac": False,
             "homography_consistency": False,
         }
+        # A derived matrix must inherit the selected candidate's private
+        # settings, not the older main game carried beside that workspace.
+        (experiments / "operation-result.json").unlink()
+        derived_request = request(
+            experiments,
+            "experiment-create",
+            {
+                "source_workspace": candidate,
+                "sequence": 2,
+                "settings": {
+                    "control_points": 101,
+                    "frame_count": 1,
+                    "stitch_frame_time": "00:00:00",
+                },
+            },
+        )
+        document = json.loads(derived_request.read_text())
+        document["authorized_media"] = [
+            str(experiments / "game" / side / "clip.mp4") for side in ("cam1", "cam2")
+        ]
+        derived_request.write_text(json.dumps(document))
+        run(args.binary, derived_request)
+        derived = json.loads((experiments / "operation-result.json").read_text())[
+            "result"
+        ]
+        assert (
+            derived["workspace"]["settings"]["camera"]["camera_fov"]["horizontal_fov"]
+            == 103
+        )
+        assert derived["workspace"]["settings"]["control_points"] == 101
+        assert derived["workspace"]["game_directory"] != candidate["game_directory"]
+
         # A captured-pair fixture allows read-only inspection to exercise the
         # exact workspace JSON returned to the next worker, without GPU work.
+        (experiments / "operation-result.json").unlink()
+        run(
+            args.binary,
+            request(experiments, "experiment-inspect", {"workspace": candidate}),
+        )
+        unavailable = json.loads((experiments / "operation-result.json").read_text())[
+            "result"
+        ]
+        assert unavailable["inspection_available"] is False
+        assert unavailable["workspace"] == candidate
+        assert unavailable["frames"] == []
+        assert "No captured calibration frames" in unavailable["source_validation"]
         inspection = (
             experiments
             / candidate["game_directory"]
@@ -665,6 +1039,7 @@ def main():
         assert inspected["result"]["workspace"]["settings"] == candidate["settings"]
         result = inspected["result"]
         assert result["inspection_version"] == 1
+        assert result["inspection_available"] is True
         assert result["expected_pair_count"] == 1
         assert result["player_selected"] is False
         assert result["coverage_grid"] == {
@@ -673,8 +1048,14 @@ def main():
             "colors": ["#0000ff", "#008000", "#808000"],
         }
         frame = result["frames"][0]
-        assert [source["name"] for source in frame["sources"]] == ["clip.mp4", "clip.mp4"]
-        assert [source["source_seconds"] for source in frame["sources"]] == [12.125, 12.25]
+        assert [source["name"] for source in frame["sources"]] == [
+            "clip.mp4",
+            "clip.mp4",
+        ]
+        assert [source["source_seconds"] for source in frame["sources"]] == [
+            12.125,
+            12.25,
+        ]
         assert frame["match_images"] == [None, None]
         assert len(frame["thumbnails"]) == 2 and all(frame["thumbnails"])
         assert frame["coverage"] == [] and frame["size_band_counts"] == [0, 0, 0]
@@ -682,9 +1063,15 @@ def main():
         # A missing left thumbnail cannot shift the right image into its place.
         (inspection / "left_0.jpg").unlink()
         (experiments / "operation-result.json").unlink()
-        run(args.binary, request(experiments, "experiment-inspect", {"workspace": candidate}))
+        run(
+            args.binary,
+            request(experiments, "experiment-inspect", {"workspace": candidate}),
+        )
         missing = json.loads((experiments / "operation-result.json").read_text())
-        assert missing["result"]["frames"][0]["thumbnails"] == [None, frame["thumbnails"][1]]
+        assert missing["result"]["frames"][0]["thumbnails"] == [
+            None,
+            frame["thumbnails"][1],
+        ]
         assert_artifacts(experiments, missing)
         for change, expected_error in (
             ({"input_lens": {"distortion": [0, 0, 2]}}, "distortion"),

@@ -1,9 +1,13 @@
 #include "OutputRinkMap.h"
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/PacedPlayback.h"
+#include "hstream/src/libs/common/PacedPlaybackConfig.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/program/ToneControlCommand.h"
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
+#include "hstream/src/libs/tracking/CameraSeekState.h"
 /* clang-format off */
 #include "src/libs/common/Status.h"
 /* clang-format on */
@@ -19,6 +23,7 @@
 #include "StitchFrameTimePlan.h"
 #include "StitchingCalibrationMode.h"
 #include "configurator.h"
+#include "hstream/src/apps/apps-common/PipelineStartupError.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/program/PreviewOverlayConfig.h"
@@ -36,6 +41,7 @@
 #include <gst-nvevent.h>
 #include <gst/gstbin.h>
 #include <gst/video/video.h>
+#include <gst/audio/gstaudiobasesink.h>
 #include <gst/video/videooverlay.h>
 #include <json-glib/json-glib.h>
 #include <nvbufsurface.h>
@@ -558,6 +564,82 @@ bool pipeline_waiting_for_user_input(AppCtx* context) {
   return waiting;
 }
 
+absl::Status configure_paced_local_playback(HmApp& app) {
+  if (!render_playback_realtime() || hm::gst::PacedPlayback::Find(app.pipeline.pipeline))
+    return absl::OkStatus();
+  std::vector<GstElement*> audio_sinks, audio_transports;
+  const bool private_web = std::any_of(
+      app.config.sink_bin_sub_bin_config,
+      app.config.sink_bin_sub_bin_config + app.config.num_sink_sub_bins,
+      [](const NvDsSinkSubBinConfig& sink) {
+        return sink.enable && sink.type == NV_DS_SINK_WEBRTC && sink.encoder_config.preview_endpoint;
+      });
+  NvDsSinkBin* video_output = nullptr;
+  for (auto& instance : app.pipeline.instance_bins) {
+    if (!instance.hmaudio_bin.bin)
+      continue;
+    auto* iterator = gst_bin_iterate_recurse(GST_BIN(instance.hmaudio_bin.bin));
+    GValue item = G_VALUE_INIT;
+    while (gst_iterator_next(iterator, &item) == GST_ITERATOR_OK) {
+      auto* element = GST_ELEMENT(g_value_get_object(&item));
+      if (GST_IS_AUDIO_BASE_SINK(element)) {
+        audio_sinks.push_back(GST_ELEMENT(gst_object_ref(element)));
+        video_output = &instance.sink_bin;
+      }
+      auto* factory = gst_element_get_factory(element);
+      if (private_web && factory &&
+          std::string(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory))) == "opusenc") {
+        audio_transports.push_back(GST_ELEMENT(gst_object_ref(element)));
+        video_output = &instance.sink_bin;
+      }
+      g_value_reset(&item);
+    }
+    g_value_unset(&item);
+    gst_iterator_free(iterator);
+  }
+  const auto release_audio = absl::MakeCleanup([&] {
+    for (auto* sink : audio_sinks)
+      gst_object_unref(sink);
+    for (auto* encoder : audio_transports)
+      gst_object_unref(encoder);
+  });
+  if (audio_sinks.empty() && audio_transports.empty())
+    return absl::OkStatus();
+  if (audio_sinks.size() > 1 || audio_transports.size() > 1 || !video_output || !video_output->tee)
+    return absl::FailedPreconditionError("Paced playback requires one source-correlated monitor and browser track");
+  hm::gst::PacedPlaybackSettings settings;
+  HM_ASSIGN_OR_RETURN(settings, hm::gst::ReadPacedPlaybackSettings(app.configurator().config()));
+  auto* ingress = gst_element_get_static_pad(video_output->tee, "sink");
+  auto owner = hm::gst::PacedPlayback::Create(app.pipeline.pipeline, ingress, settings);
+  if (ingress)
+    gst_object_unref(ingress);
+  if (!owner || (!audio_sinks.empty() && !owner->AttachAudioSink(audio_sinks.front())) ||
+      (!audio_transports.empty() && !owner->AttachAudioTransport(audio_transports.front())))
+    return absl::InternalError("Could not attach shared paced audio/video presentation");
+  if (!audio_transports.empty()) {
+    auto* clock_sink = gst_bin_get_by_name(GST_BIN(video_output->bin), "playback_clock");
+    const bool attached = clock_sink && owner->AttachVideoSink(clock_sink, settings.preview_frames);
+    if (clock_sink)
+      gst_object_unref(clock_sink);
+    if (!attached)
+      return absl::InternalError("Could not attach the shared browser playback clock");
+  }
+  for (auto& branch : video_output->sub_bins) {
+    if (!branch.sink || !GST_IS_BASE_SINK(branch.sink))
+      continue;
+    gboolean synchronized = FALSE;
+    g_object_get(branch.sink, "sync", &synchronized, nullptr);
+    if (!synchronized)
+      continue;
+    if (branch.queue)
+      g_object_set(branch.queue, "leaky", 0, "max-size-buffers", settings.preview_frames,
+          "max-size-bytes", 0U, "max-size-time", guint64{0}, nullptr);
+    if (!owner->AttachVideoSink(branch.sink, settings.preview_frames))
+      return absl::InternalError("Could not attach the paced Program video clock");
+  }
+  return absl::OkStatus();
+}
+
 absl::Status pause_pipeline_for_model_initialization(
     AppCtx* app_ctx,
     const volatile sig_atomic_t* interrupt_requested) {
@@ -578,7 +660,7 @@ absl::Status pause_pipeline_for_model_initialization(
   set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, TRUE);
   if (gst_element_set_state(pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
     set_uri_playlist_waits_paused(&app_ctx->pipeline.multi_src_bin, FALSE);
-    return absl::InternalError("Failed to set pipeline to PAUSED");
+    return hm::gst::PipelineStartupFailure(pipeline, "Failed to set pipeline to PAUSED");
   }
   constexpr auto kModelInitializationTimeout = std::chrono::minutes(15);
   constexpr auto kCancellationTimeout = std::chrono::seconds(5);
@@ -605,7 +687,7 @@ absl::Status pause_pipeline_for_model_initialization(
       return absl::CancelledError("Pipeline initialization interrupted");
     }
     if (result == GST_STATE_CHANGE_FAILURE) {
-      return absl::InternalError("Pipeline failed while initializing models");
+      return hm::gst::PipelineStartupFailure(pipeline, "Pipeline failed while initializing models");
     }
     // Initial seek blockers can hold preroll until both decoded camera pads
     // exist. The bus watch is not dispatched until playPipelines() starts the
@@ -1160,6 +1242,11 @@ PipelineApplication::PipelineApplication()
 //------------------------------------------------------------------------------
 // PipelineApplication destructor.
 PipelineApplication::~PipelineApplication() {
+  if (web_rotation_) {
+    const auto status = web_rotation_->Shutdown();
+    if (!status.ok())
+      g_printerr("Live rotation retirement failed: %s\n", status.ToString().c_str());
+  }
   g_free(settings_overlay_);
 }
 
@@ -1839,6 +1926,8 @@ absl::Status PipelineApplication::createPipelines(
     }
   }
   if (rink_mask_preparation_ == RinkMaskPreparation::kNone) {
+    for (const auto& context : app_contexts)
+      HM_RETURN_IF_ERROR(configure_paced_local_playback(*context));
     HM_RETURN_IF_ERROR(configure_preview_overlay_producers(app_contexts));
     HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
   }
@@ -1849,6 +1938,31 @@ absl::Status PipelineApplication::createPipelines(
 }
 
 absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
+  if (!stitching_calibration_only_ && current_stage_ == 0) {
+    if (!web_camera_defaults_) {
+      hm::baseline_config::BaselineConfig baseline;
+      HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
+      hm::tracking::CameraControlValues defaults;
+      HM_ASSIGN_OR_RETURN(defaults, hm::tracking::ReadPlaytrackerControlValues(baseline.values));
+      web_camera_defaults_ = std::move(defaults);
+    }
+    const auto& config = app.configurator().config();
+    const auto section = config["pipeline"]["ds-playtracker"];
+    // Timed mask preparation has no Program tracker. Seed its controls when
+    // the final graph enables it, retaining live values across later rebuilds.
+    if (!web_camera_controls_ && section.IsMap() && section["enable"].IsScalar() && config_section_enabled(section)) {
+      hm::tracking::CameraControlValues values;
+      HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config));
+      if (!section["config-file"].IsScalar())
+        return absl::InvalidArgumentError("Live camera controls require the resolved native tracker config");
+      try {
+        web_camera_base_ = YAML::LoadFile(section["config-file"].as<std::string>());
+      } catch (const YAML::Exception& error) {
+        return absl::InvalidArgumentError(std::string("Cannot read native tracker configuration: ") + error.what());
+      }
+      web_camera_controls_ = std::move(values);
+    }
+  }
   HM_ASSIGN_OR_RETURN(
       web_preview_,
       hm::preview::WebPreviewSession::Prepare(
@@ -1860,11 +1974,180 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
   return absl::OkStatus();
 }
 
+std::string PipelineApplication::web_rotation_block_reason(
+    const hm::preview::RouteOwner::Session& session,
+    bool mutation) const {
+  if (quit_ || cintr_)
+    return "stopping";
+  if (!web_preview_ || !web_preview_->available() || !(session == web_preview_->identity()) ||
+      session.stage != current_stage_ || session.topology != inspector_topology_generation_)
+    return "stale-session";
+  if (pipeline_recreation_active_.load(std::memory_order_acquire))
+    return "reconstructing";
+  if (!mutation)
+    return {};
+  if (runtime_seek_pending_ || web_seek_pending_)
+    return "seeking";
+  if (process_pause_active_)
+    return "preview-paused";
+  if (stitch_frame_calibration_active_.load(std::memory_order_acquire))
+    return "calibration-pending";
+  return web_preview_->MutationBlockReason();
+}
+
+absl::Status PipelineApplication::initialize_web_rotation_controls() {
+  if (web_rotation_)
+    return absl::OkStatus();
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.size() != 1)
+    return absl::OkStatus();
+  const auto& app = stage->second.front();
+  auto* stitcher = app->pipeline.hmstitcher_bin.elem_hmstitcher;
+  if (!stitcher)
+    return absl::OkStatus();
+  const auto& resolved = app->configurator().config();
+  std::optional<std::pair<double, double>> fixed_edge_readback;
+  if (auto* cropper = app->pipeline.common_elements.hmplaycropper_bin.playcropper) {
+    gdouble left = 0, right = 0;
+    g_object_get(cropper, "fixed-edge-rotation-angle-left", &left, "fixed-edge-rotation-angle-right", &right, nullptr);
+    fixed_edge_readback = std::make_pair(left, right);
+  }
+  hm::program::RotationControlValues controls;
+  HM_ASSIGN_OR_RETURN(controls, hm::program::ReadRotationControls(resolved, fixed_edge_readback));
+  gdouble degrees = 0;
+  g_object_get(stitcher, "post-stitch-rotate-degrees", &degrees, nullptr);
+  if (!std::isfinite(degrees) || degrees < INT_MIN + 90.0 || degrees > INT_MAX - 90.0)
+    return absl::InvalidArgumentError("Invalid native Stitch rotation readback");
+  controls["Stitch_Rotate_Degrees"] = std::lround(90 - degrees);
+  hm::stitching::StitchProjectionFraming framing;
+  HM_ASSIGN_OR_RETURN(framing, hm::stitching::read_stitch_projection_framing(resolved));
+  const auto backend = hm::get_node(resolved, "stitching.mapping_backend");
+  if (!backend || !backend->IsScalar())
+    return absl::InvalidArgumentError("Missing resolved mapping backend");
+  const bool suppressed =
+      stitching_calibration_only_ || (backend->as<std::string>() == "nona" && framing.has_leveling_rotation());
+  if (suppressed) {
+    controls["Left_Fixed_Edge_Rotation_Angle_x10"] = 0;
+    controls["Right_Fixed_Edge_Rotation_Angle_x10"] = 0;
+  }
+  web_rotation_ = std::make_unique<hm::preview::WebRotationTransaction>(
+      hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "").string(),
+      std::move(controls),
+      suppressed,
+      hm::preview::WebRotationTransaction::Hooks{
+          [this](const auto& session, bool mutation) { return web_rotation_block_reason(session, mutation); },
+          [this](const auto& values, const auto& changed, const auto& authorization) {
+            return apply_web_rotation_controls(values, changed, authorization);
+          },
+          [this]() { return web_preview_ ? web_preview_->operation() : 0; },
+          [](const auto& reply) {
+            g_print("HSTREAM_WEB_ROTATION_CONTROLS %s\n", reply.c_str());
+            std::fflush(stdout);
+          },
+          [this]() {
+            return_value_ = -1;
+            quit_ = TRUE;
+            if (main_loop_)
+              g_main_loop_quit(main_loop_);
+          }});
+  return absl::OkStatus();
+}
+
+absl::StatusOr<uint64_t> PipelineApplication::apply_web_rotation_controls(
+    const hm::program::RotationControlValues& controls,
+    const std::set<std::string>& changed,
+    const std::optional<hm::preview::WebRotationTransaction::Authorization>& authorization) {
+  const auto& contexts = stage_app_contexts_.at(current_stage_);
+  if (contexts.size() != 1 || !web_preview_)
+    return absl::FailedPreconditionError("Rotation graph is unavailable");
+  auto* stitcher = contexts.front()->pipeline.hmstitcher_bin.elem_hmstitcher;
+  if (!stitcher)
+    return absl::FailedPreconditionError("Stitcher is unavailable");
+  gchar* text = nullptr;
+  g_object_get(stitcher, "stitched-output-epoch", &text, nullptr);
+  const auto parsed = hm::stitching::parse_live_output_epoch(text ? text : "");
+  g_free(text);
+  if (!parsed.ok())
+    return parsed.status();
+  auto epoch = *parsed;
+  std::vector<std::tuple<std::string, std::string, std::string>> assignments;
+  const auto fixed = hm::program::FixedEdgeRotationCommands(controls, changed, web_rotation_->suppressed());
+  if (!fixed.ok())
+    return fixed.status();
+  for (const auto& command : *fixed)
+    assignments.emplace_back(command.element, command.property, command.value);
+  if (changed.count("Stitch_Rotate_Degrees")) {
+    epoch.post_stitch_rotate_degrees = 90 - controls.at("Stitch_Rotate_Degrees");
+    epoch.authorization_id = authorization ? authorization->value.authorization_id : std::string();
+    if (authorization)
+      epoch.scoreboard_property_value = authorization->value.scoreboard_property_value;
+    assignments.emplace_back("hmstitcher0", "stitched-output-epoch", hm::stitching::serialize_live_output_epoch(epoch));
+  }
+  std::string reason;
+  if (!assignments.empty() && !set_element_properties_runtime(assignments, &reason, false))
+    return absl::AbortedError("Rotation property transaction failed: " + reason);
+  hm::preview::RotationFrameFence fence{epoch.authorization_id, std::nullopt};
+  if (!fixed->empty()) {
+    const auto* cropper = contexts.front()->pipeline.common_elements.hmplaycropper_bin.playcropper;
+    gdouble left = 0, right = 0;
+    g_object_get(
+        const_cast<GstElement*>(cropper),
+        "fixed-edge-rotation-angle-left",
+        &left,
+        "fixed-edge-rotation-angle-right",
+        &right,
+        nullptr);
+    const float expected_left = static_cast<float>(controls.at("Left_Fixed_Edge_Rotation_Angle_x10") / 10.0);
+    const float expected_right = static_cast<float>(controls.at("Right_Fixed_Edge_Rotation_Angle_x10") / 10.0);
+    if (static_cast<float>(left) != expected_left || static_cast<float>(right) != expected_right)
+      return absl::AbortedError("Rotation crop readback did not match the applied values");
+    fence.angles = std::make_pair(expected_left, expected_right);
+  }
+  return web_preview_->RearmRotation(std::move(fence));
+}
+
 void PipelineApplication::publish_web_preview_capability() {
   if (!web_preview_ || web_preview_->identity().stage != current_stage_ ||
       web_preview_->identity().topology != inspector_topology_generation_)
     return;
-  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_).c_str());
+  const auto rotation_status = initialize_web_rotation_controls();
+  if (!rotation_status.ok()) {
+    g_printerr("Could not initialize live Rotation: %s\n", rotation_status.ToString().c_str());
+    return_value_ = -1;
+    quit_ = TRUE;
+    if (main_loop_)
+      g_main_loop_quit(main_loop_);
+    return;
+  }
+  // Completed calibration playback uses the same file/preview seek path.
+  // Active solves are still rejected by seek_runtime_impl before any mutation.
+  const bool seek = current_stage_ == 0 && runtime_seek_is_local_render_only();
+  g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_, seek).c_str());
+  if (web_rotation_) {
+    const hm::preview::WebRotationControlsRequest request{web_preview_->identity(), "0", {}, true};
+    g_print(
+        "HSTREAM_WEB_ROTATION_CONTROLS %s\n",
+        hm::preview::WebRotationControlsReply(
+            request, "state", "", web_rotation_->controls(), web_preview_->operation(), web_rotation_->suppressed())
+            .c_str());
+  }
+  if (!stitching_calibration_only_ && current_stage_ == 0) {
+    web_preview_->SetPlayerDrawingLayers(current_player_drawing_layers());
+    const hm::preview::WebPlayerDrawingRequest drawing{web_preview_->identity(), "0", 0, true};
+    g_print(
+        "HSTREAM_WEB_PLAYER_DRAWING %s\n",
+        hm::preview::WebPlayerDrawingReply(drawing, "state", "", current_player_drawing_layers()).c_str());
+    if (web_camera_controls_) {
+      const hm::preview::WebCameraControlsRequest camera{web_preview_->identity(), "0", {}, false, true};
+      g_print(
+          "HSTREAM_WEB_CAMERA_CONTROLS %s\n",
+          hm::preview::WebCameraControlsReply(camera, "state", "", web_camera_controls_).c_str());
+    }
+    const hm::preview::WebScoreboardRequest scoreboard{web_preview_->identity(), "0", "query", ""};
+    g_print(
+        "HSTREAM_WEB_SCOREBOARD %s\n",
+        hm::preview::WebScoreboardReply(scoreboard, "state", "", current_scoreboard_position()).c_str());
+  }
   std::fflush(stdout);
 }
 
@@ -2021,16 +2304,20 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       if (!queue || !ingress_isolation || !isolation || !converter || !caps_filter || !sink)
         return false;
       const guint64 aligned_pitch = (static_cast<guint64>(width) * 4ULL + 255ULL) & ~255ULL;
-      const guint64 path_image_bytes = aligned_pitch * static_cast<guint64>(height) * 2ULL;
+      const auto paced = hm::gst::PacedPlayback::Find(app_contexts.front()->pipeline.pipeline);
+      const guint pool_frames = paced ? paced->settings().preview_frames : 1;
+      const guint64 path_image_bytes = aligned_pitch * static_cast<guint64>(height) * (pool_frames + 1ULL);
       if (path_image_bytes > kPreviewImageBudgetBytes - preview_image_bytes)
         return false;
       preview_image_bytes += path_image_bytes;
+      // Source drains retain their existing one-frame input queue before
+      // scaling; the other preview queues retain only scaled output frames.
       g_object_set(
           G_OBJECT(queue),
           "leaky",
           realtime ? 0 : 2,
           "max-size-buffers",
-          1,
+          channel.rfind("source", 0) == 0 ? 1U : pool_frames,
           "max-size-bytes",
           0,
           "max-size-time",
@@ -2063,7 +2350,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "nvbuf-memory-type",
           NVBUF_MEM_CUDA_DEVICE,
           "output-buffers",
-          1,
+          pool_frames,
           nullptr);
       GstCaps* caps = gst_caps_new_simple(
           "video/x-raw",
@@ -2101,6 +2388,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           "enable-last-sample",
           FALSE,
           nullptr);
+      if (paced && !paced->AttachVideoSink(sink, pool_frames))
+        return false;
       // Unrestricted processing bounds preview work to 30 fps. Paced playback
       // retains every frame and uses its timestamp, including 50/60 fps video.
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
@@ -2153,9 +2442,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
     const auto& app_context = app_contexts.front();
     hm::preview::PreviewReferenceGeometry reference;
-    HM_ASSIGN_OR_RETURN(
-        reference,
-        hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
+    HM_ASSIGN_OR_RETURN(reference, hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
     NvDsSinkBin& output = app_context->pipeline.instance_bins[0].sink_bin;
     const auto program_target = ui_preview_window_ids_.find("program");
     if (!sources_only && program_target != ui_preview_window_ids_.end()) {
@@ -2168,7 +2455,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       std::string error;
       auto attachment = hm::preview::RouteAttachment::Create(
           {hm::preview::RouteTap::Kind::kExistingTee, output.bin, output.tee},
-          {ingress, queue, drain, converter, caps, sink},
+          {ingress, converter, caps, queue, drain, sink},
           nullptr,
           &error);
       if (!attachment ||
@@ -2215,7 +2502,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             "stitched_tracking_gpu_preview_tee"};
       std::string error;
       auto attachment =
-          hm::preview::RouteAttachment::Create(tap, {ingress, queue, drain, converter, caps, sink}, nullptr, &error);
+          hm::preview::RouteAttachment::Create(tap, {ingress, converter, caps, queue, drain, sink}, nullptr, &error);
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
       // Preserve the calibration branch's CUDA copy engine when construction
       // moves out of create_hmstitcher_bin; VIC cannot copy these device surfaces.
@@ -2325,9 +2612,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
 
   const auto& app_context = app_contexts.front();
   hm::preview::PreviewReferenceGeometry reference;
-  HM_ASSIGN_OR_RETURN(
-      reference,
-      hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
+  HM_ASSIGN_OR_RETURN(reference, hm::preview::ReadPreviewReferenceGeometry(app_context->configurator().config()));
   const gint kProgramPreviewWidth = reference.program_width;
   const gint kProgramPreviewHeight = reference.program_height;
   HM_RETURN_IF_ERROR(select_video_converter_for_element_creation(app_context->config, "source previews"));
@@ -2647,6 +2932,11 @@ absl::Status PipelineApplication::createMainLoop(
       if (context->return_value == -1) {
         return_value_ = -1;
       }
+      process_clock_paused_.erase(
+          std::remove_if(process_clock_paused_.begin(), process_clock_paused_.end(), [&](const auto& paused) {
+            return paused.lock() == context;
+          }),
+          process_clock_paused_.end());
       hm::diagnostics::Breadcrumb("pipeline", "destroy");
       destroy_pipeline(context.get());
     }
@@ -4371,7 +4661,7 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
   }
   const bool have_aggregate = instance_progress.size() == active_instances &&
       hm::aggregate_playback_progress(instance_progress, &aggregate_progress);
-  if (std::getenv("HSTREAM_UI_PARENT_PID") && have_aggregate) {
+  if ((std::getenv("HSTREAM_UI_PARENT_PID") || web_preview_) && have_aggregate) {
     auto append_time = [](std::ostringstream& output, uint64_t value) {
       if (value == GST_CLOCK_TIME_NONE) {
         output << "unknown";
@@ -4392,7 +4682,7 @@ void PipelineApplication::perf_cb(gpointer context, NvDsAppPerfStruct* str) {
                 << " fps=" << aggregate_progress.output_fps << " fps_avg=" << aggregate_progress.output_fps_average
                 << " fraction=" << aggregate_progress.fraction << " stage=" << current_stage_
                 << " instance=aggregate instances=" << active_instances
-                << " generation=" << playback_progress_generation_;
+                << " generation=" << playback_progress_generation_ << " topology=" << inspector_topology_generation_;
     g_print("%s\n", ui_progress.str().c_str());
   }
   if (progress_ui_ && progress_ui_->started()) {
@@ -4892,6 +5182,7 @@ struct PreviewFrameSaveResult {
   int width{0};
   int height{0};
   std::string message;
+  std::optional<hm::gpu_preview::CapturedFrameIdentity> identity;
 };
 
 PreviewFrameSaveResult save_preview_frame(GstElement* sink, const fs::path& output_path) {
@@ -4992,7 +5283,8 @@ PreviewFrameSaveResult save_gpu_preview_frame(GstElement* sink, const fs::path& 
   unsigned width = 0;
   unsigned height = 0;
   std::string capture_error;
-  if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error)) {
+  std::optional<hm::gpu_preview::CapturedFrameIdentity> identity;
+  if (!hm::gpu_preview::capture_presented_frame(sink, &rgba, &width, &height, &capture_error, &identity)) {
     return {PreviewFrameSaveStatus::kUnavailable, 0, 0, capture_error};
   }
   if (width == 0 || height == 0 || rgba.size() != static_cast<size_t>(width) * height * 4U) {
@@ -5011,7 +5303,7 @@ PreviewFrameSaveResult save_gpu_preview_frame(GstElement* sink, const fs::path& 
   } catch (const std::exception& exception) {
     return {PreviewFrameSaveStatus::kFailed, 0, 0, exception.what()};
   }
-  return {PreviewFrameSaveStatus::kSaved, static_cast<int>(width), static_cast<int>(height)};
+  return {PreviewFrameSaveStatus::kSaved, static_cast<int>(width), static_cast<int>(height), {}, identity};
 }
 
 void report_last_render_sample(GstElement* sink) {
@@ -5473,6 +5765,8 @@ bool PipelineApplication::set_inspected_element_property_runtime(
       mutation_error = "Pipeline reconstruction is in progress";
     } else if (current_stage_ != expected_stage || inspector_topology_generation_ != expected_generation) {
       mutation_error = "Stale pipeline inspector stage/generation; refresh the graph";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      mutation_error = "rotation-pending";
     } else {
       const auto stage = stage_app_contexts_.find(expected_stage);
       if (stage == stage_app_contexts_.end() || app_index >= stage->second.size() || !stage->second[app_index] ||
@@ -5552,6 +5846,9 @@ bool PipelineApplication::set_tone_controls_runtime(const std::string& line) {
           runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
         reason = "reconstructing";
         message = "Pipeline reconstruction is in progress";
+      } else if (!command.query && web_rotation_ && web_rotation_->pending()) {
+        reason = "rotation-pending";
+        message = "Live Rotation is still being finalized";
       } else if (runtime_seek_pending_) {
         reason = "seeking";
         message = "Playback seek or frame recovery is in progress";
@@ -6119,8 +6416,44 @@ bool PipelineApplication::reapply_runtime_properties() {
   return true;
 }
 
+std::optional<std::string> PipelineApplication::current_scoreboard_position() const {
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.size() != 1 || !stage->second.front() ||
+      !stage->second.front()->pipeline.pipeline)
+    return std::nullopt;
+  GstElement* cropper = gst_bin_get_by_name(GST_BIN(stage->second.front()->pipeline.pipeline), "playcropper0");
+  if (!cropper)
+    return std::nullopt;
+  auto cleanup = absl::MakeCleanup([&] { gst_object_unref(cropper); });
+  const auto* spec = g_object_class_find_property(G_OBJECT_GET_CLASS(cropper), "scoreboard-position");
+  if (!spec || G_PARAM_SPEC_VALUE_TYPE(spec) != G_TYPE_STRING)
+    return std::nullopt;
+  gchar* value = nullptr;
+  g_object_get(cropper, "scoreboard-position", &value, nullptr);
+  const std::string position = value ? value : "";
+  g_free(value);
+  if (position != "upper-left" && position != "upper-center" && position != "upper-right")
+    return std::nullopt;
+  return position;
+}
+
 bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   const std::string trimmed_line = trim_ascii(line);
+  // Full browser seeks replace the preview on a worker. Readers must enter
+  // through the same short fence as inspector queries before borrowing it.
+  // Never wait for reconstruction: Stop must remain responsive.
+  const bool typed_preview = trimmed_line.rfind("preview-", 0) == 0 ||
+      trimmed_line.rfind("web-player-drawing", 0) == 0 || trimmed_line.rfind("web-scoreboard", 0) == 0 ||
+      trimmed_line.rfind("web-camera-controls", 0) == 0 || trimmed_line.rfind("web-rotation-controls", 0) == 0;
+  std::unique_lock<std::mutex> preview_lock(pipeline_access_mu_, std::defer_lock);
+  bool preview_reconstructing = false;
+  if (typed_preview) {
+    preview_reconstructing = pipeline_recreation_active_.load(std::memory_order_acquire);
+    if (!preview_reconstructing) {
+      preview_lock.lock();
+      preview_reconstructing = pipeline_recreation_active_.load(std::memory_order_acquire);
+    }
+  }
   const bool overlay_query =
       trimmed_line == "preview-overlays-query" || trimmed_line.rfind("preview-overlays-query ", 0) == 0;
   if (overlay_query || trimmed_line == "preview-overlays" || trimmed_line.rfind("preview-overlays ", 0) == 0) {
@@ -6132,15 +6465,19 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
     }
     const auto reply = hm::preview::ApplyWebPreviewOverlays(
         *request,
-        web_preview_ && web_preview_->available() ? web_preview_->identity() : hm::preview::RouteOwner::Session{},
+        !preview_reconstructing && web_preview_ && web_preview_->available() ? web_preview_->identity()
+                                                                             : hm::preview::RouteOwner::Session{},
         preview_overlay_state_,
-        web_preview_ ? web_preview_->MutationBlockReason() : "preview-unavailable",
+        preview_reconstructing                                            ? "reconstructing"
+            : !overlay_query && web_rotation_ && web_rotation_->pending() ? "rotation-pending"
+            : web_preview_                                                ? web_preview_->MutationBlockReason()
+                                                                          : "preview-unavailable",
         [this, &request](const auto& selection) {
           return web_preview_ && apply_preview_overlay_state(selection, true, request->command.generation);
         });
     g_print("HSTREAM_PREVIEW_OVERLAY_STATE %s\n", reply.c_str());
     std::fflush(stdout);
-    if (overlay_query && web_preview_)
+    if (overlay_query && !preview_reconstructing && web_preview_)
       web_preview_->RefreshOverlayStatus(request->session);
     return true;
   }
@@ -6150,12 +6487,220 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       g_printerr("runtime preview route rejected: %s\n", request.status().ToString().c_str());
       return false;
     }
-    const auto reply = web_preview_
+    const auto reply = preview_reconstructing
+        ? hm::preview::WebPreviewRouteReply(*request, {hm::preview::RouteOwner::Status::kFailed, "reconstructing"})
+        : web_preview_
         ? web_preview_->Command(*request)
-        : hm::preview::WebPreviewRouteReply(*request,
-            {hm::preview::RouteOwner::Status::kUnconfigured, "selectable-preview-unavailable"});
+        : hm::preview::WebPreviewRouteReply(
+              *request, {hm::preview::RouteOwner::Status::kUnconfigured, "selectable-preview-unavailable"});
     g_print("HSTREAM_PREVIEW_ROUTE %s\n", reply.c_str());
     std::fflush(stdout);
+    return true;
+  }
+  if (trimmed_line.rfind("web-rotation-controls ", 0) == 0 ||
+      trimmed_line.rfind("web-rotation-controls-query ", 0) == 0) {
+    const bool query = trimmed_line.rfind("web-rotation-controls-query ", 0) == 0;
+    const auto request = hm::preview::ParseWebRotationControls(
+        trim_ascii(trimmed_line.substr(query ? 28 : 22)),
+        web_rotation_ ? web_rotation_->ranges() : hm::program::RotationControlValues{},
+        query);
+    if (!request.ok()) {
+      g_printerr("runtime rotation controls rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    if (preview_reconstructing || !web_rotation_) {
+      g_print(
+          "HSTREAM_WEB_ROTATION_CONTROLS %s\n",
+          hm::preview::WebRotationControlsReply(
+              *request,
+              "failed",
+              preview_reconstructing ? "reconstructing" : "rotation-unavailable",
+              std::nullopt,
+              std::nullopt,
+              web_rotation_ && web_rotation_->suppressed())
+              .c_str());
+      std::fflush(stdout);
+      return false;
+    }
+    return web_rotation_->Handle(*request);
+  }
+  if (trimmed_line.rfind("web-camera-controls ", 0) == 0 || trimmed_line.rfind("web-camera-controls-query ", 0) == 0) {
+    const bool query = trimmed_line.rfind("web-camera-controls-query ", 0) == 0;
+    const auto request = hm::preview::ParseWebCameraControls(
+        trim_ascii(trimmed_line.substr(query ? 26 : 20)),
+        web_camera_defaults_.value_or(hm::tracking::CameraControlValues{}),
+        query);
+    if (!request.ok()) {
+      g_printerr("runtime camera controls rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    std::string status = "failed", reason;
+    if (preview_reconstructing) {
+      reason = "reconstructing";
+    } else if (
+        !web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reason = "stale-session";
+    } else if (stitching_calibration_only_ || current_stage_ != 0 || !web_camera_controls_) {
+      reason = "program-unavailable";
+    } else if (query) {
+      status = "state";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      reason = "rotation-pending";
+    } else if (runtime_seek_pending_) {
+      reason = "seeking";
+    } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
+    } else {
+      auto values = *web_camera_controls_;
+      std::set<std::string> changed;
+      for (const auto& [id, value] : request->controls) {
+        values[id] = value;
+        changed.insert(id);
+      }
+      const auto document = hm::tracking::BuildPlaytrackerRuntimeControls(
+          web_camera_base_, values, *web_camera_defaults_, changed, request->force_all_targets);
+      if (!document.ok()) {
+        reason = "invalid-runtime-tuning";
+      } else {
+        std::string path;
+        if (materialize_secure_runtime_file(YAML::Dump(*document) + "\n", &path, &reason)) {
+          auto remove = absl::MakeCleanup([&path] { ::unlink(path.c_str()); });
+          if (set_element_properties_runtime(
+                  {{"dsplaytracker0", "runtime-tuning-config-file", path}}, &reason, false)) {
+            web_camera_controls_ = std::move(values);
+            status = "applied";
+          }
+        }
+      }
+    }
+    g_print(
+        "HSTREAM_WEB_CAMERA_CONTROLS %s\n",
+        hm::preview::WebCameraControlsReply(
+            *request, status, reason, preview_reconstructing ? std::nullopt : web_camera_controls_)
+            .c_str());
+    std::fflush(stdout);
+    return reason.empty();
+  }
+  if (trimmed_line.rfind("web-scoreboard ", 0) == 0) {
+    const auto request = hm::preview::ParseWebScoreboard(trim_ascii(trimmed_line.substr(15)));
+    if (!request.ok()) {
+      g_printerr("runtime scoreboard rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    std::string status = "failed", reason;
+    if (preview_reconstructing) {
+      reason = "reconstructing";
+    } else if (
+        !web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reason = "stale-session";
+    } else if (stitching_calibration_only_ || current_stage_ != 0 || !current_scoreboard_position()) {
+      reason = "program-unavailable";
+    } else if (request->action == "query") {
+      status = "state";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      reason = "rotation-pending";
+    } else if (runtime_seek_pending_) {
+      reason = "seeking";
+    } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
+    } else if (!set_element_property_runtime(
+                   "playcropper0",
+                   request->action == "position" ? "scoreboard-position" : "scoreboard-reselect",
+                   request->action == "position" ? request->position : "1")) {
+      reason = "native-property-rejected";
+    } else {
+      status = "applied";
+    }
+    g_print(
+        "HSTREAM_WEB_SCOREBOARD %s\n",
+        hm::preview::WebScoreboardReply(
+            *request, status, reason, preview_reconstructing ? std::nullopt : current_scoreboard_position())
+            .c_str());
+    std::fflush(stdout);
+    return reason.empty();
+  }
+  if (trimmed_line.rfind("web-player-drawing ", 0) == 0 || trimmed_line.rfind("web-player-drawing-query ", 0) == 0) {
+    const bool query = trimmed_line.rfind("web-player-drawing-query ", 0) == 0;
+    const auto request = hm::preview::ParseWebPlayerDrawing(trim_ascii(trimmed_line.substr(query ? 25 : 19)), query);
+    if (!request.ok()) {
+      g_printerr("runtime player drawing rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    std::string status = "failed", reason;
+    if (preview_reconstructing) {
+      reason = "reconstructing";
+    } else if (
+        !web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reason = "stale-session";
+    } else if (stitching_calibration_only_ || current_stage_ != 0) {
+      reason = "program-unavailable";
+    } else if (query) {
+      status = "state";
+    } else if (web_rotation_ && web_rotation_->pending()) {
+      reason = "rotation-pending";
+    } else if (runtime_seek_pending_ || pipeline_recreation_active_.load(std::memory_order_acquire)) {
+      reason = "seeking";
+    } else if (!(reason = web_preview_->MutationBlockReason()).empty()) {
+    } else if (!apply_player_drawing_layers(request->layers)) {
+      reason = "no-drawing-targets";
+    } else {
+      player_drawing_layers_ = request->layers;
+      status = "applied";
+    }
+    g_print(
+        "HSTREAM_WEB_PLAYER_DRAWING %s\n",
+        hm::preview::WebPlayerDrawingReply(
+            *request,
+            status,
+            reason,
+            preview_reconstructing ? player_drawing_layers_.value_or(0) : current_player_drawing_layers())
+            .c_str());
+    std::fflush(stdout);
+    return reason.empty();
+  }
+  if (trimmed_line == "preview-seek" || trimmed_line.rfind("preview-seek ", 0) == 0) {
+    const auto request = hm::preview::ParseWebPreviewSeek(trim_ascii(trimmed_line.substr(12)));
+    if (!request.ok()) {
+      g_printerr("runtime preview seek rejected: %s\n", request.status().ToString().c_str());
+      return false;
+    }
+    const auto reply = [&](const char* status, const char* reason) {
+      g_print(
+          "HSTREAM_PREVIEW_SEEK %s\n",
+          hm::preview::WebPreviewSeekReply(*request, status, reason, request->session.topology).c_str());
+      std::fflush(stdout);
+    };
+    if (preview_reconstructing) {
+      reply("failed", "reconstructing");
+      return false;
+    }
+    if (!web_preview_ || !(request->session == web_preview_->identity()) || request->session.stage != current_stage_ ||
+        request->session.topology != inspector_topology_generation_) {
+      reply("failed", "stale-session");
+      return false;
+    }
+    if (web_rotation_ && web_rotation_->pending()) {
+      reply("failed", "rotation-pending");
+      return false;
+    }
+    if (web_seek_pending_ || runtime_seek_pending_ || runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+      reply("failed", "seek-in-progress");
+      return false;
+    }
+    // Seek admission takes this mutex itself while establishing the worker fence.
+    preview_lock.unlock();
+    web_seek_pending_ = *request;
+    const bool admitted = request->delta_ns ? seek_runtime_relative(*request->delta_ns, request->request_id)
+                                            : seek_runtime(request->position_ns, request->request_id);
+    if (!admitted) {
+      if (web_seek_pending_) {
+        web_seek_pending_.reset();
+        reply("failed", "native-seek-rejected");
+      }
+      return false;
+    }
+    reply("accepted", "");
     return true;
   }
   if (trimmed_line == "set-tone-controls" || trimmed_line.rfind("set-tone-controls ", 0) == 0 ||
@@ -6180,7 +6725,36 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       return false;
     }
     if (prepare_process_pause && generation > process_pause_generation_) {
+      // Freeze the shared GStreamer clock and the audio device before the UI
+      // stops process threads. Otherwise the physical playback cursor advances
+      // during SIGSTOP and queued PCM is irrecoverably late after SIGCONT.
+      std::vector<std::weak_ptr<HmApp>> paused;
+      const auto stage = stage_app_contexts_.find(current_stage_);
+      if (stage != stage_app_contexts_.end()) {
+        for (const auto& context : stage->second) {
+          const auto owner = hm::gst::PacedPlayback::Find(context->pipeline.pipeline);
+          if (!owner)
+            continue;
+          GstState state = GST_STATE_NULL;
+          gst_element_get_state(context->pipeline.pipeline, &state, nullptr, 0);
+          if (state != GST_STATE_PLAYING)
+            continue;
+          if (!pause_pipeline(context.get())) {
+            resume_pipeline(context.get());
+            for (const auto& previous : paused) {
+              if (const auto retained = previous.lock()) {
+                resume_pipeline(retained.get());
+              }
+            }
+            g_printerr("runtime process pause failed: paced pipeline did not quiesce\n");
+            return false;
+          }
+          paused.push_back(context);
+        }
+      }
+      process_clock_paused_.insert(process_clock_paused_.end(), paused.begin(), paused.end());
       process_pause_generation_ = generation;
+      process_pause_active_ = true;
       set_uri_playlist_process_paused(TRUE);
       // The UI may stop all threads as soon as it reads this acknowledgment.
       g_print("HSTREAM_PROCESS_PAUSE status=prepared generation=%" G_GUINT64_FORMAT "\n", generation);
@@ -6188,6 +6762,17 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       return true;
     }
     if (resume_process_pause && generation == process_pause_generation_) {
+      for (const auto& paused : process_clock_paused_) {
+        const auto context = paused.lock();
+        if (!context || !context->pipeline.pipeline)
+          continue;
+        if (!resume_pipeline(context.get())) {
+          g_printerr("runtime process resume failed: paced pipeline did not restart\n");
+          return false;
+        }
+      }
+      process_clock_paused_.clear();
+      process_pause_active_ = false;
       set_uri_playlist_process_paused(FALSE);
       g_print("HSTREAM_PROCESS_PAUSE status=resumed generation=%" G_GUINT64_FORMAT "\n", generation);
       std::fflush(stdout);
@@ -6315,6 +6900,10 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
   }
   std::vector<std::tuple<std::string, std::string, std::string>> assignments;
   if (parse_runtime_set_properties(line, &assignments)) {
+    if (web_rotation_ && web_rotation_->pending()) {
+      g_printerr("runtime command failed: rotation-pending\n");
+      return false;
+    }
     return set_element_properties_runtime(assignments);
   }
   std::string element_name;
@@ -6331,11 +6920,18 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
         "<app-index> <base64-path> <base64-property> <base64-value>, or set-property <element> <property=value>\n");
     return false;
   }
+  if (web_rotation_ && web_rotation_->pending()) {
+    g_printerr("runtime command failed: rotation-pending\n");
+    return false;
+  }
   return set_element_property_runtime(element_name, property_name, value);
 }
 
 bool PipelineApplication::runtime_seek_is_local_render_only() const {
-  auto is_render_type = [](NvDsSinkType type) {
+  const bool private_browser = web_preview_ && !web_preview_run_id_.empty();
+  auto is_render_type = [private_browser](NvDsSinkType type) {
+    if (private_browser)
+      return type == NV_DS_SINK_WEBRTC;
 #if defined(IS_TEGRA)
     return type == NV_DS_SINK_RENDER_3D || type == NV_DS_SINK_RENDER_DRM;
 #else
@@ -6349,6 +6945,8 @@ bool PipelineApplication::runtime_seek_is_local_render_only() const {
   if (stage == stage_app_contexts_.end() || stage->second.empty()) {
     return false;
   }
+  if (private_browser && stage->second.size() != 1)
+    return false;
   const size_t stage_index = static_cast<size_t>(std::distance(stage_app_contexts_.cbegin(), stage));
   if (enabled_sink_types_.size() != 1 && stage_index >= enabled_sink_types_.size()) {
     return false;
@@ -6364,6 +6962,27 @@ bool PipelineApplication::runtime_seek_is_local_render_only() const {
   for (const auto& app_context : stage->second) {
     if (!app_context) {
       continue;
+    }
+    if (private_browser) {
+      bool file_source = false;
+      for (guint index = 0; index < app_context->config.num_source_sub_bins; ++index) {
+        const auto& source = app_context->config.multi_source_config[index];
+        if (!source.enable)
+          continue;
+        if (source.type != NV_DS_SOURCE_URI && source.type != NV_DS_SOURCE_URI_MULTIPLE)
+          return false;
+        file_source = true;
+      }
+      if (!file_source)
+        return false;
+    }
+    if (private_browser && app_context->config.dsplaytracker_config.enable) {
+      for (const auto& property : app_context->config.dsplaytracker_config.private_properties) {
+        auto name = property.name;
+        std::replace(name.begin(), name.end(), '_', '-');
+        if ((name == "telemetry-csv-dir" || name == "telemetry-db-dir") && !property.value.empty())
+          return false;
+      }
     }
     for (guint index = 0; index < app_context->config.num_sink_sub_bins; ++index) {
       const NvDsSinkSubBinConfig& sink = app_context->config.sink_bin_sub_bin_config[index];
@@ -6408,6 +7027,8 @@ bool PipelineApplication::seek_runtime_impl(
   if (!ui_preview_window_ids_.empty() && preview_routes_.selected_channel().empty()) {
     return reject("rejected", "local-render-disabled");
   }
+  if (web_preview_ && web_preview_->selection() == "none")
+    return reject("rejected", "local-render-disabled");
   const auto stage = stage_app_contexts_.find(current_stage_);
   if (stage == stage_app_contexts_.end() || stage->second.empty()) {
     return reject("failed", "pipeline-unavailable");
@@ -6694,13 +7315,24 @@ void PipelineApplication::advance_runtime_seek() {
   }
 }
 
-void PipelineApplication::finish_runtime_seek(const char* status, const char* reason, uint64_t achieved_position_ns) {
+void PipelineApplication::finish_runtime_seek(
+    const char* status,
+    const char* reason,
+    uint64_t achieved_position_ns,
+    uint64_t source_pts_ns) {
   if (!runtime_seek_pending_) {
     return;
   }
   runtime_seek_frame_generation_.store(0, std::memory_order_release);
   const RuntimeSeekPending completed = std::move(*runtime_seek_pending_);
   runtime_seek_pending_.reset();
+  const bool succeeded = std::string(status) == "ok";
+  if (succeeded && completed.app_ctx && completed.pipeline == completed.app_ctx->pipeline.pipeline) {
+    // The output observer stays fenced through preroll and initial source
+    // positioning; only the published replacement can acknowledge this seek.
+    if (GstElement* tracker = completed.app_ctx->pipeline.dsplaytracker_bin.elem_dsplaytracker)
+      g_object_set_data(G_OBJECT(tracker), hm::tracking::kCameraSeekState, nullptr);
+  }
   g_print(
       "HSTREAM_SEEK_TIMING generation=%" G_GUINT64_FORMAT " elapsed_ms=%lld\n",
       completed.generation,
@@ -6716,6 +7348,19 @@ void PipelineApplication::finish_runtime_seek(const char* status, const char* re
         status,
         completed.generation,
         achieved_position_ns == GST_CLOCK_TIME_NONE ? completed.target_ns : achieved_position_ns);
+  }
+  if (web_seek_pending_ && web_seek_pending_->request_id == completed.generation) {
+    const auto reply = hm::preview::WebPreviewSeekReply(
+        *web_seek_pending_,
+        succeeded ? "completed" : "failed",
+        reason ? reason : "",
+        inspector_topology_generation_,
+        succeeded ? std::optional<uint64_t>(
+                        achieved_position_ns == GST_CLOCK_TIME_NONE ? completed.target_ns : achieved_position_ns)
+                  : std::nullopt,
+        succeeded && source_pts_ns != GST_CLOCK_TIME_NONE ? std::optional<uint64_t>(source_pts_ns) : std::nullopt);
+    g_print("HSTREAM_PREVIEW_SEEK %s\n", reply.c_str());
+    web_seek_pending_.reset();
   }
   std::fflush(stdout);
   if (completed.pipeline) {
@@ -6947,6 +7592,21 @@ bool PipelineApplication::set_preview_overlays_runtime(const hm::pipeline_intern
   return true;
 }
 
+guint PipelineApplication::current_player_drawing_layers() const {
+  if (player_drawing_layers_)
+    return *player_drawing_layers_;
+  const auto stage = stage_app_contexts_.find(current_stage_);
+  if (stage == stage_app_contexts_.end() || stage->second.empty() || !stage->second.front())
+    return 0;
+  const auto& config = stage->second.front()->config;
+  const auto& drawing = config.player_analytics_config.analytics.drawing;
+  return (config.hmplaycropper_config.plot_player_tracking ? hm::player_analytics::kDrawPlayerBoxes : 0U) |
+      (drawing.pose ? hm::player_analytics::kDrawPose : 0U) |
+      (drawing.jersey ? hm::player_analytics::kDrawJerseys : 0U) |
+      (drawing.action ? hm::player_analytics::kDrawActions : 0U) |
+      (drawing.team ? hm::player_analytics::kDrawTeams : 0U);
+}
+
 bool PipelineApplication::apply_player_drawing_layers(guint layers) {
   bool applied = false;
   for (const auto& app : stage_app_contexts_.at(current_stage_)) {
@@ -6968,6 +7628,10 @@ bool PipelineApplication::apply_player_drawing_layers(guint layers) {
     if (!preview.sink || !seen.insert(preview.sink).second)
       continue;
     g_object_set(G_OBJECT(preview.sink), "player-drawing-layers", layers, nullptr);
+    applied = true;
+  }
+  if (web_preview_) {
+    web_preview_->SetPlayerDrawingLayers(layers);
     applied = true;
   }
   return applied;
@@ -7122,6 +7786,14 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
       path.c_str(),
       result.width,
       result.height);
+  if (result.identity)
+    g_print(
+        "runtime preview frame identity channel=%s path=%s generation=%" G_GUINT64_FORMAT
+        " pipeline-pts-ns=%" G_GUINT64_FORMAT "\n",
+        channel.c_str(),
+        path.c_str(),
+        static_cast<guint64>(result.identity->generation),
+        static_cast<guint64>(result.identity->pipeline_pts));
   return true;
 }
 
@@ -7241,6 +7913,14 @@ void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* messag
             expected, recovery_generation, std::memory_order_acq_rel, std::memory_order_acquire);
         return;
       }
+      if (!runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+        if (GstElement* tracker = app_ctx->pipeline.dsplaytracker_bin.elem_dsplaytracker) {
+          const auto* handoff = static_cast<const hm::tracking::CameraSeekState*>(
+              g_object_get_data(G_OBJECT(tracker), hm::tracking::kCameraSeekState));
+          if (handoff && handoff->seek_generation == recovery_generation)
+            g_object_set_data(G_OBJECT(tracker), hm::tracking::kCameraSeekState, nullptr);
+        }
+      }
       g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", recovery_generation);
       std::fflush(stdout);
       return;
@@ -7276,7 +7956,7 @@ void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* messag
         achieved_position_ns = std::min(achieved_position_ns, horizon_ns);
       }
       resume_perf_measurement(&app_ctx->perf_struct);
-      finish_runtime_seek("ok", nullptr, achieved_position_ns);
+      finish_runtime_seek("ok", nullptr, achieved_position_ns, pts_ns);
     }
     return;
   }
@@ -7507,6 +8187,24 @@ void PipelineApplication::remember_scoreboard_selection(
 
 gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage* message) {
   const GstStructure* structure = message ? gst_message_get_structure(message) : nullptr;
+  if (structure && gst_structure_has_name(structure, "hstream-operator-selection-phase")) {
+    std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
+    const auto active_stage = stage_app_contexts_.find(current_stage_);
+    gboolean active = FALSE;
+    if (web_preview_ && app_ctx && active_stage != stage_app_contexts_.end() &&
+        std::any_of(
+            active_stage->second.begin(),
+            active_stage->second.end(),
+            [app_ctx](const auto& context) { return context.get() == app_ctx; }) &&
+        GST_MESSAGE_SRC(message) == GST_OBJECT(app_ctx->pipeline.common_elements.hmplaycropper_bin.playcropper) &&
+        gst_structure_get_boolean(structure, "active", &active)) {
+      g_print(
+          "HSTREAM_WEB_SCOREBOARD_SELECTION %s\n",
+          hm::preview::WebScoreboardSelectionPhase(web_preview_->identity(), active).c_str());
+      std::fflush(stdout);
+    }
+    return TRUE;
+  }
   if (structure && gst_structure_has_name(structure, "hstream-scoreboard-selected")) {
     std::lock_guard<std::mutex> pipeline_lock(pipeline_access_mu_);
     if (!app_ctx)
@@ -7670,6 +8368,17 @@ void PipelineApplication::cancel_stitch_frame_rewind(uint64_t main_loop_generati
     g_source_remove(stitch_frame_rewind_source_id_);
     stitch_frame_rewind_source_id_ = 0;
   }
+  if (stitch_frame_rewind_cancellation_requested_) {
+    const auto stage = stage_app_contexts_.find(current_stage_);
+    if (stage != stage_app_contexts_.end()) {
+      for (const auto& context : stage->second) {
+        if (context) {
+          if (const auto paced = hm::gst::PacedPlayback::Find(context->pipeline.pipeline))
+            paced->Cancel();
+        }
+      }
+    }
+  }
   cancel_stitch_frame_completion_timeout();
   stitch_frame_rewind_pending_contexts_.clear();
   stitch_frame_rewind_cancellation_requested_ = false;
@@ -7704,6 +8413,14 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
     }
   }
   if (rewind_contexts.empty() || quit_) {
+    if (stitch_frame_rewind_cancellation_requested_) {
+      for (const auto& context : active_stage->second) {
+        if (context) {
+          if (const auto paced = hm::gst::PacedPlayback::Find(context->pipeline.pipeline))
+            paced->Cancel();
+        }
+      }
+    }
     stitch_frame_rewind_source_id_ = 0;
     stitch_frame_rewind_pending_contexts_.clear();
     stitch_frame_rewind_cancellation_requested_ = false;
@@ -7724,6 +8441,8 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   auto fail_restart = [&](const char* diagnostic, const char* message) -> gboolean {
     g_printerr("%s\n", diagnostic);
     for (AppCtx* context : stage_contexts) {
+      if (const auto paced = hm::gst::PacedPlayback::Find(context->pipeline.pipeline))
+        paced->Cancel();
       context->return_value = -1;
       context->quit = TRUE;
     }
@@ -7763,11 +8482,6 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
         }
         context->eos_received = TRUE;
       }
-      if (gst_element_set_state(context->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
-        return fail_restart(
-            "Failed to quiesce same-stage pipelines before stitch-frame restart",
-            "Could not pause playback for restart");
-      }
       context->observed_pipeline_state = GST_STATE_VOID_PENDING;
       pause_perf_measurement(&context->perf_struct);
     }
@@ -7779,6 +8493,12 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
   if (!stitch_frame_restart_awaiting_playing_) {
     bool all_quiesced = true;
     for (AppCtx* context : stage_contexts) {
+      if (!clean_terminal_context(context) &&
+          hm::gst::RequestPacedPipelinePause(context->pipeline.pipeline) == GST_STATE_CHANGE_FAILURE) {
+        return fail_restart(
+            "Failed to quiesce same-stage pipelines before stitch-frame restart",
+            "Could not pause playback for restart");
+      }
       const gboolean bus_running = dispatch_pending_pipeline_bus_messages(context);
       if (!bus_running && !clean_terminal_context(context)) {
         return fail_restart(
@@ -7845,7 +8565,7 @@ gboolean PipelineApplication::rewind_after_stitching_calibration(long stage, uin
         continue;
       }
       context->observed_pipeline_state = GST_STATE_VOID_PENDING;
-      if (gst_element_set_state(context->pipeline.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+      if (hm::gst::RequestPacedPipelineResume(context->pipeline.pipeline) == GST_STATE_CHANGE_FAILURE) {
         return fail_restart(
             "Failed to resume a same-stage peer after stitch-frame calibration",
             "Could not resume playback after calibration");
@@ -7944,6 +8664,12 @@ gboolean PipelineApplication::event_thread_func() {
   // runtime command until the completed transaction is published here.
   if (pipeline_recreation_active_.load(std::memory_order_acquire)) {
     return TRUE;
+  }
+  if (web_rotation_) {
+    std::lock_guard<std::mutex> lock(pipeline_access_mu_);
+    web_rotation_->Poll();
+    if (quit_)
+      return FALSE;
   }
   // Timed mask preparation recreates the entire stage rather than using the
   // stitch-frame rewind callback. Preserve the same UI completion protocol,
@@ -8097,7 +8823,10 @@ gboolean PipelineApplication::event_thread_func() {
           resume_pipeline(app_ctx[i].get());
       break;
     case 'q':
-      player_scan_interrupted_ = TRUE;
+      // Stop finalizes ordinary playback archives. A timed player scan still
+      // requires its natural boundary and must retain cancellation semantics.
+      if (player_frame_scan_)
+        player_scan_interrupted_ = TRUE;
       quit_ = TRUE;
       if (main_loop_)
         g_main_loop_quit(main_loop_);
@@ -8217,7 +8946,8 @@ gpointer PipelineApplication::nvds_x_event_thread() {
             break;
           }
           if (e.xkey.keycode == q) {
-            player_scan_interrupted_ = TRUE;
+            if (player_frame_scan_)
+              player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);
@@ -8233,7 +8963,8 @@ gpointer PipelineApplication::nvds_x_event_thread() {
               break;
           wm_delete = XInternAtom(display_, "WM_DELETE_WINDOW", 1);
           if (wm_delete != None && wm_delete == (Atom)e.xclient.data.l[0]) {
-            player_scan_interrupted_ = TRUE;
+            if (player_frame_scan_)
+              player_scan_interrupted_ = TRUE;
             quit_ = TRUE;
             if (main_loop_)
               g_main_loop_quit(main_loop_);
@@ -8526,7 +9257,7 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     bool calibration_restart,
     bool runtime_seek_restart,
     uint64_t runtime_seek_target_ns,
-    uint64_t /*runtime_seek_generation*/,
+    uint64_t runtime_seek_generation,
     bool* topology_changed) {
   guint i;
   gboolean ret = TRUE;
@@ -8539,6 +9270,12 @@ gboolean PipelineApplication::recreate_pipeline_impl(
       g_usleep(static_cast<gulong>(delay_ms) * 1000);
     }
   }
+  process_clock_paused_.erase(
+      std::remove_if(process_clock_paused_.begin(), process_clock_paused_.end(), [app_ctx_ptr](const auto& paused) {
+        const auto context = paused.lock();
+        return !context || context.get() == app_ctx_ptr;
+      }),
+      process_clock_paused_.end());
   g_print("Destroy pipeline\n");
   if (web_preview_) {
     retained_web_preview_selection_ = web_preview_->selection();
@@ -8550,14 +9287,21 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   preview_overlay_probe_flags_.store(0, std::memory_order_release);
   // Keep this exact generation alive through NULL so a telemetry writer that
   // initialized during preroll can be identified after its final close.
-  GstElement* retired_tracker = calibration_restart && !hm::publication::EnvironmentManifest().empty()
+  const bool retire_calibration_telemetry = calibration_restart && !hm::publication::EnvironmentManifest().empty();
+  GstElement* retired_tracker = (retire_calibration_telemetry || runtime_seek_restart)
       ? app_ctx_ptr->pipeline.dsplaytracker_bin.elem_dsplaytracker
       : nullptr;
+  std::string retained_camera_checkpoint;
+  bool retained_camera_has_tracks = false;
   bool calibration_stopped = true;
   if (retired_tracker) {
     gst_object_ref(retired_tracker);
-    app_ctx_ptr->eos_received = TRUE;
-    calibration_stopped = stop_pipeline_gracefully(app_ctx_ptr, 5 * GST_SECOND);
+    if (runtime_seek_restart) {
+      g_object_set_data(G_OBJECT(retired_tracker), hm::tracking::kCaptureCameraSeekState, GINT_TO_POINTER(1));
+    } else {
+      app_ctx_ptr->eos_received = TRUE;
+      calibration_stopped = stop_pipeline_gracefully(app_ctx_ptr, 5 * GST_SECOND);
+    }
   }
   // Hold the retiring identities until its worker stops. Its synchronous bus
   // receipt captures even a selection completed while teardown is draining.
@@ -8578,8 +9322,22 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   if (retiring_cropper)
     gst_object_unref(retiring_cropper);
   if (retired_tracker) {
+    if (runtime_seek_restart) {
+      const auto* handoff = static_cast<const hm::tracking::CameraSeekState*>(
+          g_object_get_data(G_OBJECT(retired_tracker), hm::tracking::kCameraSeekState));
+      if (!handoff || !handoff->status.ok()) {
+        g_printerr(
+            "Cannot retain seek camera state: %s\n",
+            handoff ? handoff->status.ToString().c_str() : "tracker did not complete shutdown handoff");
+        gst_object_unref(retired_tracker);
+        return FALSE;
+      }
+      retained_camera_checkpoint = handoff->checkpoint;
+      retained_camera_has_tracks = handoff->has_received_tracks;
+    }
     gchar* telemetry_path = nullptr;
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(retired_tracker), "telemetry-output-path"))
+    if (retire_calibration_telemetry &&
+        g_object_class_find_property(G_OBJECT_GET_CLASS(retired_tracker), "telemetry-output-path"))
       g_object_get(retired_tracker, "telemetry-output-path", &telemetry_path, nullptr);
     const std::string path = telemetry_path ? telemetry_path : "";
     g_free(telemetry_path);
@@ -8673,6 +9431,11 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     NVGSTDS_ERR_MSG_V("Failed to arm replacement URI-playlist chapter seeks before preroll");
     return FALSE;
   }
+  const auto paced_status = configure_paced_local_playback(*hm_app);
+  if (!paced_status.ok()) {
+    g_printerr("Cannot rebuild paced local presentation: %s\n", paced_status.ToString().c_str());
+    return FALSE;
+  }
   if (web_preview_ || !ui_preview_window_ids_.empty()) {
     const auto configured = configure_preview_overlay_producers(stage_app_contexts_.at(current_stage_));
     if (!configured.ok()) {
@@ -8699,6 +9462,33 @@ gboolean PipelineApplication::recreate_pipeline_impl(
       g_printerr("Cannot attach replacement web preview: %s\n", preview_status.ToString().c_str());
       return FALSE;
     }
+  }
+  if (runtime_seek_restart && !retained_camera_checkpoint.empty()) {
+    // The replacement tracker is lazy. Select a compatible recording against
+    // the retained camera metadata now, then validate again against the actual
+    // replacement geometry before its first frame can step or be presented.
+    GstElement* replacement_tracker = hm_app->pipeline.dsplaytracker_bin.elem_dsplaytracker;
+    if (!replacement_tracker) {
+      g_printerr("Cannot restore seek camera state: replacement tracker is unavailable\n");
+      return FALSE;
+    }
+    const auto current = hm::play_tracker::deserialize_snapshot(retained_camera_checkpoint);
+    seed_runtime_playtracker(hm_app, initial_position_ns, [&](const std::string& recorded) {
+      auto prepared = hm::tracking::PrepareCameraSeekState(recorded, current);
+      if (!prepared.ok())
+        return false;
+      retained_camera_checkpoint = hm::play_tracker::serialize_snapshot(*prepared);
+      retained_camera_has_tracks = true;
+      return true;
+    });
+    auto handoff = std::make_unique<hm::tracking::CameraSeekState>();
+    handoff->checkpoint = std::move(retained_camera_checkpoint);
+    handoff->has_received_tracks = retained_camera_has_tracks;
+    handoff->seek_generation = runtime_seek_generation;
+    g_object_set_data_full(
+        G_OBJECT(replacement_tracker), hm::tracking::kCameraSeekState, handoff.release(), [](gpointer value) {
+          delete static_cast<hm::tracking::CameraSeekState*>(value);
+        });
   }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
     NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
@@ -8748,7 +9538,10 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   return ret;
 }
 
-void PipelineApplication::seed_runtime_playtracker(HmApp* app, uint64_t absolute_position_ns) {
+void PipelineApplication::seed_runtime_playtracker(
+    HmApp* app,
+    uint64_t absolute_position_ns,
+    const std::function<bool(const std::string&)>& apply_checkpoint) {
   GstElement* tracker = app->pipeline.dsplaytracker_bin.elem_dsplaytracker;
   if (!tracker || !game_id_ || !*game_id_)
     return;
@@ -8823,10 +9616,16 @@ void PipelineApplication::seed_runtime_playtracker(HmApp* app, uint64_t absolute
         if (!replay.ok())
           throw std::runtime_error(replay.status().ToString());
         const std::string checkpoint = (*replay)->starting_checkpoint();
-        GstEvent* event = gst_event_new_custom(
-            GST_EVENT_CUSTOM_DOWNSTREAM,
-            gst_structure_new("hstream-playtracker-seed", "checkpoint", G_TYPE_STRING, checkpoint.c_str(), nullptr));
-        if (!gst_element_send_event(tracker, event))
+        bool applied = false;
+        if (apply_checkpoint) {
+          applied = apply_checkpoint(checkpoint);
+        } else {
+          GstEvent* event = gst_event_new_custom(
+              GST_EVENT_CUSTOM_DOWNSTREAM,
+              gst_structure_new("hstream-playtracker-seed", "checkpoint", G_TYPE_STRING, checkpoint.c_str(), nullptr));
+          applied = gst_element_send_event(tracker, event);
+        }
+        if (!applied)
           throw std::runtime_error("play tracker rejected incompatible recorded state");
         g_print(
             "HSTREAM_SEEK_TRACKER source=recording database=%s origin=%s elapsed_ms=%lld\n",
@@ -8902,6 +9701,8 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   if (delay_ms > 0)
     g_usleep(static_cast<gulong>(delay_ms) * 1000);
   g_print("HSTREAM_SEEK_PHASE phase=sources-stop\n");
+  if (auto paced = hm::gst::PacedPlayback::Find(app->pipeline.pipeline))
+    paced->Cancel();
   // Flush downstream before joining decoders: queued GPU work and sink clock
   // waits must release the old surfaces before the source pool can retire.
   for (const auto& link : links)
@@ -9053,7 +9854,8 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
     bool source_linked_audio = true;
     for (const auto& audio : app_ctx->config.hmaudio_config)
       source_linked_audio = source_linked_audio && (!audio.enable || audio.src == SRC_SOURCE_BIN);
-    if (source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin && source_linked_audio) {
+    if (web_preview_run_id_.empty() && source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin &&
+        source_linked_audio) {
       topology_changed = true;
       success = seek_runtime_sources(app_ctx, target_ns);
     } else {

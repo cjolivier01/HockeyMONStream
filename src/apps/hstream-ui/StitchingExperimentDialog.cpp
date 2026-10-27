@@ -20,6 +20,7 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
+#include "src/apps/hstream-ui/StitchingExperimentDefaults.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDebug>
@@ -604,6 +605,7 @@ struct StitchingExperimentDialog::Impl {
   StitchingExperimentVideoTarget* video{nullptr};
   QTimeEdit* preview_start{nullptr};
   QSpinBox* preview_duration{nullptr};
+  int scan_interval_ms{0};
   QComboBox* blend_mode{nullptr};
   QDoubleSpinBox* blend_feather{nullptr};
   QWidget* blend_feather_row{nullptr};
@@ -815,39 +817,41 @@ struct StitchingExperimentDialog::Impl {
         item->setToolTip(description);
     }
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
+    // QProcess can finish before the session fence and queued completion have
+    // released its workspace. Keep admissions closed through that interval.
+    const bool preview_owned = preview_process || preview_completion_pending || preview_shutdown_ticket.has_value();
     const bool promoting = promotion_worker != nullptr || preparation_worker != nullptr;
-    const bool stopping = pending_group_shutdowns > 0;
+    const bool stopping = pending_group_shutdowns > 0 || candidate_completion_pending || preview_completion_pending;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
     const bool selected_removable =
         row >= 0 && row < static_cast<int>(candidates.size()) && removable_candidate(candidates[row]);
     const bool editing_batch =
-        store && store_error.isEmpty() && !batch_active && !previewing && !promoting && !stopping && !closing;
+        store && store_error.isEmpty() && !batch_active && !preview_owned && !promoting && !stopping && !closing;
     const auto queued_count =
         std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
     remove_from_batch->setEnabled(
-        store && !batch_active && !previewing && !promoting && !stopping && !closing && selected_removable);
+        store && !batch_active && !preview_owned && !promoting && !stopping && !closing && selected_removable);
     clear_batch->setEnabled(
-        store && !batch_active && !previewing && !promoting && !stopping && !closing &&
+        store && !batch_active && !preview_owned && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
     start_batch->setEnabled(editing_batch && queued_count > 0);
     cancel->setEnabled(batch_active && !closing);
-    table->setEnabled(!batch_active && !previewing && !promoting && !closing);
+    table->setEnabled(!batch_active && !preview_owned && !promoting && !stopping && !closing);
     preview->setEnabled(
-        selected && !candidates[row].main_calibration && !batch_active && !previewing && !promoting && !stopping &&
+        selected && !candidates[row].main_calibration && !batch_active && !preview_owned && !promoting && !stopping &&
         !closing);
     stop_preview->setEnabled(previewing && !closing);
-    apply->setEnabled(
-        selected && !candidates[row].main_calibration && !batch_active && !previewing && !promoting && !closing);
+    apply->setEnabled(can_apply_selected() && !closing);
     inspect_frames->setEnabled(
         row >= 0 && row < static_cast<int>(candidates.size()) && candidate_has_inspection(candidates[row]) &&
-        !batch_active && !previewing && !promoting && !stopping && !closing);
+        !batch_active && !preview_owned && !promoting && !stopping && !closing);
     view_runner_log->setEnabled(
         row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].workspace &&
         QFileInfo::exists(
             QString::fromStdString((candidates[row].workspace->game_directory / "runner.log").string())) &&
-        !batch_active && !previewing && !promoting && !stopping && !closing);
+        !batch_active && !preview_owned && !promoting && !stopping && !closing);
     shared_rotation->setEnabled(editing_batch);
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
     prefer_player_frames->setEnabled(editing_batch);
@@ -1862,7 +1866,7 @@ struct StitchingExperimentDialog::Impl {
       args.removeAll("--stitching-calibration-only");
       args << QString("--stitching-player-scan-output=%1")
                   .arg(QString::fromStdString(scan_report_path(candidate).string()))
-           << "--stitching-player-scan-interval-ms=500"
+           << QString("--stitching-player-scan-interval-ms=%1").arg(scan_interval_ms)
            << QString("--stitching-player-scan-frame-count=%1").arg(candidate.settings.frame_count)
            << QString("--start-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time))
            << QString("-t=%1").arg(candidate.scan_duration_seconds);
@@ -2056,8 +2060,9 @@ struct StitchingExperimentDialog::Impl {
     if (settings.camera) {
       const auto& lens = settings.camera->input_lens;
       table->item(row, 9)->setToolTip(
-          QString("Camera horizontal FOV: %1°\nCalibration: %2\nDistortion a/b/c: %3 / %4 / %5\n"
-                  "Center offset X/Y: %6% / %7%")
+          QString(
+              "Camera horizontal FOV: %1°\nCalibration: %2\nDistortion a/b/c: %3 / %4 / %5\n"
+              "Center offset X/Y: %6% / %7%")
               .arg(settings.camera->horizontal_fov, 0, 'g', 12)
               .arg(QString::fromStdString(lens.optimization))
               .arg(lens.distortion[0], 0, 'g', 12)
@@ -3253,6 +3258,13 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   configure_preview_dialog_window(this);
   resize(1280, 820);
   auto& s = *impl_;
+  const auto experiment_baseline = environment.contains("HM_CONFIG_ROOT")
+      ? hm::baseline_config::load_from_root(environment.value("HM_CONFIG_ROOT").toStdString())
+      : hm::baseline_config::load();
+  if (!experiment_baseline.ok())
+    throw std::runtime_error(experiment_baseline.status().ToString());
+  const auto experiment_defaults = ReadStitchingExperimentDefaults(experiment_baseline->values);
+  s.scan_interval_ms = experiment_defaults.scan_interval_ms;
   s.game_directory = game_directory;
   s.runner = runner;
   s.working_directory = working_directory;
@@ -3441,11 +3453,11 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   });
   s.shared_rotation = new QCheckBox("Use the game’s saved rink leveling for every candidate");
   s.shared_rotation->setObjectName("stitchExperimentSharedRotation");
-  s.shared_rotation->setChecked(true);
+  s.shared_rotation->setChecked(experiment_defaults.share_saved_rotation);
   s.rotations = new QLineEdit("0/0");
   s.rotations->setObjectName("stitchExperimentRotations");
   s.rotations->setPlaceholderText("pitch/roll pairs: 0/0,-1.5/0.5");
-  s.rotations->setEnabled(false);
+  s.rotations->setEnabled(!experiment_defaults.share_saved_rotation);
   connect(s.shared_rotation, &QCheckBox::toggled, this, [&s](bool checked) { s.rotations->setEnabled(!checked); });
   matrix_layout->addRow("CP limits per frame pair", s.control_points);
   matrix_layout->addRow("Control-point matcher", s.control_point_matcher);
@@ -3562,7 +3574,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   matrix_layout->addRow("Rink pitch/roll variants", s.rotations);
   s.prefer_player_frames = new QCheckBox("Prefer player-rich frames");
   s.prefer_player_frames->setObjectName("stitchExperimentPreferPlayerFrames");
-  s.prefer_player_frames->setChecked(true);
+  s.prefer_player_frames->setChecked(experiment_defaults.prefer_player_frames);
   s.prefer_player_frames->setToolTip(
       "Choose player-rich frames once per frame count, using one ordinary baseline and the Program ice mask. "
       "Later options reuse that exact selection and its original search duration, even when this box is unchecked. "
@@ -3570,7 +3582,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.scan_duration = new QSpinBox();
   s.scan_duration->setObjectName("stitchExperimentPlayerScanDuration");
   s.scan_duration->setRange(1, 300);
-  s.scan_duration->setValue(60);
+  s.scan_duration->setValue(experiment_defaults.scan_duration_seconds);
   s.scan_duration->setSuffix(" s");
   s.scan_duration->setEnabled(false);
   auto* player_options = new QHBoxLayout();
@@ -3662,11 +3674,11 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.preview_duration = new QSpinBox();
   s.preview_duration->setObjectName("stitchExperimentPreviewDuration");
   s.preview_duration->setRange(2, 120);
-  s.preview_duration->setValue(15);
+  s.preview_duration->setValue(experiment_defaults.preview_duration_seconds);
   s.preview_duration->setSuffix(" s");
   s.loop = new QCheckBox("Loop");
   s.loop->setObjectName("stitchExperimentLoop");
-  s.loop->setChecked(true);
+  s.loop->setChecked(experiment_defaults.preview_loop);
   s.preview = new QPushButton(action_icon(ActionIcon::Play), "Play selected");
   s.preview->setObjectName("previewStitchExperimentButton");
   s.stop_preview = new QPushButton(action_icon(ActionIcon::Stop), "Stop");

@@ -43,6 +43,7 @@
 #include "hstream/src/apps/apps-common/WebPreviewObserver.h"
 #include "hstream/src/apps/apps-common/WebRtcSignaling.h"
 #include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
+#include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
 
@@ -1557,7 +1558,7 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
   gchar rtppay_or_flvmux_name[50];
   int probe_id = 0;
   enum ServerSinkType sink_type;
-  bool resize_rtsp_output = false;
+  bool resize_network_output = false;
   std::string caps_string;
   const guint iframe_interval = config->iframeinterval ? config->iframeinterval : 30;
 
@@ -1653,10 +1654,12 @@ static gboolean create_udpsink_bin(NvDsSinkEncoderConfig* config, NvDsSinkBinSub
     goto done;
   }
 
-  resize_rtsp_output = sink_type != SST_RTMP && config->width && config->height;
+  // RTMP and RTSP share this network branch. Honor its explicit dimensions for
+  // both instead of sending a larger Program canvas to the network encoder.
+  resize_network_output = config->width && config->height;
   caps_string =
       config->enc_type == NV_DS_ENCODER_TYPE_SW ? "video/x-raw, format=I420" : "video/x-raw(memory:NVMM), format=I420";
-  if (resize_rtsp_output) {
+  if (resize_network_output) {
     caps_string += ", width=(int)" + std::to_string(config->width) + ", height=(int)" + std::to_string(config->height);
   }
   caps = gst_caps_from_string(caps_string.c_str());
@@ -2181,6 +2184,18 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
     bin->num_bins++;
     if (config_array[i].type != NV_DS_SINK_ENCODE_STITCHED_FILE && config_array[i].type != NV_DS_SINK_MSG_CONV_BROKER) {
       normal_num_bins++;
+    }
+  }
+
+  if (render_playback_realtime() &&
+      std::any_of(config_array, config_array + num_sub_bins, [index](const NvDsSinkSubBinConfig& config) {
+        return config.enable && config.source_id == index && !config.link_to_demux && config.type == NV_DS_SINK_WEBRTC;
+      })) {
+    std::string error;
+    if (!hm::preview::AttachPlaybackClock(
+            {hm::preview::RouteTap::Kind::kExistingTee, bin->bin, bin->tee}, &error)) {
+      NVGSTDS_ERR_MSG_V("Could not attach WebRTC playback clock: %s", error.c_str());
+      goto done;
     }
   }
 

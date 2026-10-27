@@ -2,7 +2,9 @@
 
 #include <gst/gst.h>
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 
 namespace hm::preview {
 
@@ -45,5 +47,20 @@ void selected_stream_remove_route(GstElement* stream, GstPad* pad);
 // operation is allowed; an older operation cannot change the selected route.
 bool selected_stream_select(GstElement* stream, GstPad* pad, std::uint64_t operation);
 bool selected_stream_active(GstElement* stream, GstPad* pad, std::uint64_t operation);
+// Optional shared A/V presentation clock. The callback runs without the flow
+// lock, so bounded mapping waits cannot prevent route shutdown. The selector
+// rechecks its operation afterward and retains original buffer/source identity.
+using PresentationMapper =
+    std::function<GstFlowReturn(const GstSegment&, GstClockTime, const std::atomic<bool>&, GstClockTime*)>;
+bool selected_stream_set_presentation_mapper(GstElement* stream, PresentationMapper mapper, std::function<void()> wake);
+// Retire only this selection's mapping waits before closing either native gate:
+// a full queue can also block the ingress barrier. Wake runs outside the flow
+// lock. The next selection receives a fresh token; shared PCM keeps its epoch.
+bool selected_stream_cancel_presentation(GstElement* stream, GstPad* pad, std::uint64_t operation);
+// Called under the same flow lock that assigns operation identities. False
+// drops a stale native frame without failing the preview. The callback must
+// only inspect metadata and must not reenter this selector or mutate its graph.
+using FrameAdmission = std::function<bool(const char* channel, GstBuffer* original)>;
+bool selected_stream_set_frame_admission(GstElement* stream, FrameAdmission admission);
 
 } // namespace hm::preview

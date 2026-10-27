@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Requires a real X11 desktop, GPU, and an already oriented/synchronized game.
-source_game=${1:?usage: test_stitching_match_editor_e2e.sh SOURCE_GAME_DIRECTORY [ARTIFACT_DIRECTORY]}
+source_game=${1:?usage: test_stitching_match_editor_e2e.sh SOURCE_GAME_DIRECTORY [ARTIFACT_DIRECTORY] [CALIBRATION_TIME]}
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 artifact_dir=${2:-${HOME}/Videos/hstream-match-editor-e2e-$(date +%Y%m%d-%H%M%S)}
 if [[ -e ${artifact_dir} ]]; then
@@ -44,7 +44,11 @@ cd "${repo_root}"
 bazel_output=${HSTREAM_MATCH_EDITOR_BAZEL_OUTPUT_BASE:-${HOME}/.bazel-modify-matches}
 bazelisk --output_base="${bazel_output}" build --symlink_prefix=/ --config=opt --cpu=k8 --config=blackwell \
   //src/apps/hstream-ui:stitching_match_editor_e2e //src/apps/hstream-cli:hstream-cli
+calibration_args=()
+if [[ -n ${3:-} ]]; then
+  calibration_args+=("${3}")
+fi
 QT_QPA_PLATFORM=xcb "${bazel_output}/execroot/kstream/bazel-out/k8-opt/bin/src/apps/hstream-ui/stitching_match_editor_e2e" \
   "${sandbox_game}" "${repo_root}" "${artifact_dir}" \
-  "${bazel_output}/execroot/kstream/bazel-out/k8-opt/bin/src/apps/hstream-cli/hstream-cli"
+  "${bazel_output}/execroot/kstream/bazel-out/k8-opt/bin/src/apps/hstream-cli/hstream-cli" "${calibration_args[@]}"
 echo "Passed; logs and screenshots: ${artifact_dir}"

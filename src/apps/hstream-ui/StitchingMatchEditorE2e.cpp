@@ -57,8 +57,9 @@ int main(int argc, char** argv) {
   QApplication app(argc, argv);
   app.setQuitOnLastWindowClosed(false);
   install_button_icon_style();
-  if (argc != 5) {
-    std::cerr << "usage: stitching_match_editor_e2e ISOLATED_GAME_DIRECTORY REPOSITORY ARTIFACT_DIRECTORY RUNNER\n";
+  if (argc != 5 && argc != 6) {
+    std::cerr << "usage: stitching_match_editor_e2e ISOLATED_GAME_DIRECTORY REPOSITORY ARTIFACT_DIRECTORY RUNNER "
+                 "[CALIBRATION_TIME]\n";
     return 2;
   }
   const std::filesystem::path game = std::filesystem::absolute(argv[1]);
@@ -81,7 +82,7 @@ int main(int argc, char** argv) {
       env,
       100,
       2,
-      "00:09:42",
+      argc == 6 ? QString::fromLocal8Bit(argv[5]) : QStringLiteral("00:09:42"),
       nullptr,
       [&] { applied = true; });
   dialog.show();

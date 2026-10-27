@@ -14,6 +14,7 @@ from pathlib import Path
 
 TOOL = str(Path(sys.argv.pop(1)).resolve())
 PACKAGER = Path(sys.argv.pop(1)).resolve()
+PUBLICATION = Path(sys.argv.pop(1)).resolve()
 
 
 class JobScriptTest(unittest.TestCase):
@@ -75,6 +76,76 @@ class JobScriptTest(unittest.TestCase):
             capture_output=True,
             check=False,
         )
+
+    def test_all_exported_modes_keep_the_managed_marker_through_native_exec(self):
+        finalizer_output = self.root / "finalizer-environment.json"
+        finalizer = self.root / "recording-finalizer"
+        finalizer.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            "with open(os.environ['JOB_TEST_FINALIZER_OUTPUT'],'w') as f:\n"
+            " json.dump({'argv':sys.argv[1:],'env':dict(os.environ)},f)\n"
+            "start=sys.argv.index('--')+1\n"
+            "os.execv(sys.argv[start],sys.argv[start:])\n"
+        )
+        finalizer.chmod(0o700)
+        self.env.update(
+            HSTREAM_RUNTIME_CACHE_DIR=str(self.root / "private-runtime"),
+            HSTREAM_JOB_MANAGED_RUNTIME="stale-parent-value",
+            JOB_TEST_FINALIZER_OUTPUT=str(finalizer_output),
+        )
+        for mode in (None, "--interactive", "--runtime-only", "--interactive-publication"):
+            with self.subTest(mode=mode or "unattended-encode"):
+                self.output.unlink(missing_ok=True)
+                finalizer_output.unlink(missing_ok=True)
+                options = ["--force", "--finalizer", str(finalizer)]
+                if mode:
+                    options.append(mode)
+                exported = self.generate(*options)
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                extra = ["--tensorrt-runtime-info"] if mode == "--runtime-only" else []
+                run = subprocess.run([str(self.game / "hstream-job.sh"), *extra], env=self.env,
+                                     text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                self.assertEqual(actual["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
+                if mode == "--runtime-only":
+                    self.assertEqual(actual["argv"], extra)
+                elif mode is None:
+                    self.assertIn("--encode-job", actual["argv"])
+                else:
+                    self.assertNotIn("--encode-job", actual["argv"])
+                if mode in (None, "--interactive-publication"):
+                    admitted = json.loads(finalizer_output.read_text())
+                    self.assertEqual(admitted["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
+                else:
+                    self.assertFalse(finalizer_output.exists())
+
+    def test_supervisor_run_identity_reaches_the_native_finalizer(self):
+        identity = "admitted-run_123"
+        exported = self.generate("--run-id", identity)
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        self.assertFalse(self.output.exists())
+        run = subprocess.run(
+            [str(self.game / "hstream-job.sh")], env=self.env, text=True, capture_output=True
+        )
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["env"]["HSTREAM_ARCHIVE_RUN_ID"], identity)
+        self.assertTrue((self.game / f"hstream-job-{identity}.yaml").is_file())
+        self.assertEqual(len(list(self.game.glob("hstream-job-*.yaml"))), 1)
+
+    def test_invalid_or_unmanaged_run_identity_cannot_publish_a_script(self):
+        for identity in ("", "short", "x" * 101, "../outside", "unsafe/run", "new\nline", "$(touch INJECTED)"):
+            with self.subTest(identity=identity):
+                self.assertNotEqual(self.generate("--run-id", identity).returncode, 0)
+                self.assertFalse((self.game / "hstream-job.sh").exists())
+        for mode in ("--interactive", "--runtime-only"):
+            self.assertNotEqual(self.generate(mode, "--run-id", "admitted-run_123").returncode, 0)
+            self.assertFalse((self.game / "hstream-job.sh").exists())
+        self.assertNotEqual(self.generate("--run-id", "first-run-id", "--run-id", "second-run-id").returncode, 0)
+        self.assertFalse((self.game / "hstream-job.sh").exists())
+        self.assertFalse(self.output.exists())
+        self.assertFalse((self.root / "INJECTED").exists())
 
     def test_direct_execution_preserves_arguments_and_exit_code(self):
         result = self.generate(
@@ -175,6 +246,140 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotIn("nonexistent-finalizer", script.read_text())
         self.assertFalse((self.root / "INJECTED").exists())
 
+    def test_interactive_publication_preserves_stdin_and_does_not_adopt_failure(self):
+        self.arguments[0] = "--enable-sinks=WEBRTC,ENCODE_FILE,RTMP"
+        self.arguments.append("--render-realtime")
+        (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'],'w') as f:\n"
+            " json.dump({'argv':sys.argv[1:], 'stdin':sys.stdin.readline(), 'env':dict(os.environ)},f)\n"
+            "sys.exit(7)\n"
+        )
+        exported = self.generate("--interactive-publication")
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        run = subprocess.run(
+            [str(self.game / "hstream-job.sh"), "--options=pipeline.sink4.webrtc-port=20001", "literal $(touch INJECTED)"],
+            input="q\n", env=self.env, text=True, capture_output=True,
+        )
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"][5:5 + len(self.arguments)], self.arguments)
+        self.assertEqual(actual["argv"][-2:], ["--options=pipeline.sink4.webrtc-port=20001", "literal $(touch INJECTED)"])
+        self.assertEqual(actual["stdin"], "q\n")
+        self.assertNotIn("--encode-job", actual["argv"])
+        self.assertEqual(actual["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
+        manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
+        self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]), manifest.parent / "runtime")
+        self.assertFalse(list(self.game.glob("*.mp4")))
+        receipts = list(self.game.glob("hstream-job-*.yaml"))
+        self.assertEqual(len(receipts), 1)
+        self.assertIn("runner_succeeded: false", manifest.read_text())
+        self.assertNotIn("runner_succeeded: true", receipts[0].read_text())
+        self.assertNotIn("state: complete", receipts[0].read_text())
+        self.assertFalse((self.root / "INJECTED").exists())
+
+    def test_interactive_publication_finishes_exact_native_manifest_after_stop(self):
+        # The real publication fixture records telemetry for game ID "game".
+        game = self.game.with_name("game")
+        self.game.rename(game)
+        self.game = game
+        self.command[self.command.index("--game-dir") + 1] = str(game)
+        fixture = self.root / "fixture.mkv"
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=64x64:rate=5",
+            "-t", "0.4", "-c:v", "libx264", "-y", str(fixture),
+        ], check=True)
+        self.arguments[0] = "--enable-sinks=WEBRTC,ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE"
+        (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport subprocess,sys\n"
+            "assert sys.stdin.readline() == 'q\\n'\n"
+            + "subprocess.run(" + repr([str(PUBLICATION), "--produce", str(fixture)]) + ",check=True)\n"
+        )
+        self.assertEqual(self.generate("--interactive-publication", "--run-id", "interactive-admitted-id").returncode, 0)
+        script = self.game / "hstream-job.sh"
+        run = subprocess.run([str(script)], input="q\n", env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(len(list(self.game.glob("*.mp4"))), 3)
+        self.assertEqual(len(list(self.game.glob("*.db"))), 1)
+        self.assertEqual(len(list(self.game.glob("*.hstream-archive.json"))), 3)
+        receipts = list(self.game.glob("hstream-job-*.yaml"))
+        self.assertEqual(len(receipts), 1)
+        self.assertEqual(receipts[0].name, "hstream-job-interactive-admitted-id.yaml")
+        self.assertIn("state: complete", receipts[0].read_text())
+        self.assertIn("runner_succeeded: true", receipts[0].read_text())
+        self.assertFalse(list((Path(self.env["HM_OUTPUT_WORK_DIR"]) / self.game.name / "runs").glob("*")))
+        # Reconciliation retries the frozen script and native identity.
+        self.runner.unlink()
+        retry = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(len(list(self.game.glob("*.mp4"))), 3)
+
+    def test_interactive_publication_finishes_telemetry_without_video_archives(self):
+        game = self.game.with_name("game")
+        self.game.rename(game)
+        self.game = game
+        self.command[self.command.index("--game-dir") + 1] = str(game)
+        arguments = ["--enable-sinks=WEBRTC", "--render-realtime"]
+        (game / "config.yaml").write_text(json.dumps({
+            "hstream_ui": {"job": {"arguments": arguments, "capture_telemetry": True}}
+        }))
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport json,os,subprocess,sys\n"
+            "assert sys.stdin.readline() == 'q\\n'\n"
+            "with open(os.environ['JOB_TEST_OUTPUT'],'w') as f:\n"
+            " json.dump({'argv':sys.argv[1:],'manifest':os.environ['HSTREAM_JOB_MANIFEST']},f)\n"
+            + "subprocess.run(" + repr([str(PUBLICATION), "--produce", str(self.root / "unused-video"), "--telemetry-only"])
+            + ",check=True)\n"
+        )
+        exported = self.generate("--interactive-publication", "--run-id", "telemetry-only-admitted-id")
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        script = game / "hstream-job.sh"
+        run = subprocess.run([str(script)], input="q\n", env=self.env, text=True, capture_output=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertIn("--enable-sinks=WEBRTC", actual["argv"])
+        self.assertIn("--render-realtime", actual["argv"])
+        self.assertIn("--options=hstream_ui.job.capture_telemetry=true", actual["argv"])
+        self.assertNotIn("--encode-job", actual["argv"])
+        self.assertFalse(any("ENCODE_" in arg for arg in actual["argv"]))
+        self.assertFalse(list(game.glob("*.mp4")))
+        self.assertFalse(list(game.glob("*.hstream-archive.json")))
+        self.assertEqual(len(list(game.glob("*.db"))), 1)
+        receipt = game / "hstream-job-telemetry-only-admitted-id.yaml"
+        self.assertIn("state: complete", receipt.read_text())
+        self.assertIn("runner_succeeded: true", receipt.read_text())
+        self.assertIn("kind: telemetry", receipt.read_text())
+        self.assertFalse(Path(actual["manifest"]).parent.exists())
+        self.runner.unlink()
+        retry = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(len(list(game.glob("*.db"))), 1)
+
+    def test_interactive_telemetry_requires_explicit_program_capture(self):
+        for capture, calibration in ((None, False), (False, False), (True, True)):
+            with self.subTest(capture=capture, calibration=calibration):
+                job = {"arguments": ["--enable-sinks=WEBRTC"]}
+                if capture is not None:
+                    job["capture_telemetry"] = capture
+                if calibration:
+                    job["arguments"].append("--stitching-calibration-only")
+                (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": job}}))
+                result = self.generate("--interactive-publication", "--force")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("explicitly selected Program telemetry", result.stderr)
+
+    def test_interactive_publication_rejects_preview_only_or_program_calibration(self):
+        for arguments in (
+            ["--enable-sinks=WEBRTC"],
+            ["--stitching-calibration-only", "--enable-sinks=WEBRTC,ENCODE_FILE"],
+        ):
+            (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": arguments}}}))
+            result = self.generate("--interactive-publication", "--force")
+            self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(self.generate("--interactive-publication", "--runtime-only").returncode, 0)
+
     def test_interactive_requires_supervisor_runtime_directory(self):
         result = self.generate("--interactive")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -272,7 +477,9 @@ class JobScriptTest(unittest.TestCase):
                 # Export against different file contents, then change them:
                 # the script must resolve live config, while preserving its
                 # saved option arguments.
-                (baseline / "baseline.yaml").write_text("{}")
+                (baseline / "baseline.yaml").write_text(json.dumps({
+                    "hstream_ui": {"export_archive_routes": ["program_4k"]},
+                }))
                 (home / ".hstream/hstream.yaml").write_text("{}")
                 (self.game / "config.yaml").write_text(json.dumps({
                     "hstream_ui": {"job": {"arguments": options}}
@@ -487,6 +694,7 @@ class JobScriptTest(unittest.TestCase):
                 actual = json.loads(self.output.read_text())
                 self.assertEqual(actual["argv"], expected)
                 self.assertNotIn("--encode-job", actual["argv"])
+                self.assertEqual(actual["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
                 self.assertEqual(actual["cwd"], "/")
                 # The marker must be read after the launcher's runtime setup,
                 # which is the only part of it a managed run still needs.
@@ -511,6 +719,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertIn("--enable-sinks=ENCODE_FILE", actual["argv"])
         self.assertEqual(actual["argv"][-2:], ["-g", "mygame"])
         self.assertEqual(actual["cwd"], str(install))
+        self.assertNotIn("HSTREAM_JOB_MANAGED_RUNTIME", actual["env"])
 
     def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
         self.install_packaged_launcher()
@@ -534,6 +743,7 @@ class JobScriptTest(unittest.TestCase):
                                          cwd="/", env=env, text=True, capture_output=True)
                     self.assertEqual(run.returncode, 7, run.stderr)
                     actual = json.loads(self.output.read_text())
+                    self.assertEqual(actual["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
                     expected = ["-g", self.game.name]
                     if config:
                         expected += ["-c", str(self.config)]
@@ -678,6 +888,25 @@ class JobScriptTest(unittest.TestCase):
         self.assertIn("--encode-job", custom.read_text())
         (self.game / "config.yaml").write_text("[invalid")
         self.assertNotEqual(self.generate().returncode, 0)
+
+    def test_export_fallback_requires_the_shared_baseline_archive_recipe(self):
+        baseline = self.root / "baseline"
+        baseline.mkdir()
+        self.env["HM_CONFIG_ROOT"] = str(baseline)
+        (self.game / "config.yaml").write_text("pipeline: {}\n")
+        (baseline / "baseline.yaml").write_text(json.dumps({
+            "hstream_ui": {"export_archive_routes": ["stitched"]},
+        }))
+        exported = self.generate()
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        script = self.game / "hstream-job.sh"
+        self.assertIn("--enable-sinks=ENCODE_STITCHED_FILE", script.read_text())
+        self.assertIn("--stitching-calibration-only", script.read_text())
+        original = script.read_bytes()
+        for defaults in ({}, {"export_archive_routes": []}, {"export_archive_routes": ["unknown"]}):
+            (baseline / "baseline.yaml").write_text(json.dumps({"hstream_ui": defaults}))
+            self.assertNotEqual(self.generate("--force").returncode, 0)
+            self.assertEqual(script.read_bytes(), original)
 
 
 if __name__ == "__main__":

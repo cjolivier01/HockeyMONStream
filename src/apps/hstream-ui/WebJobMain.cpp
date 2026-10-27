@@ -1,20 +1,31 @@
 // Thin headless owners of the same native libraries used by the desktop dialogs.
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/ConfigLayers.h"
+#include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
+#include "src/apps/hstream-ui/DetectorOptions.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
 #include "src/apps/hstream-ui/HighlightReelPipeline.h"
 #include "src/apps/hstream-ui/HighlightScene.h"
 #include "src/apps/hstream-ui/HighlightTracking.h"
 #include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
+#include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
+#include "src/apps/hstream-ui/WebCalibrationControls.h"
+#include "src/apps/hstream-ui/WebCameraExperiment.h"
+#include "src/apps/hstream-ui/WebExperimentFrames.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
+#include "src/apps/hstream-ui/WebRinkEditor.h"
+#include "src/apps/hstream-ui/WebRinkMap.h"
+#include "src/apps/hstream-ui/WebSavedCalibration.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -29,6 +40,7 @@
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QSaveFile>
+#include <QtCore/QTemporaryDir>
 #include <QtGui/QGuiApplication>
 #include <algorithm>
 #include <atomic>
@@ -39,6 +51,7 @@
 #include <csignal>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -122,53 +135,66 @@ hm::ui::ArchiveMediaInfo probe(const fs::path& archive, bool metadata_only = fal
   return media;
 }
 
-hm::ui::ArchiveMediaInfo card_archive(const Request& request) {
-  const auto source = request.runtime.value("archive_probe").toObject();
-  const auto name = RequiredString(source, "path", 4096);
-  const fs::path path(name.toStdString());
-  require(
-      path.is_absolute() && path.lexically_normal() == path && request.authorized_media.size() == 1 &&
-          request.authorized_media.at(0).isString() && request.authorized_media.at(0).toString() == name,
-      "Card preview requires exactly its frozen authorized archive");
-  const auto expected = source.value("identity").toObject();
-  require(expected.size() == 5, "Card archive identity is incomplete");
-  // Open every directory without following aliases, then pin the immutable file
-  // while the metadata-only probe reads its descriptor. The archive is neither
-  // copied into this run nor retained as a symlink or hardlink after completion.
-  QFile pinned;
-  int descriptor = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  require(descriptor >= 0, "Cannot open the archive filesystem root");
-  require(pinned.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive root");
-  for (auto component = path.begin(); component != path.end(); ++component) {
-    if (*component == path.root_directory())
-      continue;
-    require(*component != "." && *component != "..", "Invalid card archive path");
-    const bool last = std::next(component) == path.end();
-    descriptor = ::openat(
-        pinned.handle(), component->c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (last ? O_NONBLOCK : O_DIRECTORY));
-    require(descriptor >= 0, "Cannot open the frozen card archive without following links");
-    pinned.close();
-    require(pinned.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive input");
+// Keep one checked descriptor alive for the whole decoder/capture lifetime.
+// No archive copy, symlink or hardlink is retained by the private run.
+class PinnedArchive {
+ public:
+  PinnedArchive(const Request& request, const QString& key) {
+    const auto source = request.runtime.value(key).toObject();
+    const auto name = RequiredString(source, "path", 4096);
+    const fs::path original(name.toStdString());
+    require(
+        original.is_absolute() && original.lexically_normal() == original && request.authorized_media.size() == 1 &&
+            request.authorized_media.at(0).isString() && request.authorized_media.at(0).toString() == name,
+        "Highlights require exactly their frozen authorized archive");
+    expected_ = source.value("identity").toObject();
+    require(expected_.size() == 5, "Archive identity is incomplete");
+    int descriptor = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    require(descriptor >= 0, "Cannot open the archive filesystem root");
+    require(pinned_.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive root");
+    for (auto component = original.begin(); component != original.end(); ++component) {
+      if (*component == original.root_directory())
+        continue;
+      require(*component != "." && *component != "..", "Invalid archive path");
+      const bool last = std::next(component) == original.end();
+      descriptor = ::openat(
+          pinned_.handle(), component->c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (last ? O_NONBLOCK : O_DIRECTORY));
+      require(descriptor >= 0, "Cannot open the frozen archive without following links");
+      pinned_.close();
+      require(pinned_.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive input");
+    }
+    Verify();
+    path_ = fs::path("/proc") / std::to_string(::getpid()) / "fd" / std::to_string(pinned_.handle());
   }
-  const auto matches = [&] {
+  void Verify() const {
     struct stat info{};
-    require(::fstat(pinned.handle(), &info) == 0 && S_ISREG(info.st_mode), "Card archive is not a regular file");
+    require(::fstat(pinned_.handle(), &info) == 0 && S_ISREG(info.st_mode), "Archive is not a regular file");
     const QJsonObject actual{
         {"dev", QString::number(info.st_dev)},
         {"ino", QString::number(info.st_ino)},
         {"size", QString::number(info.st_size)},
         {"mtime_ns", QString::number(qint64(info.st_mtim.tv_sec) * 1000000000 + info.st_mtim.tv_nsec)},
         {"ctime_ns", QString::number(qint64(info.st_ctim.tv_sec) * 1000000000 + info.st_ctim.tv_nsec)}};
-    require(actual == expected, "Card archive identity changed before or during inspection");
-  };
-  matches();
-  const auto media =
-      probe(fs::path("/proc") / std::to_string(::getpid()) / "fd" / std::to_string(pinned.handle()), true);
-  matches();
+    require(actual == expected_, "Archive identity changed before or during processing");
+  }
+  const fs::path& path() const {
+    return path_;
+  }
+
+ private:
+  QFile pinned_;
+  QJsonObject expected_;
+  fs::path path_;
+};
+
+hm::ui::ArchiveMediaInfo card_archive(const Request& request) {
+  const PinnedArchive pinned(request, "archive_probe");
+  const auto media = probe(pinned.path(), true);
+  pinned.Verify();
   return media;
 }
 
-hm::ui::HighlightPlan load_plan(const Request& request) {
+hm::ui::HighlightPlan load_plan(const Request& request, const PinnedArchive* archive = nullptr) {
   require(request.payload.value("plan").isObject(), "Expected a native highlight plan");
   auto json = request.payload.value("plan").toObject();
   // The worker resolves artifact IDs. No saved desktop absolute paths can leak
@@ -180,8 +206,12 @@ hm::ui::HighlightPlan load_plan(const Request& request) {
   QString error;
   if (!hm::ui::LoadHighlightPlan(qs(path), &plan, &error))
     throw std::runtime_error(error.toStdString());
-  if (!plan.archive_path.isEmpty())
-    plan.archive_path = qs(Contained(request.root, plan.archive_path));
+  if (!plan.archive_path.isEmpty()) {
+    require(!archive || plan.archive_path == "inputs/archive.mp4", "Unexpected frozen archive marker");
+    plan.archive_path = qs(archive ? archive->path() : Contained(request.root, plan.archive_path));
+  } else {
+    require(!archive, "A frozen archive requires an explicit plan binding");
+  }
   for (auto& item : plan.intervals) {
     for (auto* logo : {&item.card.logo_a, &item.card.logo_b})
       if (!logo->isEmpty())
@@ -189,27 +219,54 @@ hm::ui::HighlightPlan load_plan(const Request& request) {
     for (auto& annotation : item.annotations) {
       if (!annotation.database.isEmpty())
         annotation.database = qs(Contained(request.root, annotation.database));
-      if (!annotation.archive_path.isEmpty())
-        annotation.archive_path = qs(Contained(request.root, annotation.archive_path));
+      if (!annotation.archive_path.isEmpty()) {
+        require(!archive || annotation.archive_path == "inputs/archive.mp4", "Unexpected tracked archive marker");
+        annotation.archive_path = qs(archive ? archive->path() : Contained(request.root, annotation.archive_path));
+      }
     }
   }
   return plan;
 }
 
 QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
-  auto plan = load_plan(request);
+  if (request.operation == "highlight-archive-info") {
+    require(request.payload.isEmpty(), "Archive inspection accepts only its frozen probe");
+    const auto media = card_archive(request);
+    require(
+        std::isfinite(media.duration_seconds) && media.duration_seconds >= 0 &&
+            media.duration_seconds < 9007199254740.0 && std::isfinite(media.frame_rate) && media.frame_rate >= 0 &&
+            media.frame_rate <= 1000000 && !media.video_codec.isEmpty() && media.video_codec.size() <= 128,
+        "Archive information exceeds its metadata bounds");
+    return {
+        {"width", media.width},
+        {"height", media.height},
+        {"video_codec", media.video_codec},
+        {"has_audio", media.has_audio},
+        {"frame_rate", media.frame_rate},
+        {"duration_ms", static_cast<qint64>(std::llround(media.duration_seconds * 1000.0))}};
+  }
+  std::optional<PinnedArchive> archive;
+  if (request.runtime.contains("archive_input"))
+    archive.emplace(request, "archive_input");
+  auto plan = load_plan(request, archive ? &*archive : nullptr);
   if (request.operation == "highlight-card-preview") {
     require(
         plan.intervals.size() == 1 && plan.intervals.front().is_card && !request.payload.contains("selected_indices"),
         "Card preview requires exactly one authored card");
     require(plan.archive_path.isEmpty(), "Card preview accepts only its frozen archive probe");
-    const auto media = card_archive(request);
+    QSize output_size;
+    if (request.runtime.contains("archive_probe")) {
+      const auto media = card_archive(request);
+      output_size = QSize(media.width, media.height);
+    }
     QImage image;
     QString error;
     require(!interrupted, "cancelled");
-    if (!hm::ui::RasterHighlightCard(
-            plan.intervals.front().card, qs(request.root), &image, &error, QSize(media.width, media.height)))
+    if (!hm::ui::RasterHighlightCard(plan.intervals.front().card, qs(request.root), &image, &error, output_size))
       throw std::runtime_error(error.toStdString());
+    // Without an archive, use the same intrinsic card canvas as the Qt editor.
+    if (!output_size.isValid())
+      output_size = image.size();
     require(!interrupted, "cancelled");
     const auto path = request.root / "highlight-card.png";
     require(!fs::exists(path), "Refusing to replace an existing card preview");
@@ -223,8 +280,8 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
         {"preview", "highlight-card.png"},
         {"width", image.width()},
         {"height", image.height()},
-        {"source_width", media.width},
-        {"source_height", media.height}};
+        {"source_width", output_size.width()},
+        {"source_height", output_size.height()}};
   }
   QVector<hm::ui::HighlightInterval> selected;
   if (request.payload.contains("selected_indices")) {
@@ -250,6 +307,17 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
   job.archive_path = plan.archive_path;
   job.asset_root = qs(request.root);
   const bool live = request.operation == "highlight-live-preview";
+  if (request.payload.contains("inspect_game_ms")) {
+    require(live, "Authored frame inspection requires live preview");
+    job.inspect_game_ms = integer(request.payload, "inspect_game_ms", 0, 86400000, -1);
+  }
+  if (!job.archive_path.isEmpty())
+    job.media = probe(job.archive_path.toStdString(), archive.has_value());
+  else {
+    job.media.width = 1920;
+    job.media.height = 1080;
+    job.media.frame_rate = 30;
+  }
   if (live) {
     require(request.payload.value("loop").isBool(), "Live highlight preview requires an explicit loop choice");
     require(preview_port, "Live highlight preview requires a supervisor-assigned signaling port");
@@ -274,32 +342,28 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
         {"seek", false},
         {"receiptLimits",
          QJsonObject{{"maxFrames", int(o.browser_max_frames)}, {"maxAgeMs", int(o.browser_max_age_ms)}}}};
-    std::cout << "HSTREAM_HIGHLIGHT_PREVIEW "
-              << QJsonDocument(
-                     QJsonObject{
-                         {"version", 1},
-                         {"kind", "session"},
-                         {"run", text(request.run_id)},
-                         {"stage", 0},
-                         {"generation", 1},
-                         {"presentation", descriptor}})
-                     .toJson(QJsonDocument::Compact)
-                     .constData()
+    QJsonObject session{
+        {"version", 1},
+        {"kind", "session"},
+        {"run", text(request.run_id)},
+        {"stage", 0},
+        {"generation", 1},
+        {"presentation", descriptor}};
+    if (job.inspect_game_ms >= 0) {
+      const auto size = hm::ui::HighlightReelPipeline::PreviewSize(job.media);
+      session.insert(
+          "inspection",
+          QJsonObject{{"game_ms", job.inspect_game_ms}, {"width", size.width()}, {"height", size.height()}});
+    }
+    std::cout << "HSTREAM_HIGHLIGHT_PREVIEW " << QJsonDocument(session).toJson(QJsonDocument::Compact).constData()
               << std::endl;
   } else {
-    require(!preview_port, "A signaling port is only valid for live highlight preview");
+    require(!preview_port, "A signaling port is only valid for live highlight or camera preview");
     job.output_path = qs(request.root / "highlights.mp4");
     require(!fs::exists(job.output_path.toStdString()), "Refusing to replace an existing reel output");
   }
   job.items = selected;
   job.archive_offset_ms = integer(request.payload, "archive_offset_ms", 0, 86400000, 0);
-  if (!job.archive_path.isEmpty())
-    job.media = probe(job.archive_path.toStdString());
-  else {
-    job.media.width = 1920;
-    job.media.height = 1080;
-    job.media.frame_rate = 30;
-  }
   hm::ui::HighlightReelPipeline pipeline;
   QString error;
   if (!pipeline.Start(std::move(job), &error))
@@ -308,6 +372,8 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
     if (interrupted)
       pipeline.Cancel();
     const auto status = pipeline.Poll();
+    if (archive)
+      archive->Verify();
     if (live) {
       std::cout << "HSTREAM_HIGHLIGHT_PREVIEW "
                 << QJsonDocument(
@@ -384,6 +450,8 @@ hm::stitching::CalibrationMatchSet matches(const Request& request, bool edit) {
         (camera++ ? pair.right : pair.left) = cv::Point2f(x, y);
       }
       pair.score = Number(point, "score", 0, 1, 1);
+      pair.left_index = integer(point, "left_index", -1, std::numeric_limits<int>::max(), -1);
+      pair.right_index = integer(point, "right_index", -1, std::numeric_limits<int>::max(), -1);
       destination.matches.push_back(pair);
     }
   }
@@ -396,25 +464,68 @@ QJsonObject matches_result(
   QJsonArray frames;
   for (std::size_t index = 0; index < saved.frames.size(); ++index) {
     const auto& frame = saved.frames[index];
-    QJsonArray points, images, sizes;
+    QJsonArray points, images, sizes, source_seconds, source_identity, source_names;
     for (int camera = 0; camera < 2; ++camera) {
       images.append(text(Relative(request, frame.images[camera])));
       sizes.append(QJsonArray{frame.sizes[camera].width, frame.sizes[camera].height});
       artifacts.append(Artifact(request, frame.images[camera], "image"));
+      source_seconds.append(frame.source_seconds[camera]);
+      source_names.append(text(fs::path(frame.source_paths[camera]).filename().string()));
+      source_identity.append(
+          QString::fromLatin1(
+              QCryptographicHash::hash(
+                  QByteArray::fromStdString(frame.source_paths[camera]), QCryptographicHash::Sha256)
+                  .toHex()));
     }
     for (const auto& pair : frame.matches)
       points.append(
           QJsonObject{
               {"left", QJsonArray{pair.left.x, pair.left.y}},
               {"right", QJsonArray{pair.right.x, pair.right.y}},
-              {"score", pair.score}});
-    frames.append(QJsonObject{{"index", int(index)}, {"images", images}, {"sizes", sizes}, {"matches", points}});
+              {"score", pair.score},
+              {"left_index", pair.left_index},
+              {"right_index", pair.right_index}});
+    frames.append(
+        QJsonObject{
+            {"index", int(index)},
+            {"images", images},
+            {"sizes", sizes},
+            {"matches", points},
+            {"source_seconds", source_seconds},
+            {"source_identity", source_identity},
+            {"source_names", source_names}});
   }
   return {
       {"fingerprint", text(saved.fingerprint)},
       {"input_fingerprint", text(saved.input_fingerprint)},
       {"manual", saved.manual},
       {"frames", frames}};
+}
+
+QJsonObject editable_matches_result(const Request& request, const Request& source, QJsonArray& artifacts) {
+  const auto saved = matches(source, false);
+  const auto automatic = saved.manual
+      ? take(hm::stitching::LoadCalibrationMatches(source.game, saved.automatic_fingerprint, false))
+      : saved;
+  bool compatible = !saved.frames.empty() && saved.frames.size() == automatic.frames.size() &&
+      saved.input_fingerprint == automatic.input_fingerprint;
+  for (size_t i = 0; compatible && i < saved.frames.size(); ++i)
+    compatible = saved.frames[i].sizes == automatic.frames[i].sizes &&
+        saved.frames[i].source_paths == automatic.frames[i].source_paths &&
+        saved.frames[i].source_seconds == automatic.frames[i].source_seconds &&
+        (!saved.input_fingerprint.empty() || saved.frames[i].images == automatic.frames[i].images);
+  auto result = matches_result(request, saved, artifacts);
+  result.insert("match_editor_version", 1);
+  result.insert("automatic", matches_result(request, automatic, artifacts));
+  result.insert("automatic_compatible", compatible);
+  result.insert(
+      "editor_limits",
+      QJsonObject{
+          {"maximum_matches_per_pair", int(hm::stitching::kMaximumEditableMatchesPerPair)},
+          {"maximum_image_bytes", qint64(hm::stitching::kMaximumEditableImageBytes)},
+          {"maximum_image_pixels", qint64(hm::stitching::kMaximumEditableImagePixels)},
+          {"maximum_image_dimension", hm::stitching::kMaximumEditableImageDimension}});
+  return result;
 }
 
 void merge_settings(YAML::Node destination, const YAML::Node& overlay) {
@@ -450,6 +561,99 @@ QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
       {"camera_fov", QJsonObject{{"horizontal_fov", camera.horizontal_fov}, {"vertical_fov", camera.vertical_fov}}},
       {"input_lens", input},
       {"camera_automation", automation}};
+}
+
+QJsonObject read_camera_optics(const Request& request) {
+  require(request.payload.size() == 1 && request.payload.value("camera").isObject(), "Expected camera optics controls");
+  const auto camera = request.payload.value("camera").toObject();
+  const std::set<QString> allowed{"camera_config", "camera_fov", "input_lens", "camera_automation"};
+  for (auto item = camera.begin(); item != camera.end(); ++item)
+    require(allowed.count(item.key()), "Unsupported camera optics control");
+  auto config = YAML::Clone(take(hm::baseline_config::load()).values);
+  YAML::Node controls;
+  controls["stitching"] = YAML::Load(QJsonDocument(camera).toJson().toStdString());
+  merge_settings(config, controls);
+  const auto current_selection = take(hm::stitching::read_stitch_camera_selection(config));
+  std::unique_ptr<hm::stitching::GameConfigTransactionLock> snapshot;
+  if (request.runtime.value("saved_optics").toBool()) {
+    snapshot = take(hm::stitching::GameConfigTransactionLock::TryAcquireSnapshot(request.game));
+    const auto path = Contained(request.game, "config.yaml");
+    require(fs::file_size(path) <= 4 * 1024 * 1024, "Saved optics config exceeds its input limit");
+    const auto saved = YAML::LoadFile(path.string())["stitching"];
+    require(saved && saved.IsMap() && saved["auto_input_lens_frozen"].as<bool>(false), "Saved optics are not frozen");
+    for (const auto& key : allowed)
+      if (const auto value = saved[key.toStdString()]; value)
+        config["stitching"][key.toStdString()] = YAML::Clone(value);
+    auto saved_selection = take(hm::stitching::read_stitch_camera_selection(config));
+    require(
+        saved_selection.automatic_fov() == current_selection.automatic_fov() &&
+            saved_selection.automatic_lens() == current_selection.automatic_lens(),
+        "Saved optics policy changed");
+    if (!current_selection.automatic_fov()) {
+      saved_selection.horizontal_fov = current_selection.horizontal_fov;
+      saved_selection.vertical_fov = current_selection.vertical_fov;
+    }
+    if (!current_selection.automatic_lens())
+      saved_selection.input_lens = current_selection.input_lens;
+    hm::stitching::write_stitch_camera_selection(config, saved_selection);
+    config["stitching"]["auto_input_lens_frozen"] = true;
+  }
+  const auto selection = take(hm::stitching::read_stitch_camera_selection(config));
+  require(request.runtime.value("optics_media").isArray(), "Expected private optics media");
+  const auto media = request.runtime.value("optics_media").toArray();
+  require(media.size() <= 10000 && media.size() == request.authorized_media.size(), "Invalid optics media count");
+  // The metadata reader follows only these private aliases to descriptor-pinned
+  // originals. It never decodes frames, copies video, or trusts a saved path.
+  QTemporaryDir temporary(qs(request.root / ".optics-inputs-XXXXXX"));
+  require(temporary.isValid(), "Cannot create private optics input aliases");
+  const fs::path game(temporary.path().toStdString());
+  std::vector<std::unique_ptr<PinnedArchive>> pinned;
+  std::set<QString> originals, aliases;
+  config["hstream_ui"]["video_roles"] = YAML::Node(YAML::NodeType::Map);
+  config["game"].remove("videos");
+  for (const auto& entry : media) {
+    require(!interrupted && entry.isObject(), "Optics metadata read cancelled or invalid");
+    const auto source = entry.toObject();
+    require(source.size() == 4, "Invalid private optics source");
+    const auto original = RequiredString(source, "path", 4096);
+    const auto relative = RequiredString(source, "relative", 1024);
+    const auto role = RequiredString(source, "role", 16);
+    require(
+        (role == "auto" || role == "left" || role == "right" || role == "center") &&
+            originals.insert(original).second && aliases.insert(relative).second &&
+            request.authorized_media.contains(original),
+        "Invalid authorized optics source");
+    Request input = request;
+    input.authorized_media = QJsonArray{original};
+    input.runtime =
+        QJsonObject{{"optics_source", QJsonObject{{"path", original}, {"identity", source.value("identity")}}}};
+    auto owner = std::make_unique<PinnedArchive>(input, "optics_source");
+    const auto destination = Contained(game, relative, false);
+    require(
+        destination != game && !fs::exists(destination) && !fs::is_symlink(destination), "Overlapping optics alias");
+    fs::create_directories(destination.parent_path());
+    fs::create_symlink(owner->path(), destination);
+    if (role != "auto")
+      config["hstream_ui"]["video_roles"][role.toStdString()].push_back(destination.string());
+    pinned.push_back(std::move(owner));
+  }
+  const auto resolved = hm::stitching::ReadAutoInputLensForGame(game, config, selection, true);
+  for (const auto& input : pinned)
+    input->Verify();
+  require(!interrupted, "Optics metadata read cancelled");
+  return {
+      {"version", 1},
+      {"camera", camera_json(resolved.camera)},
+      {"message", text(resolved.message)},
+      {"fov_message", text(resolved.fov_message)},
+      {"lens_message", text(resolved.lens_message)},
+      {"recording_message", text(resolved.recording_message)},
+      {"recording_metadata_found", resolved.recording_metadata_found},
+      {"horizontal_fov_from_mp4", resolved.horizontal_fov_from_mp4},
+      {"vertical_fov_from_mp4", resolved.vertical_fov_from_mp4},
+      {"lens_from_mp4", resolved.lens_from_mp4},
+      {"detected", resolved.detected},
+      {"mismatch", resolved.mismatch}};
 }
 
 QJsonObject filtering_json(const hm::stitching::ControlPointFiltering& filtering) {
@@ -492,9 +696,20 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
         YAML::Load(QJsonDocument(object.value("control_point_filtering").toObject()).toJson().toStdString()));
   }
   result.control_point_filtering = take(hm::stitching::read_control_point_filtering(effective));
-  result.control_points = integer(object, "control_points", 10, 5000, 100);
-  result.frame_count = integer(object, "frame_count", 1, 16, 1);
-  result.stitch_frame_time = RequiredString(object, "stitch_frame_time", 32).toStdString();
+  const auto ui = source["hstream_ui"];
+  const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node(YAML::NodeType::Undefined);
+  result.control_points =
+      integer(object, "control_points", 10, 5000, take(hm::stitching::read_control_point_limit(effective)));
+  result.frame_count = integer(
+      object,
+      "frame_count",
+      1,
+      16,
+      calibration && calibration["frame_count"] ? calibration["frame_count"].as<int>()
+                                                : effective["stitching"]["calibration_frame_count"].as<int>());
+  result.stitch_frame_time = object.contains("stitch_frame_time")
+      ? RequiredString(object, "stitch_frame_time", 32).toStdString()
+      : effective["stitching"]["stitch_frame_time"].as<std::string>();
   qint64 milliseconds;
   require(hm::ui::ParseHighlightTime(text(result.stitch_frame_time), &milliseconds), "Invalid calibration timestamp");
   if (object.contains("control_point_matcher"))
@@ -539,6 +754,13 @@ QJsonObject settings_json(const StitchingExperimentSettings& value) {
   return result;
 }
 StitchingExperimentWorkspace workspace(const Request& request) {
+  if (!request.payload.contains("workspace")) {
+    const auto config = YAML::LoadFile((request.game / "config.yaml").string());
+    const auto saved = take(MainStitchingExperimentWorkspace(request.game, settings({}, config)));
+    require(
+        saved.has_value(), "The selected run has no saved calibration workspace; recover its original frames first");
+    return *saved;
+  }
   require(request.payload.value("workspace").isObject(), "Expected the saved native workspace descriptor");
   const auto object = request.payload.value("workspace").toObject();
   StitchingExperimentWorkspace result;
@@ -597,7 +819,7 @@ void run_process(
       "Native experiment process failed; inspect the run log");
 }
 
-void run_experiment(const Request& request, const StitchingExperimentWorkspace& saved) {
+void run_experiment(const Request& request, const StitchingExperimentWorkspace& saved, bool complete = true) {
   const auto runtime_path = [&](const char* key, bool directory = false) {
     const fs::path path(RequiredString(request.runtime, key, 2048).toStdString());
     require(path.is_absolute(), "Runtime paths must be absolute operator settings");
@@ -657,29 +879,40 @@ void run_experiment(const Request& request, const StitchingExperimentWorkspace& 
       directory,
       environment);
   run_process("/bin/bash", {script}, directory, environment);
-  check(CompleteStitchingExperimentWorkspace(saved, require_mask));
+  if (complete)
+    check(CompleteStitchingExperimentWorkspace(saved, require_mask));
 }
 
 QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
-  if (request.operation == "experiment-create" || request.operation == "experiment-edit") {
+  if (request.operation == "experiment-create" || request.operation == "experiment-edit" ||
+      request.operation == "experiment-prepare-edit" || request.operation == "experiment-save-matches" ||
+      request.operation == "experiment-recover") {
     fs::create_directories(request.root / "experiments");
     const int sequence = integer(request.payload, "sequence", 1, 1024, 1);
     StitchingExperimentWorkspace created;
-    if (request.operation == "experiment-create") {
+    if (request.operation == "experiment-create" || request.operation == "experiment-recover") {
       std::vector<fs::path> authorized_media;
       require(request.authorized_media.size() <= 10000, "Too many authorized media inputs");
       for (const auto& value : request.authorized_media) {
         require(value.isString() && !value.toString().contains(QChar(0)), "Invalid authorized media path");
         authorized_media.emplace_back(value.toString().toStdString());
       }
+      fs::path source_game = request.game;
+      if (request.operation == "experiment-create" && request.payload.contains("source_workspace")) {
+        auto source = request;
+        source.payload["workspace"] = request.payload.value("source_workspace");
+        source_game = workspace(source).game_directory;
+      }
       created = take(CreateStagedStitchingExperimentWorkspace(
-          request.game,
+          source_game,
           request.root / "experiments",
           settings(
-              request.payload.value("settings").toObject(), YAML::LoadFile((request.game / "config.yaml").string())),
+              request.payload.value("settings").toObject(), YAML::LoadFile((source_game / "config.yaml").string())),
           sequence,
           authorized_media,
           !request.payload.value("settings").toObject().value("camera").toObject().isEmpty()));
+    } else if (request.operation == "experiment-prepare-edit") {
+      created = take(CreateStitchingExperimentEditableCopy(workspace(request), request.root / "experiments", sequence));
     } else {
       const auto saved = workspace(request);
       auto source = request;
@@ -691,9 +924,59 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           matches(source, true),
           sequence));
     }
-    return {{"workspace", workspace_json(request, created)}, {"state", "queued"}};
+    if (request.operation == "experiment-create" || request.operation == "experiment-edit") {
+      const auto selection =
+          take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
+      return {
+          {"workspace", workspace_json(request, created)},
+          {"state", "queued"},
+          {"selection_available", !selection.empty()},
+          {"selection_fingerprint", text(selection)}};
+    }
+    const bool recovering = request.operation == "experiment-recover";
+    bool complete = false;
+    try {
+      run_experiment(request, created, !recovering);
+      complete = !recovering;
+    } catch (const std::exception&) {
+      // Recovery prepares immutable original images even when automatic
+      // matching cannot solve them. It never advertises a solved calibration.
+      // Cancellation and ordinary Save & recalibrate failures remain failures.
+      if (interrupted || (!recovering && request.operation != "experiment-prepare-edit"))
+        throw;
+    }
+    auto source = request;
+    source.game = created.game_directory;
+    source.payload.remove("fingerprint");
+    auto result = editable_matches_result(request, source, artifacts);
+    result.insert("workspace", workspace_json(request, created));
+    result.insert("state", complete ? "complete" : "editable");
+    result.insert("calibration_complete", complete);
+    const auto selection =
+        take(ReusableStitchingExperimentSelectionFingerprint(created.game_directory, created.settings));
+    result.insert("selection_available", !selection.empty());
+    result.insert("selection_fingerprint", text(selection));
+    return result;
   }
   const auto saved = workspace(request);
+  if (request.operation == "experiment-scan" || request.operation == "experiment-reuse-selection") {
+    auto companion_request = request;
+    const bool scan = request.operation == "experiment-scan";
+    const auto key = scan ? "baseline_workspace" : "selection_workspace";
+    require(request.payload.value(key).isObject(), "Expected the owned frame-selection dependency");
+    companion_request.payload.insert("workspace", request.payload.value(key));
+    const auto companion = workspace(companion_request);
+    if (scan) {
+      const auto selected = hm::web::ScanExperimentFrames(request, companion, saved, run_process);
+      return {
+          {"workspace", workspace_json(request, saved)},
+          {"state", selected.available ? "queued" : "unavailable"},
+          {"selection_available", selected.available},
+          {"selection_diagnostic", text(selected.diagnostic)}};
+    }
+    check(ReuseStitchingExperimentPlayerSelection(companion, saved));
+    return {{"workspace", workspace_json(request, saved)}, {"state", "queued"}, {"selection_available", true}};
+  }
   if (request.operation == "experiment-run") {
     run_experiment(request, saved);
     return {{"workspace", workspace_json(request, saved)}, {"state", "complete"}};
@@ -703,10 +986,44 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     return {{"workspace", workspace_json(request, saved)}, {"state", "complete"}};
   }
   if (request.operation == "experiment-promote") {
-    check(PromoteStitchingExperiment(saved, request.game));
-    return {{"workspace", workspace_json(request, saved)}, {"promoted", true}};
+    std::optional<StitchingExperimentBlend> blend;
+    if (request.payload.contains("blend")) {
+      require(request.payload.value("blend").isObject(), "Experiment blend must be an object");
+      const auto object = request.payload.value("blend").toObject();
+      const auto mode = RequiredString(object, "mode");
+      require(mode == "laplacian" || mode == "alpha" || mode == "gpu-hard-seam", "Invalid experiment blend mode");
+      blend = StitchingExperimentBlend{mode.toStdString(), std::nullopt};
+      if (object.contains("feather_fraction"))
+        blend->feather_fraction = Number(object, "feather_fraction", 0, 1, 0);
+    }
+    check(PromoteStitchingExperiment(saved, request.game, blend));
+    return {
+        {"workspace", workspace_json(request, saved)},
+        {"promoted", true},
+        {"setup_preview", hm::web::ExportSavedCalibrationPreview(request, artifacts, [] { return interrupted != 0; })}};
   }
-  const auto inspection = take(InspectStitchingExperimentFrames(saved));
+  const auto inspected = InspectStitchingExperimentFrames(saved);
+  // A saved main calibration can outlive its captured-frame diagnostics, for
+  // example after an alignment-preserving crop. Qt still permits playback of
+  // that calibration and disables its frame inspector. Preserve that state
+  // instead of rejecting the entire main workspace catalog entry.
+  if (!inspected.ok() && !absl::IsNotFound(inspected.status()))
+    check(inspected.status());
+  StitchingExperimentFrameInspection inspection;
+  if (inspected.ok()) {
+    inspection = *inspected;
+  } else {
+    inspection.expected_pair_count = saved.settings.frame_count;
+    inspection.source_validation = std::string(inspected.status().message());
+  }
+  QString editable_snapshot;
+  const auto config = YAML::LoadFile((saved.game_directory / "config.yaml").string());
+  const auto snapshot = config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>("");
+  if (!snapshot.empty()) {
+    const auto editable = hm::stitching::LoadCalibrationMatches(saved.game_directory, snapshot);
+    if (editable.ok())
+      editable_snapshot = text(snapshot);
+  }
   QJsonArray frames;
   for (const auto& frame : inspection.frames) {
     QJsonArray thumbnails, matches, sources, coverage, bands;
@@ -755,7 +1072,12 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     colors.append(color);
   return {
       {"inspection_version", 1},
+      {"inspection_available", inspected.ok()},
       {"workspace", workspace_json(request, saved)},
+      {"editable", !editable_snapshot.isEmpty()},
+      {"editable_snapshot", editable_snapshot},
+      {"calibration_complete",
+       config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete"},
       {"fingerprint", text(inspection.fingerprint)},
       {"player_selected", inspection.player_selected},
       {"expected_pair_count", int(inspection.expected_pair_count)},
@@ -816,7 +1138,10 @@ QJsonObject tracks(const Request& request, QJsonArray& artifacts) {
               {"box", QJsonArray{choice.box.x(), choice.box.y(), choice.box.width(), choice.box.height()}}});
     return {{"choices", result}};
   }
-  auto plan = load_plan(request);
+  std::optional<PinnedArchive> archive_input;
+  if (request.runtime.contains("archive_input"))
+    archive_input.emplace(request, "archive_input");
+  auto plan = load_plan(request, archive_input ? &*archive_input : nullptr);
   const int item = integer(request.payload, "item_index", 0, plan.intervals.size() - 1, -1);
   require(item >= 0, "Select a reel item");
   const int cue = integer(request.payload, "cue_index", 0, plan.intervals[item].annotations.size() - 1, -1);
@@ -840,8 +1165,10 @@ QJsonObject tracks(const Request& request, QJsonArray& artifacts) {
   annotation.archive_mtime_ms = archive.lastModified().toMSecsSinceEpoch();
   if (!hm::ui::CaptureHighlightTrack(&annotation, choice, route, &error))
     throw std::runtime_error(error.toStdString());
-  // Return portable run-relative paths rather than exposing worker locations.
-  plan.archive_path = text(Relative(request, plan.archive_path.toStdString()));
+  if (archive_input)
+    archive_input->Verify();
+  // Return portable run-relative markers rather than exposing pinned descriptors.
+  plan.archive_path = archive_input ? "inputs/archive.mp4" : text(Relative(request, plan.archive_path.toStdString()));
   for (auto& interval : plan.intervals) {
     for (auto* logo : {&interval.card.logo_a, &interval.card.logo_b})
       if (!logo->isEmpty())
@@ -850,7 +1177,8 @@ QJsonObject tracks(const Request& request, QJsonArray& artifacts) {
       if (!mark.database.isEmpty())
         mark.database = text(Relative(request, mark.database.toStdString()));
       if (!mark.archive_path.isEmpty())
-        mark.archive_path = text(Relative(request, mark.archive_path.toStdString()));
+        mark.archive_path =
+            archive_input ? "inputs/archive.mp4" : text(Relative(request, mark.archive_path.toStdString()));
     }
   }
   const auto path = request.root / "tracked-plan.json";
@@ -939,8 +1267,12 @@ QJsonObject replay(const Request& request) {
 }
 
 void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts) {
-  if (request.operation != "calibration-complete" && request.operation.rfind("matches-", 0) != 0 &&
-      request.operation.rfind("experiment-", 0) != 0)
+  if (request.operation == "rink-map-check")
+    return;
+  if (request.operation != "calibration-complete" && request.operation != "calibration-clean" &&
+      request.operation != "calibration-controls-stage" && request.operation.rfind("matches-", 0) != 0 &&
+      request.operation.rfind("experiment-", 0) != 0 && request.operation.rfind("rink-map-", 0) != 0 &&
+      request.operation.rfind("calibration-view-", 0) != 0)
     return;
   std::size_t count = 0;
   for (const auto& directory : {request.game, request.root / "experiments"}) {
@@ -953,7 +1285,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
         continue;
       }
       const auto name = path.filename().string();
-      if (iterator->is_directory() && name.size() > 3 && name.rfind("cam", 0) == 0 &&
+      if (request.operation != "calibration-clean" && iterator->is_directory() && name.size() > 3 &&
+          name.rfind("cam", 0) == 0 &&
           std::all_of(name.begin() + 3, name.end(), [](unsigned char c) { return std::isdigit(c); })) {
         iterator.disable_recursion_pending();
         continue;
@@ -969,7 +1302,54 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
   }
 }
 
+QJsonObject detector_state(const YAML::Node& game, bool hockeymon) {
+  const auto baseline = take(hm::baseline_config::load());
+  const auto user = take(hm::user_config::load_snapshot());
+  auto defaults = hm::config::MergeNodes(YAML::Clone(baseline.values), user.values, false);
+  const auto models = hm::ui::ReadDetectorModels(defaults);
+  const auto selected = hm::ui::ReadDetectorSelection(
+      hm::config::MergeNodes(defaults, game, false),
+      models,
+      [&](const QString& name) { return QString::fromStdString((baseline.root / name.toStdString()).string()); },
+      hockeymon);
+  QJsonArray choices;
+  for (const auto& model : models)
+    choices.append(QJsonObject{{"id", model.id}, {"label", model.label}});
+  const bool known_prepared =
+      std::any_of(models.begin(), models.end(), [&](const auto& model) { return model.id == selected.prepared_model; });
+  return {
+      {"version", 1},
+      {"models", choices},
+      {"model", selected.model},
+      {"precision", selected.precision},
+      {"prepared_model", known_prepared ? selected.prepared_model : QString()},
+      {"prepared", !selected.prepared_engine.isEmpty()}};
+}
+
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "detector-controls-read") {
+    require(request.payload.size() == 1 && request.payload.value("backend").isString(), "Expected detector backend");
+    const auto backend = request.payload.value("backend").toString();
+    require(backend == "native" || backend == "hockeymon", "Unsupported detector backend");
+    const auto bytes = take(
+        hm::stitching::read_bounded_regular_file_no_follow(
+            request.game / "config.yaml", 4 * 1024 * 1024, "detector config"));
+    const auto config = YAML::Load(bytes);
+    require(config.IsMap(), "Detector configuration must be a map");
+    return detector_state(config, backend == "hockeymon");
+  }
+  if (request.operation == "camera-optics-read")
+    return read_camera_optics(request);
+  if (request.operation == "calibration-still-read")
+    return hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
+  if (request.operation == "calibration-controls-stage")
+    return hm::web::RunCalibrationControlsStage(request, [] { return interrupted != 0; });
+  if (request.operation == "camera-experiment")
+    return hm::web::RunCameraExperiment(request, artifacts, preview_port, [] { return interrupted != 0; });
+  if (request.operation == "calibration-clean" || request.operation.rfind("calibration-view-", 0) == 0)
+    return hm::web::RunSavedCalibration(request, artifacts, [] { return interrupted != 0; });
+  if (request.operation.rfind("rink-map-", 0) == 0)
+    return hm::web::RunRinkMap(request, artifacts, [] { return interrupted != 0; });
   if (request.operation == "calibration-complete") {
     const auto owner = RequiredString(request.payload, "invalidation_id").toStdString();
     require(!owner.empty(), "Calibration completion requires an invalidation owner");
@@ -983,15 +1363,8 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
     check(CompleteStitchingExperimentWorkspace(saved, request.payload.value("require_ice_mask").toBool(false)));
     // A single bounded proxy of an existing calibration artifact, never a
     // readback from the steady-state GPU video pipeline.
-    const auto source = Contained(request.root, text(Relative(request, request.game / "panorama.tif")));
-    const auto preview = readCalibrationTiff(text(source.string()), 1920);
-    require(!preview.isNull(), "Calibration did not produce a readable stitched panorama");
-    const auto destination = Contained(
-        request.root,
-        text((request.game / "setup-preview.png").lexically_relative(request.root).generic_string()),
-        false);
-    require(preview.save(text(destination.string()), "PNG"), "Could not publish stitched setup preview");
-    return {{"state", "complete"}, {"invalidation_id", text(owner)}, {"preview", text(Relative(request, destination))}};
+    const auto preview = hm::web::ExportSavedCalibrationPreview(request, artifacts, [] { return interrupted != 0; });
+    return {{"state", "complete"}, {"invalidation_id", text(owner)}, {"preview", preview}};
   }
   if (request.operation.rfind("highlight-", 0) == 0)
     return highlights(request, artifacts);
@@ -1004,7 +1377,16 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   auto source = request;
   if (request.payload.contains("workspace"))
     source.game = workspace(request).game_directory;
-  auto saved = matches(source, request.operation == "matches-publish");
+  if (request.operation == "matches-read") {
+    auto result = editable_matches_result(request, source, artifacts);
+    result.insert("workspace", workspace_json(request, workspace(source)));
+    const auto config = YAML::LoadFile((source.game / "config.yaml").string());
+    result.insert(
+        "calibration_complete",
+        config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete");
+    return result;
+  }
+  auto saved = matches(source, true);
   if (request.operation == "matches-publish") {
     saved.automatic_fingerprint = saved.manual ? saved.automatic_fingerprint : saved.fingerprint;
     saved.fingerprint.clear();
@@ -1019,13 +1401,66 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string(argv[1]) == "--detector-defaults") {
+    try {
+      const YAML::Node empty(YAML::NodeType::Map);
+      const QJsonObject result{
+          {"version", 1}, {"native", detector_state(empty, false)}, {"hockeymon", detector_state(empty, true)}};
+      std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
+
+  if (argc == 2 && std::string(argv[1]) == "--runtime-defaults") {
+    try {
+      const auto baseline = take(hm::baseline_config::load());
+      const auto user = take(hm::user_config::load_snapshot());
+      const auto configured = baseline.values["runtime"]["gpu_memory_profile"];
+      if (!configured.IsScalar())
+        throw std::runtime_error("Bundled baseline requires runtime.gpu_memory_profile");
+      auto effective = hm::config::MergeNodes(YAML::Clone(baseline.values), user.values, false);
+      const auto structural_path = baseline.root / "ds_hockey_app_config.yaml";
+      if (fs::is_regular_file(structural_path)) {
+        const auto structural = YAML::LoadFile(structural_path.string());
+        const YAML::Node canonical = effective["pipeline"];
+        effective["pipeline"] =
+            canonical.IsMap() ? hm::config::MergeNodes(structural, canonical, false) : YAML::Clone(structural);
+      }
+      const auto requested = hm::ui_internal::configured_gpu_memory_profile(baseline.values, user.values);
+      const auto gpu = hm::ui_internal::configured_pipeline_gpu(effective);
+      if (!gpu)
+        throw std::runtime_error("The configured GPU ordinal is unavailable");
+      const auto resolved = take(hm::ui_internal::resolve_gpu_memory_profile(requested, gpu));
+      const QJsonObject result{{"version", 1}, {"requested", requested}, {"resolved", resolved}, {"gpu", int(*gpu)}};
+      std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
+
+  if (argc == 3 && std::string(argv[1]) == "--rink-editor") {
+    try {
+      const auto result = hm::web::RinkEditor(ReadObject(argv[2]));
+      std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
   if (argc == 2 && std::string(argv[1]) == "--capabilities") {
     // Readiness probes need neither a display server nor a request workspace.
     std::cout << QJsonDocument(hm::web::Capabilities()).toJson(QJsonDocument::Compact).constData() << '\n';
     return 0;
   }
   if ((argc != 3 && argc != 4) || std::string(argv[1]) != "--request") {
-    std::cerr << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities\n";
+    std::cerr
+        << "usage: hstream-web-job --request JOB_ROOT/operation-request.json | --capabilities | --runtime-defaults\n";
     return 64;
   }
   if (argc == 4) {
@@ -1047,8 +1482,8 @@ int main(int argc, char** argv) {
   try {
     request = hm::web::LoadRequest(argv[2]);
     require(
-        !preview_port || request->operation == "highlight-live-preview",
-        "Signaling is only available for live highlight preview");
+        !preview_port || request->operation == "highlight-live-preview" || request->operation == "camera-experiment",
+        "Signaling is only available for live highlight or camera preview");
     const auto hash = QCryptographicHash::hash(
                           QJsonDocument(ReadObject(argv[2])).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256)
                           .toHex();
