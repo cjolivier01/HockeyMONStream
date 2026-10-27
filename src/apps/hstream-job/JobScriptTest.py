@@ -77,6 +77,49 @@ class JobScriptTest(unittest.TestCase):
             check=False,
         )
 
+    def test_all_exported_modes_keep_the_managed_marker_through_native_exec(self):
+        finalizer_output = self.root / "finalizer-environment.json"
+        finalizer = self.root / "recording-finalizer"
+        finalizer.write_text(
+            "#!/usr/bin/env python3\nimport json,os,sys\n"
+            "with open(os.environ['JOB_TEST_FINALIZER_OUTPUT'],'w') as f:\n"
+            " json.dump({'argv':sys.argv[1:],'env':dict(os.environ)},f)\n"
+            "start=sys.argv.index('--')+1\n"
+            "os.execv(sys.argv[start],sys.argv[start:])\n"
+        )
+        finalizer.chmod(0o700)
+        self.env.update(
+            HSTREAM_RUNTIME_CACHE_DIR=str(self.root / "private-runtime"),
+            HSTREAM_JOB_MANAGED_RUNTIME="stale-parent-value",
+            JOB_TEST_FINALIZER_OUTPUT=str(finalizer_output),
+        )
+        for mode in (None, "--interactive", "--runtime-only", "--interactive-publication"):
+            with self.subTest(mode=mode or "unattended-encode"):
+                self.output.unlink(missing_ok=True)
+                finalizer_output.unlink(missing_ok=True)
+                options = ["--force", "--finalizer", str(finalizer)]
+                if mode:
+                    options.append(mode)
+                exported = self.generate(*options)
+                self.assertEqual(exported.returncode, 0, exported.stderr)
+                extra = ["--tensorrt-runtime-info"] if mode == "--runtime-only" else []
+                run = subprocess.run([str(self.game / "hstream-job.sh"), *extra], env=self.env,
+                                     text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                self.assertEqual(actual["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
+                if mode == "--runtime-only":
+                    self.assertEqual(actual["argv"], extra)
+                elif mode is None:
+                    self.assertIn("--encode-job", actual["argv"])
+                else:
+                    self.assertNotIn("--encode-job", actual["argv"])
+                if mode in (None, "--interactive-publication"):
+                    admitted = json.loads(finalizer_output.read_text())
+                    self.assertEqual(admitted["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
+                else:
+                    self.assertFalse(finalizer_output.exists())
+
     def test_supervisor_run_identity_reaches_the_native_finalizer(self):
         identity = "admitted-run_123"
         exported = self.generate("--run-id", identity)
@@ -597,6 +640,7 @@ class JobScriptTest(unittest.TestCase):
                 actual = json.loads(self.output.read_text())
                 self.assertEqual(actual["argv"], expected)
                 self.assertNotIn("--encode-job", actual["argv"])
+                self.assertEqual(actual["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
                 self.assertEqual(actual["cwd"], "/")
                 # The marker must be read after the launcher's runtime setup,
                 # which is the only part of it a managed run still needs.
@@ -621,6 +665,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertIn("--enable-sinks=ENCODE_FILE", actual["argv"])
         self.assertEqual(actual["argv"][-2:], ["-g", "mygame"])
         self.assertEqual(actual["cwd"], str(install))
+        self.assertNotIn("HSTREAM_JOB_MANAGED_RUNTIME", actual["env"])
 
     def test_packaged_launcher_preserves_job_arguments_and_managed_cache(self):
         self.install_packaged_launcher()
@@ -644,6 +689,7 @@ class JobScriptTest(unittest.TestCase):
                                          cwd="/", env=env, text=True, capture_output=True)
                     self.assertEqual(run.returncode, 7, run.stderr)
                     actual = json.loads(self.output.read_text())
+                    self.assertEqual(actual["env"]["HSTREAM_JOB_MANAGED_RUNTIME"], "1")
                     expected = ["-g", self.game.name]
                     if config:
                         expected += ["-c", str(self.config)]

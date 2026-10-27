@@ -342,6 +342,9 @@ int main(int argc, char** argv) {
     script +=
         "unset HSTREAM_ARCHIVE_RUN_ID HSTREAM_UI_PREVIEW_OVERLAYS HSTREAM_JOB_MANIFEST\n"
         "unset HSTREAM_JOB_PLUGIN_STAGE HSTREAM_JOB_LIBRARY_STAGE HSTREAM_JOB_MANAGED_RUNTIME\n";
+    // Every exported mode owns its runtime and must leave user preferences
+    // unchanged, including unattended encoding through the finalizer.
+    script += "export HSTREAM_JOB_MANAGED_RUNTIME=1\n";
     script += "export HM_GAME_DIR=" + quote(game.parent_path().string()) + "\n";
     for (const char* key : {"HM_OUTPUT_WORK_DIR", "HM_RENDER_SINK", "USE_NEW_NVSTREAMMUX"}) {
       const std::string value = environment(key);
@@ -365,8 +368,6 @@ if [ ! -w "${runtime_cache}" ]; then
   exit 78
 fi
 export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
-# The installed launcher rewrites ordinary arguments; managed runs own theirs.
-export HSTREAM_JOB_MANAGED_RUNTIME=1
 )JOB";
       script += "exec " + quote(runner);
       if (!runtime_only) {
@@ -382,8 +383,6 @@ export HSTREAM_JOB_MANAGED_RUNTIME=1
         quote("hstream-job: Publishing completed outputs to " + game.string() +
               "; temporary files are removed only after all outputs are safely saved.") +
         "\n";
-    if (interactive_publication)
-      script += "export HSTREAM_JOB_MANAGED_RUNTIME=1\n";
     script += "exec " + quote(finalizer) + " --game-dir " + quote(game.string()) + " --run-id " +
         quote(requested_run_id ? *requested_run_id : hm::recording::NewGuid());
     // The supervisor resolves the same live config layers before it can admit

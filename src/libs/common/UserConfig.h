@@ -16,6 +16,8 @@ inline constexpr char kOutputRootKey[] = "output-root";
 // game root continues to have a conventional default until the user changes it.
 // If HOME is unavailable but HM_GAME_DIR is explicit, loading yields an empty
 // overlay; HM_OUTPUT_WORK_DIR remains explicit whenever archive output is used.
+// HSTREAM_JOB_MANAGED_RUNTIME=1 makes all loads read-only: existing preferences
+// and Defaults retain their precedence, but a missing first-run file stays absent.
 absl::StatusOr<std::filesystem::path> file_path();
 // Legacy tuning is used only until defaults.yaml exists. Legacy paths remain
 // supported after opting into the Defaults editor.
@@ -31,7 +33,7 @@ struct Snapshot {
 };
 // Keeps native-reference provenance attached to the exact loaded values.
 absl::StatusOr<Snapshot> load_snapshot_or_create();
-// Same active tuning precedence, without creating a first-run preferences file.
+// Same active tuning precedence, always without first-run preferences creation.
 absl::StatusOr<Snapshot> load_snapshot();
 // Loads the active tuning layer plus legacy paths, for both native backends.
 absl::StatusOr<YAML::Node> load_or_create();

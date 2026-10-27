@@ -50,6 +50,22 @@ that deployment. Browser polling never invokes it. The shipped profile is
 `runtime.gpu_memory_profile: auto`; an explicit UI selection lasts for the session
 and does not enter presets.
 
+All `hstream-job` exports set `HSTREAM_JOB_MANAGED_RUNTIME=1`, including
+unattended encoding, interactive publication, ordinary interactive sessions and
+`--runtime-only` sampling. The installed CLI launcher preserves this marker
+through the native executable and its managed children. `common/UserConfig`
+then reads existing `~/.hstream/hstream.yaml` and
+`~/.config/hstream-ui/defaults.yaml` with their usual precedence, but does not
+create a missing first-run preferences file or its directory. NVIDIA and AMD
+readers use the same policy. Managed jobs own their private runtime scratch;
+execution-host preferences remain owned by the operator.
+
+This also keeps a managed sample from changing preference-file identities used
+by the web service's validated deployment signature. The readiness probes keep
+their existing read-only loader, and signature checks still invalidate actual
+operator edits. Baseline values, path resolution and ordinary Qt/CLI first-run
+preference creation are unchanged.
+
 ```json
 {
   "schema": 1,

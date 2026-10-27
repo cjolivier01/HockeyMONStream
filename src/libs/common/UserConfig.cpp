@@ -168,6 +168,11 @@ absl::StatusOr<fs::path> file_path() {
 
 namespace {
 absl::StatusOr<YAML::Node> load_preferences(bool create) {
+  // Managed launchers own runtime scratch, not the execution user's settings.
+  // Apply this here so every reader, including both Program backends and the
+  // publication supervisor, keeps the same read-only preference policy.
+  const char* managed = std::getenv("HSTREAM_JOB_MANAGED_RUNTIME");
+  create = create && (!managed || std::strcmp(managed, "1") != 0);
   auto path = file_path();
   if (!path.ok()) {
     // Explicit environment roots remain usable in non-login automation where
