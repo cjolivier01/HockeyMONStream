@@ -642,6 +642,107 @@ struct HStreamWindowTestAccess {
     return window->pipeline_stop_requested_;
   }
 
+  static QProcess* startPreviewCommandRecorder(HStreamWindow* window) {
+    window->preview_tabs_->setCurrentIndex(0);
+    window->pipeline_process_ = new QProcess(window);
+    window->pipeline_process_->start("cat");
+    if (!window->pipeline_process_->waitForStarted(5000))
+      return nullptr;
+    ++window->pipeline_run_generation_;
+    window->pipeline_uses_process_group_ = false;
+    window->pipeline_render_embedded_ = true;
+    window->preview_runtime_ready_ = true;
+    window->active_preview_channel_ = "program";
+    return window->pipeline_process_;
+  }
+  static void previewRenderChoice(HStreamWindow* window, bool enabled) {
+    const QSignalBlocker blocker(window->render_video_toggle_);
+    window->render_video_toggle_->setChecked(enabled);
+    window->setRuntimeVideoRendering(enabled);
+  }
+  static void previewOverlayChoice(HStreamWindow* window, bool enabled) {
+    const QSignalBlocker blocker(window->show_player_tracking_toggle_);
+    window->show_player_tracking_toggle_->setChecked(enabled);
+    window->setRuntimePreviewOverlays();
+  }
+  static void previewOverlayChoice(HStreamWindow* window, const std::array<bool, 3>& selection) {
+    window->setPreviewOverlayControls(selection[0], selection[1], selection[2]);
+    window->setRuntimePreviewOverlays();
+  }
+  static void confirmPreviewOverlays(HStreamWindow* window, const std::array<bool, 3>& selection) {
+    window->setConfirmedPreviewOverlays(selection[0], selection[1], selection[2]);
+  }
+  static std::array<bool, 3> previewOverlaySelection(HStreamWindow* window) {
+    return {
+        window->show_player_tracking_toggle_->isChecked(),
+        window->show_play_tracking_toggle_->isChecked(),
+        window->show_rink_mask_toggle_->isChecked()};
+  }
+  static std::array<bool, 3> confirmedPreviewOverlaySelection(HStreamWindow* window) {
+    return {
+        window->confirmed_show_player_tracking_,
+        window->confirmed_show_play_tracking_,
+        window->confirmed_show_rink_mask_};
+  }
+  static quint64 pendingPreviewOverlay(HStreamWindow* window) {
+    return window->pending_preview_overlay_generation_;
+  }
+  static bool pendingPreviewOverlayIsReconciliation(HStreamWindow* window) {
+    return window->pending_preview_overlay_is_reconciliation_;
+  }
+  static void reportPreviewOverlay(
+      HStreamWindow* window,
+      const QString& status,
+      quint64 generation,
+      const std::array<bool, 3>& selection) {
+    window->handlePreviewOverlayResponse(
+        QString("HSTREAM_PREVIEW_OVERLAYS status=%1 generation=%2 players=%3 play=%4 rink=%5")
+            .arg(status)
+            .arg(generation)
+            .arg(selection[0] ? 1 : 0)
+            .arg(selection[1] ? 1 : 0)
+            .arg(selection[2] ? 1 : 0));
+  }
+  static void reportOldProgramPreviewReady(HStreamWindow* window, bool runtime = false) {
+    window->pending_preview_channel_ = "program";
+    window->pending_preview_generation_ = window->preview_generation_;
+    window->handleGpuPreviewStatus(
+        runtime ? QString("HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=%1")
+                      .arg(window->preview_generation_)
+                : QString(
+                      "HSTREAM_PREVIEW channel=program status=ready generation=%1 message=first-frame "
+                      "resolution=1280x720")
+                      .arg(window->preview_generation_));
+  }
+  static bool previewRenderingLayoutCompacted(HStreamWindow* window) {
+    return window->preview_layout_compacted_;
+  }
+  static void selectPreviewTab(HStreamWindow* window, int tab) {
+    window->preview_tabs_->setCurrentIndex(tab);
+  }
+  static bool previewTargetsHidden(HStreamWindow* window) {
+    return window->preview_render_target_->isHidden() && window->stitched_render_target_->isHidden();
+  }
+  static bool previewCommandsDeferred(HStreamWindow* window) {
+    return !window->deferred_preview_channel_.isEmpty() || window->deferred_render_audio_muted_.has_value() ||
+        window->deferred_preview_overlays_.has_value() || window->preview_overlay_deferred_;
+  }
+  static void retirePreviewCommandRun(HStreamWindow* window) {
+    window->clearPreviewFrames();
+    ++window->pipeline_run_generation_;
+    window->pipeline_paused_ = false;
+    window->pending_process_pause_generation_ = 0;
+    window->pending_process_resume_generation_ = 0;
+  }
+  static bool cooperativePreviewCommandsRemainAvailable(HStreamWindow* window) {
+    window->pipeline_paused_ = true;
+    window->pipeline_cooperative_pause_ = true;
+    const bool available = !window->previewCommandsBlockedByPause();
+    window->pipeline_paused_ = false;
+    window->pipeline_cooperative_pause_ = false;
+    return available;
+  }
+
   static void setCalibrationPrecisionRunActive(HStreamWindow* window, bool active) {
     window->active_run_is_calibration_ = active;
     window->active_run_high_bit_depth_ = false;
@@ -19074,6 +19175,193 @@ bool test_process_pause_protocol() {
   return true;
 }
 
+bool test_paused_preview_command_order() {
+#ifdef Q_OS_UNIX
+  HStreamWindow window;
+  auto* process = HStreamWindowTestAccess::startPreviewCommandRecorder(&window);
+  if (!process)
+    return false;
+  auto cleanup = absl::MakeCleanup([&] { HStreamWindowTestAccess::killStubPipelineProcess(&window); });
+  int checkpoint = 0;
+  auto recorded = [&]() {
+    const QByteArray marker = QString("checkpoint-%1\n").arg(++checkpoint).toUtf8();
+    process->write(marker);
+    process->waitForBytesWritten(1000);
+    QByteArray output;
+    QElapsedTimer timeout;
+    timeout.start();
+    while (!output.contains(marker) && timeout.elapsed() < 2000) {
+      output += process->readAllStandardOutput();
+      if (!output.contains(marker))
+        process->waitForReadyRead(100);
+    }
+    return output.contains(marker) ? QString::fromUtf8(output) : QString();
+  };
+  auto no_preview_commands = [](const QString& commands) {
+    return !commands.isEmpty() && !commands.contains("@set-preview-") && !commands.contains("@set-render-audio-muted");
+  };
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  const quint64 generation = HStreamWindowTestAccess::pendingProcessPause(&window);
+  // Exercise the interval before the prepare ACK, while the process can still
+  // read stdin but the paced graph may already be entering PAUSED.
+  HStreamWindowTestAccess::previewRenderChoice(&window, false);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window, true);
+  if (!expect(
+          HStreamWindowTestAccess::previewTargetsHidden(&window) &&
+              !HStreamWindowTestAccess::previewRenderingLayoutCompacted(&window),
+          "Late frame and runtime readiness must not undo Render off during pause preparation"))
+    return false;
+  HStreamWindowTestAccess::previewRenderChoice(&window, true);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window, true);
+  if (!expect(
+          HStreamWindowTestAccess::previewTargetsHidden(&window),
+          "Old readiness must not present a deferred route even when its final channel is unchanged"))
+    return false;
+  HStreamWindowTestAccess::previewOverlayChoice(&window, true);
+  const auto preparing = recorded();
+  if (!expect(
+          preparing.contains(QString("@process-pause %1").arg(generation)) && no_preview_commands(preparing),
+          "Preview changes during pause preparation must not queue behind a pausing graph"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "prepared", generation);
+  HStreamWindowTestAccess::previewRenderChoice(&window, false);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  if (!expect(
+          HStreamWindowTestAccess::processPaused(&window) && HStreamWindowTestAccess::previewTargetsHidden(&window),
+          "Paused Render off must hide the native targets immediately"))
+    return false;
+  HStreamWindowTestAccess::previewRenderChoice(&window, true);
+  HStreamWindowTestAccess::previewOverlayChoice(&window, false);
+  HStreamWindowTestAccess::selectPreviewTab(&window, 2);
+  HStreamWindowTestAccess::selectPreviewTab(&window, 1);
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
+  if (!expect(
+          HStreamWindowTestAccess::previewTargetsHidden(&window),
+          "Old readiness must not present a superseded route while Resume is awaiting confirmation"))
+    return false;
+  const auto resuming = recorded();
+  if (!expect(
+          resuming.contains(QString("@process-resume %1").arg(generation)) && no_preview_commands(resuming),
+          "Resume must reach the runner before any paused preview mutation"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation + 1);
+  if (!expect(
+          no_preview_commands(recorded()) && HStreamWindowTestAccess::previewCommandsDeferred(&window),
+          "A stale Resume ACK must not release paused preview requests"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation);
+  const auto resumed = recorded();
+  if (!expect(
+          resumed.count("@set-preview-active stitched ") == 1 && !resumed.contains("@set-preview-active none ") &&
+              !resumed.contains("@set-preview-active program ") && !resumed.contains("@set-preview-active source0 ") &&
+              resumed.count("@set-render-audio-muted 0") == 1 && !resumed.contains("@set-render-audio-muted 1") &&
+              resumed.count("@set-preview-overlays ") == 1 &&
+              QRegularExpression("@set-preview-overlays [0-9]+ 0 [01] [01]").match(resumed).hasMatch() &&
+              !HStreamWindowTestAccess::previewCommandsDeferred(&window),
+          "Matching Resume must apply only the latest Render and overlay choices once"))
+    return false;
+
+  // A request sent before Pause can acknowledge after a newer unsent edit.
+  // Confirmed backend state and the operator's draft must remain independent.
+  const std::array<bool, 3> initial_overlay = {false, true, false};
+  const std::array<bool, 3> older_overlay = {false, false, true};
+  const std::array<bool, 3> desired_overlay = {true, false, false};
+  for (const bool resume_wait : {false, true}) {
+    for (const QString& status : QStringList{"applied", "failed"}) {
+      HStreamWindowTestAccess::confirmPreviewOverlays(&window, initial_overlay);
+      HStreamWindowTestAccess::previewOverlayChoice(&window, older_overlay);
+      const quint64 older = HStreamWindowTestAccess::pendingPreviewOverlay(&window);
+      if (!expect(
+              recorded().contains(QString("@set-preview-overlays %1 0 0 1").arg(older)),
+              "The delayed response regression needs an actual overlay request before Pause"))
+        return false;
+      HStreamWindowTestAccess::toggleProcessPause(&window);
+      const quint64 pause = HStreamWindowTestAccess::pendingProcessPause(&window);
+      if (resume_wait) {
+        HStreamWindowTestAccess::reportProcessPause(&window, "prepared", pause);
+        HStreamWindowTestAccess::toggleProcessPause(&window);
+      }
+      HStreamWindowTestAccess::previewOverlayChoice(&window, std::array<bool, 3>{false, true, true});
+      HStreamWindowTestAccess::previewOverlayChoice(&window, desired_overlay);
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", older + 1, older_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::pendingPreviewOverlay(&window) == older &&
+                  HStreamWindowTestAccess::previewOverlaySelection(&window) == desired_overlay &&
+                  HStreamWindowTestAccess::confirmedPreviewOverlaySelection(&window) == initial_overlay,
+              "An unknown overlay generation must not change the pending request, confirmation or paused draft"))
+        return false;
+      // An even older successful request requires reconciliation if this one
+      // fails. That recovery must not supersede the newer deferred user edit.
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", older - 1, older_overlay);
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, status, older, older_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::pendingPreviewOverlay(&window) == 0 &&
+                  HStreamWindowTestAccess::previewOverlaySelection(&window) == desired_overlay &&
+                  HStreamWindowTestAccess::confirmedPreviewOverlaySelection(&window) ==
+                      (status == "applied" ? older_overlay : initial_overlay) &&
+                  no_preview_commands(recorded()),
+              "Old applied/failed ACKs must settle backend state without replacing or sending the paused draft"))
+        return false;
+      if (!resume_wait) {
+        HStreamWindowTestAccess::reportProcessPause(&window, "prepared", pause);
+        HStreamWindowTestAccess::toggleProcessPause(&window);
+      }
+      HStreamWindowTestAccess::reportProcessPause(&window, "resumed", pause + 1);
+      if (!expect(
+              no_preview_commands(recorded()) && HStreamWindowTestAccess::previewCommandsDeferred(&window),
+              "A stale Resume ACK must retain the overlay draft after an older request settles"))
+        return false;
+      HStreamWindowTestAccess::reportProcessPause(&window, "resumed", pause);
+      const quint64 latest = HStreamWindowTestAccess::pendingPreviewOverlay(&window);
+      const QString commands = recorded();
+      if (!expect(
+              latest > older && commands.count("@set-preview-overlays ") == 1 &&
+                  commands.contains(QString("@set-preview-overlays %1 1 0 0").arg(latest)) &&
+                  !HStreamWindowTestAccess::pendingPreviewOverlayIsReconciliation(&window) &&
+                  !HStreamWindowTestAccess::previewCommandsDeferred(&window),
+              "Resume must send the latest complete overlay draft once after old applied/failed ACKs"))
+        return false;
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", older, older_overlay);
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "failed", older, older_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::pendingPreviewOverlay(&window) == latest &&
+                  HStreamWindowTestAccess::previewOverlaySelection(&window) == desired_overlay &&
+                  no_preview_commands(recorded()),
+              "Stale overlay replies after Resume must not replace or resend the newer request"))
+        return false;
+      HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", latest, desired_overlay);
+      if (!expect(
+              HStreamWindowTestAccess::confirmedPreviewOverlaySelection(&window) == desired_overlay,
+              "The matching overlay ACK must confirm the latest resumed selection"))
+        return false;
+    }
+  }
+  HStreamWindowTestAccess::previewOverlayChoice(&window, older_overlay);
+  const quint64 retired_overlay = HStreamWindowTestAccess::pendingPreviewOverlay(&window);
+  recorded();
+  HStreamWindowTestAccess::toggleProcessPause(&window);
+  const quint64 retired = HStreamWindowTestAccess::pendingProcessPause(&window);
+  HStreamWindowTestAccess::previewRenderChoice(&window, false);
+  HStreamWindowTestAccess::previewOverlayChoice(&window, desired_overlay);
+  HStreamWindowTestAccess::retirePreviewCommandRun(&window);
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", retired);
+  HStreamWindowTestAccess::reportPreviewOverlay(&window, "applied", retired_overlay, older_overlay);
+  HStreamWindowTestAccess::reportPreviewOverlay(&window, "failed", retired_overlay, older_overlay);
+  if (!expect(
+          no_preview_commands(recorded()) && !HStreamWindowTestAccess::previewCommandsDeferred(&window),
+          "Retiring a run must discard its deferred preview commands before late acknowledgements"))
+    return false;
+  if (!expect(
+          HStreamWindowTestAccess::cooperativePreviewCommandsRemainAvailable(&window),
+          "A confirmed cooperative pause must retain its existing typed preview commands"))
+    return false;
+#endif
+  return true;
+}
+
 bool test_active_process_destruction() {
   for (const QString& role : QStringList{"pipeline", "finalizer", "export"}) {
     auto window = std::make_unique<HStreamWindow>();
@@ -19253,6 +19541,8 @@ int main(int argc, char** argv) {
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
     return test_job_export() ? 0 : 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PAUSED_PREVIEW_ONLY"))
+    return test_paused_preview_command_order() ? 0 : 1;
   if (!test_active_process_destruction())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_DESTRUCTION_ONLY"))
@@ -19261,6 +19551,8 @@ int main(int argc, char** argv) {
     std::cerr << "test_process_pause_protocol failed\n";
     return 1;
   }
+  if (!test_paused_preview_command_order())
+    return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PAUSE_ONLY"))
     return 0;
   if (!test_realtime_playback_selection())

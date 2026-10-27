@@ -196,6 +196,7 @@ class HStreamWindow : public QMainWindow {
     kTabChange,
     kRecovery,
     kRenderToggle,
+    kDeferred,
   };
 
   enum class PlaybackProgressState {
@@ -347,7 +348,11 @@ class HStreamWindow : public QMainWindow {
   void recoverPreviewDisableFailure(const QString& reason, bool force = false);
   int previewDisableTimeoutMs() const;
   bool setRuntimeRenderAudioMuted(bool muted);
+  bool previewCommandsBlockedByPause() const;
+  void clearDeferredPreviewCommands();
+  void flushDeferredPreviewCommands();
   void setRuntimePreviewOverlays(bool reconciliation = false);
+  void setPreviewOverlayControls(bool players, bool play, bool rink);
   void setConfirmedPreviewOverlays(bool players, bool play, bool rink);
   void preparePreviewOverlayUserRequest();
   void resetPreviewOverlayReconciliationState();
@@ -855,6 +860,16 @@ class HStreamWindow : public QMainWindow {
   int preview_disable_attempts_{0};
   bool preview_runtime_ready_{false};
   bool preview_overlay_deferred_{false};
+  quint64 deferred_preview_run_generation_{0};
+  QString deferred_preview_channel_;
+  std::optional<bool> deferred_render_audio_muted_;
+  struct DeferredPreviewOverlays {
+    bool players;
+    bool play;
+    bool rink;
+    bool reconciliation;
+  };
+  std::optional<DeferredPreviewOverlays> deferred_preview_overlays_;
   std::set<QString> preview_frame_channels_received_;
   QString active_run_game_id_;
   QString active_archive_output_path_;

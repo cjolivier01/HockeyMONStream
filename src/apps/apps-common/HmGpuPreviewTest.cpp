@@ -6,6 +6,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <gst/app/gstappsrc.h>
 #include <gst/base/gstbasesink.h>
 #include <gst/gst.h>
 #include <gstnvdsmeta.h>
@@ -96,6 +97,72 @@ bool run_input_rate_caps_test() {
   gst_object_unref(pad);
   gst_object_unref(sink);
   return accepted;
+}
+
+bool run_paused_preroll_barrier_test() {
+  GError* error = nullptr;
+  GstElement* pipeline = gst_parse_launch(
+      "appsrc name=source format=time ! hmpreviewisolation name=gate active=true ! "
+      "fakesink name=sink async=false sync=false signal-handoffs=true",
+      &error);
+  if (!pipeline || error) {
+    if (error)
+      g_error_free(error);
+    if (pipeline)
+      gst_object_unref(pipeline);
+    return false;
+  }
+  GstElement* source = gst_bin_get_by_name(GST_BIN(pipeline), "source");
+  GstElement* gate = gst_bin_get_by_name(GST_BIN(pipeline), "gate");
+  GstElement* sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
+  std::atomic<bool> prerolled{false}, setter_entered{false}, closed{false};
+  g_signal_connect(
+      sink,
+      "preroll-handoff",
+      G_CALLBACK(
+          +[](GstElement*, GstBuffer*, GstPad*, gpointer data) { static_cast<std::atomic<bool>*>(data)->store(true); }),
+      &prerolled);
+  g_object_set_data(G_OBJECT(gate), "hstream-preview-test-active-setter-entered", &setter_entered);
+  auto wait = [](const std::atomic<bool>& value) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!value.load() && std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return value.load();
+  };
+  GstCaps* caps = gst_caps_from_string("video/x-raw,format=RGBA,width=1,height=1,framerate=30/1");
+  gst_app_src_set_caps(GST_APP_SRC(source), caps);
+  gst_caps_unref(caps);
+  gst_element_set_state(pipeline, GST_STATE_PAUSED);
+  GstBuffer* buffer = gst_buffer_new_allocate(nullptr, 4, nullptr);
+  GST_BUFFER_PTS(buffer) = 0;
+  GST_BUFFER_DURATION(buffer) = GST_SECOND / 30;
+  gst_app_src_push_buffer(GST_APP_SRC(source), buffer);
+  const bool entered_preroll = wait(prerolled);
+  std::thread disable;
+  bool blocked = false;
+  bool resumed = false;
+  if (entered_preroll) {
+    disable = std::thread([&] {
+      hm::gpu_preview::set_isolation_active(gate, false, 2);
+      closed = true;
+    });
+    const bool entered_setter = wait(setter_entered);
+    // A real GstBaseSink owns this push until it leaves PAUSED. Route teardown
+    // must therefore never precede Resume on the same runtime-command thread.
+    blocked = entered_setter && !closed.load();
+    gst_element_set_state(pipeline, GST_STATE_PLAYING);
+    resumed = wait(closed);
+  }
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  if (disable.joinable())
+    disable.join();
+  gst_object_unref(sink);
+  gst_object_unref(gate);
+  gst_object_unref(source);
+  gst_object_unref(pipeline);
+  if (!entered_preroll || !blocked || !resumed)
+    std::cerr << "Paused preroll must hold the preview barrier until Resume releases the sink\n";
+  return entered_preroll && blocked && resumed;
 }
 
 bool run_flow_isolation_test() {
@@ -1169,6 +1236,8 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (!run_input_rate_caps_test())
+    return 1;
+  if (!run_paused_preroll_barrier_test())
     return 1;
   if (!run_flow_isolation_test())
     return 1;

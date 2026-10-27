@@ -19,6 +19,20 @@ GPU. Bounds come from `runtime.local_playback`; unpaced playback retains its
 existing path. Pipeline pause uses the ordinary system-clock base adjustment
 when no physical audio device owns the clock.
 
+Qt retains Render, preview-tab and diagnostic-overlay edits while its native
+process pause is preparing, SIGSTOP-paused or waiting for Resume confirmation.
+Render off hides the local native windows immediately. After the matching
+Resume acknowledgement, Qt sends only the latest audio, route and overlay
+choices for that run. Overlay replies sent before Pause still update confirmed
+backend state without replacing the retained checkbox draft. Readiness from a
+route superseded by an unsent choice cannot remap its hidden native target.
+Closing a preview gate before the paced graph resumes
+would block its command thread behind a sink's PAUSED preroll. Stop and run
+retirement discard retained commands; confirmed cooperative backend pauses
+keep their existing command handling. The browser already retains route and
+overlay edits until native PLAYING confirmation. CPU tests cover both command
+orderings; displayed-frame and A/V qualification remain separate.
+
 Private PCM queues reject downstream allocation queries before queueing them,
 so upstream converters use their ordinary CPU allocator. A serialized query
 cannot wait behind a PCM packet whose mapping needs the same producer's next
