@@ -264,6 +264,121 @@ void clean_stitching(const QString& binary, const fs::path& source) {
       "Cleaning private descendants must never change the historical source");
 }
 
+void fresh_controls_staging(const QString& binary) {
+  for (const std::string failure :
+       {"",
+        "auto",
+        "center",
+        "journal",
+        "hash",
+        "generation",
+        "state",
+        "artifact",
+        "directory-alias",
+        "artifact-alias",
+        "unauthorized",
+        "source-role",
+        "unclaimed",
+        "controls"}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::create_directories(game);
+    const bool automatic = failure == "auto";
+    const bool success = failure.empty() || automatic || failure == "center";
+    YAML::Node config;
+    config["game"]["videos"] = YAML::Node(YAML::NodeType::Map);
+    config["hstream_ui"]["video_roles"] = YAML::Node(YAML::NodeType::Map);
+    QJsonArray authorized, rows;
+    std::vector<std::string> roles{"left", "right"};
+    if (failure == "center")
+      roles.push_back("center");
+    for (const auto& role : roles) {
+      const auto relative = automatic
+          ? (role == "left" ? std::string("cam3/GH010001.MP4") : std::string("cam4/GH010002.MP4"))
+          : role + "/input.mp4";
+      const auto original = root / (std::string(role) + ".mp4");
+      // Metadata-unavailable recordings exercise the native profile fallback;
+      // no decoder or GPU pipeline is started by this configuration operation.
+      write(original, "recording without optics metadata");
+      fs::create_directories((game / relative).parent_path());
+      fs::create_symlink(original, game / relative);
+      if (!automatic) {
+        config["game"]["videos"][role] = std::vector<std::string>{relative};
+        config["hstream_ui"]["video_roles"][role] = std::vector<std::string>{relative};
+      }
+      authorized.append(QString::fromStdString(original.string()));
+      rows.append(
+          QJsonObject{
+              {"id", QString::fromStdString(role)},
+              {"before_role", automatic ? "auto" : QString::fromStdString(role)},
+              {"after_role", automatic ? "auto" : QString::fromStdString(role)},
+              {"before_alias", QString::fromStdString(relative)},
+              {"after_alias", QString::fromStdString(relative)}});
+    }
+    if (failure == "state")
+      config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+    write(game / "config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "config.yaml");
+    QJsonObject source{{"fresh", true}, {"generation", QJsonValue::Null}, {"config_sha256", digest(initial)}};
+    if (failure == "hash")
+      source["config_sha256"] = QString(64, '0');
+    if (failure == "generation")
+      source["generation"] = "claimed-old-generation";
+    if (failure == "artifact")
+      write(game / "s.png", "prior saved still");
+    if (failure == "journal")
+      write(game / ".hstream-stitch-journal-v1", "prior transaction");
+    if (failure == "directory-alias")
+      fs::create_directory_symlink(root, game / "previous");
+    if (failure == "artifact-alias")
+      fs::create_symlink(root / "left.mp4", game / "s.png");
+    if (failure == "unauthorized")
+      authorized.removeLast();
+    if (failure == "source-role") {
+      auto row = rows[0].toObject();
+      row["after_role"] = "right";
+      rows[0] = row;
+    }
+    if (failure == "unclaimed")
+      source.remove("fresh");
+    const QJsonObject desired{
+        {"stitching",
+         QJsonObject{
+             {"control_point_limit", 2000},
+             {"calibration_frame_count", 2},
+             {"stitch_frame_time", "00:00:01"},
+             {"camera_config", "auto"}}}};
+    const QJsonObject payload{
+        {"version", 1},
+        {"source", source},
+        {"before_controls", failure == "controls" ? desired : QJsonObject{}},
+        {"desired_controls", desired},
+        {"defaults", QJsonObject{}},
+        {"sources", rows}};
+    const auto staged = invoke(binary, root, "calibration-controls-stage", payload, success, authorized);
+    if (!success) {
+      expect(read(game / "config.yaml") == initial, "Rejected fresh staging must not change admitted config");
+      continue;
+    }
+    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    expect(
+        staged.value("pending").toBool() && staged.value("start_stage").toString() == "input" &&
+            !staged.value("alignment_reused").toBool() && staged.value("cleanup_completed").toBool(),
+        "Fresh source must use the native planner and complete its input-stage cleanup");
+    expect(
+        stored["stitching"]["auto_input_lens_frozen"].as<bool>() &&
+            stored["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 2000 &&
+            stored["stitching"]["calibration_frame_count"].as<int>() == 2 &&
+            stored["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+                staged.value("invalidation_id").toString().toStdString(),
+        "Fresh source must publish checked controls, resolved optics and real native ownership");
+    expect(
+        stored["hstream_ui"]["video_roles"].size() == (automatic ? 0 : roles.size()),
+        "Fresh staging must preserve Center metadata and leave Auto orientation to native discovery");
+    invoke(binary, root, "calibration-controls-stage", payload, false, authorized);
+  }
+}
+
 void controls_staging(const QString& binary, const fs::path& source) {
   const auto original = read(source / "config.yaml");
   for (const char* kind :
@@ -911,6 +1026,7 @@ int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
   try {
     expect(argc == 2, "Pass adapter binary");
+    fresh_controls_staging(argv[1]);
     sparse_still_defaults(argv[1]);
     // Uniform synthetic images do not always support Enblend seam optimization.
     // Exercise the explicitly enabled native hard-seam path for these tiny stills.

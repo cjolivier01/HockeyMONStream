@@ -252,6 +252,72 @@ bool apply_sources(const Request& request, YAML::Node config, const std::set<fs:
   return changed;
 }
 
+void validate_fresh_inputs(
+    const Request& request,
+    const YAML::Node& config,
+    const std::set<fs::path>& allowed,
+    bool locked) {
+  // A fresh source has never owned calibration. Its initial config contains
+  // only admitted playlists; all controls arrive through the validated request.
+  const auto game = at(config, {"game"}), ui = at(config, {"hstream_ui"});
+  const auto videos = at(game, {"videos"}), roles = at(ui, {"video_roles"});
+  require(
+      config.IsMap() && config.size() == 2 && game.IsMap() && game.size() == 1 && ui.IsMap() && ui.size() == 1 &&
+          videos.IsMap() && roles.IsMap(),
+      "Fresh calibration config must contain only its admitted source playlists");
+  const auto rows = request.payload.value("sources").toArray();
+  require(!rows.isEmpty() && rows.size() <= 10000, "Fresh calibration requires bounded admitted source bindings");
+  std::set<fs::path> aliases, inputs;
+  std::set<QString> ids;
+  std::map<std::string, std::vector<std::string>> explicit_roles;
+  for (const auto& value : rows) {
+    require(value.isObject(), "Invalid fresh calibration source binding");
+    const auto row = value.toObject();
+    require(row.size() == 5, "Unexpected fresh calibration source binding fields");
+    const auto id = RequiredString(row, "id", 128), role = RequiredString(row, "before_role", 16);
+    const auto name = RequiredString(row, "before_alias");
+    require(
+        ids.insert(id).second && (role == "auto" || role == "left" || role == "center" || role == "right") &&
+            row.value("before_role") == row.value("after_role") &&
+            row.value("before_alias") == row.value("after_alias"),
+        "Fresh calibration source bindings must preserve distinct admitted identities and roles");
+    inputs.insert(media_alias(request, name, allowed));
+    require(aliases.insert(request.game / name.toStdString()).second, "Fresh calibration repeats a source alias");
+    // Auto remains in its native-discovery directory. Neither a slot number nor
+    // its ordered position establishes camera orientation.
+    if (role != "auto")
+      explicit_roles[role.toStdString()].push_back(name.toStdString());
+  }
+  require(
+      inputs == allowed && roles.size() == explicit_roles.size() && videos.size() == explicit_roles.size(),
+      "Fresh calibration must bind every admitted recording and explicit playlist");
+  for (const auto& [role, expected] : explicit_roles) {
+    const auto chapters = roles[role], original = videos[role];
+    require(
+        chapters.IsSequence() && original.IsSequence() && chapters.as<std::vector<std::string>>() == expected &&
+            original.as<std::vector<std::string>>() == expected,
+        "Fresh calibration requires matching ordered source playlists");
+  }
+  // No old solve, selected still, receipt, directory alias or other file may
+  // smuggle historical state into the native planner's empty starting point.
+  for (fs::recursive_directory_iterator entry(request.game), end; entry != end; ++entry) {
+    const auto path = entry->path();
+    if (aliases.count(path))
+      continue;
+    require(!entry->is_symlink(), "Fresh calibration contains an indirect path");
+    if (entry->is_directory())
+      continue;
+    require(
+        entry->is_regular_file() && path.parent_path() == request.game &&
+            (path.filename() == "config.yaml" || path.filename() == ".hstream-stitch.lock" ||
+             path.filename() == ".hstream-config.lock" ||
+             (locked &&
+              (path.filename() == ".hstream-rink-journal-v1" || path.filename() == ".hstream-stitch-journal-v1" ||
+               path.filename() == ".hstream-rink.lock"))),
+        "Fresh calibration contains a prior artifact or unowned file: " + path.filename().string());
+  }
+}
+
 void remove_native_aliases(YAML::Node config, const QJsonObject& before, const QJsonObject& desired) {
   const auto changed = [&](const char* group, const char* key) {
     return before.value(group).toObject().value(key) != desired.value(group).toObject().value(key);
@@ -354,9 +420,10 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   // confused with the new run's owner or its post-cleanup artifact set.
   const auto source = payload.value("source").toObject();
   const bool cleaned_source = source.value("cleaned").isBool() && source.value("cleaned").toBool();
+  const bool fresh_source = source.value("fresh").isBool() && source.value("fresh").toBool();
   require(
-      source.size() == (cleaned_source ? 3 : 2),
-      "Calibration source requires generation, config_sha256 and optional verified cleanup");
+      !(cleaned_source && fresh_source) && source.size() == ((cleaned_source || fresh_source) ? 3 : 2),
+      "Calibration source requires generation, config_sha256 and one optional initial-state claim");
   std::optional<std::string> source_generation;
   if (!source.value("generation").isNull())
     source_generation = RequiredString(source, "generation", 1024 * 1024).toStdString();
@@ -364,6 +431,9 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   require(QRegularExpression("^[0-9a-f]{64}$").match(source_hash).hasMatch(), "Invalid calibration source config hash");
   const auto previous_controls = payload.value("before_controls").toObject(),
              desired_controls = payload.value("desired_controls").toObject();
+  require(
+      !fresh_source || (!source_generation && previous_controls.isEmpty()),
+      "Fresh calibration cannot claim historical generation or controls");
   validate_controls(previous_controls);
   validate_controls(desired_controls);
   validate_controls(payload.value("defaults").toObject());
@@ -371,6 +441,12 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   const auto stop = [&] { require(!cancelled || !cancelled(), "Calibration staging cancelled"); };
   stop();
   const auto allowed = authorized_media(request);
+  if (fresh_source) {
+    const auto bytes =
+        take(st::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "fresh config"));
+    require(hash(bytes) == source_hash, "Fresh calibration config changed before staging");
+    validate_fresh_inputs(request, YAML::Load(bytes), allowed, false);
+  }
   const auto baseline = take(hm::baseline_config::load()).values;
   auto before_defaults = YAML::Clone(baseline);
   const auto source_controls = YAML::Load(QJsonDocument(previous_controls).toJson().toStdString());
@@ -396,9 +472,11 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
                           : !output_generation.IsDefined() || output_generation.IsNull(),
         "Calibration staging requires the exact saved output generation or its absence");
     const auto status = at(original, {"hstream_ui", "stitching_calibration", "status"});
+    if (fresh_source)
+      validate_fresh_inputs(request, original, allowed, true);
     require(
-        (cleaned_source ? !status.IsDefined() && !source_generation
-                        : status.IsScalar() && status.as<std::string>() == "complete") &&
+        ((cleaned_source || fresh_source) ? !status.IsDefined() && !source_generation
+                                          : status.IsScalar() && status.as<std::string>() == "complete") &&
             !st::HasStitchingReframeIntent(original),
         "Calibration staging requires completed calibration or an explicitly cleaned source without a pending reframe");
     const auto rink = at(original, {"rink"});
@@ -418,7 +496,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       auto pruned = YAML::Clone(original);
       st::RemoveManualStitchingCleanConfigKeys(pruned);
       require(YAML::Dump(pruned) == YAML::Dump(original), "Cleaned calibration still contains retired solve state");
-    } else {
+    } else if (!fresh_source) {
       const auto generation = take(st::stitch_artifact_preflight_generation_id_locked(request.game));
       if (source_generation)
         check(st::validate_stitched_output_generation_hugin(*source_generation, generation));
@@ -435,7 +513,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
     // Clean retires the saved alignment. A newly resolved automatic lens or
     // another geometry edit must not narrow that fresh solve to the canvas.
     // Seed its earliest stage without forcing release of retained input evidence.
-    if (cleaned_source)
+    if (cleaned_source || fresh_source)
       before.stale_from = "input";
     const auto stale = at(original, {"hstream_ui", "stitching_calibration", "stale_from"});
     require(
@@ -492,7 +570,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
           ? at(prepared, {"hstream_ui", "stitching_calibration", "frame_count"}).as<int>()
           : before.controls.frame_count;
     }
-    const bool sources_changed = apply_sources(request, prepared, allowed);
+    const bool sources_changed = fresh_source ? false : apply_sources(request, prepared, allowed);
     remove_native_aliases(prepared, previous_controls, desired_controls);
     for (const char* key :
          {"generated_stitching_backend_choices",
@@ -510,7 +588,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       prepared["hstream_ui"]["stitching_calibration"]["control_points"] = points;
       effective["hstream_ui"]["stitching_calibration"]["control_points"] = points;
     }
-    bool refresh_optics = sources_changed;
+    bool refresh_optics = sources_changed || fresh_source;
     const bool explicitly_released = desired_stitching.contains("auto_input_lens_frozen") &&
         desired_stitching.value("auto_input_lens_frozen").isBool() &&
         !desired_stitching.value("auto_input_lens_frozen").toBool();
@@ -522,7 +600,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       // Qt retains a saved automatic component while editing the other manual
       // component. Profile/Auto edits release the snapshot even after an edit
       // is reverted; the supervisor binds that explicit intent to its source.
-      if (sources_changed || explicitly_released ||
+      if (sources_changed || fresh_source || explicitly_released ||
           previous_stitching.value("camera_config") != desired_stitching.value("camera_config") ||
           before.controls.camera.automatic_fov() != camera.automatic_fov() ||
           before.controls.camera.automatic_lens() != camera.automatic_lens())
@@ -541,7 +619,11 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
         auto roles = at(effective, {"hstream_ui", "video_roles"});
         if (!at(roles, {"left"}).IsSequence() && !at(roles, {"right"}).IsSequence())
           roles.reset(at(effective, {"game", "videos"}));
+        const bool native_discovery =
+            fresh_source && !at(roles, {"left"}).IsSequence() && !at(roles, {"right"}).IsSequence();
         for (const char* role : {"left", "right"}) {
+          if (native_discovery)
+            break; // All Auto aliases were checked above; native discovery owns their identities.
           const auto chapters = at(roles, {role});
           require(chapters.IsSequence() && chapters.size(), "Automatic optics require both admitted source playlists");
           for (const auto& chapter : chapters)
@@ -551,7 +633,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
           optics_config["hstream_ui"]["video_roles"][role] = YAML::Clone(chapters);
         }
       }
-      camera = st::ReadAutoInputLensForGame(request.game, optics_config, camera).camera;
+      camera = st::ReadAutoInputLensForGame(request.game, optics_config, camera, fresh_source).camera;
       st::write_stitch_camera_selection(prepared, camera);
       st::write_stitch_camera_selection(effective, camera);
       prepared["stitching"]["auto_input_lens_frozen"] = true;

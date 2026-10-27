@@ -584,6 +584,25 @@ dispatch and supply exactly these payload fields:
 }
 ```
 
+`calibration-controls-fresh-v1` adds an explicit `source.fresh: true` variant
+for first manual Play/Prepare. `generation` must be null and `before_controls`
+empty. The exact hashed initial config contains only `game.videos` and
+`hstream_ui.video_roles`; every admitted source has an unchanged identity/role/alias
+binding. The adapter rejects prior calibration state, artifacts and indirect
+directories before acquiring native transaction locks. It validates again under
+those locks, allowing only the known journal files they create. Explicit Center
+metadata is retained; Auto aliases keep native discovery and orientation instead
+of acquiring Left/Right roles from upload order. Automatic optics and input-stage
+planning use the existing native implementations. The ordinary stage receipt
+owns the new invalidation; it does not claim a completed calibration.
+
+The outer manual-Play persistence barrier follows verified staging, retired
+descendants and sealed native script export. It saves Qt's calibration subset
+under the original project/default/source fences and durably acknowledges that
+exact launch binding before the supervisor starts playback. Ordinary Program
+drafts and account Defaults remain independent. Completion still requires the
+existing native validator and owned artifact receipts after playback has stopped.
+
 `source.generation` is the exact nonempty saved `rink.stitched_output_generation`
 string, or explicit JSON null only when that field is absent or YAML null. Saved
 crop/leveling reframes can legitimately complete while retiring that rendered
