@@ -233,6 +233,10 @@ if its archived copy is unavailable. Reconstruction replays the recorded player
 tracks and configuration events from the actual initialization boundary. Both
 camera trajectories must match the recording within the stated tolerance.
 
+SQLite recordings keep their historical arena and policy in the database. Their
+Legacy controls are disabled and do not affect preparation. Switching back to a
+legacy manifest restores the retained arena and policy drafts.
+
 This mode is labeled trajectory-verified reconstruction. It cannot promise an
 exact historical internal state from camera boxes alone, and refuses recordings
 whose missing inputs or mismatched trajectory prevent verification. Do not supply

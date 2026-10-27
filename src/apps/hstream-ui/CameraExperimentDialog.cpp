@@ -680,6 +680,11 @@ struct CameraExperimentDialog::Impl {
     update_controls();
   }
 
+  bool legacy_source() const {
+    const QString path = manifest->text().trimmed();
+    return !path.isEmpty() && !path.endsWith(".db") && !path.endsWith(".sqlite");
+  }
+
   void update_controls() {
     const auto state = preview.Poll();
     const bool loading = state.busy || state.seeking;
@@ -693,6 +698,8 @@ struct CameraExperimentDialog::Impl {
     // while that graph is being released, without stealing focus on each key.
     settings->setEnabled(!calculating && !closing_result && !playing && (!loading || !preview_open));
     parameter_tabs->setEnabled(editable);
+    legacy_arena->setEnabled(editable && legacy_source());
+    legacy_config->setEnabled(editable && legacy_source());
     rink_aware->setEnabled(editable && prepared && bool(rink_map));
     for (auto* option : {rink_anticipate, rink_goals, rink_zoom})
       option->setEnabled(editable && prepared && bool(rink_map) && rink_aware->isChecked());
@@ -823,8 +830,9 @@ struct CameraExperimentDialog::Impl {
     options.run_id = run_id->currentData().toString().toStdString();
     options.start_seconds = in->value();
     options.duration_seconds = duration->value();
-    options.legacy_config_path = legacy_config->text().trimmed().toStdString();
-    if (!legacy_arena->text().trimmed().isEmpty()) {
+    if (legacy_source())
+      options.legacy_config_path = legacy_config->text().trimmed().toStdString();
+    if (legacy_source() && !legacy_arena->text().trimmed().isEmpty()) {
       const QStringList values = legacy_arena->text().split(',', Qt::KeepEmptyParts);
       bool valid = values.size() == 4;
       float coordinates[4]{};
@@ -1654,8 +1662,17 @@ CameraExperimentDialog::CameraExperimentDialog(
   s.source_mode->setCurrentIndex(QFileInfo(QDir(game_directory).filePath("config.yaml")).isFile() ? 0 : 1);
   update_source_mode();
   connect(s.in, &QDoubleSpinBox::valueChanged, s.video_origin, &QDoubleSpinBox::setValue);
-  for (QLineEdit* source : {s.manifest, s.media_path, s.game_path, s.legacy_arena, s.legacy_config})
+  connect(s.manifest, &QLineEdit::textChanged, this, [this]() {
+    impl_->invalidate_source();
+    impl_->update_controls();
+  });
+  for (QLineEdit* source : {s.media_path, s.game_path})
     connect(source, &QLineEdit::textChanged, this, [this]() { impl_->invalidate_source(); });
+  for (QLineEdit* source : {s.legacy_arena, s.legacy_config})
+    connect(source, &QLineEdit::textChanged, this, [this]() {
+      if (impl_->legacy_source())
+        impl_->invalidate_source();
+    });
   connect(s.run_id, &QComboBox::currentIndexChanged, this, [this]() { impl_->invalidate_source(); });
   for (QDoubleSpinBox* source : {s.in, s.duration, s.playback_start})
     connect(source, &QDoubleSpinBox::valueChanged, this, [this]() { impl_->invalidate_source(); });

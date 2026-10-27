@@ -4,6 +4,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFileInfo>
+#include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
@@ -51,6 +52,54 @@ bool wait_until(const std::function<bool()>& ready, int timeout_ms = 60000) {
     QThread::msleep(20);
   }
   return false;
+}
+
+bool legacy_source_controls() {
+  QTemporaryDir directory;
+  if (!directory.isValid())
+    return false;
+  CameraExperimentDialog dialog;
+  auto* manifest = widget<QLineEdit>(dialog, "experimentManifest");
+  auto* arena = widget<QLineEdit>(dialog, "experimentLegacyArena");
+  auto* config = widget<QLineEdit>(dialog, "experimentLegacyConfig");
+  auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
+  auto* status = widget<QLabel>(dialog, "experimentStatus");
+  manifest->clear();
+  if (arena->isEnabled() || config->isEnabled())
+    return false;
+  const QString legacy = directory.filePath("hstream_telemetry.json");
+  manifest->setText(legacy);
+  if (!arena->isEnabled() || !config->isEnabled())
+    return false;
+  arena->setText("unfinished arena draft");
+  config->setText(directory.filePath("historical.yaml"));
+  for (const QString& extension : {QString("db"), QString("sqlite")}) {
+    manifest->setText(directory.filePath("recording." + extension));
+    if (arena->isEnabled() || config->isEnabled()) {
+      std::cerr << "SQLite recording exposes unused Legacy controls\n";
+      return false;
+    }
+    prepare->click();
+    // The missing database must reach native preparation, rather than fail
+    // immediately on the unrelated retained arena draft.
+    if (prepare->isEnabled() || !wait_until([&] { return prepare->isEnabled(); }, 5000) ||
+        status->text().contains("Historical arena")) {
+      std::cerr << "SQLite preparation validated an irrelevant Legacy arena\n";
+      return false;
+    }
+  }
+  manifest->setText(legacy);
+  if (!arena->isEnabled() || !config->isEnabled() || arena->text() != "unfinished arena draft" ||
+      config->text() != directory.filePath("historical.yaml")) {
+    std::cerr << "Switching recording kinds lost the Legacy drafts\n";
+    return false;
+  }
+  prepare->click();
+  if (!prepare->isEnabled() || !status->text().contains("Historical arena")) {
+    std::cerr << "Legacy preparation skipped its arena validation\n";
+    return false;
+  }
+  return true;
 }
 
 bool smoke() {
@@ -339,12 +388,25 @@ bool confirmation(const QString& manifest) {
   CameraExperimentDialog dialog;
   dialog.show();
   widget<QLineEdit>(dialog, "experimentManifest")->setText(manifest);
+  if (manifest.endsWith(".db") || manifest.endsWith(".sqlite")) {
+    // Retained Legacy drafts must not prevent a valid database preparation.
+    widget<QLineEdit>(dialog, "experimentLegacyArena")->setText("unfinished arena draft");
+    widget<QLineEdit>(dialog, "experimentLegacyConfig")->setText("/missing/historical.yaml");
+  }
   widget<QDoubleSpinBox>(dialog, "experimentDuration")->setValue(1);
   auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
   auto* apply = widget<QPushButton>(dialog, "experimentApply");
   prepare->click();
   if (!wait_until([&]() { return prepare->isEnabled(); }) || !apply->isEnabled() || !require_confirmation(dialog))
     return false;
+  if (manifest.endsWith(".db") || manifest.endsWith(".sqlite")) {
+    widget<QLineEdit>(dialog, "experimentLegacyArena")->clear();
+    widget<QLineEdit>(dialog, "experimentLegacyConfig")->clear();
+    if (!apply->isEnabled()) {
+      std::cerr << "Inactive Legacy drafts invalidated the prepared database\n";
+      return false;
+    }
+  }
   apply->click();
   if (!wait_until([&]() { return prepare->isEnabled(); }) ||
       widget<QComboBox>(dialog, "experimentComparison")->count() != 3 ||
@@ -904,7 +966,7 @@ int main(int argc, char** argv) {
       return e2e(app.arguments()) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments()[1] == "--confirmation")
       return confirmation(app.arguments()[2]) ? 0 : 1;
-    return smoke() && responsive_worker() ? 0 : 1;
+    return legacy_source_controls() && smoke() && responsive_worker() ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;
