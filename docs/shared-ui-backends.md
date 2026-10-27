@@ -37,6 +37,14 @@ menu retains both DeepStream and NVIDIA ReIdentificationNet selections. Encoded
 rink mini-maps currently require native Program processing; Python launch rejects
 `output.rink-map.enable` instead of silently omitting the requested overlay.
 
+Calibration prompt preferences are required baseline keys:
+`hstream_ui.show_crop_dialog` and `hstream_ui.show_leveling_dialog`, both shipped
+as `true`. Qt and browser Defaults permit editing these preferences and the
+`stitching.stitch_frame_time` reference time. Save Preset stores their overrides;
+Reset to Baseline stages the baseline values until Save Preset. Explicit game
+`false` prompt selections and a zero reference time retain precedence. The
+Python baseline carries the same keys; native calibration owns the dialogs.
+
 ## Native normal-speed audio
 
 With `--render-realtime`, native NVIDIA and AMD Program playback use

@@ -3902,7 +3902,7 @@ bool lookup_yaml_key(YAML::Node parent, const char* key, YAML::Node* value) {
   for (const auto& entry : parent) {
     if (entry.first.IsScalar() && entry.first.as<std::string>() == key) {
       if (value) {
-        *value = entry.second;
+        value->reset(entry.second);
       }
       return true;
     }
@@ -3977,7 +3977,8 @@ int remove_manual_stitching_clean_config_keys(YAML::Node& config) {
 bool lookup_yaml_path_at(const YAML::Node& node, const QStringList& parts, int index, YAML::Node* value) {
   if (index >= parts.size()) {
     if (value) {
-      *value = node;
+      // Rebind a reused lookup result without assigning through its old alias.
+      value->reset(node);
     }
     return true;
   }
@@ -4460,7 +4461,7 @@ bool read_stitch_frame_time(
 
 hm::ui_internal::StitchingIterationSettings read_stitching_iteration_settings(
     const YAML::Node& config,
-    hm::ui_internal::StitchingIterationSettings settings = {}) {
+    hm::ui_internal::StitchingIterationSettings settings) {
   YAML::Node node;
   if (lookup_yaml_path(config, "stitching.sync_method", &node)) {
     settings.sync_method = QString::fromStdString(node.as<std::string>()).trimmed().toLower();
@@ -4844,6 +4845,19 @@ void HStreamWindow::loadBaselineDefaults() {
   const auto loaded = hm::baseline_config::load();
   if (!loaded.ok())
     throw std::runtime_error(loaded.status().ToString());
+  // A saved preference must not hide a broken canonical baseline. Validate
+  // required prompt policy before applying the user overlay.
+  for (const char* path : {"hstream_ui.show_crop_dialog", "hstream_ui.show_leveling_dialog"}) {
+    YAML::Node value;
+    if (!lookup_yaml_path(loaded->values, path, &value) || !value.IsScalar())
+      throw std::runtime_error(QString("Bundled baseline requires boolean UI default %1").arg(path).toStdString());
+    try {
+      static_cast<void>(value.as<bool>());
+    } catch (const YAML::Exception& error) {
+      throw std::runtime_error(
+          QString("Invalid boolean UI default %1 in bundled baseline: %2").arg(path, error.what()).toStdString());
+    }
+  }
   const auto user_snapshot = editing_defaults_
       ? absl::StatusOr<hm::user_config::Snapshot>(hm::user_config::Snapshot{YAML::Node(YAML::NodeType::Map), {}})
       : hm::user_config::load_snapshot_or_create();
@@ -4907,7 +4921,11 @@ void HStreamWindow::loadBaselineDefaults() {
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
   require("hstream_ui.playback_start_time");
-  default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_);
+  require("stitching.sync_method");
+  hm::ui_internal::StitchingIterationSettings iteration_defaults;
+  iteration_defaults.show_crop_dialog = boolean("hstream_ui.show_crop_dialog");
+  iteration_defaults.show_leveling_dialog = boolean("hstream_ui.show_leveling_dialog");
+  default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_, iteration_defaults);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
   default_playback_realtime_ = boolean("hstream_ui.playback_realtime");
   const auto control_points_default = hm::stitching::read_control_point_limit(baseline_config_);

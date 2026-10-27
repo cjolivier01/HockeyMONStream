@@ -69,9 +69,11 @@ class BackendPreview;
 namespace hm::ui_internal {
 
 struct StitchingIterationSettings {
-  QString sync_method{"audio"};
-  bool show_crop_dialog{true};
-  bool show_leveling_dialog{true};
+  // Startup resolves all four values from the required baseline. Empty storage
+  // must never supply policy for an absent configuration key.
+  QString sync_method;
+  bool show_crop_dialog{};
+  bool show_leveling_dialog{};
   QString playback_start_time;
 
   bool operator!=(const StitchingIterationSettings& other) const {

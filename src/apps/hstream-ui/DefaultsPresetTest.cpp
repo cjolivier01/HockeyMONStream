@@ -257,6 +257,107 @@ int main(int argc, char** argv) {
     const auto reset_defaults = YAML::LoadFile(defaults_path.toStdString());
     Require(reset_defaults.IsMap() && reset_defaults.size() == 0, "Precision reset left an override");
   }
+  // Prompt policy comes from the baseline, and each editor must retain explicit
+  // false values above it. Reference time is a saved preference too.
+  for (const bool baseline_crop : {false, true}) {
+    YAML::Node custom = YAML::Load(original_baseline.toStdString());
+    custom["hstream_ui"]["show_crop_dialog"] = baseline_crop;
+    custom["hstream_ui"]["show_leveling_dialog"] = !baseline_crop;
+    custom["stitching"]["stitch_frame_time"] = "00:00:02.345";
+    Write(custom_baseline.filePath("baseline.yaml"), QByteArray::fromStdString(YAML::Dump(custom)));
+    Write(defaults_path, "{}\n");
+    Write(games.filePath("inherit/config.yaml"), "{}\n");
+    HStreamWindow calibration;
+    auto* calibration_selector = Find<QComboBox>(calibration, "gameSelector");
+    calibration_selector->setCurrentIndex(0);
+    auto* crop = Find<QCheckBox>(calibration, "showCropDialogCheck");
+    auto* leveling = Find<QCheckBox>(calibration, "showLevelingDialogCheck");
+    auto* reference = Find<QTimeEdit>(calibration, "stitchFrameTimeEdit");
+    Require(
+        crop->isEnabled() && leveling->isEnabled() && reference->isEnabled(),
+        "Defaults must enable calibration prompt and reference controls");
+    Require(
+        crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&
+            reference->time() == QTime(0, 0, 2, 345),
+        "Defaults ignored canonical calibration baseline values");
+    crop->setChecked(!baseline_crop);
+    leveling->setChecked(baseline_crop);
+    reference->setTime(QTime(0, 0, 6, 789));
+    Require(HStreamWindowTestAccess::Save(calibration), "Cannot save calibration defaults");
+    const auto saved_defaults = YAML::LoadFile(defaults_path.toStdString());
+    Require(
+        saved_defaults["hstream_ui"]["show_crop_dialog"].as<bool>() == !baseline_crop &&
+            saved_defaults["hstream_ui"]["show_leveling_dialog"].as<bool>() == baseline_crop &&
+            saved_defaults["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:06.789",
+        "Calibration defaults were not saved under canonical keys");
+    {
+      HStreamWindow calibration_reopened;
+      Find<QComboBox>(calibration_reopened, "gameSelector")->setCurrentIndex(0);
+      Require(
+          Find<QCheckBox>(calibration_reopened, "showCropDialogCheck")->isChecked() == !baseline_crop &&
+              Find<QCheckBox>(calibration_reopened, "showLevelingDialogCheck")->isChecked() == baseline_crop &&
+              Find<QTimeEdit>(calibration_reopened, "stitchFrameTimeEdit")->time() == QTime(0, 0, 6, 789),
+          "Restart lost calibration defaults");
+    }
+    calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
+    Require(
+        crop->isChecked() == !baseline_crop && leveling->isChecked() == baseline_crop &&
+            reference->time() == QTime(0, 0, 6, 789),
+        "Game did not inherit calibration defaults");
+    crop->setChecked(false);
+    leveling->setChecked(false);
+    reference->setTime(QTime(0, 0));
+    Require(HStreamWindowTestAccess::Save(calibration), "Cannot save explicit game calibration settings");
+    const auto explicit_game = Read(games.filePath("inherit/config.yaml"));
+    calibration_selector->setCurrentIndex(0);
+    calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
+    Require(
+        !crop->isChecked() && !leveling->isChecked() && reference->time() == QTime(0, 0),
+        "Explicit false and zero game settings lost precedence");
+    calibration_selector->setCurrentIndex(0);
+    const auto calibration_before_reset = Read(defaults_path);
+    Find<QPushButton>(calibration, "resetDefaultsButton")->click();
+    Require(
+        crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&
+            reference->time() == QTime(0, 0, 2, 345),
+        "Reset did not stage canonical calibration defaults");
+    Require(Read(defaults_path) == calibration_before_reset, "Calibration reset saved before Save Preset");
+    Require(HStreamWindowTestAccess::Save(calibration), "Cannot save reset calibration defaults");
+    const auto reset_calibration = YAML::LoadFile(defaults_path.toStdString());
+    Require(reset_calibration.IsMap() && reset_calibration.size() == 0, "Calibration reset left an override");
+    Require(Read(games.filePath("inherit/config.yaml")) == explicit_game, "Calibration defaults modified a game");
+    Write(games.filePath("inherit/config.yaml"), "{}\n");
+    calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
+    Require(
+        crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&
+            reference->time() == QTime(0, 0, 2, 345),
+        "Game retained cleared calibration defaults");
+  }
+  for (const char* key : {"show_crop_dialog", "show_leveling_dialog"}) {
+    for (const char* invalid : {"missing", "null", "invalid", "[]"}) {
+      YAML::Node custom = YAML::Load(original_baseline.toStdString());
+      if (std::string(invalid) == "missing")
+        custom["hstream_ui"].remove(key);
+      else
+        custom["hstream_ui"][key] = YAML::Load(invalid);
+      Write(custom_baseline.filePath("baseline.yaml"), QByteArray::fromStdString(YAML::Dump(custom)));
+      for (const char* overlay :
+           {"{}\n",
+            "hstream_ui: {show_crop_dialog: false, show_leveling_dialog: false}\n",
+            "hstream_ui: {show_crop_dialog: true, show_leveling_dialog: true}\n"}) {
+        Write(defaults_path, overlay);
+        try {
+          HStreamWindow invalid_calibration_baseline;
+          Require(false, "Missing or invalid calibration prompt baseline must fail startup");
+        } catch (const std::exception& error) {
+          Require(
+              std::string(error.what()).find(std::string("hstream_ui.") + key) != std::string::npos,
+              "Invalid calibration prompt baseline must identify its required key");
+        }
+        Require(Read(defaults_path) == overlay, "Rejected baseline modified saved defaults");
+      }
+    }
+  }
   std::cout << "Defaults preset tests passed\n";
   return 0;
 }
