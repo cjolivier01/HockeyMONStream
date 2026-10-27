@@ -15,6 +15,7 @@
 #include <thread>
 #include <vector>
 
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
 namespace {
@@ -767,6 +768,66 @@ bool write_playlist_seek_config(
   return output.good();
 }
 
+bool verify_managed_stop_publication(const fs::path& executable, const fs::path& root, const fs::path& video) {
+  for (const std::string mode : {"finish", "paused-finish", "interrupt"}) {
+    const fs::path game = root / ("managed-stop-" + mode);
+    fs::create_directory(game);
+    fs::create_directory(game / "home");
+    const auto manifest = hm::publication::CreateRun(game, root / "managed-work", "run-" + mode);
+    hm::publication::BeginRun(manifest);
+    const auto config = game / "pipeline.yaml";
+    const auto archive = manifest.parent_path() / "archive.mkv";
+    // Managed outputs must already be owned regular files when registered.
+    std::ofstream(archive).close();
+    if (!write_config(config, video, archive))
+      return false;
+    PipelineProcess process;
+    const auto check = [&](bool condition, const char* message) {
+      if (!expect(condition, message)) {
+        std::cerr << "Managed stop mode: " << mode << '\n';
+        process.DumpOutput();
+        return false;
+      }
+      return true;
+    };
+    if (!check(
+            process.Start(
+                executable,
+                config,
+                "URI",
+                "ENCODE_FILE",
+                false,
+                {{"HSTREAM_JOB_MANIFEST", manifest.string()}},
+                // Exercise mux/EOS publication without Program inference or telemetry.
+                {"--options=hstream_ui.job.capture_telemetry=0,pipeline.primary-gie.enable=0,"
+                 "pipeline.hmstitcher.enable=0,pipeline.ds-playtracker.enable=0,pipeline.player-analytics.enable=0"}),
+            "managed archive must start") ||
+        !check(process.WaitFor("Pipeline running"), "managed archive must reach PLAYING") ||
+        !check(
+            process.WaitForProgressAtOrBeyond(1, 0, std::chrono::seconds(12)),
+            "managed archive must process frames before Stop"))
+      return false;
+    if (mode == "paused-finish") {
+      const size_t pause_mark = process.Mark();
+      if (!check(process.Send("p"), "native pause must be delivered") ||
+          !check(process.WaitFor("Pipeline paused", pause_mark), "archive must be PAUSED before finish"))
+        return false;
+    }
+    if (!check(
+            mode == "interrupt" ? process.Interrupt() : process.Send("q\n"),
+            "native Stop or interruption must be delivered"))
+      return false;
+    int exit_code = -1;
+    if (!check(process.WaitForExit(&exit_code), "managed archive must finish draining") ||
+        !check(exit_code == 0, "native EOS must complete successfully") ||
+        !check(
+            hm::publication::PipelineCompleted(manifest) == (mode != "interrupt"),
+            "only cooperative finish may authorize publication, even when SIGINT drains and exits zero"))
+      return false;
+  }
+  return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -807,18 +868,24 @@ int main(int argc, char** argv) {
   const fs::path recreate_config = root / "pipeline-recreate.yaml";
   const fs::path error_config = root / "pipeline-error.yaml";
   const fs::path archive = root / "archive.mkv";
+  const bool stop_publication_only = ::getenv("HSTREAM_RUNTIME_CONTROL_TEST_STOP_PUBLICATION_ONLY") != nullptr;
+  const char* input_seconds = stop_publication_only ? "60" : "1800";
   ok &= expect(fs::create_directory(home), "isolated hstream-cli HOME must be created");
   ok &= expect(
       run_command({
           "ffmpeg",    "-hide_banner", "-loglevel",
           "error",     "-y",           "-f",
           "lavfi",     "-i",           "testsrc2=size=256x144:rate=15,format=yuv420p",
-          "-t",        "1800",         "-an",
+          "-t",        input_seconds,  "-an",
           "-c:v",      "libx264",      "-preset",
           "ultrafast", "-g",           "15",
           "-pix_fmt",  "yuv420p",      video.string(),
       }),
       "synthetic seekable input must be generated");
+  if (ok && !verify_managed_stop_publication(argv[1], root, video))
+    return 1;
+  if (stop_publication_only)
+    return ok ? 0 : 1;
   ok &= expect(
       run_command({
           "ffmpeg",

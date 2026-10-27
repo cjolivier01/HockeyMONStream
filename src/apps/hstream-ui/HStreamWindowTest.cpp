@@ -96,6 +96,89 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static bool stopProtocolChecks() {
+#ifdef Q_OS_UNIX
+    HStreamWindow window;
+    window.capture_complete_log_ = true;
+    window.pipeline_stop_timeout_ms_ = 1000;
+    window.pipeline_kill_timeout_ms_ = 1000;
+    const QString child = R"PY(
+import signal, sys, time
+def interrupted(signum, frame):
+    print('STOP_TEST interrupted', flush=True)
+    sys.exit(0)
+signal.signal(signal.SIGINT, interrupted)
+signal.signal(signal.SIGCONT, lambda signum, frame: print('STOP_TEST continued', flush=True))
+print('STOP_TEST ready', flush=True)
+while True:
+    line = sys.stdin.readline()
+    if line.strip() == 'q':
+        print('STOP_TEST finish', flush=True)
+        if sys.argv[1] != 'ignore-finish':
+            sys.exit(0)
+    if not line:
+        time.sleep(.01)
+)PY";
+    const auto exercise = [&](const QString& name, bool finish, bool paused = false) {
+      {
+        const QSignalBlocker blocker(window.render_video_toggle_);
+        window.render_video_toggle_->setChecked(name == "preview-ready");
+      }
+      window.pipeline_process_->start("python3", {"-u", "-c", child, name});
+      if (!window.pipeline_process_->waitForStarted(5000) ||
+          !QTest::qWaitFor([&] { return window.completeLogText().contains("STOP_TEST ready"); }, 5000))
+        return false;
+      window.preview_runtime_ready_ = name == "preview-ready";
+      const bool preparing = name == "startup" || name == "python-preparation";
+      window.playback_stage_ = preparing ? "models" : "0";
+      window.playback_position_ns_ = preparing || name == "preview-ready" ? 0 : 1'000'000'000;
+      window.active_hockeymon_program_ = name == "python-preparation";
+      window.active_run_is_calibration_ =
+          name == "calibration" || name == "calibration-restart" || name == "stitched-playback";
+      window.calibration_pending_ =
+          name == "calibration" || name == "one-pass-calibration" || name == "calibration-restart";
+      window.calibration_waiting_for_playback_restart_ = name == "calibration-restart";
+      window.pending_playback_seek_generation_ = name == "seek-reconstruction" ? 17 : 0;
+      window.playback_seek_recovery_generation_ = name == "seek-recovery" ? 18 : 0;
+      if (name == "closed-input")
+        window.pipeline_process_->closeWriteChannel();
+      if (paused) {
+        const qint64 pid = window.pipeline_process_->processId();
+        if (::kill(static_cast<pid_t>(pid), SIGSTOP) != 0 || !QTest::qWaitFor([&] {
+              QFile status(QString("/proc/%1/status").arg(pid));
+              return status.open(QIODevice::ReadOnly) && status.readAll().contains("T (stopped)");
+            }))
+          return false;
+        window.pipeline_paused_ = true;
+      }
+      window.stopPipeline();
+      const QString output = window.completeLogText();
+      const bool killed = name == "ignore-finish";
+      const bool ok = window.pipeline_process_->state() == QProcess::NotRunning &&
+          (killed ? window.pipeline_process_->exitStatus() == QProcess::CrashExit
+                  : window.pipeline_process_->exitStatus() == QProcess::NormalExit &&
+                   window.pipeline_process_->exitCode() == 0) &&
+          output.contains("STOP_TEST finish") == finish && output.contains("STOP_TEST interrupted") == !finish &&
+          (!paused || output.contains("STOP_TEST continued"));
+      if (!ok)
+        std::cerr << "Stop protocol failed for " << name.toStdString() << '\n' << output.toStdString();
+      window.log_->clear();
+      window.complete_log_.clear();
+      return ok;
+    };
+    if (!exercise("preview-ready", true) || !exercise("render-off-archive", true) ||
+        !exercise("stitched-playback", true) || !exercise("paused-render-off-archive", true, true) ||
+        !exercise("startup", false) || !exercise("calibration", false) || !exercise("one-pass-calibration", false) ||
+        !exercise("calibration-restart", false) || !exercise("seek-reconstruction", false) ||
+        !exercise("seek-recovery", false) || !exercise("closed-input", false) || !exercise("python-preparation", true))
+      return false;
+    window.pipeline_stop_timeout_ms_ = 50;
+    return exercise("ignore-finish", true);
+#else
+    return true;
+#endif
+  }
+
   static bool previewOverlayStartupChecks() {
     const QByteArray old_timeout = qgetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
     const bool had_timeout = qEnvironmentVariableIsSet("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
@@ -1912,6 +1995,8 @@ bool write_fake_runner(const QString& path) {
       "runtime_control_delay_seconds, "
       "reject_next_runtime_control\n");
   file.write("    print('stdin:' + line.rstrip('\\n'), flush=True)\n");
+  file.write("    if line.strip() == 'q':\n");
+  file.write("        sys.exit(0)\n");
   file.write("    if line.startswith('@test-exit'):\n");
   file.write("        print('test process exit requested', flush=True)\n");
   file.write("        sys.exit(0)\n");
@@ -18031,9 +18116,6 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       playback_progress->toolTip().contains("ETA:") && playback_progress->format().contains("ETA ") &&
       playback_fps_label.match(playback_progress->format()).hasMatch();
   const bool require_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR");
-  QMap<QString, QString> working_outputs;
-  for (const QString& output : requested_outputs)
-    working_outputs[output] = HStreamWindowTestAccess::activeArchivePath(window, output);
   if (window->pipelineStateText() != "STOPPED")
     activate(stop);
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -18050,7 +18132,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return window->outputStateText(output) == "SAVED";
     });
   };
-  while (wait_for_eos && !outputs_saved() && finalize_timer.elapsed() < 120000) {
+  while (!outputs_saved() && finalize_timer.elapsed() < 120000) {
     QApplication::processEvents();
     QTest::qWait(100);
   }
@@ -18105,8 +18187,6 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     auto* label = window->findChild<QLabel*>(output_labels.value(output));
     if (label && label->text().startsWith("Completed archive: "))
       output_path = label->text().mid(QString("Completed archive: ").size());
-    else if (!wait_for_eos)
-      output_path = working_outputs.value(output);
   }
   const QString panorama_path = QDir(window->gameDirectoryText()).filePath("panorama.tif");
   bool visual_match = false;
@@ -18198,8 +18278,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           "Program, Stitched, and Camera 1 must be supplied by their distinct backend preview channels") ||
       !expect(!fatal_log_issue, "Real UI run should not emit a fatal pipeline log signature") ||
       !expect(
-          (!wait_for_eos || outputs_saved()) && QFileInfo(output_path).size() > 64 * 1024,
-          "Archives must contain video; completed runs must finish MP4 publication") ||
+          outputs_saved() && QFileInfo(output_path).size() > 64 * 1024,
+          "Normal Stop and natural completion must publish every selected archive") ||
       !expect(visual_match, "Encoded output should geometrically match panorama.tif")) {
     std::cerr << final_log.toStdString() << '\n';
     return false;
@@ -19637,6 +19717,10 @@ int main(int argc, char** argv) {
       return 1;
     return 0;
   }
+  if (!HStreamWindowTestAccess::stopProtocolChecks())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STOP_PROTOCOL_ONLY"))
+    return 0;
   if (!HStreamWindowTestAccess::previewOverlayStartupChecks())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY"))

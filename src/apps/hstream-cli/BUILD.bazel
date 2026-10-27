@@ -345,7 +345,10 @@ cc_test(
     size = "small",
     srcs = ["PipelineRuntimeControlTest.cpp"],
     args = ["--test-output-reader"],
-    deps = ["//src/libs/recording"],
+    deps = [
+        "//src/libs/publication",
+        "//src/libs/recording",
+    ],
 )
 
 cc_test(
@@ -353,7 +356,10 @@ cc_test(
     srcs = ["PipelineRuntimeControlTest.cpp"],
     args = ["$(location :hstream-cli)"],
     data = [":hstream-cli"],
-    deps = ["//src/libs/recording"],
+    deps = [
+        "//src/libs/publication",
+        "//src/libs/recording",
+    ],
     size = "medium",
     tags = [
         "local",

@@ -215,17 +215,17 @@ int main() {
           !fixture.control->Service().ok() && fixture.messages.empty(),
           "failed output received a success acknowledgment");
     }
-    {
+    for (const char* command : {"q\n", "@quit\n"}) {
       Fixture fixture;
-      fixture.Send("@quit\n");
+      fixture.Send(command);
       Check(absl::IsCancelled(fixture.control->Service()) && fixture.stopped, "quit failed");
     }
-    {
+    for (const char* command : {"q\n", "@quit\n"}) {
       Fixture fixture;
       fixture.Send("@process-pause 1\n");
       fixture.Start();
       fixture.WaitMessage("status=prepared");
-      fixture.Send("@quit\n");
+      fixture.Send(command);
       Check(absl::IsCancelled(fixture.Complete()) && fixture.stopped, "paused quit failed");
     }
     {

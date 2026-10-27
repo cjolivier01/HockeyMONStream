@@ -8,6 +8,14 @@ launch uses the same pipeline; additional preview channels, live controls
 and other optional application features remain unfinished. This is
 not yet a complete AMD application release.
 
+Desktop Stop sends the shared `q` finish command once native playback is ready,
+including with Render off. The AMD control parser accepts both `q` and `@quit`;
+portable control tests cover both commands while playing and paused. The AMD
+lifecycle hardware suite also checks desktop `q`, including SIGSTOP/SIGCONT before
+a paused finish. Both cases passed on `ripper` using a compatible paced-audio
+runtime: each published 21 HEVC/AAC frames and passed full decode. This checks
+unmanaged file output; it does not qualify managed receipts or full AMD parity.
+
 `src/apps/apps-common/PreviewRouteOwner.*` is portable CPU control code and does
 not depend on CUDA, HIP, Qt or X11. The NVIDIA CLI uses it for existing desktop
 route activation. It does not add AMD source/Stitched branches or WebRTC;

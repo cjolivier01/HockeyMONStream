@@ -11889,10 +11889,20 @@ void HStreamWindow::stopPipeline() {
     pipeline_cooperative_pause_ = false;
   }
 #endif
-  // The Python supervisor must let its worker drain archives and telemetry.
-  // Signalling the whole group also signals its process guard, which treats
-  // that as forced cancellation and kills the worker before publication.
-  const bool cooperative_stop = active_hockeymon_program_ && pipeline_process_->write("q\n") == 2;
+  // Native q drains playback without marking its publication receipt
+  // interrupted. SIGINT remains cancellation during startup/calibration and a
+  // local-render seek, whose reconstruction worker cannot consume stdin yet.
+  // Preview readiness proves the command poll was installed; processed stage-0
+  // progress also covers archive runs with Render off.
+  const bool native_playback_ready = preview_runtime_ready_ || (playback_stage_ == "0" && playback_position_ns_ > 0);
+  // Calibration-only mode continues as Stitched playback after the pending
+  // calibration (including its manual selection/restart phases) completes.
+  const bool finish_native_playback = native_playback_ready && !calibration_pending_ &&
+      pending_playback_seek_generation_ == 0 && playback_seek_recovery_generation_ == 0;
+  // Python also needs q: signalling its process guard cancels the worker before
+  // it can drain archives and telemetry.
+  const bool cooperative_stop =
+      (active_hockeymon_program_ || finish_native_playback) && pipeline_process_->write("q\n") == 2;
   if (!cooperative_stop) {
 #ifdef Q_OS_UNIX
     if (pid > 0)

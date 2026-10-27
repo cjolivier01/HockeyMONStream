@@ -67,7 +67,7 @@ The UI acceptance test exercises the same Qt button handlers as an operator:
 3. click **Play**;
 4. observe the private native scoreboard-selector URL and submit **No scoreboard**;
 5. wait for positive pipeline FPS while recording several seconds;
-6. click **Stop** and inspect the working MKV, or wait for completion and require published MP4s;
+6. click **Stop**, or wait for natural completion, and require every selected archive to publish as MP4;
 7. compare sampled encoded frames with `panorama.tif` using SIFT features and a RANSAC homography.
 
 Positive FPS alone is deliberately insufficient. The visual check requires square pixels and at
@@ -283,9 +283,11 @@ On X11, the backend renders NVMM video through CUDA/OpenGL into the native
 preview windows. The acceptance test requests bounded diagnostic captures of
 the presented GPU framebuffer; ordinary playback performs no CPU frame readback.
 The test requires distinct channel acknowledgements and non-blank images, then
-checks the recorded working MKV after Stop. With
-`HSTREAM_UI_E2E_WAIT_FOR_EOS=1`, it waits for natural completion and requires all
-selected outputs to finish MP4 publication. It selects the CLI
+requires all selected outputs to finish MP4 publication after Stop. With
+`HSTREAM_UI_E2E_WAIT_FOR_EOS=1`, it waits for natural completion before the same
+publication checks. Ready playback finishes through the native `q` command;
+Stop during startup, pending calibration or seek reconstruction still cancels.
+It selects the CLI
 and plugins from the same Bazel build as the test executable.
 
 `HSTREAM_UI_E2E_OUTPUTS` selects comma-separated `archive-file`,

@@ -95,6 +95,8 @@ def run_case(cli, game, start, directory, case):
                     acted = True
                     if case == "quit_one":
                         send("@quit")
+                    elif case == "desktop_quit":
+                        send("q")
                     elif case == "sigint":
                         process.send_signal(signal.SIGINT)
                     elif case == "sigterm":
@@ -111,6 +113,11 @@ def run_case(cli, game, start, directory, case):
                 pause_acknowledged = True
                 if case == "paused_quit":
                     send("@quit")
+                elif case == "paused_desktop_quit":
+                    os.kill(process.pid, signal.SIGSTOP)
+                    os.waitpid(process.pid, os.WUNTRACED)
+                    os.kill(process.pid, signal.SIGCONT)
+                    send("q")
                 elif case == "paused_eof":
                     process.stdin.close()
                 elif case == "paused_sigint":
@@ -160,7 +167,7 @@ if __name__ == "__main__":
     start = os.environ["HSTREAM_AMD_TEST_START_SECONDS"]
     with tempfile.TemporaryDirectory(prefix="amd-program-lifecycle-") as directory:
         for case in [
-            "queued_end_seek", "limit_one", "quit_one", "sigint", "paused_quit",
+            "queued_end_seek", "limit_one", "quit_one", "desktop_quit", "sigint", "paused_quit", "paused_desktop_quit",
             "paused_sigint", "sigterm", "abort_then_stop", "paused_eof", "queued_quit",
         ]:
             run_case(os.path.abspath(sys.argv[1]), game, start, Path(directory), case)
