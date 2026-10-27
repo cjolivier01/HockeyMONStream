@@ -68,6 +68,7 @@ struct PacedPlayback::Impl {
   std::deque<Interval> history;
   guint64 epoch{1};
   bool active{false}, ended{false}, cancelled{false};
+  bool restart_pending{false};
   bool audio_attached{false}, audio_ended{false}, pause_pending{false};
   guint audio_pushes{0};
   GstClockTime pause_start_time{GST_CLOCK_TIME_NONE};
@@ -121,8 +122,12 @@ struct PacedPlayback::Impl {
   void Cancel() {
     std::lock_guard<std::mutex> lock(mutex);
     RestorePauseStartTimeLocked();
-    if (!cancelled)
+    // Audio can reopen preroll waits and then flush again before the recorder
+    // sees its new SEGMENT. Reserve one video epoch for that whole restart:
+    // retained preview sinks may already have captured it on their SEGMENT.
+    if (!restart_pending)
       ++epoch;
+    restart_pending = true;
     active = false;
     cancelled = true;
     pause_pending = false;
@@ -143,6 +148,7 @@ struct PacedPlayback::Impl {
       audio_ended = false;
     }
     active = true;
+    restart_pending = false;
     cancelled = false;
     ended = false;
     history.clear();

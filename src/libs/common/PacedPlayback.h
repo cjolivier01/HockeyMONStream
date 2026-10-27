@@ -64,6 +64,7 @@ class PacedPlayback : public std::enable_shared_from_this<PacedPlayback> {
   void WakePresentationWaiters();
   // Wake mapping waiters before flush, reconstruction or destruction. The next
   // serialized video SEGMENT opens a fresh epoch with an empty bounded history.
+  // Audio preroll and repeated cancellation before it retain that reserved epoch.
   void Cancel();
   // After a successful PAUSED -> PLAYING transition, start the preserved
   // device cursor immediately, then release quiesced PCM. GstAudioBaseSink
