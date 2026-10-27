@@ -2119,7 +2119,9 @@ void PipelineApplication::publish_web_preview_capability() {
       g_main_loop_quit(main_loop_);
     return;
   }
-  const bool seek = !stitching_calibration_only_ && current_stage_ == 0 && runtime_seek_is_local_render_only();
+  // Completed calibration playback uses the same file/preview seek path.
+  // Active solves are still rejected by seek_runtime_impl before any mutation.
+  const bool seek = current_stage_ == 0 && runtime_seek_is_local_render_only();
   g_print("HSTREAM_PREVIEW_PRESENTATION %s\n", web_preview_->Capability(preview_overlay_state_, seek).c_str());
   if (web_rotation_) {
     const hm::preview::WebRotationControlsRequest request{web_preview_->identity(), "0", {}, true};
@@ -6926,7 +6928,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
 }
 
 bool PipelineApplication::runtime_seek_is_local_render_only() const {
-  const bool private_browser = web_preview_ && !web_preview_run_id_.empty() && !stitching_calibration_only_;
+  const bool private_browser = web_preview_ && !web_preview_run_id_.empty();
   auto is_render_type = [private_browser](NvDsSinkType type) {
     if (private_browser)
       return type == NV_DS_SINK_WEBRTC;

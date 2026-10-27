@@ -117,6 +117,7 @@ class PipelineApplication {
 
  private:
   friend struct PipelineToneControlsTestAccess;
+  friend struct PipelineSeekAdmissionTestAccess;
   // Callback and helper functions.
   static void all_bbox_generated(AppCtx* app_ctx, GstBuffer* buf, NvDsBatchMeta* batch_meta, guint index);
   static void _intr_handler(int signum);

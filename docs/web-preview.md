@@ -8,6 +8,14 @@ presentation contract; ordinary `WEBRTC` launches retain the static output.
 This opt-in is not full Qt workflow parity: archived replay-mask ownership and
 audio/seek timeline qualification remain unfinished.
 
+Completed Stitching Calibration playback shares Program's private browser seek
+admission. The native capability still requires one file-based pipeline with only
+the owned WebRTC preview; archives, other network outputs, active telemetry and
+active calibration work reject seeks. The browser must wait for the native
+capability and timeline, and confirm the replacement generation with an exact
+decoded frame. Calibration seek hardware qualification remains pending until the
+paired Qt/browser workflow passes.
+
 Normal-speed selectable preview now binds video headers and the raw Opus input
 through the shared `common/PacedPlayback` source-interval mapping. This owner is
 also installed when the browser is the only audio consumer; a physical monitor

@@ -8,6 +8,8 @@
 
 #include <memory>
 
+struct PipelineSeekAdmissionTestAccess;
+
 namespace hm::preview {
 
 // One native graph generation. Prepare supplies the single WEBRTC sink's
@@ -47,6 +49,7 @@ class WebPreviewSession {
   }
 
  private:
+  friend struct ::PipelineSeekAdmissionTestAccess;
   struct PaintState;
   struct RouteState;
   WebPreviewSession(AppCtx& app, WebPreviewOptions options);
