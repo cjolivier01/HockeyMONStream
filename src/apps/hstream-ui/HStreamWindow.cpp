@@ -4845,6 +4845,7 @@ void HStreamWindow::loadBaselineDefaults() {
   const auto loaded = hm::baseline_config::load();
   if (!loaded.ok())
     throw std::runtime_error(loaded.status().ToString());
+  static_cast<void>(hm::ui::ReadInt8PreparationDefaults(loaded->values));
   // A saved preference must not hide a broken canonical baseline. Validate
   // required prompt policy before applying the user overlay.
   for (const char* path :
@@ -4927,6 +4928,7 @@ void HStreamWindow::loadBaselineDefaults() {
   iteration_defaults.show_crop_dialog = boolean("hstream_ui.show_crop_dialog");
   iteration_defaults.show_leveling_dialog = boolean("hstream_ui.show_leveling_dialog");
   default_show_scoreboard_dialog_ = boolean("hstream_ui.show_scoreboard_dialog");
+  static_cast<void>(hm::ui::ReadInt8PreparationDefaults(baseline_config_));
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_, iteration_defaults);
   default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
   default_playback_realtime_ = boolean("hstream_ui.playback_realtime");
@@ -10930,7 +10932,8 @@ void HStreamWindow::prepareRecordedInt8() {
     return;
   }
   hm::ui::Int8PreparationDialog dialog(
-      {backend_.isHockeyMon() ? backend_.runner : nativeRunnerPath(),
+      {hm::ui::ReadInt8PreparationDefaults(baseline_config_),
+       backend_.isHockeyMon() ? backend_.runner : nativeRunnerPath(),
        pipelineWorkingDirectory(),
        development_bazel_bin_.isEmpty() ? QDir(pipelineWorkingDirectory()).filePath("bazel-bin")
                                         : development_bazel_bin_,

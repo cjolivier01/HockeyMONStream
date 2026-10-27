@@ -1096,7 +1096,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":action_icons", "@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = [":action_icons", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
 )
 
 cc_test(

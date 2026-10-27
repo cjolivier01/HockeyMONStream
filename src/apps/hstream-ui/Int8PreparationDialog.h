@@ -1,5 +1,6 @@
 #pragma once
 
+#include <yaml-cpp/yaml.h>
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtWidgets/QDialog>
@@ -11,7 +12,14 @@ class QPushButton;
 class QCheckBox;
 
 namespace hm::ui {
+struct Int8PreparationDefaults {
+  int samples;
+  bool play_when_ready;
+};
+Int8PreparationDefaults ReadInt8PreparationDefaults(const YAML::Node& config);
+
 struct Int8PreparationRequest {
+  Int8PreparationDefaults defaults;
   QString runner, working_directory, bazel_bin, app_config, detector_config, game_id;
   QProcessEnvironment environment;
   bool hockeymon{false};

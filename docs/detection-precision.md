@@ -133,7 +133,8 @@ bazel-bin/src/apps/hstream-cli/hstream-cli --resolve-engine-path '/path/detector
 ## Prepare INT8 from a recording
 
 Complete stitching calibration, stop playback, then open **Program Controls →
-Detection → Prepare INT8 from recording**. Choose 16–256 samples (default 64).
+Detection → Prepare INT8 from recording**. Opening the dialog first saves the current preset and uses its Detection model. Choose 16–256 samples (default 64).
+The required `hstream_ui.int8_preparation.samples` and `play_when_ready` baseline keys seed the dialog (64 and true); missing or invalid values fail startup. The browser contract reads the same defaults and native sample bounds.
 The preparer samples stitched panoramas at evenly spaced interior timestamps
 across the complete synchronized recording. This currently decodes/stitches the
 recording once; it does not seek directly to the selected times. Detection,
