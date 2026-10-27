@@ -257,7 +257,10 @@ class PipelineApplication {
   };
   void runtime_seek_recreation_worker(AppCtx* app_ctx, uint64_t target_ns, uint64_t generation);
   gboolean seek_runtime_sources(AppCtx* app_ctx, uint64_t target_ns);
-  void seed_runtime_playtracker(HmApp* app_ctx, uint64_t absolute_position_ns);
+  void seed_runtime_playtracker(
+      HmApp* app_ctx,
+      uint64_t absolute_position_ns,
+      const std::function<bool(const std::string&)>& apply_checkpoint = {});
   void position_initial_sources_if_ready(AppCtx* app_ctx);
   bool dispatch_runtime_seek_recreation_completion();
   gboolean complete_runtime_seek_recreation(RuntimeSeekRecreationResult result);

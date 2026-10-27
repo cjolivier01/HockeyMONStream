@@ -52,7 +52,7 @@ Highlights defaults to the database matching the selected archive's numeric suff
 
 Camera experiments read the database directly, select a run, query the checkpoint before the requested in point, and replay exact native inputs to reconstruct full state. Trials clone that state. Preview hardware-decodes original camera chapters and stitches on the GPU, or uses an uncropped proportionally scaled archive. Preserve the historical source configuration and stitching maps; media/time binding is still explicit. A 16K-wide canvas is never required to be encoded for this workflow.
 
-Local playback seeks also use native checkpoint replay to seed the play tracker.
+Native NVIDIA local playback seeks also use checkpoint replay to seed the play tracker.
 They search game-directory databases newest generation first and select the
 latest completed run for that game. Source lists, synchronization offsets and
 stitching revision must match. New run archives record `launch.start-time-ns`;
@@ -61,6 +61,16 @@ saved launch command. Missing, incompatible or uncovered recordings leave the
 last live camera position intact. Recorded camera dynamics are restored without
 replacing current tuning or importing old object IDs. Only metadata is replayed;
 the video between the checkpoint and target is not decoded.
+
+Full seek reconstruction, including private browser previews, captures bounded
+camera metadata after the old worker stops and restores it before the replacement
+camera's first step. The replacement element retains the handoff across caps and
+source-positioning flushes until the first post-seek output acknowledgement, so
+initial preroll cannot consume the target segment's state. It uses the same
+recording selection as source-only seeks, retains live tuning through preroll,
+and rejects incompatible replacement geometry.
+Calibration restarts do not retain this state. AMD seek-history limits remain in
+[AMD GPU support](amd-gpu.md).
 
 HockeyMON PR https://github.com/cjolivier01/HockeyMON/pull/167 adds direct DriveGPT database training, portable dataset publication, and transactional merging. `--database` accepts repeated paths/directories/globs and any mixture of individual and merged files. Repeated identical run UUIDs are deduplicated; conflicting content fails. Training groups all runs of the same source game into one train/validation side and prevents sequences from crossing geometry/policy/reset boundaries. Legacy CSV recordings remain readable.
 

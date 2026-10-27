@@ -12,6 +12,7 @@
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
+#include "hstream/src/libs/tracking/CameraSeekState.h"
 
 #include <nvdsmeta.h>
 
@@ -721,7 +722,33 @@ void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx) {
   if (ctx) {
     ctx->play_trackers.clear();
     ctx->player_colors.Reset();
+    ctx->pending_seek_checkpoint.clear();
+    ctx->pending_seek_has_tracks = false;
   }
+}
+
+absl::Status DsPlayTrackerRestoreCameraSeekState(
+    DsPlayTrackerCtx::PlayTracker* tracker,
+    const std::string& checkpoint,
+    bool retain_checkpoint_tuning,
+    bool has_received_tracks) {
+  if (!tracker || !tracker->play_tracker)
+    return absl::FailedPreconditionError("Camera seek restore requires an initialized tracker");
+  auto seed =
+      hm::tracking::PrepareCameraSeekState(checkpoint, tracker->play_tracker->snapshot(), retain_checkpoint_tuning);
+  if (!seed.ok())
+    return seed.status();
+  auto restored = hm::play_tracker::PlayTracker::from_snapshot(*seed);
+  if (retain_checkpoint_tuning) {
+    tracker->play_tracker_config = seed->config;
+    for (size_t i = 0; i < seed->living_boxes.size(); ++i)
+      tracker->play_tracker_config.living_boxes[i] = seed->living_boxes[i].config;
+  }
+  tracker->play_tracker = std::move(restored);
+  tracker->rink_guide.reset();
+  tracker->rink_width = 0;
+  tracker->has_received_tracks = has_received_tracks;
+  return absl::OkStatus();
 }
 
 absl::StatusOr<DsPlayTrackerCtx::PlayTracker> DsPlayTrackerCreateCpuTracker(
@@ -811,6 +838,15 @@ bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& fra
   }
   if (!play_tracker_ctx || !play_tracker_ctx->play_tracker) {
     return false;
+  }
+  if (!ctx->pending_seek_checkpoint.empty()) {
+    const auto restored = DsPlayTrackerRestoreCameraSeekState(
+        play_tracker_ctx, ctx->pending_seek_checkpoint, true, ctx->pending_seek_has_tracks);
+    if (!restored.ok()) {
+      frame.processing_error = restored;
+      return false;
+    }
+    ctx->pending_seek_checkpoint.clear();
   }
   const auto& rink_setup = ctx->initParams.rink_camera;
   if (rink_setup.map) {

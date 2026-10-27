@@ -46,6 +46,7 @@ cc_library(
     deps = [
         ":playtracker_context_header",
         ":playtracker_runtime_config",
+        "//src/libs/tracking:camera_seek_state",
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/common:playtracker_config_roles",
         "//src/libs/common:preview_overlay_meta",

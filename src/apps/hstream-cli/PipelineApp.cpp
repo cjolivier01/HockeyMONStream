@@ -7,6 +7,7 @@
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
+#include "hstream/src/libs/tracking/CameraSeekState.h"
 /* clang-format off */
 #include "src/libs/common/Status.h"
 /* clang-format on */
@@ -7323,6 +7324,13 @@ void PipelineApplication::finish_runtime_seek(
   runtime_seek_frame_generation_.store(0, std::memory_order_release);
   const RuntimeSeekPending completed = std::move(*runtime_seek_pending_);
   runtime_seek_pending_.reset();
+  const bool succeeded = std::string(status) == "ok";
+  if (succeeded && completed.app_ctx && completed.pipeline == completed.app_ctx->pipeline.pipeline) {
+    // The output observer stays fenced through preroll and initial source
+    // positioning; only the published replacement can acknowledge this seek.
+    if (GstElement* tracker = completed.app_ctx->pipeline.dsplaytracker_bin.elem_dsplaytracker)
+      g_object_set_data(G_OBJECT(tracker), hm::tracking::kCameraSeekState, nullptr);
+  }
   g_print(
       "HSTREAM_SEEK_TIMING generation=%" G_GUINT64_FORMAT " elapsed_ms=%lld\n",
       completed.generation,
@@ -7340,7 +7348,6 @@ void PipelineApplication::finish_runtime_seek(
         achieved_position_ns == GST_CLOCK_TIME_NONE ? completed.target_ns : achieved_position_ns);
   }
   if (web_seek_pending_ && web_seek_pending_->request_id == completed.generation) {
-    const bool succeeded = std::string(status) == "ok";
     const auto reply = hm::preview::WebPreviewSeekReply(
         *web_seek_pending_,
         succeeded ? "completed" : "failed",
@@ -7903,6 +7910,14 @@ void PipelineApplication::handle_bus_message(AppCtx* app_ctx, GstMessage* messag
         (void)runtime_seek_recovery_frame_generation_.compare_exchange_strong(
             expected, recovery_generation, std::memory_order_acq_rel, std::memory_order_acquire);
         return;
+      }
+      if (!runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
+        if (GstElement* tracker = app_ctx->pipeline.dsplaytracker_bin.elem_dsplaytracker) {
+          const auto* handoff = static_cast<const hm::tracking::CameraSeekState*>(
+              g_object_get_data(G_OBJECT(tracker), hm::tracking::kCameraSeekState));
+          if (handoff && handoff->seek_generation == recovery_generation)
+            g_object_set_data(G_OBJECT(tracker), hm::tracking::kCameraSeekState, nullptr);
+        }
       }
       g_print("HSTREAM_SEEK_RECOVERY status=ready generation=%" G_GUINT64_FORMAT "\n", recovery_generation);
       std::fflush(stdout);
@@ -9240,7 +9255,7 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     bool calibration_restart,
     bool runtime_seek_restart,
     uint64_t runtime_seek_target_ns,
-    uint64_t /*runtime_seek_generation*/,
+    uint64_t runtime_seek_generation,
     bool* topology_changed) {
   guint i;
   gboolean ret = TRUE;
@@ -9270,14 +9285,21 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   preview_overlay_probe_flags_.store(0, std::memory_order_release);
   // Keep this exact generation alive through NULL so a telemetry writer that
   // initialized during preroll can be identified after its final close.
-  GstElement* retired_tracker = calibration_restart && !hm::publication::EnvironmentManifest().empty()
+  const bool retire_calibration_telemetry = calibration_restart && !hm::publication::EnvironmentManifest().empty();
+  GstElement* retired_tracker = (retire_calibration_telemetry || runtime_seek_restart)
       ? app_ctx_ptr->pipeline.dsplaytracker_bin.elem_dsplaytracker
       : nullptr;
+  std::string retained_camera_checkpoint;
+  bool retained_camera_has_tracks = false;
   bool calibration_stopped = true;
   if (retired_tracker) {
     gst_object_ref(retired_tracker);
-    app_ctx_ptr->eos_received = TRUE;
-    calibration_stopped = stop_pipeline_gracefully(app_ctx_ptr, 5 * GST_SECOND);
+    if (runtime_seek_restart) {
+      g_object_set_data(G_OBJECT(retired_tracker), hm::tracking::kCaptureCameraSeekState, GINT_TO_POINTER(1));
+    } else {
+      app_ctx_ptr->eos_received = TRUE;
+      calibration_stopped = stop_pipeline_gracefully(app_ctx_ptr, 5 * GST_SECOND);
+    }
   }
   // Hold the retiring identities until its worker stops. Its synchronous bus
   // receipt captures even a selection completed while teardown is draining.
@@ -9298,8 +9320,22 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   if (retiring_cropper)
     gst_object_unref(retiring_cropper);
   if (retired_tracker) {
+    if (runtime_seek_restart) {
+      const auto* handoff = static_cast<const hm::tracking::CameraSeekState*>(
+          g_object_get_data(G_OBJECT(retired_tracker), hm::tracking::kCameraSeekState));
+      if (!handoff || !handoff->status.ok()) {
+        g_printerr(
+            "Cannot retain seek camera state: %s\n",
+            handoff ? handoff->status.ToString().c_str() : "tracker did not complete shutdown handoff");
+        gst_object_unref(retired_tracker);
+        return FALSE;
+      }
+      retained_camera_checkpoint = handoff->checkpoint;
+      retained_camera_has_tracks = handoff->has_received_tracks;
+    }
     gchar* telemetry_path = nullptr;
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(retired_tracker), "telemetry-output-path"))
+    if (retire_calibration_telemetry &&
+        g_object_class_find_property(G_OBJECT_GET_CLASS(retired_tracker), "telemetry-output-path"))
       g_object_get(retired_tracker, "telemetry-output-path", &telemetry_path, nullptr);
     const std::string path = telemetry_path ? telemetry_path : "";
     g_free(telemetry_path);
@@ -9425,6 +9461,33 @@ gboolean PipelineApplication::recreate_pipeline_impl(
       return FALSE;
     }
   }
+  if (runtime_seek_restart && !retained_camera_checkpoint.empty()) {
+    // The replacement tracker is lazy. Select a compatible recording against
+    // the retained camera metadata now, then validate again against the actual
+    // replacement geometry before its first frame can step or be presented.
+    GstElement* replacement_tracker = hm_app->pipeline.dsplaytracker_bin.elem_dsplaytracker;
+    if (!replacement_tracker) {
+      g_printerr("Cannot restore seek camera state: replacement tracker is unavailable\n");
+      return FALSE;
+    }
+    const auto current = hm::play_tracker::deserialize_snapshot(retained_camera_checkpoint);
+    seed_runtime_playtracker(hm_app, initial_position_ns, [&](const std::string& recorded) {
+      auto prepared = hm::tracking::PrepareCameraSeekState(recorded, current);
+      if (!prepared.ok())
+        return false;
+      retained_camera_checkpoint = hm::play_tracker::serialize_snapshot(*prepared);
+      retained_camera_has_tracks = true;
+      return true;
+    });
+    auto handoff = std::make_unique<hm::tracking::CameraSeekState>();
+    handoff->checkpoint = std::move(retained_camera_checkpoint);
+    handoff->has_received_tracks = retained_camera_has_tracks;
+    handoff->seek_generation = runtime_seek_generation;
+    g_object_set_data_full(
+        G_OBJECT(replacement_tracker), hm::tracking::kCameraSeekState, handoff.release(), [](gpointer value) {
+          delete static_cast<hm::tracking::CameraSeekState*>(value);
+        });
+  }
   if (gst_element_set_state(app_ctx_ptr->pipeline.pipeline, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
     NVGSTDS_ERR_MSG_V("Failed to set pipeline to PAUSED");
     return FALSE;
@@ -9473,7 +9536,10 @@ gboolean PipelineApplication::recreate_pipeline_impl(
   return ret;
 }
 
-void PipelineApplication::seed_runtime_playtracker(HmApp* app, uint64_t absolute_position_ns) {
+void PipelineApplication::seed_runtime_playtracker(
+    HmApp* app,
+    uint64_t absolute_position_ns,
+    const std::function<bool(const std::string&)>& apply_checkpoint) {
   GstElement* tracker = app->pipeline.dsplaytracker_bin.elem_dsplaytracker;
   if (!tracker || !game_id_ || !*game_id_)
     return;
@@ -9548,10 +9614,16 @@ void PipelineApplication::seed_runtime_playtracker(HmApp* app, uint64_t absolute
         if (!replay.ok())
           throw std::runtime_error(replay.status().ToString());
         const std::string checkpoint = (*replay)->starting_checkpoint();
-        GstEvent* event = gst_event_new_custom(
-            GST_EVENT_CUSTOM_DOWNSTREAM,
-            gst_structure_new("hstream-playtracker-seed", "checkpoint", G_TYPE_STRING, checkpoint.c_str(), nullptr));
-        if (!gst_element_send_event(tracker, event))
+        bool applied = false;
+        if (apply_checkpoint) {
+          applied = apply_checkpoint(checkpoint);
+        } else {
+          GstEvent* event = gst_event_new_custom(
+              GST_EVENT_CUSTOM_DOWNSTREAM,
+              gst_structure_new("hstream-playtracker-seed", "checkpoint", G_TYPE_STRING, checkpoint.c_str(), nullptr));
+          applied = gst_element_send_event(tracker, event);
+        }
+        if (!applied)
           throw std::runtime_error("play tracker rejected incompatible recorded state");
         g_print(
             "HSTREAM_SEEK_TRACKER source=recording database=%s origin=%s elapsed_ms=%lld\n",

@@ -60,6 +60,9 @@ struct DsPlayTrackerCtx {
   // source_id -> play_tracker
   std::unordered_map<size_t, PlayTracker> play_trackers;
   hm::BBox arena_box;
+  // Consumed before the first replacement frame advances the camera policy.
+  std::string pending_seek_checkpoint;
+  bool pending_seek_has_tracks{false};
 };
 
 // CPU policy inputs and pre-frame state. These contain metadata only; recording
@@ -110,6 +113,12 @@ bool DsPlayTrackerAttachPreviewSnapshot(DsPlayTrackerCtx* ctx, GstDsPlayTrackerF
 // Drops per-source position/velocity history while preserving accumulated live
 // tuning. Used after a flushing playback seek before the next frame arrives.
 void DsPlayTrackerCtxResetTracking(DsPlayTrackerCtx* ctx);
+
+absl::Status DsPlayTrackerRestoreCameraSeekState(
+    DsPlayTrackerCtx::PlayTracker* tracker,
+    const std::string& checkpoint,
+    bool retain_checkpoint_tuning = false,
+    bool has_received_tracks = true);
 
 bool DsPlayTrackerProcessFrame(DsPlayTrackerCtx* ctx, GstDsPlayTrackerFrame& frame, cudaStream_t stream);
 

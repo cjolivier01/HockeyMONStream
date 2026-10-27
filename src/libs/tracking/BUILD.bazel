@@ -1,6 +1,24 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "camera_seek_state",
+    srcs = ["CameraSeekState.cpp"],
+    hdrs = ["CameraSeekState.h"],
+    include_prefix = "hstream/src/libs/tracking",
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@hm//hockeymon/csrc/play_tracker",
+    ],
+)
+
+cc_test(
+    name = "camera_seek_state_test",
+    srcs = ["CameraSeekStateTest.cpp"],
+    deps = [":camera_seek_state"],
+)
+
+cc_library(
     name = "camera_control_specs",
     hdrs = ["CameraControlSpecs.h"],
     include_prefix = "hstream/src/libs/tracking",

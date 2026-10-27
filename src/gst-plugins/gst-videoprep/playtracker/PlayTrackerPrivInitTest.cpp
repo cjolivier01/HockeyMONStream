@@ -4,6 +4,7 @@
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
+#include "hstream/src/libs/tracking/CameraSeekState.h"
 
 #include "absl/status/status.h"
 #include "hockeymon/csrc/play_tracker/PlayTrackerSnapshot.h"
@@ -16,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -66,7 +68,8 @@ bool generate_export_sample(
     TestPlayTrackerPriv& priv,
     uint64_t frame_number,
     const cv::Mat& mask = {},
-    int canvas_width = 3840) {
+    int canvas_width = 3840,
+    bool with_player = true) {
   NvDsBatchMeta* batch = nvds_create_batch_meta(1);
   NvDsFrameMeta* frame_meta = batch ? nvds_acquire_frame_meta_from_pool(batch) : nullptr;
   NvDsObjectMeta* object_meta = batch ? nvds_acquire_obj_meta_from_pool(batch) : nullptr;
@@ -90,7 +93,8 @@ bool generate_export_sample(
   object_meta->tracker_confidence = 0.9f;
   object_meta->detector_bbox_info.org_bbox_coords = NvBbox_Coords{118.0f, 98.0f, 404.0f, 264.0f};
   object_meta->tracker_bbox_info.org_bbox_coords = NvBbox_Coords{120.0f, 100.0f, 400.0f, 260.0f};
-  nvds_add_obj_meta_to_frame(frame_meta, object_meta, nullptr);
+  if (with_player)
+    nvds_add_obj_meta_to_frame(frame_meta, object_meta, nullptr);
   nvds_add_frame_meta_to_batch(batch, frame_meta);
 #ifdef HAS_NVDS_CUSTOMUSERMETA
   if (!mask.empty()) {
@@ -257,6 +261,150 @@ fs::path write_geometry_runtime_config(
   out << "    - name: current_roi\n";
   out << "    - name: current_roi_aspect\n";
   return cfg;
+}
+
+bool verify_camera_seek_handoff(hm::DSCustom_CreateParams params) {
+  const auto release = [](GstElement* element) { gst_object_unref(element); };
+  std::unique_ptr<GstElement, decltype(release)> old_element(gst_element_factory_make("identity", nullptr), release);
+  std::unique_ptr<GstElement, decltype(release)> new_element(gst_element_factory_make("identity", nullptr), release);
+  if (!old_element || !new_element)
+    return false;
+  params.m_element = GST_BASE_TRANSFORM(old_element.get());
+  std::string checkpoint;
+  {
+    TestPlayTrackerPriv original(0, 1);
+    if (!original.PreCapsInit(&params).ok() || !original.PostCapsInit(&params).ok() ||
+        !generate_export_sample(original, 1))
+      return false;
+    auto& tracker = original.contextForTesting()->play_trackers.at(0);
+    auto moved = tracker.play_tracker->snapshot();
+    moved.living_boxes.back().bbox = hm::BBox(900, 200, 1700, 650);
+    moved.living_boxes.back().translation.current_speed_x = 3;
+    moved.living_boxes.back().config.max_speed_x = 31;
+    tracker.play_tracker = hm::play_tracker::PlayTracker::from_snapshot(moved);
+    g_object_set_data(G_OBJECT(old_element.get()), hm::tracking::kCaptureCameraSeekState, GINT_TO_POINTER(1));
+    original.Shutdown();
+    const auto* handoff = static_cast<const hm::tracking::CameraSeekState*>(
+        g_object_get_data(G_OBJECT(old_element.get()), hm::tracking::kCameraSeekState));
+    if (!handoff || !handoff->status.ok() || handoff->checkpoint.empty() || !handoff->has_received_tracks)
+      return false;
+    checkpoint = handoff->checkpoint;
+    // State remains valid after Shutdown and after destroying the old private
+    // implementation. Copy the same owned value to a separate new element.
+    g_object_set_data_full(
+        G_OBJECT(new_element.get()),
+        hm::tracking::kCameraSeekState,
+        new hm::tracking::CameraSeekState(*handoff),
+        [](gpointer value) { delete static_cast<hm::tracking::CameraSeekState*>(value); });
+  }
+  auto reference = hm::play_tracker::PlayTracker::from_snapshot(hm::play_tracker::deserialize_snapshot(checkpoint));
+  params.m_element = GST_BASE_TRANSFORM(new_element.get());
+  {
+    // Caps-specific private implementations can be replaced before receiving
+    // a camera frame. The element must still own the unconsumed handoff.
+    TestPlayTrackerPriv initial_caps(0, 1);
+    if (!initial_caps.PreCapsInit(&params).ok() || !initial_caps.PostCapsInit(&params).ok())
+      return false;
+  }
+  {
+    TestPlayTrackerPriv replacement(0, 1);
+    if (!replacement.PreCapsInit(&params).ok() || !replacement.PostCapsInit(&params).ok() ||
+        !replacement.PostCapsInit(&params).ok())
+      return false;
+    auto* context = replacement.contextForTesting();
+    if (!context->play_trackers.empty() || context->pending_seek_checkpoint != checkpoint ||
+        !g_object_get_data(G_OBJECT(new_element.get()), hm::tracking::kCameraSeekState))
+      return false;
+    // A config reload also replaces the context before the first camera frame.
+    if (!replacement.SetProperty(hm::Property("config-file", params.config_file)))
+      return false;
+    context = replacement.contextForTesting();
+    if (context->pending_seek_checkpoint != checkpoint)
+      return false;
+    const auto matches_reference = [&](uint64_t frame) {
+      std::vector<size_t> ids;
+      std::vector<hm::BBox> boxes;
+      reference->forward(ids, boxes);
+      return generate_export_sample(replacement, frame, {}, 3840, false) && context->pending_seek_checkpoint.empty() &&
+          hm::play_tracker::serialize_snapshot(context->play_trackers.at(0).play_tracker->snapshot()) ==
+          hm::play_tracker::serialize_snapshot(reference->snapshot());
+    };
+    if (!matches_reference(1) || !matches_reference(2))
+      return false;
+
+    // A non-playlist source first prerolls, then performs its flushing initial
+    // seek. That preroll must not consume the handoff for the target segment.
+    GstEvent* flush = gst_event_new_flush_stop(TRUE);
+    const bool handled = replacement.HandleEvent(flush);
+    gst_event_unref(flush);
+    if (!handled || !context->play_trackers.empty() || context->pending_seek_checkpoint != checkpoint)
+      return false;
+    reference = hm::play_tracker::PlayTracker::from_snapshot(hm::play_tracker::deserialize_snapshot(checkpoint));
+    if (!matches_reference(10) || !matches_reference(11))
+      return false;
+
+    // The native first-output acknowledgement releases initialization state.
+    // Later ordinary flushes must retain their existing cold/reset semantics.
+    g_object_set_data(G_OBJECT(new_element.get()), hm::tracking::kCameraSeekState, nullptr);
+    flush = gst_event_new_flush_stop(TRUE);
+    const bool released = replacement.HandleEvent(flush);
+    gst_event_unref(flush);
+    if (!released || !context->pending_seek_checkpoint.empty() ||
+        !generate_export_sample(replacement, 20, {}, 3840, false) || context->play_trackers.at(0).has_received_tracks)
+      return false;
+  }
+  // A valid serialized checkpoint with a different role must fail its first
+  // frame. It cannot silently reset and publish a successful seek.
+  auto incompatible = hm::play_tracker::deserialize_snapshot(checkpoint);
+  incompatible.living_boxes.back().config.name = "different-role";
+  incompatible.config.living_boxes.back().name = "different-role";
+  auto handoff = std::make_unique<hm::tracking::CameraSeekState>();
+  handoff->checkpoint = hm::play_tracker::serialize_snapshot(incompatible);
+  handoff->has_received_tracks = true;
+  g_object_set_data_full(
+      G_OBJECT(new_element.get()), hm::tracking::kCameraSeekState, handoff.release(), [](gpointer value) {
+        delete static_cast<hm::tracking::CameraSeekState*>(value);
+      });
+  {
+    TestPlayTrackerPriv rejected(0, 1);
+    if (!rejected.PreCapsInit(&params).ok() || !rejected.PostCapsInit(&params).ok() ||
+        generate_export_sample(rejected, 1, {}, 3840, false) ||
+        rejected.contextForTesting()->pending_seek_checkpoint.empty())
+      return false;
+  }
+  g_object_set_data(G_OBJECT(new_element.get()), hm::tracking::kCameraSeekState, nullptr);
+  // With no initialized camera, shutdown still completes the handoff and the
+  // next graph retains its ordinary wait-for-players behavior.
+  {
+    TestPlayTrackerPriv empty(0, 1);
+    if (!empty.PreCapsInit(&params).ok() || !empty.PostCapsInit(&params).ok())
+      return false;
+    g_object_set_data(G_OBJECT(new_element.get()), hm::tracking::kCaptureCameraSeekState, GINT_TO_POINTER(1));
+    empty.Shutdown();
+    const auto* captured = static_cast<const hm::tracking::CameraSeekState*>(
+        g_object_get_data(G_OBJECT(new_element.get()), hm::tracking::kCameraSeekState));
+    if (!captured || !captured->status.ok() || !captured->checkpoint.empty() || captured->has_received_tracks)
+      return false;
+  }
+  {
+    TestPlayTrackerPriv empty_replacement(0, 1);
+    if (!empty_replacement.PreCapsInit(&params).ok() || !empty_replacement.PostCapsInit(&params).ok() ||
+        !generate_export_sample(empty_replacement, 1, {}, 3840, false) ||
+        empty_replacement.contextForTesting()->play_trackers.at(0).has_received_tracks)
+      return false;
+  }
+  {
+    TestPlayTrackerPriv before_caps(0, 1);
+    if (!before_caps.PreCapsInit(&params).ok())
+      return false;
+    g_object_set_data(G_OBJECT(new_element.get()), hm::tracking::kCaptureCameraSeekState, GINT_TO_POINTER(1));
+    before_caps.Shutdown();
+    const auto* captured = static_cast<const hm::tracking::CameraSeekState*>(
+        g_object_get_data(G_OBJECT(new_element.get()), hm::tracking::kCameraSeekState));
+    if (!captured || !captured->status.ok() || !captured->checkpoint.empty())
+      return false;
+  }
+  return true;
 }
 
 } // namespace
@@ -829,6 +977,11 @@ int main() {
   unsetenv("HSTREAM_JOB_MANIFEST");
   params.m_element = nullptr;
   gst_object_unref(managed_element);
+
+  if (!verify_camera_seek_handoff(params)) {
+    std::cerr << "Reconstructed seeks must preserve camera state before the first frame or fail explicitly\n";
+    return 92;
+  }
 
   if (params.m_inCaps) {
     gst_caps_unref(params.m_inCaps);
