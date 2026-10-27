@@ -2,6 +2,7 @@
 
 #include <gst/gst.h>
 
+#include <atomic>
 #include <memory>
 
 namespace hm::gst {
@@ -47,6 +48,20 @@ class PacedPlayback : public std::enable_shared_from_this<PacedPlayback> {
   // headers at source video/sample boundaries. Shared PCM memory and the
   // archive's original headers remain unchanged.
   bool AttachAudioSink(GstElement* sink);
+  // Insert the same bounded PCM mapper before a linked raw-audio encoder.
+  // A transport has no physical clock: it uses the pipeline clock and encodes
+  // explicit silence for shared video stalls, retaining every source sample.
+  bool AttachAudioTransport(GstElement* encoder);
+  // Resolve a preview header on the same epoch/interval mapping as PCM. This
+  // may wait for admitted video/audio, and returns FLUSHING on cancellation.
+  GstFlowReturn PresentationTime(
+      const GstSegment& segment,
+      GstClockTime pts,
+      GstClockTime* presentation,
+      const std::atomic<bool>* cancelled = nullptr);
+  // Wake a retired preview route without cancelling PCM or changing the shared
+  // playback epoch. Its cancellation flag must be set before this notification.
+  void WakePresentationWaiters();
   // Wake mapping waiters before flush, reconstruction or destruction. The next
   // serialized video SEGMENT opens a fresh epoch with an empty bounded history.
   void Cancel();
@@ -66,6 +81,7 @@ class PacedPlayback : public std::enable_shared_from_this<PacedPlayback> {
 
  private:
   PacedPlayback(GstElement* pipeline, const PacedPlaybackSettings& settings);
+  bool AttachAudioElement(GstElement* element, bool transport);
   std::unique_ptr<Impl> impl_;
 };
 

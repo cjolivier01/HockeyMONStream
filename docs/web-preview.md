@@ -8,6 +8,35 @@ presentation contract; ordinary `WEBRTC` launches retain the static output.
 This opt-in is not full Qt workflow parity: archived replay-mask ownership and
 audio/seek timeline qualification remain unfinished.
 
+Normal-speed selectable preview now binds video headers and the raw Opus input
+through the shared `common/PacedPlayback` source-interval mapping. This owner is
+also installed when the browser is the only audio consumer; a physical monitor
+is optional. A slow completed video interval delays its matching PCM. The
+transport inserts bounded chunks of silence for positive presentation gaps,
+then emits every original sample once in source order on a continuous encoded
+timeline. Source and archive headers remain unchanged, and video stays on the
+GPU. Bounds come from `runtime.local_playback`; unpaced playback retains its
+existing path. Pipeline pause uses the ordinary system-clock base adjustment
+when no physical audio device owns the clock.
+
+The CPU transport regression checks steady playback, sustained slow video, a
+250 ms stall and cooperative pause/resume. It compares every unique source
+sample with the selected frame's exact presentation time, checks original PCM
+headers and continuous transport timestamps, and bounds alignment to one audio
+sample. Each selection has a separate cancellation token. Route changes and
+Stop retire that token and wake its mapper before either native gate barrier,
+including when a paused drain has filled the ingress queue. Shared audio keeps
+its epoch and pending PCM. The real-isolation-gate regression checks paused
+switching, same-route rearm, Render off/on and Stop, rejects stale cancellation,
+and verifies fresh frame identity plus pending PCM after retirement. Separate
+selector and history tests cover operation fencing and shared cancellation.
+The prior authenticated c5 run measured increasing
+audio lead because arrival-time video timestamps advanced faster than unchanged
+PCM. Actual decoded browser and independent monitor measurements must be rerun
+with the shared mapping before claiming that drift resolved. Restarted playback,
+seek epochs, route switching and AMD browser preview remain separate hardware
+qualification requirements.
+
 Live Rotation uses `@web-rotation-controls` and its `-query` counterpart, with
 the same four integer control IDs, linked-angle rules and NONA leveling
 suppression as Qt. Requests bind run, stage, topology and an increasing decimal

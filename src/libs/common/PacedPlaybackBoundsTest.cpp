@@ -2,9 +2,11 @@
 
 #include <gst/base/gstbasesink.h>
 
+#include <future>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 void Check(bool value, const char* detail) {
@@ -116,6 +118,52 @@ int main(int argc, char** argv) {
       Fixture test;
       test.Push(test.ingress, 0, guint64(INT64_MAX) + 1);
       test.Error("finite source intervals");
+    }
+    {
+      Fixture test;
+      GstSegment segment;
+      gst_segment_init(&segment, GST_FORMAT_TIME);
+      test.Push(test.ingress, 0);
+      std::atomic<bool> retired{false};
+      auto waiting = std::async(std::launch::async, [&] {
+        GstClockTime presentation;
+        return test.owner->PresentationTime(segment, GST_SECOND, &presentation, &retired);
+      });
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      Check(
+          waiting.wait_for(std::chrono::milliseconds(1)) == std::future_status::timeout,
+          "An unadmitted route must wait for its shared source interval");
+      Check(
+          gst_element_set_state(test.pipeline, GST_STATE_PAUSED) != GST_STATE_CHANGE_FAILURE,
+          "Could not pause shared mapping fixture");
+      retired.store(true, std::memory_order_release);
+      test.owner->WakePresentationWaiters();
+      Check(
+          waiting.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready &&
+              waiting.get() == GST_FLOW_FLUSHING,
+          "Retiring one paused route must promptly release only its mapping wait");
+      GstClockTime presentation;
+      Check(
+          test.owner->PresentationTime(segment, 0, &presentation) == GST_FLOW_OK,
+          "Retiring a preview route must retain the shared mapping history and epoch");
+    }
+    {
+      Fixture test;
+      GstSegment segment;
+      gst_segment_init(&segment, GST_FORMAT_TIME);
+      auto waiting = std::async(std::launch::async, [&] {
+        GstClockTime presentation;
+        return test.owner->PresentationTime(segment, GST_SECOND, &presentation);
+      });
+      std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      Check(
+          waiting.wait_for(std::chrono::milliseconds(1)) == std::future_status::timeout,
+          "Unadmitted transport video must wait for its shared source interval");
+      test.owner->Cancel();
+      Check(
+          waiting.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready &&
+              waiting.get() == GST_FLOW_FLUSHING,
+          "Cancellation must retire transport mapping waits promptly");
     }
     std::cout << "History eviction, device lead and unknown/overflowing source duration fail explicitly\n";
     return 0;

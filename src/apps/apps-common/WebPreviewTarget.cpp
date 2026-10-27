@@ -329,6 +329,15 @@ bool WebPreviewTarget::SetFrameAdmission(FrameAdmission admission) {
   return selected_stream_set_frame_admission(selected_, std::move(admission));
 }
 
+bool WebPreviewTarget::SetPresentationMapper(PresentationMapper mapper, std::function<void()> wake) {
+  return selected_stream_set_presentation_mapper(selected_, std::move(mapper), std::move(wake));
+}
+
+bool WebPreviewTarget::CancelRoutePresentation(GstPad* route, std::uint64_t operation) {
+  const auto found = routes_.find(route);
+  return found != routes_.end() && selected_stream_cancel_presentation(selected_, found->second.selected, operation);
+}
+
 GstPad* WebPreviewTarget::AddRoute(const std::string& channel) {
   if (channel.empty() || channel.size() > 64)
     return nullptr;

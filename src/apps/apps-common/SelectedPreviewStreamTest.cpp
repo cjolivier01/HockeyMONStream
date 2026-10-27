@@ -437,9 +437,48 @@ bool test_admission_operation_fence() {
       "Admission and operation assignment must serialize; stale frames must drop without consuming identity");
 }
 
+bool test_mapping_operation_fence() {
+  Fixture fixture;
+  fixture.headers(0, 2);
+  hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 1);
+  std::promise<void> mapping, resume;
+  auto released = resume.get_future().share();
+  hm::preview::selected_stream_set_presentation_mapper(
+      fixture.stream,
+      [&](const GstSegment& segment, GstClockTime pts, const std::atomic<bool>&, GstClockTime* output) {
+        mapping.set_value();
+        released.wait();
+        *output = gst_segment_to_running_time(&segment, GST_FORMAT_TIME, pts) + GST_SECOND;
+        return GST_FLOW_OK;
+      },
+      [] {});
+  auto pending = std::async(std::launch::async, [&] { return fixture.push(0, 0); });
+  const bool entered = mapping.get_future().wait_for(std::chrono::seconds(1)) == std::future_status::ready;
+  auto close =
+      std::async(std::launch::async, [&] { return hm::preview::selected_stream_select(fixture.stream, nullptr, 2); });
+  const bool unblocked = close.wait_for(std::chrono::milliseconds(100)) == std::future_status::ready;
+  resume.set_value();
+  const bool closed = close.get();
+  const bool dropped = pending.get() == GST_FLOW_OK && fixture.frames.empty();
+  hm::preview::selected_stream_set_presentation_mapper(
+      fixture.stream,
+      [](const GstSegment&, GstClockTime pts, const std::atomic<bool>&, GstClockTime* output) {
+        *output = pts + GST_SECOND;
+        return GST_FLOW_OK;
+      },
+      [] {});
+  const bool selected = hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 3);
+  const bool pushed = fixture.push(0, 1) == GST_FLOW_OK && fixture.frames.size() == 1;
+  const auto* identity = pushed ? hm::preview::frame_identity(fixture.frames[0]) : nullptr;
+  return expect(
+      entered && unblocked && closed && dropped && selected && identity && identity->operation == 3 &&
+          identity->sequence == 1 && identity->source_pts == 1 && identity->presentation_pts == GST_SECOND + 1,
+      "Mapping waits must not block route retirement or assign a retired operation's frame to its successor");
+}
+
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
-  if (!preroll_and_paused_clock() || !test_admission_operation_fence())
+  if (!preroll_and_paused_clock() || !test_admission_operation_fence() || !test_mapping_operation_fence())
     return 1;
   return switching_and_memory() && inactive_eos_and_output_eof() && replacement_and_failure() && source_pool_lifetime()
       ? 0

@@ -862,6 +862,18 @@ ROCm compilation and CPU checks on `ripper` do not qualify audible AMD hardware
 playback. Sustained real-device pause/seek/Stop and source-correlated PCM remain
 required before claiming normal-speed audio parity.
 
+The same `common/PacedPlayback` implementation also supports a raw-audio
+transport consumer and a shared selectable-video timestamp mapper. It keeps
+physical monitor clock behavior while admitting each private PCM branch through
+its own bounded queue. CPU transport checks preserve every source sample across
+slow video, a stall and pause/resume, with explicit encoded silence in the
+presentation gaps. Preview-route cancellation wakes only that selection's
+mapping waits before native gate retirement; shared PCM and playback epochs
+remain intact. A real-isolation-gate CPU regression covers paused switching,
+rearm, Render off/on and Stop, including a full ingress queue. Changes to this
+common owner require the physical-device regression on AMD as well as NVIDIA. This does not implement or qualify the
+remaining AMD selectable-browser preview path.
+
 `media/Mp4AudioEdit` now owns the fixed-size MP4 edits previously local to
 `HighlightMp4Audio`. Both callers preserve avenc_aac's 1024-sample decoder preroll
 and remove it from the audible timeline after mux EOS. The shared implementation

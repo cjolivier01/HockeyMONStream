@@ -1,5 +1,7 @@
 #include "WebPreviewSession.h"
+
 #include "WebPreviewRuntime.h"
+#include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
@@ -320,10 +322,14 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
         return routes_.register_route(
             channel,
             {
-                [state, this](bool active, uint64_t operation) {
+                [state, target, this](bool active, uint64_t operation) {
+                  if (!active || !overlays_ready_)
+                    target->CancelRoutePresentation(state->input, operation);
                   gpu_preview::set_isolation_active(state->ingress, active && overlays_ready_, operation);
                 },
-                [state, this](bool active, uint64_t operation) {
+                [state, target, this](bool active, uint64_t operation) {
+                  if (!active || !overlays_ready_)
+                    target->CancelRoutePresentation(state->input, operation);
                   gpu_preview::set_isolation_active(state->drain, active && overlays_ready_, operation);
                 },
                 [state, target] {
@@ -396,6 +402,15 @@ void WebPreviewSession::DrainOverlayStatus() {
 
 absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_overlays) {
   reconcile_overlays_ = reconcile_overlays;
+  if (auto owner = gst::PacedPlayback::Find(app_.pipeline.pipeline)) {
+    if (!target_->SetPresentationMapper(
+            [owner](
+                const GstSegment& segment, GstClockTime pts, const std::atomic<bool>& cancelled, GstClockTime* output) {
+              return owner->PresentationTime(segment, pts, output, &cancelled);
+            },
+            [owner] { owner->WakePresentationWaiters(); }))
+      return absl::InternalError("Could not bind the browser's shared audio/video presentation clock");
+  }
   auto& output = app_.pipeline.instance_bins[0].sink_bin;
   auto status = AddRoute("program", {RouteTap::Kind::kExistingTee, output.bin, output.tee});
   if (!status.ok())
@@ -468,6 +483,8 @@ void WebPreviewSession::Stop() {
   // permitted by the target; there is no counter increment to overflow.
   const auto operation = routes_.operation_generation() ? routes_.operation_generation() : 1;
   for (const auto& entry : channels_) {
+    if (target_)
+      target_->CancelRoutePresentation(entry.second->input, operation);
     gpu_preview::set_isolation_active(entry.second->ingress, false, operation);
     gpu_preview::set_isolation_active(entry.second->drain, false, operation);
   }

@@ -79,6 +79,30 @@ cc_test(
 )
 
 cc_test(
+    name = "paced_preview_transport_test",
+    srcs = ["PacedPreviewTransportTest.cpp"],
+    deps = [":selected_preview_stream", "//src/libs/common:paced_playback", "@gstreamer"],
+)
+
+cc_test(
+    name = "paced_preview_retirement_test",
+    srcs = ["PacedPreviewRetirementTest.cpp"],
+    # The real native isolation gate still belongs to the NVIDIA preview path.
+    # Shared token/epoch and transport coverage stays in portable common tests.
+    target_compatible_with = select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        ":hm_gpu_preview",
+        ":preview_route_owner",
+        ":selected_preview_stream",
+        "//src/libs/common:paced_playback",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
     name = "selected_preview_stream_gpu_test",
     srcs = ["SelectedPreviewStreamGpuTest.cpp"],
     tags = ["manual", "requires-gpu", "local"],

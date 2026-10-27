@@ -1,5 +1,6 @@
 #include "SelectedPreviewStream.h"
 
+#include <memory>
 #include <mutex>
 #include <new>
 #include <string>
@@ -70,6 +71,7 @@ struct RouteState {
   std::mutex mutex;
   GstCaps* caps{nullptr};
   bool have_segment{false};
+  GstSegment segment{};
   bool ended{false};
   bool invalid_caps{false};
 };
@@ -81,6 +83,9 @@ struct StreamState {
   }
   std::mutex flow;
   hm::preview::FrameAdmission admission;
+  hm::preview::PresentationMapper mapper;
+  std::function<void()> mapping_wake;
+  std::shared_ptr<std::atomic<bool>> mapping_cancelled{std::make_shared<std::atomic<bool>>(false)};
   std::string stream_id;
   std::string memory_feature;
   std::string eof_channel;
@@ -185,10 +190,40 @@ GstFlowReturn route_chain(GstPad* pad, GstObject* parent, GstBuffer* original) n
       gst_buffer_unref(original);
       return GST_FLOW_ERROR;
     }
+    hm::preview::PresentationMapper mapper;
+    std::shared_ptr<std::atomic<bool>> cancelled;
+    std::uint64_t operation;
+    GstSegment segment;
+    {
+      std::lock_guard<std::mutex> lock(state->flow);
+      if (state->selected != pad || state->ended || state->mapping_cancelled->load(std::memory_order_acquire) ||
+          (!state->mapper && !GST_CLOCK_TIME_IS_VALID(clock_pts))) {
+        gst_buffer_unref(original);
+        return GST_FLOW_OK;
+      }
+      mapper = state->mapper;
+      cancelled = state->mapping_cancelled;
+      operation = state->operation;
+      std::lock_guard<std::mutex> route_lock(route->mutex);
+      if (!route->have_segment) {
+        gst_buffer_unref(original);
+        return GST_FLOW_OK;
+      }
+      segment = route->segment;
+    }
+    GstClockTime mapped_pts = clock_pts;
+    const auto mapped = mapper ? mapper(segment, GST_BUFFER_PTS(original), *cancelled, &mapped_pts) : GST_FLOW_OK;
     std::lock_guard<std::mutex> lock(state->flow);
-    if (state->selected != pad || state->ended || !GST_CLOCK_TIME_IS_VALID(clock_pts)) {
+    if (state->selected != pad || state->operation != operation || state->ended ||
+        cancelled->load(std::memory_order_acquire) || mapped == GST_FLOW_FLUSHING) {
       gst_buffer_unref(original);
       return GST_FLOW_OK;
+    }
+    if (mapped != GST_FLOW_OK || !GST_CLOCK_TIME_IS_VALID(mapped_pts)) {
+      gst_buffer_unref(original);
+      state->failed = true;
+      GST_ELEMENT_ERROR(self, STREAM, FAILED, ("Could not map browser audio/video presentation"), (nullptr));
+      return GST_FLOW_ERROR;
     }
     // Validation and identity assignment must share the operation lock. A
     // preceding pad probe can pass an old frame before rearm, then accidentally
@@ -217,7 +252,7 @@ GstFlowReturn route_chain(GstPad* pad, GstObject* parent, GstBuffer* original) n
       gst_buffer_unref(original);
       return GST_FLOW_NOT_NEGOTIATED;
     }
-    GstClockTime pts = clock_pts;
+    GstClockTime pts = mapped_pts;
     if (GST_CLOCK_TIME_IS_VALID(state->last_pts) && pts <= state->last_pts)
       pts = state->last_pts + 1;
     // Explicitly reference each memory block. gst_buffer_copy/make_writable may
@@ -310,6 +345,8 @@ gboolean route_event(GstPad* pad, GstObject* parent, GstEvent* event) noexcept {
             const GstSegment* segment = nullptr;
             gst_event_parse_segment(event, &segment);
             route->have_segment = segment && segment->format == GST_FORMAT_TIME;
+            if (route->have_segment)
+              route->segment = *segment;
             break;
           }
           case GST_EVENT_FLUSH_START:
@@ -474,11 +511,17 @@ void selected_stream_remove_route(GstElement* stream, GstPad* pad) {
   auto* self = get_stream(stream);
   if (!self || !self->state || !pad || GST_OBJECT_PARENT(pad) != GST_OBJECT(stream))
     return;
+  std::function<void()> wake;
   {
     std::lock_guard<std::mutex> lock(self->state->flow);
-    if (self->state->selected == pad)
+    if (self->state->selected == pad) {
+      self->state->mapping_cancelled->store(true, std::memory_order_release);
+      wake = self->state->mapping_wake;
       self->state->selected = nullptr;
+    }
   }
+  if (wake)
+    wake();
   gst_pad_set_active(pad, FALSE);
   gst_element_remove_pad(stream, pad);
 }
@@ -497,19 +540,67 @@ bool selected_stream_select(GstElement* stream, GstPad* pad, std::uint64_t opera
   if (!self || !self->state || operation == 0 ||
       (pad && (GST_OBJECT_PARENT(pad) != GST_OBJECT(stream) || !get_route(pad))))
     return false;
-  std::lock_guard<std::mutex> lock(self->state->flow);
-  auto* state = self->state;
-  if (state->ended || state->failed || operation < state->operation ||
-      (operation == state->operation && state->selected && pad && state->selected != pad))
-    return false;
-  if (pad) {
-    auto* route = get_route(pad);
-    std::lock_guard<std::mutex> route_lock(route->mutex);
-    if (route->ended || route->invalid_caps)
+  std::function<void()> wake;
+  {
+    std::lock_guard<std::mutex> lock(self->state->flow);
+    auto* state = self->state;
+    if (state->ended || state->failed || operation < state->operation ||
+        (operation == state->operation && state->selected && pad && state->selected != pad))
       return false;
+    if (pad) {
+      auto* route = get_route(pad);
+      std::lock_guard<std::mutex> route_lock(route->mutex);
+      if (route->ended || route->invalid_caps)
+        return false;
+    }
+    if (state->selected != pad || state->operation != operation || state->mapping_cancelled->load()) {
+      state->mapping_cancelled->store(true, std::memory_order_release);
+      state->mapping_cancelled = std::make_shared<std::atomic<bool>>(false);
+      wake = state->mapping_wake;
+    }
+    state->selected = pad;
+    state->operation = operation;
   }
-  state->selected = pad;
-  state->operation = operation;
+  if (wake)
+    wake();
+  return true;
+}
+
+bool selected_stream_set_presentation_mapper(
+    GstElement* stream,
+    PresentationMapper mapper,
+    std::function<void()> wake) {
+  auto* self = get_stream(stream);
+  if (!self || !self->state || (bool(mapper) != bool(wake)))
+    return false;
+  std::function<void()> previous_wake;
+  {
+    std::lock_guard<std::mutex> lock(self->state->flow);
+    self->state->mapping_cancelled->store(true, std::memory_order_release);
+    self->state->mapping_cancelled = std::make_shared<std::atomic<bool>>(false);
+    previous_wake = std::move(self->state->mapping_wake);
+    self->state->mapper = std::move(mapper);
+    self->state->mapping_wake = std::move(wake);
+  }
+  if (previous_wake)
+    previous_wake();
+  return true;
+}
+
+bool selected_stream_cancel_presentation(GstElement* stream, GstPad* pad, std::uint64_t operation) {
+  auto* self = get_stream(stream);
+  if (!self || !self->state || !pad || !operation)
+    return false;
+  std::function<void()> wake;
+  {
+    std::lock_guard<std::mutex> lock(self->state->flow);
+    if (self->state->selected != pad || operation < self->state->operation)
+      return false;
+    self->state->mapping_cancelled->store(true, std::memory_order_release);
+    wake = self->state->mapping_wake;
+  }
+  if (wake)
+    wake();
   return true;
 }
 
@@ -523,6 +614,7 @@ bool selected_stream_active(GstElement* stream, GstPad* pad, std::uint64_t opera
     return false;
   std::lock_guard<std::mutex> route_lock(route->mutex);
   return self->state->selected == pad && self->state->operation == operation && !self->state->ended &&
-      !self->state->failed && !route->ended && !route->invalid_caps;
+      !self->state->failed && !self->state->mapping_cancelled->load(std::memory_order_acquire) && !route->ended &&
+      !route->invalid_caps;
 }
 } // namespace hm::preview

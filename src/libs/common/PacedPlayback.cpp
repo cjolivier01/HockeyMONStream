@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <vector>
 
 #include "hstream/src/libs/common/PacedAudioLatency.h"
 
@@ -27,6 +28,16 @@ struct Mapping {
   GstClockTime end;
   GstClockTimeDiff offset;
   GstClockTime duration;
+};
+struct AudioQueue {
+  GWeakRef element;
+  guint rate{0}, bytes_per_frame{0};
+  explicit AudioQueue(GstElement* queue) {
+    g_weak_ref_init(&element, queue);
+  }
+  ~AudioQueue() {
+    g_weak_ref_clear(&element);
+  }
 };
 struct VideoProbe {
   std::shared_ptr<PacedPlayback> owner;
@@ -50,7 +61,8 @@ void Fail(GstElement* element, const char* detail) {
 
 struct PacedPlayback::Impl {
   PacedPlaybackSettings settings;
-  GWeakRef pipeline, audio_sink, audio_queue;
+  GWeakRef pipeline, audio_sink;
+  std::vector<std::shared_ptr<AudioQueue>> audio_queues;
   std::mutex mutex;
   std::condition_variable changed;
   std::deque<Interval> history;
@@ -62,18 +74,15 @@ struct PacedPlayback::Impl {
   bool preserve_pause_base{false};
   GstClockTime audio_end{GST_CLOCK_TIME_NONE};
   GstClockTime maximum_interval{0};
-  guint audio_rate{0}, audio_bytes_per_frame{0};
   GstClockTimeDiff offset{0};
 
   Impl(GstElement* pipeline, const PacedPlaybackSettings& settings) : settings(settings) {
     g_weak_ref_init(&this->pipeline, pipeline);
     g_weak_ref_init(&audio_sink, nullptr);
-    g_weak_ref_init(&audio_queue, nullptr);
   }
   ~Impl() {
     g_weak_ref_clear(&pipeline);
     g_weak_ref_clear(&audio_sink);
-    g_weak_ref_clear(&audio_queue);
   }
   void RestorePauseStartTimeLocked() {
     if (!preserve_pause_base)
@@ -91,6 +100,14 @@ struct PacedPlayback::Impl {
     auto* element = GST_ELEMENT(g_weak_ref_get(&pipeline));
     if (!element)
       return false;
+    auto* physical = g_weak_ref_get(&audio_sink);
+    if (!physical) {
+      // A transport follows the system clock. GstPipeline must adjust its
+      // ordinary base time on resume; only a physical cursor needs retention.
+      gst_object_unref(element);
+      return true;
+    }
+    gst_object_unref(physical);
     if (!preserve_pause_base) {
       // A physical period can publish after GstPipeline's pause snapshot.
       // Retain the base so that period cannot move video behind retained PCM.
@@ -170,34 +187,35 @@ struct PacedPlayback::Impl {
     return paused;
   }
   bool UpdateAudioQueueLocked() {
-    if (!audio_rate || !audio_bytes_per_frame || !maximum_interval)
+    if (!maximum_interval)
       return true;
-    // A mapping cannot open until its entire video interval has arrived as
-    // PCM. Reserve that known finite interval, in addition to the configured
-    // queue headroom, so the admission producer cannot block behind its own
-    // mapping waiter. Nonempty PCM has at least one sample per buffer; this
-    // also bounds the buffer count for arbitrarily small decoded packets.
-    const auto samples = gst_util_uint64_scale_ceil(maximum_interval, audio_rate, GST_SECOND);
-    if (samples > (G_MAXUINT - settings.audio_queue_bytes) / audio_bytes_per_frame ||
-        samples > G_MAXUINT - settings.audio_queue_buffers)
-      return false;
-    auto* queue = GST_ELEMENT(g_weak_ref_get(&audio_queue));
-    if (!queue)
-      return false;
-    g_object_set(
-        queue,
-        "max-size-buffers",
-        guint(samples + settings.audio_queue_buffers),
-        "max-size-bytes",
-        guint(samples * audio_bytes_per_frame + settings.audio_queue_bytes),
-        nullptr);
-    gst_object_unref(queue);
+    // Each private branch can admit one complete video interval before its
+    // mapper waits. This prevents a tee branch from blocking its own input.
+    for (const auto& audio : audio_queues) {
+      if (!audio->rate || !audio->bytes_per_frame)
+        continue;
+      const auto samples = gst_util_uint64_scale_ceil(maximum_interval, audio->rate, GST_SECOND);
+      if (samples > (G_MAXUINT - settings.audio_queue_bytes) / audio->bytes_per_frame ||
+          samples > G_MAXUINT - settings.audio_queue_buffers)
+        return false;
+      auto* queue = GST_ELEMENT(g_weak_ref_get(&audio->element));
+      if (!queue)
+        return false;
+      g_object_set(
+          queue,
+          "max-size-buffers",
+          guint(samples + settings.audio_queue_buffers),
+          "max-size-bytes",
+          guint(samples * audio->bytes_per_frame + settings.audio_queue_bytes),
+          nullptr);
+      gst_object_unref(queue);
+    }
     return true;
   }
-  bool AudioFormat(guint rate, guint bytes_per_frame) {
+  bool AudioFormat(const std::shared_ptr<AudioQueue>& audio, guint rate, guint bytes_per_frame) {
     std::lock_guard<std::mutex> lock(mutex);
-    audio_rate = rate;
-    audio_bytes_per_frame = bytes_per_frame;
+    audio->rate = rate;
+    audio->bytes_per_frame = bytes_per_frame;
     return rate && bytes_per_frame && UpdateAudioQueueLocked();
   }
   void FinalizeLocked(GstClockTime now) {
@@ -250,9 +268,11 @@ struct PacedPlayback::Impl {
     if (eos) {
       audio_ended = true;
     } else {
-      if (GST_CLOCK_TIME_IS_VALID(audio_end) && end <= audio_end)
-        return GST_FLOW_ERROR;
-      audio_end = end;
+      // All private consumers read the same source PCM. An earlier tee branch
+      // may already have admitted this interval; each branch checks its own
+      // monotonic input before contributing to the common availability bound.
+      if (!GST_CLOCK_TIME_IS_VALID(audio_end) || end > audio_end)
+        audio_end = end;
       GST_LOG("admit epoch=%" G_GUINT64_FORMAT " audio-end=%" G_GUINT64_FORMAT, epoch, end);
     }
     FinalizeLocked(now);
@@ -285,7 +305,11 @@ struct PacedPlayback::Impl {
   }
   // OK, FLUSHING and ERROR are deliberately distinct: cancellation cannot
   // masquerade as a successful presentation or discard a live packet silently.
-  GstFlowReturn Lookup(guint64 expected_epoch, GstClockTime time, Mapping* mapping) {
+  GstFlowReturn Lookup(
+      guint64 expected_epoch,
+      GstClockTime time,
+      Mapping* mapping,
+      const std::atomic<bool>* retired = nullptr) {
     if (!GST_CLOCK_TIME_IS_VALID(time))
       return GST_FLOW_ERROR;
     auto deadline = Clock::now() + std::chrono::nanoseconds(settings.mapping_timeout_ns);
@@ -299,7 +323,7 @@ struct PacedPlayback::Impl {
         history.empty() ? GST_CLOCK_TIME_NONE : history.back().end,
         audio_end);
     for (;;) {
-      if (epoch != expected_epoch || cancelled)
+      if (epoch != expected_epoch || cancelled || (retired && retired->load(std::memory_order_acquire)))
         return GST_FLOW_FLUSHING;
       if (!history.empty()) {
         if (time < history.front().start)
@@ -430,7 +454,10 @@ struct AudioAdmission {
   GstAudioInfo audio;
   GstSegment segment;
   guint64 epoch;
-  explicit AudioAdmission(std::shared_ptr<PacedPlayback> owner) : owner(std::move(owner)) {
+  GstClockTime last_end{GST_CLOCK_TIME_NONE};
+  std::shared_ptr<AudioQueue> queue;
+  AudioAdmission(std::shared_ptr<PacedPlayback> owner, std::shared_ptr<AudioQueue> queue)
+      : owner(std::move(owner)), queue(std::move(queue)) {
     gst_audio_info_init(&audio);
     gst_segment_init(&segment, GST_FORMAT_TIME);
     epoch = this->owner->impl().Epoch();
@@ -447,7 +474,8 @@ GstPadProbeReturn AdmitAudio(GstPad* pad, GstPadProbeInfo* info, gpointer data) 
         gst_event_parse_caps(event, &caps);
         if (!gst_audio_info_from_caps(&admission.audio, caps) ||
             GST_AUDIO_INFO_LAYOUT(&admission.audio) != GST_AUDIO_LAYOUT_INTERLEAVED ||
-            !owner.AudioFormat(GST_AUDIO_INFO_RATE(&admission.audio), GST_AUDIO_INFO_BPF(&admission.audio))) {
+            !owner.AudioFormat(
+                admission.queue, GST_AUDIO_INFO_RATE(&admission.audio), GST_AUDIO_INFO_BPF(&admission.audio))) {
           auto* element = gst_pad_get_parent_element(pad);
           Fail(element, "PCM format and video interval exceed finite audio admission bounds");
           gst_object_unref(element);
@@ -460,6 +488,7 @@ GstPadProbeReturn AdmitAudio(GstPad* pad, GstPadProbeInfo* info, gpointer data) 
         gst_event_parse_segment(event, &segment);
         admission.segment = *segment;
         admission.epoch = owner.AudioSegment();
+        admission.last_end = GST_CLOCK_TIME_NONE;
         break;
       }
       case GST_EVENT_FLUSH_START:
@@ -481,10 +510,18 @@ GstPadProbeReturn AdmitAudio(GstPad* pad, GstPadProbeInfo* info, gpointer data) 
     const auto duration = bytes_per_frame && rate && bytes && bytes % bytes_per_frame == 0
         ? gst_util_uint64_scale_ceil(bytes / bytes_per_frame, GST_SECOND, rate)
         : GST_CLOCK_TIME_NONE;
-    const auto result = !GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(duration) ||
-            duration > guint64(INT64_MAX) || pts > guint64(INT64_MAX) - duration
+    const auto end = GST_CLOCK_TIME_IS_VALID(pts) && GST_CLOCK_TIME_IS_VALID(duration) &&
+            duration <= guint64(INT64_MAX) && pts <= guint64(INT64_MAX) - duration
+        ? RunningTime(admission.segment, pts + duration)
+        : GST_CLOCK_TIME_NONE;
+    const auto result = !GST_CLOCK_TIME_IS_VALID(end) ||
+            (GST_CLOCK_TIME_IS_VALID(admission.last_end) && end <= admission.last_end) ||
+            !GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(duration) || duration > guint64(INT64_MAX) ||
+            pts > guint64(INT64_MAX) - duration
         ? GST_FLOW_ERROR
-        : owner.AdmitAudio(admission.epoch, RunningTime(admission.segment, pts + duration));
+        : owner.AdmitAudio(admission.epoch, end);
+    if (result == GST_FLOW_OK)
+      admission.last_end = end;
     if (result == GST_FLOW_FLUSHING)
       return GST_PAD_PROBE_DROP;
     if (result != GST_FLOW_OK) {
@@ -503,6 +540,9 @@ struct AudioState {
   GstSegment segment;
   GstClockTimeDiff offset{-1};
   guint64 epoch{0};
+  bool transport{false};
+  GstClockTime transport_start{GST_CLOCK_TIME_NONE};
+  guint64 transport_frames{0};
   AudioState() {
     gst_audio_info_init(&audio);
     gst_segment_init(&segment, GST_FORMAT_TIME);
@@ -517,6 +557,71 @@ struct PacedAudioClass {
   GstElementClass parent;
 };
 G_DEFINE_TYPE(PacedAudio, paced_audio, GST_TYPE_ELEMENT)
+
+GstFlowReturn PushTransport(PacedAudio* element, GstBuffer* buffer, guint64 frames) {
+  auto& state = *element->state;
+  const auto rate = GST_AUDIO_INFO_RATE(&state.audio);
+  if (!rate || frames > G_MAXUINT64 - state.transport_frames) {
+    gst_buffer_unref(buffer);
+    return GST_FLOW_ERROR;
+  }
+  const auto start = gst_util_uint64_scale(state.transport_frames, GST_SECOND, rate);
+  const auto end = gst_util_uint64_scale(state.transport_frames + frames, GST_SECOND, rate);
+  if (end > G_MAXUINT64 - state.transport_start) {
+    gst_buffer_unref(buffer);
+    return GST_FLOW_ERROR;
+  }
+  GST_BUFFER_PTS(buffer) = state.transport_start + start;
+  GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
+  GST_BUFFER_DURATION(buffer) = end - start;
+  auto& owner = state.owner->impl();
+  const auto ready = owner.BeginAudioPush(state.epoch);
+  if (ready != GST_FLOW_OK) {
+    gst_buffer_unref(buffer);
+    return ready;
+  }
+  const auto result = gst_pad_push(element->output, buffer);
+  owner.EndAudioPush();
+  if (result == GST_FLOW_OK)
+    state.transport_frames += frames;
+  return result;
+}
+GstFlowReturn TransportPiece(PacedAudio* element, GstBuffer* piece, guint64 frames, GstClockTime target) {
+  auto& state = *element->state;
+  const auto rate = GST_AUDIO_INFO_RATE(&state.audio);
+  const auto bpf = GST_AUDIO_INFO_BPF(&state.audio);
+  if (!GST_CLOCK_TIME_IS_VALID(state.transport_start))
+    state.transport_start = target;
+  if (target < state.transport_start || !rate || !bpf) {
+    gst_buffer_unref(piece);
+    return GST_FLOW_ERROR;
+  }
+  const auto target_frame = gst_util_uint64_scale_round(target - state.transport_start, rate, GST_SECOND);
+  const auto chunk_frames = state.owner->settings().audio_queue_bytes / bpf;
+  if (!chunk_frames) {
+    gst_buffer_unref(piece);
+    return GST_FLOW_ERROR;
+  }
+  while (target_frame > state.transport_frames) {
+    const auto count = std::min<guint64>(target_frame - state.transport_frames, chunk_frames);
+    auto* silence = gst_buffer_new_allocate(nullptr, count * bpf, nullptr);
+    GstMapInfo mapped{};
+    if (!silence || !gst_buffer_map(silence, &mapped, GST_MAP_WRITE)) {
+      if (silence)
+        gst_buffer_unref(silence);
+      gst_buffer_unref(piece);
+      return GST_FLOW_ERROR;
+    }
+    gst_audio_format_info_fill_silence(state.audio.finfo, mapped.data, mapped.size);
+    gst_buffer_unmap(silence, &mapped);
+    const auto result = PushTransport(element, silence, count);
+    if (result != GST_FLOW_OK) {
+      gst_buffer_unref(piece);
+      return result;
+    }
+  }
+  return PushTransport(element, piece, frames);
+}
 
 GstFlowReturn AudioChain(GstPad*, GstObject* object, GstBuffer* original) {
   auto* element = reinterpret_cast<PacedAudio*>(object);
@@ -590,6 +695,19 @@ GstFlowReturn AudioChain(GstPad*, GstObject* object, GstBuffer* original) {
       GST_BUFFER_FLAG_UNSET(piece, GST_BUFFER_FLAG_DISCONT);
     if (state.offset != mapping.offset)
       GST_BUFFER_FLAG_SET(piece, GST_BUFFER_FLAG_RESYNC);
+    if (state.transport) {
+      if (time > G_MAXUINT64 - mapping.offset) {
+        gst_buffer_unref(piece);
+        result = GST_FLOW_ERROR;
+        break;
+      }
+      result = TransportPiece(element, piece, count, time + mapping.offset);
+      if (result != GST_FLOW_OK)
+        break;
+      state.offset = mapping.offset;
+      consumed += count;
+      continue;
+    }
     auto* peer = gst_pad_get_peer(element->output);
     auto* sink = peer ? gst_pad_get_parent_element(peer) : nullptr;
     if (peer)
@@ -639,6 +757,14 @@ gboolean AudioEvent(GstPad* pad, GstObject* object, GstEvent* event) {
     state.segment = *segment;
     state.epoch = state.owner->impl().Epoch();
     state.offset = -1;
+    state.transport_start = GST_CLOCK_TIME_NONE;
+    state.transport_frames = 0;
+    if (state.transport) {
+      gst_event_unref(event);
+      GstSegment transport;
+      gst_segment_init(&transport, GST_FORMAT_TIME);
+      event = gst_event_new_segment(&transport);
+    }
   }
   return gst_pad_event_default(pad, object, event);
 }
@@ -741,8 +867,12 @@ bool PacedPlayback::AttachVideoSink(GstElement* sink, guint retained_frames) {
   return installed != 0;
 }
 bool PacedPlayback::AttachAudioSink(GstElement* sink) {
-  if (!GST_IS_AUDIO_BASE_SINK(sink))
-    return false;
+  return GST_IS_AUDIO_BASE_SINK(sink) && AttachAudioElement(sink, false);
+}
+bool PacedPlayback::AttachAudioTransport(GstElement* encoder) {
+  return encoder && AttachAudioElement(encoder, true);
+}
+bool PacedPlayback::AttachAudioElement(GstElement* sink, bool transport) {
   auto* pad = gst_element_get_static_pad(sink, "sink");
   auto* peer = pad ? gst_pad_get_peer(pad) : nullptr;
   auto* parent = gst_element_get_parent(sink);
@@ -757,18 +887,19 @@ bool PacedPlayback::AttachAudioSink(GstElement* sink) {
   }
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    if (impl_->audio_attached) {
+    auto* physical = g_weak_ref_get(&impl_->audio_sink);
+    if (!transport && physical) {
+      gst_object_unref(physical);
       gst_object_unref(pad);
       gst_object_unref(peer);
       gst_object_unref(parent);
       return false;
     }
-    impl_->audio_attached = true;
+    if (physical)
+      gst_object_unref(physical);
   }
   auto* queue = gst_element_factory_make("queue", nullptr);
   if (!queue) {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->audio_attached = false;
     gst_object_unref(pad);
     gst_object_unref(peer);
     gst_object_unref(parent);
@@ -776,6 +907,7 @@ bool PacedPlayback::AttachAudioSink(GstElement* sink) {
   }
   auto* adapter = reinterpret_cast<PacedAudio*>(g_object_new(paced_audio_get_type(), nullptr));
   adapter->state->owner = shared_from_this();
+  adapter->state->transport = transport;
   g_object_set(
       queue,
       "max-size-buffers",
@@ -807,24 +939,28 @@ bool PacedPlayback::AttachAudioSink(GstElement* sink) {
     else
       gst_object_unref(queue);
   } else {
-    g_weak_ref_set(&impl_->audio_queue, queue);
+    auto admission_queue = std::make_shared<AudioQueue>(queue);
+    {
+      std::lock_guard<std::mutex> lock(impl_->mutex);
+      impl_->audio_attached = true;
+      impl_->audio_queues.push_back(admission_queue);
+    }
     gst_pad_add_probe(
         queue_input,
         static_cast<GstPadProbeType>(
             GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH),
         AdmitAudio,
-        new AudioAdmission(shared_from_this()),
+        new AudioAdmission(shared_from_this(), admission_queue),
         +[](gpointer data) { delete static_cast<AudioAdmission*>(data); });
   }
   gst_object_unref(queue_input);
   gst_object_unref(pad);
   gst_object_unref(peer);
   gst_object_unref(parent);
-  if (!linked) {
-    std::lock_guard<std::mutex> lock(impl_->mutex);
-    impl_->audio_attached = false;
+  if (!linked)
     return false;
-  }
+  if (transport)
+    return true;
   g_object_set(
       sink,
       "buffer-time",
@@ -865,8 +1001,12 @@ bool PacedPlayback::PreparePause() {
 }
 bool PacedPlayback::ResumeAudioClock() {
   auto* sink = GST_AUDIO_BASE_SINK(g_weak_ref_get(&impl_->audio_sink));
-  if (!sink)
-    return false;
+  if (!sink) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->pause_pending = false;
+    impl_->changed.notify_all();
+    return true;
+  }
   GST_OBJECT_LOCK(sink);
   auto* ring = sink->ringbuffer;
   if (ring)
@@ -886,6 +1026,29 @@ bool PacedPlayback::ResumeAudioClock() {
   }
   return resumed;
 }
+GstFlowReturn PacedPlayback::PresentationTime(
+    const GstSegment& segment,
+    GstClockTime pts,
+    GstClockTime* presentation,
+    const std::atomic<bool>* cancelled) {
+  if (!presentation)
+    return GST_FLOW_ERROR;
+  const auto time = RunningTime(segment, pts);
+  Mapping mapping{};
+  const auto result = impl_->Lookup(impl_->Epoch(), time, &mapping, cancelled);
+  if (result != GST_FLOW_OK)
+    return result;
+  if (time > G_MAXUINT64 - mapping.offset)
+    return GST_FLOW_ERROR;
+  *presentation = time + mapping.offset;
+  return GST_FLOW_OK;
+}
+
+void PacedPlayback::WakePresentationWaiters() {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  impl_->changed.notify_all();
+}
+
 void PacedPlayback::Cancel() {
   impl_->Cancel();
 }

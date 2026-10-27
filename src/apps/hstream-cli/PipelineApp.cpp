@@ -566,7 +566,13 @@ bool pipeline_waiting_for_user_input(AppCtx* context) {
 absl::Status configure_paced_local_playback(HmApp& app) {
   if (!render_playback_realtime() || hm::gst::PacedPlayback::Find(app.pipeline.pipeline))
     return absl::OkStatus();
-  std::vector<GstElement*> audio_sinks;
+  std::vector<GstElement*> audio_sinks, audio_transports;
+  const bool private_web = std::any_of(
+      app.config.sink_bin_sub_bin_config,
+      app.config.sink_bin_sub_bin_config + app.config.num_sink_sub_bins,
+      [](const NvDsSinkSubBinConfig& sink) {
+        return sink.enable && sink.type == NV_DS_SINK_WEBRTC && sink.encoder_config.preview_endpoint;
+      });
   NvDsSinkBin* video_output = nullptr;
   for (auto& instance : app.pipeline.instance_bins) {
     if (!instance.hmaudio_bin.bin)
@@ -579,6 +585,12 @@ absl::Status configure_paced_local_playback(HmApp& app) {
         audio_sinks.push_back(GST_ELEMENT(gst_object_ref(element)));
         video_output = &instance.sink_bin;
       }
+      auto* factory = gst_element_get_factory(element);
+      if (private_web && factory &&
+          std::string(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory))) == "opusenc") {
+        audio_transports.push_back(GST_ELEMENT(gst_object_ref(element)));
+        video_output = &instance.sink_bin;
+      }
       g_value_reset(&item);
     }
     g_value_unset(&item);
@@ -587,19 +599,30 @@ absl::Status configure_paced_local_playback(HmApp& app) {
   const auto release_audio = absl::MakeCleanup([&] {
     for (auto* sink : audio_sinks)
       gst_object_unref(sink);
+    for (auto* encoder : audio_transports)
+      gst_object_unref(encoder);
   });
-  if (audio_sinks.empty())
+  if (audio_sinks.empty() && audio_transports.empty())
     return absl::OkStatus();
-  if (audio_sinks.size() != 1 || !video_output || !video_output->tee)
-    return absl::FailedPreconditionError("Paced local playback requires one source-correlated audio monitor");
+  if (audio_sinks.size() > 1 || audio_transports.size() > 1 || !video_output || !video_output->tee)
+    return absl::FailedPreconditionError("Paced playback requires one source-correlated monitor and browser track");
   hm::gst::PacedPlaybackSettings settings;
   HM_ASSIGN_OR_RETURN(settings, hm::gst::ReadPacedPlaybackSettings(app.configurator().config()));
   auto* ingress = gst_element_get_static_pad(video_output->tee, "sink");
   auto owner = hm::gst::PacedPlayback::Create(app.pipeline.pipeline, ingress, settings);
   if (ingress)
     gst_object_unref(ingress);
-  if (!owner || !owner->AttachAudioSink(audio_sinks.front()))
+  if (!owner || (!audio_sinks.empty() && !owner->AttachAudioSink(audio_sinks.front())) ||
+      (!audio_transports.empty() && !owner->AttachAudioTransport(audio_transports.front())))
     return absl::InternalError("Could not attach shared paced audio/video presentation");
+  if (!audio_transports.empty()) {
+    auto* clock_sink = gst_bin_get_by_name(GST_BIN(video_output->bin), "playback_clock");
+    const bool attached = clock_sink && owner->AttachVideoSink(clock_sink, settings.preview_frames);
+    if (clock_sink)
+      gst_object_unref(clock_sink);
+    if (!attached)
+      return absl::InternalError("Could not attach the shared browser playback clock");
+  }
   for (auto& branch : video_output->sub_bins) {
     if (!branch.sink || !GST_IS_BASE_SINK(branch.sink))
       continue;
