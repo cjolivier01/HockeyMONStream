@@ -449,6 +449,7 @@ class HStreamWindow : public QMainWindow {
   QString pipelineConfigPath(const QString& config_name) const;
   QString pipelineWorkingDirectory() const;
   QStringList pipelineArguments(bool standalone = false, bool job_export = false) const;
+  std::optional<int> stitchRotationOverride() const;
   QString highBitDepthMode() const;
   QString detectorPrecision() const;
   // Seam blend mode for the next run.
@@ -837,6 +838,7 @@ class HStreamWindow : public QMainWindow {
   quint64 playback_seek_recovery_generation_{0};
   bool playback_seek_channel_available_{false};
   bool active_run_local_render_only_{false};
+  std::optional<int> active_stitch_rotation_override_;
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   QString calibration_failure_message_;

@@ -932,6 +932,14 @@ while True:
     return window->pipelineArguments();
   }
 
+  static QStringList launchedArguments(HStreamWindow* window) {
+    return window->pipeline_process_ ? window->pipeline_process_->arguments() : QStringList();
+  }
+
+  static bool pipelineRetired(HStreamWindow* window) {
+    return !window->pipeline_process_ || window->pipeline_process_->state() == QProcess::NotRunning;
+  }
+
   static void refreshRunControls(HStreamWindow* window) {
     window->updateRunControls();
   }
@@ -19412,6 +19420,291 @@ bool test_stitching_still() {
   return expect(wait_visible(), "Selecting the externally completed settings must show the new calibration");
 }
 
+bool test_stitch_rotation_launch_draft() {
+  QTemporaryDir games;
+  if (!games.isValid())
+    return false;
+  const QByteArray original_root = qgetenv("HM_GAME_DIR");
+  const QByteArray original_completion = qgetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  auto restore = absl::MakeCleanup([&] {
+    if (original_root.isNull())
+      qunsetenv("HM_GAME_DIR");
+    else
+      qputenv("HM_GAME_DIR", original_root);
+    if (original_completion.isNull())
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    else
+      qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", original_completion);
+  });
+  qputenv("HM_GAME_DIR", games.path().toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  const QString game = "rotation-launch-draft";
+  const QString directory = QDir(games.path()).filePath(game);
+  if (!QDir().mkpath(directory))
+    return false;
+  const fs::path config = fs::path(directory.toStdString()) / "config.yaml";
+  const QString prefix = "--options=stitching.post_stitch_rotate_degrees=";
+  HStreamWindow window;
+  window.show();
+  auto* rotate = require_child<QSlider>(&window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* start = require_child<QPushButton>(&window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(&window, "stopPipelineButton");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  auto* mode = require_child<QComboBox>(&window, "runModeCombo");
+  auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
+  auto* telemetry = require_child<QCheckBox>(&window, "drivegptCsvCheck");
+  if (!rotate || !start || !stop || !save || !mode || !render || !telemetry)
+    return false;
+  const auto options = [&] { return HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix); };
+  // A displayed integer must not round an untouched fractional saved angle or
+  // replace an automatic/null setting with a numeric zero override.
+  for (const char* saved_rotation : {"null", "7.5"}) {
+    std::ofstream(config) << "stitching: {post_stitch_rotate_degrees: " << saved_rotation << "}\n";
+    window.openGame(game, false);
+    const int saved_slider = rotate->value();
+    if (!expect(options().isEmpty(), "Untouched null and fractional rotations must retain native config resolution"))
+      return false;
+    rotate->setValue(saved_slider + 1);
+    if (!expect(
+            options() == QStringList{prefix + QString::number(89 - saved_slider)},
+            "An edited rotation must override the native launch without rounding an untouched saved value"))
+      return false;
+    if (saved_slider != 90) {
+      rotate->setValue(90);
+      if (!expect(
+              options() == QStringList{prefix + "0"},
+              "An explicit neutral draft against a saved angle must remain numeric zero"))
+        return false;
+    }
+    rotate->setValue(saved_slider);
+    if (!expect(options().isEmpty(), "Reverting the draft must restore null/fractional inheritance"))
+      return false;
+  }
+  std::ofstream(config) << "hstream_ui: {show_crop_dialog: false, show_leveling_dialog: false}\n";
+  window.openGame(game, false);
+  for (auto* output : window.findChildren<QCheckBox*>())
+    if (output->objectName().startsWith("outputToggle_"))
+      output->setChecked(false);
+  render->setChecked(false);
+  telemetry->setChecked(false);
+  mode->setCurrentIndex(mode->findData("program"));
+  // Prepare ordinary calibration bookkeeping, then make the unsaved edit.
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  QFile saved_file(QString::fromStdString(config.string()));
+  if (!saved_file.open(QIODevice::ReadOnly))
+    return false;
+  const QByteArray saved_bytes = saved_file.readAll();
+  saved_file.close();
+  rotate->setFocus();
+  QTest::keyClick(rotate, Qt::Key_Right);
+  if (!expect(
+          rotate->value() == 91 && save->isEnabled() && saved_file.open(QIODevice::ReadOnly) &&
+              saved_file.readAll() == saved_bytes,
+          "The ordinary 90 to 91 slider edit must remain unsaved before Play"))
+    return false;
+  saved_file.close();
+  auto cleanup = absl::MakeCleanup([&] {
+    if (!HStreamWindowTestAccess::pipelineRetired(&window)) {
+      stop->click();
+      QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000);
+    }
+  });
+  activate(start);
+  if (!expect(
+          QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000),
+          "The ordinary Program Play must start the test runner") ||
+      !expect(
+          HStreamWindowTestAccess::launchedArguments(&window).count(prefix + "-1") == 1,
+          "The actual admitted process must receive the unsaved negative rotation exactly once"))
+    return false;
+  // Later live/draft changes must not rewrite the admitted launch snapshot.
+  {
+    const QSignalBlocker blocker(rotate);
+    rotate->setValue(92);
+  }
+  if (!expect(
+          HStreamWindowTestAccess::pipelineArguments(&window).filter(prefix) == QStringList{prefix + "-1"},
+          "A later slider value must not mutate the admitted rotation snapshot"))
+    return false;
+  {
+    const QSignalBlocker blocker(rotate);
+    rotate->setValue(91);
+  }
+  activate(stop);
+  if (!expect(
+          QTest::qWaitFor(
+              [&] {
+                return HStreamWindowTestAccess::pipelineRetired(&window) && window.pipelineStateText() == "STOPPED";
+              },
+              5000),
+          "Ordinary Stop must retire the admitted Program process"))
+    return false;
+  YAML::Node after_stop = YAML::LoadFile(config.string());
+  if (!expect(
+          !lookup_yaml_path(after_stop, {"stitching", "post_stitch_rotate_degrees"}, nullptr) &&
+              !lookup_yaml_path(after_stop, {"hstream_ui", "camera_controls", "Stitch_Rotate_Degrees"}, nullptr) &&
+              rotate->value() == 91 && save->isEnabled() && options() == QStringList{prefix + "-1"},
+          "Stop must retain the unsaved draft while keeping the saved rotation preference absent"))
+    return false;
+  window.openGame(game, false);
+  if (!expect(
+          rotate->value() == 90 && options().isEmpty() && !save->isEnabled(),
+          "Reopening must restore the saved neutral preference and release the run override"))
+    return false;
+  auto* selector = require_child<QComboBox>(&window, "gameSelector");
+  auto* reset_baseline = require_child<QPushButton>(&window, "resetDefaultsButton");
+  if (!selector || !reset_baseline)
+    return false;
+  selector->setCurrentIndex(selector->findText("Defaults"));
+  rotate->setValue(91);
+  activate(reset_baseline);
+  return expect(
+      rotate->value() == 90 && options().isEmpty(),
+      "Defaults Reset to Baseline must preserve automatic rotation without pinning numeric zero");
+}
+
+bool test_stitch_rotation_export_inheritance() {
+  QTemporaryDir preferences;
+  QTemporaryDir games;
+  QTemporaryDir outputs;
+  if (!preferences.isValid() || !games.isValid() || !outputs.isValid())
+    return false;
+  const QByteArray original_home = qgetenv("HOME");
+  const QByteArray original_root = qgetenv("HM_GAME_DIR");
+  const QByteArray original_completion = qgetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  auto restore = absl::MakeCleanup([&] {
+    if (original_home.isNull())
+      qunsetenv("HOME");
+    else
+      qputenv("HOME", original_home);
+    if (original_root.isNull())
+      qunsetenv("HM_GAME_DIR");
+    else
+      qputenv("HM_GAME_DIR", original_root);
+    if (original_completion.isNull())
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    else
+      qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", original_completion);
+  });
+  qputenv("HOME", preferences.path().toLocal8Bit());
+  qputenv("HM_GAME_DIR", games.path().toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  const fs::path defaults = fs::path(preferences.path().toStdString()) / ".config/hstream-ui/defaults.yaml";
+  fs::create_directories(defaults.parent_path());
+  std::ofstream(defaults) << "stitching: {post_stitch_rotate_degrees: 7.5}\n"
+                             "hstream_ui: {show_crop_dialog: false, show_leveling_dialog: false}\n";
+  const QString game = "rotation-export-inheritance";
+  const fs::path directory = fs::path(games.path().toStdString()) / game.toStdString();
+  fs::create_directories(directory);
+  const fs::path config = directory / "config.yaml";
+  std::ofstream(config) << "stitching: {post_stitch_rotate_degrees: 15}\n";
+  HStreamWindow window;
+  window.show();
+  if (!HStreamWindowTestAccess::useMatchingDevelopmentRuntime(&window))
+    return false;
+  window.openGame(game, false);
+  auto* rotate = require_child<QSlider>(&window, "cameraSlider_Stitch_Rotate_Degrees");
+  auto* start = require_child<QPushButton>(&window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(&window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(&window, "runModeCombo");
+  auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
+  auto* telemetry = require_child<QCheckBox>(&window, "drivegptCsvCheck");
+  auto* action = require_child<QAction>(&window, "saveJobScriptAction");
+  if (!rotate || !start || !stop || !mode || !render || !telemetry || !action)
+    return false;
+  for (auto* output : window.findChildren<QCheckBox*>())
+    if (output->objectName().startsWith("outputToggle_"))
+      output->setChecked(false);
+  mode->setCurrentIndex(mode->findData("program"));
+  render->setChecked(false);
+  telemetry->setChecked(false);
+  const QString prefix = "--options=stitching.post_stitch_rotate_degrees=";
+  if (!expect(rotate->value() == 75, "The game angle must initially override the fractional user default"))
+    return false;
+  rotate->setValue(83); // The integer presentation of the inherited 7.5 degrees.
+  if (!expect(
+          HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix) == QStringList{prefix + "7"},
+          "Before Save, a deliberate slider edit must remain the integer launch draft"))
+    return false;
+  for (int save_index = 0; save_index < 2; ++save_index) {
+    const QString path = outputs.filePath(QString("rotation-%1.sh").arg(save_index));
+    QString error_message;
+    QTimer dialogs;
+    QObject::connect(&dialogs, &QTimer::timeout, [&] {
+      QWidget* modal = QApplication::activeModalWidget();
+      if (auto* file = qobject_cast<QFileDialog*>(modal)) {
+        if (file->property("rotationExportHandled").toBool())
+          return;
+        file->setProperty("rotationExportHandled", true);
+        QTimer::singleShot(200, file, [file, path] {
+          auto* filename = file->findChild<QLineEdit*>("fileNameEdit");
+          if (!filename)
+            return;
+          filename->setFocus();
+          filename->selectAll();
+          QTest::keyClicks(filename, path);
+          QMetaObject::invokeMethod(file, "accept");
+        });
+      } else if (auto* input = qobject_cast<QInputDialog*>(modal)) {
+        input->accept();
+      } else if (auto* message = qobject_cast<QMessageBox*>(modal)) {
+        if (message->icon() == QMessageBox::Warning || message->icon() == QMessageBox::Critical)
+          error_message = message->text();
+        message->accept();
+      }
+    });
+    dialogs.start(20);
+    action->trigger(); // Includes the ordinary Save Preset before hstream-job.
+    if (!expect(
+            QTest::qWaitFor([&] { return window.logText().contains("job script saved: " + path); }, 10000),
+            "Both the first export and unchanged second export must complete"))
+      return false;
+    QFile script(path);
+    if (!script.open(QIODevice::ReadOnly))
+      return false;
+    const QString text = QString::fromUtf8(script.readAll());
+    const YAML::Node saved = YAML::LoadFile(config.string());
+    const YAML::Node arguments = saved["hstream_ui"]["job"]["arguments"];
+    QStringList recipe;
+    if (arguments.IsSequence())
+      for (const auto& argument : arguments)
+        recipe << QString::fromStdString(argument.as<std::string>());
+    if (!expect(
+            error_message.isEmpty() && text.contains("--encode-job") && !text.contains(prefix) &&
+                arguments.IsSequence() && recipe.filter(prefix).isEmpty() &&
+                !lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, nullptr) &&
+                !lookup_yaml_path(saved, {"hstream_ui", "camera_controls", "Stitch_Rotate_Degrees"}, nullptr) &&
+                YAML::LoadFile(defaults.string())["stitching"]["post_stitch_rotate_degrees"].as<double>() == 7.5 &&
+                HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix).isEmpty(),
+            "Save and both exported recipes must inherit exact 7.5 degrees without a rounded CLI authority"))
+      return false;
+  }
+  window.openGame(game, false);
+  if (!expect(
+          rotate->value() == 83 && HStreamWindowTestAccess::standaloneArguments(&window).filter(prefix).isEmpty(),
+          "Reopening the saved game must retain fractional inheritance instead of a rounded override"))
+    return false;
+  auto cleanup = absl::MakeCleanup([&] {
+    if (!HStreamWindowTestAccess::pipelineRetired(&window)) {
+      stop->click();
+      QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000);
+    }
+  });
+  activate(start);
+  if (!expect(
+          QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000) &&
+              HStreamWindowTestAccess::launchedArguments(&window).filter(prefix).isEmpty(),
+          "Ordinary reopened Play must leave the exact inherited angle to native configuration resolution"))
+    return false;
+  activate(stop);
+  return expect(
+      QTest::qWaitFor(
+          [&] { return HStreamWindowTestAccess::pipelineRetired(&window) && window.pipelineStateText() == "STOPPED"; },
+          5000),
+      "The reopened inherited-rotation test run must retire on ordinary Stop");
+}
+
 bool test_realtime_playback_selection() {
   HStreamWindow window;
   auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
@@ -19917,6 +20210,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ROTATION_LAUNCH_ONLY"))
+    return test_stitch_rotation_launch_draft() && test_stitch_rotation_export_inheritance() ? 0 : 1;
   // The focused detector suite does not need the unrelated hardware memory probe.
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
     return test_detector_precision() && test_detector_model() ? 0 : 1;
@@ -19998,6 +20293,8 @@ int main(int argc, char** argv) {
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PAUSE_ONLY"))
     return 0;
   if (!test_realtime_playback_selection())
+    return 1;
+  if (!test_stitch_rotation_launch_draft() || !test_stitch_rotation_export_inheritance())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_REALTIME_ONLY"))
     return 0;

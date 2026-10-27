@@ -10718,6 +10718,16 @@ void HStreamWindow::closeStitchingCalibrationDialog() {
   active_calibration_stage_.clear();
 }
 
+std::optional<int> HStreamWindow::stitchRotationOverride() const {
+  const auto saved = saved_camera_controls_.find("Stitch_Rotate_Degrees");
+  const int selected = static_cast<int>(cameraControlValue("Stitch_Rotate_Degrees"));
+  // Preserve untouched null/inherited and fractional configuration values;
+  // the integer slider is authoritative only after an actual draft change.
+  if (saved == saved_camera_controls_.end() || saved->second == selected)
+    return std::nullopt;
+  return 90 - selected;
+}
+
 QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) const {
   const QString game_id = !standalone && !active_run_game_id_.isEmpty()
       ? active_run_game_id_
@@ -10814,6 +10824,14 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
     }
   }
   args << QString("--options=pipeline.hmstitcher.properties.high-bit-depth=%1").arg(highBitDepthMode());
+  const auto stitch_rotation =
+      !standalone && !active_run_game_id_.isEmpty() ? active_stitch_rotation_override_ : stitchRotationOverride();
+  if (!job_export && stitch_rotation.has_value()) {
+    // The native startup planner owns output-generation, mask and scoreboard
+    // invalidation. Exported jobs resolve rotation from the completed saved
+    // config, preserving its exact fractional and inherited values.
+    args << QString("--options=stitching.post_stitch_rotate_degrees=%1").arg(*stitch_rotation);
+  }
   // A mode the live path cannot run stays whatever the config layers resolve to; overriding it
   // here would silently run something else.
   if (blendMode() != kUnrepresentableBlendData) {
@@ -11249,6 +11267,7 @@ void HStreamWindow::startPipeline() {
   }
   managed_archive_manifest_.clear();
   active_run_game_id_ = game_id_edit_->text().trimmed();
+  active_stitch_rotation_override_ = stitchRotationOverride();
   active_run_is_calibration_ = isCalibrationRun();
   active_hockeymon_program_ = hockeyMonProgram();
   active_backend_initial_launch_ = active_hockeymon_program_ && !backend_.initial_launch.isEmpty();

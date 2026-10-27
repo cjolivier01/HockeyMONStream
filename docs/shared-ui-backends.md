@@ -14,6 +14,16 @@ hstream-ui --backend=hockeymon --backend-runner=/absolute/path/to/hm-cli \
 initial-launch document so `hmtrack --camera-ui=1` can preserve explicit Python
 arguments. It applies once, to the game selected at startup, and is not copied
 into exported jobs. A later Play uses the current saved and unsaved UI choices.
+An edited Stitched Rotation is frozen at Play and passed as a per-run
+`stitching.post_stitch_rotate_degrees` override. Native startup invalidates
+rotation-dependent masks and scoreboard geometry for that output without saving
+the draft as a preference. Stop retains the draft; reopening the game reloads
+the saved value. Untouched null and fractional settings keep their configuration
+semantics. Save job script first saves the preset; exported jobs resolve
+rotation from that saved configuration, including inherited fractional values.
+The browser stages the same edit in its private calibration copy before launch.
+AMD Program still rejects unsupported nonzero post-stitch
+rotation; this launch handoff does not add an AMD rotation implementation.
 Initial Program envelopes include source ownership resolved by the Python
 adapter before Qt opens, bound to the same game, arguments and working directory.
 Qt checks it before calibration cleanup or crop admission. A single-source CLI
