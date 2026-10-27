@@ -4,6 +4,7 @@
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
+#include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
@@ -96,6 +97,10 @@
 #endif
 
 struct HStreamWindowTestAccess {
+  static QString managedArchiveManifest(const HStreamWindow* window) {
+    return window->managed_archive_manifest_;
+  }
+
   static bool stopProtocolChecks() {
 #ifdef Q_OS_UNIX
     HStreamWindow window;
@@ -17074,6 +17079,211 @@ bool write_e2e_text(const QString& path, const QString& contents) {
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
 }
 
+struct ManagedTelemetryReceipt {
+  QString path;
+  YAML::Node binding;
+};
+
+YAML::Node read_owned_e2e_publication(const QString& path) {
+#ifdef Q_OS_UNIX
+  const int fd = ::open(QFile::encodeName(path).constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0)
+    throw std::runtime_error("Publication evidence is unavailable: " + path.toStdString());
+  const auto close_fd = absl::MakeCleanup([fd] { ::close(fd); });
+  struct stat st{};
+  if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != ::geteuid() || st.st_size <= 0 ||
+      st.st_size > 16 * 1024 * 1024)
+    throw std::runtime_error("Publication evidence must be a bounded owned regular file");
+  QFile file;
+  if (!file.open(fd, QIODevice::ReadOnly, QFileDevice::DontCloseHandle))
+    throw std::runtime_error("Cannot read publication evidence");
+  const QByteArray contents = file.read(st.st_size + 1);
+  if (contents.size() != st.st_size)
+    throw std::runtime_error("Publication evidence changed while reading");
+  const auto run = YAML::Load(contents.toStdString());
+  if (run["schema"].as<int>(0) != 1)
+    throw std::runtime_error("Unsupported publication evidence schema");
+  return run;
+#else
+  throw std::runtime_error("Owned publication evidence requires Unix file identities");
+#endif
+}
+
+ManagedTelemetryReceipt capture_managed_telemetry_receipt(const QString& manifest, const QString& game) {
+  if (manifest.isEmpty())
+    throw std::runtime_error("The current run has no managed publication manifest");
+  const auto run = read_owned_e2e_publication(manifest);
+  const std::string game_dir = run["game_dir"].as<std::string>();
+  if (fs::canonical(game.toStdString()) != fs::path(game_dir) ||
+      fs::path(manifest.toStdString()) != fs::path(run["work"].as<std::string>()) / "run.yaml" ||
+      !run["telemetry_required"].as<bool>(false))
+    throw std::runtime_error("The managed telemetry manifest does not match this game and run");
+  ManagedTelemetryReceipt captured;
+  captured.path = QString::fromStdString(hm::publication::ReceiptPath(game_dir, run["id"].as<std::string>()).string());
+  for (const char* key : {"id", "game_dir", "game_id", "work", "work_identity"})
+    captured.binding[key] = YAML::Clone(run[key]);
+  for (const char* key : {"device", "inode"})
+    captured.binding["work_identity"][key].as<uint64_t>();
+  return captured;
+}
+
+bool completed_managed_telemetry_receipt(
+    const ManagedTelemetryReceipt& captured,
+    QString* telemetry_path,
+    QString* error) {
+  telemetry_path->clear();
+  try {
+    const auto run = read_owned_e2e_publication(captured.path);
+    for (const char* key : {"id", "game_dir", "game_id", "work"})
+      if (run[key].as<std::string>() != captured.binding[key].as<std::string>())
+        throw std::runtime_error("Publication receipt belongs to a different run");
+    for (const char* key : {"device", "inode"})
+      if (run["work_identity"][key].as<uint64_t>() != captured.binding["work_identity"][key].as<uint64_t>())
+        throw std::runtime_error("Publication receipt has a different working identity");
+    if (run["state"].as<std::string>() != "complete" || !run["telemetry_required"].as<bool>(false))
+      throw std::runtime_error("Telemetry publication is not complete");
+    if (!run["artifacts"].IsSequence())
+      throw std::runtime_error("Publication receipt has no artifacts");
+    QString published;
+    for (const auto artifact : run["artifacts"]) {
+      if (artifact["kind"].as<std::string>() != "telemetry")
+        continue;
+      const fs::path destination = artifact["destination"].as<std::string>();
+      if (!published.isEmpty() || !artifact["published"].as<bool>(false) ||
+          destination.parent_path() != fs::path(captured.binding["game_dir"].as<std::string>()) ||
+          destination.extension() != ".db")
+        throw std::runtime_error("Telemetry artifact is not a unique published game database");
+#ifdef Q_OS_UNIX
+      const auto expected = artifact["prepared_identity"];
+      struct stat st{};
+      if (::lstat(destination.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != ::geteuid() ||
+          st.st_size <= 0 || uint64_t(st.st_dev) != expected["device"].as<uint64_t>() ||
+          uint64_t(st.st_ino) != expected["inode"].as<uint64_t>() ||
+          int64_t(st.st_size) != expected["size"].as<int64_t>() ||
+          int64_t(st.st_mtim.tv_sec) != expected["mtime"].as<int64_t>() ||
+          int64_t(st.st_mtim.tv_nsec) != expected["mtime_ns"].as<int64_t>() || expected["directory"].as<bool>())
+        throw std::runtime_error("Published telemetry file does not match its receipt identity");
+#else
+      throw std::runtime_error("Owned telemetry evidence requires Unix file identities");
+#endif
+      published = QString::fromStdString(destination.string());
+    }
+    if (published.isEmpty())
+      throw std::runtime_error("Publication receipt has no published telemetry database");
+    *telemetry_path = published;
+    error->clear();
+    return true;
+  } catch (const std::exception& failure) {
+    *error = QString::fromUtf8(failure.what());
+    return false;
+  }
+}
+
+bool test_managed_telemetry_receipt_acceptance() {
+#ifndef Q_OS_UNIX
+  return true;
+#else
+  QTemporaryDir root;
+  if (!root.isValid() || !QDir(root.path()).mkdir("game") || !QDir(root.path()).mkdir("work"))
+    return false;
+  const QString game = root.filePath("game");
+  const QString work = root.filePath("work");
+  const QString manifest = QDir(work).filePath("run.yaml");
+  const QString database = QDir(game).filePath("game-telemetry-1.db");
+  const auto identity = [](const QString& path) {
+    struct stat st{};
+    if (::lstat(QFile::encodeName(path).constData(), &st) != 0)
+      throw std::runtime_error("Cannot inspect telemetry acceptance fixture");
+    YAML::Node result;
+    result["device"] = uint64_t(st.st_dev);
+    result["inode"] = uint64_t(st.st_ino);
+    result["size"] = int64_t(st.st_size);
+    result["mtime"] = int64_t(st.st_mtim.tv_sec);
+    result["mtime_ns"] = int64_t(st.st_mtim.tv_nsec);
+    result["directory"] = bool(S_ISDIR(st.st_mode));
+    return result;
+  };
+  YAML::Node run;
+  run["schema"] = 1;
+  run["id"] = "telemetry-e2e-fixture";
+  run["game_id"] = "game";
+  run["game_dir"] = fs::canonical(game.toStdString()).string();
+  run["work"] = work.toStdString();
+  run["work_identity"] = identity(work);
+  run["state"] = "running";
+  run["telemetry_required"] = true;
+  if (!write_e2e_text(manifest, QString::fromStdString(YAML::Dump(run))))
+    return false;
+  const auto captured = capture_managed_telemetry_receipt(manifest, game);
+  QString published;
+  QString error;
+  const auto check = [&](const YAML::Node& receipt, bool accepted, const std::string& detail) {
+    if (!write_e2e_text(captured.path, QString::fromStdString(YAML::Dump(receipt))))
+      return false;
+    const bool completed = completed_managed_telemetry_receipt(captured, &published, &error);
+    return expect(
+        completed == accepted && (accepted ? published == database && error.isEmpty() : published.isEmpty()), detail);
+  };
+  if (!expect(
+          !completed_managed_telemetry_receipt(captured, &published, &error),
+          "Missing receipt must not satisfy telemetry publication") ||
+      !write_e2e_text(database, "owned published telemetry fixture"))
+    return false;
+  YAML::Node artifact;
+  artifact["kind"] = "telemetry";
+  artifact["destination"] = database.toStdString();
+  artifact["prepared_identity"] = identity(database);
+  artifact["published"] = true;
+  run["artifacts"].push_back(artifact);
+  for (const char* state : {"admitted", "encoded", "publishing", "published"}) {
+    run["state"] = state;
+    if (!check(run, false, "Pending receipts must not satisfy telemetry publication"))
+      return false;
+  }
+  run["state"] = "complete";
+  if (!check(run, true, "Exact completed receipt and owned telemetry file must satisfy publication"))
+    return false;
+  // Completion must remain verifiable after the native finalizer retires work.
+  if (!QFile::remove(manifest) || !QDir().rmdir(work) ||
+      !check(run, true, "Completed receipt must survive working-manifest cleanup"))
+    return false;
+  for (const char* key : {"id", "game_dir", "game_id", "work"}) {
+    auto wrong = YAML::Clone(run);
+    wrong[key] = "different-run";
+    if (!check(wrong, false, "A different run must not satisfy this run's telemetry publication"))
+      return false;
+  }
+  for (const char* key : {"device", "inode"}) {
+    auto wrong = YAML::Clone(run);
+    wrong["work_identity"][key] = wrong["work_identity"][key].as<uint64_t>() + 1;
+    if (!check(wrong, false, "A replaced working identity must not satisfy telemetry publication"))
+      return false;
+  }
+  auto unpublished = YAML::Clone(run);
+  unpublished["artifacts"][0]["published"] = false;
+  auto missing = YAML::Clone(run);
+  missing["artifacts"] = YAML::Node(YAML::NodeType::Sequence);
+  if (!check(unpublished, false, "Unpublished telemetry must fail even in a completed receipt") ||
+      !check(missing, false, "A completed receipt without telemetry must fail"))
+    return false;
+  for (const char* key : {"device", "inode", "size", "mtime", "mtime_ns"}) {
+    auto wrong = YAML::Clone(run);
+    wrong["artifacts"][0]["prepared_identity"][key] =
+        wrong["artifacts"][0]["prepared_identity"][key].as<uint64_t>() + 1;
+    if (!check(wrong, false, "Every recorded telemetry file-identity component must match"))
+      return false;
+  }
+  const QString retained = database + ".retained";
+  if (!QFile::rename(database, retained) ||
+      ::symlink(QFile::encodeName(retained).constData(), QFile::encodeName(database).constData()) != 0 ||
+      !check(run, false, "Symlink telemetry must not satisfy the recorded file identity") || !QFile::remove(database) ||
+      !write_e2e_text(database, "owned published telemetry fixture") ||
+      !check(run, false, "A replaced database must not satisfy the recorded file identity"))
+    return false;
+  return true;
+#endif
+}
+
 struct NativePreviewCapture {
   bool passed{false};
   int width{0};
@@ -17865,7 +18075,21 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return false;
     toggle->setChecked(requested_outputs.contains(output));
   }
-  activate(start);
+  start->click();
+  std::optional<ManagedTelemetryReceipt> telemetry_receipt;
+  QString published_telemetry_path;
+  QString telemetry_publication_error;
+  if (require_standalone_telemetry) {
+    try {
+      // Finalization clears the window's manifest. Keep this run's immutable
+      // admission binding before processing any more events.
+      telemetry_receipt = capture_managed_telemetry_receipt(
+          HStreamWindowTestAccess::managedArchiveManifest(window), window->gameDirectoryText());
+    } catch (const std::exception& error) {
+      telemetry_publication_error = QString::fromUtf8(error.what());
+    }
+  }
+  QApplication::processEvents();
   const auto stop_and_preserve_failure = [&]() {
     activate(stop);
     for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -18126,7 +18350,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   finalize_timer.start();
   const auto outputs_saved = [&]() {
     if (require_standalone_telemetry &&
-        !window->completeLogText().contains("DriveGPT database copied to the game directory:"))
+        (!telemetry_receipt ||
+         !completed_managed_telemetry_receipt(
+             *telemetry_receipt, &published_telemetry_path, &telemetry_publication_error)))
       return false;
     return std::all_of(requested_outputs.cbegin(), requested_outputs.cend(), [&](const QString& output) {
       return window->outputStateText(output) == "SAVED";
@@ -18216,6 +18442,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   report += QString("run_mode: %1\noutputs: %2\n").arg(run_mode, requested_outputs.join(','));
   report += QString("preview_overlays: %1\n").arg(preview_overlays.join(','));
   report += QString("output: %1\n").arg(output_path);
+  if (require_standalone_telemetry) {
+    report += QString("telemetry_receipt: %1\n").arg(telemetry_receipt ? telemetry_receipt->path : QString());
+    report += QString("published_telemetry: %1\n").arg(published_telemetry_path);
+    report += QString("telemetry_publication_error: %1\n").arg(telemetry_publication_error);
+  }
   report += QString("panorama: %1\n").arg(panorama_path);
   report += QString("scoreboard_selector_observed: %1\n").arg(submitted_scoreboard ? "true" : "false");
   report += QString("positive_fps_observed: %1\n").arg(observed_first_frame ? "true" : "false");
@@ -19630,9 +19861,11 @@ int main(int argc, char** argv) {
         ? 0
         : 1;
   }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_TELEMETRY_RECEIPT_ONLY"))
+    return test_managed_telemetry_receipt_acceptance() ? 0 : 1;
   if (!test_path_scoped_auto_rollback() || !test_matching_development_runtime_selection() ||
       !test_stitching_canvas_constraint_decisions() || !test_diagnostic_capture_attempt_paths() ||
-      !test_pipeline_log_issue_classification()) {
+      !test_pipeline_log_issue_classification() || !test_managed_telemetry_receipt_acceptance()) {
     return 1;
   }
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");

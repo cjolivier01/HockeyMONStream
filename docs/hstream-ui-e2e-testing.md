@@ -297,6 +297,12 @@ with `HSTREAM_UI_E2E_OUTPUTS=archive-stitched`; the omitted Program preview is
 excluded from that mode's checks. Set `HSTREAM_UI_E2E_STANDALONE_TELEMETRY=1`
 with 4K-only output and `HSTREAM_UI_E2E_WAIT_FOR_EOS=1` to enable DriveGPT
 and require its independent database publication after video completion.
+The test captures the current managed run's receipt identity immediately after
+Play. Stop and EOS both require that exact receipt to reach `complete` and its
+published telemetry database to match the recorded file identity; log messages
+and pending receipts do not satisfy publication.
+`HSTREAM_UI_TEST_TELEMETRY_RECEIPT_ONLY=1` runs the CPU acceptance fixtures without
+launching a window or pipeline.
 
 ## Evidence retained
 

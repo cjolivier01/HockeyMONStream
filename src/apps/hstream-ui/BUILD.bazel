@@ -1080,6 +1080,7 @@ cc_test(
         ":scoreboard_selection_dialog",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
         "//src/libs/common:gpu_memory_profile",
+        "//src/libs/publication",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:player_frame_selection",
         "@com_google_absl//absl/cleanup",
