@@ -48,13 +48,29 @@ canonical_platform() {
   esac
 }
 
+# Prefixes each name, for example with the staging directory. This is a loop
+# rather than "${names[@]/#/${prefix}}" because since bash 5.2's
+# patsub_replacement an unquoted & in the replacement expands to the matched
+# text, so a checkout under a path like /srv/r&d would silently lose the
+# ampersand and name files that do not exist.
+prefix_each() {
+  local prefix="$1"
+  shift
+  local name
+  for name in "$@"; do
+    printf '%s%s\n' "${prefix}" "${name}"
+  done
+}
+
 # Prints the platforms to publish, one per line, in RELEASE_PLATFORMS order.
 resolve_release_platforms() {
   local excluded_spec="$1"
   local -a tokens=() included=()
   local -A excluded=()
   local token canonical platform
-  IFS=', ' read -r -a tokens <<< "${excluded_spec}"
+  # -d '' consumes the whole value: a plain read would stop at the first
+  # newline and silently ignore every exclusion after it.
+  IFS=$', \n\t' read -r -d '' -a tokens <<< "${excluded_spec}" || true
   for token in ${tokens[@]+"${tokens[@]}"}; do
     [[ -n "${token}" ]] || continue
     if ! canonical="$(canonical_platform "${token}")"; then
@@ -110,8 +126,13 @@ included_platform_list="$(resolve_release_platforms "${EXCLUDE_SPEC}")" || exit 
 mapfile -t included_platforms <<< "${included_platform_list}"
 
 publishing() {
-  local platform="$1"
-  [[ " ${included_platforms[*]} " == *" ${platform} "* ]]
+  local platform="$1" candidate
+  for candidate in "${included_platforms[@]}"; do
+    if [[ "${candidate}" == "${platform}" ]]; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 if ! command -v git >/dev/null 2>&1; then
@@ -407,9 +428,10 @@ if publishing jetson; then
   done
 fi
 
+mapfile -t checksum_names < <(prefix_each ./ "${staged_assets[@]}")
 (
   cd "${release_dir}"
-  sha256sum "${staged_assets[@]/#/./}" > SHA256SUMS
+  sha256sum "${checksum_names[@]}" > SHA256SUMS
 )
 
 # Recheck after the long builds so a concurrent publisher cannot claim the
@@ -433,7 +455,8 @@ if ! git push origin "refs/tags/${release_tag}"; then
   exit 1
 fi
 
-release_assets=("${staged_assets[@]/#/${release_dir}/}" "${release_dir}/SHA256SUMS")
+mapfile -t release_assets < <(prefix_each "${release_dir}/" "${staged_assets[@]}")
+release_assets+=("${release_dir}/SHA256SUMS")
 release_notes=$'HockeyMONStream is source-available software for stitching two sports-camera videos, automatically tracking the play, and producing a virtual pan-and-zoom program view. It runs without a HockeyMONStream subscription fee on supported NVIDIA GPU hardware. The repository has mixed file-level licensing.\n\n[Product overview](https://cjolivier01.github.io/HockeyMONStream/) · [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) · [Source and licensing](https://github.com/cjolivier01/HockeyMONStream)'
 # A reader cannot tell a deliberately reduced matrix from a broken upload, so
 # name the missing targets instead of leaving a gap in the asset list.

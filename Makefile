@@ -279,7 +279,7 @@ print_targets:
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \
 		'windows-installer Build the small native Windows/WSL setup .exe on Ubuntu (requires NSIS).' \
-		'publish        Build every .deb, increment the vMAJOR.MINOR.PATCH tag, tag, and publish a GitHub release.' \
+		'publish        Build the selected packages, increment the vMAJOR.MINOR.PATCH tag, tag, and publish a GitHub release.' \
 		'               Platforms: ubuntu24, ubuntu26, jetson, windows.' \
 		'               EXCLUDE=jetson omits one (comma- or space-separated for several).' \
 		'publish-dry-run Show the next tag and planned artifacts without building or publishing (honors EXCLUDE).' \

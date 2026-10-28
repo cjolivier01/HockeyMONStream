@@ -10,6 +10,13 @@ fail() {
   exit 1
 }
 
+expect_equal() {
+  local actual="$1"
+  local expected="$2"
+  local label="$3"
+  [[ "${actual}" == "${expected}" ]] || fail "${label}: expected '${expected}', got '${actual}'"
+}
+
 expect_platforms() {
   local excluded="$1"
   local expected="$2"
@@ -39,6 +46,12 @@ expect_platforms "jetson,jetson" "ubuntu24 ubuntu26 windows" "repeated platform"
 expect_platforms "ubuntu24.04,windows" "ubuntu26 jetson" "dotted Ubuntu spelling"
 expect_platforms "ubuntu26.04" "ubuntu24 jetson windows" "dotted Ubuntu 26 spelling"
 
+# A plain `read` stops at the first newline, which would publish a platform the
+# caller asked to leave out instead of failing.
+expect_platforms $'jetson\nwindows' "ubuntu24 ubuntu26" "newline-separated list"
+expect_platforms $'\njetson' "ubuntu24 ubuntu26 windows" "leading newline"
+expect_rejected $'\nubuntu24\nubuntu26\njetson\nwindows' "excluding everything across newlines"
+
 expect_rejected "arm64" "unknown platform"
 expect_rejected "jetson,sbsa" "unknown platform beside a known one"
 expect_rejected "Jetson" "platform names are case-sensitive"
@@ -57,5 +70,46 @@ for platform in "${RELEASE_PLATFORMS[@]}"; do
   platform_label "${platform}" >/dev/null \
     || fail "no release-notes label for platform '${platform}'"
 done
+
+# SHA256SUMS and the upload list are built from these names. Since bash 5.2
+# enabled patsub_replacement, "${names[@]/#/${prefix}}" eats an unquoted & in
+# the prefix, so a checkout under /srv/r&d would upload paths that do not
+# exist -- and only after the release tag had already been pushed.
+expect_equal "$(prefix_each ./ a.deb b.exe | tr '\n' ' ')" "./a.deb ./b.exe " \
+  "checksum names are prefixed with ./"
+expect_equal "$(prefix_each "/srv/r&d/rel/" a.deb | tr '\n' ' ')" "/srv/r&d/rel/a.deb " \
+  "an ampersand in the staging path survives"
+expect_equal "$(prefix_each "/srv/rel/" "hstream_v1.2.3_ubuntu24.04_amd64.deb" | tr '\n' ' ')" \
+  "/srv/rel/hstream_v1.2.3_ubuntu24.04_amd64.deb " "upload paths join the staging directory"
+expect_equal "$(prefix_each ./ | wc -l)" "0" "no assets prefixes nothing"
+
+# Stage the assets of a Jetson-excluded release the way the publisher does and
+# check that what it hashes is exactly what it uploads, with no stray glob.
+staging="$(mktemp -d)"
+trap 'rm -rf "${staging}"' EXIT
+staged_assets=(
+  "hstream_v1.2.3_ubuntu24.04_amd64.deb"
+  "hstream_v1.2.3_ubuntu26.04_amd64.deb"
+  "hstream_v1.2.3_windows-wsl-setup.exe"
+  "install-hstream-deb.sh"
+)
+for asset in "${staged_assets[@]}"; do
+  printf 'contents of %s\n' "${asset}" > "${staging}/${asset}"
+done
+mapfile -t checksum_names < <(prefix_each ./ "${staged_assets[@]}")
+(cd "${staging}" && sha256sum "${checksum_names[@]}" > SHA256SUMS)
+(cd "${staging}" && sha256sum --check --status SHA256SUMS) \
+  || fail "the staged checksum file does not verify"
+expect_equal "$(wc -l < "${staging}/SHA256SUMS")" "${#staged_assets[@]}" \
+  "every staged asset is hashed exactly once"
+grep -q '[*]' "${staging}/SHA256SUMS" \
+  && fail "an unexpanded glob reached SHA256SUMS"
+mapfile -t release_assets < <(prefix_each "${staging}/" "${staged_assets[@]}")
+release_assets+=("${staging}/SHA256SUMS")
+for asset in "${release_assets[@]}"; do
+  [[ -f "${asset}" ]] || fail "upload list names a file that does not exist: ${asset}"
+done
+expect_equal "${#release_assets[@]}" "$((${#staged_assets[@]} + 1))" \
+  "the upload list is the staged assets plus SHA256SUMS"
 
 echo "PASS"

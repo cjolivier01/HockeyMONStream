@@ -68,7 +68,7 @@
       <p>The current public installer is signed with a private/self-signed publisher certificate. Windows therefore shows an unknown-publisher warning unless that certificate is already trusted. Read the complete <a href="https://github.com/cjolivier01/HockeyMONStream/blob/master/docs/windows-wsl-installer.md">Windows WSL installer documentation</a> for the security model, files, and uninstall behavior.</p>
 
       <h2>Ubuntu desktop</h2>
-      <p>Download three files: the <code>_ubuntu24.04_amd64.deb</code> or <code>_ubuntu26.04_amd64.deb</code> asset that exactly matches the host, <a href="https://github.com/cjolivier01/HockeyMONStream/releases/latest/download/install-hstream-deb.sh"><code>install-hstream-deb.sh</code></a> from the same HockeyMONStream release, and NVIDIA’s separately obtained DeepStream 9.1 Debian package.</p>
+      <p>Download three files: the <code>_ubuntu24.04_amd64.deb</code> or <code>_ubuntu26.04_amd64.deb</code> asset that exactly matches the host, <a href="https://github.com/cjolivier01/HockeyMONStream/releases"><code>install-hstream-deb.sh</code></a> from the same HockeyMONStream release as that package, and NVIDIA’s separately obtained DeepStream 9.1 Debian package. Do not take the helper from a different release: <code>SHA256SUMS</code> only covers the release it ships in.</p>
       <p>After verifying all three downloads as described above, run the helper with the downloaded paths:</p>
       <pre><code>chmod +x ./install-hstream-deb.sh
 sudo ./install-hstream-deb.sh \

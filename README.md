@@ -141,6 +141,11 @@ contains installers/packages for these targets:
 | Ubuntu 24.04 / 26.04 x86_64 | `*_amd64.deb` | Use with the matching NVIDIA DeepStream installation. |
 | NVIDIA Jetson (Ubuntu 22.04 arm64) | `*_jetson-ubuntu22.04_arm64.deb` | Built for JetPack 6-class Jetson systems. |
 
+A release occasionally omits a platform whose build hardware was unavailable;
+its notes say which, and the most recent release listing that asset is the one
+to use. Take every file for an install from that same release, including
+`install-hstream-deb.sh`, because `SHA256SUMS` only covers its own release.
+
 Release assets include `SHA256SUMS`. The Windows installer is currently signed
 with a private/self-signed publisher certificate, so Windows reports an unknown
 publisher unless that certificate is trusted. See the
