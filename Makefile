@@ -202,9 +202,15 @@ undeploy:
 	fi
 	NODES="$(NODES)" scripts/deploy.sh --undeploy
 
+# EXCLUDE reaches the script through the environment, not the recipe text, so
+# the shell never evaluates an operator's value: as a command-line argument,
+# EXCLUDE='x`cmd`' would run cmd and EXCLUDE='jetson" --help "' would inject a
+# second option.
+publish: export HSTREAM_RELEASE_EXCLUDE = $(EXCLUDE)
 publish:
 	scripts/publish_release.sh
 
+publish-dry-run: export HSTREAM_RELEASE_EXCLUDE = $(EXCLUDE)
 publish-dry-run:
 	scripts/publish_release.sh --dry-run
 
@@ -279,8 +285,10 @@ print_targets:
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \
 		'windows-installer Build the small native Windows/WSL setup .exe on Ubuntu (requires NSIS).' \
-		'publish        Build every .deb, increment the vMAJOR.MINOR.PATCH tag, tag, and publish a GitHub release.' \
-		'publish-dry-run Show the next tag and planned artifacts without building or publishing.' \
+		'publish        Build the selected packages, increment the vMAJOR.MINOR.PATCH tag, tag, and publish a GitHub release.' \
+		'               Platforms: ubuntu24, ubuntu26, jetson, windows.' \
+		'               EXCLUDE=jetson omits one (comma- or space-separated for several).' \
+		'publish-dry-run Show the next tag and planned artifacts without building or publishing (honors EXCLUDE).' \
 		'delete-release Delete a GitHub release, its assets, and tag (requires RELEASE_TAG=vX.Y.Z and confirmation).' \
 		'' \
 		'Tests' \

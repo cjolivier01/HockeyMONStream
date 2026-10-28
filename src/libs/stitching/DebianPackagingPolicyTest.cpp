@@ -121,12 +121,29 @@ int main(int argc, char** argv) {
           contains(publisher, "git remote get-url --push --all origin") &&
           contains(publisher, "hugin_2022.0.0+dfsg.orig.tar.xz") && contains(publisher, "10#${patch}") &&
           contains(publisher, "(0|[1-9][0-9]*)") && contains(publisher, "windows-wsl-setup.exe") &&
-          contains(publisher, "sha256sum ./*.deb ./*.exe") && contains(publisher, "\"${release_dir}\"/*.exe") &&
+          contains(publisher, "staged_assets+=(\"hstream_${release_tag}_windows-wsl-setup.exe\")") &&
+          contains(publisher, "checksum_names+=(\"./${asset}\")") &&
+          contains(publisher, "release_assets+=(\"${release_dir}/${asset}\")") &&
+          contains(publisher, "sha256sum \"${checksum_names[@]}\"") &&
+          !contains(publisher, "sha256sum ./*") && !contains(publisher, "\"${release_dir}\"/*.deb") &&
+          !contains(publisher, "\"${release_dir}\"/*.exe") && !contains(publisher, "\"${release_dir}\"/*.sh") &&
           contains(publisher, "WINDOWS_INSTALLER_REPOSITORY=\"${repository}\"") &&
           contains(publisher, "WINDOWS_SIGNING_PKCS12") && contains(publisher, "WINDOWS_SIGNING_CA_FILE") &&
           contains(publisher, "-CAfile") && contains(publisher, "private/self-signed publisher certificate") &&
           contains(publisher, "osslsigncode verify"),
       "release publication must verify provenance/source compliance, increment strict semver, and publish Windows setup");
+  // A release may omit a platform whose hardware or toolchain is unavailable.
+  // Hashing and uploading an explicit staged list rather than globbing the
+  // staging directory is what keeps that safe, so pin the two couplings an
+  // exclusion must not break.
+  ok &= expect(
+      contains(publisher, "RELEASE_PLATFORMS=(ubuntu24 ubuntu26 jetson windows)") &&
+          contains(publisher, "if publishing jetson; then\n  hugin_build_script_asset=") &&
+          contains(publisher, "\"${hugin_build_script_asset}\" --export-sources=\"${release_dir}\"") &&
+          contains(publisher, "so excluding ubuntu24 also requires excluding windows.") &&
+          contains(publisher, "every platform was excluded"),
+      "excluding a platform must keep Jetson's GPLv2 corresponding source with the package that ships those "
+      "binaries, keep the Windows installer with the Ubuntu 24.04 package it downloads, and refuse an empty release");
   ok &= expect(
       contains(windows_builder, "makensis") && contains(windows_builder, "rsvg-convert") &&
           contains(windows_builder, "icotool") && contains(windows_builder, "PE32 executable") &&
