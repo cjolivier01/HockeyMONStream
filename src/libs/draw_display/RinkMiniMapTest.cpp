@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/draw_display/AnalyticsOverlayInternal.h"
 #include "hstream/src/libs/player_analytics/FrameMeta.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
@@ -31,7 +32,14 @@ struct Frame {
       double shift_x = 0,
       uint64_t pts_ns = 100,
       pa::TeamLabel team = pa::TeamLabel::kUnknown,
-      bool second_undecided_track = false) {
+      // 0 none, 1 after the decided track, 2 before it. The order matters:
+      // the overlay has to read the same way whichever one it walks first.
+      int second_undecided_track = 0,
+      // A snapshot that reached the overlay with nobody in it, which is what a
+      // whistle or a fully pruned frame looks like.
+      bool empty_snapshot = false,
+      // Put the decided track where the saved map draws no dot for it.
+      bool decided_off_board = false) {
     check(frame, "Metadata allocation");
     frame->source_id = 4;
     frame->buf_pts = pts_ns;
@@ -44,7 +52,7 @@ struct Frame {
     observation.coordinate_height = 600;
     p::PlayerRect player;
     player.track_id = 22;
-    player.rect.left = 350 + shift_x;
+    player.rect.left = decided_off_board ? 1600 : 350 + shift_x;
     player.rect.top = 100;
     player.rect.width = 100;
     player.rect.height = 200;
@@ -55,15 +63,18 @@ struct Frame {
       outside.rect.left = 1600;
       observation.player_rects.assign(pa::kMaximumTracks, outside);
     }
-    observation.player_rects.push_back(player);
-    if (second_undecided_track) {
-      // A skater the clusterer has not called yet, on the ice beside one it
-      // has. Both are tracked and both are drawn.
-      auto undecided = player;
-      undecided.track_id = 23;
-      undecided.rect.left = 300 + shift_x;
+    // A skater the clusterer has not called yet, on the ice beside one it has.
+    // Both are tracked and both are drawn.
+    auto undecided = player;
+    undecided.track_id = 23;
+    undecided.rect.left = 300 + shift_x;
+    undecided.ignored = false;
+    if (second_undecided_track == 2)
       observation.player_rects.push_back(undecided);
-    }
+    if (!empty_snapshot)
+      observation.player_rects.push_back(player);
+    if (second_undecided_track == 1)
+      observation.player_rects.push_back(undecided);
     if (snapshot)
       check(p::add_prepared_overlay_snapshot_meta(frame, observation), "Snapshot attachment");
     if (jersey) {
@@ -100,6 +111,32 @@ size_t count(const a::CommandList& commands, a::detail::Kind kind, bool white = 
     if (commands.data()[i].kind == kind && (!white || commands.data()[i].color.red > .9F))
       ++result;
   return result;
+}
+// The footer is the last text the overlay adds, and it is the only text on its
+// baseline, so the trailing glyphs sharing the last command's y are its own
+// rather than a jersey number's. AddText drops spaces, so the reading has none.
+// A misread changes the string the comparisons below see, so it fails them; it
+// cannot turn a wrong footer into a passing one.
+std::string footer(const a::CommandList& commands) {
+  size_t end = commands.size();
+  while (end && commands.data()[end - 1].kind != a::detail::Kind::kGlyph)
+    --end;
+  if (!end)
+    return {};
+  const float baseline = commands.data()[end - 1].y0;
+  size_t begin = end;
+  while (begin && commands.data()[begin - 1].kind == a::detail::Kind::kGlyph &&
+         commands.data()[begin - 1].y0 == baseline)
+    --begin;
+  std::string text;
+  for (size_t i = begin; i < end; ++i) {
+    // AddText stores the atlas index, which carries the weight offset.
+    uint32_t code = commands.data()[i].glyph;
+    if (code >= uint32_t(a::detail::kWeightGlyphOffset))
+      code -= uint32_t(a::detail::kWeightGlyphOffset);
+    text.push_back(char(code + a::detail::kFirstGlyph));
+  }
+  return text;
 }
 bool dotColor(const a::CommandList& commands, const NvOSD_ColorParams& expected) {
   const a::detail::Command* fill = nullptr;
@@ -150,6 +187,42 @@ int main() {
       check(named.Append(home.frame, 1600, 1200, 800, 600, &commands), "The home side stays visible");
       check(dotColor(commands, {0, 0, 128.0 / 255, 1}), "Home fills navy");
       check(count(commands, a::detail::Kind::kGlyph, true) == 2, "Navy dots use light jersey digits");
+      check(footer(commands) == "1/1LOCATED", "A footer over named dots cannot keep reporting the teams as unknown");
+      commands.Clear();
+    }
+    {
+      // The camera policy excludes the nearest skater on most frames of a real
+      // game, and that track is often the first the clusterer calls. It is
+      // drawn grey, not in a side's colour, so on its own it does not make the
+      // map a two-group reading and the footer must keep saying so.
+      hm::draw_display::RinkMiniMap excluded(map);
+      Frame ignored_side(generation, true, true, 120, true, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
+      check(excluded.Append(ignored_side.frame, 1600, 1200, 800, 600, &commands), "An excluded named track draws");
+      check(dotColor(commands, p::kIgnoredPlayerColor), "An excluded track stays grey even with a side");
+      check(
+          footer(commands) == "1/1LOCATED-TEAMSUNKNOWN",
+          "An excluded track's side cannot announce a naming no dot on the map shows");
+      commands.Clear();
+    }
+    {
+      // A whistle empties the snapshot for a few frames. The sides this stream
+      // named do not become unknown again while nobody is on screen.
+      hm::draw_display::RinkMiniMap settled(map);
+      Frame named(generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome);
+      check(settled.Append(named.frame, 1600, 1200, 800, 600, &commands), "The naming frame draws");
+      commands.Clear();
+      Frame empty(
+          generation, true, false, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 140, pa::TeamLabel::kUnknown, false, true);
+      check(settled.Append(empty.frame, 1600, 1200, 800, 600, &commands), "An empty snapshot retains the rink");
+      check(footer(commands) == "NOTRACKS", "An empty frame cannot withdraw a naming this stream already made");
+      commands.Clear();
+      hm::draw_display::RinkMiniMap fresh_overlay(map);
+      Frame empty_unnamed(
+          generation, true, false, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 140, pa::TeamLabel::kUnknown, false, true);
+      check(fresh_overlay.Append(empty_unnamed.frame, 1600, 1200, 800, 600, &commands), "An empty first frame draws");
+      check(
+          footer(commands) == "NOTRACKS-TEAMSUNKNOWN",
+          "A run that has never named a side still reports the teams as unknown");
       commands.Clear();
     }
     {
@@ -165,14 +238,38 @@ int main() {
     {
       // Someone on the ice has a side, so a skater without one is drawn
       // hollow rather than filled with a colour that reads as a third group.
+      // Which of the two the overlay walks first cannot change that, so both
+      // orders are checked: the reading is decided before anything is drawn.
+      for (const int order : {1, 2}) {
+        hm::draw_display::RinkMiniMap named(map);
+        Frame unknown_side(
+            generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark, order);
+        check(named.Append(unknown_side.frame, 1600, 1200, 800, 600, &commands), "An unnamed skater stays visible");
+        check(
+            count(commands, a::detail::Kind::kDisc) == 5,
+            "A named skater is a filled dot and an undecided one beside them is a ring");
+        commands.Clear();
+      }
       hm::draw_display::RinkMiniMap named(map);
       Frame unknown_side(
-          generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark, true);
+          generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kDark, 1);
       check(named.Append(unknown_side.frame, 1600, 1200, 800, 600, &commands), "An unnamed skater stays visible");
-      check(
-          count(commands, a::detail::Kind::kDisc) == 5,
-          "A named skater is a filled dot and an undecided one beside them is a ring");
       check(dotColor(commands, {0.96, 0.98, 1, 1}), "The ring is left open over the ice");
+      commands.Clear();
+    }
+    {
+      // The saved map draws no dot for a player outside the estimated boards.
+      // A side called on one of those cannot switch the map into the two-group
+      // reading either, for the same reason an excluded track cannot.
+      hm::draw_display::RinkMiniMap off_board(map);
+      Frame outside_named(
+          generation, true, true, 120, false, {0.2, 0.4, 0.7, 1}, false, 0, 100, pa::TeamLabel::kHome, 2, false, true);
+      check(off_board.Append(outside_named.frame, 1600, 1200, 800, 600, &commands), "The skater on the ice draws");
+      check(count(commands, a::detail::Kind::kDisc) == 2, "Only the located skater gets a dot");
+      check(dotColor(commands, {0.2, 0.4, 0.7, 1}), "That skater keeps its track colour instead of a ring");
+      check(
+          footer(commands) == "1/2LOCATED-TEAMSUNKNOWN",
+          "A side on a track the map cannot place does not make the map a two-group reading");
       commands.Clear();
     }
     {
@@ -233,6 +330,7 @@ int main() {
     check(teamless.Append(unnamed.frame, 1600, 1200, 800, 600, &commands), "An unnamed run still draws");
     check(dotColor(commands, {0.2, 0.4, 0.7, 1}), "Without any named side the dots keep their track colour");
     check(count(commands, a::detail::Kind::kDisc) == 2, "An unnamed dot is a plain filled dot");
+    check(footer(commands) == "1/1LOCATED-TEAMSUNKNOWN", "Track-coloured dots still say the teams are unknown");
     commands.Clear();
     Frame overflow(generation, true, false, 120, false, {0.2, 0.4, 0.7, 1}, true);
     check(overlay.Append(overflow.frame, 1600, 1200, 800, 600, &commands), "Oversized snapshot retains the rink");

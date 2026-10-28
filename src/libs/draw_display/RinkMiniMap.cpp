@@ -144,23 +144,51 @@ bool RinkMiniMap::Append(
   const Color team_away{1.0F, 140.0F / 255, 0.0F, 1.0F};
   const Color team_dark{0.16F, 0.18F, 0.22F, 1.0F};
   const Color team_light{0.93F, 0.94F, 0.96F, 1.0F};
-  // Switch to the two-group reading only once this stream has named a side,
-  // and keep reading it that way afterwards: a run with teams off keeps its
-  // track colours, and a frame that happens to carry no decided track must
-  // not flip the whole map back for one frame. The flag is latched from the
-  // per-player walk below, so no extra pass over the results is needed.
   const size_t inspected = have_tracks ? std::min(snapshot->players.size(), player_analytics::kMaximumTracks) : 0;
-  for (size_t index = 0; index < inspected; ++index) {
-    const auto& player = snapshot->players[index];
-    const auto& box = player;
-    if (!std::isfinite(box.width) || !std::isfinite(box.height) || box.width <= 0 || box.height <= 0)
-      continue;
-    auto location = map_->Locate(
-        (box.left + box.width / 2) / snapshot->coordinate_width,
-        (box.top + box.height) / snapshot->coordinate_height,
+  // Where a player's dot belongs, or nothing when this overlay draws none:
+  // a box with no extent, and a foot the saved map puts outside the estimated
+  // boards. Both the latch below and the drawing walk go through here, so a
+  // track that is not on the map cannot decide how the map reads.
+  const auto locate = [&](const RinkMapPlayer& player) -> std::optional<cv::Point2d> {
+    if (!std::isfinite(player.width) || !std::isfinite(player.height) || player.width <= 0 || player.height <= 0)
+      return std::nullopt;
+    return map_->Locate(
+        (player.left + player.width / 2) / snapshot->coordinate_width,
+        (player.top + player.height) / snapshot->coordinate_height,
         *rotation_,
         stitched_width,
         stitched_height);
+  };
+  // Switch to the two-group reading only once this stream has named a side,
+  // and keep reading it that way afterwards: a run with teams off keeps its
+  // track colours, and a frame that happens to carry no decided track must
+  // not flip the whole map back for one frame.
+  //
+  // Latch before drawing anything, so every dot in this frame and the footer
+  // under them read the same way. Doing it inside the walk below would leave
+  // the players it reaches first filled and the ones after them hollow on the
+  // single frame a side is first called. An excluded track is drawn grey
+  // rather than in a side's colour, so it does not count either: between that
+  // and `locate`, the footer cannot announce a naming no dot on the map
+  // shows. Stops at the first track that names one, and does not run once the
+  // flag is set.
+  for (size_t index = 0; index < inspected && !named_sides_ && result; ++index) {
+    const auto& player = snapshot->players[index];
+    if (player.ignored || player.track_id == player_analytics::kUntrackedId || !locate(player))
+      continue;
+    for (size_t i = 0; i < std::min(result->player_count, player_analytics::kMaximumTracks); ++i) {
+      if (result->players[i].track_id != player.track_id)
+        continue;
+      // home_is_dark only renames dark/light as home/away; it never decides
+      // whether a side was called, so this does not need the conversion.
+      named_sides_ = result->players[i].team.label != player_analytics::TeamLabel::kUnknown;
+      break;
+    }
+  }
+  for (size_t index = 0; index < inspected; ++index) {
+    const auto& player = snapshot->players[index];
+    const auto& box = player;
+    auto location = locate(player);
     if (!location)
       continue;
     const auto& palette = box.color;
@@ -197,12 +225,10 @@ bool RinkMiniMap::Append(
       const bool dark = side == player_analytics::TeamLabel::kDark;
       side = dark == *options_.home_is_dark ? player_analytics::TeamLabel::kHome : player_analytics::TeamLabel::kAway;
     }
-    const bool known_side = side != player_analytics::TeamLabel::kUnknown;
-    named_sides_ = named_sides_ || known_side;
     const auto& box_color = player.ignored ? analytics::Color{0.5F, 0.5F, 0.5F, 1.0F} : box.color;
     const Color track_color{
         float(box_color.red), float(box_color.green), float(box_color.blue), float(box_color.alpha)};
-    const bool named = !player.ignored && known_side;
+    const bool named = !player.ignored && side != player_analytics::TeamLabel::kUnknown;
     const Color color = !named                       ? track_color
         : side == player_analytics::TeamLabel::kHome ? team_home
         : side == player_analytics::TeamLabel::kAway ? team_away
@@ -228,19 +254,26 @@ bool RinkMiniMap::Append(
     }
     ++visible;
   }
+  // The dots above are already filled navy and orange once a side has been
+  // named, so the footer cannot keep claiming the teams are unknown. Both
+  // readings take the same suffix: a whistle that empties the snapshot for a
+  // few frames must not announce that teams named a minute ago are unknown
+  // again.
+  const char* const teams = named_sides_ ? "" : " - TEAMS UNKNOWN";
   char summary[64];
   if (!have_tracks)
     std::snprintf(summary, sizeof(summary), "WAITING FOR TRACKS");
   else if (snapshot->players.empty())
-    std::snprintf(summary, sizeof(summary), "NO TRACKS - TEAMS UNKNOWN");
+    std::snprintf(summary, sizeof(summary), "NO TRACKS%s", teams);
   else
     std::snprintf(
         summary,
         sizeof(summary),
-        "%zu/%zu%s LOCATED - TEAMS UNKNOWN",
+        "%zu/%zu%s LOCATED%s",
         visible,
         inspected,
-        std::max(snapshot->total_players, snapshot->players.size()) > inspected ? "+" : "");
+        std::max(snapshot->total_players, snapshot->players.size()) > inspected ? "+" : "",
+        teams);
   commands->AddText(left, top + header + rink_height + 4 * scale, 13 * scale, summary, ink);
   unavailable_reason_ = nullptr;
   return true;

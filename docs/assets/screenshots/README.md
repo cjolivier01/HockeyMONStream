@@ -66,9 +66,11 @@ recording and corresponding media time binding.
 
 ## README assets
 
-Assembled on 2026-09-30 on an NVIDIA RTX 5090, from source checkout `0055cc53`
-(the branch point for this work).
-These four files, plus the existing `vegas-kings-program.webp` documented above,
+The first four were assembled on 2026-09-30 on an NVIDIA RTX 5090, from source
+checkout `0055cc53` (the branch point for that work). The two tracking images
+were rendered on 2026-10-27 on the same machine; their own section below records
+their checkout and command.
+These six files, plus the existing `vegas-kings-program.webp` documented above,
 are embedded in the repository [README](../../../README.md).
 Every frame in them was produced by this project: video frames from Program and
 stitched-archive output, and, in `two-cameras-one-panorama.webp`, three artifacts
@@ -84,6 +86,8 @@ was drawn or fabricated.
 | `whole-rink-live.webp` | 1200 × 306 | 0.8 MB | Animated, 84 frames at 12 fps, infinite loop |
 | `two-cameras-one-panorama.webp` | 1600 × 926 | 206 KB | Still composite |
 | `four-rinks.webp` | 1600 × 962 | 176 KB | Still composite |
+| `player-tracking-live.webp` | 1040 × 586 | 2.4 MB | Animated, 90 frames at 12 fps, infinite loop |
+| `player-tracking-overlays.webp` | 1600 × 900 | 118 KB | Single frame of that same clip |
 
 Animation is WebP rather than GIF on purpose. The same eight-second follow-cam
 clip is 2.4 MB as animated WebP and 25.3 MB as a 256-color GIF
@@ -102,10 +106,11 @@ tile does; its render is dated 2026-09-28, while `vegas-kings-1` (09-09),
 `two-cameras-one-panorama.webp` cannot carry it: per
 [the watermark notes](../../watermark.md) the mark is drawn in `playcropper` Program
 output, the stitched GL preview, and the archive encoder input, and calibration
-artifacts are on none of those paths. Only `whole-rink-live.webp`, captured
+artifacts are on none of those paths. `whole-rink-live.webp`, captured
 2026-09-30, went through a watermarking build; there the mark falls on the dark
-boards and is not visible at 1200 px. Current builds always burn it in and it
-cannot be disabled.
+boards and is not visible at 1200 px. The two tracking images were rendered a
+month later and carry it visibly over the ice in the lower right. Current builds
+always burn it in and it cannot be disabled.
 
 ### `auto-follow-cam.webp`
 
@@ -211,10 +216,102 @@ placed in a 2 × 2 grid on a solid `#0B1220` canvas at WebP quality 88, with the
 id drawn above each tile in DejaVu Sans Bold at `#7FD3F7`, using the same
 `color` + `overlay` + `drawtext` construction as the two-camera composite above.
 
+### The two tracking images
+
+`player-tracking-live.webp` and `player-tracking-overlays.webp` come from one
+`blackhawks-p3` run on 2026-10-27, on the RTX 5090, from this change's branch
+(base `59da4b86`, with the `RinkMiniMap` footer fix in the same commit — without
+it the map's footer read `TEAMS UNKNOWN` over dots it had already filled navy
+and orange). The still is frame 54.17 s of the same run, so it is one picture
+out of the same clip rather than a separate render.
+
+Only the boxes, the `HOME`/`AWAY`/`IGNORED` labels, the map panel and the
+scoreboard are drawn. The player names and numbers legible on the sweaters are
+printed on the sweaters. Jersey recognition draws the number it read inside
+that track's map dot and above its box; it reads a minority of tracks, so most
+dots here are plain circles. The still happens to contain no jersey read at
+all. The clip's first frame has one: a `7` over a box near the centre, and the
+same `7` in that track's navy dot, drawn at twice the radius of a plain one.
+
+The run used a sandbox copy of the game, so the real game directory was not
+touched: configuration, `rink-map.yaml` and every calibration artifact copied
+with `cp -p`, camera recordings symlinked. Both details matter. The artifact
+loader refuses a symlinked `hm_project.pto`, and plain `cp` rewrites the mtimes
+the artifact dependency check reads, so either mistake makes the run recalibrate
+and the saved rink map is then rejected as belonging to an older calibration.
+
+```sh
+HM_GAME_DIR=<sandbox parent> HM_OUTPUT_WORK_DIR=<scratch> \
+hstream-cli -g blackhawks-p3 \
+  --enable-sources=URI-MULTIPLE --enable-sinks=ENCODE_FILE \
+  --start-time=00:42:20 -t 150 \
+  --options=pipeline.hmaudio.enable=0 \
+  --options=pipeline.hmplaycropper.plot-player-tracking=1 \
+  --options=pipeline.player-analytics.jersey.enable=1,pipeline.player-analytics.draw-jerseys=1 \
+  --options=pipeline.player-analytics.team.enable=1,pipeline.player-analytics.draw-teams=1 \
+  --options=output.rink-map.enable=true,output.rink-map.size=compact,output.rink-map.position=upper-right
+```
+
+Three things that command does not say, and a reader reproducing it on another
+game will need. `game.home_is_dark` is what turns the clusterer's two groups
+into HOME and AWAY; the baseline ships it null, and this run got `true` from
+the game's own `config.yaml`, so without that key — or an added
+`--options=game.home_is_dark=true` — the badges read DARK and LIGHT and the
+dots use the dark/light palette instead of navy and orange. The tracker's
+appearance re-identification likewise comes from the game config
+(`pipeline.tracker.reid-enable: true`), not from the command. And
+`output.rink-map.enable` is parsed by yaml-cpp's `bool`, which takes `true`
+but rejects `1` with a startup error, unlike the 1/0 booleans on the other
+lines; `size=compact` and `position=upper-right` are already the baseline
+values and are there only to show where they live.
+
+That stitched a 20415 × 5256 canvas and wrote a 7680 × 4320 HEVC Program file at
+0.98x real time. Audio is off to save the work; the game has it, and it changes
+no overlay. Most of the 150 s is warm-up: team affiliation fits a two-means
+split per stream, and the first fit comes `warmup_samples` crops in — but it
+names the sides only if that fit is balanced and its lightness gap clears
+`min_lightness_gap`, and each fit that is not pushes the naming out by another
+`refit_interval`. Here that took about half a minute of play. The camera
+policy needs a while to settle too. The run reported 9008 frames,
+`jersey-results=4697` and `team-committed=88`.
+
+The excerpt is 7.5 s starting 50.5 s in, over a line change along the near
+boards; the virtual camera pans right across it and widens by nearly a third.
+An earlier attempt at 00:55:45
+was discarded: that window reported `team-unranked=3075, team-committed=0`, so
+the split never became publishable — the counter covers both an insufficient
+`min_lightness_gap` and an unbalanced `min_cluster_share`, and the two were not
+distinguished. Every badge was correctly withheld and the map footer correctly
+read `TEAMS UNKNOWN`. Nothing was wrong with it; it just does not show the
+feature.
+
+```sh
+ffmpeg -ss 50.5 -i tracking_output-with-audio.mkv -t 7.5 \
+  -vf "fps=12,scale=1040:-2:flags=lanczos" -c:v libx264 -crf 10 -an track_src.mp4
+ffmpeg -i track_src.mp4 -c:v libwebp_anim -q:v 52 -compression_level 6 -loop 0 \
+  player-tracking-live.webp
+
+ffmpeg -ss 54.17 -i tracking_output-with-audio.mkv -frames:v 1 \
+  -vf "scale=1600:-1:flags=lanczos" -c:v libwebp -quality 88 \
+  player-tracking-overlays.webp
+```
+
+Scaling and WebP compression are the only processing. Every box, jersey number,
+HOME/AWAY badge, `IGNORED` label and map dot was composited on the GPU into the
+encoded frames by `playcropper` and `hmrinkmap`; none of it was drawn in post.
+
 ### Not captured
 
+The play-tracking camera geometry — the moving crop and cluster boxes HockeyMON
+draws — is still **not** in any published asset, because `plot-play-tracking`
+and `ds-playtracker.draw` render into a local display copy rather than the
+encoded output. The notes below record what was tried on 2026-09-30, before
+the encoded route above worked on this host. Of those three, the first and the
+third are the ones that would also have given that geometry; the second is the
+player-box route that works now, and it cannot draw a camera box.
+
 A detection-and-tracking overlay (player boxes, play-tracking camera box, rink
-mask) is **not** part of this set. Three routes were tried on 2026-09-30 and
+mask) was **not** part of this set then. Three routes were tried on 2026-09-30 and
 none produced a publishable, correctly aligned image:
 
 - **GPU preview overlays** (`HSTREAM_UI_E2E_PREVIEW_OVERLAYS=players,play,rink`
@@ -229,7 +326,10 @@ none produced a publishable, correctly aligned image:
   (`pipeline.hmplaycropper.plot-player-tracking=1`) needs the Program branch,
   which never produced frames in this headless configuration and hung in EOS
   finalization, leaving a zero-byte file. The stitched-archive branch ran fine in
-  the same environment, so this is specific to the Program path here.
+  the same environment, so this is specific to the Program path here. **This is
+  the route that now works**: on 2026-10-27 the same flag on the same host wrote
+  a complete 7680 × 4320 Program file at 0.98x real time. What changed in between
+  was not investigated. It is how the two tracking images above were made.
 - **Drawing recorded telemetry onto an existing render** was rejected as
   incorrect. `hstream_telemetry-2.db` holds a complete 229,781-sample run with
   per-frame detections, tracks, and Program camera rectangles in
@@ -239,4 +339,7 @@ none produced a publishable, correctly aligned image:
 
 Confirmed while testing: `pipeline.hmplaycropper.plot-play-tracking` and
 `pipeline.ds-playtracker.draw` affect the display/render copy only and do **not**
-appear in the encoded stitched archive.
+appear in the encoded stitched archive. `plot-player-tracking` is the exception
+— `playcropper` composites those boxes straight into its owned Program output —
+which is why player boxes can be published from a headless run and the camera
+geometry still cannot.
