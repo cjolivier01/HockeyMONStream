@@ -95,8 +95,13 @@ int main(int argc, char** argv) {
   }
 
   bool ok = true;
-  const fs::path root =
-      fs::weakly_canonical(fs::temp_directory_path()) / ("hstream-trt-cache-test-" + std::to_string(::getpid()));
+  std::string root_pattern =
+      (fs::weakly_canonical(fs::temp_directory_path()) / "hstream-trt-cache-test-XXXXXX").string();
+  if (!::mkdtemp(root_pattern.data())) {
+    std::cerr << "Cannot create private TensorRT cache fixture\n";
+    return 1;
+  }
+  const fs::path root = root_pattern;
   const fs::path configs = root / "configs";
   const fs::path models = root / "packaged-models";
   const fs::path home = root / "home";
@@ -753,6 +758,52 @@ int main(int argc, char** argv) {
       !fs::exists(home_models / "home-detector.onnx_b1_gpu0_fp32.engine"),
       "engine generation must not write beside the source ONNX model");
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
+
+  // Web runs keep separate HOME directories for their frozen preferences but
+  // share verified model files. Their aliases must not create new engines.
+  std::ofstream(configs / "home-alias.yaml")
+      << "property:\n"
+         "  onnx-file: $HOME/.cache/hstream/models/home-detector.onnx\n"
+         "  model-engine-file: $HOME/.cache/hstream/models/missing-alias.engine\n"
+         "  labelfile-path: $HOME/.cache/hstream/models/labels_coco.txt\n"
+         "  network-mode: 0\n";
+  fs::path alias_engine;
+  fs::file_time_type alias_engine_write_time;
+  for (const char* name : {"first-run", "second-run"}) {
+    const fs::path private_home = root / name / "home";
+    fs::create_directories(private_home / ".cache/hstream");
+    fs::create_directory_symlink(home_models, private_home / ".cache/hstream/models");
+    ::setenv("HOME", private_home.c_str(), 1);
+    auto alias_pipeline = pipeline_for("home-alias.yaml");
+    ok &= expect(prepare_cache(alias_pipeline, configs).ok(), "private model alias must prepare successfully");
+    const auto alias_config = YAML::LoadFile(alias_pipeline["primary-gie"]["config-file"].as<std::string>());
+    const fs::path engine = alias_config["property"]["model-engine-file"].as<std::string>();
+    if (alias_engine.empty()) {
+      alias_engine = engine;
+      std::ofstream(engine) << "engine serialized by first private run\n";
+      alias_engine_write_time = fs::last_write_time(engine);
+    } else {
+      ok &= expect(
+          engine == alias_engine && fs::is_regular_file(engine) &&
+              fs::last_write_time(engine) == alias_engine_write_time,
+          "two private HOME aliases of shared models must reuse the same untouched engine");
+    }
+    ok &= expect(
+        alias_config["property"]["labelfile-path"].as<std::string>() ==
+            (private_home / ".cache/hstream/models/labels_coco.txt").string(),
+        "runtime inference config must retain this launch's model alias");
+    hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  }
+  std::ofstream(home_models / "labels_coco.txt", std::ios::app) << "new class\n";
+  auto changed_alias_labels = pipeline_for("home-alias.yaml");
+  ok &= expect(prepare_cache(changed_alias_labels, configs).ok(), "changed shared labels must prepare successfully");
+  const auto changed_alias_config =
+      YAML::LoadFile(changed_alias_labels["primary-gie"]["config-file"].as<std::string>());
+  ok &= expect(
+      changed_alias_config["property"]["model-engine-file"].as<std::string>() != alias_engine.string(),
+      "canonical model aliases must still invalidate the engine when input bytes change");
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
+  ::setenv("HOME", home.c_str(), 1);
 
   // Reusing ordinal zero on a different GPU must neither load nor overwrite
   // the first device's engine or runtime YAML.
