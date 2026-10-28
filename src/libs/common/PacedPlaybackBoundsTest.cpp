@@ -164,46 +164,103 @@ struct Fixture {
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   try {
-    {
-      Fixture test(true);
-      g_object_set(test.source_sink, "sync", FALSE, nullptr);
-      g_object_set(test.sink, "sync", FALSE, nullptr);
-      test.Audio(1);
-      test.Push(test.ingress, 0);
-      test.Push(test.route, 0);
-      test.Wait(test.audio_presented[0], 1);
-      Check(test.presented == 1, "Initial retained preview did not present");
-      for (unsigned seek = 0; seek < 6; ++seek) {
-        test.owner->Cancel();
-        // The retained sink still has its previous SEGMENT. Even the same PTS
-        // must remain cancelled until that sink receives the new segment.
-        test.Push(test.route, 0);
-        Check(test.presented == seek + 1, "An old-epoch video frame escaped cancellation");
-        for (auto* input : {test.ingress, test.route, test.audio})
-          test.Event(input, gst_event_new_flush_start());
-        for (auto* input : {test.ingress, test.route, test.audio})
-          test.Event(input, gst_event_new_flush_stop(TRUE));
-        test.Segment(test.route);
-        test.Segment(test.audio);
-        test.Audio(2);
-        test.Wait(test.audio_entered, 2 + 2 * seek);
-        Check(test.audio_presented[1] == 0, "Unmapped preroll PCM was presented");
-        // A source's local preroll seek can flush audio after Stitched already
-        // received its segment, but before Program establishes the mapping.
-        // This must retire the pending PCM without changing the reserved video
-        // epoch. FLUSH_STOP also joins the mapper's pending chain invocation.
-        test.Event(test.audio, gst_event_new_flush_start());
-        test.Event(test.audio, gst_event_new_flush_stop(TRUE));
-        test.Segment(test.audio);
-        test.Audio(3);
-        test.Segment(test.ingress);
+    bool seek_regressions_passed = true;
+    for (const unsigned preroll_segments : {0U, 1U, 2U}) {
+      try {
+        Fixture test(true);
+        g_object_set(test.source_sink, "sync", FALSE, nullptr);
+        g_object_set(test.sink, "sync", FALSE, nullptr);
+        test.Audio(1);
         test.Push(test.ingress, 0);
         test.Push(test.route, 0);
-        test.Wait(test.audio_presented[2], seek + 1);
-        Check(test.presented == seek + 2, "Audio preroll flush stranded the retained preview epoch");
-        Check(test.audio_presented[1] == 0, "Cancelled preroll PCM resumed in the new mapping");
+        test.Wait(test.audio_presented[0], 1);
+        Check(test.presented == 1, "Initial retained preview did not present");
+        for (unsigned seek = 0; seek < 6; ++seek) {
+          test.owner->Cancel();
+          // The retained sink still has its previous SEGMENT. Even the same PTS
+          // must remain cancelled until that sink receives the new segment.
+          test.Push(test.route, 0);
+          Check(test.presented == seek + 1, "An old-epoch video frame escaped cancellation");
+          for (auto* input : {test.ingress, test.route, test.audio})
+            test.Event(input, gst_event_new_flush_start());
+          for (auto* input : {test.ingress, test.route, test.audio})
+            test.Event(input, gst_event_new_flush_stop(TRUE));
+          test.Segment(test.route);
+          // Stitched may see its SEGMENT before Program. Program can also
+          // receive one or more segments while replacement sources preroll,
+          // before any video interval is available to map audio or previews.
+          for (unsigned segment = 0; segment < preroll_segments; ++segment)
+            test.Segment(test.ingress);
+          test.Segment(test.audio);
+          test.Audio(2);
+          test.Wait(test.audio_entered, 2 + 2 * seek);
+          Check(test.audio_presented[1] == 0, "Unmapped preroll PCM was presented");
+          // A source's local preroll seek can flush audio after Stitched already
+          // received its segment, but before Program establishes the mapping.
+          // This must retire the pending PCM without changing the reserved video
+          // epoch. FLUSH_STOP also joins the mapper's pending chain invocation.
+          test.Event(test.audio, gst_event_new_flush_start());
+          test.Event(test.audio, gst_event_new_flush_stop(TRUE));
+          test.Segment(test.audio);
+          test.Audio(3);
+          test.Segment(test.ingress);
+          test.Push(test.ingress, 0);
+          test.Push(test.route, 0);
+          test.Wait(test.audio_presented[2], seek + 1);
+          Check(test.presented == seek + 2, "Audio preroll flush stranded the retained preview epoch");
+          Check(test.audio_presented[1] == 0, "Cancelled preroll PCM resumed in the new mapping");
+        }
+        std::cout << "Six retained-preview seeks survived " << preroll_segments
+                  << " preroll video segments and late audio flushes without reviving old video or PCM\n";
+      } catch (const std::exception& error) {
+        std::cerr << "Preroll video segments=" << preroll_segments << ": " << error.what() << '\n';
+        seek_regressions_passed = false;
       }
-      std::cout << "Six retained-preview seeks survived late audio flushes without reviving old video or PCM\n";
+    }
+    try {
+      Fixture test;
+      g_object_set(test.sink, "sync", FALSE, nullptr);
+      // Initial preroll also has no committed video interval. Duplicate
+      // segments must not strand a preview which already received its segment.
+      // Rejected video cannot commit that interval either.
+      test.Push(test.ingress, 0, GST_CLOCK_TIME_NONE);
+      test.Error("finite source intervals");
+      test.Segment(test.ingress);
+      test.Segment(test.ingress);
+      test.Push(test.ingress, 0);
+      test.Push(test.route, 0);
+      Check(test.presented == 1, "Initial duplicate segments stranded the preview epoch");
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      seek_regressions_passed = false;
+    }
+    Check(seek_regressions_passed, "Retained preview preroll regressions failed");
+    {
+      Fixture test;
+      g_object_set(test.sink, "sync", FALSE, nullptr);
+      test.Push(test.ingress, 0);
+      test.Push(test.route, 0);
+      Check(test.presented == 1, "Initial committed preview did not present");
+      test.owner->Cancel();
+      test.Event(test.ingress, gst_event_new_flush_start());
+      test.Event(test.ingress, gst_event_new_flush_stop(TRUE));
+      test.Segment(test.ingress);
+      test.Push(test.ingress, 0);
+      // A real flush after recorded video must advance the epoch. Even after
+      // the new mapping opens, a retained old-segment frame must stay fenced.
+      test.Push(test.route, 0);
+      Check(test.presented == 1, "Old video resumed after the replacement mapping opened");
+      test.Segment(test.route);
+      test.Push(test.route, 0);
+      Check(test.presented == 2, "Replacement-segment video did not present");
+      // An unflushed new segment after recorded video also begins a new epoch.
+      test.Segment(test.ingress);
+      test.Push(test.ingress, 0);
+      test.Push(test.route, 0);
+      Check(test.presented == 2, "Old video resumed after an unflushed committed segment");
+      test.Segment(test.route);
+      test.Push(test.route, 0);
+      Check(test.presented == 3, "New unflushed-segment video did not present");
     }
     {
       Fixture test;

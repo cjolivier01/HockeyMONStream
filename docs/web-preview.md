@@ -27,6 +27,15 @@ GPU. Bounds come from `runtime.local_playback`; unpaced playback retains its
 existing path. Pipeline pause uses the ordinary system-clock base adjustment
 when no physical audio device owns the clock.
 
+Seek preroll reserves one shared playback epoch until the first accepted video
+interval. Repeated segments and audio flushes before that interval retain the
+reservation. Previously, committing it on SEGMENT could leave the retained Qt
+Stitched sink using an old epoch: every new preview frame was dropped while
+processing continued. Video and PCM still use their own SEGMENT-bound epoch;
+later flushes after recorded video invalidate that epoch normally. Portable
+pacing regressions cover both event orderings, rejected intervals and stale PCM.
+Paired playback tests must additionally check that displayed frames advance.
+
 Qt retains Render, preview-tab and diagnostic-overlay edits while its native
 process pause is preparing, SIGSTOP-paused or waiting for Resume confirmation.
 Render off hides the local native windows immediately. After the matching

@@ -191,6 +191,35 @@ absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolv
   }
 }
 
+absl::StatusOr<WebPreviewRinkMapOptions> ReadWebPreviewRinkMapOptions(
+    const YAML::Node& resolved,
+    const char* enabled,
+    const char* size,
+    const char* position) {
+  try {
+    const auto defaults = resolved["hstream_ui"]["preview_rink_map"];
+    WebPreviewRinkMapOptions options{
+        defaults["enable"].as<bool>(), defaults["size"].as<std::string>(), defaults["position"].as<std::string>()};
+    if (enabled) {
+      const std::string value(enabled);
+      if (value != "0" && value != "1")
+        return absl::InvalidArgumentError("Preview rink mini-map enable must be 0 or 1");
+      options.enabled = value == "1";
+    }
+    if (size)
+      options.size = size;
+    if (position)
+      options.position = position;
+    if ((options.size != "icon" && options.size != "compact" && options.size != "standard" &&
+         options.size != "large") ||
+        (options.position != "upper-right" && options.position != "upper-left" && options.position != "lower-left"))
+      return absl::InvalidArgumentError("Invalid preview rink mini-map size or position");
+    return options;
+  } catch (const std::exception& exception) {
+    return absl::InvalidArgumentError(std::string("Invalid preview rink mini-map settings: ") + exception.what());
+  }
+}
+
 bool ValidWebPreviewRun(const std::string& run) {
   if (run.size() != 36)
     return false;
@@ -711,7 +740,7 @@ void WebPreviewOverlayArtifactMailbox::Publish(WebPreviewOverlayArtifact artifac
   std::lock_guard<std::mutex> lock(mutex_);
   if (last_ && last_->session == artifact.session && last_->operation == artifact.operation &&
       last_->generation == artifact.generation && last_->channel == artifact.channel &&
-      last_->status == artifact.status && last_->reason == artifact.reason)
+      last_->status == artifact.status && last_->reason == artifact.reason && last_->artifact == artifact.artifact)
     return;
   last_ = artifact;
   pending_ = std::move(artifact);
@@ -728,11 +757,20 @@ std::optional<WebPreviewOverlayArtifact> WebPreviewOverlayArtifactMailbox::Take(
     uint64_t operation,
     const std::string& channel,
     const pipeline_internal::PreviewOverlayCommand& overlays) {
+  return Take(session, operation, channel, overlays.generation, overlays.selection.rink);
+}
+
+std::optional<WebPreviewOverlayArtifact> WebPreviewOverlayArtifactMailbox::Take(
+    const RouteOwner::Session& session,
+    uint64_t operation,
+    const std::string& channel,
+    uint64_t generation,
+    bool enabled) {
   std::lock_guard<std::mutex> lock(mutex_);
   std::optional<WebPreviewOverlayArtifact> artifact;
   artifact.swap(pending_);
-  if (!artifact || !overlays.selection.rink || !(artifact->session == session) ||
-      artifact->generation != overlays.generation || artifact->operation != operation || artifact->channel != channel)
+  if (!artifact || !enabled || !(artifact->session == session) || artifact->generation != generation ||
+      artifact->operation != operation || artifact->channel != channel)
     return std::nullopt;
   return artifact;
 }
@@ -741,7 +779,7 @@ std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& arti
   return Serialize([&](JsonBuilder* builder) {
     Identity(builder, artifact.session, artifact.operation, artifact.channel);
     Add(builder, "generation", std::to_string(artifact.generation));
-    Add(builder, "artifact", std::string("rink-mask"));
+    Add(builder, "artifact", artifact.artifact);
     Add(builder, "status", artifact.status);
     Add(builder, "reason", artifact.reason);
   });
@@ -765,6 +803,7 @@ std::string WebPreviewCapability(
     json_builder_end_array(builder);
     json_builder_set_member_name(builder, "overlays");
     OverlayState(builder, overlays);
+    Add(builder, "rinkMiniMapVersion", gint64{1});
     Add(builder, "width", options.width);
     Add(builder, "height", options.height);
     json_builder_set_member_name(builder, "seek");

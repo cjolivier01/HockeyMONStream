@@ -1971,6 +1971,30 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
           {web_preview_run_id_, static_cast<int>(current_stage_), inspector_topology_generation_ + 1},
           retained_web_preview_selection_,
           hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "").string()));
+  hm::preview::WebPreviewRinkMapOptions rink_options;
+  HM_ASSIGN_OR_RETURN(
+      rink_options,
+      hm::preview::ReadWebPreviewRinkMapOptions(
+          app.configurator().config(),
+          g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP"),
+          g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_SIZE"),
+          g_getenv("HSTREAM_UI_PREVIEW_RINK_MAP_POSITION")));
+  rink_map_preview_active_ = false;
+  const auto backend = hm::get_node(app.configurator().config(), "stitching.mapping_backend");
+  if (rink_options.enabled && !stitching_calibration_only_ && current_stage_ == 0) {
+    const auto prepared = backend && backend->as<std::string>() == "nona"
+        ? hm::stitching::LoadPlaybackRinkMap(
+              hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : ""),
+              [this] { return g_atomic_int_get(&cintr_) != 0; })
+        : absl::StatusOr<std::shared_ptr<const hm::stitching::PlaybackRinkMap>>(
+              absl::FailedPreconditionError("The rink mini-map requires the Hugin (nona) mapping backend."));
+    rink_map_preview_active_ = prepared.ok();
+    web_preview_->ConfigureRinkMiniMap(
+        prepared.ok() ? *prepared : nullptr,
+        hm::draw_display::RinkMiniMapPreferences(
+            rink_options.size, rink_options.position, app.config.player_analytics_config.analytics.home_is_dark),
+        prepared.ok() ? "" : prepared.status().ToString());
+  }
   return absl::OkStatus();
 }
 

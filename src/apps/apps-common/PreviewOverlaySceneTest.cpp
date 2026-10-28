@@ -1,5 +1,7 @@
 #include "hstream/src/apps/apps-common/PreviewOverlayScene.h"
 
+#include "hstream/src/libs/draw_display/RinkMiniMap.h"
+#include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
 #include <gst/gst.h>
@@ -151,6 +153,54 @@ void ExactArtifactGeometry() {
     Check(!scene::ExactPreviewDimension(dimension), "invalid canvas dimension accepted");
   }
 }
+
+void MiniMapRouteAndFrameGeometry() {
+  auto map = std::make_shared<hm::stitching::PlaybackRinkMap>();
+  map->hugin_generation = "preview-map-fixture\n";
+  map->fit.state = hm::stitching::RinkMapState::kReady;
+  map->fit.plane_to_ray = cv::Matx33d(0, -1, 19, -1, 0, -3, 0, 0, -7);
+  map->columns = map->rows = 2;
+  map->rays.assign(4, *hm::stitching::RinkPointToRay(map->fit, {0, 0}));
+  const auto generation = *hm::stitching::stitched_output_generation_id(map->hugin_generation, 0, 800, 600);
+  Frame fixture;
+  Check(preview::add_overlay_snapshot_meta(fixture.frame), "mini-map snapshot attachment");
+  Check(hm::stitching::add_stitched_output_generation_meta(fixture.frame, generation), "mini-map identity attachment");
+  const preview::PlayCropperTransform transform{800, 600, 800, 600, 0, 0, 0, 0, 0, 0, 800, 600, 400, 300, 0, true, 0};
+  Check(preview::add_playcropper_transform_meta(fixture.frame, transform), "mini-map crop attachment");
+  scene::PreviewOverlayOptions options{"program", 400, 300, 800, 600, false, false, 0, 0.3F};
+  analytics::CommandList commands;
+  hm::draw_display::RinkMiniMap program(map), stitched(map);
+  for (const char* channel : {"program", "stitched"}) {
+    options.channel = channel;
+    auto* renderer = options.channel == "program" ? &program : &stitched;
+    const auto painted = scene::BuildPreviewOverlayScene(fixture.frame, options, commands, renderer);
+    Check(
+        !painted.rink_map_unavailable_reason && commands.size() > 80 && painted.paths.empty(),
+        "Program/Stitched mini-map must draw while every other drawing layer is off");
+  }
+  options.channel = "source0";
+  scene::BuildPreviewOverlayScene(fixture.frame, options, commands, &program);
+  Check(commands.empty(), "Source route inherited mini-map commands");
+  options.channel = "stitched";
+  options.source_width = 801;
+  const auto resized = scene::BuildPreviewOverlayScene(fixture.frame, options, commands, &stitched);
+  Check(resized.rink_map_unavailable_reason && commands.empty(), "Different canvas accepted a saved mini-map");
+  options.source_width = 800;
+  Frame missing;
+  Check(hm::stitching::add_stitched_output_generation_meta(missing.frame, generation), "missing crop identity");
+  options.channel = "program";
+  const auto crop_missing = scene::BuildPreviewOverlayScene(missing.frame, options, commands, &program);
+  Check(
+      crop_missing.rink_map_unavailable_reason && commands.empty(),
+      "Mini-map retained readiness without matching Program crop metadata");
+  options.channel = "stitched";
+  Frame stale;
+  Check(hm::stitching::add_stitched_output_generation_meta(stale.frame, "another-generation"), "stale map identity");
+  const auto mismatch = scene::BuildPreviewOverlayScene(stale.frame, options, commands, &stitched);
+  Check(mismatch.rink_map_unavailable_reason && commands.empty(), "Stale calibration retained mini-map commands");
+  const auto absent = scene::BuildPreviewOverlayScene(nullptr, options, commands, &stitched);
+  Check(absent.rink_map_unavailable_reason && commands.empty(), "Absent frame retained mini-map readiness");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -159,6 +209,7 @@ int main(int argc, char** argv) {
     GeometryAndFrozenMetadata();
     MissingAndAlreadyTransformedGeometry();
     ExactArtifactGeometry();
+    MiniMapRouteAndFrameGeometry();
     std::cout << "Shared preview overlay geometry, frozen metadata, frame clearing and artifact bounds passed\n";
     return 0;
   } catch (const std::exception& error) {

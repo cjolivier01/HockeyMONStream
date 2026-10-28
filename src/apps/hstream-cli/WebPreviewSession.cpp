@@ -3,6 +3,7 @@
 #include "WebPreviewRuntime.h"
 #include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
+#include "hstream/src/libs/draw_display/RinkMiniMap.h"
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
 
@@ -62,6 +63,10 @@ struct WebPreviewSession::PaintState {
   }
   RouteOwner::Session session;
   WebPreviewOverlayArtifactMailbox artifacts;
+  WebPreviewOverlayArtifactMailbox rink_map_artifacts;
+  std::map<std::string, std::unique_ptr<draw_display::RinkMiniMap>> rink_maps;
+  bool rink_map_requested{false};
+  std::string rink_map_unavailable_reason;
   void ReportArtifact(const FrameIdentityMeta& identity, uint64_t generation, bool ready, const char* reason) {
     // The mailbox never waits on GPU or disk work and retains one status only.
     artifacts.Publish(
@@ -156,7 +161,9 @@ struct WebPreviewSession::PaintState {
         (flags & 2U) != 0,
         analytics_layers.load(std::memory_order_acquire),
         joint_confidence};
-    const auto scene = gpu_preview::BuildPreviewOverlayScene(metadata, options, commands, nullptr);
+    const auto rink_map = rink_maps.find(route->first);
+    const auto scene = gpu_preview::BuildPreviewOverlayScene(
+        metadata, options, commands, rink_map == rink_maps.end() ? nullptr : rink_map->second.get());
     EnsureMask(scene, flags);
     auto* pixels = static_cast<uint8_t*>(output.rgba) + output.video.top * output.pitch + output.video.left * 4;
     const auto result = painter.Paint(
@@ -173,6 +180,20 @@ struct WebPreviewSession::PaintState {
                                                      : "The GPU rink mask overlay is unavailable.";
       ReportArtifact(*identity, selected->generation, result.mask_drawn, reason);
     }
+    if (rink_map_requested) {
+      const char* reason = rink_map == rink_maps.end()            ? rink_map_unavailable_reason.c_str()
+          : scene.rink_map_unavailable_reason                     ? scene.rink_map_unavailable_reason
+          : result.status != gpu_preview::PreviewPaintStatus::kOk ? "The GPU rink mini-map overlay is unavailable."
+                                                                  : nullptr;
+      rink_map_artifacts.Publish(
+          {session,
+           identity->operation,
+           0,
+           identity->channel,
+           reason ? "unavailable" : "ready",
+           reason ? reason : "",
+           "rink-mini-map"});
+    }
     return result.status == gpu_preview::PreviewPaintStatus::kOk ||
         result.status == gpu_preview::PreviewPaintStatus::kOverlaySuppressed;
   }
@@ -180,6 +201,19 @@ struct WebPreviewSession::PaintState {
 
 WebPreviewSession::WebPreviewSession(AppCtx& app, WebPreviewOptions options)
     : app_(app), options_(std::move(options)), paint_(std::make_shared<PaintState>()) {}
+
+void WebPreviewSession::ConfigureRinkMiniMap(
+    std::shared_ptr<const stitching::PlaybackRinkMap> map,
+    draw_display::RinkMiniMapOptions options,
+    std::string unavailable_reason) {
+  paint_->rink_map_requested = true;
+  paint_->rink_map_unavailable_reason = std::move(unavailable_reason);
+  // Each route retains its own temporal/team state, as the two Qt sinks do.
+  // Source routes never enter the overlay painter.
+  for (const char* channel : {"program", "stitched"})
+    if (map)
+      paint_->rink_maps[channel] = std::make_unique<draw_display::RinkMiniMap>(map, options);
+}
 
 absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
     AppCtx& app,
@@ -383,6 +417,7 @@ void WebPreviewSession::RefreshOverlayStatus(const RouteOwner::Session& session)
   if (!available() || !(session == routes_.session()))
     return;
   paint_->artifacts.Replay(session);
+  paint_->rink_map_artifacts.Replay(session);
   DrainOverlayStatus();
 }
 
@@ -392,12 +427,16 @@ void WebPreviewSession::DrainOverlayStatus() {
   const auto selected = std::atomic_load(&paint_->overlays);
   const auto event =
       paint_->artifacts.Take(routes_.session(), routes_.operation_generation(), routes_.selected_channel(), *selected);
-  if (!event)
-    return;
   // Control commands and this timer run on the same main context, so an event
   // cannot overtake the complete route/selection acknowledgment that owns it.
-  g_print("HSTREAM_PREVIEW_OVERLAY_ARTIFACT %s\n", WebPreviewOverlayArtifactEvent(*event).c_str());
-  std::fflush(stdout);
+  if (event)
+    g_print("HSTREAM_PREVIEW_OVERLAY_ARTIFACT %s\n", WebPreviewOverlayArtifactEvent(*event).c_str());
+  const auto rink_map = paint_->rink_map_artifacts.Take(
+      routes_.session(), routes_.operation_generation(), routes_.selected_channel(), 0, paint_->rink_map_requested);
+  if (rink_map)
+    g_print("HSTREAM_PREVIEW_OVERLAY_ARTIFACT %s\n", WebPreviewOverlayArtifactEvent(*rink_map).c_str());
+  if (event || rink_map)
+    std::fflush(stdout);
 }
 
 absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_overlays) {

@@ -60,6 +60,29 @@ Focused checks: `QT_QPA_PLATFORM=offscreen HSTREAM_UI_TEST_PATHS_ONLY=1
 bazel-bin/src/apps/hstream-ui/hstream_ui_test` covers root switching and
 persistence, environment precedence, and multi-file selection/import/reopening.
 
+For a genuinely fresh Calibration workflow, run the built `hstream_ui_test`
+directly with `HSTREAM_UI_E2E_CALIBRATION_COMPLETION_ONLY=1`,
+`HSTREAM_UI_E2E_FRESH_CALIBRATION=1` and
+`HSTREAM_UI_E2E_RUN_MODE=stitch-calibration`. Supply a new game ID through
+`HSTREAM_UI_E2E_GAME_ID`, a private game root through `HM_GAME_DIR`, original
+recording paths through `HSTREAM_UI_E2E_FRESH_LEFT` and
+`HSTREAM_UI_E2E_FRESH_RIGHT`, an explicit `HSTREAM_UI_E2E_REFERENCE_MS` and a new
+`HSTREAM_UI_E2E_ARTIFACT_DIR`. The test imports through the Left/Right controls,
+retains baseline sampling, performs Skip leveling and Full canvas/Use crop,
+checks the native rendered preview and requires ordinary Stop with process
+retirement. It records controls, rendered dialogs, configuration and logs.
+
+Run `HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY=1` against the genuinely completed
+game to check forward/backward seeking and two queued +10-second clicks during
+Pause, followed by one seek on Resume and normal Stop. A recreated source graph
+restarts its local frame PTS at zero: check direction on the acknowledged global
+playback position, and advancing presented frames within each local epoch.
+Both cases reject `HSTREAM_UI_E2E_PREPARE_GAME`; the archive wrapper's synthetic
+fixture preparation cannot establish calibration workflow behavior. Keep the
+CLI, UI and plugins from the same build and route test audio to an explicitly
+owned virtual sink. HockeyMONWeb's matching fresh and saved Calibration tests
+check authenticated adoption and actual decoded browser frames.
+
 The UI acceptance test exercises the same Qt button handlers as an operator:
 
 1. load the selected game;

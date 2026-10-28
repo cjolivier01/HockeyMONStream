@@ -5957,8 +5957,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   connect(rink_map_button_, &QPushButton::clicked, this, [this] { selectRinkMap(); });
   rink_map_preview_check_ = new QCheckBox("Show rink mini-map during playback");
   rink_map_preview_check_->setObjectName("showRinkMiniMapCheck");
+  const auto rink_map_preview_defaults = baseline_config_["hstream_ui"]["preview_rink_map"];
   rink_map_preview_check_->setChecked(
-      QSettings(ui_settings_path(), QSettings::IniFormat).value("preview/rink-map", true).toBool());
+      QSettings(ui_settings_path(), QSettings::IniFormat)
+          .value("preview/rink-map", rink_map_preview_defaults["enable"].as<bool>())
+          .toBool());
   rink_map_preview_check_->setToolTip(
       "Applies on the next playback. Requires a saved, reviewed rink map and tracked players. "
       "Shows player dots in their detection-box colours and recognized jersey numbers in the Program and Stitched previews. "
@@ -5980,7 +5983,9 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   rink_map_position_combo_->addItem("Upper left", "upper-left");
   for (const auto& option : {std::pair{rink_map_size_combo_, "size"}, {rink_map_position_combo_, "position"}}) {
     const QString key = QString("preview/rink-map-%1").arg(option.second);
-    const QString fallback = option.first == rink_map_size_combo_ ? "standard" : "upper-right";
+    const QString fallback = QString::fromStdString(rink_map_preview_defaults[option.second].as<std::string>());
+    if (option.first->findData(fallback) < 0)
+      throw std::runtime_error("Invalid baseline preview rink mini-map preference");
     const auto value = QSettings(ui_settings_path(), QSettings::IniFormat).value(key, fallback).toString();
     set_combo_to_data(option.first, option.first->findData(value) >= 0 ? value : fallback);
     option.first->setToolTip("Applies on the next playback. Changes only the desktop mini-map display.");

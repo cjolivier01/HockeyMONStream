@@ -39,6 +39,25 @@ int main() {
       !hm::pipeline_internal::ReadPreviewOverlaySelection(explicit_defaults).ok(),
       "Shared overlay reader supplied an independent default");
   auto configured = hm::preview::ReadWebPreviewOptions(baseline);
+  const auto rink_defaults = hm::preview::ReadWebPreviewRinkMapOptions(baseline, nullptr, nullptr, nullptr);
+  Check(
+      rink_defaults.ok() && rink_defaults->enabled == baseline["hstream_ui"]["preview_rink_map"]["enable"].as<bool>() &&
+          rink_defaults->size == baseline["hstream_ui"]["preview_rink_map"]["size"].as<std::string>() &&
+          rink_defaults->position == baseline["hstream_ui"]["preview_rink_map"]["position"].as<std::string>(),
+      "Mini-map preferences lost required baseline defaults");
+  for (const char* size : {"icon", "compact", "standard", "large"})
+    for (const char* position : {"upper-right", "upper-left", "lower-left"}) {
+      const auto selected = hm::preview::ReadWebPreviewRinkMapOptions(baseline, "0", size, position);
+      Check(
+          selected.ok() && !selected->enabled && selected->size == size && selected->position == position,
+          "Admitted mini-map preferences lost an explicit selection");
+    }
+  Check(
+      !hm::preview::ReadWebPreviewRinkMapOptions(baseline, "true", nullptr, nullptr).ok() &&
+          !hm::preview::ReadWebPreviewRinkMapOptions(baseline, nullptr, "huge", nullptr).ok() &&
+          !hm::preview::ReadWebPreviewRinkMapOptions(baseline, nullptr, nullptr, "lower-right").ok() &&
+          !hm::preview::ReadWebPreviewRinkMapOptions(YAML::Node(), "1", "icon", "upper-left").ok(),
+      "Malformed or missing mini-map configuration was accepted");
   Check(configured.ok(), "Canonical preview baseline was rejected");
   auto changed = YAML::Clone(baseline);
   changed["preview_reference"]["program_width"] = 1440;
@@ -194,6 +213,7 @@ int main() {
   auto* limits = json_object_get_object_member(object, "receiptLimits");
   Check(
       json_object_get_int_member(limits, "maxFrames") == 23 && !json_object_get_boolean_member(object, "seek") &&
+          json_object_get_int_member(object, "rinkMiniMapVersion") == 1 &&
           std::string(json_object_get_string_member(object, "channel")) == "source127",
       "Capability did not reflect resolved limits and active route");
   const auto seek_capability = hm::preview::WebPreviewCapability(
@@ -463,5 +483,31 @@ int main() {
   Check(take()->status == "ready", "Recovery did not replace unavailable mask status");
   mailbox.Replay(overlay->session);
   Check(take()->status == "ready", "Query replayed an older unavailable status");
+  // The next-Play mini-map is independent of the live mask checkbox and epoch,
+  // while retaining the same exact session/route fences and bounded mailbox.
+  hm::preview::WebPreviewOverlayArtifactMailbox mini_map;
+  const hm::preview::WebPreviewOverlayArtifact mini_ready{
+      overlay->session, 2, 0, "stitched", "ready", "", "rink-mini-map"};
+  mini_map.Publish(mini_ready);
+  const auto mini_event = mini_map.Take(overlay->session, 2, "stitched", 0, true);
+  Check(
+      mini_event && mini_event->artifact == "rink-mini-map" &&
+          hm::preview::WebPreviewOverlayArtifactEvent(*mini_event).find("\"artifact\":\"rink-mini-map\"") !=
+              std::string::npos,
+      "Mini-map status became a mask status");
+  for (const auto& candidate : {overlay->session, retired_session}) {
+    mini_map.Replay(overlay->session);
+    Check(!mini_map.Take(candidate, 3, "stitched", 0, true), "A new operation admitted an old mini-map frame");
+  }
+  mini_map.Replay(overlay->session);
+  Check(!mini_map.Take(retired_session, 2, "stitched", 0, true), "Retired session exposed a mini-map frame");
+  mini_map.Replay(overlay->session);
+  Check(!mini_map.Take(overlay->session, 2, "program", 0, true), "New channel exposed a mini-map frame");
+  mini_map.Replay(overlay->session);
+  Check(!mini_map.Take(overlay->session, 2, "stitched", 0, false), "Disabled mini-map exposed a frame");
+  mini_map.Replay(overlay->session);
+  Check(!mini_map.Take(overlay->session, 2, "stitched", 1, true), "Mini-map accepted a mutable overlay epoch");
+  mini_map.Replay(overlay->session);
+  Check(mini_map.Take(overlay->session, 2, "stitched", 0, true).has_value(), "Mini-map query replay lost readiness");
   return 0;
 }
