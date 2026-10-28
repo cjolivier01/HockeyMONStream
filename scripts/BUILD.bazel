@@ -171,6 +171,18 @@ sh_test(
     ],
 )
 
+sh_test(
+    name = "publish_release_test",
+    size = "small",
+    srcs = ["publish_release_test.sh"],
+    data = [
+        "publish_release.sh",
+        # Read directly: the test pins the Windows installer's hard-coded
+        # Ubuntu 24.04 package name to the ubuntu24 exclusion rule.
+        "//packaging/windows:hstream-wsl.ps1",
+    ],
+)
+
 py_test(
     name = "find_obsolete_mp4s_test",
     imports = ["."],

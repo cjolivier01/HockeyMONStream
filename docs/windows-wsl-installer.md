@@ -104,6 +104,22 @@ Authorities store and, where publisher policy requires it, Trusted Publishers.
 Private-signing releases also prepend a prominent warning to the generated
 GitHub release notes.
 
+## Releasing without every platform
+
+`make publish EXCLUDE=jetson` publishes a release without the Jetson package,
+for when that hardware or its toolchain is unavailable. `EXCLUDE` takes a
+comma- or space-separated list of `ubuntu24`, `ubuntu26`, `jetson`, and
+`windows`; `make publish-dry-run EXCLUDE=...` shows the reduced artifact list
+first. An excluded platform's tools are not required, so `EXCLUDE=windows`
+publishes without NSIS, `osslsigncode`, or the signing certificate, and
+excluding `jetson` also drops the Hugin and VIGRA corresponding-source
+archives, which accompany only the Jetson binaries. The release notes name the
+missing targets so the gap does not read as a failed upload.
+
+The Windows installer downloads `hstream_<tag>_ubuntu24.04_amd64.deb` from its
+own release, so `EXCLUDE=ubuntu24` is rejected unless `windows` is excluded
+too.
+
 ## Runtime requirements
 
 - Windows 11 with hardware virtualization and WSL 2 support.

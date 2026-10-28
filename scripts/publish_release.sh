@@ -7,24 +7,112 @@ set -euo pipefail
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=0
 
+EXCLUDE_SPEC=""
+
 usage() {
   cat <<'USAGE'
-Usage: scripts/publish_release.sh [--dry-run]
+Usage: scripts/publish_release.sh [--dry-run] [--exclude=PLATFORMS]
 
-Builds Ubuntu 24.04 amd64, Ubuntu 26.04 amd64, and Jetson Ubuntu 22.04
-arm64 packages. The first release is v0.1.0; later releases increment the
+Builds Ubuntu 24.04 amd64, Ubuntu 26.04 amd64, Jetson Ubuntu 22.04 arm64, and
+Windows WSL packages. The first release is v0.1.0; later releases increment the
 patch component of the highest existing strict vMAJOR.MINOR.PATCH tag.
+
+--exclude takes a comma- or space-separated list of platforms to leave out of
+the release, for building a release when one target's hardware or toolchain is
+unavailable. Supported names are ubuntu24, ubuntu26, jetson, and windows; the
+option can be repeated. Excluding jetson also drops the Hugin and VIGRA
+corresponding-source archives, which accompany only the Jetson package.
 USAGE
 }
+
+# Build order, which is also the order artifacts are listed and staged.
+RELEASE_PLATFORMS=(ubuntu24 ubuntu26 jetson windows)
+
+platform_label() {
+  case "$1" in
+    ubuntu24) printf 'Ubuntu 24.04 amd64\n' ;;
+    ubuntu26) printf 'Ubuntu 26.04 amd64\n' ;;
+    jetson) printf 'NVIDIA Jetson Ubuntu 22.04 arm64\n' ;;
+    windows) printf 'Windows 11 WSL installer\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+canonical_platform() {
+  case "$1" in
+    ubuntu24|ubuntu24.04) printf 'ubuntu24\n' ;;
+    ubuntu26|ubuntu26.04) printf 'ubuntu26\n' ;;
+    jetson) printf 'jetson\n' ;;
+    windows) printf 'windows\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Prints the platforms to publish, one per line, in RELEASE_PLATFORMS order.
+resolve_release_platforms() {
+  local excluded_spec="$1"
+  local -a tokens=() included=()
+  local -A excluded=()
+  local token canonical platform
+  IFS=', ' read -r -a tokens <<< "${excluded_spec}"
+  for token in ${tokens[@]+"${tokens[@]}"}; do
+    [[ -n "${token}" ]] || continue
+    if ! canonical="$(canonical_platform "${token}")"; then
+      echo "ERROR: unknown release platform: ${token}" >&2
+      echo "Supported platforms: ${RELEASE_PLATFORMS[*]}" >&2
+      return 1
+    fi
+    excluded["${canonical}"]=1
+  done
+  for platform in "${RELEASE_PLATFORMS[@]}"; do
+    [[ -n "${excluded[${platform}]:-}" ]] || included+=("${platform}")
+  done
+  if [[ "${#included[@]}" -eq 0 ]]; then
+    echo "ERROR: every platform was excluded, so the release would contain no packages." >&2
+    return 1
+  fi
+  # The Windows bootstrapper downloads hstream_<tag>_ubuntu24.04_amd64.deb from
+  # its own release by name, so publishing it without that package ships an
+  # installer that cannot complete.
+  if [[ -n "${excluded[ubuntu24]:-}" && -z "${excluded[windows]:-}" ]]; then
+    echo "ERROR: the Windows installer downloads this release's Ubuntu 24.04 amd64 package," >&2
+    echo "so excluding ubuntu24 also requires excluding windows." >&2
+    return 1
+  fi
+  printf '%s\n' "${included[@]}"
+}
+
+# Let the test source the platform selection without running a release.
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  return 0
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
+    --exclude=*) EXCLUDE_SPEC+=" ${1#--exclude=}" ;;
+    --exclude)
+      if [[ $# -lt 2 ]]; then
+        echo "ERROR: --exclude requires a platform list." >&2
+        usage >&2
+        exit 2
+      fi
+      EXCLUDE_SPEC+=" $2"
+      shift
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ERROR: unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
+
+included_platform_list="$(resolve_release_platforms "${EXCLUDE_SPEC}")" || exit 2
+mapfile -t included_platforms <<< "${included_platform_list}"
+
+publishing() {
+  local platform="$1"
+  [[ " ${included_platforms[*]} " == *" ${platform} "* ]]
+}
 
 if ! command -v git >/dev/null 2>&1; then
   echo "ERROR: required command not found: git" >&2
@@ -108,16 +196,27 @@ source_revision="$(git rev-parse HEAD)"
 remote_revision="$(git rev-parse "refs/remotes/origin/${default_branch}")"
 release_dir="${TOPDIR}/dist/releases/${release_tag}"
 
+excluded_labels=()
+for platform in "${RELEASE_PLATFORMS[@]}"; do
+  publishing "${platform}" || excluded_labels+=("$(platform_label "${platform}")")
+done
+
 echo "Next release: ${release_tag}"
 echo "Source commit: ${source_revision}"
+if [[ "${#excluded_labels[@]}" -gt 0 ]]; then
+  echo "Excluded platforms:"
+  printf '  %s\n' "${excluded_labels[@]}"
+fi
 echo "Artifacts:"
-echo "  hstream_${release_tag}_ubuntu24.04_amd64.deb"
-echo "  hstream_${release_tag}_ubuntu26.04_amd64.deb"
-echo "  hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
-echo "  hugin_2022.0.0+dfsg.orig.tar.xz"
-echo "  libvigraimpex_1.11.1+dfsg.orig.tar.xz"
-echo "  hstream_${release_tag}_jetson-hugin-build.sh"
-echo "  hstream_${release_tag}_windows-wsl-setup.exe"
+publishing ubuntu24 && echo "  hstream_${release_tag}_ubuntu24.04_amd64.deb"
+publishing ubuntu26 && echo "  hstream_${release_tag}_ubuntu26.04_amd64.deb"
+if publishing jetson; then
+  echo "  hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
+  echo "  hugin_2022.0.0+dfsg.orig.tar.xz"
+  echo "  libvigraimpex_1.11.1+dfsg.orig.tar.xz"
+  echo "  hstream_${release_tag}_jetson-hugin-build.sh"
+fi
+publishing windows && echo "  hstream_${release_tag}_windows-wsl-setup.exe"
 echo "  install-hstream-deb.sh"
 echo "  SHA256SUMS"
 
@@ -126,19 +225,30 @@ if [[ "${DRY_RUN}" -eq 1 ]]; then
   exit 0
 fi
 
-for command_name in gh make dpkg-deb sha256sum makensis rsvg-convert icotool file osslsigncode; do
+# Only require the toolchain the selected platforms actually build with, so an
+# excluded target's tools are not needed to publish the rest.
+required_commands=(gh make sha256sum)
+if publishing ubuntu24 || publishing ubuntu26 || publishing jetson; then
+  required_commands+=(dpkg-deb)
+fi
+if publishing windows; then
+  required_commands+=(makensis rsvg-convert icotool file osslsigncode)
+fi
+for command_name in "${required_commands[@]}"; do
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "ERROR: required release build command not found: ${command_name}" >&2
     exit 1
   fi
 done
-if [[ ! -f "${WINDOWS_SIGNING_PKCS12:-}" || ! -f "${WINDOWS_SIGNING_PASSWORD_FILE:-}" ]]; then
-  echo "ERROR: release publication requires WINDOWS_SIGNING_PKCS12 and WINDOWS_SIGNING_PASSWORD_FILE." >&2
-  exit 1
-fi
-if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" && ! -f "${WINDOWS_SIGNING_CA_FILE}" ]]; then
-  echo "ERROR: WINDOWS_SIGNING_CA_FILE must name a readable PEM certificate file." >&2
-  exit 1
+if publishing windows; then
+  if [[ ! -f "${WINDOWS_SIGNING_PKCS12:-}" || ! -f "${WINDOWS_SIGNING_PASSWORD_FILE:-}" ]]; then
+    echo "ERROR: publishing the Windows installer requires WINDOWS_SIGNING_PKCS12 and WINDOWS_SIGNING_PASSWORD_FILE." >&2
+    exit 1
+  fi
+  if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" && ! -f "${WINDOWS_SIGNING_CA_FILE}" ]]; then
+    echo "ERROR: WINDOWS_SIGNING_CA_FILE must name a readable PEM certificate file." >&2
+    exit 1
+  fi
 fi
 if ! gh auth status >/dev/null 2>&1; then
   echo "ERROR: GitHub CLI is not authenticated. Run 'gh auth login' first." >&2
@@ -179,19 +289,34 @@ if [[ -e "${release_dir}" ]]; then
 fi
 
 build_dir="${release_dir}/build"
-mkdir -p "${build_dir}/ubuntu24.04" "${build_dir}/ubuntu26.04" "${build_dir}/jetson"
+mkdir -p "${release_dir}"
 
-make deb-ubuntu24 PACKAGE_VERSION="${release_tag}" DEB_OUTPUT_DIR="${build_dir}/ubuntu24.04"
-make deb-ubuntu26 PACKAGE_VERSION="${release_tag}" DEB_OUTPUT_DIR="${build_dir}/ubuntu26.04"
-make deb-jetson PACKAGE_VERSION="${release_tag}" JETSON_DEB_OUTPUT_DIR="${build_dir}/jetson"
-make windows-installer \
-  WINDOWS_INSTALLER_VERSION="${release_tag}" \
-  WINDOWS_INSTALLER_OUTPUT_DIR="${build_dir}/windows" \
-  WINDOWS_INSTALLER_REPOSITORY="${repository}" \
-  WINDOWS_SIGNING_PKCS12="${WINDOWS_SIGNING_PKCS12}" \
-  WINDOWS_SIGNING_PASSWORD_FILE="${WINDOWS_SIGNING_PASSWORD_FILE}" \
-  WINDOWS_SIGNING_CA_FILE="${WINDOWS_SIGNING_CA_FILE:-}" \
-  WINDOWS_SIGNING_TIMESTAMP_URL="${WINDOWS_SIGNING_TIMESTAMP_URL:-http://timestamp.digicert.com}"
+if publishing ubuntu24; then
+  mkdir -p "${build_dir}/ubuntu24.04"
+  make deb-ubuntu24 PACKAGE_VERSION="${release_tag}" DEB_OUTPUT_DIR="${build_dir}/ubuntu24.04"
+fi
+if publishing ubuntu26; then
+  mkdir -p "${build_dir}/ubuntu26.04"
+  make deb-ubuntu26 PACKAGE_VERSION="${release_tag}" DEB_OUTPUT_DIR="${build_dir}/ubuntu26.04"
+fi
+if publishing jetson; then
+  mkdir -p "${build_dir}/jetson"
+  make deb-jetson PACKAGE_VERSION="${release_tag}" JETSON_DEB_OUTPUT_DIR="${build_dir}/jetson"
+fi
+if publishing windows; then
+  make windows-installer \
+    WINDOWS_INSTALLER_VERSION="${release_tag}" \
+    WINDOWS_INSTALLER_OUTPUT_DIR="${build_dir}/windows" \
+    WINDOWS_INSTALLER_REPOSITORY="${repository}" \
+    WINDOWS_SIGNING_PKCS12="${WINDOWS_SIGNING_PKCS12}" \
+    WINDOWS_SIGNING_PASSWORD_FILE="${WINDOWS_SIGNING_PASSWORD_FILE}" \
+    WINDOWS_SIGNING_CA_FILE="${WINDOWS_SIGNING_CA_FILE:-}" \
+    WINDOWS_SIGNING_TIMESTAMP_URL="${WINDOWS_SIGNING_TIMESTAMP_URL:-http://timestamp.digicert.com}"
+fi
+
+# Names of the staged assets, in publication order. Globbing the staging
+# directory would break as soon as a platform drops a whole file class.
+staged_assets=()
 
 validate_and_stage_deb() {
   local source_path="$1"
@@ -220,52 +345,71 @@ validate_and_stage_deb() {
     exit 1
   fi
   install -m 0644 "${source_path}" "${release_dir}/${published_name}"
+  staged_assets+=("${published_name}")
 }
 
-validate_and_stage_deb \
-  "${build_dir}/ubuntu24.04/hstream_${package_version}_amd64.deb" \
-  amd64 24.04 desktop "hstream_${release_tag}_ubuntu24.04_amd64.deb"
-validate_and_stage_deb \
-  "${build_dir}/ubuntu26.04/hstream_${package_version}_amd64.deb" \
-  amd64 26.04 desktop "hstream_${release_tag}_ubuntu26.04_amd64.deb"
-validate_and_stage_deb \
-  "${build_dir}/jetson/hstream_${package_version}_arm64.deb" \
-  arm64 22.04 jetson "hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
-windows_installer="${build_dir}/windows/hstream_${release_tag}_windows-wsl-setup.exe"
-if [[ ! -f "${windows_installer}" ]] ||
-   [[ "$(file -Lb "${windows_installer}")" != *"PE32 executable"* ]]; then
-  echo "ERROR: expected Windows WSL bootstrapper was not created: ${windows_installer}" >&2
-  exit 1
+if publishing ubuntu24; then
+  validate_and_stage_deb \
+    "${build_dir}/ubuntu24.04/hstream_${package_version}_amd64.deb" \
+    amd64 24.04 desktop "hstream_${release_tag}_ubuntu24.04_amd64.deb"
 fi
-windows_verify_args=(-in "${windows_installer}")
-if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
-  windows_verify_args=(-CAfile "${WINDOWS_SIGNING_CA_FILE}" "${windows_verify_args[@]}")
+if publishing ubuntu26; then
+  validate_and_stage_deb \
+    "${build_dir}/ubuntu26.04/hstream_${package_version}_amd64.deb" \
+    amd64 26.04 desktop "hstream_${release_tag}_ubuntu26.04_amd64.deb"
 fi
-if ! osslsigncode verify "${windows_verify_args[@]}"; then
-  echo "ERROR: Windows WSL bootstrapper is not validly Authenticode-signed: ${windows_installer}" >&2
-  exit 1
+if publishing jetson; then
+  validate_and_stage_deb \
+    "${build_dir}/jetson/hstream_${package_version}_arm64.deb" \
+    arm64 22.04 jetson "hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
 fi
-install -m 0755 "${windows_installer}" \
-  "${release_dir}/hstream_${release_tag}_windows-wsl-setup.exe"
+if publishing windows; then
+  windows_installer="${build_dir}/windows/hstream_${release_tag}_windows-wsl-setup.exe"
+  if [[ ! -f "${windows_installer}" ]] ||
+     [[ "$(file -Lb "${windows_installer}")" != *"PE32 executable"* ]]; then
+    echo "ERROR: expected Windows WSL bootstrapper was not created: ${windows_installer}" >&2
+    exit 1
+  fi
+  windows_verify_args=(-in "${windows_installer}")
+  if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
+    windows_verify_args=(-CAfile "${WINDOWS_SIGNING_CA_FILE}" "${windows_verify_args[@]}")
+  fi
+  if ! osslsigncode verify "${windows_verify_args[@]}"; then
+    echo "ERROR: Windows WSL bootstrapper is not validly Authenticode-signed: ${windows_installer}" >&2
+    exit 1
+  fi
+  install -m 0755 "${windows_installer}" \
+    "${release_dir}/hstream_${release_tag}_windows-wsl-setup.exe"
+  staged_assets+=("hstream_${release_tag}_windows-wsl-setup.exe")
+fi
 
 # Publish the exact desktop dependency installer from this tag. It validates
 # the local DeepStream and HStream packages and handles Ubuntu compatibility.
 desktop_installer_asset="${release_dir}/install-hstream-deb.sh"
 git show "${source_revision}:scripts/install_deb.sh" > "${desktop_installer_asset}"
 chmod 0755 "${desktop_installer_asset}"
+staged_assets+=("install-hstream-deb.sh")
 
 # The Jetson package redistributes GPLv2 Hugin binaries. Accompany them with
 # the exact verified corresponding-source archive and the build-control script
 # used by this tag. VIGRA's verified source is included as well so the complete
-# native calibration toolchain can be reconstructed from release assets.
-hugin_build_script_asset="${release_dir}/hstream_${release_tag}_jetson-hugin-build.sh"
-git show "${source_revision}:scripts/build_hugin_tools_jetson.sh" > "${hugin_build_script_asset}"
-chmod 0755 "${hugin_build_script_asset}"
-"${hugin_build_script_asset}" --export-sources="${release_dir}"
+# native calibration toolchain can be reconstructed from release assets. A
+# release without the Jetson package distributes no Hugin binary, so it carries
+# no corresponding source either.
+if publishing jetson; then
+  hugin_build_script_asset="${release_dir}/hstream_${release_tag}_jetson-hugin-build.sh"
+  git show "${source_revision}:scripts/build_hugin_tools_jetson.sh" > "${hugin_build_script_asset}"
+  chmod 0755 "${hugin_build_script_asset}"
+  "${hugin_build_script_asset}" --export-sources="${release_dir}"
+  staged_assets+=("hstream_${release_tag}_jetson-hugin-build.sh")
+  for exported_source in "${release_dir}"/*.tar.xz; do
+    staged_assets+=("$(basename "${exported_source}")")
+  done
+fi
 
 (
   cd "${release_dir}"
-  sha256sum ./*.deb ./*.exe ./*.tar.xz ./*.sh > SHA256SUMS
+  sha256sum "${staged_assets[@]/#/./}" > SHA256SUMS
 )
 
 # Recheck after the long builds so a concurrent publisher cannot claim the
@@ -289,15 +433,18 @@ if ! git push origin "refs/tags/${release_tag}"; then
   exit 1
 fi
 
-release_assets=(
-  "${release_dir}"/*.deb
-  "${release_dir}"/*.exe
-  "${release_dir}"/*.tar.xz
-  "${release_dir}"/*.sh
-  "${release_dir}/SHA256SUMS"
-)
+release_assets=("${staged_assets[@]/#/${release_dir}/}" "${release_dir}/SHA256SUMS")
 release_notes=$'HockeyMONStream is source-available software for stitching two sports-camera videos, automatically tracking the play, and producing a virtual pan-and-zoom program view. It runs without a HockeyMONStream subscription fee on supported NVIDIA GPU hardware. The repository has mixed file-level licensing.\n\n[Product overview](https://cjolivier01.github.io/HockeyMONStream/) · [Installation guide](https://cjolivier01.github.io/HockeyMONStream/install.html) · [Source and licensing](https://github.com/cjolivier01/HockeyMONStream)'
-if [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
+# A reader cannot tell a deliberately reduced matrix from a broken upload, so
+# name the missing targets instead of leaving a gap in the asset list.
+if [[ "${#excluded_labels[@]}" -gt 0 ]]; then
+  release_notes+=$'\n\n## Platforms not in this release\n\n> [!NOTE]\n'
+  release_notes+='> This release does not include packages for '
+  printf -v excluded_sentence '%s, ' "${excluded_labels[@]}"
+  release_notes+="${excluded_sentence%, }"
+  release_notes+=$'. Use the most recent release that lists those assets.'
+fi
+if publishing windows && [[ -n "${WINDOWS_SIGNING_CA_FILE:-}" ]]; then
   private_release_warning=$'## Windows installer trust\n\n> [!WARNING]\n'
   private_release_warning+=$'> The Windows installer in this release uses a private/self-signed publisher certificate. '
   private_release_warning+=$'Windows will report an unknown publisher unless that certificate is explicitly trusted on '
