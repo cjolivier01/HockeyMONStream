@@ -122,8 +122,9 @@ int main(int argc, char** argv) {
           contains(publisher, "hugin_2022.0.0+dfsg.orig.tar.xz") && contains(publisher, "10#${patch}") &&
           contains(publisher, "(0|[1-9][0-9]*)") && contains(publisher, "windows-wsl-setup.exe") &&
           contains(publisher, "staged_assets+=(\"hstream_${release_tag}_windows-wsl-setup.exe\")") &&
-          contains(publisher, "prefix_each ./ \"${staged_assets[@]}\"") &&
-          contains(publisher, "prefix_each \"${release_dir}/\" \"${staged_assets[@]}\"") &&
+          contains(publisher, "checksum_names+=(\"./${asset}\")") &&
+          contains(publisher, "release_assets+=(\"${release_dir}/${asset}\")") &&
+          contains(publisher, "sha256sum \"${checksum_names[@]}\"") &&
           !contains(publisher, "sha256sum ./*") && !contains(publisher, "\"${release_dir}\"/*.deb") &&
           !contains(publisher, "\"${release_dir}\"/*.exe") && !contains(publisher, "\"${release_dir}\"/*.sh") &&
           contains(publisher, "WINDOWS_INSTALLER_REPOSITORY=\"${repository}\"") &&

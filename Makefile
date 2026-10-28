@@ -202,11 +202,17 @@ undeploy:
 	fi
 	NODES="$(NODES)" scripts/deploy.sh --undeploy
 
+# EXCLUDE reaches the script through the environment, not the recipe text, so
+# the shell never evaluates an operator's value: as a command-line argument,
+# EXCLUDE='x`cmd`' would run cmd and EXCLUDE='jetson" --help "' would inject a
+# second option.
+publish: export HSTREAM_RELEASE_EXCLUDE = $(EXCLUDE)
 publish:
-	scripts/publish_release.sh $(if $(strip $(EXCLUDE)),--exclude="$(strip $(EXCLUDE))",)
+	scripts/publish_release.sh
 
+publish-dry-run: export HSTREAM_RELEASE_EXCLUDE = $(EXCLUDE)
 publish-dry-run:
-	scripts/publish_release.sh --dry-run $(if $(strip $(EXCLUDE)),--exclude="$(strip $(EXCLUDE))",)
+	scripts/publish_release.sh --dry-run
 
 delete-release:
 	@if [ -z "$(or $(RELEASE_TAG),$(VERSION))" ]; then \

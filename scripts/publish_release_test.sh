@@ -71,22 +71,14 @@ for platform in "${RELEASE_PLATFORMS[@]}"; do
     || fail "no release-notes label for platform '${platform}'"
 done
 
-# SHA256SUMS and the upload list are built from these names. Since bash 5.2
-# enabled patsub_replacement, "${names[@]/#/${prefix}}" eats an unquoted & in
-# the prefix, so a checkout under /srv/r&d would upload paths that do not
-# exist -- and only after the release tag had already been pushed.
-expect_equal "$(prefix_each ./ a.deb b.exe | tr '\n' ' ')" "./a.deb ./b.exe " \
-  "checksum names are prefixed with ./"
-expect_equal "$(prefix_each "/srv/r&d/rel/" a.deb | tr '\n' ' ')" "/srv/r&d/rel/a.deb " \
-  "an ampersand in the staging path survives"
-expect_equal "$(prefix_each "/srv/rel/" "hstream_v1.2.3_ubuntu24.04_amd64.deb" | tr '\n' ' ')" \
-  "/srv/rel/hstream_v1.2.3_ubuntu24.04_amd64.deb " "upload paths join the staging directory"
-expect_equal "$(prefix_each ./ | wc -l)" "0" "no assets prefixes nothing"
-
-# Stage the assets of a Jetson-excluded release the way the publisher does and
-# check that what it hashes is exactly what it uploads, with no stray glob.
-staging="$(mktemp -d)"
+# Stage a Jetson-excluded release the way the publisher does and check that
+# what it hashes is exactly what it uploads, with no stray glob. The staging
+# directory carries an ampersand on purpose: "${staged_assets[@]/#/${dir}/}"
+# would drop it under bash 5.2's patsub_replacement and name files that do not
+# exist, and only after the release tag had already been pushed.
+staging="$(mktemp -d "${TEST_TMPDIR:-/tmp}/publish-r&d-XXXXXX")"
 trap 'rm -rf "${staging}"' EXIT
+[[ "${staging}" == *"r&d"* ]] || fail "the staging path lost its ampersand before the test ran"
 staged_assets=(
   "hstream_v1.2.3_ubuntu24.04_amd64.deb"
   "hstream_v1.2.3_ubuntu26.04_amd64.deb"
@@ -96,20 +88,37 @@ staged_assets=(
 for asset in "${staged_assets[@]}"; do
   printf 'contents of %s\n' "${asset}" > "${staging}/${asset}"
 done
-mapfile -t checksum_names < <(prefix_each ./ "${staged_assets[@]}")
+
+# These two loops are the publisher's, verbatim.
+checksum_names=()
+for asset in "${staged_assets[@]}"; do
+  checksum_names+=("./${asset}")
+done
+release_assets=()
+for asset in "${staged_assets[@]}"; do
+  release_assets+=("${staging}/${asset}")
+done
+release_assets+=("${staging}/SHA256SUMS")
+
 (cd "${staging}" && sha256sum "${checksum_names[@]}" > SHA256SUMS)
 (cd "${staging}" && sha256sum --check --status SHA256SUMS) \
   || fail "the staged checksum file does not verify"
 expect_equal "$(wc -l < "${staging}/SHA256SUMS")" "${#staged_assets[@]}" \
   "every staged asset is hashed exactly once"
-grep -q '[*]' "${staging}/SHA256SUMS" \
-  && fail "an unexpanded glob reached SHA256SUMS"
-mapfile -t release_assets < <(prefix_each "${staging}/" "${staged_assets[@]}")
-release_assets+=("${staging}/SHA256SUMS")
+if grep -q '[*]' "${staging}/SHA256SUMS"; then
+  fail "an unexpanded glob reached SHA256SUMS"
+fi
 for asset in "${release_assets[@]}"; do
   [[ -f "${asset}" ]] || fail "upload list names a file that does not exist: ${asset}"
 done
 expect_equal "${#release_assets[@]}" "$((${#staged_assets[@]} + 1))" \
   "the upload list is the staged assets plus SHA256SUMS"
+
+# Every name in SHA256SUMS must be uploaded, so a consumer can verify what it
+# downloaded against the entry that describes it.
+while read -r _ checksum_name; do
+  [[ -f "${staging}/${checksum_name#./}" ]] \
+    || fail "SHA256SUMS names a file that is not staged: ${checksum_name}"
+done < "${staging}/SHA256SUMS"
 
 echo "PASS"
