@@ -3,6 +3,16 @@
 ## Skills
 - Some skill scan be found in the files and dirs under the 'skills' dir
 
+## Worktrees
+- Start new work in a Git worktree that is a sibling of this checkout, never inside it: `git worktree add -b <task> ../hstream-<task>`. Do not put a worktree under the repository root, including `.claude/worktrees/`.
+- If this checkout is already a worktree, keep the work here rather than nesting another one. Check with `[ "$(git rev-parse --git-dir)" != "$(git rev-parse --git-common-dir)" ]`.
+- Leave the primary checkout (usually on `master`) unmodified; use it to fetch, compare revisions and review. An explicit instruction to work elsewhere wins.
+- A worktree under the repository root carries its own `BUILD.bazel` files, so `//...` expands into it and the build fails on targets that belong to another checkout. `.bazelignore` excludes `.claude` for this reason; a worktree anywhere else under the root would still break `bazelisk build //...`.
+- Sibling placement also keeps the relative peer paths in this file, such as `../HockeyMOMWeb`, resolvable from inside the worktree.
+- Bazel keys its output base on the workspace path, so each worktree builds cold and keeps its own `bazel-*` symlinks. Give long-running comparisons an explicit `--output_user_root` instead of sharing one checkout's cache.
+- `git worktree add` does not populate submodules; run `git submodule update --init --recursive` in the new worktree when `external/hm` is needed.
+- Remove the worktree once its branch merges (`git worktree remove ../hstream-<task>`), and run `git worktree prune` if the directory was deleted by hand, otherwise the stale entry keeps its branch locked.
+
 ## Project Structure & Modules
 - Code: `src/` with libraries in `src/libs/*`, apps in `src/apps`, optional plugins in `src/gst-plugins`.
 - Build files: `BUILD.bazel` next to sources; external repos in `WORKSPACE.bazel` and `buildfiles/`.
