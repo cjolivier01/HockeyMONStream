@@ -20,6 +20,9 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
@@ -971,6 +974,18 @@ while True:
   static bool savedCalibrationPlayback(HStreamWindow* window) {
     return window->active_run_is_calibration_ && !window->calibration_pending_ &&
         !window->calibration_waiting_for_playback_restart_;
+  }
+
+  static QString currentRinkMapMessage(HStreamWindow* window, const QString& channel) {
+    if (!window->pipeline_run_generation_ || window->rink_map_status_generation_ != window->pipeline_run_generation_ ||
+        window->rink_map_status_game_ != window->active_run_game_id_)
+      return {};
+    const auto frame = window->rink_map_frame_messages_.find(channel);
+    return frame == window->rink_map_frame_messages_.end() ? window->rink_map_run_message_ : frame->second;
+  }
+
+  static bool baselinePreviewOverlay(HStreamWindow* window, const char* key) {
+    return window->baseline_config_["preview_overlays"][key].as<bool>();
   }
 
   static void clearLog(HStreamWindow* window) {
@@ -17833,6 +17848,19 @@ bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) 
 // outputs or telemetry because those correctly prohibit local source seeking.
 bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) {
   const bool calibration_seeks = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY");
+  const bool mini_map_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP_ONLY");
+  const bool av_timing_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY");
+  const bool genuine_preview = calibration_seeks || mini_map_only || av_timing_only;
+  const QString expected_map_status = qEnvironmentVariable("HSTREAM_UI_E2E_RINK_MAP_EXPECTED");
+  if (!expect(
+          int(calibration_seeks) + int(mini_map_only) + int(av_timing_only) <= 1,
+          "Choose one focused genuine-playback qualification mode"))
+    return false;
+  if (mini_map_only &&
+      !expect(
+          !calibration_seeks && (expected_map_status == "ready" || expected_map_status == "unavailable"),
+          "Preview-only mini-map qualification requires expected ready or unavailable status"))
+    return false;
   auto* game = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -17854,26 +17882,29 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     return false;
   const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_E2E_ARTIFACT_DIR");
   if (!expect(
-          QGuiApplication::platformName() == "xcb" && !artifact_dir.isEmpty() && QDir().mkpath(artifact_dir),
+          QGuiApplication::platformName() == "xcb" && !artifact_dir.isEmpty() &&
+              (!(mini_map_only || av_timing_only) || !QFileInfo::exists(artifact_dir)) && QDir().mkpath(artifact_dir),
           "Preview transitions require X11 and an isolated artifact directory"))
     return false;
   game->setText(game_id);
   activate(create);
   mode->setCurrentIndex(mode->findData(calibration_seeks ? "stitch-calibration" : "program"));
-  if (calibration_seeks) {
+  if (genuine_preview) {
     const QString config_path = QDir(window->gameDirectoryText()).filePath("config.yaml");
     try {
       const YAML::Node config = YAML::LoadFile(config_path.toStdString());
+      const auto calibration = config["hstream_ui"]["stitching_calibration"];
       if (!expect(
-              config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete",
-              "Calibration seek qualification requires an actual saved completed calibration"))
+              calibration["status"].as<std::string>("") == "complete" &&
+                  calibration["stale_from"].as<std::string>("").empty(),
+              "Preview qualification requires an actual saved completed calibration"))
         return false;
     } catch (const std::exception& error) {
       std::cerr << "Cannot read saved calibration: " << error.what() << '\n';
       return false;
     }
     if (!QFile::copy(config_path, QDir(artifact_dir).filePath("calibration-config-before.yaml")))
-      return expect(false, "Calibration seek evidence requires a new artifact directory");
+      return expect(false, "Genuine playback evidence requires a new artifact directory");
     auto* playback_start = require_child<QTimeEdit>(window, "playbackStartTimeEdit");
     if (!playback_start)
       return false;
@@ -17886,6 +17917,59 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
   realtime->setChecked(true);
   render->setChecked(true);
   tabs->setCurrentIndex(calibration_seeks ? 1 : 0);
+  if (av_timing_only) {
+    for (const auto* id : {"showRinkMiniMapCheck", "outputRinkMapCheck", "rinkFramingEnable"}) {
+      auto* toggle = require_child<QCheckBox>(window, id);
+      if (!toggle)
+        return false;
+      toggle->setChecked(false);
+    }
+    for (const auto& overlay :
+         {std::pair{"showPlayerTrackingCheck", "players"},
+          {"showPlayTrackingCheck", "play"},
+          {"showRinkMaskCheck", "rink"}}) {
+      auto* toggle = require_child<QCheckBox>(window, overlay.first);
+      if (!toggle)
+        return false;
+      toggle->setChecked(HStreamWindowTestAccess::baselinePreviewOverlay(window, overlay.second));
+    }
+  }
+  if (mini_map_only) {
+    for (const auto* id :
+         {"showPlayerTrackingCheck",
+          "showPlayTrackingCheck",
+          "showRinkMaskCheck",
+          "outputRinkMapCheck",
+          "rinkFramingEnable"}) {
+      auto* toggle = require_child<QCheckBox>(window, id);
+      if (!toggle)
+        return false;
+      toggle->setChecked(false);
+    }
+    auto* rink_map = require_child<QCheckBox>(window, "showRinkMiniMapCheck");
+    auto* control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+    auto* drawer = require_child<QToolButton>(window, "stitchedControlsToggle");
+    if (!rink_map || !control_tabs || !drawer || !rink_map->isEnabled())
+      return false;
+    rink_map->setChecked(true);
+    drawer->setChecked(true);
+    for (int index = 0; index < control_tabs->count(); ++index)
+      if (control_tabs->tabText(index) == "Rink")
+        control_tabs->setCurrentIndex(index);
+    for (const auto& option :
+         {std::pair{"rinkMiniMapSizeCombo", "HSTREAM_UI_E2E_RINK_MAP_SIZE"},
+          {"rinkMiniMapPositionCombo", "HSTREAM_UI_E2E_RINK_MAP_POSITION"}}) {
+      auto* combo = require_child<QComboBox>(window, option.first);
+      if (!combo)
+        return false;
+      if (qEnvironmentVariableIsSet(option.second)) {
+        const int index = combo->findData(qEnvironmentVariable(option.second));
+        if (!expect(index >= 0, "Mini-map qualification requires a supported next-Play preference"))
+          return false;
+        combo->setCurrentIndex(index);
+      }
+    }
+  }
   QString report;
   auto wait_for = [&](auto predicate, const char* label, int timeout_ms = 30000) {
     QElapsedTimer timer;
@@ -17909,6 +17993,32 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
   };
   const auto ready = [](QWidget* surface) { return surface->property("previewRendererState").toString() == "ready"; };
   const auto generation = [](QWidget* surface) { return surface->property("previewRendererGeneration").toULongLong(); };
+  bool timing_saved = true;
+  const auto timing_event = [&](const QString& name, quint64 request_generation = 0) {
+    if (!av_timing_only)
+      return;
+    const auto now =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+            .count();
+    QJsonArray arguments;
+    for (const auto& argument : HStreamWindowTestAccess::launchedArguments(window))
+      arguments.append(argument);
+    auto* process = HStreamWindowTestAccess::ownedProcess(window, false);
+    const QJsonObject event{
+        {"event", name},
+        {"clock", "CLOCK_MONOTONIC"},
+        {"monotonic_ns", QString::number(now)},
+        {"state", window->pipelineStateText()},
+        {"qprocess_pid", QString::number(process ? process->processId() : 0)},
+        {"arguments", arguments},
+        {"request_generation", QString::number(request_generation)},
+        {"preview_generation", QString::number(generation(program))},
+        {"position_ns", QString::number(HStreamWindowTestAccess::playbackPositionNs(window))}};
+    const QByteArray bytes = QJsonDocument(event).toJson(QJsonDocument::Compact) + '\n';
+    QFile file(QDir(artifact_dir).filePath("av-timing-events.jsonl"));
+    timing_saved =
+        file.open(QIODevice::WriteOnly | QIODevice::Append) && file.write(bytes) == bytes.size() && timing_saved;
+  };
   const auto capture = [&](const QString& channel,
                            const QString& filename,
                            qint64* pts_ns = nullptr,
@@ -17921,7 +18031,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     // arrive after the readiness acknowledgment, retaining each bounded attempt.
     QElapsedTimer capture_timer;
     capture_timer.start();
-    for (int attempt = 1; attempt <= (calibration_seeks ? 20 : 5); ++attempt) {
+    for (int attempt = 1; attempt <= (genuine_preview ? 20 : 5); ++attempt) {
       const QString path = diagnostic_capture_attempt_path(artifact_dir, filename, attempt);
       QFile::remove(path);
       const auto before = window->completeLogText().size();
@@ -17951,13 +18061,14 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
             1000);
         bool valid_pts = false;
         const qint64 value = match.captured(2).toLongLong(&valid_pts);
+        QWidget* surface = channel == "program" ? program : channel == "stitched" ? stitched : source;
         identity_matches = match.hasMatch() && valid_pts && value >= minimum_pts && value <= maximum_pts &&
-            match.captured(1).toULongLong() == generation(stitched);
+            match.captured(1).toULongLong() == generation(surface);
         report +=
             QString(
                 "capture=%1 generation=%2 pipeline-pts-ns=%3 current-generation=%4 identity=%5 ui-position-ns=%6 elapsed-ms=%7\n")
                 .arg(filename, match.captured(1), match.captured(2))
-                .arg(generation(stitched))
+                .arg(generation(surface))
                 .arg(identity_matches ? "PASS" : "FAIL")
                 .arg(HStreamWindowTestAccess::playbackPositionNs(window))
                 .arg(capture_timer.elapsed());
@@ -17966,9 +18077,9 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       }
       if (frame.passed && identity_matches)
         return promote_diagnostic_capture_artifact(path, QDir(artifact_dir).filePath(filename));
-      if (calibration_seeks && capture_timer.elapsed() >= 10000)
+      if (genuine_preview && capture_timer.elapsed() >= 10000)
         break;
-      QTest::qWait(calibration_seeks ? 500 : 250);
+      QTest::qWait(genuine_preview ? 500 : 250);
     }
     return expect(false, "Current route needs a nonblank presented frame with the requested identity and timeline");
   };
@@ -18008,7 +18119,197 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     return true;
   };
   const bool passed = [&] {
-    activate(start);
+    if (av_timing_only) {
+      timing_event("play-click");
+      start->click();
+    } else {
+      activate(start);
+    }
+    if (av_timing_only) {
+      if (!wait_for(
+              [&] { return window->pipelineStateText() == "PLAYING" && ready(program) && pause->isEnabled(); },
+              "Program is ready before the A/V timing schedule",
+              180000))
+        return false;
+      timing_event("program-ready");
+      if (!expect(
+              HStreamWindowTestAccess::launchedArguments(window).contains("--options=pipeline.hmaudio.enable=1"),
+              "A/V qualification requires native audio enabled with Render video"))
+        return false;
+      timing_event("initial-diagnostic-capture-begin");
+      qint64 first_pts = -1, later_pts = -1;
+      const bool captured = capture("program", "av-program-first.png", &first_pts);
+      if (captured)
+        QTest::qWait(750);
+      const bool advancing =
+          captured && capture("program", "av-program-later.png", &later_pts, first_pts + 250'000'000LL);
+      timing_event("initial-diagnostic-capture-end");
+      if (!advancing ||
+          !expect(
+              QImage(QDir(artifact_dir).filePath("av-program-first.png")) !=
+                  QImage(QDir(artifact_dir).filePath("av-program-later.png")),
+              "A/V startup proof requires changing presented pixels") ||
+          !expect(
+              HStreamWindowTestAccess::playbackDurationNs(window) -
+                      HStreamWindowTestAccess::playbackPositionNs(window) >=
+                  40'000'000'000LL,
+              "A/V fixture must retain forty seconds after startup proof"))
+        return false;
+      timing_event("first-advancing-ready");
+      const auto initial_seek = HStreamWindowTestAccess::playbackSeekGeneration(window);
+      const auto initial_preview = generation(program);
+      const auto hold = [&](const QString& phase, int milliseconds, bool paused) {
+        timing_event(phase + "-begin");
+        const qint64 before = HStreamWindowTestAccess::playbackPositionNs(window);
+        QElapsedTimer timer;
+        timer.start();
+        while (timer.elapsed() < milliseconds) {
+          QTest::qWait(25);
+          if (window->pipelineStateText() != (paused ? "PAUSED" : "PLAYING") ||
+              HStreamWindowTestAccess::processPaused(window) != paused ||
+              HStreamWindowTestAccess::pipelineRetired(window) || generation(program) != initial_preview ||
+              HStreamWindowTestAccess::playbackSeekGeneration(window) != initial_seek) {
+            timing_event(phase + "-failed");
+            return expect(false, "Measured A/V windows retain the same native process, route and playback state");
+          }
+        }
+        timing_event(phase + "-end");
+        return expect(
+            paused || HStreamWindowTestAccess::playbackPositionNs(window) > before,
+            "Measured playing windows advance the acknowledged recording position");
+      };
+      if (!hold("steady-initial", 8000, false))
+        return false;
+      for (int cycle = 1; cycle <= 3; ++cycle) {
+        const QString name = QString::number(cycle);
+        timing_event("pause-click-" + name);
+        pause->click();
+        const auto pause_generation = HStreamWindowTestAccess::pendingProcessPause(window);
+        if (!expect(pause_generation != 0, "Pause must await its native acknowledgment") ||
+            !wait_for(
+                [&] {
+                  return window->pipelineStateText() == "PAUSED" && HStreamWindowTestAccess::processPaused(window) &&
+                      HStreamWindowTestAccess::pendingProcessPause(window) == 0 && pause->isEnabled();
+                },
+                "Native Pause is acknowledged"))
+          return false;
+        timing_event("pause-confirmed-" + name, pause_generation);
+        if (!hold("paused-" + name, 3000, true))
+          return false;
+        timing_event("resume-click-" + name);
+        pause->click();
+        const auto resume_generation = HStreamWindowTestAccess::pendingProcessResume(window);
+        if (!expect(resume_generation != 0, "Resume must await its native acknowledgment") ||
+            !wait_for(
+                [&] {
+                  return window->pipelineStateText() == "PLAYING" && !HStreamWindowTestAccess::processPaused(window) &&
+                      HStreamWindowTestAccess::pendingProcessResume(window) == 0 && pause->isEnabled();
+                },
+                "Native Resume is acknowledged"))
+          return false;
+        timing_event("resume-confirmed-" + name, resume_generation);
+        if (!hold("steady-resumed-" + name, cycle == 3 ? 12000 : 8000, false))
+          return false;
+      }
+      report +=
+          "A/V schedule: steady 8s; three 3s pauses; resume windows 8s, 8s, 12s; "
+          "no route changes, seeks or diagnostic readbacks inside measured windows; acknowledgment polling 25ms\n";
+      return true;
+    }
+    if (mini_map_only) {
+      auto* status = require_child<QLabel>(window, "rinkMiniMapStatusLabel");
+      auto* rink_map = require_child<QCheckBox>(window, "showRinkMiniMapCheck");
+      auto* size = require_child<QComboBox>(window, "rinkMiniMapSizeCombo");
+      auto* position = require_child<QComboBox>(window, "rinkMiniMapPositionCombo");
+      auto* drawer = require_child<QToolButton>(window, "stitchedControlsToggle");
+      auto* control_tabs = require_child<QTabWidget>(window, "stitchedControlTabs");
+      auto* rink_scroll = require_child<QScrollArea>(window, "stitchingRinkScrollArea");
+      auto* splitter = require_child<QSplitter>(window, "stitchedPreviewControlsSplitter");
+      if (!status || !rink_map || !size || !position || !drawer || !control_tabs || !rink_scroll || !splitter)
+        return false;
+      report += QString("expected-map-status=%1 size=%2 position=%3 players=0 play=0 rink-mask=0\n")
+                    .arg(expected_map_status, size->currentData().toString(), position->currentData().toString());
+      const auto current_status = [&](const QString& channel) {
+        const QString message = HStreamWindowTestAccess::currentRinkMapMessage(window, channel);
+        return status->text() == message &&
+            (expected_map_status == "ready" ? message == "Mini-map drawing with matching playback geometry."
+                                            : message.startsWith("Mini-map unavailable: ") &&
+                     message.size() > QString("Mini-map unavailable: ").size());
+      };
+      for (const auto& route : {std::pair{"program", 0}, {"stitched", 1}}) {
+        tabs->setCurrentIndex(route.second);
+        QWidget* surface = route.second == 0 ? program : stitched;
+        if (!wait_for(
+                [&] { return ready(surface) && current_status(route.first); },
+                "Selected Program/Stitched route has current-run mini-map availability",
+                180000) ||
+            !expect(
+                !rink_map->isEnabled() && !size->isEnabled() && !position->isEnabled() &&
+                    !require_child<QCheckBox>(window, "showPlayerTrackingCheck")->isChecked(),
+                "Active mini-map preferences stay locked while Player boxes remain off"))
+          return false;
+        if (route.second == 1) {
+          // Ordinary Play collapses the controls. Reopen their actual Stitched
+          // location before qualifying the visible availability explanation.
+          if (!drawer->isChecked())
+            activate(drawer);
+          control_tabs->setCurrentWidget(rink_scroll);
+          const int controls_width = std::max(1, splitter->width() / 3);
+          splitter->setSizes({std::max(1, splitter->width() - controls_width), controls_width});
+          if (!wait_for(
+                  [&] {
+                    rink_scroll->ensureWidgetVisible(status, 8, 8);
+                    const QRect label_rect(status->mapTo(rink_scroll->viewport(), QPoint()), status->size());
+                    return status->isVisible() && rink_scroll->viewport()->rect().contains(label_rect) &&
+                        current_status("stitched");
+                  },
+                  "Stitched Rink drawer visibly explains current-run mini-map availability"))
+            return false;
+        }
+        qint64 first_pts = -1, later_pts = -1;
+        const QString first = QString("mini-map-%1-first.png").arg(route.first);
+        const QString later = QString("mini-map-%1-later.png").arg(route.first);
+        if (!capture(route.first, first, &first_pts))
+          return false;
+        QTest::qWait(750);
+        if (!capture(route.first, later, &later_pts, first_pts + 250'000'000LL))
+          return false;
+        const QImage first_image(QDir(artifact_dir).filePath(first));
+        const QImage later_image(QDir(artifact_dir).filePath(later));
+        if (!expect(
+                !first_image.isNull() && !later_image.isNull() && first_image != later_image &&
+                    current_status(route.first),
+                "Mini-map availability must coexist with changing nonblank current-route video") ||
+            !expect(
+                window->grab().save(QDir(artifact_dir).filePath(QString("mini-map-%1-controls.png").arg(route.first))),
+                "Live mini-map controls and availability screenshot must be retained"))
+          return false;
+        report += QString("channel=%1 first-pts-ns=%2 later-pts-ns=%3 status=%4\n")
+                      .arg(route.first)
+                      .arg(first_pts)
+                      .arg(later_pts)
+                      .arg(status->text());
+      }
+      tabs->setCurrentIndex(2);
+      if (!wait_for(
+              [&] {
+                return ready(source) && status->text() == "The mini-map is shown in the Program and Stitched previews.";
+              },
+              "Source route explains that the mini-map belongs to Program and Stitched"))
+        return false;
+      qint64 source_pts = -1;
+      if (!capture("source0", "mini-map-source.png", &source_pts))
+        return false;
+      tabs->setCurrentIndex(1);
+      if (!wait_for(
+              [&] { return ready(stitched) && current_status("stitched"); },
+              "Returning to Stitched restores its current-run mini-map status"))
+        return false;
+      report +=
+          "ready-capture-review: inspect LOCATED counts and player dots with Player boxes off; "
+          "frame readiness alone does not attest tracked-player snapshots\n";
+      return true;
+    }
     if (calibration_seeks) {
       if (!wait_for(
               [&] {
@@ -18303,29 +18604,42 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     return capture("program", "transitions-program-after-restart.png");
   }();
   const bool stop_requested = window->pipelineStateText() != "STOPPED";
-  if (stop_requested)
+  if (stop_requested) {
+    timing_event("stop-click");
     activate(stop);
+  }
   const bool stopped =
       wait_for([&] { return window->pipelineStateText() == "STOPPED"; }, "Native playback stops cleanly");
-  const bool ordinary_stop = !calibration_seeks ||
+  timing_event(stopped && HStreamWindowTestAccess::pipelineRetired(window) ? "process-retired" : "stop-incomplete");
+  const bool ordinary_stop = !genuine_preview ||
       expect(
           stop_requested && HStreamWindowTestAccess::pipelineRetired(window) &&
               window->completeLogText().contains("pipeline finished exit=0 status=normal"),
-          "Saved Calibration ordinary Stop must retire the native process with a successful exit");
+          "Ordinary Stop must retire the native process with a successful exit");
   write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), window->completeLogText());
-  bool artifacts_saved = true;
-  if (calibration_seeks) {
+  bool artifacts_saved = timing_saved;
+  if (genuine_preview) {
     artifacts_saved = QFile::copy(
-        QDir(window->gameDirectoryText()).filePath("config.yaml"),
-        QDir(artifact_dir).filePath("calibration-config-after.yaml"));
-    artifacts_saved = window->grab().save(QDir(artifact_dir).filePath("calibration-stopped.png")) && artifacts_saved;
+                          QDir(window->gameDirectoryText()).filePath("config.yaml"),
+                          QDir(artifact_dir).filePath("calibration-config-after.yaml")) &&
+        artifacts_saved;
+    artifacts_saved = window->grab().save(QDir(artifact_dir)
+                                              .filePath(
+                                                  av_timing_only      ? "av-timing-stopped.png"
+                                                      : mini_map_only ? "mini-map-stopped.png"
+                                                                      : "calibration-stopped.png")) &&
+        artifacts_saved;
     report += QString("ordinary-stop=%1 artifacts=%2 result=%3\n")
                   .arg(ordinary_stop ? "PASS" : "FAIL", artifacts_saved ? "PASS" : "FAIL")
                   .arg(passed && stopped && ordinary_stop && artifacts_saved ? "PASS" : "FAIL");
   }
   write_e2e_text(
       QDir(artifact_dir)
-          .filePath(calibration_seeks ? "calibration-seeks-report.txt" : "preview-transitions-report.txt"),
+          .filePath(
+              av_timing_only          ? "av-timing-report.txt"
+                  : mini_map_only     ? "mini-map-report.txt"
+                  : calibration_seeks ? "calibration-seeks-report.txt"
+                                      : "preview-transitions-report.txt"),
       report);
   std::cout << report.toStdString();
   return passed && stopped && ordinary_stop && artifacts_saved;
@@ -20563,9 +20877,11 @@ int main(int argc, char** argv) {
   const QByteArray e2e_game_id = qgetenv("HSTREAM_UI_E2E_GAME_ID");
   if (!e2e_game_id.isEmpty()) {
     if ((qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY") ||
-         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_FRESH_CALIBRATION")) &&
+         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_FRESH_CALIBRATION") ||
+         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP_ONLY") ||
+         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY")) &&
         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREPARE_GAME")) {
-      std::cerr << "Fresh and saved Calibration checks cannot use E2E preparation that rewrites calibration metadata\n";
+      std::cerr << "Genuine calibration and mini-map checks cannot use E2E preparation that rewrites metadata\n";
       return 1;
     }
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_FRESH_CALIBRATION") &&
@@ -20590,7 +20906,9 @@ int main(int argc, char** argv) {
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_COMPLETION_ONLY"))
       return run_real_calibration_completion_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREVIEW_TRANSITIONS_ONLY") ||
-        qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY"))
+        qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY") ||
+        qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP_ONLY") ||
+        qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY"))
       return run_preview_transitions_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
     if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {
       std::cerr << "run_real_pipeline_e2e failed\n";

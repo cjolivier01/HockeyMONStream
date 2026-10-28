@@ -83,6 +83,35 @@ CLI, UI and plugins from the same build and route test audio to an explicitly
 owned virtual sink. HockeyMONWeb's matching fresh and saved Calibration tests
 check authenticated adoption and actual decoded browser frames.
 
+For preview-only mini-map qualification, use `HSTREAM_UI_E2E_RINK_MAP_ONLY=1`
+and `HSTREAM_UI_E2E_RINK_MAP_EXPECTED=ready` or `unavailable`, with a genuinely
+completed game and a new evidence directory. This also rejects
+`HSTREAM_UI_E2E_PREPARE_GAME`. Optional `HSTREAM_UI_E2E_RINK_MAP_SIZE` and
+`HSTREAM_UI_E2E_RINK_MAP_POSITION` select the ordinary next-Play controls.
+The test disables archives, telemetry, encoded maps and rink-aware framing,
+leaves Player boxes/Play tracking/Rink mask off, and requires current-run
+availability plus advancing nonblank, changing Program and Stitched captures.
+It checks locked preferences, reopens the Stitched Rink drawer to verify the
+visible availability explanation, and checks the source-view explanation and
+normal Stop with process retirement. Inspect the ready captures for player dots and `LOCATED`
+counts while Player boxes remain off: a matching map can report ready while
+waiting for tracks, so readiness alone cannot qualify the snapshot producer.
+Keep unavailable-map evidence separate; its video must continue normally.
+
+`HSTREAM_UI_E2E_AV_TIMING_ONLY=1` uses the same genuine saved-game and isolated
+evidence requirements for a Program audio/video timing schedule. It enables
+Render and normal speed, starts at zero, disables mini-maps/framing and file or
+telemetry outputs, and restores the required baseline diagnostic-overlay choices.
+After two advancing, changing startup captures, it plays eight seconds, then
+performs three three-second pauses with resume windows of eight, eight and twelve
+seconds. No seeks, route changes or diagnostic captures occur within those
+measured windows. `av-timing-events.jsonl` records Linux `CLOCK_MONOTONIC`
+nanoseconds at clicks, matching state acknowledgments and window boundaries,
+plus the QProcess PID/arguments and renderer identity. Initial capture intervals
+are explicitly marked so external timing analysis can exclude their overhead.
+The test requires normal Stop and process retirement; source-correlated audio
+and actual presentation timing require a separate owned-sink/metadata collector.
+
 The UI acceptance test exercises the same Qt button handlers as an operator:
 
 1. load the selected game;
