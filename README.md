@@ -74,6 +74,41 @@ composite several real frames into one image; the source render, frame time and
 exact processing for each is recorded in
 [the screenshot provenance notes](docs/assets/screenshots/README.md).
 
+What the detector, the tracker and the player analytics see, burned into the
+Program recording itself:
+
+![Looping clip of automatically framed hockey. A coloured box follows every tracked skater, about half of them carrying a HOME or AWAY badge, and one greyed box is labelled IGNORED. An overhead rink map in the top-right corner holds one dot per skater, navy for Home, orange for Away, grey for the excluded track and a hollow ring for a skater with no side yet](docs/assets/screenshots/player-tracking-live.webp)
+
+*7.5 continuous seconds. Every box, badge, dot and label here was composited
+on the GPU into the encoded frames by `hstream-cli`; none of it was drawn
+afterwards. The names and numbers you can read on the sweaters are the
+sweaters.*
+
+Scaled up, one frame of the same run:
+
+![A single Program frame at 1600 pixels wide: a coloured box around each skater and official on the ice, HOME badges over the red team and AWAY over the gold, one box greyed and labelled IGNORED, and an overhead rink map reading 16 of 16 located, holding navy, orange, grey and hollow dots](docs/assets/screenshots/player-tracking-overlays.webp)
+
+The boxes come from YOLOv8 detection and the NvDCF tracker, which this game
+runs with appearance re-identification — `pipeline.tracker.reid-enable`, off
+unless a game config turns it on. HOME and AWAY are not classified; nothing
+transfers the idea of "home" between games. The two sides are split per stream
+from re-identification embeddings, and called HOME and AWAY only once
+`game.home_is_dark` says which sweater home wore, which this game's config does. Without it the badges
+read DARK and LIGHT, and a skater the split has not called yet is left hollow
+on the map rather than guessed into a side. `IGNORED` marks a track the camera
+policy excludes — here `rink.tracking.cam_ignore_largest`, which drops the
+nearest skater so somebody passing close under the camera cannot drag the shot
+with them. Jersey recognition puts the number it read inside that skater's map
+dot, and over the box when it has one; it fires on a minority of tracks, which
+is why most dots in these two images are plain.
+
+The overlays are off by default; the
+[rink map notes](docs/rink-map.md) and
+[player analytics notes](docs/player-analytics-runtime.md) cover the options
+that turn them on, and the
+[provenance notes](docs/assets/screenshots/README.md#the-two-tracking-images)
+give the exact command that produced these two.
+
 The stitched panorama the tracker runs on, covering both goals and both benches
 in a single canvas:
 
@@ -88,9 +123,12 @@ Four venues, four camera placements, one pipeline with per-game calibration:
 
 ![Four program-output frames in a two-by-two grid labelled vegas-kings-1, sharks-14-p1, blackhawks-p1 and tv-14-1-p1, each a different rink framed automatically by the same pipeline](docs/assets/screenshots/four-rinks.webp)
 
-Most of these come from renders made before the "SportsAI HockeyMON" watermark
-landed on 2026-09-27, so they show frames without it. Current builds always burn
-it in and it cannot be turned off; see [the watermark notes](docs/watermark.md).
+The two tracking images were rendered on 2026-10-27 and carry the "SportsAI
+HockeyMON" watermark in the lower right. Most of the rest come from renders
+made before that mark landed on 2026-09-27, so they show frames without it; the
+[provenance notes](docs/assets/screenshots/README.md) say which. Current builds
+always burn it in and it cannot be turned off; see
+[the watermark notes](docs/watermark.md).
 
 ## Download
 

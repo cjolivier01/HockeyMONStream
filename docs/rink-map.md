@@ -229,13 +229,28 @@ Detection boxes, camera policy and telemetry retain their original measurements.
 
 A circle shows the jersey number when enabled jersey recognition supplies a
 fresh result for that track. Leading zeros are retained; missing or expired
-numbers leave a plain circle. There is currently no home/away classification,
-so track colours and jersey numbers do not identify teams. Ignored players use
-the same grey as their detection boxes. Jersey digits switch between light and
-dark text to remain readable on the track colour. The footer reports located
-tracks out of inspected tracks; these counts are not a count of players on ice.
-A `+` after the denominator means the snapshot exceeded the 256-track inspection
-limit. An empty snapshot says **NO TRACKS**.
+numbers leave a plain circle. Ignored players use the same grey as their
+detection boxes. Jersey digits switch between light and dark text to remain
+readable on the fill.
+
+Once the team feature has called a side on this stream the circles carry
+affiliation instead of track colour: navy for Home, orange for Away, dark and
+light fills when no `game.home_is_dark` names the sides, and a hollow ring for
+a skater the split has not called. Before any side is called every circle keeps
+its track colour, which is also what a run with the team feature off looks
+like. An excluded player stays grey either way, and a player the saved map
+cannot place gets no dot, so neither one's side switches the map into the
+two-group reading. The Program overlay badges an excluded player all the
+same, so for the frames where the only called side is one of those, a box can
+read HOME or AWAY while the map below still says the teams are unknown.
+
+The footer reports located tracks out of inspected tracks; these counts are not
+a count of players on ice. A `+` after the denominator means the snapshot
+exceeded the 256-track inspection limit. An empty snapshot says **NO TRACKS**.
+Until a side has been called, those two readings add **- TEAMS UNKNOWN**;
+after that neither does, including on frames where nobody is on the ice.
+**WAITING FOR TRACKS** never carries it: it means the frame brought no track
+data at all, not that the teams are unknown.
 
 Startup validates the saved calibration, refits its source-camera evidence,
 and prepares a bounded output-pixel-to-ray grid through Hugin, using the
