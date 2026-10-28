@@ -43,6 +43,9 @@ struct WebPreviewRinkMapOptions {
   bool enabled;
   std::string size, position;
 };
+// Only the code crosses this public boundary; helper output and private paths
+// belong in native diagnostics, never in the bounded frame-status protocol.
+std::string WebPreviewRinkMapFailureReason(absl::StatusCode code);
 // The admitted environment overrides required baseline-backed preferences.
 absl::StatusOr<WebPreviewRinkMapOptions> ReadWebPreviewRinkMapOptions(
     const YAML::Node& resolved,

@@ -486,6 +486,23 @@ int main() {
   // The next-Play mini-map is independent of the live mask checkbox and epoch,
   // while retaining the same exact session/route fences and bounded mailbox.
   hm::preview::WebPreviewOverlayArtifactMailbox mini_map;
+  std::string private_error(65536, 'x');
+  private_error += "/private/worker/calibration\n";
+  private_error.append("\0\xff", 2);
+  const auto failed_projection = absl::InternalError(private_error);
+  const auto public_reason = hm::preview::WebPreviewRinkMapFailureReason(failed_projection.code());
+  Check(
+      !public_reason.empty() && public_reason.size() <= 1024 &&
+          public_reason.find("/private/") == std::string::npos &&
+          public_reason.find('\0') == std::string::npos && g_utf8_validate(public_reason.c_str(), -1, nullptr),
+      "Projection diagnostics escaped into the bounded public mini-map reason");
+  Check(
+      hm::preview::WebPreviewRinkMapFailureReason(absl::StatusCode::kOk).empty() &&
+          hm::preview::WebPreviewRinkMapFailureReason(absl::StatusCode::kFailedPrecondition).find("save") !=
+              std::string::npos &&
+          hm::preview::WebPreviewRinkMapFailureReason(absl::StatusCode::kNotFound).find("diagnostics") !=
+              std::string::npos,
+      "Mini-map status lost its ready/required-review distinction");
   const hm::preview::WebPreviewOverlayArtifact mini_ready{
       overlay->session, 2, 0, "stitched", "ready", "", "rink-mini-map"};
   mini_map.Publish(mini_ready);

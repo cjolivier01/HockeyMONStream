@@ -13,8 +13,10 @@ admission. The native capability still requires one file-based pipeline with onl
 the owned WebRTC preview; archives, other network outputs, active telemetry and
 active calibration work reject seeks. The browser must wait for the native
 capability and timeline, and confirm the replacement generation with an exact
-decoded frame. Calibration seek hardware qualification remains pending until the
-paired Qt/browser workflow passes.
+decoded frame. The October 28 paired DeepStream 9.1 calibration tests passed
+forward/backward seeking, Pause with a queued seek, Resume with advancing
+frames, and graceful Stop. This qualifies that saved-calibration workflow;
+audio timing and the other playback paths remain separate checks.
 
 Normal-speed selectable preview now binds video headers and the raw Opus input
 through the shared `common/PacedPlayback` source-interval mapping. This owner is

@@ -1989,11 +1989,13 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
         : absl::StatusOr<std::shared_ptr<const hm::stitching::PlaybackRinkMap>>(
               absl::FailedPreconditionError("The rink mini-map requires the Hugin (nona) mapping backend."));
     rink_map_preview_active_ = prepared.ok();
+    if (!prepared.ok())
+      hm::diagnostics::Log("preview-rink-map", prepared.status().ToString());
     web_preview_->ConfigureRinkMiniMap(
         prepared.ok() ? *prepared : nullptr,
         hm::draw_display::RinkMiniMapPreferences(
             rink_options.size, rink_options.position, app.config.player_analytics_config.analytics.home_is_dark),
-        prepared.ok() ? "" : prepared.status().ToString());
+        hm::preview::WebPreviewRinkMapFailureReason(prepared.status().code()));
   }
   return absl::OkStatus();
 }

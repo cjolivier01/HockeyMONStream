@@ -102,6 +102,19 @@ void Identity(
 }
 } // namespace
 
+std::string WebPreviewRinkMapFailureReason(absl::StatusCode code) {
+  switch (code) {
+    case absl::StatusCode::kOk:
+      return "";
+    case absl::StatusCode::kFailedPrecondition:
+      return "Review and save a rink map for this calibration before restarting playback.";
+    case absl::StatusCode::kCancelled:
+      return "Rink mini-map preparation was cancelled.";
+    default:
+      return "The rink mini-map could not be prepared. Check the service diagnostics.";
+  }
+}
+
 absl::StatusOr<PreviewReferenceGeometry> ReadPreviewReferenceGeometry(const YAML::Node& resolved) {
   try {
     const auto node = resolved["preview_reference"];
