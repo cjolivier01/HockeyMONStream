@@ -1145,16 +1145,24 @@ bilinear 4K fitting. Incompatible explicit codec, profile, container and
 scaling settings fail before GPU preparation. Duplicate output paths and sink
 IDs also fail preflight.
 
-`video_out.program_4k_interpolation` is not implemented here. The NVIDIA sink
-renders Program at its full size and resizes to UHD with a separate
-`nvvideoconvert`, which is what that filter selects; this branch renders the
-crop straight into a UHD surface through the shared bilinear inverse-mapping
-kernel in `src/libs/program/`, so there is no second pass to apply it to. The
-shared baseline ships `algo2`, so rather than failing every AMD 4K archive,
-`ResolveProgramArchives` logs that it ignored the requested filter and keeps
-bilinear sampling. Both backends therefore undersample a ~1.94x reduction.
-Closing this gap means area-averaged minification in that shared crop kernel,
-with CUDA and HIP coverage, not another configuration key.
+`video_out.program_4k_interpolation` is not implemented here, and could not
+mean the same thing if it were. NVIDIA sizes Program at the panorama height
+and 16:9 of it (~7466x4200 in `playcropper.cpp`), so its 16:9 crop rect is at
+most 1:1 and the crop only ever magnifies; its one minification is the
+separate `nvvideoconvert` resize to UHD, which is what that filter selects.
+`runtime.amd.output` defaults to 3840x2160, so this backend has no such
+resize: `ProgramGpu.cu` samples a crop rect of up to 7466x4200 panorama pixels
+into UHD through one 2x2 bilinear tap. At the widest shot that is a ~1.94x
+reduction taken with a footprint sized for 1:1, and it undersamples - in the
+main `ENCODE_FILE` archive, not only the 4K branch. With stock settings the 4K
+branch then scales by `min(1.0, 3840/3840, 2160/2160)`, a 1:1 passthrough.
+
+Because the shared baseline ships `algo2`, `ResolveProgramArchives` logs that
+it ignored the requested filter and keeps bilinear rather than failing every
+AMD archive. Closing the real gap means area-averaged minification in that
+shared crop kernel, with CUDA and HIP coverage, not another configuration key.
+CUDA would not change behavior - its crop never minifies - but the kernel is
+shared, so the work lands in both.
 
 A desktop run already supplies `HSTREAM_JOB_MANIFEST`; default output names
 resolve inside that private workspace. After every output reaches EOS and AAC
