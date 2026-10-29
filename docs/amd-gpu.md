@@ -356,10 +356,16 @@ surface integration.
 
 ## Program pixels and output
 
-`src/libs/program/` now owns the existing crop geometry, bilinear inverse
-rotation, shadow lift and exposure. The NVIDIA adapter delegates to the same
-kernel compiled by NVCC or HIP. Its x/output-width sampling, black boundary,
-alpha and disabled-tone rounding behavior are retained. Detector and Program
+`src/libs/program/` now owns the existing crop geometry, inverse rotation,
+shadow lift and exposure. The NVIDIA adapter delegates to the same kernel
+compiled by NVCC or HIP. Its x/output-width sampling and disabled-tone
+rounding behavior are retained. An axis reducing by 1.75x or more is area
+averaged (see below); every other axis still takes one bilinear tap. That
+shrinks the transparent-black border rather than fading it: a pixel with at
+least one tap inside the source keeps full brightness and alpha, so the
+opaque region grows by up to 0.375 of an output pixel across an
+axis-aligned source edge, and up to sqrt(2) times that at a corner or under
+the fixed-edge rotation. Detector and Program
 sampling share GPU image descriptors and RGB/NV12/P010 conversion; descriptors
 validate dimensions, pitch, alignment and address overflow before submission.
 
@@ -368,8 +374,12 @@ The YUV path retains floating-point samples through tone evaluation, quantizes
 once and averages chroma over each 2x2 output block. Output caps must specify
 centered chroma. Matrix/range are explicit; the caller must preserve source
 primaries and transfer or convert them separately. HDR is rejected by the VA
-adapter. Eight YUV format/range/matrix cases and eighteen packed-output
-format/rotation/tone cases compare against scalar pixel references.
+adapter. Eight YUV format/range/matrix cases and twenty-one packed-output
+format/rotation/tone cases compare against scalar pixel references, and
+thirty minifying-crop cases check hand-derived means, and registration and
+tap counts against scalar references, with edge coverage either side. The
+ratio has to be chosen for the latter: at an integer one several tap counts
+land back on half-integer source positions and read the same value.
 
 `VaOutputPool` creates bounded linear VA-owned DMA-BUF buffers on the selected
 HIP device's PCI render node. Acquisition is nonblocking when downstream owns
@@ -454,9 +464,16 @@ violations fail with a bus error.
 On RX 9060 XT, the `vegas-calheat-1` raw 7680×4320 camera pair at 60 seconds produced
 120 frames through a validated **15632×4100** panorama and a **3840×2160 Main10**
 Program export. There were 2,382 confirmed track observations and 119 camera-led
-crops after the initial full-canvas frame. The warmed loop took **9.40 seconds**
+crops after the initial frame, whose box is the output-aspect fallback. The warmed loop took **9.40 seconds**
 for 2.002 seconds of source video, excluding model preparation. This configuration
-is not real-time. `ffprobe` verifies all 120 frames, 60000/1001 fps, centered chroma
+is not real-time. That number predates area-averaged minification. Only the
+initial frame, whose box is the output-aspect fallback at 7289x4100 rather
+than a recorded follower or the literal canvas, is pinned at 1.90x per axis
+and certainly averaged;
+the other 119 crop to the recorded follower box, so whether they cross the
+1.75x threshold depends on the camera's zoom and is not recorded here. The
+upper bound, if every frame averaged, is 120 x 0.66 ms = 0.08 s, under 1% of
+the 9.40 s. The figure has not been re-measured end to end. `ffprobe` verifies all 120 frames, 60000/1001 fps, centered chroma
 and full-range BT.709 matching the raw inputs. Bounded offline thumbnails were
 inspected after export; the processing loop never reads video back.
 
@@ -1141,28 +1158,86 @@ integer bitrate helper. Metadata comes from the native MP4 header reader without
 opening a decoder or subprocess. Explicit native/canonical/AMD bitrates retain
 precedence; missing source bitrate retains the configured fallback and reports
 that choice. The AMD archive path supports hardware Main10 HEVC in MP4 and
-bilinear 4K fitting. Incompatible explicit codec, profile, container and
-scaling settings fail before GPU preparation. Duplicate output paths and sink
-IDs also fail preflight.
+fits 4K by choosing the output size and rendering the crop straight into it;
+there is no separate resample. Incompatible explicit codec, profile,
+container and scaling settings fail before GPU preparation. Duplicate output
+paths and sink IDs also fail preflight.
 
-`video_out.program_4k_interpolation` is not implemented here, and could not
-mean the same thing if it were. NVIDIA sizes Program at the panorama height
-and 16:9 of it (~7466x4200 in `playcropper.cpp`), so its 16:9 crop rect is at
-most 1:1 and the crop only ever magnifies; its one minification is the
-separate `nvvideoconvert` resize to UHD, which is what that filter selects.
-`runtime.amd.output` defaults to 3840x2160, so this backend has no such
-resize: `ProgramGpu.cu` samples a crop rect of up to 7466x4200 panorama pixels
-into UHD through one 2x2 bilinear tap. At the widest shot that is a ~1.94x
-reduction taken with a footprint sized for 1:1, and it undersamples - in the
-main `ENCODE_FILE` archive, not only the 4K branch. With stock settings the 4K
-branch then scales by `min(1.0, 3840/3840, 2160/2160)`, a 1:1 passthrough.
+`video_out.program_4k_interpolation` selects no filter here, because this
+backend has no resize for it to name. The NVIDIA sink renders Program at its
+full size and resizes to UHD with a separate `nvvideoconvert`, which is what
+that filter selects. `runtime.amd.output` defaults to 3840x2160, so
+`ProgramGpu.cu` takes the whole reduction in the crop itself - in the main
+`ENCODE_FILE` archive, not only the 4K branch, which at those defaults scales
+by `min(1.0, 3840/3840, 2160/2160)` and is a 1:1 passthrough.
 
-Because the shared baseline ships `algo2`, `ResolveProgramArchives` logs that
-it ignored the requested filter and keeps bilinear rather than failing every
-AMD archive. Closing the real gap means area-averaged minification in that
-shared crop kernel, with CUDA and HIP coverage, not another configuration key.
-CUDA would not change behavior - its crop never minifies - but the kernel is
-shared, so the work lands in both.
+A steep enough crop is area averaged. A single bilinear tap is a tent two
+source pixels wide whatever the scale, so a cropped rect of up to 7466x4200
+panorama pixels rendered into UHD - or the whole canvas under `no-crop` -
+left most of the output pixel's footprint to a tap too narrow to reach it,
+and aliased. Source pixels are dropped outright only past 2x. `RenderProgram`
+and `RenderProgramYuv` derive per-axis tap counts from the crop-to-output
+ratio and average that many samples spread across the output pixel, which
+covers the footprint the pixel actually spans. Rotation changes each
+sub-step's direction but not its length, so an evenly spaced grid in output
+space stays evenly spaced across the rotated source parallelogram. Only taps
+landing inside the source are counted: folding the out-of-bounds ones in as
+transparent black would darken any pixel whose footprint reaches the edge.
+Row 0 does whenever the crop box's top is 0 against a `source_rect` starting
+at the image top, which `FrameGeometry.cpp` produces for every `no-crop`
+frame and for every frame before the first detection; the left column joins
+it when the camera pans to the canvas edge. A pixel with no tap inside still returns
+transparent black. Shadow lift and exposure run once on the averaged pixel,
+because the lift curve is concave and grading taps before averaging them is
+not the same as grading the average.
+
+Averaging starts at a 1.75x reduction, not just above 1:1. A bilinear tap is
+a tent two source pixels wide, equivalent to a box of sqrt(2); N taps spread
+over (N-1)/N of the output pixel give sqrt(2 + R^2 (N^2-1)/N^2) against an
+ideal R. Matching equivalent widths is a sharpness criterion, and on it the
+two filters' error crosses at 16*sqrt(2)/13 = 1.741, rounded up to the 1.75
+floor. Below there the single tap is the closer approximation, so averaging
+would make a mild reduction softer rather than sharper. Judged on RMS error
+against the ideal footprint instead, averaging would win everywhere; this
+picks sharpness. The count is per axis, so a crop may magnify in x
+and average in y.
+
+This is not an AMD-only change - the kernel is shared, and NVIDIA's crop
+minifies too, though less of it reaches the threshold. The playcropper output
+is capped at 7680x4320 (`kMaxPlayCropperOutputWidth` in `configurator.cpp`,
+applied there for a known canvas and through `runtime-output-max-width` on
+the one-pass path) while the crop rect is not. A cropped Program on the
+14259x4893 and 14406x4694 canvases in `docs/native-canvas-memory.md` reduces
+only 1.13x and 1.09x, under the threshold, and is byte-identical to before. `no-crop`
+on those two takes the whole canvas against the capped output, 1.86x and
+1.88x, and is averaged. Camera Experiments previews 1280x720 from the
+replayed camera's own follower box, so its reduction tracks the recorded zoom
+and crosses the threshold at a box about 1260 px tall.
+
+Three things still alias. Reductions beyond 4x are capped; the sub-samples
+are uniform point taps rather than coverage-weighted, so this approximates a
+box filter rather than implementing one; and the scoreboard's own homography
+warp is untouched and still a single bilinear tap, so it aliases whenever the
+operator's source quad is larger than the overlay rect.
+
+`ResolveProgramArchives` still logs that the requested filter went unused
+rather than failing every AMD archive on the shared baseline's `algo2`.
+
+Averaging costs 1.9x to 2.3x the single tap where it applies and nothing
+where it does not. Measured per frame with the same geometry either way, 40
+frames after warmup. RX 9060 XT, 7466x4200 crop to UHD NV12 through
+`RenderProgramYuv`: 0.519 -> 1.18 ms. RTX 5090, same geometry 0.104 -> 0.205
+ms; `no-crop` 14259x4893 to its capped 7680x2634 RGBA output through
+`RenderProgram` 0.230 -> 0.434 ms; and the cropped 8699x4893 to 7680x4320
+case, which sits under the threshold, 0.326 -> 0.326 ms. The pipeline caps
+that last output at 7678 rather than 7680; the measurement used the round
+number and the ratio is the same to four digits.
+
+The tap count is a step function of a continuously varying crop, with no
+hysteresis, so a camera zooming across the threshold changes the filter width
+within one frame. Camera Experiments sweeps it routinely; AMD Program reaches
+it only across the widest part of the zoom range, and the NVIDIA archives sit
+on one side of it for a whole run.
 
 A desktop run already supplies `HSTREAM_JOB_MANIFEST`; default output names
 resolve inside that private workspace. After every output reaches EOS and AAC

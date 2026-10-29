@@ -295,7 +295,16 @@ schema is versioned and bounded. Compatibility is checked before restoring a fre
 tracker; deterministic continuation is tested on the same build/platform.
 
 The Qt preview reuses GPU decoding, the production playcropper, and the existing
-GPU renderer. Original-camera replay also reuses production chapter selection,
+GPU renderer. It renders 1280x720 from the replayed camera's own follower
+box, so its reduction tracks the recorded zoom: a box taller than about
+1260 px crosses the cropper's 1.75x threshold and is area averaged, with 2
+taps to 1440 px, 3 to 2160 px and 4 above that. Crossing the threshold
+mid-playback steps the filter width within one frame, so a zoom sweeping
+through it shows a sharpness change the Program encode of the same
+trajectory does not. The coordinate
+transform is the same as Program's; the filtering need not be, because
+Program renders a far larger output from the same box and so usually stays
+on the single bilinear tap. Original-camera replay also reuses production chapter selection,
 exact source pairing and GPU stitching. Raw seeks and loops rebuild this small
 source graph on a worker; chapter positioning seeks to a nearby keyframe and trims
 to the selected time. Maps are validated again against the prepared revision at
