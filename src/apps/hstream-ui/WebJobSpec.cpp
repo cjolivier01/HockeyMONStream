@@ -138,6 +138,7 @@ QJsonObject Capabilities() {
            "rink-editor-v1",
            "rink-map-v1",
            "rink-map-check-v1",
+           "web-preview-rink-map-v1",
            "highlight-frame-inspection-v1",
            "highlight-pinned-archive-v1",
            "highlight-archive-info-v1",

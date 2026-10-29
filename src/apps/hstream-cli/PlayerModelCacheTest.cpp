@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -220,6 +221,55 @@ void ReuseAndCorruption() {
       "Explicit built-in did not replace malformed legacy path");
   fixture.NoStaging();
 }
+void PrivateHomeReuse() {
+  Fixture fixture;
+  struct RestoreEnvironment {
+    std::map<std::string, std::optional<std::string>> values;
+    RestoreEnvironment() {
+      for (const char* name : {"HOME", "XDG_CACHE_HOME", "HSTREAM_ASSET_ROOTS"}) {
+        const char* value = std::getenv(name);
+        values[name] = value ? std::optional<std::string>(value) : std::nullopt;
+      }
+    }
+    ~RestoreEnvironment() {
+      for (const auto& [name, value] : values) {
+        if (value)
+          ::setenv(name.c_str(), value->c_str(), 1);
+        else
+          ::unsetenv(name.c_str());
+      }
+    }
+  } restore_environment;
+  const auto shared_cache = fixture.options.cache_root;
+  auto options = fixture.options;
+  options.cache_root.clear(); // Exercise the ordinary HOME-based selection.
+  ::unsetenv("XDG_CACHE_HOME");
+  ::setenv("HSTREAM_ASSET_ROOTS", shared_cache.c_str(), 1);
+  fs::path first_bundle;
+  fs::file_time_type engine_write_time;
+  for (const char* name : {"first-run", "second-run"}) {
+    const auto private_home = fixture.directory / name / "home";
+    fs::create_directories(private_home / ".cache/hstream");
+    fs::create_directory_symlink(shared_cache, private_home / ".cache/hstream/player-models");
+    ::setenv("HOME", private_home.c_str(), 1);
+    auto pipeline = fixture.Pipeline();
+    const auto status = PreparePlayerModelCache(pipeline, fixture.directory, options);
+    Expect(status.ok(), status.ToString());
+    const fs::path bundle = pipeline["player-analytics"]["pose"]["bundle"].as<std::string>();
+    Expect(Builds(fixture.journal) == 1, "A new private HOME rebuilt the shared player model");
+    if (first_bundle.empty()) {
+      first_bundle = bundle;
+      engine_write_time = fs::last_write_time(bundle / "model.engine");
+    } else {
+      Expect(
+          bundle == first_bundle && fs::last_write_time(bundle / "model.engine") == engine_write_time,
+          "Private HOME aliases did not preserve the canonical player bundle");
+    }
+    fs::remove_all(private_home);
+    Expect(fs::is_regular_file(bundle / "model.engine"), "Private HOME cleanup removed the shared model");
+  }
+  fixture.NoStaging();
+}
 void ResolvedReIdDevice() {
   const auto custom = [] {
     return YAML::Load(
@@ -408,6 +458,7 @@ int main(int argc, char** argv) {
       return Helper(argc, argv);
     OffAndCustom();
     ReuseAndCorruption();
+    PrivateHomeReuse();
     ResolvedReIdDevice();
     ResolvedAnalyticsDevice();
     FailedPreparation();

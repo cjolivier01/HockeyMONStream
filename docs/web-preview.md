@@ -13,8 +13,10 @@ admission. The native capability still requires one file-based pipeline with onl
 the owned WebRTC preview; archives, other network outputs, active telemetry and
 active calibration work reject seeks. The browser must wait for the native
 capability and timeline, and confirm the replacement generation with an exact
-decoded frame. Calibration seek hardware qualification remains pending until the
-paired Qt/browser workflow passes.
+decoded frame. The October 28 paired DeepStream 9.1 calibration tests passed
+forward/backward seeking, Pause with a queued seek, Resume with advancing
+frames, and graceful Stop. This qualifies that saved-calibration workflow;
+audio timing and the other playback paths remain separate checks.
 
 Normal-speed selectable preview now binds video headers and the raw Opus input
 through the shared `common/PacedPlayback` source-interval mapping. This owner is
@@ -26,6 +28,15 @@ timeline. Source and archive headers remain unchanged, and video stays on the
 GPU. Bounds come from `runtime.local_playback`; unpaced playback retains its
 existing path. Pipeline pause uses the ordinary system-clock base adjustment
 when no physical audio device owns the clock.
+
+Seek preroll reserves one shared playback epoch until the first accepted video
+interval. Repeated segments and audio flushes before that interval retain the
+reservation. Previously, committing it on SEGMENT could leave the retained Qt
+Stitched sink using an old epoch: every new preview frame was dropped while
+processing continued. Video and PCM still use their own SEGMENT-bound epoch;
+later flushes after recorded video invalidate that epoch normally. Portable
+pacing regressions cover both event orderings, rejected intervals and stale PCM.
+Paired playback tests must additionally check that displayed frames advance.
 
 Qt retains Render, preview-tab and diagnostic-overlay edits while its native
 process pause is preparing, SIGSTOP-paused or waiting for Resume confirmation.
@@ -502,6 +513,30 @@ ICE and DTLS state. Reusing a previous transport after a browser reload is not
 supported. Disconnected inputs drain to nonblocking sinks; connecting inputs
 remain gated until the new transport reports connected. This does not copy or
 map video frames: the endpoint only handles already-encoded RTP.
+
+Each fresh peer configures its shared `rtpbin` with
+`ntp-time-source=running-time` before creating its audio/video sessions. Sender
+reports then use the same pipeline presentation clock as the RTP timestamps.
+With wall-clock NTP, Pause stopped RTP time while NTP kept advancing; Resume
+changed both streams' RTP/NTP mapping even though their packet timestamps and
+source identities remained correct. Independently fitted receiver histories can
+turn that common change into unequal audio/video delay. The relative clock keeps
+the sender mapping stable across Pause without rewriting RTP, presentation
+receipts, source PTS, audio pacing or archive timestamps. Unsupported clock
+configuration fails peer creation instead of silently retaining wall-clock NTP.
+
+These NTP values describe relative presentation time, not UTC capture time.
+Receiver reports spanning Pause cannot establish wall elapsed round-trip delay;
+fresh sender reports are required after Resume. A pipeline clock-origin reset
+must retire its peer: browser seeks already stop the old preview and recreate
+the complete pipeline/peer, while route changes retain their existing clock.
+Authored Highlights uses this same endpoint on its continuous reel timeline and
+retires signaling before EOS/NULL. The CPU `webrtc_sender_clock_test` negotiates
+two successive loopback peers, checks actual audio/video sender-report mappings
+across a paused base-time adjustment, and verifies unchanged RTP identities and
+presentation headers. It uses encoded test packets with no decoder or audio
+device. This checks the sender contract; browser PCM/display timing still needs
+an independent repeat of the previously failing capture.
 
 The native sender initiates SDP negotiation. After all encoded input caps are
 available, it sends `{"type":"offer","sdp":"..."}`; the browser applies it and

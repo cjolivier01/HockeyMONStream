@@ -122,9 +122,9 @@ struct PacedPlayback::Impl {
   void Cancel() {
     std::lock_guard<std::mutex> lock(mutex);
     RestorePauseStartTimeLocked();
-    // Audio can reopen preroll waits and then flush again before the recorder
-    // sees its new SEGMENT. Reserve one video epoch for that whole restart:
-    // retained preview sinks may already have captured it on their SEGMENT.
+    // Audio can flush again after the recorder's SEGMENT but before its first
+    // video interval. Reserve one epoch for that whole preroll: retained
+    // preview sinks may already have captured it on their SEGMENT.
     if (!restart_pending)
       ++epoch;
     restart_pending = true;
@@ -140,15 +140,16 @@ struct PacedPlayback::Impl {
   }
   guint64 Start() {
     std::lock_guard<std::mutex> lock(mutex);
-    // A new unflushed segment also invalidates outstanding audio waits. The
-    // initial segment retains the epoch so audio may preroll ahead of video.
-    if (active) {
+    // A new segment after recorded video invalidates outstanding audio waits.
+    // Preroll can repeat segments before any interval is recorded; those
+    // segments retain the epoch already captured by upstream preview branches.
+    if (active && !restart_pending) {
       ++epoch;
       audio_end = GST_CLOCK_TIME_NONE;
       audio_ended = false;
     }
     active = true;
-    restart_pending = false;
+    restart_pending = true;
     cancelled = false;
     ended = false;
     history.clear();
@@ -252,6 +253,9 @@ struct PacedPlayback::Impl {
         return GST_FLOW_ERROR;
     }
     history.push_back({start, start + duration, -1});
+    // Only accepted video commits the epoch. A segment alone cannot close the
+    // reservation while replacement sources may still flush during preroll.
+    restart_pending = false;
     GST_LOG(
         "record epoch=%" G_GUINT64_FORMAT " start=%" G_GUINT64_FORMAT " end=%" G_GUINT64_FORMAT
         " audio-end=%" G_GUINT64_FORMAT,

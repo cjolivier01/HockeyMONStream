@@ -1,4 +1,5 @@
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 
 #include <QtCore/QElapsedTimer>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -40,6 +42,27 @@ struct HStreamWindowTestAccess {
     window.resolveArchiveJobLogPath(path);
     window.appendLog("managed test log");
   }
+  static void finish(
+      HStreamWindow& window,
+      const fs::path& manifest,
+      const fs::path& source,
+      bool telemetry_only,
+      int exit_code,
+      QProcess::ExitStatus exit_status,
+      bool stopped_by_user) {
+    window.managed_archive_manifest_ = QString::fromStdString(manifest.string());
+    window.active_run_game_id_ = "game";
+    window.active_run_telemetry_requested_ = telemetry_only;
+    window.pipeline_stop_requested_ = stopped_by_user;
+    window.calibration_pending_ = false;
+    window.archive_finalize_failed_ = false;
+    if (!telemetry_only) {
+      window.active_archive_output_path_ = QString::fromStdString(source.string());
+      window.active_archive_initial_size_ = -1;
+      window.active_archive_initial_mtime_ms_ = -1;
+    }
+    window.handlePipelineFinished(exit_code, exit_status);
+  }
   static bool busy(const HStreamWindow& window) {
     return window.telemetry_publication_worker_ != nullptr;
   }
@@ -56,6 +79,17 @@ struct HStreamWindowTestAccess {
 void require(bool value, const std::string& message) {
   if (!value)
     throw std::runtime_error(message);
+}
+std::string readFile(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  require(input.good(), "read retained file: " + path.string());
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+size_t countFiles(const fs::path& directory, const std::string& extension) {
+  size_t count = 0;
+  for (const auto& entry : fs::directory_iterator(directory))
+    count += entry.path().extension() == extension;
+  return count;
 }
 int main(int argc, char** argv) {
   QTemporaryDir root;
@@ -103,6 +137,86 @@ int main(int argc, char** argv) {
     require(
         HStreamWindowTestAccess::clean(window, clean_helper, clean_env), "clean helper cannot close the archive run");
     require(clean_env.contains("HSTREAM_JOB_MANIFEST"), "archive launch environment retains its manifest");
+    for (const bool telemetry_only : {true, false}) {
+      for (const std::string outcome : {"nonzero", "crash", "graceful-stop"}) {
+        const bool success = outcome == "graceful-stop";
+        const std::string id = std::string("ui-finished-") + (telemetry_only ? "telemetry-" : "video-") + outcome;
+        const auto finished_game = path / id / "game";
+        fs::create_directories(finished_game);
+        const auto manifest = hm::publication::CreateRun(finished_game, path / "work", id);
+        hm::publication::BeginRun(manifest, telemetry_only, telemetry_only);
+        setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+        const auto source = manifest.parent_path() / (telemetry_only ? "game_telemetry-1.db" : "program.mkv");
+        if (telemetry_only) {
+          std::ofstream(source).close();
+          hm::recording::Database database(source.string(), true);
+          database.Exec(hm::recording::Schema());
+          database.Exec("INSERT INTO runs VALUES('test-run','game','today','test','{}','{}',1,'end-of-stream',1)");
+        } else {
+          fs::copy_file(fixture, source);
+        }
+        hm::publication::RegisterOutput(source, telemetry_only ? "telemetry" : "program");
+        HStreamWindowTestAccess::openLog(window, source);
+        const auto log = source.string() + ".log";
+        const auto guard = log + ".hstream-pin";
+        require(fs::exists(log) && fs::equivalent(log, guard), id + ": log identity is pinned");
+        hm::publication::CompletePipeline(true, 2000);
+        unsetenv("HSTREAM_JOB_MANIFEST");
+        const auto receipt = hm::publication::ReceiptPath(finished_game, id);
+        const auto manifest_before = readFile(manifest);
+        const auto receipt_before = readFile(receipt);
+        const auto source_before = readFile(source);
+        const auto log_before = readFile(log);
+        const auto log_offset = window.logText().size();
+        require(hm::publication::PipelineCompleted(manifest), id + ": runner encoded its output before exiting");
+        HStreamWindowTestAccess::finish(
+            window,
+            manifest,
+            source,
+            telemetry_only,
+            outcome == "nonzero" ? 42 : 0,
+            outcome == "crash" ? QProcess::CrashExit : QProcess::NormalExit,
+            success);
+        if (!success) {
+          require(!HStreamWindowTestAccess::busy(window), id + ": failed runner cannot start publication");
+          require(
+              countFiles(finished_game, ".db") == 0 && countFiles(finished_game, ".mp4") == 0,
+              id + ": failed runner publishes no output");
+          require(
+              readFile(manifest) == manifest_before && readFile(receipt) == receipt_before &&
+                  readFile(source) == source_before,
+              id + ": failure preserves encoded manifest, admission receipt and source bytes");
+          require(
+              fs::equivalent(log, guard) && readFile(log).find(log_before) == 0,
+              id + ": failure retains log content and its identity guard");
+          require(
+              window.logText()
+                  .mid(log_offset)
+                  .contains("Managed outputs not published: pipeline did not complete successfully"),
+              id + ": failure explains why working outputs were retained");
+          if (!telemetry_only)
+            require(
+                HStreamWindowTestAccess::state(window, "archive-file") == "INCOMPLETE",
+                id + ": failed video remains incomplete");
+        } else {
+          QElapsedTimer timeout;
+          timeout.start();
+          while (HStreamWindowTestAccess::busy(window) && timeout.elapsed() < 15000)
+            QTest::qWait(20);
+          require(
+              !HStreamWindowTestAccess::busy(window) && !HStreamWindowTestAccess::failed(window),
+              id + ": graceful Stop completes publication");
+          require(
+              YAML::LoadFile(receipt.string())["state"].as<std::string>() == "complete" &&
+                  countFiles(finished_game, ".db") == (telemetry_only ? 1 : 0) &&
+                  countFiles(finished_game, ".mp4") == (telemetry_only ? 0 : 1),
+              id + ": graceful Stop publishes exactly the requested output");
+          require(
+              !fs::exists(manifest.parent_path()) && !fs::exists(log) && !fs::exists(guard),
+              id + ": successful publication removes workspace and log identities");
+        }
+      }
+    }
     for (const bool failed : {false, true}) {
       const std::string id = failed ? "ui-explicitly-failed" : "ui-incomplete-managed";
       const auto manifest = hm::publication::CreateRun(game, path / "work", id);

@@ -39,6 +39,19 @@ struct WebPreviewOptions {
 };
 
 absl::StatusOr<WebPreviewOptions> ReadWebPreviewOptions(const YAML::Node& resolved);
+struct WebPreviewRinkMapOptions {
+  bool enabled;
+  std::string size, position;
+};
+// Only the code crosses this public boundary; helper output and private paths
+// belong in native diagnostics, never in the bounded frame-status protocol.
+std::string WebPreviewRinkMapFailureReason(absl::StatusCode code);
+// The admitted environment overrides required baseline-backed preferences.
+absl::StatusOr<WebPreviewRinkMapOptions> ReadWebPreviewRinkMapOptions(
+    const YAML::Node& resolved,
+    const char* enabled,
+    const char* size,
+    const char* position);
 bool ValidWebPreviewRun(const std::string& run);
 absl::StatusOr<RouteOwner::Request> ParseWebPreviewRoute(const std::string& json);
 std::string WebPreviewRouteReply(const RouteOwner::Request& request, const RouteOwner::Result& result);
@@ -138,6 +151,7 @@ struct WebPreviewOverlayArtifact {
   RouteOwner::Session session;
   uint64_t operation, generation;
   std::string channel, status, reason;
+  std::string artifact{"rink-mask"};
 };
 std::string WebPreviewOverlayArtifactEvent(const WebPreviewOverlayArtifact& artifact);
 // Bounded producer-to-main-context status. Readback can replay the last status
@@ -151,6 +165,12 @@ class WebPreviewOverlayArtifactMailbox {
       uint64_t operation,
       const std::string& channel,
       const pipeline_internal::PreviewOverlayCommand& overlays);
+  std::optional<WebPreviewOverlayArtifact> Take(
+      const RouteOwner::Session& session,
+      uint64_t operation,
+      const std::string& channel,
+      uint64_t generation,
+      bool enabled);
 
  private:
   std::mutex mutex_;

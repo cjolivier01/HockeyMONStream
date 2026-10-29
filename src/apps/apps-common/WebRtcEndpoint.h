@@ -10,6 +10,8 @@ namespace hstream {
 // create(), which follows the usual floating GstElement factory convention.
 // Managed readiness snapshots/application are thread-safe nonstructural updates;
 // the readiness worker may apply them after draining its upstream RTP boundary.
+// RTP and RTCP sender reports share pipeline running time across Pause/Resume.
+// Replacing the pipeline clock origin requires retiring the peer first.
 GstElement* webrtc_endpoint_create(const char* name, const char* stun_server);
 GstPad* webrtc_endpoint_add_track(GstElement* endpoint, GstCaps* caps);
 GstElement* webrtc_endpoint_reset_peer(GstElement* endpoint);

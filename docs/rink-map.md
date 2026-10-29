@@ -188,7 +188,7 @@ startup, so an exported job cannot silently ignore an unusable map.
 
 After saving a reviewed, fitted map, leave **Show rink mini-map during playback**
 checked under **Stitched → Rink**, then start playback. The Program and Stitched
-desktop GPU previews show an overhead rink with player circles in the same
+desktop and selectable browser GPU previews show an overhead rink with player circles in the same
 track colours as their detection boxes, including when boxes are hidden. Once
 the team feature has named the two sides, the circles switch to showing
 affiliation instead: navy blue for Home, orange for Away, and hollow for a skater
@@ -197,7 +197,8 @@ which sweaters they wear. Without a home-sweater mapping, DARK/LIGHT sides
 retain dark/light fills. A game where nothing has been named keeps the track
 colours, so a run with teams off looks as it always did. The setting applies
 on the next playback and works independently of player boxes.
-It currently requires the embedded NVIDIA X11 GPU preview on x86. **Mini-map size** offers
+Desktop preview requires the embedded NVIDIA X11 renderer on x86; the browser
+uses its existing selectable NVIDIA GPU surface. **Mini-map size** offers
 Icon, Compact, Standard and Large. Icon is half Compact's width and height.
 **Mini-map position** defaults to Upper right and
 also offers Upper left and Lower left. Existing saved placement is retained. These preferences apply on the next playback and keep the complete panel
@@ -211,6 +212,20 @@ when the selected backend, run mode or rendering choice cannot show the map.
 If playback starts with Render video off, restart with it enabled to prepare the map.
 A prepared map still requires matching current-frame geometry to appear. Status
 messages are fenced by the active run and preview channel.
+
+The browser freezes enable, size and position at Play. Their required defaults
+come from `hstream_ui.preview_rink_map` in the shared baseline. Native
+`WebPreviewSession` prepares the same reviewed map before graph activation and
+passes a separate Program/Stitched `RinkMiniMap` into `PreviewOverlayScene` and
+the existing GPU painter. Source routes do not draw it. Map preparation failure
+leaves ordinary video available; enabling rink-aware camera framing retains its
+separate required-map gate. No frame readback or per-frame map loading is added.
+The native `web-preview-rink-map-v1` feature and `rinkMiniMapVersion: 1` preview
+capability identify support. `rink-mini-map` artifact events carry the current
+run/stage/topology/operation/channel, with generation zero for the immutable
+next-Play choice. They are independent of the live `rink-mask` selection epoch.
+CPU scene and mailbox checks cover those fences; paired decoded browser/Qt
+mini-map presentation remains a separate qualification.
 
 Each circle projects a tracked player's box bottom-centre onto the ice plane.
 Positions are estimates: occlusion, loose boxes, calibration error and assumed

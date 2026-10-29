@@ -866,6 +866,11 @@ boundaries, processing stalls, queued pause/resume and READY reconstruction. It
 also verifies exact archive samples/PTS, cancellation and history/device bounds.
 PCM placement is compared to video targets in device sample positions, separately
 from wall-time skew; late device-period publication is scheduled explicitly.
+The shared seek fix keeps preroll segments and repeated audio flushes in one
+reserved epoch until the first accepted video interval. Its CPU regression
+reproduces the old retained-preview freeze and checks stale video/PCM rejection.
+The playback, bounds and configuration suites pass on `ripper` with the ROCm
+build configuration; no AMD-specific pacing implementation is substituted.
 ROCm compilation and CPU checks on `ripper` do not qualify audible AMD hardware
 playback. Sustained real-device pause/seek/Stop and source-correlated PCM remain
 required before claiming normal-speed audio parity.
@@ -1280,6 +1285,6 @@ Qt and both CLI backends now resolve initial Player boxes / Play tracking /
 Rink mask selections from required `preview_overlays` baseline settings. An
 explicit `HSTREAM_UI_PREVIEW_OVERLAYS` launch selection replaces those values.
 The AMD local preview still supports only Player boxes: Play/Rink settings
-fail explicitly. The new fenced selectable-browser overlay protocol and mask
-consumer belong to the NVIDIA WebPreviewSession; no AMD browser-target or
+fail explicitly. The fenced selectable-browser overlay protocol, mask and
+next-Play mini-map consumer belong to the NVIDIA WebPreviewSession; no AMD browser-target or
 EGL/HIP interoperability qualification is implied.

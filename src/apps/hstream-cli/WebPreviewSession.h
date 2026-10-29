@@ -5,10 +5,15 @@
 #include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
 #include "hstream/src/apps/apps-common/RotationFrameFence.h"
 #include "hstream/src/apps/apps-common/WebPreviewTarget.h"
+#include "hstream/src/libs/draw_display/RinkMiniMapOptions.h"
 
 #include <memory>
 
 struct PipelineSeekAdmissionTestAccess;
+
+namespace hm::stitching {
+struct PlaybackRinkMap;
+}
 
 namespace hm::preview {
 
@@ -25,6 +30,12 @@ class WebPreviewSession {
       const std::string& retained_selection,
       const std::string& game_dir);
   ~WebPreviewSession();
+  // Startup only, before Attach. The map is prepared once outside the video
+  // callback; a missing optional map keeps video available with a fenced notice.
+  void ConfigureRinkMiniMap(
+      std::shared_ptr<const stitching::PlaybackRinkMap> map,
+      draw_display::RinkMiniMapOptions options,
+      std::string unavailable_reason);
   absl::Status Attach(const std::function<bool()>& reconcile_overlays);
   void SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation);
   // Called after publishing a matching query acknowledgment, including paused readback.

@@ -106,9 +106,9 @@ must be reconciled with that source while preserving unrelated launch behavior.
 
 ## Shared preview drawing
 
-`HmGpuPreview.cpp` currently prepares preview paths, analytics, and rink-map
-commands and draws them in GL. Those final GL overlays are not present in the
-ordinary WebRTC encoder input.
+`HmGpuPreview.cpp` prepares preview paths, analytics, and rink-map commands and
+draws them in GL. Selectable WebRTC uses the same scene preparation on its owned
+GPU surface; the legacy WebRTC encoder input does not include desktop GL overlays.
 
 Shared `PreviewOverlayScene` preparation and the owned-surface
 `PreviewOverlayPainter` now reuse
@@ -117,6 +117,16 @@ Shared `PreviewOverlayScene` preparation and the owned-surface
 adapter and browser GPU compositor must consume the same prepared drawing and
 coordinate transforms, including baked-layer suppression and stale geometry
 checks.
+
+The browser mini-map is a next-Play choice with required
+`hstream_ui.preview_rink_map` baseline defaults. `WebPreviewSession` receives the
+prepared immutable map before route activation and owns one renderer per
+Program/Stitched route. Native startup keeps the track-snapshot producer enabled
+independently of visible player boxes. Bounded `rink-mini-map` artifact notices
+share the existing status mailbox and exact route/session fences, with a fixed
+generation zero separate from mutable mask selections. Missing/stale maps keep
+ordinary video available. Neither map preparation nor status handling reads back
+video; full decoded Qt/browser comparison remains a runtime gate.
 
 The browser adapter composes into an owned bounded preview surface. It does
 not mutate a borrowed processing/archive surface shared across a tee. Immutable

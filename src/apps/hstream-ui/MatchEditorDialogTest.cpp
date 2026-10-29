@@ -7,6 +7,8 @@
 #include <iostream>
 #include <stdexcept>
 
+#include <QtTest/qtest_widgets.h>
+#include <QtTest/qtestmouse.h>
 #include <QtCore/QDebug>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QTemporaryDir>
@@ -17,13 +19,16 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QScreen>
 #include <QtGui/QWindow>
+#include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QStyleOptionSpinBox>
 
 namespace {
 void require(bool condition, const char* message) {
@@ -338,6 +343,101 @@ int main(int argc, char** argv) {
     QApplication::processEvents();
     require(
         !unexpected_prompt && !restored.isVisible(), "Unchanged matches must close without confirmation after undo");
+    // Compare actual spin-box events, including pending keyboard-tracking-off
+    // edits. Browser numeric input lattice stepping is not this additive contract.
+    auto stepping_input = automatic;
+    const QString larger_path = root.path() + "/larger-camera.png";
+    require(image.scaled(1024, 512).save(larger_path), "Cannot save larger pair fixture");
+    stepping_input.frames[1].images = {larger_path.toStdString(), larger_path.toStdString()};
+    stepping_input.frames[1].sizes = {cv::Size(1024, 512), cv::Size(1024, 512)};
+    MatchEditorDialog stepping(stepping_input, stepping_input, &owner);
+    stepping.show();
+    QApplication::processEvents();
+    auto* step_x = widget<QDoubleSpinBox>(stepping, "matchEditorCoordinate0");
+    auto* step_undo = widget<QPushButton>(stepping, "matchEditorUndo");
+    auto* step_redo = widget<QPushButton>(stepping, "matchEditorRedo");
+    struct StepCase {
+      Qt::Key key;
+      Qt::KeyboardModifiers modifiers;
+      float expected;
+    };
+    for (const auto& test :
+         {StepCase{Qt::Key_Up, Qt::NoModifier, 31.625f},
+          StepCase{Qt::Key_Down, Qt::NoModifier, 31.125f},
+          StepCase{Qt::Key_Up, Qt::ControlModifier, 33.875f},
+          StepCase{Qt::Key_Down, Qt::ControlModifier, 28.875f},
+          StepCase{Qt::Key_Up, Qt::ShiftModifier, 31.625f},
+          StepCase{Qt::Key_Up, Qt::AltModifier, 31.625f},
+          StepCase{Qt::Key_Up, Qt::MetaModifier, 31.625f},
+          StepCase{Qt::Key_PageUp, Qt::NoModifier, 33.875f},
+          StepCase{Qt::Key_PageDown, Qt::NoModifier, 28.875f},
+          StepCase{Qt::Key_PageUp, Qt::ControlModifier, 33.875f}}) {
+      for (bool pending : {false, true}) {
+        const float before = pending ? 34.25f : 31.375f;
+        step_x->setValue(before);
+        step_x->setFocus();
+        if (pending) {
+          step_x->selectAll();
+          QTest::keyClicks(step_x, "31.375");
+          require(stepping.editedSet().frames[0].matches[0].left.x == before, "Pending typed edit committed early");
+        }
+        QTest::keyClick(step_x, test.key, test.modifiers);
+        require(stepping.editedSet().frames[0].matches[0].left.x == test.expected, "Qt additive key step changed");
+        step_undo->click();
+        require(stepping.editedSet().frames[0].matches[0].left.x == before, "Pending text and step must undo together");
+        step_redo->click();
+        require(stepping.editedSet().frames[0].matches[0].left.x == test.expected, "Step redo changed the endpoint");
+      }
+    }
+    step_x->setValue(31.375);
+    step_x->setFocus();
+    step_x->selectAll();
+    QTest::keyClicks(step_x, "-");
+    QTest::keyClick(step_x, Qt::Key_Up);
+    require(step_x->value() == 31.375, "Invalid pending text must restore without stepping");
+    step_x->setValue(0.125);
+    QTest::keyClick(step_x, Qt::Key_Down);
+    require(step_x->value() == 0, "Step must clamp to the lower endpoint");
+    step_x->setValue(511.875);
+    QTest::keyClick(step_x, Qt::Key_Up);
+    require(
+        stepping.editedSet().frames[0].matches[0].left.x == std::nextafter(512.f, 0.f),
+        "Step must clamp below the original-image dimension");
+    step_x->setValue(31.375);
+    QStyleOptionSpinBox spin_option;
+    spin_option.initFrom(step_x);
+    spin_option.rect = step_x->rect();
+    spin_option.frame = true;
+    spin_option.buttonSymbols = QAbstractSpinBox::UpDownArrows;
+    spin_option.stepEnabled = QAbstractSpinBox::StepUpEnabled | QAbstractSpinBox::StepDownEnabled;
+    const QPoint up =
+        step_x->style()->subControlRect(QStyle::CC_SpinBox, &spin_option, QStyle::SC_SpinBoxUp, step_x).center();
+    QTest::mouseClick(step_x, Qt::LeftButton, Qt::NoModifier, up);
+    require(step_x->value() == 31.625, "Spinner click must add to the fractional value");
+    QTest::mouseClick(step_x, Qt::LeftButton, Qt::ControlModifier, up);
+    require(step_x->value() == 34.125, "Ctrl spinner click must add ten steps");
+    QTest::mouseMove(step_x, up);
+    QTest::mousePress(step_x, Qt::LeftButton, Qt::NoModifier, up);
+    QTest::qWait(900);
+    QTest::mouseRelease(step_x, Qt::LeftButton, Qt::NoModifier, up);
+    const double held = step_x->value();
+    require(held > 34.375 && std::fmod(held - 34.125, 0.25) == 0, "Held spinner must repeat additive increments");
+    std::cout << "Native spinner after a 900 ms hold: " << held << '\n';
+    QTest::qWait(200);
+    require(step_x->value() == held, "Released spinner must stop repeating");
+    auto* step_pairs = widget<QComboBox>(stepping, "matchEditorPair");
+    step_pairs->setCurrentIndex(1);
+    require(float(step_x->maximum()) == std::nextafter(1024.f, 0.f), "Larger pair must update coordinate bounds");
+    step_pairs->setCurrentIndex(0);
+    require(float(step_x->maximum()) == std::nextafter(512.f, 0.f), "Returning pair must restore coordinate bounds");
+    QTest::mouseMove(step_x, up);
+    QTest::mousePress(step_x, Qt::LeftButton, Qt::NoModifier, up);
+    stepping.setSaving(true);
+    const double saving_value = step_x->value();
+    QTest::qWait(700);
+    QTest::mouseRelease(step_x, Qt::LeftButton, Qt::NoModifier, up);
+    require(!step_x->isEnabled() && step_x->value() == saving_value, "Saving must retire held numeric stepping");
+    stepping.accept();
     automatic.frames[0].images[0] = root.path().toStdString() + "/missing.png";
     MatchEditorDialog missing(automatic, automatic);
     require(

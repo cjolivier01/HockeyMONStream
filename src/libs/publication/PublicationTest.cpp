@@ -1,5 +1,5 @@
-#include "hstream/src/libs/publication/Cleanup.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/publication/Cleanup.h"
 #include "hstream/src/libs/recording/Database.h"
 
 #include <fcntl.h>
@@ -185,6 +185,56 @@ int main(int argc, char** argv) {
       require(!fs::exists(root / "game/runs" / id), "telemetry-only scratch removed after publication");
       require(pub::RunJob(game, root, id, {"/bin/false"}, {}, true) == 0, "telemetry-only retry is idempotent");
       require(count(game, ".db") == 1, "telemetry-only retry does not republish");
+    }
+    for (const std::string mode : {"success", "empty", "extra-video", "failed"}) {
+      const auto game = base / ("desktop-telemetry-" + mode) / "game";
+      const auto root = game.parent_path() / "work";
+      const std::string id = "run-desktop-telemetry";
+      fs::create_directories(game);
+      const auto manifest = pub::CreateRun(game, root, id);
+      bool refused = false;
+      try {
+        pub::BeginRun(manifest, false, true);
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(
+          refused && YAML::LoadFile(manifest.string())["state"].as<std::string>() == "created",
+          "telemetry-only admission cannot disable capture or consume a rejected admission");
+      pub::BeginRun(manifest, true, true);
+      setenv("HSTREAM_JOB_MANIFEST", manifest.c_str(), 1);
+      refused = false;
+      try {
+        if (mode == "empty" || mode == "failed")
+          pub::CompletePipeline(mode != "failed", 0);
+        else
+          produce(fixture, false, false, mode == "success");
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      unsetenv("HSTREAM_JOB_MANIFEST");
+      require(refused == (mode == "empty" || mode == "extra-video"), "desktop telemetry preserves its output set");
+      refused = false;
+      try {
+        pub::Finalize(manifest);
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(refused == (mode != "success"), "desktop telemetry publishes only a completed requested output");
+      if (mode == "success") {
+        const auto receipt = YAML::LoadFile(pub::ReceiptPath(game, id).string());
+        require(
+            receipt["state"].as<std::string>() == "complete" && receipt["telemetry_only"].as<bool>() &&
+                receipt["artifacts"].size() == 1 && receipt["artifacts"][0]["kind"].as<std::string>() == "telemetry" &&
+                count(game, ".db") == 1 && count(game, ".mp4") == 0 && !fs::exists(manifest.parent_path()),
+            "desktop telemetry-only publication retains one verified database and removes its private workspace");
+        pub::Finalize(pub::ReceiptPath(game, id));
+        require(count(game, ".db") == 1, "desktop telemetry-only publication retry is idempotent");
+      } else {
+        require(
+            count(game, ".db") == 0 && count(game, ".mp4") == 0 && fs::exists(manifest.parent_path()),
+            "failed desktop telemetry cannot publish or remove its retained private workspace");
+      }
     }
     for (const char* mode : {"--telemetry-only", "--empty", "--video-only", "--disable-telemetry", "--calibration"}) {
       const bool telemetry_only = std::string(mode) != "--telemetry-only";

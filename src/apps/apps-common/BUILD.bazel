@@ -455,6 +455,7 @@ cc_test(
     deps = [
         ":preview_overlay_scene",
         "//src/libs/common:preview_overlay_meta",
+        "//src/libs/draw_display:rink_mini_map",
         "//src/libs/stitching:stitching",
         "@deepstream//:deepstream_lib",
     ],
@@ -851,6 +852,13 @@ cc_library(
 cc_test(
     name = "webrtc_endpoint_test",
     srcs = ["WebRtcEndpointTest.cpp"],
+    copts = ["-DGST_USE_UNSTABLE_API"],
+    deps = [":webrtc_endpoint"],
+)
+
+cc_test(
+    name = "webrtc_sender_clock_test",
+    srcs = ["WebRtcSenderClockTest.cpp"],
     copts = ["-DGST_USE_UNSTABLE_API"],
     deps = [":webrtc_endpoint"],
 )

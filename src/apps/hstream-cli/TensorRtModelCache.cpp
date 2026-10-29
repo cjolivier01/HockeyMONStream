@@ -359,13 +359,22 @@ absl::StatusOr<std::string> inference_build_digest(
           kind == InferencePropertyKind::kPathList ? split_path_list(value) : std::vector<std::string>{value};
       for (size_t index = 0; index < paths.size(); ++index) {
         const fs::path input = resolve_path(paths[index], inference_path.parent_path());
+        std::error_code error;
+        const bool regular_file = fs::is_regular_file(input, error) && !error;
+        fs::path identity = fs::absolute(input).lexically_normal();
+        if (regular_file) {
+          // Private run HOME directories may alias the same shared model cache.
+          // Key the actual file and its bytes, not the disposable launch path.
+          identity = fs::canonical(input, error);
+          if (error)
+            return absl::FailedPreconditionError("Unable to resolve TensorRT input: " + error.message());
+        }
         fingerprint << "input:" << key;
         if (kind == InferencePropertyKind::kPathList)
           fingerprint << '[' << index << ']';
-        fingerprint << '=' << fs::absolute(input).lexically_normal().string() << '\n';
-        std::error_code error;
-        if (fs::is_regular_file(input, error) && !error) {
-          auto hash = hm::assets::AssetManager::Sha256(input);
+        fingerprint << '=' << identity.string() << '\n';
+        if (regular_file) {
+          auto hash = hm::assets::AssetManager::Sha256(identity);
           if (!hash.ok())
             return hash.status();
           fingerprint << "sha256:" << *hash << '\n';
