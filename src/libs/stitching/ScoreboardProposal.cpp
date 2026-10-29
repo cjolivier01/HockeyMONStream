@@ -45,9 +45,10 @@ absl::StatusOr<std::optional<ScoreboardProposal>> SuggestScoreboard(
     spec.sha256 = kDigest;
     spec.target = path;
     spec.on_demand = true;
-    const auto status = hm::assets::AssetManager::EnsureAsset(spec, {}, cancelled);
-    if (!status.ok())
-      return status;
+    const auto verified = hm::assets::AssetManager::EnsureCacheAsset(spec, {}, cancelled);
+    if (!verified.ok())
+      return verified.status();
+    path = verified->target;
   }
 #if defined(HSTREAM_SCOREBOARD_CPU_ONLY)
   // This is a bounded offline still suggestion. The installed ORT build has

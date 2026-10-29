@@ -1100,6 +1100,32 @@ absl::Status AssetManager::EnsureAsset(
   return ensure_one(spec, limits, &total, cancelled, true);
 }
 
+absl::StatusOr<AssetSpec> AssetManager::EnsureCacheAsset(
+    const AssetSpec& spec,
+    const Limits& limits,
+    const std::function<bool()>& cancelled) {
+  if (cancelled && cancelled())
+    return absl::CancelledError("Asset preparation cancelled");
+  const fs::path filename = spec.target.filename();
+  if (!spec.target.is_absolute() || filename.empty() || filename == "." || filename == "..")
+    return absl::InvalidArgumentError("Cache asset requires an absolute file target");
+  std::error_code error;
+  const fs::path parent = fs::weakly_canonical(spec.target.parent_path(), error);
+  if (error)
+    return absl::PermissionDeniedError("Unable to resolve asset cache directory: " + error.message());
+  AssetSpec verified = spec;
+  verified.target = parent / filename;
+  // Do not use EnsureAsset's trusted selected-target exemption for cache
+  // aliases. Resolve the directory first, then authorize the actual location.
+  auto status = validate_target(verified);
+  if (!status.ok())
+    return status;
+  status = EnsureAsset(verified, limits, cancelled);
+  if (!status.ok())
+    return status;
+  return verified;
+}
+
 absl::Status AssetManager::Verify(const std::vector<fs::path>& configs, const Limits& limits) {
   auto assets = Discover(configs, limits);
   if (!assets.ok())

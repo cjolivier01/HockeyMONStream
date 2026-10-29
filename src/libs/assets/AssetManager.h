@@ -100,6 +100,14 @@ class AssetManager {
       const AssetSpec& spec,
       const Limits& limits = {},
       const std::function<bool()>& cancelled = {});
+  // Resolves a shared cache directory alias, then ensures its target is inside
+  // the approved asset roots. Only the parent is resolved: the asset itself
+  // may not be a symlink. Callers must consume the returned verified target,
+  // not the original alias. EnsureAsset's digest, limits and cancellation apply.
+  static absl::StatusOr<AssetSpec> EnsureCacheAsset(
+      const AssetSpec& spec,
+      const Limits& limits = {},
+      const std::function<bool()>& cancelled = {});
   static absl::Status Verify(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::Status VerifyPackageAssets(const std::vector<std::filesystem::path>& configs, const Limits& limits = {});
   static absl::StatusOr<std::string> Sha256(
