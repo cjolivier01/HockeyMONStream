@@ -411,7 +411,11 @@ struct MatchEditorDialog::Impl {
         field->setEnabled(active && have_selection && !adding);
         if (validPair()) {
           const auto size = set.frames[pair].sizes[camera];
-          field->setRange(0, std::nextafter(float(axis ? size.height : size.width), 0.0f));
+          const float maximum = std::nextafter(float(axis ? size.height : size.width), 0.0f);
+          // setRange resets Qt's held-button repeat even when the range is unchanged.
+          // The spin box rounds its bound to nine decimals; compare native floats.
+          if (field->minimum() != 0 || float(field->maximum()) != maximum)
+            field->setRange(0, maximum);
           const auto p = have_selection ? endpoint(matches()[selected], camera) : QPointF();
           field->setValue(axis ? p.y() : p.x());
         }
