@@ -7,6 +7,7 @@
 #include <gst/webrtc/webrtc.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -151,6 +152,7 @@ void run() {
   gst_bin_add(GST_BIN(pipeline), endpoint);
   std::array<GstElement*, 2> sources{};
   std::array<GstPad*, 2> inputs{};
+  std::array<std::atomic<unsigned>, 2> source_requests{};
   const std::array<const char*, 2> caps_text{
       "application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000,packetization-mode=(string)1",
       "application/x-rtp,media=audio,encoding-name=OPUS,payload=97,clock-rate=48000,encoding-params=(string)2"};
@@ -160,6 +162,11 @@ void run() {
     gst_caps_set_simple(caps, "ssrc", G_TYPE_UINT, kSsrc[i], nullptr);
     inputs[i] = hstream::webrtc_endpoint_add_track(endpoint, caps);
     check(sources[i] && inputs[i], "could not create source/track");
+    g_signal_connect(
+        sources[i],
+        "need-data",
+        G_CALLBACK(+[](GstElement*, guint, gpointer requests) { ++*static_cast<std::atomic<unsigned>*>(requests); }),
+        &source_requests[i]);
     g_object_set(
         sources[i],
         "caps",
@@ -284,8 +291,19 @@ void run() {
     const auto base_before = gst_element_get_base_time(pipeline);
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
     check(counts() == before, "sender reports continued while paused");
+    const std::array<unsigned, 2> requests_before_resume{source_requests[0].load(), source_requests[1].load()};
     check(gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE, "resume failed");
     check(gst_element_get_base_time(pipeline) >= base_before + 350 * GST_MSECOND, "test did not shift the pause base");
+    // PLAYING wakes live source tasks before their appsrc unlock_stop runs.
+    // A new need-data callback comes from each resumed task after it clears
+    // flushing; pushing immediately after set_state can race that transition.
+    const auto ready_deadline = Clock::now() + std::chrono::seconds(1);
+    for (size_t i = 0; i < source_requests.size(); ++i) {
+      while (source_requests[i].load() == requests_before_resume[i]) {
+        check(Clock::now() < ready_deadline, "audio/video source did not become ready after Resume");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+    }
     collect({before[0] + 3, before[1] + 3});
     gst_pad_remove_probe(rtp, rtp_id);
     gst_pad_remove_probe(rtcp, rtcp_id);
