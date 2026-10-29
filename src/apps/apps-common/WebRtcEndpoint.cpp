@@ -41,6 +41,31 @@ Endpoint* data(GstElement* element) {
   auto* holder = static_cast<std::shared_ptr<Endpoint>*>(g_object_get_data(G_OBJECT(element), kData));
   return holder ? holder->get() : nullptr;
 }
+bool configure_sender_clock(GstElement* peer) {
+  // Both encoded tracks use the pipeline's presentation running time. A
+  // retained peer must use that same clock in its sender reports: wallclock
+  // NTP advances through PAUSED while RTP does not, changing the fitted RTP/NTP
+  // relation on every Resume. Configure the shared manager before any session
+  // is created; rtpbin propagates this setting to all of its sessions.
+  GstElement* rtp = gst_bin_get_by_name(GST_BIN(peer), "rtpbin");
+  if (!rtp)
+    return false;
+  GParamSpec* property = g_object_class_find_property(G_OBJECT_GET_CLASS(rtp), "ntp-time-source");
+  bool configured = false;
+  if (property && G_IS_PARAM_SPEC_ENUM(property)) {
+    auto* values = G_ENUM_CLASS(g_type_class_ref(G_PARAM_SPEC_VALUE_TYPE(property)));
+    const GEnumValue* running = g_enum_get_value_by_nick(values, "running-time");
+    if (running) {
+      g_object_set(rtp, "ntp-time-source", running->value, nullptr);
+      gint actual = -1;
+      g_object_get(rtp, "ntp-time-source", &actual, nullptr);
+      configured = actual == running->value;
+    }
+    g_type_class_unref(values);
+  }
+  gst_object_unref(rtp);
+  return configured;
+}
 struct InputProbe {
   GWeakRef endpoint;
   size_t index;
@@ -347,6 +372,12 @@ GstElement* webrtc_endpoint_reset_peer(GstElement* endpoint) {
   remove_peer(endpoint, state);
   GstElement* peer = gst_element_factory_make("webrtcbin", nullptr);
   if (!peer) {
+    webrtc_endpoint_detach_peer(endpoint);
+    return nullptr;
+  }
+  if (!configure_sender_clock(peer)) {
+    GST_ERROR_OBJECT(endpoint, "WebRTC requires running-time RTCP sender reports for its presentation clock");
+    gst_object_unref(peer);
     webrtc_endpoint_detach_peer(endpoint);
     return nullptr;
   }
