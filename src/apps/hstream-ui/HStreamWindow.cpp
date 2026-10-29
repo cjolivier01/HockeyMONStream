@@ -6654,6 +6654,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
 
   game_path_label_ = new QLabel(gameRoot());
   game_path_label_->setObjectName("gamePathLabel");
+  game_path_label_->setWordWrap(true);
   game_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
   layout->addWidget(new QLabel("Existing"), 0, 0);
@@ -6718,6 +6719,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
 
   video_sets_path_label_ = new QLabel(gameRoot());
   video_sets_path_label_->setObjectName("videoSetsPathLabel");
+  video_sets_path_label_->setWordWrap(true);
   video_sets_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
   video_sets_path_label_->setEnabled(false);
 

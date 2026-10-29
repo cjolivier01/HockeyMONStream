@@ -5253,6 +5253,31 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     return false;
   }
+  auto* game_path = require_child<QLabel>(window, "gamePathLabel");
+  auto* video_sets_path = require_child<QLabel>(window, "videoSetsPathLabel");
+  if (!game_path || !video_sets_path)
+    return false;
+  const QString original_game_path = game_path->text();
+  const QString original_video_sets_path = video_sets_path->text();
+  const QString long_game_path = "/long-game-root/" + QString("nested-directory/").repeated(24) + "ui-test-game";
+  game_path->setText(long_game_path);
+  video_sets_path->setText(long_game_path);
+  QApplication::processEvents();
+  window->resize(1440, 900);
+  QApplication::processEvents();
+  const QSize long_path_hint = window->minimumSizeHint();
+  const bool long_paths_fit = expect(
+      long_path_hint.width() <= 1440 && long_path_hint.height() <= 900 && game_path->wordWrap() &&
+          video_sets_path->wordWrap() && game_path->text() == long_game_path &&
+          video_sets_path->text() == long_game_path &&
+          game_path->textInteractionFlags().testFlag(Qt::TextSelectableByMouse) &&
+          video_sets_path->textInteractionFlags().testFlag(Qt::TextSelectableByMouse),
+      "Long game paths must wrap without changing selectable text or exceeding the supported 1440x900 viewport");
+  game_path->setText(original_game_path);
+  video_sets_path->setText(original_video_sets_path);
+  QApplication::processEvents();
+  if (!long_paths_fit)
+    return false;
   const QString invalid_pair_config_path = QDir(window->gameDirectoryText()).filePath("config.yaml");
   const QString invalid_pair_artifact_path = QDir(window->gameDirectoryText()).filePath("seam_file.png");
   QFile invalid_pair_config(invalid_pair_config_path);
