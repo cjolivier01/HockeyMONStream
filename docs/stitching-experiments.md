@@ -342,16 +342,81 @@ DISPLAY=:0 scripts/test_stitching_match_editor_e2e.sh "$HOME/Videos/tv-14-1-p1"
 The test creates an isolated game under a new `~/Videos/hstream-match-editor-e2e-*`
 folder, using read-only video hard links and private config, sidecar and image
 copies. The source and test folder must share a filesystem. It runs automatic
-matching, edits/deletes points through the actual Qt controls, recalibrates the
-new candidate, checks the GPU preview, promotes it into the isolated game, and
-reopens its saved points, then loads both rink-leveling camera images and renders
-a leveling preview. It verifies that the promoted Hugin project contains
-the exact saved count. Logs, editor screenshots, optional native-preview captures,
-and `result.txt` stay in the test folder. Xwayland can reject framebuffer capture;
-the test also requires the renderer acknowledgement after its first GPU
-presentation. The source game is unchanged. This opt-in script builds the
-Blackwell desktop configuration; the ordinary editor tests also run offscreen
-and on X11 to check physical maximization/restoration and mouse interactions.
+matching, edits/deletes points through the actual Qt controls, recalibrates a
+new candidate, and verifies its exact saved manual points and original PNGs.
+Preview must show two different nonblack pixel samples from the same current
+candidate generation, process token, renderer generation and native window.
+The test uses ordinary Stop, promotes into the isolated game, opens a second
+Stitching Experiments dialog, and inspects/edits the promoted Main through its
+ordinary controls. It also loads both rink-leveling images and renders a native
+leveling preview. The promoted Hugin point count must equal the saved count.
+
+Logs, original PNGs, screenshots, `workflow-report.yaml` and `result.txt` stay in
+the test folder. Xwayland capture failure leaves moving-preview qualification
+failed; a first-frame acknowledgment alone cannot pass it. Success and failure
+both use ordinary dialog cancellation/close, wait for native process ownership
+to retire, and retain cleanup failures in the report. The test preserves
+unapplied results when closing. The source game is unchanged. This opt-in script
+builds the Blackwell desktop configuration; run it only in an allocated GPU lane.
+
+For independently reviewed foreground matches or recovery after a genuine
+automatic failure, first capture all original pairs:
+
+```sh
+HSTREAM_MATCH_EDITOR_SOURCE_MODE=automatic-failed \
+HSTREAM_MATCH_EDITOR_FRAME_COUNT=4 \
+HSTREAM_MATCH_EDITOR_CONTROL_POINTS=1500 \
+HSTREAM_MATCH_EDITOR_CAPTURE_ONLY=1 \
+HSTREAM_MATCH_EDITOR_PREVIEW_START=00:00:05 \
+DISPLAY=:0 scripts/test_stitching_match_editor_e2e.sh \
+  /absolute/isolated-source-game /absolute/new-capture-evidence 00:00:05
+```
+
+Use `automatic` for an expected successful automatic source. `automatic-failed`
+requires an actual native failure plus an inspectable failed candidate; it never
+changes a status or manufactures editable evidence. This is **failed-candidate
+recovery**. It does not establish access to an ordinary failed Main without a
+saved player selection. `main` is available only when the selected isolated
+Main is genuinely complete and its ordinary frame inspector is enabled. A
+completed game with only root `left.png`/`right.png` does not establish retained
+multi-pair diagnostics; use Add candidate to capture them. The shell wrapper
+copies inputs for a new candidate, not a complete retained-Main workspace.
+`HSTREAM_MATCH_EDITOR_CONTROL_POINTS` sets the positive automatic control-point
+budget (100 when omitted); match the browser source's budget when comparing
+captures. This is independent of the reviewed manual point count.
+
+Capture mode writes each actual `pair-N-camera-M.png` and `review-template.yaml`.
+Its empty match arrays are deliberately not runnable. Review each captured pair
+independently, keep the exact image hashes, dimensions and source times, fill
+`review_notes`, and populate every frame's `matches` with maps containing
+`feature` (a reviewed static-feature description), `left: [x, y]`, and
+`right: [x, y]` in original pixels. The test accepts 4–100 points per pair;
+this bound does not establish geometric quality. Use noncollinear features
+across foreground/ice and distant structures. Never repeat coordinates across
+distinct frames without independently reviewing those images.
+
+Rerun in a new evidence directory with `HSTREAM_MATCH_EDITOR_REVIEWED_MATCHES`
+set to that YAML/JSON file and without `HSTREAM_MATCH_EDITOR_CAPTURE_ONLY`.
+The test checks every original PNG hash before any edit, enters matches with
+actual canvas clicks/numeric controls, and saves a new native Manual candidate.
+It stops after changing-pixel preview and ordinary Stop by default. After
+independent physical review, add a nonempty `promotion_review` to the input and
+set `HSTREAM_MATCH_EDITOR_PROMOTE_REVIEWED=1` to include promotion/reopen. A
+successful workflow does not establish physical map accuracy or a ready rink
+map. `workflow_qualified` is true only after the full promoted/reopened scenario
+and cleanup pass; capture and candidate-only reports remain explicitly partial.
+
+The browser counterpart is HockeyMOMWeb's
+`tests/test_webapp_stream_native_manual_matches_browser.py`. Its `failed` route
+uses Prepare manual calibration on an immutable failed native run; this differs
+from the desktop Add candidate → failure → Inspect/Edit entry route. Use the
+same frozen native products, full configuration root, camera bytes/order,
+synchronization, sampling time and pair count. Compare the ordered original PNG
+hashes and source times before sharing reviewed coordinates. Hash differences
+require separate review; filenames or path-based source identities do not prove
+that captured pixels match. The browser test can compare this directory directly
+with `HM_STREAM_MANUAL_QT_EVIDENCE`; retain the common frozen-build provenance
+alongside both reports.
 
 ### Saved calibration preview
 
