@@ -397,13 +397,16 @@ fs::path EnvironmentManifest() {
   const char* value = ::getenv("HSTREAM_JOB_MANIFEST");
   return value && *value ? fs::path(value) : fs::path();
 }
-void BeginRun(const fs::path& manifest, bool telemetry_required) {
+void BeginRun(const fs::path& manifest, bool telemetry_required, bool telemetry_only) {
+  if (telemetry_only && !telemetry_required)
+    fail("Telemetry-only publication requires telemetry capture");
   ManifestLock lock(manifest);
   auto run = load(manifest);
   if (run["state"].as<std::string>() != "created")
     fail("Run has already started");
   run["state"] = "running";
   run["telemetry_required"] = telemetry_required;
+  run["telemetry_only"] = telemetry_only;
   save_run(run);
 }
 bool PipelineCompleted(const fs::path& manifest) {
@@ -607,8 +610,7 @@ void CompletePipeline(bool success, int64_t start_time_ms) {
       video |= output["kind"].as<std::string>() != "telemetry";
     }
     const bool telemetry_only = run["telemetry_only"].as<bool>(false);
-    if ((telemetry_only ? (!telemetry || video) : !video) ||
-        (run["telemetry_required"].as<bool>(false) && !telemetry))
+    if ((telemetry_only ? (!telemetry || video) : !video) || (run["telemetry_required"].as<bool>(false) && !telemetry))
       fail("Pipeline did not produce all required outputs");
   }
   run["start_time_ms"] = start_time_ms;

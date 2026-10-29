@@ -11385,6 +11385,7 @@ void HStreamWindow::startPipeline() {
   active_stitched_archive_video_is_hevc_ = false;
   pending_archive_finalizations_.clear();
   archive_finalize_failure_summaries_.clear();
+  archive_finalize_failed_ = false;
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled = !isCalibrationRun() && archive_toggle != output_toggles_.end() &&
       archive_toggle->second && archive_toggle->second->isChecked();
@@ -11392,7 +11393,9 @@ void HStreamWindow::startPipeline() {
   const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
       stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
   const bool program_4k_enabled = !active_run_is_calibration_ && output_toggles_.at("archive-program-4k")->isChecked();
-  if (!active_hockeymon_program_ && (archive_enabled || stitched_archive_enabled || program_4k_enabled)) {
+  const bool video_archive_enabled = archive_enabled || stitched_archive_enabled || program_4k_enabled;
+  const bool telemetry_only = active_run_telemetry_requested_ && !video_archive_enabled;
+  if (!active_hockeymon_program_ && (video_archive_enabled || active_run_telemetry_requested_)) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
     env.insert("HM_OUTPUT_WORK_DIR", output_work_dir);
     const QString archive_run_id = QString("%1-%2")
@@ -11404,7 +11407,7 @@ void HStreamWindow::startPipeline() {
           gameDirectory(active_run_game_id_).toStdString(),
           output_work_dir.toStdString(),
           archive_run_id.toStdString());
-      hm::publication::BeginRun(manifest, active_run_telemetry_requested_);
+      hm::publication::BeginRun(manifest, active_run_telemetry_requested_, telemetry_only);
       managed_archive_manifest_ = QString::fromStdString(manifest.string());
       env.insert("HSTREAM_JOB_MANIFEST", managed_archive_manifest_);
       env.insert("HSTREAM_RUNTIME_CACHE_DIR", QString::fromStdString((manifest.parent_path() / "runtime").string()));
@@ -11426,7 +11429,12 @@ void HStreamWindow::startPipeline() {
     const QString primary_archive_path = !active_archive_output_path_.isEmpty() ? active_archive_output_path_
         : !active_program_4k_output_path_.isEmpty()                             ? active_program_4k_output_path_
                                                                                 : active_stitched_archive_output_path_;
-    const QString archive_dir = QFileInfo(primary_archive_path).absolutePath();
+    // A telemetry-only run has no video path. Keep its UI log inside the
+    // admitted workspace so managed finalization owns its publication cleanup.
+    const QString job_log_base = primary_archive_path.isEmpty()
+        ? QDir(QFileInfo(managed_archive_manifest_).absolutePath()).filePath("telemetry")
+        : primary_archive_path;
+    const QString archive_dir = QFileInfo(job_log_base).absolutePath();
     if (!QDir().mkpath(archive_dir)) {
       if (archive_enabled)
         output_states_["archive-file"]->setText("ERROR");
@@ -11446,8 +11454,11 @@ void HStreamWindow::startPipeline() {
       updateRunControls();
       return;
     }
-    archive_job_log_output_kind_ = archive_enabled ? "program" : program_4k_enabled ? "program-4k" : "stitched";
-    beginArchiveJobLog(primary_archive_path, archive_run_id);
+    archive_job_log_output_kind_ = archive_enabled ? "program"
+        : program_4k_enabled                      ? "program-4k"
+        : stitched_archive_enabled                ? "stitched"
+                                                  : "telemetry";
+    beginArchiveJobLog(job_log_base, archive_run_id);
     if (archive_enabled) {
       output_states_["archive-file"]->setText("WRITING");
       if (archive_output_path_label_)
@@ -12215,6 +12226,17 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_stitched_archive_initial_size_ = -1;
   active_program_4k_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
+  if (pending_archive_finalizations_.empty() && !managed_archive_manifest_.isEmpty()) {
+    // Telemetry-only runs have no archive queue. Their completed manifest still
+    // owns publication and cleanup, including after a graceful user Stop.
+    startNextArchiveFinalization();
+    if (telemetry_publication_worker_ || archive_finalize_failed_) {
+      updateRunControls();
+      return;
+    }
+    // A legacy runner without manifest support retains its existing standalone
+    // telemetry path below, and may publish only after normal completion.
+  }
   if (!pending_archive_finalizations_.empty()) {
     startNextArchiveFinalization();
   } else {
@@ -14401,7 +14423,7 @@ void HStreamWindow::startManagedArchiveFinalization() {
   archive_finalize_failed_ = false;
   archive_finalize_stage_ = ArchiveFinalizeStage::kPublishTelemetry;
   archive_finalize_headline_->setText("Finalizing completed outputs…");
-  archive_finalize_detail_->setText("Publishing video and telemetry, then removing this run's working files.");
+  archive_finalize_detail_->setText("Publishing completed outputs, then removing this run's working files.");
   archive_finalize_progress_->setRange(0, 0);
   archive_finalize_progress_->setFormat("Finalizing");
   archive_finalize_ok_button_->hide();

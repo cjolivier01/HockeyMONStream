@@ -71,6 +71,15 @@ recording paths through `HSTREAM_UI_E2E_FRESH_LEFT` and
 retains baseline sampling, performs Skip leveling and Full canvas/Use crop,
 checks the native rendered preview and requires ordinary Stop with process
 retirement. It records controls, rendered dialogs, configuration and logs.
+Optionally set `HSTREAM_UI_E2E_CAMERA_PROFILE` to an exact native profile ID.
+The fresh test selects that existing camera control after importing both sources,
+records its resolved optics, and requires the completed calibration to retain
+those exact values and Auto policies. Unknown IDs fail instead of falling back;
+omitting the variable preserves the ordinary default-selection case. Use the
+same source bytes and profile in the browser's `HM_STREAM_FRESH_CAMERA_PROFILE`
+case. For excerpts without vendor metadata, verify the profile against the
+original recordings before choosing it; a successful solve does not establish
+physical rink-map accuracy.
 
 Run `HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY=1` against the genuinely completed
 game to check forward/backward seeking and two queued +10-second clicks during
@@ -349,6 +358,13 @@ with `HSTREAM_UI_E2E_OUTPUTS=archive-stitched`; the omitted Program preview is
 excluded from that mode's checks. Set `HSTREAM_UI_E2E_STANDALONE_TELEMETRY=1`
 with 4K-only output and `HSTREAM_UI_E2E_WAIT_FOR_EOS=1` to enable DriveGPT
 and require its independent database publication after video completion.
+For telemetry without a video archive, set `HSTREAM_UI_E2E_OUTPUTS=''`,
+`HSTREAM_UI_E2E_STANDALONE_TELEMETRY=1` and
+`HSTREAM_UI_E2E_VERIFY_X11_PREVIEW=1` in Program mode. This case requires two
+changing, nonblank native Program captures with advancing current-generation
+timestamps, alongside the Stitched and Camera 1 captures. The archive comparison
+is explicitly omitted; its absence cannot substitute for a completed telemetry
+receipt. Other archive cases retain the encoded-video checks.
 The test captures the current managed run's receipt identity immediately after
 Play. Stop and EOS both require that exact receipt to reach `complete` and its
 published telemetry database to match the recorded file identity; log messages
@@ -434,3 +450,18 @@ sets `hstream_ui.job.capture_telemetry: true`; it preserves the selected live si
 and does not add an encoder. Stop must publish a completed telemetry database and
 its native receipt before releasing the run. Calibration-only and experiment
 preview sessions remain excluded from telemetry capture.
+
+A real saved-leveling follow-up can use `HSTREAM_UI_E2E_SAVED_LEVELING_POINTS`
+with an existing genuinely completed `HSTREAM_UI_E2E_GAME_ID`, a new artifact
+directory, and a YAML file containing two pairs of reviewed original-image
+coordinates (`[[[left_near_x, left_near_y], [left_far_x, left_far_y]],
+[[right_near_x, right_near_y], [right_far_x, right_far_y]]]`). It opens the
+ordinary Level rink dialog, places corners with mouse clicks, requires the native
+rectangle estimate and rendered Preview, selects Use angles, and saves through
+Save Preset. It then runs actual Calibration regeneration, captures Stitched,
+stops normally, and reloads the saved controls. Use only independently reviewed
+landmarks; the hook does not establish their physical accuracy. It rejects
+`HSTREAM_UI_E2E_PREPARE_GAME` and must not be combined with fresh-import flags.
+Pin `HM_CONFIG_ROOT` to the exact product configuration and include all tracked
+configs when freezing a Bazel-shaped runtime; a test binary alone can otherwise
+resolve installed configuration.

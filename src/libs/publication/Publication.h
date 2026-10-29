@@ -22,7 +22,8 @@ fs::path CreateRun(const fs::path& game, const fs::path& output_root, const std:
 // Shared by exporters and the supervisor; throws for an unsafe receipt identity.
 void ValidateRunId(const std::string& id);
 fs::path ReceiptPath(const fs::path& game, const std::string& id);
-void BeginRun(const fs::path& manifest, bool telemetry_required = false);
+// Telemetry-only admission requires telemetry and rejects unrequested video.
+void BeginRun(const fs::path& manifest, bool telemetry_required = false, bool telemetry_only = false);
 bool PipelineCompleted(const fs::path& manifest);
 fs::path EnvironmentManifest();
 fs::path EnvironmentWorkingDirectory();
