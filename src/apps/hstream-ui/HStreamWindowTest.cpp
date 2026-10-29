@@ -19147,9 +19147,20 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     activate(show_rink_mask);
   const bool require_rink_map = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP");
   const bool require_rink_framing = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_FRAMING");
+  const bool framing_mode_set = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_FRAMING_MODE");
+  const QString framing_mode = qEnvironmentVariable("HSTREAM_UI_E2E_RINK_FRAMING_MODE");
+  if (framing_mode_set &&
+      !expect(
+          require_rink_framing && QStringList{"anticipate", "goals", "zoom", "all"}.contains(framing_mode),
+          "An explicit framing mode requires HSTREAM_UI_E2E_RINK_FRAMING and anticipate, goals, zoom or all"))
+    return false;
+  QString rink_framing_report;
   if (require_rink_framing) {
     auto* framing = require_child<QCheckBox>(window, "rinkFramingEnable");
-    if (!framing)
+    auto* anticipate = require_child<QCheckBox>(window, "rinkFramingAnticipate");
+    auto* goals = require_child<QCheckBox>(window, "rinkFramingGoals");
+    auto* zoom = require_child<QCheckBox>(window, "rinkFramingZoom");
+    if (!framing || !anticipate || !goals || !zoom)
       return false;
     QElapsedTimer readiness_timer;
     readiness_timer.start();
@@ -19157,9 +19168,31 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       QTest::qWait(20);
     if (!expect(framing->isEnabled(), "The reviewed game map must enable rink-aware framing"))
       return false;
+    // Without a mode, retain the existing anticipation choice and disable the
+    // other options, matching the original framing E2E behavior.
+    const bool requested_anticipate =
+        framing_mode_set ? framing_mode == "anticipate" || framing_mode == "all" : anticipate->isChecked();
+    const bool requested_goals = framing_mode_set && (framing_mode == "goals" || framing_mode == "all");
+    const bool requested_zoom = framing_mode_set && (framing_mode == "zoom" || framing_mode == "all");
     framing->setChecked(true);
-    window->findChild<QCheckBox*>("rinkFramingGoals")->setChecked(false);
-    window->findChild<QCheckBox*>("rinkFramingZoom")->setChecked(false);
+    anticipate->setChecked(requested_anticipate);
+    goals->setChecked(requested_goals);
+    zoom->setChecked(requested_zoom);
+    const bool controls_match = framing->isChecked() && anticipate->isChecked() == requested_anticipate &&
+        goals->isChecked() == requested_goals && zoom->isChecked() == requested_zoom;
+    rink_framing_report = QString(
+                              "rink_framing_mode: %1\nrink_framing_enable: %2\nrink_framing_anticipate: %3\n"
+                              "rink_framing_goals: %4\nrink_framing_zoom: %5\nrink_framing_controls_match: %6\n")
+                              .arg(framing_mode_set ? framing_mode : "unset")
+                              .arg(framing->isChecked() ? "true" : "false")
+                              .arg(anticipate->isChecked() ? "true" : "false")
+                              .arg(goals->isChecked() ? "true" : "false")
+                              .arg(zoom->isChecked() ? "true" : "false")
+                              .arg(controls_match ? "true" : "false");
+    const bool controls_report_saved =
+        write_e2e_text(QDir(artifact_dir).filePath("rink-framing-report.txt"), rink_framing_report);
+    if (!expect(controls_match, "Rink framing controls must match the selected E2E mode") || !controls_report_saved)
+      return false;
   }
   if (require_rink_map) {
     auto* rink_map = require_child<QCheckBox>(window, "showRinkMiniMapCheck");
@@ -19595,6 +19628,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
   QString report;
   report += QString("game_id: %1\n").arg(game_id);
+  report += rink_framing_report;
   if (require_rink_framing && !window->completeLogText().contains("HSTREAM_RINK_CAMERA status=ready")) {
     std::cerr << "Program framing did not bind the reviewed map\n";
     return false;
