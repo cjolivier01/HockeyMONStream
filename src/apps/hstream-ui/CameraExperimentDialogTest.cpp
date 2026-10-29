@@ -547,10 +547,32 @@ bool rink_comparison(const QStringList& args) {
   return true;
 }
 
-bool e2e(const QStringList& args) {
+bool e2e(const QStringList& raw_args) {
+  QStringList args;
+  // Optional test-driver probes leave ordinary e2e coverage unchanged.
+  int requested_overlay_frame = -1, expected_frame_count = -1;
+  QList<int> exact_seek_frames;
+  for (const QString& argument : raw_args) {
+    const auto parse_nonnegative = [](const QString& value) {
+      bool valid = false;
+      const int number = value.toInt(&valid);
+      if (!valid || number < 0)
+        throw std::runtime_error("Expected a nonnegative test frame/count");
+      return number;
+    };
+    if (argument.startsWith("--overlay-frame="))
+      requested_overlay_frame = parse_nonnegative(argument.mid(QString("--overlay-frame=").size()));
+    else if (argument.startsWith("--expect-frame-count="))
+      expected_frame_count = parse_nonnegative(argument.mid(QString("--expect-frame-count=").size()));
+    else if (argument.startsWith("--exact-seek-frames=")) {
+      for (const QString& value : argument.mid(QString("--exact-seek-frames=").size()).split(','))
+        exact_seek_frames.append(parse_nonnegative(value));
+    } else
+      args.append(argument);
+  }
   if (args.size() < 8) {
     std::cerr
-        << "Usage: --e2e MANIFEST PANORAMA ARTIFACT_DIR OFFSET DURATION VIDEO_OFFSET [ARENA] [CONFIG] [PLAYBACK_START]\n";
+        << "Usage: --e2e MANIFEST PANORAMA ARTIFACT_DIR OFFSET DURATION VIDEO_OFFSET [ARENA] [CONFIG] [PLAYBACK_START] [--overlay-frame=N] [--exact-seek-frames=N,...] [--expect-frame-count=N]\n";
     return false;
   }
   const QString artifacts = args[4];
@@ -776,6 +798,18 @@ bool e2e(const QStringList& args) {
   if (plot->accessibleName() != "Visual timeline")
     return false;
   const int comparison_frame = timeline->maximum() / 2;
+  const int overlay_frame = requested_overlay_frame >= 0 ? requested_overlay_frame : comparison_frame;
+  if ((expected_frame_count >= 0 && timeline->maximum() != expected_frame_count - 1) ||
+      overlay_frame > timeline->maximum()) {
+    std::cerr << "Requested test range does not match prepared frame count " << timeline->maximum() + 1 << '\n';
+    return false;
+  }
+  for (const int frame : exact_seek_frames) {
+    if (frame > timeline->maximum()) {
+      std::cerr << "Requested exact seek frame outside prepared range: " << frame << '\n';
+      return false;
+    }
+  }
   for (const int frame : {0, timeline->maximum(), comparison_frame})
     if (!click_plot_frame(frame))
       return false;
@@ -789,11 +823,30 @@ bool e2e(const QStringList& args) {
   auto seek_frame = [&](int frame) {
     timeline->setValue(frame);
     QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
-    return wait_until([&]() { return screenshot->isEnabled() || status->styleSheet().contains("#b42318"); }, 60000) &&
-        screenshot->isEnabled() && timeline->value() == frame;
+    const auto presented_frame = [&] {
+      // The slider was set by this test. Require the separately published
+      // native preview frame label as well as completed screenshot readiness.
+      const QString expected = QString("frame %1 / %2").arg(frame + 1).arg(timeline->maximum() + 1);
+      return screenshot->isEnabled() && timeline->value() == frame &&
+          widget<QLabel>(dialog, "experimentFrameStatus")->text().split("  ·  ").value(2) == expected;
+    };
+    return wait_until([&]() { return presented_frame() || status->styleSheet().contains("#b42318"); }, 60000) &&
+        presented_frame();
   };
-  if (!seek_frame(comparison_frame)) {
-    std::cerr << "Midrange seek failed: " << status->text().toStdString() << '\n';
+  for (const int frame : exact_seek_frames) {
+    if (!seek_frame(frame) || play->text() == "Pause") {
+      std::cerr << "Exact seek failed at frame " << frame << ": " << status->text().toStdString() << '\n';
+      return false;
+    }
+    std::cout << "Exact seek acknowledged frame " << frame << " / " << timeline->maximum() + 1 << ": "
+              << widget<QLabel>(dialog, "experimentFrameStatus")->text().toStdString() << '\n';
+    if (!capture(QString("exact-seek-%1.png").arg(frame).toUtf8().constData()))
+      return false;
+  }
+  // Dense ranges cannot identify every frame through plot pixel coordinates.
+  // Use the existing exact slider command for the opt-in overlay frame.
+  if (!seek_frame(overlay_frame)) {
+    std::cerr << "Overlay comparison seek failed: " << status->text().toStdString() << '\n';
     return false;
   }
   if (!capture("experiment-trial-a.png"))
@@ -832,11 +885,11 @@ bool e2e(const QStringList& args) {
       for (int x = 0; x < clean.width(); ++x)
         different += clean.pixel(x, y) != drawn.pixel(x, y);
     std::cout << "Test overlay pixel comparison " << name << " took " << comparison_time.elapsed() << " ms\n";
-    if (different < 50 || timeline->value() != comparison_frame) {
+    if (different < 50 || timeline->value() != overlay_frame) {
       std::cerr << "Paused overlay did not draw on the same GPU frame: " << name << " changed=" << different << '\n';
       return false;
     }
-    std::cout << name << " changed " << different << " preview pixels on paused frame " << comparison_frame << '\n';
+    std::cout << name << " changed " << different << " preview pixels on paused frame " << overlay_frame << '\n';
     toggle->setChecked(false);
     if (!wait_until([&] { return screenshot->isEnabled(); }))
       return false;
@@ -881,7 +934,7 @@ bool e2e(const QStringList& args) {
     return false;
   }
   comparison->setCurrentIndex(0);
-  if (!seek_frame(comparison_frame) || !capture("experiment-original.png"))
+  if (!seek_frame(overlay_frame) || !capture("experiment-original.png"))
     return false;
   // Exercise the actual end boundary without waiting through the entire clip.
   // A successful loop must present a new frame near its beginning.
