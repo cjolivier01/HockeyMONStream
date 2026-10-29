@@ -17371,7 +17371,6 @@ bool test_telemetry_only_admission() {
     return false;
   game->setText("telemetry-only-admission");
   activate(create);
-  mode->setCurrentIndex(mode->findData("program"));
   render->setChecked(false);
   telemetry->setChecked(true);
   for (auto* output : window.findChildren<QCheckBox*>())
@@ -17383,6 +17382,17 @@ bool test_telemetry_only_admission() {
       return false;
     toggle->setChecked(false);
   }
+  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  const QString config_path = QDir(window.gameDirectoryText()).filePath("config.yaml");
+  if (!expect(
+          !YAML::LoadFile(config_path.toStdString())["hstream_ui"]["job"]["capture_telemetry"].as<bool>(),
+          "Saving Calibration must retain an exported-job telemetry opt-out"))
+    return false;
+  // Switch to Program without saving over the previous Calibration job.
+  mode->setCurrentIndex(mode->findData("program"));
+  telemetry->setChecked(true);
   // A previous result must not suppress this run's legacy fallback path.
   HStreamWindowTestAccess::setPublicationFailed(&window, true);
   auto stop_owned = absl::MakeCleanup([&] {
@@ -17409,8 +17419,11 @@ bool test_telemetry_only_admission() {
               HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_JOB_MANIFEST") == manifest &&
               HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_RUNTIME_CACHE_DIR") ==
                   QDir(work).filePath("runtime") &&
-              arguments.contains("--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=" + work),
-          "Telemetry-only admission must bind its required recording and staging to this managed run") ||
+              arguments.contains("--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=" + work) &&
+              arguments.filter("--options=hstream_ui.job.capture_telemetry=") ==
+                  QStringList{"--options=hstream_ui.job.capture_telemetry=true"} &&
+              !YAML::LoadFile(config_path.toStdString())["hstream_ui"]["job"]["capture_telemetry"].as<bool>(),
+          "Unsaved Program telemetry must override the saved Calibration opt-out and bind capture to this run") ||
       !expect(
           QFileInfo(log).isFile() && QFileInfo(log).absolutePath() == work &&
               !HStreamWindowTestAccess::publicationFailed(&window),
@@ -17419,13 +17432,62 @@ bool test_telemetry_only_admission() {
   activate(stop);
   const QString receipt = QString::fromStdString(
       hm::publication::ReceiptPath(run["game_dir"].as<std::string>(), run["id"].as<std::string>()).string());
+  if (!expect(
+          QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000) &&
+              window.pipelineStateText() == "STOPPED" && QFileInfo(manifest).isFile() && QFileInfo(log).isFile() &&
+              YAML::LoadFile(manifest.toStdString())["state"].as<std::string>() == "running" &&
+              YAML::LoadFile(receipt.toStdString())["state"].as<std::string>() == "admitted" &&
+              window.logText().contains("Managed outputs not published: pipeline did not complete successfully"),
+          "An early Stop without native completion must preserve the workspace and must not publish a receipt"))
+    return false;
+
+  // Exercise the inverse transition: a checked saved Program job must not
+  // enable recording when the current unsaved toggle is off.
+  if (!HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  if (!expect(
+          YAML::LoadFile(config_path.toStdString())["hstream_ui"]["job"]["capture_telemetry"].as<bool>(),
+          "Saving Program with telemetry checked must retain an exported-job capture choice"))
+    return false;
+  auto* archive = require_child<QCheckBox>(&window, "outputToggle_archive-file");
+  if (!archive)
+    return false;
+  archive->setChecked(true);
+  telemetry->setChecked(false);
+  activate(start);
+  if (!expect(
+          QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000),
+          "Program with telemetry disabled must launch without saving over the previous job"))
+    return false;
+  const auto disabled_arguments = HStreamWindowTestAccess::launchedArguments(&window);
+  const QString disabled_manifest = HStreamWindowTestAccess::managedArchiveManifest(&window);
+  if (!expect(
+          !disabled_manifest.isEmpty() && QFileInfo(disabled_manifest).isFile(),
+          "A video archive must retain managed admission when telemetry is unchecked"))
+    return false;
+  const auto disabled_run = YAML::LoadFile(disabled_manifest.toStdString());
+  if (!expect(
+          disabled_arguments.filter("--options=hstream_ui.job.capture_telemetry=") ==
+                  QStringList{"--options=hstream_ui.job.capture_telemetry=false"} &&
+              disabled_arguments.filter("--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=")
+                  .isEmpty() &&
+              !disabled_run["telemetry_required"].as<bool>() && !disabled_run["telemetry_only"].as<bool>() &&
+              YAML::LoadFile(config_path.toStdString())["hstream_ui"]["job"]["capture_telemetry"].as<bool>(),
+          "Unsaved telemetry opt-out must override a saved capture choice for the admitted video archive"))
+    return false;
+  activate(stop);
+  if (!expect(
+          QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000),
+          "The telemetry-disabled test run must stop before checking Calibration arguments"))
+    return false;
+  telemetry->setChecked(true);
+  const auto calibration_arguments = HStreamWindowTestAccess::calibrationArguments(&window);
   return expect(
-      QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000) &&
-          window.pipelineStateText() == "STOPPED" && QFileInfo(manifest).isFile() && QFileInfo(log).isFile() &&
-          YAML::LoadFile(manifest.toStdString())["state"].as<std::string>() == "running" &&
-          YAML::LoadFile(receipt.toStdString())["state"].as<std::string>() == "admitted" &&
-          window.logText().contains("Managed outputs not published: pipeline did not complete successfully"),
-      "An early Stop without native completion must preserve the workspace and must not publish a receipt");
+      calibration_arguments.filter("--options=hstream_ui.job.capture_telemetry=") ==
+              QStringList{"--options=hstream_ui.job.capture_telemetry=false"} &&
+          calibration_arguments.filter("--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=")
+              .isEmpty(),
+      "Calibration must explicitly disable telemetry even with a checked toggle and a saved Program capture choice");
 }
 
 struct NativePreviewCapture {

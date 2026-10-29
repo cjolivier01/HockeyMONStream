@@ -10739,6 +10739,9 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
       : (game_id_edit_ ? game_id_edit_->text().trimmed() : QString());
   const bool calibration_only =
       isCalibrationRun() || (job_export && enabledSinkNames(true) == QStringList{"ENCODE_STITCHED_FILE"});
+  const bool capture_telemetry = !calibration_only &&
+      (!standalone && !active_run_game_id_.isEmpty() ? active_run_telemetry_requested_
+                                                     : drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked());
   const bool render_video = !job_export && (!render_video_toggle_ || render_video_toggle_->isChecked());
   const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
       qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
@@ -10885,7 +10888,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
                     cameraControlValue("Oversized_Player_Percent"), 'g', std::numeric_limits<double>::max_digits10));
     args
         << QString("--options=rink.camera.zoom_in_aggressiveness=%1").arg(cameraControlValue("Zoom_In_Aggressiveness"));
-    if (drivegpt_csv_toggle_ && drivegpt_csv_toggle_->isChecked()) {
+    if (capture_telemetry) {
       const QString telemetry_work_directory =
           QDir(archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory()))
               .filePath(game_id);
@@ -10893,6 +10896,11 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
                   .arg(QDir::cleanPath(telemetry_work_directory));
       args << QString("--options=pipeline.ds-playtracker.private-properties.telemetry-game-id=%1").arg(game_id);
     }
+  }
+  if (!job_export) {
+    // A previous Save may describe a different exported job. Live playback
+    // must use its current capture selection, including explicit opt-out.
+    args << QString("--options=hstream_ui.job.capture_telemetry=%1").arg(capture_telemetry ? "true" : "false");
   }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
