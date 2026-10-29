@@ -3388,6 +3388,12 @@ absl::StatusOr<std::vector<std::set<E_TYPE>>> parse_types(
 // Main run function.
 //------------------------------------------------------------------------------
 absl::Status PipelineApplication::run(int argc, char* argv[]) {
+  // Library callers get the same fail-closed launch-only validation as main.
+  try {
+    (void)hm::preview::ProcessCapturePlan();
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(error.what());
+  }
   absl::Status status = absl::OkStatus();
   GError* error = nullptr;
   char* start_time{nullptr};
@@ -7820,6 +7826,18 @@ bool PipelineApplication::capture_preview_frame_runtime(const std::string& chann
         path.c_str(),
         static_cast<guint64>(result.identity->generation),
         static_cast<guint64>(result.identity->pipeline_pts));
+  if (result.identity && result.identity->metadata) {
+    hm::preview::CaptureContext capture;
+    capture.interface = "qt";
+    capture.run = "native-pid:" + std::to_string(getpid());
+    capture.channel = channel;
+    capture.renderer_generation = result.identity->generation;
+    capture.source_pts = result.identity->pipeline_pts;
+    capture.path = path;
+    // This receipt is emitted only by the explicit one-shot capture command.
+    // Physical sources/crop were latched under the same render lock as its PNG.
+    g_print("HSTREAM_PREVIEW_CAPTURE %s\n", hm::preview::CaptureReceipt(capture, *result.identity->metadata).c_str());
+  }
   return true;
 }
 
@@ -10068,6 +10086,14 @@ int main(int argc, char* argv[]) {
       }
       std::perror("hstream-cli re-exec failed");
     }
+  }
+  // Reject malformed explicit evidence plans before diagnostics, GPU discovery
+  // or any pipeline/runtime initialization. An omitted plan remains inert.
+  try {
+    (void)hm::preview::ProcessCapturePlan();
+  } catch (const std::exception& error) {
+    g_printerr("hstream-cli invalid preview capture plan: %s\n", error.what());
+    return 78;
   }
   hm::diagnostics::Initialize("hstream-cli", argc ? argv[0] : nullptr);
   g_set_print_handler(+[](const gchar* message) {

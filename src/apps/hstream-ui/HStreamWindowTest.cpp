@@ -18332,11 +18332,16 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
   const bool calibration_seeks = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY");
   const bool mini_map_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP_ONLY");
   const bool av_timing_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY");
-  const bool genuine_preview = calibration_seeks || mini_map_only || av_timing_only;
+  const bool effects_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY");
+  const bool genuine_preview = calibration_seeks || mini_map_only || av_timing_only || effects_only;
   const QString expected_map_status = qEnvironmentVariable("HSTREAM_UI_E2E_RINK_MAP_EXPECTED");
   if (!expect(
-          int(calibration_seeks) + int(mini_map_only) + int(av_timing_only) <= 1,
+          int(calibration_seeks) + int(mini_map_only) + int(av_timing_only) + int(effects_only) <= 1,
           "Choose one focused genuine-playback qualification mode"))
+    return false;
+  if (!expect(
+          !effects_only || !qEnvironmentVariableIsSet("HSTREAM_UI_E2E_LIVE_CAMERA_CONTROLS"),
+          "Focused effects must not run unrelated camera tuning or Reset"))
     return false;
   if (mini_map_only &&
       !expect(
@@ -18399,6 +18404,25 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
   realtime->setChecked(true);
   render->setChecked(true);
   tabs->setCurrentIndex(calibration_seeks ? 1 : 0);
+  if (effects_only) {
+    const QString precision = qEnvironmentVariable("HSTREAM_UI_E2E_EFFECTS_PRECISION");
+    auto* high = require_child<QCheckBox>(window, "cameraCheck_Use_10_Bit_Grading");
+    if (!high || !expect(precision == "0" || precision == "1", "Effects require explicit Standard or FP16 precision"))
+      return false;
+    high->setCheckState(precision == "1" ? Qt::Checked : Qt::Unchecked);
+    for (const auto* id :
+         {"showRinkMiniMapCheck",
+          "outputRinkMapCheck",
+          "rinkFramingEnable",
+          "showPlayerTrackingCheck",
+          "showPlayTrackingCheck",
+          "showRinkMaskCheck"}) {
+      auto* toggle = require_child<QCheckBox>(window, id);
+      if (!toggle)
+        return false;
+      toggle->setChecked(false);
+    }
+  }
   if (av_timing_only) {
     for (const auto* id : {"showRinkMiniMapCheck", "outputRinkMapCheck", "rinkFramingEnable"}) {
       auto* toggle = require_child<QCheckBox>(window, id);
@@ -18930,6 +18954,76 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       return false;
     if (!capture("program", "transitions-program.png") || !compare_overlays("program"))
       return false;
+    if (effects_only) {
+      const std::array<const char*, 5> drawing_ids{
+          "playerDrawBoxes", "playerDrawPose", "playerDrawJerseys", "playerDrawActions", "playerDrawTeams"};
+      unsigned initial_layers = 0;
+      auto snapshot = [&](const char* label) {
+        unsigned layers = 0;
+        for (unsigned i = 0; i < drawing_ids.size(); ++i) {
+          auto* field = require_child<QCheckBox>(window, drawing_ids[i]);
+          if (!field || !field->isEnabled())
+            return false;
+          layers |= field->isChecked() ? 1U << i : 0;
+          report += QString("drawing-dom label=%1 control=%2 checked=%3 enabled=%4\n")
+                        .arg(label, drawing_ids[i])
+                        .arg(field->isChecked())
+                        .arg(field->isEnabled());
+        }
+        report += QString("drawing-mask label=%1 layers=%2\n").arg(label).arg(layers);
+        return true;
+      };
+      if (!snapshot("before"))
+        return false;
+      const auto baseline_offset = window->completeLogText().size();
+      for (unsigned i = 0; i < drawing_ids.size(); ++i) {
+        auto* field = require_child<QCheckBox>(window, drawing_ids[i]);
+        initial_layers |= field->isChecked() ? 1U << i : 0;
+        field->setChecked(false);
+      }
+      if (initial_layers &&
+          !wait_for(
+              [&] {
+                return window->completeLogText().mid(baseline_offset).contains("player drawing layers=0 apply=live");
+              },
+              "Qt establishes the live zero-layer Drawing baseline"))
+        return false;
+      if (!snapshot("zero"))
+        return false;
+      const auto live_offset = window->completeLogText().size();
+      for (const auto* id : drawing_ids)
+        require_child<QCheckBox>(window, id)->setChecked(true);
+      if (!wait_for(
+              [&] {
+                return window->completeLogText().mid(live_offset).contains("player drawing layers=31 apply=live");
+              },
+              "Qt acknowledges the actual all-layer Drawing edit") ||
+          !snapshot("all") || !capture("program", "effects-drawing-all.png"))
+        return false;
+      activate(pause);
+      if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses before the Drawing draft"))
+        return false;
+      const auto paused_offset = window->completeLogText().size();
+      require_child<QCheckBox>(window, "playerDrawPose")->setChecked(false);
+      if (!snapshot("paused-pose-off"))
+        return false;
+      QTest::qWait(5000);
+      const auto paused_log = window->completeLogText().mid(paused_offset);
+      if (!expect(
+              !paused_log.contains("player drawing layers=29 apply=") &&
+                  !paused_log.contains("acknowledgement-timeout"),
+              "Paused Drawing remains a draft without native mutation or timeout"))
+        return false;
+      activate(pause);
+      if (!wait_for(
+              [&] {
+                return window->pipelineStateText() == "PLAYING" &&
+                    window->completeLogText().mid(paused_offset).contains("player drawing layers=29 apply=live");
+              },
+              "Confirmed Resume applies the Drawing draft") ||
+          !snapshot("resumed-pose-off") || !capture("program", "effects-drawing-resumed.png"))
+        return false;
+    }
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_LIVE_CAMERA_CONTROLS")) {
       const std::array<const char*, 5> drawing_ids{
           "playerDrawBoxes", "playerDrawPose", "playerDrawJerseys", "playerDrawActions", "playerDrawTeams"};
@@ -19044,6 +19138,27 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       return false;
     if (!capture("source0", "transitions-source-after-seek.png"))
       return false;
+    if (effects_only) {
+      const auto source_generation = generation(source);
+      tabs->setCurrentIndex(1);
+      if (!wait_for(
+              [&] { return ready(stitched) && generation(stitched) > source_generation; },
+              "Effects Stitched route returns after the source-only seek"))
+        return false;
+      qint64 first_pts = -1, later_pts = -1;
+      if (!capture("stitched", "effects-stitched-after-seek-first.png", &first_pts))
+        return false;
+      QTest::qWait(500);
+      if (!capture("stitched", "effects-stitched-after-seek-later.png", &later_pts, first_pts + 1))
+        return false;
+      // Local PTS proves motion only within this epoch. The additive physical
+      // frame/crop receipts, never this check, own cross-seek pixel comparison.
+      return expect(
+          later_pts > first_pts &&
+              QImage(QDir(artifact_dir).filePath("effects-stitched-after-seek-first.png")) !=
+                  QImage(QDir(artifact_dir).filePath("effects-stitched-after-seek-later.png")),
+          "Effects Stitched must present advancing identities and changed pixels after source seek");
+    }
     const int disabled = window->completeLogText().count("GPU preview disabled generation=");
     const int hidden_seeks = window->completeLogText().count("playback seek complete at ");
     // Start while seeking is allowed, then turn rendering off without pumping
@@ -21453,7 +21568,8 @@ int main(int argc, char** argv) {
          qEnvironmentVariableIsSet("HSTREAM_UI_E2E_FRESH_CALIBRATION") ||
          qEnvironmentVariableIsSet("HSTREAM_UI_E2E_SAVED_LEVELING_POINTS") ||
          qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP_ONLY") ||
-         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY")) &&
+         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY") ||
+         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY")) &&
         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREPARE_GAME")) {
       std::cerr << "Genuine calibration and mini-map checks cannot use E2E preparation that rewrites metadata\n";
       return 1;
@@ -21484,7 +21600,8 @@ int main(int argc, char** argv) {
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_PREVIEW_TRANSITIONS_ONLY") ||
         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY") ||
         qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP_ONLY") ||
-        qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY"))
+        qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY") ||
+        qEnvironmentVariableIsSet("HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY"))
       return run_preview_transitions_e2e(&window, QString::fromLocal8Bit(e2e_game_id)) ? 0 : 1;
     if (!run_real_pipeline_e2e(&window, QString::fromLocal8Bit(e2e_game_id))) {
       std::cerr << "run_real_pipeline_e2e failed\n";

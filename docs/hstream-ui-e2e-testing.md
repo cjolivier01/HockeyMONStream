@@ -92,6 +92,39 @@ CLI, UI and plugins from the same build and route test audio to an explicitly
 owned virtual sink. HockeyMONWeb's matching fresh and saved Calibration tests
 check authenticated adoption and actual decoded browser frames.
 
+For the focused Drawing/source-seek regression, use
+`HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY=1` and an explicit
+`HSTREAM_UI_E2E_EFFECTS_PRECISION=0` (Standard) or `1` (FP16). This mode disables
+framing, mini-map and diagnostic overlays, records the five Drawing controls,
+applies masks 0 then 31, and verifies that a paused Pose edit remains a draft
+until Resume applies mask 29. It returns from a source-only seek to Stitched
+and requires two advancing, different images, then ordinary Stop and process
+retirement. It rejects synthetic fixture preparation and the unrelated live
+camera-tuning/Reset mode. It does not qualify tone effects by itself.
+
+Physical-frame comparisons can opt into `HSTREAM_PREVIEW_CAPTURE_METADATA=1`
+for Qt's existing explicit capture command. Enable
+`pipeline.hmstitcher.private-properties.emit-frame-pair-meta=1` only in the
+disposable evidence configuration. `HSTREAM_PREVIEW_CAPTURE` records both
+original chapter URIs/PTS and the frame's complete Program crop transform,
+latched with the rendered generation. No video readback occurs outside the
+explicit capture. Browser native captures instead use a literal JSON
+`HSTREAM_PREVIEW_CAPTURE_PLAN` with version 1 and 1–8 requests. Each request
+contains `id`, `channel` (`program` or `stitched`), `leftUri`, `rightUri`, exact
+decimal-string `leftPtsNs`/`rightPtsNs`, and `count` (1–3). Its process-wide
+budget survives preview reconstruction; malformed plans fail before runtime
+initialization, and omitted plans add no metadata sampling.
+
+A browser native receipt proves a prepared frame. Join its exact run, stage,
+topology, operation, channel, sequence and transport PTS to verified browser
+presentation and an explicitly captured image before claiming displayed pixels.
+Compare bound source file hashes and original physical PTS across interfaces;
+staging URI strings and local playback PTS can differ. Tone comparisons also
+require equal finite crop geometry, actual native descriptors/acknowledgments,
+and repeated-neutral images to measure capture noise. Missing or mismatched
+frames remain incomplete evidence. These diagnostics currently use the NVIDIA
+preview implementation; they do not establish AMD or compositor scanout parity.
+
 For preview-only mini-map qualification, use `HSTREAM_UI_E2E_RINK_MAP_ONLY=1`
 and `HSTREAM_UI_E2E_RINK_MAP_EXPECTED=ready` or `unavailable`, with a genuinely
 completed game and a new evidence directory. This also rejects
