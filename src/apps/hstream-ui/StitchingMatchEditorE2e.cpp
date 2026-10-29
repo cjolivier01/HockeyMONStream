@@ -940,7 +940,16 @@ int main(int argc, char** argv) {
             owner.state == "complete" &&
                 owner.artifact_generation_id == report["artifact_generation"].as<std::string>(),
             "Preview candidate generation changed");
-        require(preview_process_matches(owner), "Preview PID no longer has its exact native process token");
+        if (!preview_process_matches(owner)) {
+          // QProcess publishes the PID before the CLI's runtime re-exec has
+          // settled. /proc/environ can be temporarily unavailable then. Never
+          // accept pixels until ownership is observed, and never reacquire it
+          // after an established owner disappears. The preview deadline above
+          // also bounds a child that exits or never presents its token.
+          require(!preview_owner, "Preview PID no longer has its exact native process token");
+          report["preview_wait_reason"] = "Waiting for the initial native process token";
+          return;
+        }
         if (preview_owner)
           require(
               owner.process_session_id == preview_owner->process_session_id &&
