@@ -12,8 +12,10 @@
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTimer>
+#include <QtGui/QImageReader>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QScreen>
 #include <QtGui/QTextCursor>
@@ -31,9 +33,19 @@
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTimeEdit>
+#if QT_CONFIG(xcb)
+#include <QtGui/qguiapplication_platform.h>
+#include <xcb/xcb.h>
+#endif
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <cmath>
+#include <csignal>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -299,6 +311,99 @@ bool preview_process_matches(const StoredStitchingExperiment& record) {
       QByteArray::fromStdString("HSTREAM_EXPERIMENT_PROCESS_TOKEN=" + record.process_token));
 }
 
+QByteArray preview_process_identity(
+    const StoredStitchingExperiment& record,
+    const std::filesystem::path& runner,
+    WId window) {
+  require(preview_process_matches(record), "Preview process token changed");
+  const QString root = QString("/proc/%1/").arg(record.process_session_id);
+  QFile stat(root + "stat"), command(root + "cmdline"), environment(root + "environ");
+  require(
+      stat.open(QIODevice::ReadOnly) && command.open(QIODevice::ReadOnly) && environment.open(QIODevice::ReadOnly),
+      "Preview process is unavailable");
+  const QByteArray fields = stat.readAll();
+  const auto values = fields.mid(fields.lastIndexOf(')') + 2).simplified().split(' ');
+  require(values.size() > 19, "Preview starttime is unavailable");
+  require(values[1].toLongLong() == QCoreApplication::applicationPid(), "Preview is not this dialog's child");
+  require(
+      values[2].toLongLong() == record.process_session_id && values[3].toLongLong() == record.process_session_id &&
+          values[19].toULongLong() > 0,
+      "Preview process session or starttime is invalid");
+  require(
+      environment.readAll().split('\0').contains(
+          QByteArray::fromStdString("HM_GAME_DIR=" + record.workspace.root.string())),
+      "Preview environment does not select the owned candidate directory");
+  const QByteArray arguments = command.readAll();
+  const auto args = arguments.split('\0');
+  const int game_argument = args.indexOf("-g");
+  require(
+      game_argument >= 0 && game_argument + 1 < args.size() &&
+          args[game_argument + 1] == QByteArray::fromStdString(record.workspace.game_id) &&
+          args.contains(
+              QByteArray("--ui-preview-windows=stitched:") + QByteArray::number(static_cast<qulonglong>(window))) &&
+          args.contains("--ui-preview-active=stitched"),
+      "Preview command does not target the selected candidate and exact Qt window");
+  require(
+      QFileInfo(root + "exe").canonicalFilePath() ==
+          QFileInfo(QString::fromStdString(runner.string())).canonicalFilePath(),
+      "Preview executable changed");
+  return values[19] + '\0' + arguments;
+}
+
+QSize viewable_preview_size(QWidget* video, YAML::Node& report) {
+#if QT_CONFIG(xcb)
+  require(QGuiApplication::platformName() == "xcb", "Native front-buffer capture requires X11");
+  auto* x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+  require(x11 && x11->connection(), "Native preview X11 connection is unavailable");
+  auto* connection = x11->connection();
+  const auto window = static_cast<xcb_window_t>(video->winId());
+  const auto attributes_cookie = xcb_get_window_attributes(connection, window);
+  const auto geometry_cookie = xcb_get_geometry(connection, window);
+  auto* attributes = xcb_get_window_attributes_reply(connection, attributes_cookie, nullptr);
+  auto* geometry = xcb_get_geometry_reply(connection, geometry_cookie, nullptr);
+  const bool viewable = attributes && attributes->map_state == XCB_MAP_STATE_VIEWABLE;
+  const QSize size = geometry ? QSize(geometry->width, geometry->height) : QSize();
+  std::free(attributes);
+  std::free(geometry);
+  report["preview_native_window_viewable"] = viewable;
+  report["preview_native_window_width"] = size.width();
+  report["preview_native_window_height"] = size.height();
+  require(viewable && !size.isEmpty(), "Native preview window is not viewable");
+  require(size == video->size() * video->devicePixelRatioF(), "Native and Qt preview dimensions disagree");
+  return size;
+#else
+  throw std::runtime_error("Native front-buffer capture requires X11");
+#endif
+}
+
+void request_front_buffer(
+    const StoredStitchingExperiment& record,
+    const std::filesystem::path& runner,
+    WId window,
+    const QByteArray& identity,
+    const QString& path) {
+  require(!path.contains('\n') && !path.contains('\r'), "Capture path contains a runtime-command separator");
+  require(!QFileInfo::exists(path), "Native capture output already exists");
+  require(preview_process_identity(record, runner, window) == identity, "Preview identity changed before capture");
+  const QByteArray input = QString("/proc/%1/fd/0").arg(record.process_session_id).toLocal8Bit();
+  const int descriptor = ::open(input.constData(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+  require(descriptor >= 0, "Cannot open owned preview command pipe");
+  QFile pipe;
+  if (!pipe.open(descriptor, QIODevice::WriteOnly, QFileDevice::AutoCloseHandle)) {
+    ::close(descriptor);
+    throw std::runtime_error("Cannot retain owned preview command pipe");
+  }
+  struct stat opened{}, current{};
+  require(
+      ::fstat(descriptor, &opened) == 0 && ::stat(input.constData(), &current) == 0 && S_ISFIFO(opened.st_mode) &&
+          opened.st_dev == current.st_dev && opened.st_ino == current.st_ino,
+      "Preview stdin is not the same owned pipe");
+  require(preview_process_identity(record, runner, window) == identity, "Preview identity changed before command");
+  const QByteArray command = "@capture-preview-frame stitched " + path.toUtf8() + '\n';
+  require(command.size() <= 4096, "Native capture command exceeds the bounded pipe write");
+  require(::write(descriptor, command.constData(), command.size()) == command.size(), "Native capture command failed");
+}
+
 bool owned_tokens_retired(const std::set<std::string>& tokens) {
   if (tokens.empty())
     return true;
@@ -361,8 +466,26 @@ int main(int argc, char** argv) {
   }
   const QString source_mode = qEnvironmentVariable("HSTREAM_MATCH_EDITOR_SOURCE_MODE", "automatic");
   const std::string reviewed_path = qEnvironmentVariable("HSTREAM_MATCH_EDITOR_REVIEWED_MATCHES").toStdString();
+  const std::string retained_preview_report =
+      qEnvironmentVariable("HSTREAM_MATCH_EDITOR_RETAINED_PREVIEW_REPORT").toStdString();
   const bool capture_only = qEnvironmentVariableIntValue("HSTREAM_MATCH_EDITOR_CAPTURE_ONLY") == 1;
   const bool reviewed_promote = qEnvironmentVariableIntValue("HSTREAM_MATCH_EDITOR_PROMOTE_REVIEWED") == 1;
+  const QString capture_method = qEnvironmentVariable("HSTREAM_MATCH_EDITOR_PREVIEW_CAPTURE", "qscreen");
+  if (capture_method != "qscreen" && capture_method != "native-gl-front") {
+    std::cerr << "Preview capture must be qscreen or explicit native-gl-front\n";
+    return 2;
+  }
+  const bool native_front_capture = capture_method == "native-gl-front";
+  // A runner can exit between ownership validation and the nonblocking pipe
+  // write. Report EPIPE through ordinary cleanup instead of killing this driver.
+  if (native_front_capture && std::signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+    std::cerr << "Cannot make native capture pipe failures recoverable\n";
+    return 2;
+  }
+  if (!retained_preview_report.empty() && (capture_only || reviewed_promote || reviewed_path.empty())) {
+    std::cerr << "Retained preview diagnostics require reviewed input and forbid capture-only or promotion\n";
+    return 2;
+  }
   if (source_mode != "automatic" && source_mode != "main" && source_mode != "automatic-failed") {
     std::cerr << "Unknown source mode; failed Main is not a supported route in the current Qt product\n";
     return 2;
@@ -447,6 +570,17 @@ int main(int argc, char** argv) {
         "The dedicated game must have no queued or owned native work");
   std::optional<StoredStitchingExperiment> preview_owner;
   QString preview_output;
+  QString preview_incremental_output;
+  qint64 preview_log_offset = -1, preview_log_read = 0;
+  bool diagnostic_capture_saved = false;
+  QImage last_screen_capture;
+  qint64 first_screen_capture_ms = 0;
+  QByteArray preview_identity;
+  QString native_capture_path;
+  int native_capture_requests = 0;
+  qint64 native_capture_sent_ms = 0;
+  QSize native_capture_size;
+  std::optional<qulonglong> first_capture_pts;
   QString preview_generation, first_pixel_hash;
   qint64 first_pixel_ms = 0;
   QSize first_pixel_size;
@@ -455,10 +589,18 @@ int main(int argc, char** argv) {
   report["source_mode"] = source_mode.toStdString();
   report["capture_only"] = capture_only;
   report["reviewed_points_used"] = !reviewed_path.empty();
+  report["retained_preview_only"] = !retained_preview_report.empty();
   if (!reviewed_bytes.isEmpty())
     report["review_input_sha256"] =
         QCryptographicHash::hash(reviewed_bytes, QCryptographicHash::Sha256).toHex().toStdString();
   report["physical_map_qualified"] = false;
+  report["preview_capture_method"] = capture_method.toStdString();
+  report["renderer_window_presentation_qualified"] = false;
+  report["compositor_visibility_qualified"] = false;
+  if (native_front_capture)
+    report["preview_capture_boundary"] =
+        "Explicit bounded GL_FRONT readback proves current pixels on the owned, viewable native window. "
+        "It does not qualify desktop compositor visibility or physical rink geometry.";
   report["workflow_qualified"] = false;
   report["cleanup_complete"] = false;
   report["runner_sha256"] = image_sha256(std::filesystem::absolute(argv[4])).toStdString();
@@ -490,9 +632,14 @@ int main(int argc, char** argv) {
     QTextCursor cursor(log->document());
     cursor.setPosition(position);
     cursor.setPosition(std::min(position + added, log->document()->characterCount() - 1), QTextCursor::KeepAnchor);
-    preview_output += cursor.selectedText().replace(QChar::ParagraphSeparator, QChar('\n'));
+    preview_incremental_output += cursor.selectedText().replace(QChar::ParagraphSeparator, QChar('\n'));
+    preview_incremental_output = preview_incremental_output.right(1024 * 1024);
   });
   const auto finish = [&](int result, const QString& message) {
+    write(artifacts / "preview-current-process.log", preview_output);
+    write(artifacts / "preview-document-incremental.log", preview_incremental_output);
+    if (!last_screen_capture.isNull())
+      last_screen_capture.save(QString::fromStdString((artifacts / "preview-screen-last-attempt.png").string()));
     finishing = true;
     requested_exit = result;
     pending_result = message;
@@ -542,7 +689,8 @@ int main(int argc, char** argv) {
           write(artifacts / "runner.log", log->toPlainText());
           report["cleanup_complete"] = true;
           report["exit_code"] = requested_exit;
-          report["workflow_qualified"] = requested_exit == 0 && report["promoted"].as<bool>(false);
+          report["workflow_qualified"] =
+              requested_exit == 0 && retained_preview_report.empty() && report["promoted"].as<bool>(false);
           write(artifacts / "result.txt", pending_result);
           std::ofstream(artifacts / "workflow-report.yaml") << YAML::Dump(report);
           driver.stop();
@@ -564,7 +712,85 @@ int main(int argc, char** argv) {
       require(elapsed.elapsed() < 1200000, "End-to-end test exceeded 20 minutes");
       write(artifacts / "runner.log", log->toPlainText());
       require(!current.startsWith("Could not persist"), current.toStdString());
-      if (step == 0 && source_mode == "main") {
+      if (step == 0 && !retained_preview_report.empty()) {
+        require(std::filesystem::file_size(retained_preview_report) <= 4 * 1024 * 1024, "Prior report is too large");
+        const auto prior_report = YAML::LoadFile(retained_preview_report);
+        require(prior_report["cleanup_complete"].as<bool>(), "Prior workflow cleanup did not finish");
+        require(
+            prior_report["review_input_sha256"].as<std::string>() == report["review_input_sha256"].as<std::string>() &&
+                prior_report["runner_sha256"].as<std::string>() == report["runner_sha256"].as<std::string>(),
+            "Retained preview input or runner differs from the original workflow");
+        for (const char* config : {"baseline.yaml", "ds_hockey_app_config.yaml", "ds_hockey_configure_stitching.yaml"})
+          require(
+              prior_report["config_sha256"][config].as<std::string>() ==
+                  report["config_sha256"][config].as<std::string>(),
+              "Retained preview configuration differs");
+        manual_workspace = prior_report["manual_workspace"].as<std::string>();
+        const auto retained = current_record(game, manual_workspace);
+        require(
+            retained.state == "complete" && retained.process_session_id == 0 && retained.process_token.empty() &&
+                retained.artifact_generation_id == prior_report["artifact_generation"].as<std::string>(),
+            "Retained manual candidate generation or ownership differs");
+        const auto config = YAML::LoadFile((manual_workspace / "config.yaml").string());
+        const auto fingerprint = hm::stitching::manual_control_point_fingerprint(config);
+        require(
+            fingerprint.ok() && *fingerprint == prior_report["manual_fingerprint"].as<std::string>(),
+            "Retained manual fingerprint differs");
+        const auto saved = hm::stitching::LoadCalibrationMatches(manual_workspace, *fingerprint);
+        require(saved.ok() && saved->manual, "Retained manual snapshot is unavailable");
+        const auto normalized = expected_reviewed_matches(reviewed_document);
+        require(saved->frames.size() == normalized.size(), "Retained manual pair count differs");
+        for (size_t index = 0; index < saved->frames.size(); ++index) {
+          const auto& frame = saved->frames[index];
+          const auto wanted = reviewed_document["frames"][index];
+          require(wanted["index"].as<size_t>() == index, "Retained review pair order differs");
+          for (size_t camera = 0; camera < 2; ++camera) {
+            require(
+                image_sha256(frame.images[camera]).toStdString() == wanted["image_sha256"][camera].as<std::string>() &&
+                    std::abs(frame.source_seconds[camera] - wanted["source_seconds"][camera].as<double>()) < 1e-6 &&
+                    frame.sizes[camera].width == wanted["sizes"][camera][0].as<int>() &&
+                    frame.sizes[camera].height == wanted["sizes"][camera][1].as<int>(),
+                "Retained original image or source time differs");
+          }
+          require(frame.matches.size() == normalized[index]["matches"].size(), "Retained manual point count differs");
+          for (size_t point = 0; point < frame.matches.size(); ++point) {
+            const auto match = normalized[index]["matches"][point];
+            require(
+                frame.matches[point].left == cv::Point2f(match["left"][0].as<float>(), match["left"][1].as<float>()) &&
+                    frame.matches[point].right ==
+                        cv::Point2f(match["right"][0].as<float>(), match["right"][1].as<float>()),
+                "Retained manual endpoints differ from reviewed numeric entry");
+          }
+        }
+        for (int row = 0; row < table->rowCount(); ++row) {
+          const auto sequence = QRegularExpression("(\\d+)$").match(table->item(row, 0)->text());
+          if (sequence.hasMatch() && sequence.captured(1).toInt() == retained.sequence) {
+            require(manual_row < 0, "Retained candidate row is ambiguous");
+            manual_row = row;
+          }
+        }
+        require(
+            manual_row >= 0 && table->item(manual_row, 5)->text() == "Ready", "Retained candidate row is not ready");
+        source_workspace = prior_report["source_workspace"].as<std::string>();
+        source_config_sha = QString::fromStdString(prior_report["source_config_sha256"].as<std::string>());
+        require(image_sha256(source_workspace / "config.yaml") == source_config_sha, "Prior source config changed");
+        report["retained_from_report"] = retained_preview_report;
+        report["retained_report_sha256"] = image_sha256(retained_preview_report).toStdString();
+        report["source_workspace"] = source_workspace.string();
+        report["source_config_sha256"] = source_config_sha.toStdString();
+        report["manual_workspace"] = manual_workspace.string();
+        report["manual_fingerprint"] = *fingerprint;
+        report["artifact_generation"] = retained.artifact_generation_id;
+        report["reviewed_coordinate_normalization"] = "qt-fixed9-float32";
+        report["reviewed_expected_matches"] = normalized;
+        save_review_template(*saved, artifacts);
+        table->selectRow(manual_row);
+        preview_log_offset = QFileInfo(QString::fromStdString((manual_workspace / "runner.log").string())).size();
+        report["preview_log_start_offset"] = preview_log_offset;
+        click(dialog, "previewStitchExperimentButton");
+        preview_elapsed.start();
+        step = 6;
+      } else if (step == 0 && source_mode == "main") {
         for (int row = 0; row < table->rowCount(); ++row)
           if (table->item(row, 0)->text() == "Main calibration")
             automatic_row = row;
@@ -684,11 +910,27 @@ int main(int argc, char** argv) {
         report["artifact_generation"] = manual.artifact_generation_id;
         table->selectRow(manual_row);
         preview_output.clear();
+        preview_incremental_output.clear();
+        preview_log_offset = QFileInfo(QString::fromStdString((manual_workspace / "runner.log").string())).size();
+        report["preview_log_start_offset"] = preview_log_offset;
         click(dialog, "previewStitchExperimentButton");
         preview_elapsed.start();
         ++step;
       } else if (step == 6) {
         require(preview_elapsed.elapsed() < 240000, "Current candidate preview never presented changing pixels");
+        // The candidate log is append-only and belongs to this selected workspace.
+        // Fence its starting offset before Play so previous ready markers cannot
+        // authorize pixels. Retain the UI collector independently for diagnosis.
+        QFile raw_log(QString::fromStdString((manual_workspace / "runner.log").string()));
+        require(raw_log.open(QIODevice::ReadOnly), "Cannot read current candidate preview output");
+        require(raw_log.size() >= preview_log_offset + preview_log_read, "Preview log was replaced or truncated");
+        require(raw_log.seek(preview_log_offset + preview_log_read), "Cannot seek current preview output");
+        const QByteArray added = raw_log.read(1024 * 1024);
+        preview_log_read += added.size();
+        preview_output = (preview_output + QString::fromUtf8(added)).right(1024 * 1024);
+        report["preview_log_bytes_read"] = preview_log_read;
+        report["preview_document_collected_chars"] = preview_incremental_output.size();
+        report["preview_elapsed_ms"] = preview_elapsed.elapsed();
         const auto owner = current_record(game, manual_workspace);
         if (owner.process_session_id <= 0 || owner.process_token.empty()) {
           require(!preview_owner, "Preview retired before changing pixels were captured");
@@ -713,23 +955,134 @@ int main(int argc, char** argv) {
             QRegularExpression(
                 "HSTREAM_PREVIEW channel=stitched status=ready generation=(\\d+) message=first GPU frame presented")
                 .match(preview_output);
-        if (!ready.hasMatch())
+        report["preview_ready_marker_seen"] = ready.hasMatch();
+        if (!ready.hasMatch()) {
+          report["preview_wait_reason"] = "Current process has not emitted the ready marker";
           return;
+        }
         if (preview_generation.isEmpty())
           preview_generation = ready.captured(1);
         require(ready.captured(1) == preview_generation, "Native renderer generation changed during capture");
         auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
+        const QPoint global = video->mapToGlobal(QPoint());
+        report["preview_widget_xid"] = static_cast<unsigned long long>(video->winId());
+        report["preview_widget_visible"] = video->isVisible();
+        report["preview_widget_geometry"] = QString("%1,%2 %3x%4")
+                                                .arg(global.x())
+                                                .arg(global.y())
+                                                .arg(video->width())
+                                                .arg(video->height())
+                                                .toStdString();
+        report["preview_screen"] = video->screen()->name().toStdString();
+        report["preview_device_pixel_ratio"] = video->devicePixelRatioF();
         require(
             video->isVisible() && video->width() >= 300 && video->height() >= 150, "Preview surface is not visible");
-        const QImage image = video->screen()->grabWindow(video->winId()).toImage();
+        const auto identity = preview_process_identity(owner, std::filesystem::absolute(argv[4]), video->winId());
+        if (preview_identity.isEmpty()) {
+          preview_identity = identity;
+          report["preview_process_start_ticks"] = identity.left(identity.indexOf('\0')).toStdString();
+        }
+        require(identity == preview_identity, "Preview starttime or command changed during capture");
+        last_screen_capture = video->screen()->grabWindow(video->winId()).toImage();
+        report["preview_screen_capture_available"] = !last_screen_capture.isNull();
+        PixelSample screen_pixels;
+        if (!last_screen_capture.isNull())
+          screen_pixels = sample_pixels(last_screen_capture);
+        report["preview_screen_last_nonblack_fraction"] = screen_pixels.nonblack_fraction;
+        report["preview_screen_last_pixel_sha256"] = screen_pixels.sha256.toStdString();
+        if (!diagnostic_capture_saved) {
+          diagnostic_capture_saved = true;
+          first_screen_capture_ms = preview_elapsed.elapsed();
+          last_screen_capture.save(QString::fromStdString((artifacts / "preview-window-first-attempt.png").string()));
+          dialog.grab().save(QString::fromStdString((artifacts / "preview-dialog-diagnostic.png").string()));
+          video->screen()
+              ->grabWindow(0, global.x(), global.y(), video->width(), video->height())
+              .save(QString::fromStdString((artifacts / "preview-screen-region-diagnostic.png").string()));
+        }
+        QImage image = last_screen_capture;
+        if (native_front_capture) {
+          // Xwayland can return black XGetImage/QScreen pixels even while the
+          // same Qt XID contains video in GL_FRONT. This explicit alternative
+          // uses the existing one-shot renderer command, never a CPU video path.
+          // Preserve screen evidence and keep compositor visibility unqualified.
+          const QSize size = viewable_preview_size(video, report);
+          require(
+              static_cast<quint64>(size.width()) * size.height() * 4 <= 16 * 1024 * 1024,
+              "Native preview exceeds the diagnostic readback budget");
+          if (native_capture_size.isEmpty()) {
+            native_capture_size = size;
+            preview_window = video->winId();
+          }
+          require(size == native_capture_size && video->winId() == preview_window, "Native capture target changed");
+          if (native_capture_path.isEmpty()) {
+            if (preview_elapsed.elapsed() - first_screen_capture_ms < 300 ||
+                (!first_pixel_hash.isEmpty() && preview_elapsed.elapsed() - first_pixel_ms < 500))
+              return;
+            require(native_capture_requests < 2, "Two bounded native captures did not prove changing pixels");
+            native_capture_path = QString::fromStdString(
+                (artifacts / ("preview-native-front-" + std::to_string(++native_capture_requests) + ".png")).string());
+            request_front_buffer(
+                owner, std::filesystem::absolute(argv[4]), preview_window, preview_identity, native_capture_path);
+            native_capture_sent_ms = preview_elapsed.elapsed();
+            report["preview_native_capture_requests"] = native_capture_requests;
+            report["preview_wait_reason"] = "Waiting for exact-path native front-buffer identity acknowledgement";
+            return;
+          }
+          const auto captured =
+              QRegularExpression(
+                  "runtime preview frame identity channel=stitched path=" +
+                  QRegularExpression::escape(native_capture_path) + " generation=(\\d+) pipeline-pts-ns=(\\d+)")
+                  .match(preview_output);
+          if (!captured.hasMatch()) {
+            require(preview_elapsed.elapsed() - native_capture_sent_ms < 5000, "Native capture identity timed out");
+            return;
+          }
+          require(captured.captured(1) == preview_generation, "Native capture renderer generation changed");
+          bool pts_valid = false;
+          const auto pts = captured.captured(2).toULongLong(&pts_valid);
+          require(pts_valid, "Native capture PTS is invalid");
+          require(!first_capture_pts || pts > *first_capture_pts, "Native capture did not advance presentation PTS");
+          require(
+              preview_process_identity(owner, std::filesystem::absolute(argv[4]), preview_window) == preview_identity &&
+                  viewable_preview_size(video, report) == native_capture_size,
+              "Native capture acknowledgement no longer belongs to the same viewable target");
+          const QFileInfo file(native_capture_path);
+          require(
+              file.isFile() && file.size() > 0 && file.size() <= 20 * 1024 * 1024,
+              "Native PNG is unavailable or oversized");
+          QImageReader reader(native_capture_path);
+          const QSize dimensions = reader.size();
+          require(
+              dimensions == native_capture_size &&
+                  static_cast<quint64>(dimensions.width()) * dimensions.height() * 4 <= 16 * 1024 * 1024,
+              "Native PNG does not match the bounded Qt window");
+          image = reader.read();
+          YAML::Node capture;
+          capture["path"] = native_capture_path.toStdString();
+          capture["generation"] = preview_generation.toStdString();
+          capture["pipeline_pts_ns"] = pts;
+          capture["request_elapsed_ms"] = native_capture_sent_ms;
+          capture["acknowledgement_elapsed_ms"] = preview_elapsed.elapsed();
+          capture["png_sha256"] = image_sha256(native_capture_path.toStdString()).toStdString();
+          report["preview_native_captures"].push_back(capture);
+          if (!first_capture_pts)
+            first_capture_pts = pts;
+          native_capture_path.clear();
+        }
         const auto pixels = sample_pixels(image);
-        if (pixels.nonblack_fraction < 0.05)
+        report["preview_last_nonblack_fraction"] = pixels.nonblack_fraction;
+        report["preview_last_pixel_sha256"] = pixels.sha256.toStdString();
+        if (pixels.nonblack_fraction < 0.05) {
+          report["preview_wait_reason"] = "Owned video-window capture remains black";
+          require(!native_front_capture, "Native front-buffer capture remains black");
           return;
+        }
         if (first_pixel_hash.isEmpty()) {
           first_pixel_hash = pixels.sha256;
           first_pixel_ms = preview_elapsed.elapsed();
           first_pixel_size = image.size();
           preview_window = video->winId();
+          report["preview_wait_reason"] = "Waiting for different nonblack pixels on the same current video window";
           require(
               image.save(QString::fromStdString((artifacts / "preview-first.png").string())),
               "Cannot save first preview capture");
@@ -746,6 +1099,8 @@ int main(int argc, char** argv) {
           report["preview_changed_sha256"] = pixels.sha256.toStdString();
           report["preview_nonblack_fraction"] = pixels.nonblack_fraction;
           report["preview_sample_separation_ms"] = preview_elapsed.elapsed() - first_pixel_ms;
+          report["renderer_window_presentation_qualified"] = true;
+          report["compositor_visibility_qualified"] = !native_front_capture;
           click(dialog, "stopStitchExperimentPreviewButton");
           ++step;
         }
@@ -757,6 +1112,12 @@ int main(int argc, char** argv) {
         require(
             image_sha256(source_workspace / "config.yaml") == source_config_sha, "Preview changed its original source");
         report["ordinary_stop_retired"] = true;
+        if (!retained_preview_report.empty()) {
+          finish(
+              0,
+              "RETAINED PREVIEW ONLY: same manual artifact, changing owned pixels and ordinary Stop verified; no end-to-end rerun or promotion.\n");
+          return;
+        }
         if (!reviewed_path.empty() && !reviewed_promote) {
           finish(
               0,

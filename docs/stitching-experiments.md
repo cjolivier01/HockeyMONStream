@@ -359,9 +359,23 @@ Stitching Experiments dialog, and inspects/edits the promoted Main through its
 ordinary controls. It also loads both rink-leveling images and renders a native
 leveling preview. The promoted Hugin point count must equal the saved count.
 
+Coordinate spin boxes add quarter-pixel steps to the current value. Their
+refresh changes bounds only when image dimensions change, preserving Qt's
+held-button repeat timer. The CPU dialog test covers keyboard modifiers,
+pending text with undo/redo, range changes and pointer press/release; the
+browser counterpart uses the same additive behavior and colored arrow icons.
+
 Logs, original PNGs, screenshots, `workflow-report.yaml` and `result.txt` stay in
-the test folder. Xwayland capture failure leaves moving-preview qualification
-failed; a first-frame acknowledgment alone cannot pass it. Success and failure
+the test folder. The default `qscreen` capture method requires changing desktop
+pixels. Under Xwayland, an explicitly selected
+`HSTREAM_MATCH_EDITOR_PREVIEW_CAPTURE=native-gl-front` can instead use two
+bounded `capture-preview-frame` requests. Each must belong to the same live
+runner, candidate, viewable Qt window and renderer generation, with increasing
+presentation timestamps and different nonblack pixels. The report retains the
+desktop capture attempts and records the capture method. This alternative
+qualifies renderer-window presentation; desktop compositor visibility remains
+unqualified. A first-frame acknowledgment alone cannot pass either method.
+Success and failure
 both use ordinary dialog cancellation/close, wait for native process ownership
 to retire, and retain cleanup failures in the report. The test preserves
 unapplied results when closing. The source game is unchanged. This opt-in script
