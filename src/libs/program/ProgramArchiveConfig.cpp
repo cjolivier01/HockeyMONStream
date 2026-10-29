@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <iostream>
 #include <stdexcept>
 
 #include "hstream/src/libs/common/ConfigPath.h"
@@ -71,8 +72,15 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
         auto interpolation = config.values["video_out"]["program_4k_interpolation"];
         if (sink["interpolation-method"] && Rank(config, prefix + "interpolation-method") >= Rank(config, canonical))
           interpolation.reset(YAML::Clone(sink["interpolation-method"]));
-        if (!interpolation.IsScalar() || (interpolation.Scalar() != "bilinear" && interpolation.Scalar() != "1"))
-          return absl::UnimplementedError("AMD Program 4K currently requires bilinear interpolation");
+        if (!interpolation.IsScalar())
+          return absl::InvalidArgumentError(canonical + " must name a scaling filter");
+        // Unlike the NVIDIA sink, this branch renders the crop straight into a
+        // UHD surface instead of resizing a full-size Program, so there is no
+        // second pass for the filter to select. Report that rather than
+        // failing startup on a value the shared baseline ships.
+        if (interpolation.Scalar() != "bilinear" && interpolation.Scalar() != "1")
+          std::cerr << "AMD Program 4K ignores " << canonical << '=' << interpolation.Scalar()
+                    << "; it renders directly at UHD with bilinear sampling\n";
       }
       // Native per-sink sizes are scaling choices. Keep the same camera aspect
       // as Program; rendering a different aspect would change its field of view.

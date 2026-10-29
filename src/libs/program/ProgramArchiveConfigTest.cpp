@@ -93,6 +93,10 @@ int main(int argc, char** argv) {
         result.ok() && result->at("ENCODE_FILE").output.bitrate_kbps == 9000 &&
             result->at("ENCODE_FILE").path == directory / "native.mp4",
         "Native archive settings lost same-layer precedence");
+    // This branch renders directly at UHD, so a filter it cannot apply is
+    // reported and ignored instead of failing the run.
+    for (const auto* ignored : {"video_out.program_4k_interpolation=nearest", "pipeline.sink6.interpolation-method=0"})
+      Check(resolve({ignored}).ok(), std::string("Unapplied 4K filter failed startup: ") + ignored);
     for (const auto* invalid :
          {"pipeline.sink6.codec=1",
           "pipeline.sink2.enc-type=1",
@@ -101,7 +105,6 @@ int main(int argc, char** argv) {
           "pipeline.sink6.sink-id=2",
           "pipeline.sink2.bitrate=-1",
           "pipeline.sink2.output-file=output.mkv",
-          "video_out.program_4k_interpolation=nearest",
           "pipeline.sink2.width=1280",
           "pipeline.sink6.width=1920",
           "pipeline.sink2.output-file=same.mp4,pipeline.sink6.output-file=same.mp4"})

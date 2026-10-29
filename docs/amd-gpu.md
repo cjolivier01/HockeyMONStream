@@ -1141,9 +1141,20 @@ integer bitrate helper. Metadata comes from the native MP4 header reader without
 opening a decoder or subprocess. Explicit native/canonical/AMD bitrates retain
 precedence; missing source bitrate retains the configured fallback and reports
 that choice. The AMD archive path supports hardware Main10 HEVC in MP4 and
-bilinear 4K fitting. Incompatible explicit codec, profile, container, scaling
-and interpolation settings fail before GPU preparation. Duplicate output paths
-and sink IDs also fail preflight.
+bilinear 4K fitting. Incompatible explicit codec, profile, container and
+scaling settings fail before GPU preparation. Duplicate output paths and sink
+IDs also fail preflight.
+
+`video_out.program_4k_interpolation` is not implemented here. The NVIDIA sink
+renders Program at its full size and resizes to UHD with a separate
+`nvvideoconvert`, which is what that filter selects; this branch renders the
+crop straight into a UHD surface through the shared bilinear inverse-mapping
+kernel in `src/libs/program/`, so there is no second pass to apply it to. The
+shared baseline ships `algo2`, so rather than failing every AMD 4K archive,
+`ResolveProgramArchives` logs that it ignored the requested filter and keeps
+bilinear sampling. Both backends therefore undersample a ~1.94x reduction.
+Closing this gap means area-averaged minification in that shared crop kernel,
+with CUDA and HIP coverage, not another configuration key.
 
 A desktop run already supplies `HSTREAM_JOB_MANIFEST`; default output names
 resolve inside that private workspace. After every output reaches EOS and AAC
