@@ -1156,12 +1156,12 @@ int main(int argc, char** argv) {
           }
         }
         std::ifstream project(game / "hm_project.pto");
-        size_t control_points = 0;
+        size_t project_control_points = 0;
         std::string line;
         while (std::getline(project, line))
           if (line.rfind("c ", 0) == 0)
-            ++control_points;
-        require(control_points == total, "Real Hugin project did not consume all edited matches");
+            ++project_control_points;
+        require(project_control_points == total, "Real Hugin project did not consume all edited matches");
         auto original = hm::stitching::LoadCalibrationMatches(game, saved->automatic_fingerprint);
         require(original.ok(), "Promoted original is unavailable for reset");
         same_matches(*saved, expected);
@@ -1174,7 +1174,7 @@ int main(int argc, char** argv) {
               current_record(game, source_workspace).state == report["source_state"].as<std::string>(),
               "Promotion changed the original candidate's terminal state");
         }
-        saved_control_points = control_points;
+        saved_control_points = project_control_points;
         reopened_dialog = std::make_unique<StitchingExperimentDialog>(
             QString::fromStdString(game.string()),
             QString::fromLocal8Bit(argv[4]),
@@ -1208,10 +1208,28 @@ int main(int argc, char** argv) {
         auto* editor = dynamic_cast<MatchEditorDialog*>(reopened_dialog->findChild<QDialog*>("matchEditorDialog"));
         if (!editor || !editor->isVisible())
           return;
-        same_matches(editor->editedSet(), expected);
+        const auto draft = editor->editedSet();
+        same_matches(draft, expected);
+        const auto reopened_config = YAML::LoadFile((game / "config.yaml").string());
+        const auto reopened_snapshot =
+            reopened_config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>();
         require(
-            QString::fromStdString(editor->editedSet().fingerprint) == manual_fingerprint,
-            "Reopened UI lost manual identity");
+            QString::fromStdString(reopened_snapshot) == manual_fingerprint,
+            "Reopening changed the saved manual identity");
+        const auto reopened = hm::stitching::LoadCalibrationMatches(game, reopened_snapshot);
+        require(reopened.ok(), reopened.status().ToString());
+        require(
+            reopened->manual && reopened->fingerprint == reopened_snapshot,
+            "Reopened saved calibration lost manual identity");
+        // editedSet() deliberately returns an unpublished draft. The save
+        // handler retains the immutable snapshot identity separately.
+        require(
+            draft.manual && draft.fingerprint.empty() && draft.input_fingerprint == reopened->input_fingerprint &&
+                draft.automatic_fingerprint == reopened->automatic_fingerprint,
+            "Reopened draft lost its saved input or automatic-match provenance");
+        same_matches(draft, *reopened);
+        report["ordinary_reopen_saved_fingerprint"] = reopened_snapshot;
+        report["ordinary_reopen_draft_unpublished"] = true;
         editor->grab().save(QString::fromStdString((artifacts / "promoted-reopened-editor.png").string()));
         click(*editor, "matchEditorCancel");
         report["ordinary_reopen_verified"] = true;
