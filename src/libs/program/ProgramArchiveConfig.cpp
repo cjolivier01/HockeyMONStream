@@ -76,11 +76,12 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
           return absl::InvalidArgumentError(canonical + " must name a scaling filter");
         // Unlike the NVIDIA sink, this branch renders the crop straight into a
         // UHD surface instead of resizing a full-size Program, so there is no
-        // second pass for the filter to select. Report that rather than
-        // failing startup on a value the shared baseline ships.
-        if (interpolation.Scalar() != "bilinear" && interpolation.Scalar() != "1")
-          std::cerr << "AMD Program 4K ignores " << canonical << '=' << interpolation.Scalar()
-                    << "; it renders directly at UHD with bilinear sampling\n";
+        // second pass for the filter to name. RenderProgramYuv already area
+        // averages the footprints it reduces far enough to need it, so report
+        // the unused setting rather than failing on a value the baseline ships.
+        std::cerr << "AMD Program 4K does not select a resize filter through " << canonical << '='
+                  << interpolation.Scalar()
+                  << "; its crop area averages any footprint it reduces by 1.75x or more, up to 4 taps per axis\n";
       }
       // Native per-sink sizes are scaling choices. Keep the same camera aspect
       // as Program; rendering a different aspect would change its field of view.

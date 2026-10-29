@@ -25,9 +25,31 @@ struct YuvOutput {
   YuvEncoding color;
 };
 
-// Fused crop, inverse rotation, bilinear resize, shadow lift and exposure.
-// Preserves NVIDIA's x/width sampling and transparent-black out-of-bounds
-// behavior, with no tone adjustment to alpha. Every output pixel is written;
+// Fused crop, inverse rotation, resize, shadow lift and exposure. The tap
+// count is chosen per axis, not per crop: an axis reducing by 1.75x or more
+// averages ceil(ratio) taps, capped at 4, and every other axis keeps the
+// single bilinear tap. So a crop may magnify in x and average 3 taps in y.
+// The 1.75 floor is deliberate. A bilinear tap is already as wide as a box
+// of sqrt(2) source pixels, and on equivalent width the two filters' error
+// crosses at 1.741, so below there one tap is the closer answer and
+// averaging would only soften it; the floor rounds that up. Averaging covers
+// the footprint the output pixel spans instead of leaving most of it to a
+// tap too narrow to reach. Past 4x the cap stops widening and the shortfall
+// returns; past 8x the tents stop overlapping at all.
+// Taps are centered on the existing x/width corner convention, so an
+// averaged axis reaches 0.5 - 0.5/N of a source step outside crop_box at the
+// low edge and stops 0.5 + 0.5/N short at the high edge - 0.375 and 0.625 at
+// four taps. The displacement from the old single tap is the same at both.
+// Preserves NVIDIA's x/width sampling. Transparent-black out-of-bounds
+// behavior holds only once no tap lands inside: a pixel whose footprint
+// merely reaches the edge keeps the brightness and alpha of the taps that
+// did land, so the opaque region grows by up to 0.375 of an output pixel
+// across an axis-aligned source edge, and up to sqrt(2) times that at a
+// corner or a rotated one.
+// Shadow lift and exposure run once on the resampled pixel, never per tap:
+// the lift curve is concave, so grading taps and averaging them is not the
+// same as grading the average.
+// No tone adjustment to alpha. Every output pixel is written;
 // row padding is untouched. RGBA8/RGB8/gray output; RGB/YUV GPU input.
 // Input and output must not overlap and remain alive until stream completion,
 // including on submission errors. No allocation, sync or video readback.
