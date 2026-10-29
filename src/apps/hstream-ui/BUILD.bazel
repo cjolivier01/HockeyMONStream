@@ -1365,7 +1365,7 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local"],
-    deps = [":hstream_window", "//src/libs/publication", "@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = [":hstream_window", "//src/libs/publication", "//src/libs/recording", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
 
 # Headless workflows share the native dialog libraries, without desktop windows.

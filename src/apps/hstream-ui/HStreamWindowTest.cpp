@@ -17424,7 +17424,7 @@ bool test_telemetry_only_admission() {
           window.pipelineStateText() == "STOPPED" && QFileInfo(manifest).isFile() && QFileInfo(log).isFile() &&
           YAML::LoadFile(manifest.toStdString())["state"].as<std::string>() == "running" &&
           YAML::LoadFile(receipt.toStdString())["state"].as<std::string>() == "admitted" &&
-          window.logText().contains("Legacy archive runner: managed workspace retained"),
+          window.logText().contains("Managed outputs not published: pipeline did not complete successfully"),
       "An early Stop without native completion must preserve the workspace and must not publish a receipt");
 }
 

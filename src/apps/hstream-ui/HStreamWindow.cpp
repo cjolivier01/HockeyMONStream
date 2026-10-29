@@ -12227,15 +12227,28 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_program_4k_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
   if (pending_archive_finalizations_.empty() && !managed_archive_manifest_.isEmpty()) {
-    // Telemetry-only runs have no archive queue. Their completed manifest still
-    // owns publication and cleanup, including after a graceful user Stop.
-    startNextArchiveFinalization();
-    if (telemetry_publication_worker_ || archive_finalize_failed_) {
-      updateRunControls();
-      return;
+    if (archive_completed) {
+      // Telemetry-only runs have no archive queue. Require the same successful
+      // runner exit as video, including an acknowledged graceful user Stop.
+      startNextArchiveFinalization();
+      if (telemetry_publication_worker_ || archive_finalize_failed_) {
+        updateRunControls();
+        return;
+      }
+      // A legacy runner without manifest support retains its existing standalone
+      // telemetry path below, and may publish only after normal completion.
+    } else {
+      // An encoded manifest alone is insufficient: the runner can fail after
+      // recording completion. Retain every recovery identity without publishing.
+      appendLog(
+          "Managed outputs not published: pipeline did not complete successfully; "
+          "working files and publication manifest retained at " +
+          managed_archive_manifest_);
+      retain_archive_log_guard_for_recovery = true;
+      managed_archive_manifest_.clear();
+      active_run_telemetry_requested_ = false;
+      active_telemetry_manifest_path_.clear();
     }
-    // A legacy runner without manifest support retains its existing standalone
-    // telemetry path below, and may publish only after normal completion.
   }
   if (!pending_archive_finalizations_.empty()) {
     startNextArchiveFinalization();
