@@ -136,6 +136,7 @@ QJsonObject Capabilities() {
            "experiment-optics-filtering-v1",
            "match-editor-v1",
            "rink-editor-v1",
+           "scoreboard-preview-v1",
            "rink-map-v1",
            "rink-map-check-v1",
            "web-preview-rink-map-v1",
