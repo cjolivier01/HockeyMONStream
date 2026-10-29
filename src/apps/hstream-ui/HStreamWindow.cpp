@@ -5437,6 +5437,10 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
   if (!event) {
     return;
   }
+  deferred_play_requested_ = false;
+  deferred_restart_requested_ = false;
+  deferred_restart_game_id_.clear();
+  calibration_restart_requested_ = false;
   if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
     appendLog("window close requested; stopping pipeline before exit");
     stopPipeline();
@@ -6608,6 +6612,13 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   game_id_edit_->setObjectName("gameIdEdit");
   game_id_edit_->setPlaceholderText("game-id");
   connect(game_id_edit_, &QLineEdit::textChanged, this, [this]() {
+    if (deferred_play_requested_ || deferred_restart_requested_) {
+      deferred_play_requested_ = false;
+      deferred_restart_requested_ = false;
+      deferred_restart_game_id_.clear();
+      calibration_restart_requested_ = false;
+      appendLog("pending pipeline start cancelled because the game changed");
+    }
     if (editing_defaults_ && !game_id_edit_->text().trimmed().isEmpty()) {
       editing_defaults_ = false;
       defaults_reset_pending_ = false;
@@ -11363,6 +11374,8 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 void HStreamWindow::startPipeline() {
+  if (deferred_play_requested_ || deferred_restart_requested_)
+    return;
   if (!resolveInitialProgramSources())
     return;
   const bool initial_single_source = initial_program_requires_stitching_ == false;
@@ -11423,9 +11436,20 @@ void HStreamWindow::startPipeline() {
     updateRunControls();
     return;
   }
-  if (!isCalibrationRun() && rink_framing_controls_) {
+  if (rink_framing_controls_) {
     rink_framing_controls_->setGameDirectory(gameDirectory(game_id_edit_->text().trimmed()));
-    const auto error = rink_framing_controls_->validateForRun();
+    const auto error = isCalibrationRun() ? QString() : rink_framing_controls_->validateForRun();
+    // validateForRun can schedule a fresh check. Inspect ownership afterwards,
+    // before STARTING suspends new checks and calibration takes the same lock.
+    if (rink_framing_controls_->isCheckingForRun()) {
+      deferred_play_requested_ = true;
+      deferred_restart_pipeline_generation_ = pipeline_run_generation_;
+      deferred_restart_game_id_ = game_id_edit_->text();
+      appendLog("pipeline start waiting for saved rink map validation to retire");
+      preview_status_->setText("Waiting for saved rink map validation");
+      updateRunControls();
+      return;
+    }
     if (!error.isEmpty()) {
       appendLog("pipeline not started: " + error);
       pipeline_state_->setText("STOPPED");
@@ -12088,6 +12112,10 @@ void HStreamWindow::pauseOrResumePipeline() {
 
 void HStreamWindow::stopPipeline() {
   hm::diagnostics::Breadcrumb("pipeline", "stop requested");
+  deferred_play_requested_ = false;
+  deferred_restart_requested_ = false;
+  deferred_restart_game_id_.clear();
+  calibration_restart_requested_ = false;
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
   if (projection_crop_dialog_)
@@ -18192,7 +18220,8 @@ void HStreamWindow::updateRunControls() {
     scheduled_player_drawing_ready_ = false;
     ++scheduled_player_drawing_generation_;
   }
-  const bool finalizing = isArchiveFinalizing();
+  const bool waiting_for_start = deferred_play_requested_ || deferred_restart_requested_;
+  const bool finalizing = isArchiveFinalizing() || waiting_for_start;
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
   if (archive_recovery_was_cleared) {
@@ -18236,7 +18265,7 @@ void HStreamWindow::updateRunControls() {
     pause_button_->setIcon(action_icon(pipeline_paused_ ? ActionIcon::Play : ActionIcon::Pause));
   }
   if (stop_button_) {
-    stop_button_->setEnabled(running);
+    stop_button_->setEnabled(running || waiting_for_start);
   }
   if (run_mode_selector_) {
     run_mode_selector_->setEnabled(!running && !finalizing);
@@ -18338,33 +18367,41 @@ void HStreamWindow::updateRunControls() {
 
 void HStreamWindow::restartStage() {
   appendLog("stage restart requested");
-  calibration_restart_requested_ = isCalibrationRun();
+  const bool restart_calibration = isCalibrationRun();
+  const QString game_id = active_run_game_id_.isEmpty() ? game_id_edit_->text() : active_run_game_id_;
+  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning)
+    stopPipeline();
+  calibration_restart_requested_ = restart_calibration;
+  deferred_play_requested_ = false;
   deferred_restart_requested_ = true;
   deferred_restart_pipeline_generation_ = pipeline_run_generation_;
-  deferred_restart_game_id_ = active_run_game_id_.isEmpty() ? game_id_edit_->text() : active_run_game_id_;
-  if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
-    stopPipeline();
-  }
+  deferred_restart_game_id_ = game_id;
   maybeStartDeferredRestart();
 }
 
 void HStreamWindow::maybeStartDeferredRestart() {
-  if (!deferred_restart_requested_ || stitching_still_starting_ || live_rotation_authorization_pending_ ||
+  if ((!deferred_restart_requested_ && !deferred_play_requested_) || stitching_still_starting_ ||
+      live_rotation_authorization_pending_ ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing()) {
     return;
   }
   const bool request_is_current = deferred_restart_pipeline_generation_ == pipeline_run_generation_ && game_id_edit_ &&
       game_id_edit_->text() == deferred_restart_game_id_;
-  if (request_is_current && !isCalibrationRun() && rink_framing_controls_ && rink_framing_controls_->isCheckingForRun())
+  if (request_is_current && rink_framing_controls_ && rink_framing_controls_->isCheckingForRun())
     return;
+  const bool ordinary_play = deferred_play_requested_;
+  deferred_play_requested_ = false;
   deferred_restart_requested_ = false;
   deferred_restart_game_id_.clear();
   if (!request_is_current) {
     calibration_restart_requested_ = false;
-    appendLog("stage restart cancelled because the pipeline generation or game changed");
+    appendLog("pending pipeline start cancelled because the pipeline generation or game changed");
+    updateRunControls();
     return;
   }
-  appendLog("stage restart continuing after pipeline cleanup");
+  appendLog(
+      ordinary_play ? "pipeline start continuing after saved rink map validation"
+                    : "stage restart continuing after pipeline cleanup");
   startPipeline();
 }
 

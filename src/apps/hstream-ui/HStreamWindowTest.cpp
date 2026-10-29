@@ -530,6 +530,9 @@ while True:
   static void recheckRinkMap(HStreamWindow* window) {
     window->rink_framing_controls_->checkMap(true);
   }
+  static void advancePipelineGeneration(HStreamWindow* window) {
+    ++window->pipeline_run_generation_;
+  }
   static void inheritCustomDetector(HStreamWindow* window) {
     window->baseline_config_["pipeline"]["primary-gie"]["config-file"] = "custom-detector.yaml";
     window->baseline_config_["pipeline"]["primary-gie"]["model-engine-file"] = "custom.engine";
@@ -8396,6 +8399,77 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     framing->setChecked(false);
     if (!HStreamWindowTestAccess::savePreset(window))
       return false;
+    HStreamWindowTestAccess::useRinkMapCheck(window, {});
+  }
+
+  // A disabled framing feature can still have an optional readiness worker
+  // holding native calibration artifacts. Play must wait for that owner, and
+  // cancellation or a changed source/generation must retire the queued launch.
+  for (int outcome : {0, 1, 2, 3}) {
+    auto release = std::make_shared<std::atomic<bool>>(false);
+    auto locked = std::make_shared<std::atomic<bool>>(false);
+    const absl::Cleanup release_check = [release] { *release = true; };
+    auto* framing = HStreamWindowTestAccess::useRinkMapCheck(
+        window, [release, locked](const QString& path, const std::function<bool()>&) {
+          QFile artifact(path + "/.hstream-stitch.lock");
+          if (!artifact.open(QIODevice::ReadWrite) || ::flock(artifact.handle(), LOCK_EX) != 0)
+            return absl::InternalError("Cannot hold the readiness fixture's artifact lock");
+          *locked = true;
+          QElapsedTimer deadline;
+          deadline.start();
+          while (!*release && deadline.elapsed() < 10000)
+            QThread::msleep(1);
+          ::flock(artifact.handle(), LOCK_UN);
+          *locked = false;
+          return absl::OkStatus();
+        });
+    auto wait = [](const std::function<bool()>& done) {
+      for (int i = 0; i < 500 && !done(); ++i)
+        QTest::qWait(10);
+      return done();
+    };
+    if (!expect(
+            wait([&] { return locked->load(); }) && !framing->isChecked(),
+            "Optional readiness must own the real artifact lock while framing is off"))
+      return false;
+    const int commands = window->logText().count("pipeline command ");
+    activate(start);
+    start->click();
+    if (!expect(
+            !start->isEnabled() && stop->isEnabled() && window->logText().count("pipeline command ") == commands,
+            "Repeated Play must wait without launching while readiness owns calibration artifacts"))
+      return false;
+    if (outcome == 1) {
+      activate(stop);
+    } else if (outcome == 2) {
+      auto* game_edit = window->findChild<QLineEdit*>("gameIdEdit");
+      const auto game = game_edit->text();
+      game_edit->setText(game + "-changed");
+      game_edit->setText(game);
+    } else if (outcome == 3) {
+      HStreamWindowTestAccess::advancePipelineGeneration(window);
+    }
+    *release = true;
+    if (outcome == 0) {
+      if (!expect(
+              wait([&] {
+                return window->pipelineStateText() == "PLAYING" &&
+                    window->logText().count("pipeline command ") == commands + 1;
+              }),
+              "Retired readiness must continue one ordinary Play"))
+        return false;
+      activate(stop);
+    } else {
+      if (!expect(
+              wait([&] { return !locked->load() && start->isEnabled(); }),
+              "Cancelled or stale Play must become idle after readiness retires"))
+        return false;
+      QTest::qWait(200);
+      if (!expect(
+              window->pipelineStateText() == "STOPPED" && window->logText().count("pipeline command ") == commands,
+              "Stop, a game switch or a new generation must prevent delayed Play"))
+        return false;
+    }
     HStreamWindowTestAccess::useRinkMapCheck(window, {});
   }
 

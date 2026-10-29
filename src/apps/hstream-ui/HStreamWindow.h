@@ -1109,6 +1109,7 @@ class HStreamWindow : public QMainWindow {
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
   bool deferred_restart_requested_{false};
+  bool deferred_play_requested_{false};
   quint64 deferred_restart_pipeline_generation_{0};
   QString deferred_restart_game_id_;
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;

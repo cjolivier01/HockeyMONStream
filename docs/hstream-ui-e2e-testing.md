@@ -498,3 +498,20 @@ landmarks; the hook does not establish their physical accuracy. It rejects
 Pin `HM_CONFIG_ROOT` to the exact product configuration and include all tracked
 configs when freezing a Bazel-shaped runtime; a test binary alone can otherwise
 resolve installed configuration.
+
+### Saved-map readiness and Play ownership
+
+An optional saved-map readiness check can hold the calibration artifact lock even
+when rink-aware framing is off. Cancellation does not release that ownership;
+Play and Restart wait asynchronously for the worker to finish before admission.
+Repeated Play cannot create another launch, and Stop, closing the window, a game
+change or a newer pipeline generation cancels the pending request.
+
+`rink_framing_controls_test` holds a real temporary artifact lock past cancellation
+and checks that readiness retains ownership while the GUI continues processing
+timers. The full `hstream_ui_test` uses the same lock with a fake runner to check
+one deferred launch, repeated Play, Stop, game changes and generation fencing.
+These CPU checks do not qualify actual GPU playback. The failed native scoreboard
+startup remains retained; rerun it against the newly frozen runtime before
+claiming that live case passes. The browser already uses supervised native
+admission and retirement; no browser-side lock or readiness bypass is added.
