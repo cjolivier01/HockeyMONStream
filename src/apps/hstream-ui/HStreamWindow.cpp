@@ -1719,6 +1719,10 @@ bool create_open_file_guard(int source_fd, const QString& protected_path, QStrin
 // directory holding it. Returns -1 when the published name no longer has the
 // expected identity, leaving the caller's existing pin authoritative.
 int reopen_pin_on_published_path(const QString& published_path, const struct stat& expected_stat) {
+  const QString failed_recovery_pin = qEnvironmentVariable("HSTREAM_UI_TEST_RECOVERY_PIN_REOPEN_FAILURE");
+  if (!failed_recovery_pin.isEmpty() &&
+      (published_path == failed_recovery_pin || published_path == failed_recovery_pin + ".log"))
+    return -1;
   const QByteArray encoded_published = QFile::encodeName(published_path);
   const int published_fd = ::open(encoded_published.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (published_fd < 0)
@@ -1732,12 +1736,17 @@ int reopen_pin_on_published_path(const QString& published_path, const struct sta
   return published_fd;
 }
 
+struct UiDeferredCleanupRetirement;
+
 bool remove_path_if_same_identity(
     const QString& path,
     const struct stat& expected_stat,
     QString* error,
     const QString& required_identity_path,
-    const struct stat* required_identity_stat);
+    const struct stat* required_identity_stat,
+    int* caller_fd_to_retire = nullptr,
+    UiDeferredCleanupRetirement* deferred_retirement = nullptr,
+    int preserved_caller_fd = -1);
 
 bool copy_open_file_no_replace(
     int source_fd,
@@ -2375,6 +2384,125 @@ bool retire_ui_cleanup_directory(int cleanup_fd, int parent_fd, const QByteArray
   if (::unlinkat(cleanup_fd, kUiCleanupOwnerName, 0) != 0 || ::fsync(cleanup_fd) != 0)
     return false;
   return remove_named_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name);
+}
+
+// Only a source pin whose deletion is already durable may defer metadata
+// retirement. Keep both directory locks until its caller closes that pin and
+// retires this exact transaction; never authorize an unrelated cleanup sweep.
+struct UiDeferredCleanupRetirement {
+  int cleanup_fd = -1;
+  int parent_fd = -1;
+  QByteArray cleanup_name;
+  QByteArray target_name;
+  struct stat expected_stat{};
+
+  UiDeferredCleanupRetirement() = default;
+  UiDeferredCleanupRetirement(const UiDeferredCleanupRetirement&) = delete;
+  UiDeferredCleanupRetirement& operator=(const UiDeferredCleanupRetirement&) = delete;
+  ~UiDeferredCleanupRetirement() {
+    if (cleanup_fd >= 0)
+      ::close(cleanup_fd);
+    if (parent_fd >= 0)
+      ::close(parent_fd);
+  }
+
+  bool records_match() const {
+    QByteArray owner;
+    std::optional<UiCleanupCommittedIdentity> committed;
+    return ui_cleanup_name_matches_fd(cleanup_fd, parent_fd, cleanup_name) &&
+        read_ui_cleanup_owner(cleanup_fd, &owner, nullptr) && owner == target_name &&
+        read_ui_cleanup_committed(cleanup_fd, &committed, nullptr) && committed &&
+        ui_cleanup_identity_matches(*committed, expected_stat);
+  }
+
+  // Recreate only a missing record in the still-owned directory. Never
+  // overwrite an unexpected entry or recreate a directory already retired.
+  bool restore_record(const char* name, const QByteArray& record) const {
+    const int fd = ::openat(cleanup_fd, name, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+    if (fd < 0)
+      return errno == EEXIST;
+    qsizetype written = 0;
+    bool ok = true;
+    while (written < record.size()) {
+      const ssize_t result = ::write(fd, record.constData() + written, record.size() - written);
+      if (result < 0 && errno == EINTR)
+        continue;
+      if (result <= 0) {
+        ok = false;
+        break;
+      }
+      written += result;
+    }
+    ok = ok && ::fsync(fd) == 0;
+    if (::close(fd) != 0)
+      ok = false;
+    return ok;
+  }
+
+  bool retire(QString* error) {
+    if (!records_match()) {
+      if (error)
+        *error = "committed cleanup ownership changed before metadata retirement";
+      return false;
+    }
+    if (retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name)) {
+      if (::fsync(parent_fd) == 0)
+        return true;
+      if (error)
+        *error = QString("cleanup metadata was retired, but its parent could not be synced: %1")
+                     .arg(QString::fromLocal8Bit(std::strerror(errno)));
+      return false;
+    }
+    const int saved_errno = errno;
+    bool records_retained = false;
+    if (ui_cleanup_name_matches_fd(cleanup_fd, parent_fd, cleanup_name)) {
+      const QByteArray owner = QByteArray(kUiCleanupOwnerMagic) + target_name.toBase64();
+      const QByteArray committed = QByteArray(kUiCleanupCommittedMagic) +
+          QByteArray::number(static_cast<qulonglong>(expected_stat.st_dev)) + "\n" +
+          QByteArray::number(static_cast<qulonglong>(expected_stat.st_ino)) + "\n";
+      const bool owner_restored = restore_record(kUiCleanupOwnerName, owner);
+      const bool commit_restored = restore_record(kUiCleanupCommittedName, committed);
+      records_retained =
+          owner_restored && commit_restored && ::fsync(cleanup_fd) == 0 && ::fsync(parent_fd) == 0 && records_match();
+    }
+    if (error) {
+      *error = QString("cleanup metadata remains at %1: %2%3")
+                   .arg(
+                       QString::fromLocal8Bit(cleanup_name),
+                       QString::fromLocal8Bit(std::strerror(saved_errno)),
+                       records_retained ? QString() : QString("; recovery records could not be fully restored"));
+    }
+    return false;
+  }
+};
+
+bool ui_cleanup_contains_only_caller_tombstones(int cleanup_fd, const struct stat& caller_stat) {
+  const int scan_fd = ::openat(cleanup_fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (scan_fd < 0)
+    return false;
+  DIR* directory = ::fdopendir(scan_fd);
+  if (!directory) {
+    ::close(scan_fd);
+    return false;
+  }
+  bool found_tombstone = false;
+  errno = 0;
+  while (const dirent* entry = ::readdir(directory)) {
+    const QByteArray name(entry->d_name);
+    if (name == "." || name == ".." || name == kUiCleanupOwnerName || name == kUiCleanupCommittedName)
+      continue;
+    struct stat tombstone_stat{};
+    if (!name.startsWith(".nfs") ||
+        ::fstatat(cleanup_fd, name.constData(), &tombstone_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(tombstone_stat.st_mode) || !same_file_identity(tombstone_stat, caller_stat)) {
+      ::closedir(directory);
+      return false;
+    }
+    found_tombstone = true;
+    errno = 0;
+  }
+  const int scan_errno = errno;
+  return ::closedir(directory) == 0 && scan_errno == 0 && found_tombstone;
 }
 
 QString publish_unique_ui_reconciliation_guard(
@@ -3070,7 +3198,32 @@ bool remove_path_if_same_identity(
     const struct stat& expected_stat,
     QString* error,
     const QString& required_identity_path = {},
-    const struct stat* required_identity_stat = nullptr) {
+    const struct stat* required_identity_stat = nullptr,
+    int* caller_fd_to_retire,
+    UiDeferredCleanupRetirement* deferred_retirement,
+    int preserved_caller_fd) {
+  // A caller may surrender its own pin only after this transaction has moved
+  // the public name into quarantine and secured a private guard. Until then,
+  // preserve the descriptor (and any ownership flock) on every failure path.
+  if (caller_fd_to_retire && *caller_fd_to_retire >= 0) {
+    struct stat caller_stat{};
+    if (::fstat(*caller_fd_to_retire, &caller_stat) != 0 || !S_ISREG(caller_stat.st_mode) ||
+        !same_file_identity(caller_stat, expected_stat)) {
+      if (error)
+        *error = "cleanup caller descriptor does not match the expected identity";
+      return false;
+    }
+  }
+  if (deferred_retirement) {
+    struct stat caller_stat{};
+    if (caller_fd_to_retire || deferred_retirement->cleanup_fd >= 0 || preserved_caller_fd < 0 ||
+        ::fstat(preserved_caller_fd, &caller_stat) != 0 || !S_ISREG(caller_stat.st_mode) ||
+        !same_file_identity(caller_stat, expected_stat)) {
+      if (error)
+        *error = "deferred cleanup requires an unchanged authoritative caller descriptor";
+      return false;
+    }
+  }
   const QByteArray encoded_path = QFile::encodeName(path);
   const QFileInfo path_info(path);
   const QByteArray encoded_parent = QFile::encodeName(path_info.absolutePath());
@@ -3344,6 +3497,15 @@ bool remove_path_if_same_identity(
     qunsetenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
     errno = EIO;
   }
+  // The original public name is already quarantined, its identity and any
+  // required publication were checked, and both fallback and guard links keep
+  // the inode alive. Close a surrendered caller pin here, before NFS can turn
+  // this unlink into a .nfs tombstone. In particular, do not unlock an owner
+  // file while it is still reachable through its original public pathname.
+  if (!fail_entry_unlink && caller_fd_to_retire && *caller_fd_to_retire >= 0) {
+    ::close(*caller_fd_to_retire);
+    *caller_fd_to_retire = -1;
+  }
   const int unlink_result = fail_entry_unlink ? -1 : ::unlinkat(cleanup_fd, "entry", 0);
   const int unlink_errno = errno;
   if (unlink_result != 0) {
@@ -3363,6 +3525,13 @@ bool remove_path_if_same_identity(
         cleanup_fd, kUiTestTombstoneName, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
     if (tombstone_fd >= 0)
       ::close(tombstone_fd);
+  }
+  if (deferred_retirement && qEnvironmentVariable("HSTREAM_UI_TEST_CALLER_CLEANUP_TOMBSTONE") == path) {
+    qunsetenv("HSTREAM_UI_TEST_CALLER_CLEANUP_TOMBSTONE");
+    // A same-inode link that deliberately survives caller close exercises the
+    // postcommit warning boundary on both local filesystems and NFS.
+    const int tombstone_result = ::linkat(cleanup_fd, "guard", cleanup_fd, kUiTestTombstoneName, 0);
+    (void)tombstone_result;
   }
   if (::fsync(cleanup_fd) != 0) {
     const int saved_errno = errno;
@@ -3473,6 +3642,23 @@ bool remove_path_if_same_identity(
       ? 0
       : -1;
   const int cleanup_errno = errno;
+  if (deferred_retirement && fallback_retired && deletion_sync_result == 0 && guard_unlink_result == 0 &&
+      cleanup_result != 0 && cleanup_errno == ENOTEMPTY &&
+      ui_cleanup_contains_only_caller_tombstones(cleanup_fd, expected_stat)) {
+    deferred_retirement->cleanup_fd = cleanup_fd;
+    deferred_retirement->parent_fd = parent_fd;
+    deferred_retirement->cleanup_name = cleanup_name;
+    deferred_retirement->target_name = encoded_filename;
+    deferred_retirement->expected_stat = expected_stat;
+    if (deferred_retirement->records_match()) {
+      // Source deletion, publication checks and private-guard removal have
+      // committed. The caller must close its preserved pin, then retire the
+      // exact metadata transaction before releasing finalizer ownership.
+      return true;
+    }
+    deferred_retirement->cleanup_fd = -1;
+    deferred_retirement->parent_fd = -1;
+  }
   ::close(cleanup_fd);
   const bool cleanup_completed =
       unlink_result == 0 && guard_unlink_result == 0 && fallback_retired && cleanup_result == 0;
@@ -11393,6 +11579,7 @@ void HStreamWindow::startPipeline() {
   active_stitched_archive_video_is_hevc_ = false;
   pending_archive_finalizations_.clear();
   archive_finalize_failure_summaries_.clear();
+  archive_finalize_cleanup_warnings_.clear();
   archive_finalize_failed_ = false;
   const auto archive_toggle = output_toggles_.find("archive-file");
   const bool archive_enabled = !isCalibrationRun() && archive_toggle != output_toggles_.end() &&
@@ -14060,13 +14247,21 @@ void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
         }
       }
       QString cleanup_error;
-      if (!remove_path_if_same_identity(archive_finalize_owner_lock_path_, lock_stat, &cleanup_error)) {
+      if (!remove_path_if_same_identity(
+              archive_finalize_owner_lock_path_,
+              lock_stat,
+              &cleanup_error,
+              {},
+              nullptr,
+              &archive_finalize_owner_lock_fd_)) {
         appendLog(QString("archive finalizer ownership lock retained at %1: %2")
                       .arg(archive_finalize_owner_lock_path_, cleanup_error));
       }
     }
-    ::flock(archive_finalize_owner_lock_fd_, LOCK_UN);
-    ::close(archive_finalize_owner_lock_fd_);
+    if (archive_finalize_owner_lock_fd_ >= 0) {
+      ::flock(archive_finalize_owner_lock_fd_, LOCK_UN);
+      ::close(archive_finalize_owner_lock_fd_);
+    }
   }
 #endif
   archive_finalize_owner_lock_fd_ = -1;
@@ -14076,6 +14271,7 @@ void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
 bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require_target_identity) {
   bool released = true;
 #ifdef Q_OS_UNIX
+  UiDeferredCleanupRetirement deferred_retirement;
   struct stat source_stat {};
   if (remove_guard && archive_finalize_source_fd_ >= 0 && !archive_finalize_source_guard_path_.isEmpty() &&
       ::fstat(archive_finalize_source_fd_, &source_stat) == 0 && S_ISREG(source_stat.st_mode)) {
@@ -14093,7 +14289,14 @@ bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require
                                                                : (source_path_is_primary ? &source_stat : nullptr);
     if ((require_target_identity && !target_identity_available) ||
         !remove_path_if_same_identity(
-            archive_finalize_source_guard_path_, source_stat, &cleanup_error, required_path, required_stat)) {
+            archive_finalize_source_guard_path_,
+            source_stat,
+            &cleanup_error,
+            required_path,
+            required_stat,
+            nullptr,
+            require_target_identity ? &deferred_retirement : nullptr,
+            archive_finalize_source_fd_)) {
       released = false;
       if (cleanup_error.isEmpty())
         cleanup_error = "the completed MP4 identity is unavailable";
@@ -14105,8 +14308,21 @@ bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require
     appendLog(QString("archive source identity guard retained at %1: source identity is unavailable")
                   .arg(archive_finalize_source_guard_path_));
   }
-  if ((!remove_guard || released) && archive_finalize_source_fd_ >= 0)
+  if ((!remove_guard || released) && archive_finalize_source_fd_ >= 0) {
     ::close(archive_finalize_source_fd_);
+    archive_finalize_source_fd_ = -1;
+  }
+  if (deferred_retirement.cleanup_fd >= 0) {
+    QString retirement_error;
+    if (!deferred_retirement.retire(&retirement_error)) {
+      // The source no longer exists. Never route a metadata-only failure into
+      // failArchiveFinalization(), which would withdraw the completed MP4.
+      const QString warning = QString("Completed MP4 retained at %1, but source cleanup metadata remains: %2")
+                                  .arg(archive_finalize_target_path_, retirement_error);
+      archive_finalize_cleanup_warnings_.append(warning);
+      appendLog("WARNING: " + warning);
+    }
+  }
 #endif
   if (remove_guard && !released)
     return false;
@@ -14340,6 +14556,18 @@ void HStreamWindow::startArchiveFinalization(
             .arg(source_guard_error));
     return;
   }
+  // A dup retains the original dentry on NFS. Reopen the verified guard before
+  // retiring the work filename, keeping this source recoverable on sync faults.
+  const int guarded_source_fd = reopen_pin_on_published_path(archive_finalize_source_guard_path_, source_stat);
+  if (guarded_source_fd < 0) {
+    archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
+    showArchiveFinalizationFailure(
+        "Could not transfer the source pin to its identity guard. The original archive remains protected; "
+        "copy it to safety before starting another archive run.");
+    return;
+  }
+  ::close(archive_finalize_source_fd_);
+  archive_finalize_source_fd_ = guarded_source_fd;
 #endif
 
   if (archive_finalize_target_path_.isEmpty()) {
@@ -15428,6 +15656,7 @@ void HStreamWindow::finishCompletedArchivePresentation(
                          : QString("; source retained at %1").arg(archive_finalize_source_path_))));
   const bool more_archives = !pending_archive_finalizations_.empty();
   const bool batch_has_failures = !archive_finalize_failure_summaries_.isEmpty();
+  const bool batch_has_cleanup_warnings = !archive_finalize_cleanup_warnings_.isEmpty();
   if (!more_archives && active_run_telemetry_requested_ && !batch_has_failures &&
       !active_telemetry_manifest_path_.isEmpty()) {
     // A 4K-only run has no full-size video to pair with telemetry. Publish its
@@ -15447,12 +15676,15 @@ void HStreamWindow::finishCompletedArchivePresentation(
   if (!more_archives && !telemetry_publication_worker_)
     finishArchiveJobLog();
   startNextArchiveFinalization();
-  if (!more_archives && batch_has_failures) {
-    archive_finalize_progress_->setFormat("COMPLETED WITH ERRORS");
-    archive_finalize_headline_->setText("Video finalization completed with errors");
+  if (!more_archives && (batch_has_failures || batch_has_cleanup_warnings)) {
+    archive_finalize_progress_->setFormat(batch_has_failures ? "COMPLETED WITH ERRORS" : "COMPLETED WITH WARNINGS");
+    archive_finalize_headline_->setText(
+        batch_has_failures ? "Video finalization completed with errors" : "Video finalization completed with warnings");
     archive_finalize_detail_->setText(
         QString("Completed archive:\n%1\n\n%2")
-            .arg(archive_finalize_target_path_, archive_finalize_failure_summaries_.join("\n\n")));
+            .arg(
+                archive_finalize_target_path_,
+                (archive_finalize_failure_summaries_ + archive_finalize_cleanup_warnings_).join("\n\n")));
     archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxWarning).pixmap(32, 32));
     for (QWidget* widget :
          {static_cast<QWidget*>(archive_finalize_headline_), static_cast<QWidget*>(archive_finalize_progress_)}) {
@@ -15504,7 +15736,8 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   const QString failure_summary = QString("%1 archive finalization failed: %2\nRecovery archive: %3")
                                       .arg(route_name, failure_detail, archive_finalize_source_path_);
   archive_finalize_failure_summaries_.append(failure_summary);
-  archive_finalize_detail_->setText(archive_finalize_failure_summaries_.join("\n\n"));
+  archive_finalize_detail_->setText(
+      (archive_finalize_failure_summaries_ + archive_finalize_cleanup_warnings_).join("\n\n"));
   QLabel* recovery_path_label = archive_finalize_output_id_ == "archive-program-4k" ? program_4k_output_path_label_
       : archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
                                                           : archive_output_path_label_;
@@ -15625,14 +15858,20 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
       QString cleanup_error;
       if (path_has_file_identity(original_log_path, original_log_stat)) {
         remove_path_if_same_identity(
-            original_log_path, original_log_stat, &cleanup_error, archive_job_log_guard_path_, &original_log_stat);
+            original_log_path,
+            original_log_stat,
+            &cleanup_error,
+            archive_job_log_guard_path_,
+            &original_log_stat,
+            &pinned_log_fd);
       }
       if (path_has_file_identity(archive_job_log_guard_path_, original_log_stat))
         remove_path_if_same_identity(archive_job_log_guard_path_, original_log_stat, &cleanup_error);
       archive_job_log_guard_path_.clear();
       archive_job_log_path_.clear();
       archive_job_log_enabled_ = false;
-      ::close(pinned_log_fd);
+      if (pinned_log_fd >= 0)
+        ::close(pinned_log_fd);
       pinned_log_fd = -1;
       has_job_log = false;
     }
@@ -15657,6 +15896,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
       struct stat reservation_stat {};
       bool candidate_log_reserved = false;
       bool candidate_log_is_marker = false;
+      bool log_pin_reanchored = false;
       int marker_fd = -1;
       if (has_job_log) {
         int saved_errno = 0;
@@ -15692,7 +15932,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           ::close(marker_fd);
           marker_fd = -1;
           QString cleanup_error;
-          remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error);
+          remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error, {}, nullptr, &marker_fd);
           recovery_move_error = QString("could not secure recovery log reservation %1: %2")
                                     .arg(candidate_log, QString::fromLocal8Bit(std::strerror(saved_errno)));
           break;
@@ -15716,7 +15956,8 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         QString cleanup_error;
         bool log_cleanup_succeeded = true;
         if (candidate_log_reserved)
-          log_cleanup_succeeded = remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error);
+          log_cleanup_succeeded =
+              remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error, {}, nullptr, &marker_fd);
         if (marker_fd >= 0)
           ::close(marker_fd);
         if (!log_cleanup_succeeded) {
@@ -15765,7 +16006,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         QString cleanup_error;
         remove_path_if_same_identity(candidate, original_archive_stat, &cleanup_error);
         if (candidate_log_reserved)
-          remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error);
+          remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error, {}, nullptr, &marker_fd);
         if (marker_fd >= 0)
           ::close(marker_fd);
         struct stat occupied_guard_stat {};
@@ -15816,7 +16057,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         remove_path_if_same_identity(candidate_source_guard_path, original_archive_stat, &cleanup_error);
         remove_path_if_same_identity(candidate, original_archive_stat, &cleanup_error);
         if (candidate_log_reserved)
-          remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error);
+          remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error, {}, nullptr, &marker_fd);
         if (marker_fd >= 0)
           ::close(marker_fd);
         recovery_move_error = QString("could not make the recovery pair durable before source cleanup: %1")
@@ -15830,7 +16071,12 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT") && suffix == 1) {
           QString marker_cleanup_error;
           if (remove_path_if_same_identity(
-                  candidate_log, reservation_stat, &marker_cleanup_error, candidate, &original_archive_stat)) {
+                  candidate_log,
+                  reservation_stat,
+                  &marker_cleanup_error,
+                  candidate,
+                  &original_archive_stat,
+                  &marker_fd)) {
             QFile replacement(candidate_log);
             if (replacement.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
               replacement.write("injected recovery marker replacement");
@@ -15839,8 +16085,12 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           }
         }
         QString marker_cleanup_error;
-        const bool marker_removed = remove_path_if_same_identity(
-            candidate_log, reservation_stat, &marker_cleanup_error, candidate, &original_archive_stat);
+        // Once a prior retirement consumed this reservation, its inode number
+        // can be reused. The saved stat alone cannot authorize another unlink.
+        const bool marker_removed =
+            marker_fd >= 0 &&
+            remove_path_if_same_identity(
+                candidate_log, reservation_stat, &marker_cleanup_error, candidate, &original_archive_stat, &marker_fd);
         if (marker_fd >= 0)
           ::close(marker_fd);
         if (!marker_removed) {
@@ -15886,14 +16136,27 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
             continue;
           }
         }
+        // QFile's writable handle and this independent recovery pin must both
+        // leave the old dentry before its link is retired on NFS.
+        const int candidate_log_fd = reopen_pin_on_published_path(candidate_log, original_log_stat);
+        log_pin_reanchored = candidate_log_fd >= 0;
+        if (log_pin_reanchored) {
+          ::close(pinned_log_fd);
+          pinned_log_fd = candidate_log_fd;
+        } else {
+          failure_detail +=
+              QString(
+                  "\n\nThe recovery log pin could not move to %1; its previous log (%2) and guard (%3) were left untouched.")
+                  .arg(candidate_log, original_log_path, archive_job_log_guard_path_);
+        }
         QString old_log_cleanup_error;
         const bool original_log_is_ours = path_has_file_identity(original_log_path, original_log_stat);
         const bool preserve_existing_recovery_log = archive_job_log_recovery_paths_.contains(original_log_path);
-        const bool old_log_removed =
-            preserve_existing_recovery_log || !original_log_is_ours ||
-            remove_path_if_same_identity(
-                original_log_path, original_log_stat, &old_log_cleanup_error, candidate_log, &original_log_stat);
-        if (!old_log_removed) {
+        const bool old_log_removed = preserve_existing_recovery_log || !original_log_is_ours ||
+            (log_pin_reanchored &&
+             remove_path_if_same_identity(
+                 original_log_path, original_log_stat, &old_log_cleanup_error, candidate_log, &original_log_stat));
+        if (!old_log_removed && log_pin_reanchored) {
           failure_detail += QString("\n\nThe recovery log is paired at %1, but its old link could not be removed: %2")
                                 .arg(candidate_log, old_log_cleanup_error);
         }
@@ -15922,17 +16185,33 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
             archive_job_log_.close();
           }
           int restore_log_errno = 0;
-          if (link_open_file_no_replace(pinned_log_fd, original_log_path, &restore_log_errno) &&
-              path_has_file_identity(original_log_path, original_log_stat)) {
+          QString restore_log_sync_error;
+          if ((link_open_file_no_replace(pinned_log_fd, original_log_path, &restore_log_errno) ||
+               restore_log_errno == EEXIST) &&
+              path_has_file_identity(original_log_path, original_log_stat) &&
+              sync_parent_directory(original_log_path, &restore_log_sync_error)) {
+            const int restored_log_fd = reopen_pin_on_published_path(original_log_path, original_log_stat);
             QString candidate_log_cleanup_error;
-            remove_path_if_same_identity(
-                candidate_log, original_log_stat, &candidate_log_cleanup_error, original_log_path, &original_log_stat);
-            remove_path_if_same_identity(
-                candidate_log_guard_path,
-                original_log_stat,
-                &candidate_log_cleanup_error,
-                original_log_path,
-                &original_log_stat);
+            if (restored_log_fd >= 0) {
+              ::close(pinned_log_fd);
+              pinned_log_fd = restored_log_fd;
+              remove_path_if_same_identity(
+                  candidate_log,
+                  original_log_stat,
+                  &candidate_log_cleanup_error,
+                  original_log_path,
+                  &original_log_stat);
+              remove_path_if_same_identity(
+                  candidate_log_guard_path,
+                  original_log_stat,
+                  &candidate_log_cleanup_error,
+                  original_log_path,
+                  &original_log_stat);
+            } else {
+              failure_detail +=
+                  QString("\n\nThe restored log pin could not reopen; the previous recovery log remains at %1.")
+                      .arg(candidate_log);
+            }
             QString restored_log_guard;
             QString restored_guard_error;
             create_open_file_guard(pinned_log_fd, original_log_path, &restored_log_guard, &restored_guard_error);
@@ -15955,7 +16234,19 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         failure_detail += "\n\n" + recovery_move_error;
         break;
       }
-      if (!archive_finalize_source_guard_path_.isEmpty()) {
+      // All candidate rollback branches are behind us. Move the source pin to
+      // the durable recovery name before retiring its previous guard.
+      const int recovered_source_fd = reopen_pin_on_published_path(candidate, original_archive_stat);
+      if (recovered_source_fd >= 0) {
+        ::close(archive_finalize_source_fd_);
+        archive_finalize_source_fd_ = recovered_source_fd;
+      } else {
+        failure_detail +=
+            QString(
+                "\n\nThe recovery source pin could not move to %1; its previous guard path was left untouched at %2.")
+                .arg(candidate, archive_finalize_source_guard_path_);
+      }
+      if (recovered_source_fd >= 0 && !archive_finalize_source_guard_path_.isEmpty()) {
         const QString old_guard_path = archive_finalize_source_guard_path_;
         QString guard_cleanup_error;
         if (remove_path_if_same_identity(
@@ -15968,7 +16259,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         }
       }
       archive_finalize_source_guard_path_ = candidate_source_guard_path;
-      if (has_job_log && !archive_job_log_guard_path_.isEmpty()) {
+      if (has_job_log && log_pin_reanchored && !archive_job_log_guard_path_.isEmpty()) {
         const QString old_guard_path = archive_job_log_guard_path_;
         QString guard_cleanup_error;
         if (remove_path_if_same_identity(

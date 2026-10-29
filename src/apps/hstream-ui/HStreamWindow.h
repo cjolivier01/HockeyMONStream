@@ -924,6 +924,7 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_error_output_;
   QString archive_finalize_pending_failure_detail_;
   QStringList archive_finalize_failure_summaries_;
+  QStringList archive_finalize_cleanup_warnings_;
   QString archive_finalize_owner_lock_path_;
   qint64 archive_finalize_duration_us_{-1};
   int archive_finalize_owner_lock_fd_{-1};

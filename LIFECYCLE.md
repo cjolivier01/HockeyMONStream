@@ -204,6 +204,18 @@ recordings, other runs, and persistent publication locks are not scratch.
 Process diagnostics retain their separate bounded history as described in
 [crash diagnostics](docs/crash-diagnostics.md).
 
+Legacy Qt runners use a separate identity-guard protocol in `HStreamWindow`.
+On NFS, source and log descriptors reopen on verified guard or durable recovery
+names before their previous names are removed. A source descriptor remains
+available for recovery until deletion commits. If its final `.nfs*` tombstone
+temporarily prevents metadata retirement, the finalizer keeps both directory
+locks, verifies that the transaction and tombstones belong to that exact source,
+closes the source descriptor, then retires that transaction. A metadata failure
+after this commit keeps the completed MP4 and displays a warning; it cannot
+withdraw the MP4 through raw-source recovery. Unrelated files and unverified
+tombstones still prevent cleanup. These legacy warnings do not count as a
+managed receipt's successful cleanup or suppress requested telemetry publication.
+
 Failures retain recoverable data. An interrupted publication may already have
 some final filenames; retries verify those files and continue the same
 transaction rather than allocating a second generation. A receipt marked

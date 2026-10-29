@@ -9729,6 +9729,7 @@ bool test_output_controls(HStreamWindow* window) {
               {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", source_sync_failure.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_PARENT_SYNC_FAILURE", "1");
+  qputenv("HSTREAM_UI_TEST_RECOVERY_PIN_REOPEN_FAILURE", source_sync_failure_recovery.toLocal8Bit());
   activate(start);
   for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
     QApplication::processEvents();
@@ -9738,6 +9739,7 @@ bool test_output_controls(HStreamWindow* window) {
   finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
   auto* source_sync_failure_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
   auto* source_sync_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  qunsetenv("HSTREAM_UI_TEST_RECOVERY_PIN_REOPEN_FAILURE");
   QFile source_sync_failure_recovery_file(source_sync_failure_recovery);
   const bool source_sync_failure_recovery_opened = source_sync_failure_recovery_file.open(QIODevice::ReadOnly);
   const QByteArray source_sync_failure_recovery_text =
@@ -9750,9 +9752,13 @@ bool test_output_controls(HStreamWindow* window) {
       window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
           finalize_headline && finalize_headline->text() == "Video finalization failed" && source_sync_failure_detail &&
           source_sync_failure_detail->text().contains(source_sync_failure_recovery) &&
+          source_sync_failure_detail->text().contains("recovery source pin could not move") &&
+          source_sync_failure_detail->text().contains("recovery log pin could not move") &&
+          QFileInfo::exists(source_sync_failure + ".hstream-pin") &&
+          QFileInfo::exists(source_sync_failure + ".log.hstream-pin") &&
           source_sync_failure_recovery_text == "completed lossless archive" &&
           finalized_after_source_sync_failure == finalized_before_source_sync_failure,
-      "A source-parent sync failure must withdraw the MP4 and durably recover the pinned MKV instead of reporting success");
+      "A source-parent sync failure must withdraw the MP4 and recover the MKV even when pin handoff fails, retaining old guards");
   if (source_sync_failure_ok)
     activate(source_sync_failure_ok);
   for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
@@ -9764,6 +9770,66 @@ bool test_output_controls(HStreamWindow* window) {
           .filePath(
               "tracking_output-with-audio.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-"
               "aabbccddeeff.mkv");
+  const QString metadata_warning_source =
+      QDir(QFileInfo(failed_source).absolutePath()).filePath("source-metadata-warning.mkv");
+  const QStringList finalized_before_metadata_warning =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", metadata_warning_source.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_CALLER_CLEANUP_TOMBSTONE", (metadata_warning_source + ".hstream-pin").toLocal8Bit());
+  activate(start);
+  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "SAVED"; ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  qunsetenv("HSTREAM_UI_TEST_CALLER_CLEANUP_TOMBSTONE");
+  auto* metadata_warning_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
+  auto* metadata_warning_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
+  const QStringList finalized_after_metadata_warning =
+      QDir(window->gameDirectoryText())
+          .entryList(
+              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
+  QByteArray metadata_warning_video;
+  for (const QString& name : finalized_after_metadata_warning) {
+    if (!finalized_before_metadata_warning.contains(name)) {
+      QFile completed_file(QDir(window->gameDirectoryText()).filePath(name));
+      if (completed_file.open(QIODevice::ReadOnly))
+        metadata_warning_video = completed_file.readAll();
+    }
+  }
+  QString metadata_warning_transaction;
+  const QDir metadata_warning_parent(QFileInfo(metadata_warning_source).absolutePath());
+  for (const QString& name :
+       metadata_warning_parent.entryList({"hstream-cleanup-v2-*"}, QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+    const QString transaction = metadata_warning_parent.filePath(name);
+    QFile owner(QDir(transaction).filePath("owner"));
+    if (owner.open(QIODevice::ReadOnly) &&
+        owner.readAll() ==
+            QByteArray("hstream-cleanup-v2\n") +
+                QFile::encodeName(QFileInfo(metadata_warning_source + ".hstream-pin").fileName()).toBase64()) {
+      metadata_warning_transaction = transaction;
+      break;
+    }
+  }
+  const bool committed_metadata_warning_safe = expect(
+      window->outputStateText("archive-file") == "SAVED" && metadata_warning_video == "completed lossless archive" &&
+          !QFileInfo::exists(metadata_warning_source) && metadata_warning_detail &&
+          metadata_warning_detail->text().contains("Completed MP4 retained") && metadata_warning_ok &&
+          metadata_warning_ok->isVisible() && !metadata_warning_transaction.isEmpty() &&
+          QFileInfo::exists(QDir(metadata_warning_transaction).filePath("committed")),
+      "A committed source cleanup must retain the MP4 and display a persistent metadata warning without raw-source rollback");
+  if (metadata_warning_ok)
+    activate(metadata_warning_ok);
+  const bool metadata_warning_tombstone_cleared = !metadata_warning_transaction.isEmpty() &&
+      QFile::remove(QDir(metadata_warning_transaction).filePath(".nfs00000000deadbeef"));
+  QString metadata_warning_reconciliation_error;
+  const bool metadata_warning_reconciled = expect(
+      metadata_warning_tombstone_cleared &&
+          hm::ui_internal::reconcile_cleanup_directory_for_test(
+              metadata_warning_parent.absolutePath(), &metadata_warning_reconciliation_error) &&
+          !QFileInfo::exists(metadata_warning_transaction),
+      "Committed source metadata must remain recoverable after its caller tombstone disappears");
   const QString dangling_log_video =
       QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-1.mkv");
   const QString dangling_log_path = dangling_log_video + ".log";
@@ -10112,8 +10178,8 @@ bool test_output_controls(HStreamWindow* window) {
       missing_new_output_reported && job_log_persisted && incomplete_exit_log_guarded && same_filesystem_log_rollback &&
       cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
       archive_origin_recorded && durability_sync_responsive && telemetry_copy_responsive && telemetry_deployed &&
-      target_cleanup_race_recovered &&
-      ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe && source_cleanup_sync_failure_recovered &&
+      target_cleanup_race_recovered && ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe &&
+      source_cleanup_sync_failure_recovered && committed_metadata_warning_safe && metadata_warning_reconciled &&
       cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
       no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
       publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery &&
