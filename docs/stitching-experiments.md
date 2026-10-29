@@ -211,6 +211,14 @@ pointer. **Add match** takes one click in each camera; Escape cancels an unfinis
 selected correspondence. **Undo/Redo** covers coordinate edits, additions and deletions across pairs, and
 **Reset all to automatic** restores the original automatic set for every pair as one undoable operation.
 
+Numeric entry rounds to nine decimal places before conversion to the native
+float32 endpoint. The browser uses the same order and displays nine decimal
+places. Canvas movement still converts directly to float32; opening, selecting
+or displaying an existing point does not rewrite it. Reviewed-workflow tests
+preserve the original input bytes and report the exact normalized expected
+coordinates separately in `review-expected.yaml` (Qt) or `review-expected.json`
+(browser). Saved and reopened endpoints must match those expectations exactly.
+
 **Save & recalibrate** publishes the edit into a new **Manual** candidate and immediately calibrates only that row.
 The editor stays open until the candidate is saved. A failed save preserves the points and undo history for retry.
 The original candidate remains available, and unrelated queued rows stay queued. The Manual row shows **Edited**

@@ -106,6 +106,35 @@ void save_review_template(const hm::stitching::CalibrationMatchSet& original, co
   std::ofstream(artifacts / "review-template.yaml") << YAML::Dump(result);
 }
 
+float reviewed_typed_coordinate(double value, int size) {
+  // QDoubleSpinBox rounds typed/programmatic numeric entry to nine decimal
+  // places before MatchEditorDialog converts the value to its float endpoint.
+  // Keep the reviewed source bytes unchanged; compare this explicit UI result.
+  const double decimal = QString::number(value, 'f', 9).toDouble();
+  return std::clamp(float(decimal), 0.0f, std::nextafter(float(size), 0.0f));
+}
+
+YAML::Node expected_reviewed_matches(const YAML::Node& review) {
+  YAML::Node result(YAML::NodeType::Sequence);
+  for (const auto& frame : review["frames"]) {
+    YAML::Node expected;
+    expected["index"] = frame["index"].as<int>();
+    for (const auto& point : frame["matches"]) {
+      YAML::Node normalized;
+      for (size_t camera = 0; camera < 2; ++camera)
+        for (size_t axis = 0; axis < 2; ++axis) {
+          const char* role = camera ? "right" : "left";
+          const float value =
+              reviewed_typed_coordinate(point[role][axis].as<double>(), frame["sizes"][camera][axis].as<int>());
+          normalized[role].push_back(static_cast<double>(value));
+        }
+      expected["matches"].push_back(normalized);
+    }
+    result.push_back(expected);
+  }
+  return result;
+}
+
 void apply_reviewed_matches(MatchEditorDialog& editor, const YAML::Node& review) {
   const auto original = editor.editedSet();
   require(review["schema"].as<int>() == 1, "Unknown reviewed-match schema");
@@ -190,9 +219,14 @@ void apply_reviewed_matches(MatchEditorDialog& editor, const YAML::Node& review)
     const auto entered = editor.editedSet().frames[index].matches;
     for (size_t point = 0; point < entered.size(); ++point) {
       const auto wanted = frames[index]["matches"][point];
+      const auto endpoint = [&](size_t camera) {
+        const char* role = camera ? "right" : "left";
+        return cv::Point2f(
+            reviewed_typed_coordinate(wanted[role][0].as<double>(), frames[index]["sizes"][camera][0].as<int>()),
+            reviewed_typed_coordinate(wanted[role][1].as<double>(), frames[index]["sizes"][camera][1].as<int>()));
+      };
       require(
-          entered[point].left == cv::Point2f(wanted["left"][0].as<float>(), wanted["left"][1].as<float>()) &&
-              entered[point].right == cv::Point2f(wanted["right"][0].as<float>(), wanted["right"][1].as<float>()),
+          entered[point].left == endpoint(0) && entered[point].right == endpoint(1),
           "Ordinary coordinate controls changed a reviewed endpoint");
     }
   }
@@ -594,6 +628,9 @@ int main(int argc, char** argv) {
           }
           if (!reviewed_path.empty()) {
             apply_reviewed_matches(*editor, reviewed_document);
+            report["reviewed_coordinate_normalization"] = "qt-fixed9-float32";
+            report["reviewed_expected_matches"] = expected_reviewed_matches(reviewed_document);
+            std::ofstream(artifacts / "review-expected.yaml") << YAML::Dump(report["reviewed_expected_matches"]);
             expected = editor->editedSet();
           } else {
             auto* selection = widget<QComboBox>(*editor, "matchEditorSelection");
