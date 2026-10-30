@@ -607,6 +607,18 @@ if ! grep -Fqx \
   exit 1
 fi
 
+# The build driver generated this catalog from the same immutable source as
+# the binaries. Verify every catalogued config after package path rewrites.
+contract_dir="${TOPDIR}/dist/web-contract"
+if [[ ! -s "${contract_dir}/hstream-web-contract.json" || ! -s "${contract_dir}/configs.sha256" ]]; then
+  echo "ERROR: build-generated web contract is missing; rerun the package build driver." >&2
+  exit 1
+fi
+(cd "${STAGING}${INSTALL_PREFIX}" && sha256sum --check "${contract_dir}/configs.sha256")
+install -m 0644 "${contract_dir}/hstream-web-contract.json" \
+  "${STAGING}${INSTALL_PREFIX}/share/hstream-web-contract.json"
+cmp "${contract_dir}/hstream-web-contract.json" "${STAGING}${INSTALL_PREFIX}/share/hstream-web-contract.json"
+
 # ---------- pretrained assets ----------
 echo "[make_deb] Staging declared non-engine pretrained assets..."
 asset_manifest="$(mktemp)"

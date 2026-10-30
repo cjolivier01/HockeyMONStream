@@ -92,6 +92,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
       pkg-config \
       protobuf-compiler \
       python3 \
+      python3-yaml \
       qt6-base-dev \
       qt6-base-dev-tools \
       qt6-qpa-plugins \

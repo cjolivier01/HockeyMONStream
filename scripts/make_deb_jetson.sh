@@ -137,9 +137,11 @@ mkdir -p "${persistent_cache_root}/repository" "${sandbox_base}"
 git config --global url.https://github.com/.insteadOf ssh://git@github.com/
 cd "${source_dir}"
 
-# Jammy arm64 has no hugin-tools package. Install only the build dependencies
-# needed to compile the two pinned CLI tools which the Jetson .deb bundles.
-hugin_build_packages=(
+# Generate the web catalog at build time and compile the pinned Hugin tools
+# which Jammy arm64 does not provide as a package.
+build_packages=(
+  python3
+  python3-yaml
   cmake
   curl
   libboost-filesystem-dev
@@ -158,14 +160,14 @@ hugin_build_packages=(
   ninja-build
   zlib1g-dev
 )
-missing_hugin_build_packages=()
-for package_name in "${hugin_build_packages[@]}"; do
+missing_build_packages=()
+for package_name in "${build_packages[@]}"; do
   if [[ "$(dpkg-query -W -f='${Status}' "${package_name}" 2>/dev/null || true)" != "install ok installed" ]]; then
-    missing_hugin_build_packages+=("${package_name}")
+    missing_build_packages+=("${package_name}")
   fi
 done
-if [[ "${#missing_hugin_build_packages[@]}" -gt 0 ]]; then
-  sudo -n apt-get install -y --no-install-recommends "${missing_hugin_build_packages[@]}"
+if [[ "${#missing_build_packages[@]}" -gt 0 ]]; then
+  sudo -n apt-get install -y --no-install-recommends "${missing_build_packages[@]}"
 fi
 scripts/build_hugin_tools_jetson.sh \
   --cache-dir="${persistent_cache_root}/hugin-tools" \
@@ -201,6 +203,13 @@ if [[ -d "${external_root}" ]]; then
     rm -f -- "${external_root}/@${repository_name}.marker"
   done
 fi
+
+# Generate the web catalog from this build's immutable source snapshot.
+read -r contract_revision contract_epoch < .hstream-package-source
+python3 scripts/sync_stream_contract.py --hstream-root . \
+  --native-revision "${contract_revision}" \
+  --output dist/web-contract/hstream-web-contract.json \
+  --config-checksums dist/web-contract/configs.sha256
 
 bazelisk --batch --output_base="${output_base}" build \
   --repository_cache="${persistent_cache_root}/repository" \

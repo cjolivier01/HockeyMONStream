@@ -68,6 +68,13 @@ rsync -a \
   "${SOURCE_DIR}/" "${BUILD_DIR}/"
 
 cd "${BUILD_DIR}"
+# Generate the web catalog from this build's immutable source snapshot.
+read -r contract_revision contract_epoch < .hstream-package-source
+python3 scripts/sync_stream_contract.py --hstream-root . \
+  --native-revision "${contract_revision}" \
+  --output dist/web-contract/hstream-web-contract.json \
+  --config-checksums dist/web-contract/configs.sha256
+
 make HOST_CUDA_FLAGS="--config=${BAZEL_DEB_CONFIG}" \
   hstream-job hstream-cli hstream-calibration-export hstream-model-prepare hstream-model-infer hstream-assets hstream-ui hstream-web-job yolo-custom-lib hstream-gst-plugins
 
