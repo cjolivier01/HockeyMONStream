@@ -1102,6 +1102,7 @@ cc_test(
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:player_frame_selection",
         "@com_google_absl//absl/cleanup",
+        "@qt//:qt_network",
         "@qt//:qt_test",
         "@qt//:qt_widgets",
         "@yaml-cpp",

@@ -24,6 +24,7 @@
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QPointer>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
@@ -36,6 +37,8 @@
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
 #include <QtGui/QWindow>
+#include <QtNetwork/QTcpServer>
+#include <QtNetwork/QTcpSocket>
 #include <QtTest/QSignalSpy>
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
@@ -17457,6 +17460,155 @@ bool write_e2e_text(const QString& path, const QString& contents) {
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
 }
 
+bool wait_for_scoreboard_proposal(
+    QDialog* dialog,
+    const QElapsedTimer& run_timer,
+    qint64 run_deadline_ms,
+    QJsonObject* evidence,
+    QString* error,
+    int proposal_timeout_ms = 15000) {
+  QPointer<QDialog> guarded(dialog);
+  QElapsedTimer timer;
+  timer.start();
+  const auto finish = [&](const QString& outcome, bool passed, const QString& reason = QString()) {
+    evidence->insert("outcome", outcome);
+    evidence->insert("wait_elapsed_ms", timer.elapsed());
+    evidence->insert("error", reason);
+    if (error)
+      *error = reason;
+    return passed;
+  };
+  while (true) {
+    if (!guarded || !guarded->isVisible())
+      return finish("failed", false, "scoreboard dialog closed before its proposal was observed");
+    auto* title = guarded->findChild<QLabel*>("scoreboardStatusTitle");
+    auto* message = guarded->findChild<QLabel*>("scoreboardStatusMessage");
+    auto* count = guarded->findChild<QLabel*>("scoreboardSelectionCount");
+    auto* canvas = static_cast<ScoreboardSelectionCanvas*>(guarded->findChild<QWidget*>("scoreboardSelectionCanvas"));
+    auto* save = guarded->findChild<QPushButton*>("scoreboardSaveButton");
+    auto* no_scoreboard = guarded->findChild<QPushButton*>("scoreboardNoScoreboardButton");
+    if (!title || !message || !count || !canvas || !save || !no_scoreboard)
+      return finish("failed", false, "scoreboard proposal controls are unavailable");
+    QJsonArray points;
+    for (const QPoint& point : canvas->points())
+      points.append(QJsonArray{point.x(), point.y()});
+    evidence->insert("status_title", title->text());
+    evidence->insert("message", message->text());
+    evidence->insert("points", points);
+    evidence->insert("point_count_text", count->text());
+    if (run_timer.elapsed() >= run_deadline_ms || timer.elapsed() >= proposal_timeout_ms)
+      return finish("timed-out", false, "scoreboard proposal did not finish within the qualification deadline");
+    const bool suggested = title->text() == "Review suggested corners";
+    const bool existing = title->text() == "Existing selection loaded";
+    const bool no_confident = message->text() == "No confident scoreboard found. Please select its four corners.";
+    if (suggested || existing || no_confident) {
+      const int expected_count = no_confident ? 0 : 4;
+      if (points.size() != expected_count || count->text() != QString("%1 / 4 points").arg(expected_count) ||
+          save->isEnabled() != (expected_count == 4) || !no_scoreboard->isEnabled())
+        return finish("failed", false, "scoreboard proposal status and displayed selection disagree");
+      return finish(suggested ? "applied" : existing ? "existing-selection" : "no-confident", true);
+    }
+    // Visibility alone precedes the asynchronous /initial callback. No Scoreboard
+    // makes that callback discard its reply, so do not submit while still pending.
+    if (title->text() != "Place four points" ||
+        message->text() != "Click each scoreboard corner. You can drag a point after placing it.")
+      return finish("failed", false, "scoreboard proposal did not apply: " + message->text());
+    QTest::qWait(10);
+  }
+}
+
+bool test_scoreboard_proposal_wait() {
+  QTemporaryDir root;
+  QImage image(100, 80, QImage::Format_RGB32);
+  image.fill(Qt::darkGray);
+  const QString image_path = root.filePath("s.png");
+  if (!root.isValid() || !image.save(image_path))
+    return false;
+  const QVector<QPoint> suggested{{10, 10}, {90, 10}, {90, 70}, {10, 70}};
+  const QByteArray proposal =
+      R"({"points":[[10,10],[90,10],[90,70],[10,70]],"message":"Suggested scoreboard corners. Review or adjust them, then save."})";
+  const QByteArray no_confident =
+      R"({"points":[],"message":"No confident scoreboard found. Please select its four corners."})";
+  const auto check = [&](const QByteArray& body,
+                         const QString& expected_outcome,
+                         int run_deadline_ms = 1500,
+                         int proposal_timeout_ms = 1000,
+                         int request_timeout_ms = 10000,
+                         bool saved = false) {
+    QTcpServer server;
+    if (!server.listen(QHostAddress::LocalHost, 0))
+      return false;
+    QByteArray request;
+    bool response_sent = false;
+    bool observed_pending = false;
+    bool premature_resolution = false;
+    QObject::connect(&server, &QTcpServer::newConnection, &server, [&]() {
+      auto* socket = server.nextPendingConnection();
+      QObject::connect(socket, &QTcpSocket::readyRead, socket, [&, socket]() {
+        request += socket->readAll();
+        if (!request.endsWith("\r\n\r\n") || body.isEmpty())
+          return;
+        QTimer::singleShot(80, socket, [&, socket]() {
+          response_sent = true;
+          socket->write(
+              "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+              QByteArray::number(body.size()) + "\r\n\r\n" + body);
+          socket->disconnectFromHost();
+        });
+      });
+    });
+    const QUrl url(QString("http://127.0.0.1:%1/?token=%2").arg(server.serverPort()).arg(QString(64, 'a')));
+    ScoreboardSelectionDialog dialog(
+        url, image_path, saved ? suggested : QVector<QPoint>{}, nullptr, request_timeout_ms);
+    dialog.setAttribute(Qt::WA_DeleteOnClose, false);
+    const auto close = absl::MakeCleanup([&]() { dialog.closeAfterBackendCompletion(); });
+    dialog.show();
+    auto* canvas = static_cast<ScoreboardSelectionCanvas*>(dialog.findChild<QWidget*>("scoreboardSelectionCanvas"));
+    dialog.loadProposal();
+    QTimer::singleShot(20, &dialog, [&]() {
+      if (!saved) {
+        observed_pending = true;
+        premature_resolution = response_sent || !canvas->points().isEmpty() ||
+            dialog.findChild<QLabel*>("scoreboardStatusTitle")->text() != "Place four points";
+      }
+    });
+    QElapsedTimer timer;
+    timer.start();
+    QJsonObject evidence;
+    QString error;
+    const bool passed =
+        wait_for_scoreboard_proposal(&dialog, timer, run_deadline_ms, &evidence, &error, proposal_timeout_ms);
+    const bool expected_pass = expected_outcome == "applied" || expected_outcome == "no-confident" || saved;
+    bool ok = expect(
+        passed == expected_pass && evidence.value("outcome").toString() == expected_outcome &&
+            (saved || observed_pending) && !premature_resolution && (passed ? error.isEmpty() : !error.isEmpty()),
+        QString("Qualification must wait for the actual asynchronous proposal outcome (expected %1, got %2: %3)")
+            .arg(expected_outcome, evidence.value("outcome").toString(), error)
+            .toStdString());
+    ok &= expect(
+        saved ? request.isEmpty() && canvas->points() == suggested
+              : request.startsWith("GET /initial?token=") && !request.contains("POST "),
+        "Observation must preserve saved corners and never submit a selection");
+    if (expected_outcome == "applied" || expected_outcome == "no-confident") {
+      const auto expected = QJsonDocument::fromJson(body).object();
+      ok &= expect(
+          response_sent && evidence.value("points") == expected.value("points") &&
+              evidence.value("message") == expected.value("message") &&
+              canvas->points() == (expected_outcome == "applied" ? suggested : QVector<QPoint>{}),
+          "Evidence must record the exact applied points and native proposal message");
+    }
+    if (expected_outcome == "timed-out")
+      ok &= expect(timer.elapsed() < 500, "Both the existing run deadline and local proposal bound must be honored");
+    return ok;
+  };
+  return check(proposal, "applied") && check(no_confident, "no-confident") &&
+      check(R"({"points":[[10,10]],"message":"bad points"})", "failed") && check("invalid JSON", "failed") &&
+      check(R"({"points":[],"message":"Automatic detection unavailable. Select the four corners manually; see the run log."})",
+            "failed") &&
+      check({}, "failed", 1500, 1000, 100) && check({}, "timed-out", 60) && check({}, "timed-out", 1500, 60) &&
+      check({}, "existing-selection", 1500, 1000, 10000, true);
+}
+
 struct ManagedTelemetryReceipt {
   QString path;
   YAML::Node binding;
@@ -19716,6 +19868,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   QApplication::processEvents();
   bool observed_first_frame = false;
   bool submitted_scoreboard = false;
+  QJsonObject scoreboard_proposal_evidence;
   const bool cancel_initial_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD");
   int scoreboard_cancel_log_offset = -1;
   QStringList scoreboard_positions_after_cancel;
@@ -19906,10 +20059,24 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
         auto* dialog = window->findChild<QDialog*>("scoreboardSelectionDialog");
         if (!dialog || !dialog->isVisible()) {
           interaction_error = "initial scoreboard dialog is unavailable for evidence capture";
-        } else if (!dialog->grab().save(QDir(artifact_dir).filePath("scoreboard-selection.png"))) {
-          interaction_error = "could not save the initial scoreboard dialog screenshot";
         } else {
-          submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+          QPointer<QDialog> guarded(dialog);
+          bool proposal_ready = true;
+          if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR")) {
+            proposal_ready = wait_for_scoreboard_proposal(
+                dialog, timer, deadline_ms, &scoreboard_proposal_evidence, &interaction_error);
+            if (!write_e2e_text(
+                    QDir(artifact_dir).filePath("scoreboard-proposal.json"),
+                    QString::fromUtf8(QJsonDocument(scoreboard_proposal_evidence).toJson()))) {
+              proposal_ready = false;
+              interaction_error += " could not save scoreboard proposal evidence";
+            }
+          }
+          if (!guarded || !guarded->grab().save(QDir(artifact_dir).filePath("scoreboard-selection.png"))) {
+            interaction_error += " could not save the initial scoreboard dialog screenshot";
+          } else if (proposal_ready) {
+            submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+          }
         }
       }
       if (!submitted_scoreboard) {
@@ -20110,6 +20277,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   }
   report += QString("panorama: %1\n").arg(panorama_path);
   report += QString("scoreboard_selector_observed: %1\n").arg(submitted_scoreboard ? "true" : "false");
+  report += QString("scoreboard_proposal_outcome: %1\n")
+                .arg(scoreboard_proposal_evidence.value("outcome").toString("not-requested"));
   report += QString("positive_fps_observed: %1\n").arg(observed_first_frame ? "true" : "false");
   report += QString("playback_progress_observed: %1\n").arg(observed_playback_progress ? "true" : "false");
   report += QString("log_issue_lines: %1\n").arg(log_issue_count);
@@ -21893,6 +22062,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (!test_scoreboard_proposal_wait())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SCOREBOARD_PROPOSAL_WAIT_ONLY"))
+    return 0;
   if (!test_telemetry_only_admission())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_TELEMETRY_ADMISSION_ONLY"))
