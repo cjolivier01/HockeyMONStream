@@ -155,7 +155,8 @@ The test requires normal Stop and process retirement; source-correlated audio
 and actual presentation timing require a separate owned-sink/metadata collector.
 
 Add `HSTREAM_UI_E2E_AV_MATCHED_LONG_WINDOW=1` to that timing mode for a
-single longer comparison. It pauses near source time 20 seconds, holds the
+single longer comparison within the 60-second qualification fixture. It pauses
+at the first acknowledged source position at or above 10 seconds, holds the
 confirmed pause for seven seconds, then requires both 35 wall seconds and
 32 seconds of acknowledged source progress after Resume. Startup must finish
 before the Pause target; EOF, ownership changes and a 45-second resumed-window
@@ -163,6 +164,14 @@ timeout fail the case. The ordinary three-pause schedule remains the default.
 The external presentation collector must still verify actual displayed source
 coverage and align Qt/browser measurements; acknowledged position alone does
 not qualify A/V timing.
+
+The acknowledged pipeline position can lead actual presented frames. The earlier
+Pause target reserves room for the next progress receipt and both resumed minima
+before EOS. Bind the paired browser Pause threshold to the Qt collector's measured
+frozen-source interval, record actual Pause positions and uncertainty, and compare
+at least 30 seconds of common actual source content. Ordinary Stop, non-silent
+source-correlated audio, current frame identities and contained retirement remain
+required.
 
 The UI acceptance test exercises the same Qt button handlers as an operator:
 

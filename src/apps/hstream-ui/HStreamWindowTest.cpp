@@ -19097,16 +19097,20 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
             "Measured playing windows advance the acknowledged recording position");
       };
       if (av_matched_long_window) {
+        // Position receipts are coarse and may lead the displayed frame. The earlier
+        // target leaves room for the next receipt plus the unchanged 35 wall/32 source
+        // resumed window within the 60 s fixture. Bind the browser Pause target to
+        // this run's measured frozen-source interval from the external getter.
         timing_event("steady-initial-source-target-begin");
         if (!expect(
-                HStreamWindowTestAccess::playbackPositionNs(window) < 20'000'000'000LL,
-                "Matched startup proof must finish before the 20 s source Pause target") ||
+                HStreamWindowTestAccess::playbackPositionNs(window) < 10'000'000'000LL,
+                "Matched startup proof must finish before the 10 s source Pause target") ||
             !wait_for(
                 [&] {
                   return !timing_state_valid(false) ||
-                      HStreamWindowTestAccess::playbackPositionNs(window) >= 20'000'000'000LL;
+                      HStreamWindowTestAccess::playbackPositionNs(window) >= 10'000'000'000LL;
                 },
-                "Matched source reaches the 20 s Pause target",
+                "Matched source reaches the 10 s Pause target",
                 35000) ||
             !expect(timing_state_valid(false), "Matched initial window retains its native owner and route"))
           return false;
@@ -19165,7 +19169,8 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
           return false;
       }
       report += av_matched_long_window
-          ? "A/V matched schedule: Pause near source 20 s; one confirmed 7 s pause; "
+          ? "A/V matched schedule: Pause at the first acknowledged source position at or above 10 s; "
+            "one confirmed 7 s pause; "
             "resume at least 35 wall seconds and at least 32 source seconds from fresh acknowledged progress; "
             "no route changes, seeks or diagnostic readbacks inside measured windows; acknowledgment polling 25 ms\n"
           : "A/V schedule: steady 8s; three 3s pauses; resume windows 8s, 8s, 12s; "
