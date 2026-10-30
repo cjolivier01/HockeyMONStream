@@ -13,6 +13,7 @@
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryFile>
 #include <QtGui/QImageReader>
+#include <memory>
 #include <stdexcept>
 
 namespace hm::web {
@@ -128,11 +129,13 @@ QJsonObject ScoreboardPreview(const QJsonObject& request, const std::function<vo
   const auto base = QString("scoreboard-preview-%1").arg(token);
   const auto image_name = (base + ".png").toLatin1();
   const auto receipt_name = (base + ".json").toLatin1();
-  QTemporaryFile image(descriptor_path(root.fd) + "/." + base + "-image-XXXXXX");
-  require(image.open() && preview.save(&image, "PNG"), "Cannot encode scoreboard preview");
-  require(image.size() > 0 && image.size() <= kMaximumPreviewBytes, "Scoreboard preview exceeds its size bound");
-  flush(image);
-  const auto sha256 = digest(image);
+  auto image = std::make_unique<QTemporaryFile>(descriptor_path(root.fd) + "/." + base + "-image-XXXXXX");
+  require(image->open() && preview.save(image.get(), "PNG"), "Cannot encode scoreboard preview");
+  require(image->size() > 0 && image->size() <= kMaximumPreviewBytes, "Scoreboard preview exceeds its size bound");
+  flush(*image);
+  const auto sha256 = digest(*image);
+  const auto temporary_name = QFile::encodeName(image->fileName());
+  const auto encoded_identity = identity(image->handle());
   if (before_publication)
     before_publication();
   const auto check_source = [&] {
@@ -144,17 +147,45 @@ QJsonObject ScoreboardPreview(const QJsonObject& request, const std::function<vo
         "Scoreboard preview source changed");
   };
   check_source();
-  bool image_published = false, receipt_published = false;
+  bool image_published = false, receipt_published = false, temporary_retired = false;
   try {
+    require(identity(image->handle()) == encoded_identity, "Scoreboard preview image changed");
     require(
-        hm::link_pinned_file(image.handle(), root.fd, image_name.constData()) == 0,
+        hm::link_pinned_file(image->handle(), root.fd, image_name.constData()) == 0,
         "Scoreboard preview token already used or publication failed");
     image_published = true;
+    Descriptor published(open_path(root.fd, QString::fromLatin1(image_name), false));
+    const auto linked_identity = identity(image->handle());
     require(
-        ::unlink(QFile::encodeName(image.fileName()).constData()) == 0,
-        "Cannot retire scoreboard preview temporary name");
-    image.setAutoRemove(false);
+        identity(published.fd) == linked_identity && linked_identity["size"] == encoded_identity["size"] &&
+            linked_identity["mtime_ns"] == encoded_identity["mtime_ns"],
+        "Scoreboard preview image changed");
+    QFile published_image;
+    require(published_image.open(published.fd, QIODevice::ReadOnly), "Cannot read published scoreboard preview");
+    require(
+        digest(published_image) == sha256 && identity(published.fd) == linked_identity,
+        "Scoreboard preview image changed");
+    // A dup retains the temporary dentry on NFS, and QTemporaryFile::close()
+    // may retain its OS handle. Keep the independently opened final-name pin,
+    // destroy the temporary handle, then retire its name before binding ctime.
+    image->setAutoRemove(false);
+    image.reset();
+    require(::unlink(temporary_name.constData()) == 0, "Cannot retire scoreboard preview temporary name");
+    temporary_retired = true;
     // Link/unlink changes ctime, so bind the final single-link identity.
+    const auto image_identity = identity(published.fd);
+    require(
+        image_identity["size"] == linked_identity["size"] && image_identity["mtime_ns"] == linked_identity["mtime_ns"],
+        "Scoreboard preview image changed");
+    require(
+        digest(published_image) == sha256 && identity(published.fd) == image_identity,
+        "Scoreboard preview image changed");
+    const auto check_image = [&] {
+      Descriptor current_image(open_path(root.fd, QString::fromLatin1(image_name), false));
+      require(
+          identity(published.fd) == image_identity && identity(current_image.fd) == image_identity,
+          "Scoreboard preview image changed");
+    };
     const QJsonObject result{
         {"schema", "hstream-scoreboard-preview-v1"},
         {"token", token},
@@ -164,13 +195,14 @@ QJsonObject ScoreboardPreview(const QJsonObject& request, const std::function<vo
         {"source_size", QJsonArray{source_size.width(), source_size.height()}},
         {"preview_size", QJsonArray{preview_size.width(), preview_size.height()}},
         {"image", QString::fromLatin1(image_name)},
-        {"image_identity", identity(image.handle())},
+        {"image_identity", image_identity},
         {"sha256", sha256}};
     QTemporaryFile receipt(descriptor_path(root.fd) + "/." + base + "-receipt-XXXXXX");
     const auto bytes = QJsonDocument(result).toJson(QJsonDocument::Compact);
     require(receipt.open() && receipt.write(bytes) == bytes.size(), "Cannot write scoreboard preview receipt");
     flush(receipt);
     check_source();
+    check_image();
     require(
         hm::link_pinned_file(receipt.handle(), root.fd, receipt_name.constData()) == 0,
         "Scoreboard preview receipt already exists or publication failed");
@@ -178,6 +210,8 @@ QJsonObject ScoreboardPreview(const QJsonObject& request, const std::function<vo
     require(::fsync(root.fd) == 0, "Cannot sync scoreboard preview directory");
     return result;
   } catch (...) {
+    if (!image && !temporary_retired)
+      ::unlink(temporary_name.constData());
     if (receipt_published)
       ::unlinkat(root.fd, receipt_name.constData(), 0);
     if (image_published)

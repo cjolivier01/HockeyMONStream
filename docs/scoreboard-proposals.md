@@ -74,6 +74,14 @@ source and source identity; `source_size` holds original coordinates and
 `image_identity` and encoded PNG `sha256`. Encoded images are bounded to
 128 MiB. A failed publication removes files created by that attempt; the
 outer supervisor owns cancellation, deadline and remaining run cleanup.
+Before retiring the temporary image name, the helper independently opens
+the published name without following symlinks and verifies its inode,
+identity and hash against the temporary descriptor. It destroys the
+temporary file object before unlinking that name: a duplicate descriptor
+retains the old NFS dentry, and Qt's temporary-file `close()` may retain the
+OS handle. This prevents a delayed NFS silly-unlink from changing ctime
+after the receipt. The final pin and pathname must still match the exact
+post-unlink identity, hash and original source before receipt publication.
 Consumers must reject stale tokens, changed source/image identities and
 dimension/hash mismatches before exposing editor readiness. Image HTTP reads
 serve an already validated proxy and never start this helper. This mode does

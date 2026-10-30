@@ -33,6 +33,15 @@ QJsonObject identity(const QString& path) {
       {"ctime_ns", QString::number(qint64(status.st_ctim.tv_sec) * 1000000000LL + status.st_ctim.tv_nsec)}};
 }
 
+void require_identity(const QJsonObject& expected, const QString& path, const char* message) {
+  const auto actual = identity(path);
+  if (actual != expected) {
+    std::cerr << "Expected identity: " << QJsonDocument(expected).toJson(QJsonDocument::Compact).constData()
+              << "\nObserved identity: " << QJsonDocument(actual).toJson(QJsonDocument::Compact).constData() << '\n';
+  }
+  require(actual == expected, message);
+}
+
 void write(const QString& path, const QByteArray& bytes) {
   QFile file(path);
   require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Cannot write fixture");
@@ -138,6 +147,45 @@ void test_failures() {
   rejected(request(root));
 }
 
+void test_publication_conflicts() {
+  for (const auto& extension : {".png", ".json"}) {
+    QTemporaryDir root;
+    require(QDir(root.path()).mkdir("game"), "Cannot create game");
+    fixture(root.filePath("game/s.png"));
+    const auto input = request(root);
+    const auto conflict_name = "scoreboard-preview-" + input["token"].toString() + extension;
+    const auto conflict_path = root.filePath(conflict_name);
+    write(conflict_path, "existing publication");
+    const auto original_identity = identity(conflict_path);
+    bool failed = false;
+    try {
+      hm::web::ScoreboardPreview(input);
+    } catch (const std::exception&) {
+      failed = true;
+    }
+    require(failed, "An existing image or receipt must reject publication");
+    require_identity(original_identity, conflict_path, "A publication conflict must preserve the existing file");
+    QFile existing(conflict_path);
+    require(
+        existing.open(QIODevice::ReadOnly) && existing.readAll() == "existing publication",
+        "A publication conflict must preserve the existing bytes");
+    require(
+        QDir(root.path()).entryList(QDir::Files | QDir::Hidden) == QStringList{conflict_name},
+        "A publication conflict must retire only its own image and temporary files");
+  }
+  QTemporaryDir root;
+  require(QDir(root.path()).mkdir("game"), "Cannot create game");
+  fixture(root.filePath("game/s.png"));
+  rejected(request(root), [&] {
+    const auto images = QDir(root.path()).entryList({".scoreboard-preview-*-image-*"}, QDir::Files | QDir::Hidden);
+    require(images.size() == 1, "Expected one pending proxy");
+    write(root.filePath(images.front()), "changed proxy");
+  });
+  require(
+      QDir(root.path()).entryList(QDir::Files | QDir::Hidden).isEmpty(),
+      "A changed image must leave no publication or temporary files");
+}
+
 void test_success(int width, int height, bool interlaced = false) {
   QTemporaryDir root;
   require(QDir(root.path()).mkdir("game"), "Cannot create game");
@@ -149,7 +197,7 @@ void test_success(int width, int height, bool interlaced = false) {
   require(result["preview_size"] == QJsonArray{expected.width(), expected.height()}, "Receipt must bind proxy pixels");
   require(result["source_identity"] == input["source_identity"], "Receipt must bind exact source identity");
   const auto image_path = root.filePath(result["image"].toString());
-  require(result["image_identity"].toObject() == identity(image_path), "Receipt must bind final image identity");
+  require_identity(result["image_identity"].toObject(), image_path, "Receipt must bind final image identity");
   const QImage image(image_path);
   require(!image.isNull() && image.size() == expected, "Proxy must be decodable at the shared size");
   for (const auto& point :
@@ -169,15 +217,19 @@ void test_success(int width, int height, bool interlaced = false) {
   require(
       receipt.open(QIODevice::ReadOnly) && QJsonDocument::fromJson(receipt.readAll()).object() == result,
       "Atomic receipt must match returned result");
+  require_identity(result["image_identity"].toObject(), image_path, "Reading the receipt must preserve image identity");
+  const auto image_identity = result["image_identity"].toObject();
+  require(
+      QDir(root.path()).entryList({".*"}, QDir::Files | QDir::Hidden).isEmpty(),
+      "Successful publication must leave no temporary or NFS silly-renamed files");
   bool duplicate_failed = false;
   try {
     hm::web::ScoreboardPreview(input);
   } catch (const std::exception&) {
     duplicate_failed = true;
   }
-  require(
-      duplicate_failed && identity(image_path) == result["image_identity"].toObject(),
-      "An old token must never replace its published proxy");
+  require(duplicate_failed, "An old token must never publish again");
+  require_identity(image_identity, image_path, "An old token must never replace its published proxy");
 }
 
 void test_source_bounds() {
@@ -215,6 +267,7 @@ int main() {
     require(scoreboardPreviewSize({65535, 1}) == QSize(8192, 1), "Qt side bound must remain unchanged");
     require(scoreboardPreviewSize({}).isEmpty(), "Invalid Qt geometry must remain empty");
     test_failures();
+    test_publication_conflicts();
     test_source_bounds();
     test_success(640, 360);
     test_success(640, 360, true);
