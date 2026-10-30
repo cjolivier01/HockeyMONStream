@@ -4,6 +4,7 @@
 #include <QtCore/QPointer>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QAbstractButton>
+#include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QAbstractScrollArea>
 #include <QtWidgets/QAbstractSpinBox>
 #include <QtWidgets/QApplication>
@@ -44,6 +45,25 @@ bool scroll_pane(QAbstractScrollArea* pane, QWheelEvent* wheel) {
     const int delta = pixel_delta ? pixel_delta : angle_delta;
     if (!bar->isEnabled() || !delta || (delta > 0 ? bar->value() <= bar->minimum() : bar->value() >= bar->maximum()))
       continue;
+    if (qobject_cast<QAbstractItemView*>(pane)) {
+      // Item views translate trackpad pixels into rows in ScrollPerItem mode.
+      // Their viewport owns that conversion; treating the bar as pixels skips
+      // rows in tables containing editors.
+      QWidget* viewport = pane->viewport();
+      QWheelEvent forwarded(
+          viewport->mapFromGlobal(wheel->globalPosition().toPoint()),
+          wheel->globalPosition(),
+          pixels,
+          angles,
+          wheel->buttons(),
+          wheel->modifiers() & ~Qt::ShiftModifier,
+          wheel->phase(),
+          wheel->inverted(),
+          wheel->source());
+      forwarded.ignore();
+      QCoreApplication::sendEvent(viewport, &forwarded);
+      return forwarded.isAccepted();
+    }
     if (pixel_delta) {
       bar->setValue(bar->value() - pixel_delta);
       consumed = true;

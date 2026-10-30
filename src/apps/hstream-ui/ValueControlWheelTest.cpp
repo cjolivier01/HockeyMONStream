@@ -9,6 +9,7 @@
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QGraphicsScene>
 #include <QtWidgets/QGraphicsView>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
@@ -186,6 +187,21 @@ void exercise() {
   canvas.show();
   wheel(canvas.viewport());
   require(canvas.transform().m11() == 1.25, "Image canvas wheel zoom must remain available");
+  QGraphicsScene scene;
+  scene.setSceneRect(0, 0, 2000, 2000);
+  canvas.setScene(&scene);
+  QSpinBox embedded(canvas.viewport());
+  embedded.setValue(50);
+  embedded.show();
+  QTest::qWait(20);
+  canvas.verticalScrollBar()->setValue(50);
+  wheel(&embedded);
+  require(canvas.verticalScrollBar()->value() > 50, "Controls inside canvases must scroll their pane");
+  for (int i = 0; i < 10; ++i)
+    wheel(&embedded, {0, -1});
+  require(
+      embedded.value() == 50 && canvas.transform().m11() == 1.25,
+      "A control gesture must never edit its value or zoom the enclosing canvas");
 }
 } // namespace
 
