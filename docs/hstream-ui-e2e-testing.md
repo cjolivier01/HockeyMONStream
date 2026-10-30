@@ -95,12 +95,29 @@ check authenticated adoption and actual decoded browser frames.
 For the focused Drawing/source-seek regression, use
 `HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY=1` and an explicit
 `HSTREAM_UI_E2E_EFFECTS_PRECISION=0` (Standard) or `1` (FP16). This mode disables
-framing, mini-map and diagnostic overlays, records the five Drawing controls,
+framing, mini-map and diagnostic overlays, opens the visible Players controls,
+records the five Drawing controls and their acknowledged request generations,
 applies masks 0 then 31, and verifies that a paused Pose edit remains a draft
 until Resume applies mask 29. It returns from a source-only seek to Stitched
 and requires two advancing, different images, then ordinary Stop and process
 retirement. It rejects synthetic fixture preparation and the unrelated live
 camera-tuning/Reset mode. It does not qualify tone effects by itself.
+
+The separate strict frame-pair comparison additionally sets
+`HSTREAM_UI_E2E_DRAWING_FRAME_WINDOWS=1`. It requires a 1800×1200 client window
+at device pixel ratio 1, `HSTREAM_PREVIEW_CAPTURE_METADATA=1` and an explicitly
+supplied metadata observer writing `$HM_AV_DIRECTORY/qt-presented-<cli-pid>.jsonl`.
+That observer is external diagnostic tooling, not part of the ordinary regression
+or deployed runtime. Bind its source, binary and the observed CLI getter to the
+exact build before using it. It must read only the renderer's metadata, without
+changing playback or reading pixels. Each complete JSON line carries `sink`,
+`valid`, `generation`, `pts_ns`, and monotonic `before_ns`/`after_ns`; the driver
+accepts only fresh records for its current Program renderer. It uses those
+records to schedule one capture in each source interval [10,12), [20,22) and
+[30,32) seconds. The capture's own receipt must prove the actual source pair,
+renderer generation and baked Drawing mask. Missing or late evidence fails;
+the observer never establishes displayed pixel identity by itself. The ordinary
+Drawing regression does not require this observer or claim exact frame pairing.
 
 Physical-frame comparisons can opt into `HSTREAM_PREVIEW_CAPTURE_METADATA=1`
 for Qt's existing explicit capture command. Enable

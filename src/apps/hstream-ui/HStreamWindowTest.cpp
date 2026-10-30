@@ -32,6 +32,7 @@
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtGui/QImage>
+#include <QtGui/QRegion>
 #include <QtGui/QScreen>
 #include <QtGui/QTextBlock>
 #include <QtGui/QTextDocument>
@@ -48,6 +49,7 @@
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QGroupBox>
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
@@ -63,7 +65,9 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QStyleOptionButton>
 #include <QtWidgets/QStyleOptionSlider>
+#include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTextEdit>
 #include <QtWidgets/QTimeEdit>
@@ -103,7 +107,53 @@
 #include <unistd.h>
 #endif
 
+// Consume the existing metadata-only getter observer. Scheduling never reads
+// video pixels; the single capture's render-locked receipt remains authoritative.
+static std::optional<QJsonObject> drawing_renderer_observation(
+    const QString& path,
+    quint64 renderer_generation,
+    qint64 now_ns) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > 32 * 1024 * 1024)
+    return std::nullopt;
+  const auto offset = std::max<qint64>(0, file.size() - 16384);
+  if (!file.seek(offset))
+    return std::nullopt;
+  QByteArray tail = file.read(16384);
+  if (offset)
+    tail.remove(0, tail.indexOf('\n') + 1);
+  const auto lines = tail.split('\n');
+  // The last line can be an in-flight partial append and has no authority.
+  for (int index = lines.size() - 2; index >= 0; --index) {
+    const auto row = QJsonDocument::fromJson(lines[index]).object();
+    if (row.value("sink").toString() != "program_gpu_preview_sink")
+      continue;
+    const auto exact_integer = [&](const char* name, qint64* value) {
+      const auto field = row.value(name);
+      const double number = field.toDouble(-1);
+      if (!field.isDouble() || number < 0 || number >= 9007199254740992.0 || std::floor(number) != number)
+        return false;
+      *value = static_cast<qint64>(number);
+      return true;
+    };
+    qint64 generation = -1, pts = -1, before = -1, after = -1;
+    if (!row.value("valid").toBool() || !exact_integer("generation", &generation) || !exact_integer("pts_ns", &pts) ||
+        !exact_integer("before_ns", &before) || !exact_integer("after_ns", &after) ||
+        static_cast<quint64>(generation) != renderer_generation || before > after || after > now_ns ||
+        now_ns - after > 1'000'000'000LL)
+      return std::nullopt;
+    return row;
+  }
+  return std::nullopt;
+}
+
 struct HStreamWindowTestAccess {
+  static quint64 playerDrawingRequest(const HStreamWindow* window) {
+    return window->player_drawing_request_;
+  }
+  static bool playerDrawingSettled(const HStreamWindow* window, unsigned layers) {
+    return !window->pending_player_drawing_layers_ && window->published_player_drawing_layers_ == layers;
+  }
   static QString managedArchiveManifest(const HStreamWindow* window) {
     return window->managed_archive_manifest_;
   }
@@ -18738,6 +18788,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
           "Matched A/V schedule accepts only 0/1 and requires A/V timing mode when enabled"))
     return false;
   const bool effects_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY");
+  const bool drawing_frame_windows = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_DRAWING_FRAME_WINDOWS");
   const bool genuine_preview = calibration_seeks || mini_map_only || av_timing_only || effects_only;
   const QString expected_map_status = qEnvironmentVariable("HSTREAM_UI_E2E_RINK_MAP_EXPECTED");
   if (!expect(
@@ -18772,6 +18823,14 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
   if (!game || !create || !start || !stop || !pause || !restart || !render || !telemetry || !realtime || !tabs ||
       !seek_forward || !seek_back || !program || !stitched || !source || !mode)
     return false;
+  if (effects_only && drawing_frame_windows) {
+    window->resize(1800, 1200);
+    QApplication::processEvents();
+    if (!expect(
+            window->size() == QSize(1800, 1200) && window->devicePixelRatioF() == 1.0,
+            "Drawing pair requires the shared 1800x1200 client size and DPR1"))
+      return false;
+  }
   const QString artifact_dir = qEnvironmentVariable("HSTREAM_UI_E2E_ARTIFACT_DIR");
   if (!expect(
           QGuiApplication::platformName() == "xcb" && !artifact_dir.isEmpty() &&
@@ -18934,7 +18993,8 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
                            const QString& filename,
                            qint64* pts_ns = nullptr,
                            qint64 minimum_pts = 0,
-                           qint64 maximum_pts = std::numeric_limits<qint64>::max()) {
+                           qint64 maximum_pts = std::numeric_limits<qint64>::max(),
+                           std::optional<unsigned> expected_baked_layers = std::nullopt) {
     auto* process = HStreamWindowTestAccess::ownedProcess(window, false);
     if (!clear_diagnostic_capture_artifact(artifact_dir, filename))
       return false;
@@ -18942,7 +19002,10 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     // arrive after the readiness acknowledgment, retaining each bounded attempt.
     QElapsedTimer capture_timer;
     capture_timer.start();
-    for (int attempt = 1; attempt <= (genuine_preview ? 20 : 5); ++attempt) {
+    // Drawing uses one command in its predetermined window. A missed or stale
+    // frame fails this case; never sample a substitute target after failure.
+    const int attempts = expected_baked_layers ? 1 : (genuine_preview ? 20 : 5);
+    for (int attempt = 1; attempt <= attempts; ++attempt) {
       const QString path = diagnostic_capture_attempt_path(artifact_dir, filename, attempt);
       QFile::remove(path);
       const auto before = window->completeLogText().size();
@@ -18956,6 +19019,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
         return false;
       const auto frame = inspect_native_preview_capture(path);
       report += native_preview_report_line(channel, frame);
+      const QRegularExpression receipt_expression(R"(HSTREAM_PREVIEW_CAPTURE (\{[^\n]+\}))");
       bool identity_matches = true;
       if (pts_ns) {
         // HSTREAM_SEEK is consumed by the window. These diagnostic identities
@@ -18964,16 +19028,26 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
             QString("runtime preview frame identity channel=%1 path=%2 generation=([0-9]+) pipeline-pts-ns=([0-9]+)")
                 .arg(QRegularExpression::escape(channel), QRegularExpression::escape(path)));
         QRegularExpressionMatch match;
-        QTest::qWaitFor(
+        const bool identity_received = QTest::qWaitFor(
             [&] {
               match = identity.match(window->completeLogText().mid(before));
-              return match.hasMatch();
+              if (!match.hasMatch() || !expected_baked_layers)
+                return match.hasMatch();
+              // Identity and metadata are separate native writes. They may
+              // reach QProcess in different reads of this same capture.
+              auto receipts = receipt_expression.globalMatch(window->completeLogText().mid(before));
+              while (receipts.hasNext()) {
+                const auto receipt = QJsonDocument::fromJson(receipts.next().captured(1).toUtf8()).object();
+                if (receipt.value("path").toString() == path)
+                  return true;
+              }
+              return false;
             },
             1000);
         bool valid_pts = false;
         const qint64 value = match.captured(2).toLongLong(&valid_pts);
         QWidget* surface = channel == "program" ? program : channel == "stitched" ? stitched : source;
-        identity_matches = match.hasMatch() && valid_pts && value >= minimum_pts && value <= maximum_pts &&
+        identity_matches = identity_received && valid_pts && value >= minimum_pts && value <= maximum_pts &&
             match.captured(1).toULongLong() == generation(surface);
         report +=
             QString(
@@ -18986,7 +19060,35 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
         if (identity_matches)
           *pts_ns = value;
       }
-      if (frame.passed && identity_matches)
+      bool drawing_matches = !expected_baked_layers;
+      if (expected_baked_layers) {
+        // The explicit diagnostic receipt was latched under the PNG's render
+        // lock. An applied setter plus a later PTS alone admits queued old pixels.
+        auto receipts = receipt_expression.globalMatch(window->completeLogText().mid(before));
+        while (receipts.hasNext()) {
+          const auto receipt = QJsonDocument::fromJson(receipts.next().captured(1).toUtf8()).object();
+          if (receipt.value("path").toString() != path)
+            continue;
+          const auto crop = receipt.value("crop").toObject();
+          bool valid_layers = false, valid_generation = false, valid_pts = false;
+          const auto baked = crop.value("bakedPlayerLayers").toString().toUInt(&valid_layers);
+          const auto renderer = receipt.value("rendererGeneration").toString().toULongLong(&valid_generation);
+          const auto captured_pts = receipt.value("sourcePts").toString().toLongLong(&valid_pts);
+          QWidget* surface = channel == "program" ? program : channel == "stitched" ? stitched : source;
+          drawing_matches = receipt.value("version").toInt() == 1 && receipt.value("interface").toString() == "qt" &&
+              receipt.value("channel").toString() == channel && receipt.value("physicalIdentityValid").toBool() &&
+              receipt.value("physicalSources").toArray().size() == 2 && valid_layers &&
+              baked == *expected_baked_layers && valid_generation && renderer == generation(surface) && valid_pts &&
+              pts_ns && captured_pts == *pts_ns;
+          report += QString("drawing-frame capture=%1 expected-baked-layers=%2 actual-baked-layers=%3 receipt=%4\n")
+                        .arg(filename)
+                        .arg(*expected_baked_layers)
+                        .arg(baked)
+                        .arg(drawing_matches ? "PASS" : "FAIL");
+          break;
+        }
+      }
+      if (frame.passed && identity_matches && drawing_matches)
         return promote_diagnostic_capture_artifact(path, QDir(artifact_dir).filePath(filename));
       if (genuine_preview && capture_timer.elapsed() >= 10000)
         break;
@@ -19412,15 +19514,131 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
     if (effects_only) {
       const std::array<const char*, 5> drawing_ids{
           "playerDrawBoxes", "playerDrawPose", "playerDrawJerseys", "playerDrawActions", "playerDrawTeams"};
+      auto* drawer = require_child<QToolButton>(window, "programControlsToggle");
+      auto* controls = require_child<QGroupBox>(window, "programControlsGroup");
+      auto* control_tabs = require_child<QTabWidget>(window, "programControlTabs");
+      auto* players_scroll = require_child<QScrollArea>(window, "playerAnalyticsScrollArea");
+      if (!drawer || !controls || !control_tabs || !players_scroll)
+        return false;
+      const auto layout_capture = [&](const char* label, bool expanded) {
+        if (!expect(
+                drawer->isVisible() && drawer->isEnabled() && drawer->isChecked() == expanded &&
+                    controls->isVisible() == expanded && window->screen(),
+                "Drawing layout keeps its ordinary visible toggle and expected controls visibility"))
+          return false;
+        QApplication::processEvents();
+        QGuiApplication::sync();
+        const QPixmap image = window->screen()->grabWindow(window->winId());
+        if (!expect(
+                !image.isNull() &&
+                    image.save(QDir(artifact_dir).filePath(QString("effects-drawing-layout-%1.png").arg(label))),
+                "Drawing layout requires a composed whole-window screenshot"))
+          return false;
+        report +=
+            QString(
+                "drawing-layout label=%1 expanded=%2 toggle-visible=1 toggle-enabled=1 controls-visible=%2 width=%3 height=%4 dpr=%5\n")
+                .arg(label)
+                .arg(expanded)
+                .arg(window->width())
+                .arg(window->height())
+                .arg(image.devicePixelRatio());
+        const QPoint preview_origin = program->mapTo(window, QPoint(0, 0));
+        report +=
+            QString(
+                "drawing-geometry label=%1 window-dpr=%2 image-width=%3 image-height=%4 preview-x=%5 preview-y=%6 preview-width=%7 preview-height=%8\n")
+                .arg(label)
+                .arg(window->devicePixelRatioF())
+                .arg(image.width())
+                .arg(image.height())
+                .arg(preview_origin.x())
+                .arg(preview_origin.y())
+                .arg(program->width())
+                .arg(program->height());
+        return true;
+      };
+      // Both interfaces deliberately compact these controls when rendering starts.
+      // Record that default before using the same visible controls as an operator.
+      if (!layout_capture("collapsed", false))
+        return false;
+      QTest::mouseClick(drawer, Qt::LeftButton);
+      if (!wait_for(
+              [&] { return drawer->isChecked() && controls->isVisible(); }, "Drawing controls open by ordinary click"))
+        return false;
+      auto* bar = control_tabs->tabBar();
+      int players_index = -1;
+      for (int i = 0; i < control_tabs->count(); ++i)
+        if (control_tabs->tabText(i) == "Players")
+          players_index = i;
+      if (!expect(players_index >= 0 && bar->isVisible(), "Players tab exists in the visible Program controls"))
+        return false;
+      const auto tab_reachable = [&] {
+        const QRect rect = bar->tabRect(players_index);
+        return bar->rect().contains(rect) && !bar->childAt(rect.center()) && bar->tabAt(rect.center()) == players_index;
+      };
+      for (int attempts = 0; !tab_reachable() && attempts < 2 * control_tabs->count(); ++attempts) {
+        QToolButton* forward = nullptr;
+        for (auto* arrow : bar->findChildren<QToolButton*>())
+          if (arrow->isVisible() && arrow->isEnabled() && arrow->arrowType() == Qt::RightArrow)
+            forward = arrow;
+        if (!expect(forward != nullptr, "Players tab must be reachable through its ordinary scroll arrow"))
+          return false;
+        QTest::mouseClick(forward, Qt::LeftButton);
+        QApplication::processEvents();
+      }
+      if (!expect(tab_reachable(), "Players tab is unobscured before its ordinary click"))
+        return false;
+      QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier, bar->tabRect(players_index).center());
+      if (!wait_for(
+              [&] { return control_tabs->currentIndex() == players_index && players_scroll->isVisible(); },
+              "Players tab opens by ordinary click"))
+        return false;
+      if (players_scroll->verticalScrollBar()->isVisible()) {
+        players_scroll->verticalScrollBar()->setFocus();
+        QTest::keyClick(players_scroll->verticalScrollBar(), Qt::Key_End);
+        QApplication::processEvents();
+      }
+      const auto drawing_visible = [&](QCheckBox* field) {
+        return field && drawer->isChecked() && control_tabs->currentIndex() == players_index && field->isVisible() &&
+            field->isEnabled() && QRegion(field->rect()).subtracted(field->visibleRegion()).isEmpty();
+      };
+      for (const auto* id : drawing_ids)
+        if (!expect(
+                drawing_visible(require_child<QCheckBox>(window, id)),
+                "All five Drawing fields are visible and enabled"))
+          return false;
+      if (!layout_capture("players-open", true))
+        return false;
+      const auto click_drawing = [&](const char* id, bool checked) {
+        auto* field = require_child<QCheckBox>(window, id);
+        if (!expect(drawing_visible(field), "Drawing mouse input requires a fully visible enabled checkbox"))
+          return false;
+        if (field->isChecked() != checked) {
+          QStyleOptionButton option;
+          option.initFrom(field);
+          const QPoint point = field->style()->subElementRect(QStyle::SE_CheckBoxIndicator, &option, field).center();
+          QTest::mouseClick(field, Qt::LeftButton, Qt::NoModifier, point);
+          QApplication::processEvents();
+          report += QString("drawing-click control=%1 checked=%2\n").arg(id).arg(field->isChecked());
+        }
+        return expect(field->isChecked() == checked, "Ordinary Drawing click reaches its requested state");
+      };
+      const auto drawing_ack = [&](int log_offset, quint64 before_request, unsigned layers) {
+        const quint64 request = HStreamWindowTestAccess::playerDrawingRequest(window);
+        return request > before_request && HStreamWindowTestAccess::playerDrawingSettled(window, layers) &&
+            window->completeLogText()
+                .mid(log_offset)
+                .contains(QRegularExpression(
+                    QString("player drawing layers=%1 apply=live generation=%2(?:\\s|$)").arg(layers).arg(request)));
+      };
       unsigned initial_layers = 0;
       auto snapshot = [&](const char* label) {
         unsigned layers = 0;
         for (unsigned i = 0; i < drawing_ids.size(); ++i) {
           auto* field = require_child<QCheckBox>(window, drawing_ids[i]);
-          if (!field || !field->isEnabled())
+          if (!drawing_visible(field))
             return false;
           layers |= field->isChecked() ? 1U << i : 0;
-          report += QString("drawing-dom label=%1 control=%2 checked=%3 enabled=%4\n")
+          report += QString("drawing-dom label=%1 control=%2 checked=%3 enabled=%4 visible=1 in-view=1\n")
                         .arg(label, drawing_ids[i])
                         .arg(field->isChecked())
                         .arg(field->isEnabled());
@@ -19431,35 +19649,95 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       if (!snapshot("before"))
         return false;
       const auto baseline_offset = window->completeLogText().size();
+      const auto baseline_request = HStreamWindowTestAccess::playerDrawingRequest(window);
       for (unsigned i = 0; i < drawing_ids.size(); ++i) {
         auto* field = require_child<QCheckBox>(window, drawing_ids[i]);
         initial_layers |= field->isChecked() ? 1U << i : 0;
-        field->setChecked(false);
+        if (!click_drawing(drawing_ids[i], false))
+          return false;
       }
       if (initial_layers &&
           !wait_for(
-              [&] {
-                return window->completeLogText().mid(baseline_offset).contains("player drawing layers=0 apply=live");
-              },
+              [&] { return drawing_ack(baseline_offset, baseline_request, 0U); },
               "Qt establishes the live zero-layer Drawing baseline"))
         return false;
-      if (!snapshot("zero"))
+      // Fixed source-time windows leave ordinary browser clicks sufficient lead.
+      // Current renderer metadata schedules one diagnostic command. The receipt's
+      // actual source PTS and physical metadata, never UI time, certify the PNG.
+      const auto drawing_capture = [&](const QString& filename,
+                                       unsigned layers,
+                                       qint64 lower,
+                                       qint64 upper,
+                                       qint64* pts) {
+        // The ordinary regression keeps its existing capture behavior. Exact
+        // cross-interface frame pairing is a separately opted-in diagnostic.
+        if (!drawing_frame_windows)
+          return capture("program", filename, pts);
+        const auto* process = HStreamWindowTestAccess::ownedProcess(window, false);
+        const auto probe_dir = qEnvironmentVariable("HM_AV_DIRECTORY");
+        if (!expect(
+                process && process->processId() > 0 && !probe_dir.isEmpty() &&
+                    qEnvironmentVariable("HSTREAM_PREVIEW_CAPTURE_METADATA") == "1",
+                "Drawing requires its pinned metadata observer and capture receipts before launch"))
+          return false;
+        const auto probe_path = QDir(probe_dir).filePath(QString("qt-presented-%1.jsonl").arg(process->processId()));
+        std::optional<QJsonObject> observed;
+        const auto observe_renderer = [&] {
+          const auto now =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                  .count();
+          observed = drawing_renderer_observation(probe_path, generation(program), now);
+          return observed.has_value();
+        };
+        if (!wait_for(observe_renderer, "Drawing observes its current renderer metadata", 5000) ||
+            !expect(
+                observed->value("pts_ns").toDouble() < lower,
+                "Drawing state must be established before its fixed source window") ||
+            !wait_for(
+                [&] { return observe_renderer() && observed->value("pts_ns").toDouble() >= lower + 1'000'000'000LL; },
+                "Drawing renderer reaches the predetermined capture window",
+                35000) ||
+            !expect(
+                observed->value("pts_ns").toDouble() < upper,
+                "Drawing renderer has not missed its fixed source window"))
+          return false;
+        report +=
+            QString("drawing-scheduler capture=%1 probe=%2 observation=%3\n")
+                .arg(filename, probe_path, QString::fromUtf8(QJsonDocument(*observed).toJson(QJsonDocument::Compact)));
+        if (!capture("program", filename, pts, lower, upper - 1, layers))
+          return false;
+        report +=
+            QString("drawing-window capture=%1 lower-ns=%2 upper-exclusive-ns=%3 actual-source-pts-ns=%4 result=PASS\n")
+                .arg(filename)
+                .arg(lower)
+                .arg(upper)
+                .arg(*pts);
+        return true;
+      };
+      qint64 zero_pts = -1, all_pts = -1, resumed_pts = -1;
+      if (!snapshot("zero") ||
+          !drawing_capture("effects-drawing-zero.png", 0U, 10'000'000'000LL, 12'000'000'000LL, &zero_pts))
         return false;
+      const auto drawing_renderer_generation = generation(program);
       const auto live_offset = window->completeLogText().size();
+      const auto live_request = HStreamWindowTestAccess::playerDrawingRequest(window);
       for (const auto* id : drawing_ids)
-        require_child<QCheckBox>(window, id)->setChecked(true);
+        if (!click_drawing(id, true))
+          return false;
       if (!wait_for(
-              [&] {
-                return window->completeLogText().mid(live_offset).contains("player drawing layers=31 apply=live");
-              },
+              [&] { return drawing_ack(live_offset, live_request, 31U); },
               "Qt acknowledges the actual all-layer Drawing edit") ||
-          !snapshot("all") || !capture("program", "effects-drawing-all.png"))
+          !snapshot("all") || generation(program) != drawing_renderer_generation ||
+          !drawing_capture("effects-drawing-all.png", 31U, 20'000'000'000LL, 22'000'000'000LL, &all_pts) ||
+          generation(program) != drawing_renderer_generation)
         return false;
       activate(pause);
       if (!wait_for([&] { return window->pipelineStateText() == "PAUSED"; }, "Qt pauses before the Drawing draft"))
         return false;
       const auto paused_offset = window->completeLogText().size();
-      require_child<QCheckBox>(window, "playerDrawPose")->setChecked(false);
+      const auto paused_request = HStreamWindowTestAccess::playerDrawingRequest(window);
+      if (!click_drawing("playerDrawPose", false))
+        return false;
       if (!snapshot("paused-pose-off"))
         return false;
       QTest::qWait(5000);
@@ -19472,11 +19750,12 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       activate(pause);
       if (!wait_for(
               [&] {
-                return window->pipelineStateText() == "PLAYING" &&
-                    window->completeLogText().mid(paused_offset).contains("player drawing layers=29 apply=live");
+                return window->pipelineStateText() == "PLAYING" && drawing_ack(paused_offset, paused_request, 29U);
               },
               "Confirmed Resume applies the Drawing draft") ||
-          !snapshot("resumed-pose-off") || !capture("program", "effects-drawing-resumed.png"))
+          !snapshot("resumed-pose-off") || generation(program) != drawing_renderer_generation ||
+          !drawing_capture("effects-drawing-resumed.png", 29U, 30'000'000'000LL, 32'000'000'000LL, &resumed_pts) ||
+          generation(program) != drawing_renderer_generation)
         return false;
     }
     if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_LIVE_CAMERA_CONTROLS")) {

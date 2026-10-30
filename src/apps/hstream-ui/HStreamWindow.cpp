@@ -17272,7 +17272,7 @@ bool HStreamWindow::handlePlayerDrawingResponse(const QString& line) {
     // Only an accepted selection may be deduplicated against; a write that the
     // runner refused must be sent again when the operator tries once more.
     published_player_drawing_layers_ = layers;
-    appendLog(QString("player drawing layers=%1 apply=live").arg(layers));
+    appendLog(QString("player drawing layers=%1 apply=live generation=%2").arg(layers).arg(match.captured(2)));
   } else {
     published_player_drawing_layers_.reset();
     appendLog(QString("player drawing layers=%1 apply=failed reason=%2")
