@@ -1219,9 +1219,13 @@ const std::string& ReplaySession::manifest_path() const {
   return impl_->options.manifest_path;
 }
 
-absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult& trial, const MediaBinding& media)
-    const {
+absl::Status ReplaySession::SaveTrial(
+    const std::string& path,
+    const TrialResult& trial,
+    const MediaBinding& media,
+    const std::atomic<bool>* cancelled) const {
   try {
+    check_cancel(cancelled);
     require(
         trial.frames.size() == impl_->samples.size() && !trial.frames.empty(), "Trial does not belong to this range");
     const bool has_media = !media.path.empty();
@@ -1355,6 +1359,7 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
       }
     }
     for (size_t i = 0; i < trial.frames.size(); ++i) {
+      check_cancel(cancelled);
       const auto& frame = trial.frames[i];
       const auto& sample = impl_->samples[i];
       require(
@@ -1394,7 +1399,9 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
     YAML::Emitter emitter;
     emitter.SetFloatPrecision(std::numeric_limits<float>::max_digits10);
     emitter.SetDoublePrecision(std::numeric_limits<double>::max_digits10);
+    check_cancel(cancelled);
     emitter << document;
+    check_cancel(cancelled);
     require(emitter.good(), "Could not serialize trial descriptor");
     struct Temporary {
       std::string path;
@@ -1411,6 +1418,7 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
     const std::string contents = std::string(emitter.c_str()) + '\n';
     size_t written = 0;
     while (written < contents.size()) {
+      check_cancel(cancelled);
       const ssize_t count = ::write(temporary.fd, contents.data() + written, contents.size() - written);
       if (count < 0 && errno == EINTR)
         continue;
@@ -1418,10 +1426,13 @@ absl::Status ReplaySession::SaveTrial(const std::string& path, const TrialResult
       written += count;
     }
     require(::fsync(temporary.fd) == 0, "Could not synchronize trial descriptor: " + path);
+    check_cancel(cancelled);
     require(::rename(temporary.path.c_str(), path.c_str()) == 0, "Could not commit trial descriptor: " + path);
     temporary.path.clear();
     return absl::OkStatus();
   } catch (const std::exception& error) {
+    if (cancelled && cancelled->load(std::memory_order_relaxed))
+      return absl::CancelledError(error.what());
     return absl::InvalidArgumentError(error.what());
   }
 }

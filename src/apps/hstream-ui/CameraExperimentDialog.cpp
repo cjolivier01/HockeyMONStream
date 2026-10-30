@@ -522,6 +522,7 @@ struct CameraExperimentDialog::Impl {
     QDoubleSpinBox* value;
   };
   struct WorkResult {
+    QString saved_message;
     std::shared_ptr<replay::ReplaySession> session;
     std::optional<replay::TrialResult> trial;
     std::optional<replay::TrialResult> native_trial;
@@ -582,6 +583,7 @@ struct CameraExperimentDialog::Impl {
   QProgressBar* progress{nullptr};
   QLabel* activity{nullptr};
   bool calculating{false};
+  bool saving{false};
   bool frame_ready{false};
   bool preview_loading{false};
   std::optional<int> closing_result;
@@ -694,6 +696,7 @@ struct CameraExperimentDialog::Impl {
     prepare->setEnabled(editable);
     apply->setEnabled(editable && prepared);
     cancel->setEnabled(active && !closing_result);
+    cancel->setText(saving ? "Cancel saving" : "Cancel preparation");
     // A stopped preview owns a snapshot of its inputs. Source edits remain safe
     // while that graph is being released, without stealing focus on each key.
     settings->setEnabled(!calculating && !closing_result && !playing && (!loading || !preview_open));
@@ -726,6 +729,7 @@ struct CameraExperimentDialog::Impl {
     activity->setVisible((active || playing) && !preview_focused);
     activity->setText(
         closing_result    ? "Finishing background work before closing…"
+            : saving      ? "Saving trial…"
             : calculating ? "Preparing experiment…"
             : loading     ? "Loading or stopping preview…"
             : playing     ? "Playing preview · Pause to edit camera settings"
@@ -1145,8 +1149,13 @@ struct CameraExperimentDialog::Impl {
         result.error = "Experiment preparation failed.";
       }
       const bool cancelled = cancellation && cancellation->load();
-      if (cancelled) {
-        show_status("Preparation cancelled. The previous prepared trial remains available.");
+      if (!result.saved_message.isEmpty()) {
+        // A cancellation after atomic publication cannot undo a completed Save.
+        show_status(result.saved_message);
+      } else if (cancelled) {
+        show_status(
+            saving ? "Saving cancelled. The previous prepared trial remains available."
+                   : "Preparation cancelled. The previous prepared trial remains available.");
       } else if (!result.error.empty()) {
         show_status(QString::fromStdString(result.error), true);
       } else if (result.session) {
@@ -1198,6 +1207,7 @@ struct CameraExperimentDialog::Impl {
         select_comparison(true);
         trial_name->setText(trial_prefix + QString(" %1").arg(trials.size() + 1));
       }
+      saving = false;
       busy(false);
     }
     const auto state = preview.Poll();
@@ -1747,12 +1757,22 @@ CameraExperimentDialog::CameraExperimentDialog(
       state.show_status("Playback start plus Video start offset precedes the selected archive.", true);
       return;
     }
-    const auto status = state.session->SaveTrial(path.toStdString(), state.trials[index], media);
-    state.show_status(
-        status.ok() ? (media.path.empty() ? "Trial saved without a video binding."
-                                          : "Trial and its source/video binding saved.")
-                    : QString::fromStdString(status.ToString()),
-        !status.ok());
+    state.cancellation = std::make_shared<std::atomic<bool>>(false);
+    const auto token = state.cancellation;
+    const auto prepared = state.session;
+    state.saving = true;
+    state.busy(true);
+    state.show_status("Saving trial…");
+    state.work = std::async(std::launch::async, [prepared, trial = state.trials[index], media, path, token]() {
+      Impl::WorkResult result;
+      const auto status = prepared->SaveTrial(path.toStdString(), trial, media, token.get());
+      if (status.ok())
+        result.saved_message =
+            media.path.empty() ? "Trial saved without a video binding." : "Trial and its source/video binding saved.";
+      else
+        result.error = status.ToString();
+      return result;
+    });
   });
   connect(s.capture, &QPushButton::clicked, this, [this]() {
     const QString path =

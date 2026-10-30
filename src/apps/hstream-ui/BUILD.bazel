@@ -989,7 +989,7 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
-    deps = [":camera_experiment_dialog", ":camera_experiment_preview", "@qt//:qt_widgets"],
+    deps = [":camera_experiment_dialog", ":camera_experiment_preview", "@qt//:qt_widgets", "@yaml-cpp"],
 )
 
 cc_test(

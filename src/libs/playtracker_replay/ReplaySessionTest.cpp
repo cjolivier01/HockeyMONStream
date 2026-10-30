@@ -548,6 +548,20 @@ int main(int argc, char** argv) {
         "cannot overwrite explicitly supplied historical configuration");
     const auto saved = (*session)->SaveTrial((directory / "trial.yaml").string(), *candidate, binding);
     check(saved.ok(), saved.ToString());
+    const auto saved_before_cancel = YAML::Dump(YAML::LoadFile((directory / "trial.yaml").string()));
+    check(
+        absl::IsCancelled((*session)->SaveTrial((directory / "trial.yaml").string(), *candidate, binding, &cancelled)),
+        "cancelled save reports cancellation");
+    check(
+        YAML::Dump(YAML::LoadFile((directory / "trial.yaml").string())) == saved_before_cancel,
+        "cancelled save preserves an existing trial");
+    const auto cancelled_path = directory / "cancelled-trial.yaml";
+    check(
+        absl::IsCancelled((*session)->SaveTrial(cancelled_path.string(), *candidate, binding, &cancelled)) &&
+            !fs::exists(cancelled_path),
+        "cancelled save never publishes a new trial");
+    for (const auto& entry : fs::directory_iterator(directory))
+      check(entry.path().filename().string().find(".tmp-") == std::string::npos, "save leaves no temporary trial");
     auto descriptor = YAML::LoadFile((directory / "trial.yaml").string());
     check(
         descriptor["frames"].size() == 150 &&

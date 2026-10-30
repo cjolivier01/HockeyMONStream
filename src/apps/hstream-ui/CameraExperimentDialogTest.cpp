@@ -3,17 +3,23 @@
 
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QImage>
+#include <QtGui/QImageReader>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDoubleSpinBox>
+#include <QtWidgets/QFileDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QProgressBar>
@@ -22,6 +28,8 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QToolButton>
+
+#include <yaml-cpp/yaml.h>
 
 #include <atomic>
 #include <cmath>
@@ -52,6 +60,38 @@ bool wait_until(const std::function<bool()>& ready, int timeout_ms = 60000) {
     QThread::msleep(20);
   }
   return false;
+}
+
+bool save_trial_dialog(QPushButton* button, const QString& path, bool accept) {
+  bool seen = false, handled = false;
+  QTimer poll, deadline;
+  QObject::connect(&poll, &QTimer::timeout, [&] {
+    auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
+    if (!chooser || seen)
+      return;
+    seen = true;
+    if (chooser->acceptMode() != QFileDialog::AcceptSave) {
+      chooser->reject();
+      return;
+    }
+    if (accept) {
+      chooser->selectFile(path);
+      handled = QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection);
+    } else {
+      chooser->reject();
+      handled = true;
+    }
+  });
+  deadline.setSingleShot(true);
+  QObject::connect(&deadline, &QTimer::timeout, [&] {
+    handled = false;
+    if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget()))
+      modal->reject();
+  });
+  poll.start(10);
+  deadline.start(5000);
+  button->click();
+  return seen && handled;
 }
 
 bool legacy_source_controls() {
@@ -435,6 +475,73 @@ bool confirmation(const QString& manifest) {
   return true;
 }
 
+// Exercise the real dense serializer without requiring a video renderer. This
+// isolates Save/Cancel/Close responsiveness from compositor and decoder checks.
+bool save_trial_workflow(const QStringList& args) {
+  if (args.size() != 7 || !QDir().mkpath(args[3])) {
+    std::cerr << "Usage: --save-trial MANIFEST ARTIFACT_DIR DURATION ARENA CONFIG\n";
+    return false;
+  }
+  CameraExperimentDialog dialog;
+  dialog.show();
+  widget<QLineEdit>(dialog, "experimentManifest")->setText(args[2]);
+  widget<QDoubleSpinBox>(dialog, "experimentDuration")->setValue(args[4].toDouble());
+  widget<QLineEdit>(dialog, "experimentLegacyArena")->setText(args[5]);
+  widget<QLineEdit>(dialog, "experimentLegacyConfig")->setText(args[6]);
+  widget<QCheckBox>(dialog, "experimentUncropped")->setChecked(true);
+  auto* prepare = widget<QPushButton>(dialog, "experimentPrepare");
+  auto* apply = widget<QPushButton>(dialog, "experimentApply");
+  auto* save = widget<QPushButton>(dialog, "experimentSave");
+  auto* cancel = widget<QPushButton>(dialog, "experimentCancel");
+  auto* status = widget<QLabel>(dialog, "experimentStatus");
+  auto* comparison = widget<QComboBox>(dialog, "experimentComparison");
+  prepare->click();
+  if (!wait_until([&] { return prepare->isEnabled(); }) || !apply->isEnabled()) {
+    std::cerr << "Save fixture preparation failed: " << status->text().toStdString() << '\n';
+    return false;
+  }
+  apply->click();
+  if (!wait_until([&] { return save->isEnabled(); }))
+    return false;
+  const int frames = widget<QSlider>(dialog, "experimentTimeline")->maximum() + 1;
+  const QString trial = comparison->currentText();
+  QElapsedTimer heartbeat;
+  heartbeat.start();
+  qint64 longest_gap = 0;
+  QTimer responsiveness;
+  QObject::connect(
+      &responsiveness, &QTimer::timeout, [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); });
+  responsiveness.start(10);
+  const auto path = [&](const char* name) { return QDir(args[3]).absoluteFilePath(name); };
+  if (!save_trial_dialog(save, path("chooser-cancelled.yaml"), false) ||
+      QFileInfo::exists(path("chooser-cancelled.yaml")) || !save->isEnabled())
+    return false;
+  if (!save_trial_dialog(save, path("cancelled.yaml"), true) || save->isEnabled() || !cancel->isEnabled() ||
+      cancel->text() != "Cancel saving")
+    return false;
+  cancel->click();
+  if (!wait_until([&] { return save->isEnabled(); }) || QFileInfo::exists(path("cancelled.yaml")) ||
+      !status->text().contains("Saving cancelled") || comparison->currentText() != trial)
+    return false;
+  if (!save_trial_dialog(save, path("saved.yaml"), true) || !wait_until([&] { return save->isEnabled(); }) ||
+      !QFileInfo::exists(path("saved.yaml")) || !status->text().contains("Trial saved without a video binding"))
+    return false;
+  if (!save_trial_dialog(save, path("closed.yaml"), true) || save->isEnabled())
+    return false;
+  dialog.reject();
+  if (!wait_until([&] { return !dialog.isVisible(); }) || QFileInfo::exists(path("closed.yaml")))
+    return false;
+  responsiveness.stop();
+  longest_gap = std::max(longest_gap, heartbeat.elapsed());
+  const auto exported = YAML::LoadFile(path("saved.yaml").toStdString());
+  const bool intact = exported["schema"].as<std::string>() == "hstream-camera-experiment-v1" &&
+      exported["name"].as<std::string>() == trial.toStdString() &&
+      exported["frames"].size() == static_cast<std::size_t>(frames) &&
+      exported["media"]["kind"].as<std::string>() == "none";
+  std::cout << "Save/Cancel/Close: " << frames << " frames; longest UI heartbeat gap: " << longest_gap << " ms\n";
+  return intact && longest_gap < 1000;
+}
+
 bool rink_comparison(const QStringList& args) {
   if (args.size() != 8) {
     std::cerr << "Usage: --rink-comparison RECORDING.db GAME_DIRECTORY ARTIFACT_DIR OFFSET DURATION PLAYBACK_START\n";
@@ -650,6 +757,26 @@ bool e2e(const QStringList& raw_args) {
       std::cerr << error.toStdString() << '\n';
       return false;
     }
+    const auto bounds = [&](const char* object_name) {
+      auto* control = widget<QWidget>(dialog, object_name);
+      const QPoint origin = control->mapTo(&dialog, QPoint());
+      return QJsonArray{origin.x(), origin.y(), control->width(), control->height()};
+    };
+    const QSize pixels = QImageReader(QDir(artifacts).filePath(name)).size();
+    const QJsonObject geometry{
+        {"device_pixel_ratio", dialog.devicePixelRatioF()},
+        {"dialog_size", QJsonArray{dialog.width(), dialog.height()}},
+        {"minimum_size", QJsonArray{dialog.minimumWidth(), dialog.minimumHeight()}},
+        {"image_size", QJsonArray{pixels.width(), pixels.height()}},
+        {"preview", bounds("experimentVideoTarget")},
+        {"timeline", bounds("experimentCameraPlot")},
+        {"control_tabs", bounds("experimentControlTabs")}};
+    QFile geometry_file(QDir(artifacts).filePath(QString(name) + ".geometry.json"));
+    const QByteArray encoded = QJsonDocument(geometry).toJson();
+    // Repeated captures replace both the PNG and its geometry together.
+    if (!geometry_file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
+        geometry_file.write(encoded) != encoded.size())
+      return false;
     std::cout << "Test screenshot " << name << " took " << screenshot_time.elapsed() << " ms\n";
     return true;
   };
@@ -1019,6 +1146,52 @@ bool e2e(const QStringList& raw_args) {
     std::cerr << "Prepared candidate cannot be saved\n";
     return false;
   }
+  const QString saved_path = QDir(artifacts).absoluteFilePath("saved-camera-trial.yaml");
+  if (QFileInfo::exists(saved_path) || !save_trial_dialog(save, saved_path, false) || QFileInfo::exists(saved_path) ||
+      !save->isEnabled()) {
+    std::cerr << "Cancelling Save changed the prepared trial or created a file\n";
+    return false;
+  }
+  const QString cancelled_path = QDir(artifacts).absoluteFilePath("cancelled-camera-trial.yaml");
+  auto* cancel_save = widget<QPushButton>(dialog, "experimentCancel");
+  if (!save_trial_dialog(save, cancelled_path, true) || save->isEnabled() || !cancel_save->isEnabled() ||
+      cancel_save->text() != "Cancel saving") {
+    std::cerr << "An active Save must leave cancellation available\n";
+    return false;
+  }
+  cancel_save->click();
+  if (!wait_until([&] { return save->isEnabled(); }) || QFileInfo::exists(cancelled_path) ||
+      !status->text().contains("Saving cancelled") || comparison->currentText() != "A · slower pan") {
+    std::cerr << "Cancelling an active Save lost the prepared trial: " << status->text().toStdString() << '\n';
+    return false;
+  }
+  record_heartbeat();
+  QElapsedTimer save_time;
+  save_time.start();
+  const bool saved = save_trial_dialog(save, saved_path, true);
+  record_heartbeat();
+  std::cout << "Trial Save action took " << save_time.elapsed() << " ms\n";
+  if (!saved || !wait_until([&] { return save->isEnabled() || status->styleSheet().contains("#b42318"); }) ||
+      !QFileInfo::exists(saved_path) || status->styleSheet().contains("#b42318") || !status->text().contains("saved")) {
+    std::cerr << "Save trial failed: " << status->text().toStdString() << '\n';
+    return false;
+  }
+  // Parsing the exported evidence is test work; the actual Save above remains
+  // inside the UI responsiveness measurement.
+  const YAML::Node exported = YAML::LoadFile(saved_path.toStdString());
+  const auto tuning = exported["tuning"]["play-tracker"]["hstream-runtime-tuning"];
+  if (exported["schema"].as<std::string>() != "hstream-camera-experiment-v1" ||
+      exported["name"].as<std::string>() != "A · slower pan" ||
+      exported["frames"].size() != static_cast<std::size_t>(timeline->maximum() + 1) ||
+      tuning["max-speed-x"].as<double>() != 1.5 || std::abs(tuning["max-accel-x"].as<double>() - 0.2) > 1e-7 ||
+      exported["media"]["kind"].as<std::string>() != (QFileInfo(args[3]).isDir() ? "original-cameras" : "panorama") ||
+      exported["frames"][0]["pts_ns"].as<uint64_t>() != exported["in_pts_ns"].as<uint64_t>() ||
+      exported["frames"][exported["frames"].size() - 1]["pts_ns"].as<uint64_t>() >=
+          exported["out_pts_ns"].as<uint64_t>()) {
+    std::cerr << "Saved trial does not retain the selected native range and tuning\n";
+    return false;
+  }
+  heartbeat.restart();
   widget<QPushButton>(dialog, "experimentStopPreview")->click();
   if (!wait_until([&] { return play->isEnabled(); }) || !click_plot_frame(comparison_frame))
     return false;
@@ -1047,7 +1220,7 @@ bool e2e(const QStringList& raw_args) {
     return false;
   }
   std::cout
-      << "PASS: historical preparation, parameter trial, actual GPU playback, visible paused resize/maximize, visual timeline seek/resume, paused frame step, original comparison, range loop, end pause, screenshots, stale trial save invalidation\n";
+      << "PASS: historical preparation, parameter trial, actual GPU playback, visible paused resize/maximize, visual timeline seek/resume, paused frame step, original comparison, range loop, end pause, screenshots, trial Save/Cancel, stale trial save invalidation\n";
   std::cout << "Longest UI heartbeat gap: " << longest_gap << " ms\n";
   if (longest_gap > 1000) {
     std::cerr << "Experiment blocked the UI event loop for more than one second\n";
@@ -1059,8 +1232,11 @@ bool e2e(const QStringList& raw_args) {
 } // namespace
 
 int main(int argc, char** argv) {
+  QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
   QApplication app(argc, argv);
   try {
+    if (app.arguments().contains("--save-trial"))
+      return save_trial_workflow(app.arguments()) ? 0 : 1;
     if (app.arguments().contains("--rink-comparison"))
       return rink_comparison(app.arguments()) ? 0 : 1;
     if (app.arguments().contains("--e2e"))

@@ -118,7 +118,11 @@ class ReplaySession {
       const RinkCameraSetup* rink_camera = nullptr) const;
   // A current map must match the geometry archived with this exact range.
   absl::StatusOr<double> RinkCameraRotation(const stitching::PlaybackRinkMap& map) const;
-  absl::Status SaveTrial(const std::string& path, const TrialResult& trial, const MediaBinding& media) const;
+  absl::Status SaveTrial(
+      const std::string& path,
+      const TrialResult& trial,
+      const MediaBinding& media,
+      const std::atomic<bool>* cancelled = nullptr) const;
 
   const std::vector<Frame>& original() const;
   const std::vector<Frame>& baseline() const;

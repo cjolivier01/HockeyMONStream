@@ -76,6 +76,13 @@ outside that crop.
    offsets and stitching revision. **Screenshot**
    captures the displayed frame and experiment controls.
 
+Saving runs on a background worker. **Cancel saving** stops an uncommitted
+desktop save and retains the prepared trial; closing the dialog cancels and
+waits for that worker before releasing it. An already committed file remains
+saved. The browser currently offers **Cancel experiment** during Save: it
+retires the whole session and its unsaved trials. Operation-only browser
+cancellation remains a tracked parity gap.
+
 Original means the camera trajectory in the CSV. Recomputed baseline means the
 historical starting configuration held constant across this passage. A candidate
 holds that configuration plus its overrides. Recorded control changes after the
@@ -338,6 +345,13 @@ without video playback or an X11 display:
 QT_QPA_PLATFORM=offscreen bazel-bin/src/apps/hstream-ui/camera_experiment_dialog_test \
   --confirmation /path/my-game_telemetry-1.db
 ```
+
+The opt-in `--save-trial MANIFEST ARTIFACT_DIR DURATION ARENA CONFIG` case
+prepares a real recording without video and checks file-chooser cancellation,
+active Save cancellation, complete YAML export and Close during Save. Use a
+dense range to exercise the serializer; the test requires the UI heartbeat to
+stay below one second. For database recordings, pass empty `ARENA` and `CONFIG`
+arguments. It does not qualify GPU presentation or browser cancellation.
 
 The dialog test also has an opt-in real GPU exercise. Supply a completed recording,
 the corresponding game directory or panorama, output directory, recording offset, duration, and the
