@@ -64,7 +64,7 @@ absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
   if ((avformat_version() >> 16) != LIBAVFORMAT_VERSION_MAJOR ||
       (avcodec_version() >> 16) != LIBAVCODEC_VERSION_MAJOR || (avutil_version() >> 16) != LIBAVUTIL_VERSION_MAJOR)
     return absl::FailedPreconditionError("MP4 metadata requires matching FFmpeg headers and libraries");
-  const auto* demuxer = av_find_input_format("mov");
+  auto* demuxer = av_find_input_format("mov");
   if (!demuxer)
     return absl::FailedPreconditionError("FFmpeg MP4 demuxer is unavailable");
   AVFormatContext* context = avformat_alloc_context();

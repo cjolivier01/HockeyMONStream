@@ -120,7 +120,7 @@ absl::Status Mp4AudioReader::Open(const std::filesystem::path& path) {
   AVDictionary* options{};
   av_dict_set(&options, "protocol_whitelist", "file", 0);
   av_dict_set(&options, "enable_drefs", "0", 0);
-  const auto* demuxer = av_find_input_format("mov");
+  auto* demuxer = av_find_input_format("mov");
   if (!demuxer) {
     av_dict_free(&options);
     return impl.Retire(absl::UnavailableError("FFmpeg MP4 demuxer is unavailable"));
