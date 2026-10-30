@@ -35,7 +35,7 @@ DESKTOP_DEEPSTREAM_DEB=""
 usage() {
   cat <<'USAGE'
 Usage:
-  make deploy NODES=node1,node2[,node3]
+  make deploy [NODES=node1,node2[,node3]]
   make undeploy NODES=node1,node2[,node3]
 
 The deployment runner detects each node over SSH, builds one package for each
@@ -43,6 +43,7 @@ distinct supported target, and force-installs the matching package. Supported
 targets are Ubuntu 24.04/26.04 amd64 desktops and Ubuntu 22.04 arm64 Jetsons.
 Ubuntu derivatives (KDE neon, Pop!_OS, ...) are matched on their Ubuntu base
 release, taken from UBUNTU_CODENAME in /etc/os-release.
+make deploy defaults to the current hostname when NODES is undefined.
 Nodes must allow non-interactive SSH access and passwordless sudo.
 The invoking HStream repository must have no tracked or source-file changes.
 

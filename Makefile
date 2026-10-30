@@ -184,6 +184,7 @@ deb-jetson:
 	@echo "Jetson Debian package output directory: $(JETSON_DEB_OUTPUT_DIR)"
 	scripts/make_deb_jetson.sh --host="$(JETSON_DEB_HOST)" --output-dir="$(JETSON_DEB_OUTPUT_DIR)" $(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
 
+deploy: NODES ?= $(shell hostname)
 deploy:
 	@if [ -z "$(strip $(NODES))" ]; then \
 		echo 'ERROR: NODES is required. Usage: make deploy NODES=monster,stubby,mini' >&2; \
@@ -281,7 +282,7 @@ print_targets:
 		'deepstream-deb-ubuntu24 Copy the original DeepStream package to dist/ubuntu24.04.' \
 		'deepstream-deb-ubuntu26 Write the dependency-relaxed DeepStream package to dist/ubuntu26.04.' \
 		'deb-jetson     Build the Ubuntu 22.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
-		'deploy         Detect, build, and force-install on comma-separated NODES (required).' \
+		'deploy         Detect, build, and force-install on comma-separated NODES (default: current hostname).' \
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \
 		'windows-installer Build the small native Windows/WSL setup .exe on Ubuntu (requires NSIS).' \
