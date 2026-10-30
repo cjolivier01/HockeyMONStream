@@ -97,7 +97,11 @@ experiment-cache removal. The only operation that changes
 the main game's stitching state is the explicit **Use selected in main Program** action described below. If a stopped
 runner's isolated process session cannot be confirmed dead, the tool reports and retains its temporary workspace path
 instead of risking deletion while a descendant still uses it; that retained directory can be removed after the
-process exits. A retained candidate is quarantined from preview and promotion.
+process exits. Preview cleanup retains the successful calibration and keeps Play, editing and promotion disabled
+until the preview session is confirmed stopped. The open dialog continues checking delayed cleanup and restores
+those actions automatically. Closing retains the process identity for reconciliation on reopen. Older preview
+failures are recovered only when the owner has stopped and the saved complete configuration still matches the
+committed calibration generation; unsuccessful or replaced calibrations remain unavailable.
 
 ## Comparing candidates
 
