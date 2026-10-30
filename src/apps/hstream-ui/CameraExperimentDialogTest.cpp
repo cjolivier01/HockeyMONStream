@@ -936,33 +936,81 @@ bool e2e(const QStringList& raw_args) {
   comparison->setCurrentIndex(0);
   if (!seek_frame(overlay_frame) || !capture("experiment-original.png"))
     return false;
-  // Exercise the actual end boundary without waiting through the entire clip.
-  // A successful loop must present a new frame near its beginning.
-  comparison->setCurrentIndex(2);
-  if (!seek_frame(timeline->maximum() - 6))
+  // Require actual native presented-frame progress after Play, followed by an
+  // end-to-start transition and several fresh wrapped frames. A Play bug that
+  // restarts at zero must not satisfy the automatic-repeat check.
+  const auto acknowledged_frame = [&] {
+    const QString label = widget<QLabel>(dialog, "experimentFrameStatus")->text().split("  ·  ").value(2);
+    const QStringList parts = label.mid(6).split(" / ");
+    bool frame_ok = false, count_ok = false;
+    const int frame = parts.value(0).toInt(&frame_ok) - 1;
+    const int count = parts.value(1).toInt(&count_ok);
+    return label.startsWith("frame ") && frame_ok && count_ok && count == timeline->maximum() + 1 && frame >= 0 &&
+            frame < count && screenshot->isEnabled()
+        ? frame
+        : -1;
+  };
+  const double duration = args[6].toDouble();
+  if (!std::isfinite(duration) || duration <= 0)
     return false;
+  const double rate = (timeline->maximum() + 1) / duration;
+  const int tail_span = std::max(3, std::min(timeline->maximum() / 3, int(std::ceil(rate * 3))));
+  const int tail_start = timeline->maximum() - tail_span;
+  const int near_end = timeline->maximum() - std::max(2, int(std::ceil(rate / 4)));
+  const int wrapped_limit = std::min(timeline->maximum() / 3, int(std::ceil(rate * 2)));
+  comparison->setCurrentIndex(2);
+  if (!seek_frame(tail_start))
+    return false;
+  int prior_frame = tail_start, tail_frames = 0, wrapped_frames = 0;
+  bool wrapped = false, invalid_repeat = false;
   play->click();
-  if (!wait_until(
-          [&]() {
-            return (timeline->value() < 20 && screenshot->isEnabled()) || status->styleSheet().contains("#b42318");
-          },
-          60000) ||
-      !screenshot->isEnabled() || timeline->value() >= 20) {
-    std::cerr << "Range loop failed: " << status->text().toStdString() << '\n';
+  const bool repeated = wait_until(
+      [&] {
+        if (status->styleSheet().contains("#b42318"))
+          return true;
+        const int frame = acknowledged_frame();
+        if (frame < 0 || frame == prior_frame || play->text() != "Pause")
+          return false;
+        std::cout << "Repeat presented frame " << frame << " / " << timeline->maximum() + 1 << '\n';
+        if (!wrapped) {
+          if (frame > prior_frame && frame > tail_start)
+            ++tail_frames;
+          else if (frame < prior_frame && tail_frames >= 3 && prior_frame >= near_end && frame <= wrapped_limit) {
+            wrapped = true;
+            wrapped_frames = 1;
+          } else
+            invalid_repeat = true;
+        } else if (frame > prior_frame && frame <= wrapped_limit)
+          ++wrapped_frames;
+        else
+          invalid_repeat = true;
+        prior_frame = frame;
+        return invalid_repeat || wrapped_frames >= 3;
+      },
+      60000);
+  if (!repeated || invalid_repeat || wrapped_frames < 3 || status->styleSheet().contains("#b42318")) {
+    std::cerr << "Range repeat did not present a verified tail-to-wrap sequence: tail=" << tail_frames
+              << " wrapped=" << wrapped_frames << ": " << status->text().toStdString() << '\n';
     return false;
   }
   play->click();
+  if (!wait_until([&] { return play->text() != "Pause" && acknowledged_frame() >= 0; }, 60000) ||
+      !capture("loop-held-frame.png")) {
+    std::cerr << "Repeat Pause did not retain an acknowledged native frame\n";
+    return false;
+  }
   widget<QCheckBox>(dialog, "experimentLoop")->setChecked(false);
   if (!seek_frame(timeline->maximum() - 6))
     return false;
   play->click();
   if (!wait_until(
           [&]() {
-            return (timeline->value() == timeline->maximum() && play->text() != "Pause" && screenshot->isEnabled()) ||
+            return (acknowledged_frame() == timeline->maximum() && play->text() != "Pause" &&
+                    screenshot->isEnabled()) ||
                 status->styleSheet().contains("#b42318");
           },
           60000) ||
-      timeline->value() != timeline->maximum() || !screenshot->isEnabled()) {
+      acknowledged_frame() != timeline->maximum() || !screenshot->isEnabled()) {
     std::cerr << "End-of-range pause failed: " << status->text().toStdString() << '\n';
     return false;
   }

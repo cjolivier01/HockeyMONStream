@@ -353,6 +353,13 @@ The example timestamp is recording-specific; determine the correct mapping for
 your own media. See [telemetry format](playtracker-telemetry-csv.md) and the
 [accepted design](camera-experiments-design.md) for persistence and replay details.
 
+The repeat check requires several increasing native presented-frame labels near
+the end, an end-to-start transition, and several increasing wrapped frames.
+It then pauses, captures the held frame, disables repeat and verifies the exact
+final frame. A Play action that immediately restarts at zero cannot satisfy this
+check. This samples actual presentation; it does not assert that every source
+frame was displayed or establish the separate browser workflow result.
+
 ## Source throughput comparison
 
 The manual `//src/apps/hstream-ui:camera_experiment_source_benchmark` target compares

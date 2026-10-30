@@ -154,6 +154,16 @@ are explicitly marked so external timing analysis can exclude their overhead.
 The test requires normal Stop and process retirement; source-correlated audio
 and actual presentation timing require a separate owned-sink/metadata collector.
 
+Add `HSTREAM_UI_E2E_AV_MATCHED_LONG_WINDOW=1` to that timing mode for a
+single longer comparison. It pauses near source time 20 seconds, holds the
+confirmed pause for seven seconds, then requires both 35 wall seconds and
+32 seconds of acknowledged source progress after Resume. Startup must finish
+before the Pause target; EOF, ownership changes and a 45-second resumed-window
+timeout fail the case. The ordinary three-pause schedule remains the default.
+The external presentation collector must still verify actual displayed source
+coverage and align Qt/browser measurements; acknowledged position alone does
+not qualify A/V timing.
+
 The UI acceptance test exercises the same Qt button handlers as an operator:
 
 1. load the selected game;

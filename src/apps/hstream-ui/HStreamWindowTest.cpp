@@ -18711,10 +18711,32 @@ bool run_amd_program_preview_e2e(HStreamWindow* window, const QString& game_id) 
 // Exercise the real native owner through Qt's transport controls. This runs in
 // the same copied-game sandbox as the archive E2E, but deliberately has no file
 // outputs or telemetry because those correctly prohibit local source seeking.
+// Pure schedule helpers are exercised by the external CPU-only schedule check.
+bool parse_av_matched_long_window(const char* value, bool timing_mode, bool& enabled) {
+  enabled = false;
+  if (value == nullptr || std::strcmp(value, "0") == 0)
+    return true;
+  if (std::strcmp(value, "1") != 0 || !timing_mode)
+    return false;
+  enabled = true;
+  return true;
+}
+
+bool av_matched_resume_complete(std::int64_t wall_ms, std::int64_t first_source_ns, std::int64_t source_ns) {
+  return wall_ms >= 35000 && first_source_ns >= 0 && source_ns >= first_source_ns &&
+      source_ns - first_source_ns >= 32'000'000'000LL;
+}
+
 bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) {
   const bool calibration_seeks = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CALIBRATION_SEEKS_ONLY");
   const bool mini_map_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_RINK_MAP_ONLY");
   const bool av_timing_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_AV_TIMING_ONLY");
+  bool av_matched_long_window = false;
+  if (!expect(
+          parse_av_matched_long_window(
+              std::getenv("HSTREAM_UI_E2E_AV_MATCHED_LONG_WINDOW"), av_timing_only, av_matched_long_window),
+          "Matched A/V schedule accepts only 0/1 and requires A/V timing mode when enabled"))
+    return false;
   const bool effects_only = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY");
   const bool genuine_preview = calibration_seeks || mini_map_only || av_timing_only || effects_only;
   const QString expected_map_status = qEnvironmentVariable("HSTREAM_UI_E2E_RINK_MAP_EXPECTED");
@@ -19047,17 +19069,24 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
       timing_event("first-advancing-ready");
       const auto initial_seek = HStreamWindowTestAccess::playbackSeekGeneration(window);
       const auto initial_preview = generation(program);
-      const auto hold = [&](const QString& phase, int milliseconds, bool paused) {
+      const auto timing_state_valid = [&](bool paused) {
+        return window->pipelineStateText() == (paused ? "PAUSED" : "PLAYING") &&
+            HStreamWindowTestAccess::processPaused(window) == paused &&
+            !HStreamWindowTestAccess::pipelineRetired(window) && generation(program) == initial_preview &&
+            HStreamWindowTestAccess::playbackSeekGeneration(window) == initial_seek;
+      };
+      const auto hold = [&](const QString& phase, int milliseconds, bool paused, bool matched_resume = false) {
         timing_event(phase + "-begin");
         const qint64 before = HStreamWindowTestAccess::playbackPositionNs(window);
         QElapsedTimer timer;
         timer.start();
-        while (timer.elapsed() < milliseconds) {
+        while (matched_resume ? !av_matched_resume_complete(
+                                    timer.elapsed(), before, HStreamWindowTestAccess::playbackPositionNs(window))
+                              : timer.elapsed() < milliseconds) {
+          if (matched_resume && timer.elapsed() >= 45000)
+            return expect(false, "Matched resumed window did not reach both duration minima within 45 s");
           QTest::qWait(25);
-          if (window->pipelineStateText() != (paused ? "PAUSED" : "PLAYING") ||
-              HStreamWindowTestAccess::processPaused(window) != paused ||
-              HStreamWindowTestAccess::pipelineRetired(window) || generation(program) != initial_preview ||
-              HStreamWindowTestAccess::playbackSeekGeneration(window) != initial_seek) {
+          if (!timing_state_valid(paused)) {
             timing_event(phase + "-failed");
             return expect(false, "Measured A/V windows retain the same native process, route and playback state");
           }
@@ -19067,9 +19096,25 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
             paused || HStreamWindowTestAccess::playbackPositionNs(window) > before,
             "Measured playing windows advance the acknowledged recording position");
       };
-      if (!hold("steady-initial", 8000, false))
+      if (av_matched_long_window) {
+        timing_event("steady-initial-source-target-begin");
+        if (!expect(
+                HStreamWindowTestAccess::playbackPositionNs(window) < 20'000'000'000LL,
+                "Matched startup proof must finish before the 20 s source Pause target") ||
+            !wait_for(
+                [&] {
+                  return !timing_state_valid(false) ||
+                      HStreamWindowTestAccess::playbackPositionNs(window) >= 20'000'000'000LL;
+                },
+                "Matched source reaches the 20 s Pause target",
+                35000) ||
+            !expect(timing_state_valid(false), "Matched initial window retains its native owner and route"))
+          return false;
+        timing_event("steady-initial-source-target-end");
+      } else if (!hold("steady-initial", 8000, false)) {
         return false;
-      for (int cycle = 1; cycle <= 3; ++cycle) {
+      }
+      for (int cycle = 1; cycle <= (av_matched_long_window ? 1 : 3); ++cycle) {
         const QString name = QString::number(cycle);
         timing_event("pause-click-" + name);
         pause->click();
@@ -19083,7 +19128,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
                 "Native Pause is acknowledged"))
           return false;
         timing_event("pause-confirmed-" + name, pause_generation);
-        if (!hold("paused-" + name, 3000, true))
+        if (!hold("paused-" + name, av_matched_long_window ? 7000 : 3000, true))
           return false;
         timing_event("resume-click-" + name);
         pause->click();
@@ -19097,12 +19142,34 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
                 "Native Resume is acknowledged"))
           return false;
         timing_event("resume-confirmed-" + name, resume_generation);
-        if (!hold("steady-resumed-" + name, cycle == 3 ? 12000 : 8000, false))
+        if (av_matched_long_window) {
+          // Anchor after fresh acknowledged source progress. The unchanged
+          // external getter retains the actual first presented-frame bracket.
+          const auto paused_position = HStreamWindowTestAccess::playbackPositionNs(window);
+          if (!wait_for(
+                  [&] {
+                    return !timing_state_valid(false) ||
+                        HStreamWindowTestAccess::playbackPositionNs(window) > paused_position;
+                  },
+                  "Matched Resume obtains fresh source progress",
+                  10000) ||
+              !expect(timing_state_valid(false), "Matched Resume retains its native owner and route"))
+            return false;
+          timing_event("resume-source-progress-" + name);
+        }
+        if (!hold(
+                "steady-resumed-" + name,
+                av_matched_long_window ? 35000 : (cycle == 3 ? 12000 : 8000),
+                false,
+                av_matched_long_window))
           return false;
       }
-      report +=
-          "A/V schedule: steady 8s; three 3s pauses; resume windows 8s, 8s, 12s; "
-          "no route changes, seeks or diagnostic readbacks inside measured windows; acknowledgment polling 25ms\n";
+      report += av_matched_long_window
+          ? "A/V matched schedule: Pause near source 20 s; one confirmed 7 s pause; "
+            "resume at least 35 wall seconds and at least 32 source seconds from fresh acknowledged progress; "
+            "no route changes, seeks or diagnostic readbacks inside measured windows; acknowledgment polling 25 ms\n"
+          : "A/V schedule: steady 8s; three 3s pauses; resume windows 8s, 8s, 12s; "
+            "no route changes, seeks or diagnostic readbacks inside measured windows; acknowledgment polling 25ms\n";
       return true;
     }
     if (mini_map_only) {
