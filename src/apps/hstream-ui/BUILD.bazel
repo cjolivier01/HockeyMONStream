@@ -98,6 +98,8 @@ filegroup(
         "main.cpp",
         "UiDiagnostics.cpp",
         "UiDiagnostics.h",
+        "ValueControlWheel.cpp",
+        "ValueControlWheel.h",
     ],
     visibility = ["//visibility:public"],
 )
@@ -290,9 +292,20 @@ cc_library(
 
 cc_library(
     name = "value_control_wheel",
+    srcs = ["ValueControlWheel.cpp"],
     hdrs = ["ValueControlWheel.h"],
+    copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = ["@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "value_control_wheel_test",
+    srcs = ["ValueControlWheelTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":value_control_wheel", "@qt//:qt_widgets", "@qt//:qt_test"],
 )
 
 cc_library(
@@ -1037,6 +1050,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":value_control_wheel",
         ":ui_diagnostics",
         "//src/libs/common:process_diagnostics",
         ":action_icons",
@@ -1112,11 +1126,11 @@ cc_test(
 
 cc_test(
     name = "int8_preparation_dialog_test",
-    srcs = ["Int8PreparationDialogTest.cpp", "Int8PreparationDialog.cpp", "Int8PreparationDialog.h", "ValueControlWheel.h"],
+    srcs = ["Int8PreparationDialogTest.cpp", "Int8PreparationDialog.cpp", "Int8PreparationDialog.h"],
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":action_icons", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
+    deps = [":action_icons", ":value_control_wheel", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
 )
 
 cc_test(
