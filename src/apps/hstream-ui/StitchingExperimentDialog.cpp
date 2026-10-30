@@ -1279,8 +1279,7 @@ struct StitchingExperimentDialog::Impl {
         recover_completed_preview(candidate);
         // The catalog is bounded. Exact source, image and artifact validation runs
         // when this row is inspected, reused, previewed, or promoted.
-        candidate.complete =
-            candidate.stored->state == "complete" && !record.artifact_generation_id.empty() &&
+        candidate.complete = candidate.stored->state == "complete" && !record.artifact_generation_id.empty() &&
             !candidate.selection_reuse_blocked;
         bool recovered_selection = false;
         if (!candidate.queued && !candidate.has_selected_frames &&
@@ -1317,8 +1316,7 @@ struct StitchingExperimentDialog::Impl {
         // so an explicit discard can still remove that unusable history.
         if (pending_owner && !recovered_selection) {
           if (!candidate.selection_reuse_blocked)
-            candidate.failure =
-                candidate.complete ? QString() : "Previous run stopped before durable completion";
+            candidate.failure = candidate.complete ? QString() : "Previous run stopped before durable completion";
           auto reconciled_record = *candidate.stored;
           const auto reconciled =
               MarkStitchingExperimentProcessStopped(*store, reconciled_record, candidate.failure.toStdString());

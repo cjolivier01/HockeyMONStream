@@ -453,9 +453,10 @@ void exercise_filtering_queue(const QString& game, const QString& root) {
     const auto baseline = hm::baseline_config::load();
     require(baseline.ok(), "Cannot load experiment filtering defaults");
     const auto defaults = hm::stitching::read_control_point_filtering(baseline->values);
-    require(defaults.ok() && epipolar->isChecked() == defaults->epipolar_ransac &&
-                homography->isChecked() == defaults->homography_consistency,
-            "Experiment filters must use the shipped baseline");
+    require(
+        defaults.ok() && epipolar->isChecked() == defaults->epipolar_ransac &&
+            homography->isChecked() == defaults->homography_consistency,
+        "Experiment filters must use the shipped baseline");
     for (bool e : {false, true}) {
       for (bool h : {false, true}) {
         epipolar->setChecked(e);
