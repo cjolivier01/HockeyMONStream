@@ -830,7 +830,7 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
             [](const auto& observation) { return observation.automatic && observation.mask_revision.empty(); }),
         document.observations.end());
     const char* override_path = std::getenv("HM_RINK_LANDMARKS_ONNX_MODEL");
-    const QString model_path = override_path && *override_path
+    QString model_path = override_path && *override_path
         ? QString::fromLocal8Bit(override_path)
         : QDir::home().filePath(".cache/hstream/models/rink-landmarks-mask2former-swin-s-76b96e34a9386267.onnx");
     if (!(override_path && *override_path)) {
@@ -842,9 +842,10 @@ absl::StatusOr<RinkMapWorkResult> UpdateRinkMap(
       spec.sha256 = "76b96e34a9386267c08e0edc6cb09b2196a94a933b27e2f92fcae5d9f0426a08";
       spec.target = model_path.toStdString();
       spec.on_demand = true;
-      auto status = hm::assets::AssetManager::EnsureAsset(spec, {}, cancelled);
-      if (!status.ok())
-        return status;
+      const auto verified = hm::assets::AssetManager::EnsureCacheAsset(spec, {}, cancelled);
+      if (!verified.ok())
+        return verified.status();
+      model_path = QString::fromStdString(verified->target.string());
     }
     if (!QFile::exists(model_path))
       return absl::NotFoundError("The native rink-landmark model is not installed. Manual marks remain available.");

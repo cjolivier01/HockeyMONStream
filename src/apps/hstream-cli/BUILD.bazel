@@ -32,6 +32,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/apps/apps-common:preview_capture_receipt",
     "//src/libs/tracking:camera_seek_state",
     "//src/libs/common:paced_playback",
     "//src/libs/common:paced_playback_config",

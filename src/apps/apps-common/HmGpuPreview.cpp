@@ -535,6 +535,10 @@ struct RendererState {
   guint64 ready_generation{G_MAXUINT64};
   guint64 presented_generation{G_MAXUINT64};
   GstClockTime presented_pts{GST_CLOCK_TIME_NONE};
+  // Test launch opt-in. Copy bounded scalar metadata with the rendered pixels;
+  // no buffer retention, pixel readback, serialization or I/O during rendering.
+  const bool capture_metadata_enabled{g_strcmp0(g_getenv("HSTREAM_PREVIEW_CAPTURE_METADATA"), "1") == 0};
+  std::optional<hm::preview::CaptureMetadata> presented_metadata;
   int presented_window_width{0};
   int presented_window_height{0};
   guint64 presented_window_id{0};
@@ -1503,6 +1507,8 @@ GstFlowReturn preview_sink_render_impl(GstBaseSink* base_sink, GstBuffer* buffer
     if (!state->failed.load()) {
       state->presented_generation = generation;
       state->presented_pts = GST_BUFFER_PTS(buffer);
+      if (state->capture_metadata_enabled)
+        state->presented_metadata = hm::preview::ReadCaptureMetadata(buffer);
     }
     if (!state->failed.load() && state->ready_generation != generation) {
       state->ready_generation = generation;
@@ -2245,7 +2251,7 @@ bool capture_presented_frame(
         state->presented_generation == state->generation.load() && state->presented_window_id == state->window_id &&
         attributes.width == state->presented_window_width && attributes.height == state->presented_window_height &&
         attributes.map_state == IsViewable)
-      *identity = CapturedFrameIdentity{state->presented_generation, state->presented_pts};
+      *identity = CapturedFrameIdentity{state->presented_generation, state->presented_pts, state->presented_metadata};
     if (error)
       error->clear();
     return true;

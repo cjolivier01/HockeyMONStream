@@ -26,6 +26,7 @@
 #include "src/apps/hstream-ui/WebRinkEditor.h"
 #include "src/apps/hstream-ui/WebRinkMap.h"
 #include "src/apps/hstream-ui/WebSavedCalibration.h"
+#include "src/apps/hstream-ui/WebScoreboardPreview.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -1401,6 +1402,17 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 3 && std::string(argv[1]) == "--scoreboard-preview") {
+    try {
+      const auto result = hm::web::ScoreboardPreview(ReadObject(argv[2], 65536));
+      std::cout << QJsonDocument(result).toJson(QJsonDocument::Compact).constData() << '\n';
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << error.what() << '\n';
+      return 1;
+    }
+  }
+
   if (argc == 2 && std::string(argv[1]) == "--detector-defaults") {
     try {
       const YAML::Node empty(YAML::NodeType::Map);

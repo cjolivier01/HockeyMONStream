@@ -924,6 +924,7 @@ class HStreamWindow : public QMainWindow {
   QString archive_finalize_error_output_;
   QString archive_finalize_pending_failure_detail_;
   QStringList archive_finalize_failure_summaries_;
+  QStringList archive_finalize_cleanup_warnings_;
   QString archive_finalize_owner_lock_path_;
   qint64 archive_finalize_duration_us_{-1};
   int archive_finalize_owner_lock_fd_{-1};
@@ -1108,6 +1109,7 @@ class HStreamWindow : public QMainWindow {
   bool scheduled_rotation_controls_ready_{false};
   bool live_rotation_authorization_pending_{false};
   bool deferred_restart_requested_{false};
+  bool deferred_play_requested_{false};
   quint64 deferred_restart_pipeline_generation_{0};
   QString deferred_restart_game_id_;
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;

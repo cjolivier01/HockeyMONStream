@@ -6,12 +6,19 @@
 #include <QtGui/QImageReader>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
 #include <vector>
 
 namespace {
+// Stay comfortably below Qt's default decoded-image allocation limit. The
+// selector only needs a display proxy; submitted points remain in the source
+// image's coordinate space.
+constexpr qint64 kMaximumPreviewBytes = 96LL * 1024LL * 1024LL;
+constexpr int kMaximumPreviewDimension = 8192;
+
 constexpr png_uint_32 kMaximumSourceDimension = 65535;
 constexpr uint64_t kMaximumSourcePixels = 256ULL * 1024ULL * 1024ULL;
 
@@ -162,6 +169,23 @@ void free_png_preview(void* pixels) {
 }
 
 } // namespace
+
+QSize scoreboardPreviewSize(const QSize& source_size) {
+  if (!source_size.isValid() || source_size.isEmpty())
+    return {};
+  const long double source_pixels =
+      static_cast<long double>(source_size.width()) * static_cast<long double>(source_size.height());
+  const long double maximum_pixels = static_cast<long double>(kMaximumPreviewBytes) / 4.0L;
+  const long double memory_scale = source_pixels > maximum_pixels ? std::sqrt(maximum_pixels / source_pixels) : 1.0L;
+  const long double dimension_scale = std::min(
+      static_cast<long double>(kMaximumPreviewDimension) / source_size.width(),
+      static_cast<long double>(kMaximumPreviewDimension) / source_size.height());
+  const long double scale = std::min({1.0L, memory_scale, dimension_scale});
+  return {
+      std::max(1, static_cast<int>(std::floor(source_size.width() * scale))),
+      std::max(1, static_cast<int>(std::floor(source_size.height() * scale))),
+  };
+}
 
 QImage readCalibrationPng(const QString& path, const QSize& size) {
   PngPreview preview = read_bounded_png_preview(QFile::encodeName(path), size);

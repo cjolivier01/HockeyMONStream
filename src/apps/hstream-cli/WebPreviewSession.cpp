@@ -9,6 +9,7 @@
 
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/PlayerAnalyticsRouting.h"
+#include "hstream/src/apps/apps-common/PreviewCaptureReceipt.h"
 #include "hstream/src/apps/apps-common/PreviewOverlayPainter.h"
 #include "hstream/src/apps/apps-common/SelectedPreviewStream.h"
 
@@ -16,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <utility>
 
@@ -36,6 +38,7 @@ struct WebPreviewSession::PaintState {
   draw_display::analytics::CommandList commands;
   std::map<std::string, std::shared_ptr<RouteState>> channels;
   unsigned program_width, program_height, source_width, source_height;
+  std::atomic<CapturePlan*> capture_plan{nullptr};
   std::atomic<unsigned> analytics_layers{0};
   float joint_confidence;
   // One immutable snapshot binds the three flags and their acknowledged epoch.
@@ -194,8 +197,35 @@ struct WebPreviewSession::PaintState {
            reason ? reason : "",
            "rink-mini-map"});
     }
-    return result.status == gpu_preview::PreviewPaintStatus::kOk ||
+    const bool painted = result.status == gpu_preview::PreviewPaintStatus::kOk ||
         result.status == gpu_preview::PreviewPaintStatus::kOverlaySuppressed;
+    auto* plan = capture_plan.load(std::memory_order_acquire);
+    if (painted && plan && plan->pending()) {
+      try {
+        CaptureContext context;
+        context.interface = "browser";
+        context.run = session.run;
+        context.stage = session.stage;
+        context.topology = session.topology;
+        context.operation = identity->operation;
+        context.sequence = identity->sequence;
+        context.channel = identity->channel;
+        context.source_pts = identity->source_pts;
+        context.presentation_pts = identity->presentation_pts;
+        // Launch explicitly armed at most 24 metadata receipts for exact source
+        // pairs. There is no video readback and no change to preview protocols.
+        if (const auto receipt = plan->Capture(context, ReadCaptureMetadata(native)))
+          g_print("HSTREAM_PREVIEW_CAPTURE %s\n", receipt->c_str());
+      } catch (const std::exception& error) {
+        // Diagnostic failure never substitutes metadata or fails playback.
+        g_printerr("HSTREAM_PREVIEW_CAPTURE_FAILED %s\n", error.what());
+        capture_plan.store(nullptr, std::memory_order_release);
+      } catch (...) {
+        g_printerr("HSTREAM_PREVIEW_CAPTURE_FAILED unknown diagnostic exception\n");
+        capture_plan.store(nullptr, std::memory_order_release);
+      }
+    }
+    return painted;
   }
 };
 
@@ -245,6 +275,13 @@ absl::StatusOr<std::unique_ptr<WebPreviewSession>> WebPreviewSession::Prepare(
   // supplied by a runtime browser command.
   paint.game_dir = game_dir;
   paint.session = identity;
+  try {
+    auto& plan = ProcessCapturePlan();
+    if (!plan.empty())
+      paint.capture_plan.store(&plan, std::memory_order_release);
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(error.what());
+  }
   const char* invalidation = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   paint.invalidation = invalidation ? invalidation : "";
   paint.program_width = options->program_reference_width;

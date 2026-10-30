@@ -1,5 +1,8 @@
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
@@ -9,7 +12,79 @@
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QPushButton>
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <iostream>
+#include <thread>
+
+namespace {
+bool cancelledReadinessRetainsArtifactOwnership() {
+  QTemporaryDir game;
+  std::atomic<bool> locked{false}, cancelled_seen{false}, release{false};
+  std::atomic<int> checks{0};
+  RinkFramingControls controls(nullptr, [&](const QString& path, const std::function<bool()>& cancelled) {
+    ++checks;
+    const auto lock_path = (path + "/.hstream-stitch.lock").toLocal8Bit();
+    const int descriptor = ::open(lock_path.constData(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (descriptor < 0 || ::flock(descriptor, LOCK_EX) != 0) {
+      if (descriptor >= 0)
+        ::close(descriptor);
+      return absl::InternalError("The readiness fixture could not own its artifact lock");
+    }
+    locked = true;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!release && std::chrono::steady_clock::now() < deadline) {
+      if (cancelled())
+        cancelled_seen = true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ::flock(descriptor, LOCK_UN);
+    ::close(descriptor);
+    return absl::CancelledError("The held readiness check retired");
+  });
+  int retirements = 0;
+  controls.setReadinessCallback([&] { ++retirements; });
+  auto wait = [](const std::function<bool()>& condition) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!condition() && timer.elapsed() < 5000)
+      QTest::qWait(10);
+    return condition();
+  };
+  int heartbeats = 0;
+  QTimer heartbeat;
+  heartbeat.setInterval(1);
+  QObject::connect(&heartbeat, &QTimer::timeout, [&] { ++heartbeats; });
+  heartbeat.start();
+  controls.setGameDirectory(game.path());
+  bool ok = wait([&] { return locked.load(); });
+  auto* enable = controls.findChild<QCheckBox*>("rinkFramingEnable");
+  ok &= enable && !enable->isChecked() && controls.validateForRun().isEmpty();
+  controls.setCheckingSuspended(true);
+  ok &= wait([&] { return cancelled_seen.load(); });
+  const bool launch_deferred = controls.isCheckingForRun();
+  const auto lock_path = game.filePath(".hstream-stitch.lock").toLocal8Bit();
+  const int launcher = ::open(lock_path.constData(), O_RDWR | O_CLOEXEC);
+  const bool lock_contended =
+      launcher >= 0 && ::flock(launcher, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
+  if (!launch_deferred || !lock_contended)
+    std::cerr << "Cancelled map readiness still owns the artifact lock; launch must remain deferred even with "
+                 "rink framing off\n";
+  ok &= launch_deferred && lock_contended && retirements == 0 && heartbeats > 1;
+  release = true;
+  ok &= wait([&] { return retirements == 1; });
+  const bool lock_released = launcher >= 0 && ::flock(launcher, LOCK_EX | LOCK_NB) == 0;
+  ok &= lock_released && !controls.isCheckingForRun() && checks == 1;
+  if (launcher >= 0) {
+    ::flock(launcher, LOCK_UN);
+    ::close(launcher);
+  }
+  std::cout << "Readiness ownership: cancelled=" << cancelled_seen << " launch_deferred=" << launch_deferred
+            << " lock_contended=" << lock_contended << " retirements=" << retirements
+            << " lock_released=" << lock_released << " heartbeats=" << heartbeats << '\n';
+  return ok;
+}
+} // namespace
 
 int main(int argc, char** argv) {
   QApplication application(argc, argv);
@@ -47,6 +122,8 @@ int main(int argc, char** argv) {
         ? 0
         : 1;
   }
+  if (!cancelledReadinessRetainsArtifactOwnership())
+    return 1;
   QTemporaryDir map_directory;
   std::atomic<int> checks{0};
   RinkFramingControls controls(nullptr, [&](const QString& path, const std::function<bool()>& cancelled) {

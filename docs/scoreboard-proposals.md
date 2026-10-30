@@ -46,6 +46,48 @@ status to Qt. A response cannot replace points after the operator starts
 editing or submits. The browser embeds the same draft and fetches its status.
 Neither response persists a polygon.
 
+The desktop and browser display the same bounded still geometry from
+`CalibrationImage::scoreboardPreviewSize`: at most 8192 pixels per side and
+96 MiB of RGBA pixels, with both dimensions rounded down after proportional
+scaling. Selection coordinates remain in the original `s.png` canvas. PNG
+proxies use the existing row decoder and midpoint sampling, with one source
+row plus the bounded output allocation; no full panorama bitmap or video
+readback is required. Native input limits remain 65535 per side and 256 Mi
+pixels. As in Qt, small PNGs use `QImageReader` (including interlaced images);
+reduced PNGs use the row decoder, which rejects interlacing.
+
+The CPU-only `hstream-web-job --scoreboard-preview REQUEST.json` entry point
+advertises `scoreboard-preview-v1`. Its request is limited to 64 KiB and uses
+schema `hstream-scoreboard-preview-request-v1`, a 32-character lowercase hex
+`token`, absolute owned-run `root`, relative `source` ending in `s.png`, and
+`source_identity` containing decimal-string `device`, `inode`, `size`,
+`mtime_ns`, and `ctime_ns`. The helper opens every path component without
+following symlinks, pins the original descriptor, and accepts sources up to
+2 GiB. It verifies that both the descriptor and current pathname still match
+the request before publishing.
+
+The helper publishes `scoreboard-preview-TOKEN.png` and then
+`scoreboard-preview-TOKEN.json` atomically without replacing existing files.
+The receipt schema `hstream-scoreboard-preview-v1` repeats the token, root,
+source and source identity; `source_size` holds original coordinates and
+`preview_size` holds proxy dimensions. It binds the image basename, exact
+`image_identity` and encoded PNG `sha256`. Encoded images are bounded to
+128 MiB. A failed publication removes files created by that attempt; the
+outer supervisor owns cancellation, deadline and remaining run cleanup.
+Before retiring the temporary image name, the helper independently opens
+the published name without following symlinks and verifies its inode,
+identity and hash against the temporary descriptor. It destroys the
+temporary file object before unlinking that name: a duplicate descriptor
+retains the old NFS dentry, and Qt's temporary-file `close()` may retain the
+OS handle. This prevents a delayed NFS silly-unlink from changing ctime
+after the receipt. The final pin and pathname must still match the exact
+post-unlink identity, hash and original source before receipt publication.
+Consumers must reject stale tokens, changed source/image identities and
+dimension/hash mismatches before exposing editor readiness. Image HTTP reads
+serve an already validated proxy and never start this helper. This mode does
+not read saved-calibration completion metadata or substitute a TIFF for the
+current selector's PNG.
+
 Validation on an RTX 4090, `2025-2026/chicago-3`: native model load plus
 inference/postprocessing took 1.5 seconds on CUDA and 4.2 seconds on CPU.
 The Python path, including panorama preparation and loading, took 4.5 seconds.

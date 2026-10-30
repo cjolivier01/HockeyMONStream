@@ -92,6 +92,56 @@ CLI, UI and plugins from the same build and route test audio to an explicitly
 owned virtual sink. HockeyMONWeb's matching fresh and saved Calibration tests
 check authenticated adoption and actual decoded browser frames.
 
+For the focused Drawing/source-seek regression, use
+`HSTREAM_UI_E2E_EFFECTS_OBSERVE_ONLY=1` and an explicit
+`HSTREAM_UI_E2E_EFFECTS_PRECISION=0` (Standard) or `1` (FP16). This mode disables
+framing, mini-map and diagnostic overlays, opens the visible Players controls,
+records the five Drawing controls and their acknowledged request generations,
+applies masks 0 then 31, and verifies that a paused Pose edit remains a draft
+until Resume applies mask 29. It returns from a source-only seek to Stitched
+and requires two advancing, different images, then ordinary Stop and process
+retirement. It rejects synthetic fixture preparation and the unrelated live
+camera-tuning/Reset mode. It does not qualify tone effects by itself.
+
+The separate strict frame-pair comparison additionally sets
+`HSTREAM_UI_E2E_DRAWING_FRAME_WINDOWS=1`. It requires a 1800×1200 client window
+at device pixel ratio 1, `HSTREAM_PREVIEW_CAPTURE_METADATA=1` and an explicitly
+supplied metadata observer writing `$HM_AV_DIRECTORY/qt-presented-<cli-pid>.jsonl`.
+That observer is external diagnostic tooling, not part of the ordinary regression
+or deployed runtime. Bind its source, binary and the observed CLI getter to the
+exact build before using it. It must read only the renderer's metadata, without
+changing playback or reading pixels. Each complete JSON line carries `sink`,
+`valid`, `generation`, `pts_ns`, and monotonic `before_ns`/`after_ns`; the driver
+accepts only fresh records for its current Program renderer. It uses those
+records to schedule one capture in each source interval [10,12), [20,22) and
+[30,32) seconds. The capture's own receipt must prove the actual source pair,
+renderer generation and baked Drawing mask. Missing or late evidence fails;
+the observer never establishes displayed pixel identity by itself. The ordinary
+Drawing regression does not require this observer or claim exact frame pairing.
+
+Physical-frame comparisons can opt into `HSTREAM_PREVIEW_CAPTURE_METADATA=1`
+for Qt's existing explicit capture command. Enable
+`pipeline.hmstitcher.private-properties.emit-frame-pair-meta=1` only in the
+disposable evidence configuration. `HSTREAM_PREVIEW_CAPTURE` records both
+original chapter URIs/PTS and the frame's complete Program crop transform,
+latched with the rendered generation. No video readback occurs outside the
+explicit capture. Browser native captures instead use a literal JSON
+`HSTREAM_PREVIEW_CAPTURE_PLAN` with version 1 and 1–8 requests. Each request
+contains `id`, `channel` (`program` or `stitched`), `leftUri`, `rightUri`, exact
+decimal-string `leftPtsNs`/`rightPtsNs`, and `count` (1–3). Its process-wide
+budget survives preview reconstruction; malformed plans fail before runtime
+initialization, and omitted plans add no metadata sampling.
+
+A browser native receipt proves a prepared frame. Join its exact run, stage,
+topology, operation, channel, sequence and transport PTS to verified browser
+presentation and an explicitly captured image before claiming displayed pixels.
+Compare bound source file hashes and original physical PTS across interfaces;
+staging URI strings and local playback PTS can differ. Tone comparisons also
+require equal finite crop geometry, actual native descriptors/acknowledgments,
+and repeated-neutral images to measure capture noise. Missing or mismatched
+frames remain incomplete evidence. These diagnostics currently use the NVIDIA
+preview implementation; they do not establish AMD or compositor scanout parity.
+
 For preview-only mini-map qualification, use `HSTREAM_UI_E2E_RINK_MAP_ONLY=1`
 and `HSTREAM_UI_E2E_RINK_MAP_EXPECTED=ready` or `unavailable`, with a genuinely
 completed game and a new evidence directory. This also rejects
@@ -120,6 +170,25 @@ plus the QProcess PID/arguments and renderer identity. Initial capture intervals
 are explicitly marked so external timing analysis can exclude their overhead.
 The test requires normal Stop and process retirement; source-correlated audio
 and actual presentation timing require a separate owned-sink/metadata collector.
+
+Add `HSTREAM_UI_E2E_AV_MATCHED_LONG_WINDOW=1` to that timing mode for a
+single longer comparison within the 60-second qualification fixture. It pauses
+at the first acknowledged source position at or above 10 seconds, holds the
+confirmed pause for seven seconds, then requires both 35 wall seconds and
+32 seconds of acknowledged source progress after Resume. Startup must finish
+before the Pause target; EOF, ownership changes and a 45-second resumed-window
+timeout fail the case. The ordinary three-pause schedule remains the default.
+The external presentation collector must still verify actual displayed source
+coverage and align Qt/browser measurements; acknowledged position alone does
+not qualify A/V timing.
+
+The acknowledged pipeline position can lead actual presented frames. The earlier
+Pause target reserves room for the next progress receipt and both resumed minima
+before EOS. Bind the paired browser Pause threshold to the Qt collector's measured
+frozen-source interval, record actual Pause positions and uncertainty, and compare
+at least 30 seconds of common actual source content. Ordinary Stop, non-silent
+source-correlated audio, current frame identities and contained retirement remain
+required.
 
 The UI acceptance test exercises the same Qt button handlers as an operator:
 
@@ -465,3 +534,25 @@ landmarks; the hook does not establish their physical accuracy. It rejects
 Pin `HM_CONFIG_ROOT` to the exact product configuration and include all tracked
 configs when freezing a Bazel-shaped runtime; a test binary alone can otherwise
 resolve installed configuration.
+
+### Saved-map readiness and Play ownership
+
+An optional saved-map readiness check can hold the calibration artifact lock even
+when rink-aware framing is off. Cancellation does not release that ownership;
+Play and Restart wait asynchronously for the worker to finish before admission.
+Repeated Play cannot create another launch, and Stop, closing the window, a game
+change or a newer pipeline generation cancels the pending request.
+
+`rink_framing_controls_test` holds a real temporary artifact lock past cancellation
+and checks that readiness retains ownership while the GUI continues processing
+timers. The full `hstream_ui_test` uses the same lock with a fake runner to check
+one deferred launch, repeated Play, Stop, game changes and generation fencing.
+Players settings remain editable while Play waits. If those edits fail validation
+after readiness retires, the waiting message and control lock must retire too.
+Correcting the settings must permit one new Play without an intervening Stop.
+`HSTREAM_UI_TEST_DEFERRED_PLAY_VALIDATION_ONLY=1` runs that focused fake-runner
+regression; it also runs in the ordinary pipeline-buttons suite.
+These CPU checks do not qualify actual GPU playback. The failed native scoreboard
+startup remains retained; rerun it against the newly frozen runtime before
+claiming that live case passes. The browser already uses supervised native
+admission and retirement; no browser-side lock or readiness bypass is added.

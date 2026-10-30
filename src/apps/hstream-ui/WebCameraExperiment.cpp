@@ -722,7 +722,13 @@ QJsonObject RunCameraExperiment(
             if (!saved_trials.count(view)) {
               require(
                   !std::filesystem::exists(std::filesystem::symlink_status(path)), "The trial output already exists");
-              const auto saved = session->SaveTrial(path.string(), trials.at(view - 2), media);
+              auto save = std::async(std::launch::async, [&] {
+                return session->SaveTrial(path.string(), trials.at(view - 2), media, &cancelled);
+              });
+              while (save.wait_for(std::chrono::milliseconds(30)) != std::future_status::ready)
+                if (interrupted())
+                  cancelled = true;
+              const auto saved = save.get();
               require(saved.ok(), saved.ToString());
               saved_trials.emplace(view, Artifact(request, path, "metadata"));
               artifacts.append(saved_trials.at(view));

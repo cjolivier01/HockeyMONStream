@@ -300,7 +300,9 @@ QString RinkFramingControls::validateForRun() {
 
 bool RinkFramingControls::isCheckingForRun() {
   checkMap();
-  return choices_[0]->isChecked() && (check_pending_ || job_);
+  // Cancellation only asks the worker to stop. Until its finished callback
+  // retires it, even an optional check can still own calibration artifacts.
+  return job_ || (choices_[0]->isChecked() && check_pending_);
 }
 
 QString RinkFramingControls::mapReadinessMessage() const {

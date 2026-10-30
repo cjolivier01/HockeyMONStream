@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "hstream/src/apps/apps-common/PreviewCaptureReceipt.h"
 #include "hstream/src/libs/draw_display/RinkMiniMapOptions.h"
 
 namespace hm::stitching {
@@ -99,6 +100,7 @@ std::pair<unsigned, unsigned> bounded_capture_dimensions(unsigned width, unsigne
 struct CapturedFrameIdentity {
   std::uint64_t generation;
   GstClockTime pipeline_pts;
+  std::optional<hm::preview::CaptureMetadata> metadata;
 };
 
 // Optional identity is sampled with the pixels under the render mutex. It is

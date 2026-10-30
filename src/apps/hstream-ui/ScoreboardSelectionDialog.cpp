@@ -38,12 +38,6 @@ namespace {
 constexpr double kMinimumScale = 0.02;
 constexpr double kMaximumScale = 32.0;
 constexpr double kPointHitRadius = 15.0;
-// Stay comfortably below Qt's default decoded-image allocation limit. The
-// selector only needs a display proxy; submitted points remain in the source
-// image's coordinate space.
-constexpr qint64 kMaximumPreviewBytes = 96LL * 1024LL * 1024LL;
-constexpr int kMaximumPreviewDimension = 8192;
-
 void set_control_help(QWidget* control, const QString& description) {
   if (!control)
     return;
@@ -51,23 +45,6 @@ void set_control_help(QWidget* control, const QString& description) {
   control->setStatusTip(description);
   control->setWhatsThis(description);
   control->setAccessibleDescription(description);
-}
-
-QSize bounded_preview_size(const QSize& source_size) {
-  if (!source_size.isValid() || source_size.isEmpty())
-    return {};
-  const long double source_pixels =
-      static_cast<long double>(source_size.width()) * static_cast<long double>(source_size.height());
-  const long double maximum_pixels = static_cast<long double>(kMaximumPreviewBytes) / 4.0L;
-  const long double memory_scale = source_pixels > maximum_pixels ? std::sqrt(maximum_pixels / source_pixels) : 1.0L;
-  const long double dimension_scale = std::min(
-      static_cast<long double>(kMaximumPreviewDimension) / source_size.width(),
-      static_cast<long double>(kMaximumPreviewDimension) / source_size.height());
-  const long double scale = std::min({1.0L, memory_scale, dimension_scale});
-  return {
-      std::max(1, static_cast<int>(std::floor(source_size.width() * scale))),
-      std::max(1, static_cast<int>(std::floor(source_size.height() * scale))),
-  };
 }
 
 QVector<QPoint> ordered_points(const QVector<QPoint>& points) {
@@ -107,7 +84,7 @@ bool ScoreboardSelectionCanvas::setImage(const QString& path) {
   if (!image_size_.isValid() || image_size_.isEmpty()) {
     image_ = {};
   } else {
-    const QSize preview_size = bounded_preview_size(image_size_);
+    const QSize preview_size = scoreboardPreviewSize(image_size_);
     if (preview_size == image_size_) {
       image_ = reader.read();
     } else if (reader.format().toLower() == "png") {

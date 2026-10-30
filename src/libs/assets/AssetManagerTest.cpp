@@ -2,6 +2,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,7 @@
 
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/file.h>
 #include <sys/ptrace.h>
 #include <unistd.h>
 
@@ -456,6 +458,104 @@ int main(int, char**) {
       ::unsetenv("HOME");
     else
       ::setenv("HOME", original_home.c_str(), 1);
+  }
+  {
+    const char* original_roots_value = std::getenv("HSTREAM_ASSET_ROOTS");
+    const std::string original_roots = original_roots_value == nullptr ? "" : original_roots_value;
+    const fs::path cache = root / "shared-models";
+    const fs::path alias = root / "private-home" / ".cache" / "hstream" / "models";
+    const fs::path escaped_cache = root / "shared-models-escape";
+    fs::create_directories(cache);
+    fs::create_directories(escaped_cache);
+    fs::create_directories(alias.parent_path());
+    fs::create_directory_symlink(cache, alias);
+    for (const auto& directory : {cache, escaped_cache}) {
+      std::ofstream asset(directory / "model.bin");
+      asset << "native asset\n";
+    }
+    ::setenv("HSTREAM_ASSET_ROOTS", cache.c_str(), 1);
+    hm::assets::AssetSpec spec;
+    spec.name = "shared cache model";
+    spec.url = "https://example.invalid/model.bin";
+    spec.sha256 = hash.ok() ? *hash : std::string(64, '0');
+    spec.target = alias / "model.bin";
+    spec.declaring_config = root / "configs" / "cache.yaml";
+    spec.on_demand = true;
+    ok &= expect(
+        absl::IsPermissionDenied(hm::assets::AssetManager::EnsureAsset(spec)),
+        "EnsureAsset must still reject raw targets with symlink parents");
+    auto verified = hm::assets::AssetManager::EnsureCacheAsset(spec);
+    ok &= expect(
+        verified.ok() && verified->target == cache / "model.bin" && verified->sha256 == spec.sha256 &&
+            verified->url == spec.url && verified->on_demand,
+        "an explicitly approved warmed cache alias must return its exact verified canonical target offline");
+    ok &= expect(
+        !fs::exists(cache / "model.bin.lock"),
+        "a warmed shared model must verify without creating a lock or downloading");
+    auto cancelled = hm::assets::AssetManager::EnsureCacheAsset(spec, {}, [] { return true; });
+    ok &= expect(
+        !cancelled.ok() && absl::IsCancelled(cancelled.status()),
+        "shared cache resolution must honor cancellation even when the model is warmed");
+    auto invalid = spec;
+    invalid.url = "http://example.invalid/model.bin";
+    auto insecure = hm::assets::AssetManager::EnsureCacheAsset(invalid);
+    ok &= expect(
+        !insecure.ok() && absl::IsInvalidArgument(insecure.status()),
+        "shared cache aliases must not bypass the HTTPS requirement");
+    invalid = spec;
+    invalid.sha256 = "missing digest";
+    auto unsigned_asset = hm::assets::AssetManager::EnsureCacheAsset(invalid);
+    ok &= expect(
+        !unsigned_asset.ok() && absl::IsInvalidArgument(unsigned_asset.status()),
+        "shared cache aliases must not bypass the mandatory digest");
+    // Hold the publication lock so a mismatching warm file cannot reach the
+    // network. It must fail verification, wait for the lock, and honor Stop.
+    const fs::path lock_path = cache / "model.bin.lock";
+    const int lock = ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    const bool locked = lock >= 0 && ::flock(lock, LOCK_EX | LOCK_NB) == 0;
+    ok &= expect(locked, "the cache checksum test must own its private publication lock");
+    if (locked) {
+      auto mismatched = spec;
+      mismatched.sha256 = std::string(64, '0');
+      std::atomic<bool> stop{false};
+      std::thread cancellation([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        stop = true;
+      });
+      auto rejected = hm::assets::AssetManager::EnsureCacheAsset(mismatched, {}, [&] { return stop.load(); });
+      cancellation.join();
+      ok &= expect(
+          !rejected.ok() && absl::IsCancelled(rejected.status()),
+          "a warm cache alias with the wrong digest must not be accepted and lock waiting must remain cancellable");
+    }
+    if (lock >= 0)
+      ::close(lock);
+    fs::remove(lock_path);
+    fs::create_symlink(cache / "model.bin", cache / "linked-model.bin");
+    auto leaf = spec;
+    leaf.target = alias / "linked-model.bin";
+    auto linked_leaf = hm::assets::AssetManager::EnsureCacheAsset(leaf);
+    ok &= expect(
+        !linked_leaf.ok() && absl::IsPermissionDenied(linked_leaf.status()),
+        "an approved cache parent must not permit a symlinked asset leaf");
+    fs::create_directory_symlink(escaped_cache, cache / "escape");
+    auto escape = spec;
+    escape.target = cache / "escape" / "model.bin";
+    auto unapproved = hm::assets::AssetManager::EnsureCacheAsset(escape);
+    ok &= expect(
+        !unapproved.ok() && absl::IsPermissionDenied(unapproved.status()),
+        "a cache alias beneath an approved root must not authorize an escaped canonical target");
+    fs::remove(alias);
+    fs::create_directory_symlink(escaped_cache, alias);
+    auto redirected = hm::assets::AssetManager::EnsureCacheAsset(spec);
+    ok &= expect(
+        !redirected.ok() && absl::IsPermissionDenied(redirected.status()) && verified.ok() &&
+            verified->target == cache / "model.bin",
+        "retargeting a cache alias must be rejected and cannot redirect an already returned verified path");
+    if (original_roots_value == nullptr)
+      ::unsetenv("HSTREAM_ASSET_ROOTS");
+    else
+      ::setenv("HSTREAM_ASSET_ROOTS", original_roots.c_str(), 1);
   }
   fs::remove_all(root);
   return ok ? 0 : 1;
