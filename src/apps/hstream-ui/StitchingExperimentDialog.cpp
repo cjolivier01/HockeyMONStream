@@ -823,7 +823,8 @@ struct StitchingExperimentDialog::Impl {
     const bool promoting = promotion_worker != nullptr || preparation_worker != nullptr;
     const bool stopping = pending_group_shutdowns > 0 || candidate_completion_pending || preview_completion_pending;
     const int row = table->currentRow();
-    const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete;
+    const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete &&
+        !candidates[row].selection_reuse_blocked;
     const bool selected_removable =
         row >= 0 && row < static_cast<int>(candidates.size()) && removable_candidate(candidates[row]);
     const bool editing_batch =
@@ -1154,6 +1155,45 @@ struct StitchingExperimentDialog::Impl {
     return released;
   }
 
+  void recover_completed_preview(Candidate& candidate) {
+    const auto& saved = *candidate.stored;
+    if ((saved.state != "failed" && saved.state != "quarantined") || saved.artifact_generation_id.empty() ||
+        (saved.failure != "Preview process group still active; workspace retained" &&
+         saved.failure != "Previous run stopped before durable completion"))
+      return;
+    // Older versions overwrote completion when preview cleanup ran late. Only
+    // recover that history if its committed generation and complete config
+    // still agree. A failed or replaced calibration must remain unavailable.
+    {
+      auto lock = hm::stitching::HuginProject::RecoverAndLock(candidate.workspace->game_directory, false);
+      if (!lock.ok())
+        return;
+      const auto generation = hm::stitching::HuginProject::GenerationId(candidate.workspace->game_directory, **lock);
+      const auto config = hm::stitching::load_game_config_file(candidate.workspace->game_directory / "config.yaml");
+      if (!generation.ok() || *generation != saved.artifact_generation_id || !config.ok() || !config->has_value() ||
+          !(**config).IsMap())
+        return;
+      const auto ui = (**config)["hstream_ui"];
+      if (!ui.IsMap())
+        return;
+      const auto calibration = ui["stitching_calibration"];
+      if (!calibration.IsMap() || !calibration["status"].IsScalar() || calibration["status"].Scalar() != "complete" ||
+          !calibration["invalidation_id"].IsScalar() ||
+          calibration["invalidation_id"].Scalar() != candidate.workspace->invalidation_id)
+        return;
+    }
+    auto recovered = saved;
+    recovered.state = "complete";
+    recovered.failure.clear();
+    recovered.process_session_id = 0;
+    recovered.process_token.clear();
+    const auto persisted = SaveStitchingExperiment(*store, recovered);
+    if (persisted.ok()) {
+      candidate.stored = std::move(recovered);
+      candidate.failure.clear();
+    }
+  }
+
   void restore_persistent_store(const StitchingExperimentSettings& displayed_settings) {
     auto opened = OpenStitchingExperimentStore(game_directory.toStdString());
     if (!opened.ok()) {
@@ -1236,10 +1276,12 @@ struct StitchingExperimentDialog::Impl {
         candidate.selection_reuse_blocked = true;
         candidate.failure = "Unavailable: previous process ownership is unconfirmed";
       } else {
+        recover_completed_preview(candidate);
         // The catalog is bounded. Exact source, image and artifact validation runs
         // when this row is inspected, reused, previewed, or promoted.
         candidate.complete =
-            record.state == "complete" && !record.artifact_generation_id.empty() && !candidate.selection_reuse_blocked;
+            candidate.stored->state == "complete" && !record.artifact_generation_id.empty() &&
+            !candidate.selection_reuse_blocked;
         bool recovered_selection = false;
         if (!candidate.queued && !candidate.has_selected_frames &&
             (pending_owner || record.state == "failed" || candidate.selection_owner_sequence == candidate.sequence)) {
@@ -1276,7 +1318,7 @@ struct StitchingExperimentDialog::Impl {
         if (pending_owner && !recovered_selection) {
           if (!candidate.selection_reuse_blocked)
             candidate.failure =
-                record.state == "complete" ? QString() : "Previous run stopped before durable completion";
+                candidate.complete ? QString() : "Previous run stopped before durable completion";
           auto reconciled_record = *candidate.stored;
           const auto reconciled =
               MarkStitchingExperimentProcessStopped(*store, reconciled_record, candidate.failure.toStdString());
@@ -1504,6 +1546,8 @@ struct StitchingExperimentDialog::Impl {
         return;
       const bool replay = preview_replay_pending && !stopping_preview && !closing;
       preview_replay_pending = false;
+      const bool retained = candidates[preview_candidate_row].selection_reuse_blocked;
+      const bool failed_to_start = preview_process && preview_process->error() == QProcess::FailedToStart;
       const auto persisted = persist_preview_process(true);
       if (!persisted.ok())
         show_status(QString::fromStdString(persisted.ToString()), true);
@@ -1513,6 +1557,8 @@ struct StitchingExperimentDialog::Impl {
       preview_completion_pending = false;
       preview_candidate_row = -1;
       video->set_renderer_active(false);
+      if (persisted.ok() && !replay && !closing && !retained && !failed_to_start)
+        show_status("Preview stopped. The selected calibration is ready to use.");
       update_controls();
       if (replay)
         start_preview(true);
@@ -1553,9 +1599,8 @@ struct StitchingExperimentDialog::Impl {
         preview_replay_pending = false;
         if (preview_candidate_row >= 0 && preview_candidate_row < static_cast<int>(candidates.size())) {
           Candidate& candidate = candidates[preview_candidate_row];
-          candidate.complete = false;
           candidate.selection_reuse_blocked = true;
-          candidate.failure = "Preview process group still active; workspace retained";
+          candidate.failure = "Preview cleanup is unconfirmed; saved calibration retained";
           table->item(candidate.row, 5)->setText(candidate.failure);
         }
       }
@@ -1622,21 +1667,34 @@ struct StitchingExperimentDialog::Impl {
           : (calibration ? calibration_process_token : preview_process_token);
       kill_process(guarded_process.data(), effective_group, effective_token);
       QTimer::singleShot(100, dialog, [this, calibration, ticket, effective_group, effective_token]() {
-        const bool group_unverified = effective_group <= 0 || effective_token.isEmpty();
-        const bool descendants_remain = group_unverified || experiment_session_alive(effective_group, effective_token);
-        if (descendants_remain) {
-          const QString retained_path = session ? session->path() : QString("(unknown path)");
-          const QString message =
-              QString(
-                  "An experiment process group could not be confirmed stopped; retaining its temporary workspace "
-                  "at %1.")
-                  .arg(retained_path);
-          append_output_message(message + "\n");
-          qWarning().noquote() << "Stitching Experiments:" << message;
-        }
-        finish_shutdown_ticket(calibration, ticket, descendants_remain);
+        check_forced_stop(calibration, ticket, effective_group, effective_token);
       });
     });
+  }
+
+  void check_forced_stop(bool calibration, uint64_t ticket, qint64 group, const QString& token) {
+    const auto& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
+    if (!active || *active != ticket)
+      return;
+    const bool descendants_remain = group <= 0 || token.isEmpty() || experiment_session_alive(group, token);
+    if (descendants_remain && !calibration && !closing) {
+      // SIGKILL delivery is not proof that GPU teardown or descendants have
+      // finished. Keep the same owner and admission fence until they do.
+      show_status("Stopping preview; waiting for process cleanup. Saved calibration is retained.");
+      QTimer::singleShot(
+          100, dialog, [this, ticket, group, token]() { check_forced_stop(false, ticket, group, token); });
+      return;
+    }
+    if (descendants_remain) {
+      const QString retained_path = session ? session->path() : QString("(unknown path)");
+      const QString message =
+          QString(
+              "An experiment process group could not be confirmed stopped; retaining its temporary workspace at %1.")
+              .arg(retained_path);
+      append_output_message(message + "\n");
+      qWarning().noquote() << "Stitching Experiments:" << message;
+    }
+    finish_shutdown_ticket(calibration, ticket, descendants_remain);
   }
 
   void stop_calibration_process() {
@@ -2537,7 +2595,9 @@ struct StitchingExperimentDialog::Impl {
     if (preview_candidate_row < 0 || !store)
       return absl::FailedPreconditionError("The preview candidate is unavailable");
     Candidate& candidate = candidates[preview_candidate_row];
-    auto saved = candidate_record(candidate, candidate.selection_reuse_blocked ? "quarantined" : "complete");
+    // A preview owns a previously completed calibration. Persist its process
+    // separately so an interrupted cleanup cannot turn that solve into a failure.
+    auto saved = candidate_record(candidate, "complete");
     if (stopped && !candidate.selection_reuse_blocked) {
       saved.process_session_id = 0;
       saved.process_token.clear();
@@ -2664,6 +2724,10 @@ struct StitchingExperimentDialog::Impl {
         return;
       preview_completion_pending = true;
       preview_replay_pending = false;
+      // FailedToStart proves the launcher never ran; its saved intent has no
+      // process session to wait for. Preserve the completed calibration.
+      preview_process_group = 0;
+      preview_process_token.clear();
       show_status("Could not start the stitched preview: " + preview_process->errorString(), true);
       settle_finished_process(/*calibration=*/false);
     });

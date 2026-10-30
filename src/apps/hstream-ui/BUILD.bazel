@@ -613,6 +613,7 @@ cc_test(
         ":match_editor_dialog",
         ":stitching_experiment_dialog",
         ":stitching_experiment_store",
+        "//src/libs/common:baseline_config",
         "//src/libs/stitching:calibration_match_images",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",

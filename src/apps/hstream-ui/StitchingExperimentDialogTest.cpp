@@ -4,6 +4,7 @@
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -62,6 +63,11 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
+
+#ifdef Q_OS_LINUX
+#include <sys/prctl.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -444,7 +450,12 @@ void exercise_filtering_queue(const QString& game, const QString& root) {
         game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
     auto* epipolar = widget<QCheckBox>(dialog, "stitchExperimentEpipolarRansac");
     auto* homography = widget<QCheckBox>(dialog, "stitchExperimentHomographyConsistency");
-    require(epipolar->isChecked() && homography->isChecked(), "Experiment filters must default on");
+    const auto baseline = hm::baseline_config::load();
+    require(baseline.ok(), "Cannot load experiment filtering defaults");
+    const auto defaults = hm::stitching::read_control_point_filtering(baseline->values);
+    require(defaults.ok() && epipolar->isChecked() == defaults->epipolar_ransac &&
+                homography->isChecked() == defaults->homography_consistency,
+            "Experiment filters must use the shipped baseline");
     for (bool e : {false, true}) {
       for (bool h : {false, true}) {
         epipolar->setChecked(e);
@@ -576,6 +587,7 @@ previous_projection: cylindrical
 
 void exercise_matcher_queue(const QString& game, const QString& root) {
   auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  hm::stitching::write_control_point_filtering(config, {true, true});
   config["stitching"]["control_point_matcher"] = "dedode-lightglue";
   config["stitching"]["control_point_resolution"] = "1k";
   write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
@@ -2233,9 +2245,15 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   const QString runner = root + "/complete-runner.sh";
   const QString preview_release = root + "/preview-release";
   const QString preview_started = root + "/preview-started";
+  const QString child_started = root + "/preview-child-started";
+  const QString child_release = root + "/preview-child-release";
+  const QString delayed_preview = root + "/delay-preview-cleanup";
   write(
       runner,
       "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
+      "if [ -f \"$HSTREAM_TEST_DELAY_PREVIEW\" ]; then\n"
+      "  \"$HSTREAM_TEST_BINARY\" --preview-cleanup-child \"$HSTREAM_TEST_CHILD_STARTED\" "
+      "\"$HSTREAM_TEST_CHILD_RELEASE\" &\nfi\n"
       "touch \"$HSTREAM_TEST_PREVIEW_STARTED\"\n"
       "while [ ! -f \"$HSTREAM_TEST_PREVIEW_RELEASE\" ]; do sleep 0.05; done\n"
       "exit \"$(cat \"$HSTREAM_TEST_PREVIEW_RELEASE\")\";;\nesac\n"
@@ -2248,6 +2266,10 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   environment.insert("HSTREAM_TEST_ARTIFACTS", fixtures);
   environment.insert("HSTREAM_TEST_PREVIEW_RELEASE", preview_release);
   environment.insert("HSTREAM_TEST_PREVIEW_STARTED", preview_started);
+  environment.insert("HSTREAM_TEST_BINARY", QCoreApplication::applicationFilePath());
+  environment.insert("HSTREAM_TEST_DELAY_PREVIEW", delayed_preview);
+  environment.insert("HSTREAM_TEST_CHILD_STARTED", child_started);
+  environment.insert("HSTREAM_TEST_CHILD_RELEASE", child_release);
   StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
   const auto original_config = read(game + "/config.yaml");
@@ -2317,6 +2339,41 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
     check_idle_preview(dialog);
     require(video->winId() == target, "Finishing a preview must preserve its native target");
   }
+#ifdef Q_OS_LINUX
+  // An unreadable descendant cannot be signalled by token. Its eventual exit
+  // must release preview ownership without invalidating the completed solve.
+  struct ReleaseChild {
+    QString path;
+    ~ReleaseChild() {
+      write(path, "release");
+    }
+  } release_child{child_release};
+  write(delayed_preview, "delay");
+  QFile::remove(preview_release);
+  QFile::remove(preview_started);
+  play->click();
+  require(
+      wait_until([&] { return QFile::exists(child_started) && stop->isEnabled(); }, 10000),
+      "Delayed preview child did not start");
+  stop->click();
+  QElapsedTimer cleanup_wait;
+  cleanup_wait.start();
+  require(wait_until([&] { return cleanup_wait.elapsed() >= 4000; }, 6000), "Cleanup wait stalled");
+  auto* apply = widget<QPushButton>(dialog, "applyStitchExperimentButton");
+  require(
+      !play->isEnabled() && !apply->isEnabled() && preview_owned(),
+      "A live unconfirmed preview descendant must retain ownership and block promotion");
+  write(child_release, "release");
+  const bool released = wait_until([&] { return play->isEnabled() && apply->isEnabled(); }, 10000);
+  const QString screenshot_dir = qEnvironmentVariable("HSTREAM_TEST_SCREENSHOT_DIR");
+  if (!screenshot_dir.isEmpty())
+    dialog.grab().save(screenshot_dir + "/stitch-preview-stopped.png");
+  require(released, "Delayed preview cleanup must restore Play and Use selected without another solve");
+  require(
+      !preview_owned() && !ownership.admitted_before_release && table->item(0, 5)->text() == "Ready",
+      "Stopping a delayed preview must preserve the ready result and release durable ownership first");
+  QFile::remove(delayed_preview);
+#endif
   const auto before = LoadStitchingExperimentStore(*store);
   require(before.ok() && before->experiments.size() == 2, "Completed history must be durable");
   const auto removed_directory = before->experiments.front().workspace.game_directory;
@@ -2377,6 +2434,51 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
       "Failed promotion must retain the dialog and its results");
   answer_close_guard(dialog, "stitchExperimentCloseDiscard", true);
   require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Keeping results must close completed results");
+  const auto retained_config_path = QString::fromStdString((retained_directory / "config.yaml").string());
+  const auto retained_config = read(retained_config_path);
+  for (const QString scenario : {"pending", "changed-generation", "unconfirmed", "quarantined", "failed"}) {
+    auto history = LoadStitchingExperimentStore(*store);
+    require(history.ok() && history->experiments.size() == 1, "Cannot load preview recovery fixture");
+    auto legacy = history->experiments.front();
+    const auto original_generation = legacy.artifact_generation_id;
+    legacy.state = scenario == "quarantined" || scenario == "unconfirmed" ? "quarantined" : "failed";
+    legacy.failure = legacy.state == "quarantined" ? "Preview process group still active; workspace retained"
+                                                   : "Previous run stopped before durable completion";
+    legacy.process_session_id = scenario == "quarantined" ? 2147483647 : 0;
+    legacy.process_token = legacy.state == "quarantined" ? "previous-preview-owner" : "";
+    if (scenario == "changed-generation")
+      legacy.artifact_generation_id = "different-committed-generation";
+    if (scenario == "pending") {
+      auto config = YAML::Load(retained_config.toStdString());
+      config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+      write(retained_config_path, QByteArray::fromStdString(YAML::Dump(config)));
+    }
+    require(SaveStitchingExperiment(*store, legacy).ok(), "Cannot save legacy preview failure");
+    {
+      StitchingExperimentDialog recovery(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+      recovery.show();
+      widget<QTableWidget>(recovery, "stitchExperimentCandidates")->selectRow(0);
+      const bool expected = scenario == "failed" || scenario == "quarantined";
+      require(
+          widget<QPushButton>(recovery, "applyStitchExperimentButton")->isEnabled() == expected &&
+              widget<QPushButton>(recovery, "previewStitchExperimentButton")->isEnabled() == expected,
+          "Preview history recovery requires a stopped owner and the unchanged completed calibration");
+      const auto saved = LoadStitchingExperimentStore(*store);
+      require(
+          saved.ok() && (saved->experiments.front().state == "complete") == expected,
+          "Recovered preview completion must survive another reopen");
+    }
+    write(retained_config_path, retained_config);
+    history = LoadStitchingExperimentStore(*store);
+    require(history.ok(), "Cannot restore preview recovery fixture");
+    auto ready = history->experiments.front();
+    ready.state = "complete";
+    ready.failure.clear();
+    ready.process_session_id = 0;
+    ready.process_token.clear();
+    ready.artifact_generation_id = original_generation;
+    require(SaveStitchingExperiment(*store, ready).ok(), "Cannot restore completed preview fixture");
+  }
   StitchingExperimentDialog reopened(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
   reopened.show();
   auto* restored = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
@@ -2975,6 +3077,19 @@ void exercise(
 } // namespace
 
 int main(int argc, char** argv) {
+#ifdef Q_OS_LINUX
+  if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--preview-cleanup-child") {
+    // Model a descendant whose ownership cannot be inspected until cleanup
+    // finishes. A separate process keeps this permission change out of Qt.
+    if (::prctl(PR_SET_DUMPABLE, 0) != 0)
+      return 2;
+    write(QString::fromLocal8Bit(argv[2]), "ready");
+    for (int attempt = 0; attempt < 3000 && ::access(argv[3], F_OK) != 0; ++attempt)
+      ::usleep(10000);
+    ::prctl(PR_SET_DUMPABLE, 1);
+    return 0;
+  }
+#endif
   QApplication application(argc, argv);
   install_button_icon_style();
   try {
