@@ -233,6 +233,12 @@ camera files / live sources -> decode and batch -> hmstitcher
 
 - `src/gst-plugins/gst-amd-program/` registers the embedded `hstreamamdprogram` GStreamer plugin with six separately named elements: `hmamdstitch`, `hmamdinfer`, `hmrinkfilter`, `hmobjecttrack`, `hmcameratrack`, and `hmamdcrop`. Each owns an independent processing stage. `AmdProgramGraph` connects the first five through owned frame-envelope metadata and runs crop in a second graph for each output submission. `program/AmdVideoStages` owns GPU panorama lifetimes and device-scoped destruction; shared `program/FrameGeometry` scales present followers into surface coordinates and resolves absent followers to the output aspect at render time; `ProgramRinkFilter` and `ProgramCamera` are independent metadata stages. The legacy synchronous processor is a qualification facade over the same libraries. The initial integration retains one-pair-at-a-time admission and existing source/audio/publication owners; it does not claim parallel frame execution or Pipeline-tab integration. Resolved configuration is supplied through the native embedding API; factories reject unconfigured startup. Header-only output handoff pins the source VA pool buffer while sharing its exact GPU memories, with no maps or pixel copies. See `docs/amd-gpu.md`.
 
+### TODO
+- In file TODO.md in root dir, this is where we keep things we want to do, but may be out of scope for the current job
+- When starting a new task look in TODO.md for sub-tasks that can be easily added to the current task (if they werent already implemented).
+- If the task or subtask in TODO.md is already implemented, or was implemented in the currenmt session, then remove it from TODO.md
+- Agents should not add task or subtask to TODO.md unless intructed to or approved by the user.
+
 ### Dependency and distribution boundaries
 
 - `scripts/side_by_side_video.py` is a standalone offline Python/FFmpeg comparison utility. It aligns relative playback times, fits two aspect-preserving panes within 7680×4320, and supports a shared start/duration. It does not enter the native playback or export pipeline; usage and timing limits are in the README.
