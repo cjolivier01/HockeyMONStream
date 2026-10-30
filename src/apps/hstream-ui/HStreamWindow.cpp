@@ -18393,6 +18393,8 @@ void HStreamWindow::maybeStartDeferredRestart() {
   deferred_play_requested_ = false;
   deferred_restart_requested_ = false;
   deferred_restart_game_id_.clear();
+  if (ordinary_play)
+    preview_status_->setText("Pipeline stopped");
   if (!request_is_current) {
     calibration_restart_requested_ = false;
     appendLog("pending pipeline start cancelled because the pipeline generation or game changed");
@@ -18403,6 +18405,8 @@ void HStreamWindow::maybeStartDeferredRestart() {
       ordinary_play ? "pipeline start continuing after saved rink map validation"
                     : "stage restart continuing after pipeline cleanup");
   startPipeline();
+  // Revalidation can reject a queued start before its normal control refresh.
+  updateRunControls();
 }
 
 void HStreamWindow::saveJobScript() {

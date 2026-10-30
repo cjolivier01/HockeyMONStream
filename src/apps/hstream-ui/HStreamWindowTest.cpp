@@ -4545,6 +4545,82 @@ bool expect_application_identity(HStreamWindow* window) {
   return true;
 }
 
+bool test_deferred_play_validation(HStreamWindow* window) {
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  auto* game = require_child<QLineEdit>(window, "gameIdEdit");
+  auto* status = require_child<QLabel>(window, "previewStatusLabel");
+  auto* pose = require_child<QCheckBox>(window, "playerPoseEnable");
+  auto* rate = require_child<QLineEdit>(window, "playerPoseRate");
+  if (!start || !stop || !mode || !game || !status || !pose || !rate)
+    return false;
+  mode->setCurrentIndex(mode->findData("program"));
+  const bool original_pose = pose->isChecked();
+  const QString original_rate = rate->text();
+  auto release = std::make_shared<std::atomic<bool>>(false);
+  auto locked = std::make_shared<std::atomic<bool>>(false);
+  const absl::Cleanup restore = [&, release] {
+    *release = true;
+    pose->setChecked(original_pose);
+    rate->setText(original_rate);
+    activate(stop);
+    HStreamWindowTestAccess::useRinkMapCheck(window, {});
+  };
+  auto* framing = HStreamWindowTestAccess::useRinkMapCheck(
+      window, [release, locked](const QString& path, const std::function<bool()>&) {
+        QFile artifact(path + "/.hstream-stitch.lock");
+        if (!artifact.open(QIODevice::ReadWrite) || ::flock(artifact.handle(), LOCK_EX) != 0)
+          return absl::InternalError("Cannot hold the deferred validation fixture's artifact lock");
+        *locked = true;
+        QElapsedTimer deadline;
+        deadline.start();
+        while (!*release && deadline.elapsed() < 10000)
+          QThread::msleep(1);
+        ::flock(artifact.handle(), LOCK_UN);
+        *locked = false;
+        return absl::OkStatus();
+      });
+  auto wait = [](const std::function<bool()>& done) {
+    for (int i = 0; i < 500 && !done(); ++i)
+      QTest::qWait(10);
+    return done();
+  };
+  if (!expect(
+          wait([&] { return locked->load(); }) && !framing->isChecked(),
+          "Deferred validation fixture must hold readiness ownership with framing off"))
+    return false;
+  const int commands = window->logText().count("pipeline command ");
+  const int validation_errors = window->logText().count("Player analytics prerequisites:");
+  activate(start);
+  if (!expect(
+          !start->isEnabled() && stop->isEnabled() && pose->isEnabled() && rate->isEnabled(),
+          "Pending Play must retain editable Players settings and offer Stop"))
+    return false;
+  pose->setChecked(true);
+  rate->setText("0");
+  *release = true;
+  if (!expect(
+          wait([&] { return window->logText().count("Player analytics prerequisites:") > validation_errors; }) &&
+              window->logText().count("pipeline command ") == commands,
+          "Retired readiness must revalidate Players edits before launching"))
+    return false;
+  if (!expect(
+          start->isEnabled() && !stop->isEnabled() && mode->isEnabled() && game->isEnabled() &&
+              !status->text().contains("Waiting for saved rink map validation"),
+          "Rejected deferred Play must restore idle controls and retire its waiting status"))
+    return false;
+  pose->setChecked(original_pose);
+  rate->setText(original_rate);
+  activate(start);
+  return expect(
+      wait([&] {
+        return window->pipelineStateText() == "PLAYING" &&
+            window->logText().count("pipeline command ") == commands + 1;
+      }),
+      "Corrected Players settings must allow one subsequent Play without an extra Stop");
+}
+
 bool test_pipeline_buttons(HStreamWindow* window) {
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
@@ -8472,6 +8548,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     HStreamWindowTestAccess::useRinkMapCheck(window, {});
   }
+
+  if (!test_deferred_play_validation(window))
+    return false;
 
   const QByteArray original_runner = qgetenv("HSTREAM_UI_TEST_RUNNER");
   const int process_errors_before = window->logText().count("pipeline process error");
@@ -21771,6 +21850,11 @@ int main(int argc, char** argv) {
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GAME_SETUP_ONLY")) {
     HStreamWindow window;
     return test_game_setup(&window, source_root.path()) ? 0 : 1;
+  }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_DEFERRED_PLAY_VALIDATION_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_game_setup(&window, source_root.path()) && test_deferred_play_validation(&window) ? 0 : 1;
   }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_JOB_EXPORT_ONLY"))
     return test_job_export() ? 0 : 1;

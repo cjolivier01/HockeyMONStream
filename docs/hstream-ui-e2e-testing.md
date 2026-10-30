@@ -511,6 +511,11 @@ change or a newer pipeline generation cancels the pending request.
 and checks that readiness retains ownership while the GUI continues processing
 timers. The full `hstream_ui_test` uses the same lock with a fake runner to check
 one deferred launch, repeated Play, Stop, game changes and generation fencing.
+Players settings remain editable while Play waits. If those edits fail validation
+after readiness retires, the waiting message and control lock must retire too.
+Correcting the settings must permit one new Play without an intervening Stop.
+`HSTREAM_UI_TEST_DEFERRED_PLAY_VALIDATION_ONLY=1` runs that focused fake-runner
+regression; it also runs in the ordinary pipeline-buttons suite.
 These CPU checks do not qualify actual GPU playback. The failed native scoreboard
 startup remains retained; rerun it against the newly frozen runtime before
 claiming that live case passes. The browser already uses supervised native
