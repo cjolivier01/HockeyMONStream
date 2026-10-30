@@ -533,6 +533,16 @@ while True:
   static void advancePipelineGeneration(HStreamWindow* window) {
     ++window->pipeline_run_generation_;
   }
+  static quint64 pipelineRunGeneration(HStreamWindow* window) {
+    return window->pipeline_run_generation_;
+  }
+  static bool pipelineStartPending(HStreamWindow* window) {
+    return window->deferred_play_requested_ || window->deferred_restart_requested_;
+  }
+  static bool pipelineAdmittedFor(HStreamWindow* window, quint64 generation, const QString& game_id) {
+    return window->pipeline_run_generation_ == generation && window->active_run_game_id_ == game_id &&
+        window->pipeline_process_ && window->pipeline_process_->state() != QProcess::NotRunning;
+  }
   static void inheritCustomDetector(HStreamWindow* window) {
     window->baseline_config_["pipeline"]["primary-gie"]["config-file"] = "custom-detector.yaml";
     window->baseline_config_["pipeline"]["primary-gie"]["model-engine-file"] = "custom.engine";
@@ -4545,6 +4555,31 @@ bool expect_application_identity(HStreamWindow* window) {
   return true;
 }
 
+bool wait_for_pipeline_admission(
+    HStreamWindow* window,
+    quint64 previous_generation,
+    const QString& game_id,
+    const QElapsedTimer& timer,
+    int deadline_ms,
+    QString* error) {
+  while (timer.elapsed() < deadline_ms) {
+    // A synchronous launch needs no event drain before its immutable manifest
+    // is captured. A queued Play owns STOPPED until readiness actually retires.
+    if (HStreamWindowTestAccess::pipelineAdmittedFor(window, previous_generation + 1, game_id)) {
+      error->clear();
+      return true;
+    }
+    if (HStreamWindowTestAccess::pipelineRunGeneration(window) != previous_generation ||
+        !HStreamWindowTestAccess::pipelineStartPending(window)) {
+      *error = "Play was cancelled or rejected before the requested pipeline was admitted";
+      return false;
+    }
+    QTest::qWait(static_cast<int>(std::clamp<qint64>(deadline_ms - timer.elapsed(), 0, 20)));
+  }
+  *error = "Timed out waiting for deferred Play admission";
+  return false;
+}
+
 bool test_deferred_play_validation(HStreamWindow* window) {
   auto* start = require_child<QPushButton>(window, "startPipelineButton");
   auto* stop = require_child<QPushButton>(window, "stopPipelineButton");
@@ -4558,67 +4593,110 @@ bool test_deferred_play_validation(HStreamWindow* window) {
   mode->setCurrentIndex(mode->findData("program"));
   const bool original_pose = pose->isChecked();
   const QString original_rate = rate->text();
-  auto release = std::make_shared<std::atomic<bool>>(false);
-  auto locked = std::make_shared<std::atomic<bool>>(false);
-  const absl::Cleanup restore = [&, release] {
-    *release = true;
-    pose->setChecked(original_pose);
-    rate->setText(original_rate);
-    activate(stop);
-    HStreamWindowTestAccess::useRinkMapCheck(window, {});
-  };
-  auto* framing = HStreamWindowTestAccess::useRinkMapCheck(
-      window, [release, locked](const QString& path, const std::function<bool()>&) {
-        QFile artifact(path + "/.hstream-stitch.lock");
-        if (!artifact.open(QIODevice::ReadWrite) || ::flock(artifact.handle(), LOCK_EX) != 0)
-          return absl::InternalError("Cannot hold the deferred validation fixture's artifact lock");
-        *locked = true;
-        QElapsedTimer deadline;
-        deadline.start();
-        while (!*release && deadline.elapsed() < 10000)
-          QThread::msleep(1);
-        ::flock(artifact.handle(), LOCK_UN);
-        *locked = false;
-        return absl::OkStatus();
-      });
   auto wait = [](const std::function<bool()>& done) {
     for (int i = 0; i < 500 && !done(); ++i)
       QTest::qWait(10);
     return done();
   };
-  if (!expect(
-          wait([&] { return locked->load(); }) && !framing->isChecked(),
-          "Deferred validation fixture must hold readiness ownership with framing off"))
-    return false;
-  const int commands = window->logText().count("pipeline command ");
-  const int validation_errors = window->logText().count("Player analytics prerequisites:");
-  activate(start);
-  if (!expect(
-          !start->isEnabled() && stop->isEnabled() && pose->isEnabled() && rate->isEnabled(),
-          "Pending Play must retain editable Players settings and offer Stop"))
-    return false;
-  pose->setChecked(true);
-  rate->setText("0");
-  *release = true;
-  if (!expect(
-          wait([&] { return window->logText().count("Player analytics prerequisites:") > validation_errors; }) &&
-              window->logText().count("pipeline command ") == commands,
-          "Retired readiness must revalidate Players edits before launching"))
-    return false;
-  if (!expect(
-          start->isEnabled() && !stop->isEnabled() && mode->isEnabled() && game->isEnabled() &&
-              !status->text().contains("Waiting for saved rink map validation"),
-          "Rejected deferred Play must restore idle controls and retire its waiting status"))
-    return false;
-  pose->setChecked(original_pose);
-  rate->setText(original_rate);
-  activate(start);
-  return expect(
-      wait([&] {
-        return window->pipelineStateText() == "PLAYING" &&
-            window->logText().count("pipeline command ") == commands + 1;
-      }),
-      "Corrected Players settings must allow one subsequent Play without an extra Stop");
+  for (const QString& outcome : {"admitted", "rejected", "cancelled", "timeout"}) {
+    auto release = std::make_shared<std::atomic<bool>>(false);
+    auto locked = std::make_shared<std::atomic<bool>>(false);
+    const absl::Cleanup restore = [&, release] {
+      *release = true;
+      pose->setChecked(original_pose);
+      rate->setText(original_rate);
+      activate(stop);
+      HStreamWindowTestAccess::useRinkMapCheck(window, {});
+    };
+    auto* framing = HStreamWindowTestAccess::useRinkMapCheck(
+        window, [release, locked](const QString& path, const std::function<bool()>&) {
+          QFile artifact(path + "/.hstream-stitch.lock");
+          if (!artifact.open(QIODevice::ReadWrite) || ::flock(artifact.handle(), LOCK_EX) != 0)
+            return absl::InternalError("Cannot hold the deferred validation fixture's artifact lock");
+          *locked = true;
+          QElapsedTimer deadline;
+          deadline.start();
+          while (!*release && deadline.elapsed() < 10000)
+            QThread::msleep(1);
+          ::flock(artifact.handle(), LOCK_UN);
+          *locked = false;
+          return absl::OkStatus();
+        });
+    if (!expect(
+            wait([&] { return locked->load(); }) && !framing->isChecked(),
+            "Deferred validation fixture must hold readiness ownership with framing off"))
+      return false;
+    const int commands = window->logText().count("pipeline command ");
+    const int validation_errors = window->logText().count("Player analytics prerequisites:");
+    const quint64 generation = HStreamWindowTestAccess::pipelineRunGeneration(window);
+    const QString requested_game = game->text().trimmed();
+    QElapsedTimer admission_timer;
+    admission_timer.start();
+    start->click();
+    if (!expect(
+            !start->isEnabled() && stop->isEnabled() && pose->isEnabled() && rate->isEnabled() &&
+                HStreamWindowTestAccess::pipelineStartPending(window),
+            "Pending Play must retain editable Players settings and offer Stop"))
+      return false;
+    if (outcome == "rejected") {
+      pose->setChecked(true);
+      rate->setText("0");
+    }
+    if (outcome != "timeout") {
+      QTimer::singleShot(100, window, [release, stop, outcome] {
+        if (outcome == "cancelled")
+          stop->click();
+        *release = true;
+      });
+    }
+    QString admission_error;
+    const int deadline_ms = outcome == "timeout" ? static_cast<int>(admission_timer.elapsed()) + 100 : 5000;
+    const bool admitted =
+        wait_for_pipeline_admission(window, generation, requested_game, admission_timer, deadline_ms, &admission_error);
+    if (outcome == "admitted") {
+      if (!expect(
+              admitted && admission_error.isEmpty() && !locked->load() &&
+                  window->logText().count("pipeline command ") == commands + 1,
+              "E2E admission must wait for the real readiness owner and bind exactly one new pipeline"))
+        return false;
+    } else {
+      if (!expect(
+              !admitted && window->logText().count("pipeline command ") == commands,
+              "Rejected, cancelled or expired admission must not report a running pipeline"))
+        return false;
+      if (outcome == "timeout") {
+        if (!expect(
+                admission_error.contains("Timed out") && locked->load() &&
+                    HStreamWindowTestAccess::pipelineStartPending(window),
+                "Admission timeout must respect its existing deadline without fabricating retirement"))
+          return false;
+        activate(stop);
+        *release = true;
+      } else if (!expect(admission_error.contains("cancelled or rejected"), "Admission must report its rejection")) {
+        return false;
+      }
+      if (outcome == "rejected") {
+        if (!expect(
+                window->logText().count("Player analytics prerequisites:") > validation_errors && start->isEnabled() &&
+                    !stop->isEnabled() && mode->isEnabled() && game->isEnabled() &&
+                    !status->text().contains("Waiting for saved rink map validation"),
+                "Rejected deferred Play must restore idle controls and retire its waiting status"))
+          return false;
+        pose->setChecked(original_pose);
+        rate->setText(original_rate);
+        admission_timer.restart();
+        start->click();
+        if (!expect(
+                wait_for_pipeline_admission(
+                    window, generation, requested_game, admission_timer, 5000, &admission_error) &&
+                    wait([&] { return window->pipelineStateText() == "PLAYING"; }) &&
+                    window->logText().count("pipeline command ") == commands + 1,
+                "Corrected Players settings must allow one subsequent Play without an extra Stop"))
+          return false;
+      }
+    }
+  }
+  return true;
 }
 
 bool test_pipeline_buttons(HStreamWindow* window) {
@@ -19398,8 +19476,10 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
 bool has_fatal_pipeline_log_issue(const QString& log) {
   const QRegularExpression missing_optional_rink_map(
       R"(^\d{2}:\d{2}:\d{2}\.\d{3} HSTREAM_RINK_MAP status=unavailable run=\d+ message=FAILED_PRECONDITION: Save a reviewed rink map before using rink-aware framing or the mini-map$)");
+  const QRegularExpression stale_rink_mask_frame_time(
+      R"(^\d{2}:\d{2}:\d{2}\.\d{3} Rink mask cannot be reused: FAILED_PRECONDITION: Field mask was generated with a different rink mask frame time$)");
   for (const QString& line : log.split('\n')) {
-    if (missing_optional_rink_map.match(line).hasMatch())
+    if (missing_optional_rink_map.match(line).hasMatch() || stale_rink_mask_frame_time.match(line).hasMatch())
       continue;
     if (line.contains("ERROR from element") || line.contains("FAILED_PRECONDITION:") ||
         line.contains("Segmentation fault") || line.contains("CUDA error:"))
@@ -19412,13 +19492,20 @@ bool test_pipeline_log_issue_classification() {
   const QString optional =
       "10:50:02.852 HSTREAM_RINK_MAP status=unavailable run=1 message=FAILED_PRECONDITION: Save a reviewed rink map "
       "before using rink-aware framing or the mini-map\n";
+  const QString stale_mask =
+      "17:22:08.508 Rink mask cannot be reused: FAILED_PRECONDITION: Field mask was generated with a different "
+      "rink mask frame time\n";
   return expect(!has_fatal_pipeline_log_issue(optional), "An absent optional rink map is not a pipeline failure") &&
-      expect(
-          has_fatal_pipeline_log_issue(optional + "ERROR from element primary_gie: inference failed\n") &&
-              has_fatal_pipeline_log_issue("FAILED_PRECONDITION: calibration is stale\n") &&
-              has_fatal_pipeline_log_issue("CUDA error: invalid argument\n") &&
-              has_fatal_pipeline_log_issue(optional + "Segmentation fault\n"),
-          "Optional status messages must not hide actual pipeline failures");
+      expect(!has_fatal_pipeline_log_issue(stale_mask), "A stale rink-mask frame time permits native regeneration") &&
+      expect(has_fatal_pipeline_log_issue(optional + "ERROR from element primary_gie: inference failed\n") &&
+                 has_fatal_pipeline_log_issue("FAILED_PRECONDITION: calibration is stale\n") &&
+                 has_fatal_pipeline_log_issue(
+                     "17:22:08.508 Rink mask cannot be reused: FAILED_PRECONDITION: calibration is stale\n") &&
+                 has_fatal_pipeline_log_issue(stale_mask.trimmed() + "; FAILED_PRECONDITION: model is missing\n") &&
+                 has_fatal_pipeline_log_issue(stale_mask + "FAILED_PRECONDITION: model is missing\n") &&
+                 has_fatal_pipeline_log_issue("CUDA error: invalid argument\n") &&
+                 has_fatal_pipeline_log_issue(optional + "Segmentation fault\n"),
+             "Optional or recoverable diagnostics must not hide actual pipeline failures");
 }
 
 bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
@@ -19584,35 +19671,49 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       return false;
     toggle->setChecked(requested_outputs.contains(output));
   }
-  start->click();
-  std::optional<ManagedTelemetryReceipt> telemetry_receipt;
-  QString published_telemetry_path;
-  QString telemetry_publication_error;
-  if (require_standalone_telemetry) {
-    try {
-      // Finalization clears the window's manifest. Keep this run's immutable
-      // admission binding before processing any more events.
-      telemetry_receipt = capture_managed_telemetry_receipt(
-          HStreamWindowTestAccess::managedArchiveManifest(window), window->gameDirectoryText());
-    } catch (const std::exception& error) {
-      telemetry_publication_error = QString::fromUtf8(error.what());
-    }
-  }
-  QApplication::processEvents();
   const auto stop_and_preserve_failure = [&]() {
     activate(stop);
-    for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
+    for (int i = 0; i < 300 &&
+         (window->pipelineStateText() != "STOPPED" || !HStreamWindowTestAccess::pipelineRetired(window) ||
+          HStreamWindowTestAccess::pipelineStartPending(window));
+         ++i) {
       QApplication::processEvents();
       QTest::qWait(100);
     }
     window->grab().save(QDir(artifact_dir).filePath("ui-failed.png"));
     write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), window->completeLogText());
   };
-
   const int timeout_ms = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_TIMEOUT_MS");
   const int deadline_ms = timeout_ms > 0 ? timeout_ms : 120000;
+  const quint64 previous_generation = HStreamWindowTestAccess::pipelineRunGeneration(window);
+  const QString requested_game = game_id_edit->text().trimmed();
   QElapsedTimer timer;
   timer.start();
+  start->click();
+  QString admission_error;
+  if (!wait_for_pipeline_admission(window, previous_generation, requested_game, timer, deadline_ms, &admission_error)) {
+    std::cerr << "E2E pipeline admission failed: " << admission_error.toStdString() << '\n';
+    stop_and_preserve_failure();
+    return false;
+  }
+  std::optional<ManagedTelemetryReceipt> telemetry_receipt;
+  QString published_telemetry_path;
+  QString telemetry_publication_error;
+  if (require_standalone_telemetry) {
+    try {
+      // Finalization clears the window's manifest. Keep this run's immutable
+      // admission binding only after Play owns the requested process, before
+      // processing any more events.
+      telemetry_receipt = capture_managed_telemetry_receipt(
+          HStreamWindowTestAccess::managedArchiveManifest(window), window->gameDirectoryText());
+    } catch (const std::exception& error) {
+      telemetry_publication_error = QString::fromUtf8(error.what());
+      std::cerr << "Could not capture admitted telemetry receipt: " << error.what() << '\n';
+      stop_and_preserve_failure();
+      return false;
+    }
+  }
+  QApplication::processEvents();
   bool observed_first_frame = false;
   bool submitted_scoreboard = false;
   const bool cancel_initial_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD");
@@ -19802,7 +19903,14 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           interaction_error = "initial scoreboard Cancel is unavailable";
         }
       } else {
-        submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+        auto* dialog = window->findChild<QDialog*>("scoreboardSelectionDialog");
+        if (!dialog || !dialog->isVisible()) {
+          interaction_error = "initial scoreboard dialog is unavailable for evidence capture";
+        } else if (!dialog->grab().save(QDir(artifact_dir).filePath("scoreboard-selection.png"))) {
+          interaction_error = "could not save the initial scoreboard dialog screenshot";
+        } else {
+          submitted_scoreboard = submit_no_scoreboard(window, &interaction_error);
+        }
       }
       if (!submitted_scoreboard) {
         std::cerr << "Could not submit the scoreboard selector: " << interaction_error.toStdString() << '\n';
