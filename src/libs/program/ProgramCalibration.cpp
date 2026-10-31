@@ -13,10 +13,13 @@ namespace hm::program {
 namespace {
 // Calibration identity needs exact decimal comparison. The general playback
 // parser uses floating point and can differ by a nanosecond across spellings.
-uint64_t ReferenceNanoseconds(std::string_view text) {
-  const auto invalid = [] { throw std::invalid_argument("Expected nonnegative [HH:]MM:SS or decimal seconds"); };
+int64_t ReferenceNanoseconds(std::string_view text) {
+  const bool negative = !text.empty() && text.front() == '-';
+  if (negative)
+    text.remove_prefix(1);
+  const auto invalid = [] { throw std::invalid_argument("Expected signed [HH:]MM:SS or decimal seconds"); };
   constexpr uint64_t billion = 1000000000;
-  constexpr auto maximum = std::numeric_limits<uint64_t>::max();
+  constexpr auto maximum = uint64_t(std::numeric_limits<int64_t>::max());
   uint64_t seconds = 0, fraction = 0;
   unsigned components = 0;
   for (;;) {
@@ -54,7 +57,10 @@ uint64_t ReferenceNanoseconds(std::string_view text) {
   }
   if (seconds > (maximum - fraction) / billion)
     invalid();
-  return seconds * billion + fraction;
+  const int64_t result = seconds * billion + fraction;
+  if (negative && result == 0)
+    invalid();
+  return negative ? -result : result;
 }
 } // namespace
 absl::Status ValidateProgramCalibrationSelection(const YAML::Node& saved, const ProgramCalibrationRequest& request) {

@@ -971,6 +971,46 @@ def main():
             "epipolar_ransac": False,
             "homography_consistency": False,
         }
+        for index, reference in enumerate(("-00:00:01", "-00:00:01.125", "-00:00:00")):
+            signed = root / f"signed-reference-{index}"
+            signed.mkdir()
+            signed_path = request(
+                signed,
+                "experiment-create",
+                {
+                    "settings": {
+                        "stitch_frame_time": reference,
+                        "camera": {"camera_automation": {"fov": False, "lens": False}},
+                    }
+                },
+            )
+            (signed / "game" / "config.yaml").write_bytes(
+                (experiments / "game" / "config.yaml").read_bytes()
+            )
+            for camera in ("cam1", "cam2"):
+                (signed / "game" / camera).mkdir()
+                (signed / "game" / camera / "clip.mp4").write_bytes(
+                    b"manual-optics-fixture"
+                )
+            if reference == "-00:00:00":
+                run(args.binary, signed_path, expected=1)
+                failed = json.loads((signed / "operation-result.json").read_text())
+                assert (
+                    failed["state"] == "failed" and failed["runner_succeeded"] is False
+                )
+                assert failed["artifacts"] == []
+            else:
+                run(args.binary, signed_path)
+                signed_receipt = json.loads(
+                    (signed / "operation-result.json").read_text()
+                )
+                assert_artifacts(signed, signed_receipt)
+                assert (
+                    signed_receipt["result"]["workspace"]["settings"][
+                        "stitch_frame_time"
+                    ]
+                    == reference
+                )
         # A derived matrix must inherit the selected candidate's private
         # settings, not the older main game carried beside that workspace.
         (experiments / "operation-result.json").unlink()

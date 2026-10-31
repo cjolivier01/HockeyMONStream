@@ -3341,8 +3341,8 @@ absl::Status create_control_points(
       return absl::InvalidArgumentError("Captured calibration inputs require both image writers");
     HM_RETURN_IF_ERROR(pair.left(left_file));
     HM_RETURN_IF_ERROR(pair.right(right_file));
-    metadata_frames.emplace_back(left_file, pair.left_source);
-    metadata_frames.emplace_back(right_file, pair.right_source);
+    metadata_frames.emplace_back(left_file, pair.source(0));
+    metadata_frames.emplace_back(right_file, pair.source(1));
     input_files.emplace_back(left_file, right_file);
   }
   CalibrationFrameExifWriter exif_writer(is_cancelled);
@@ -3500,7 +3500,7 @@ absl::Status create_control_points(
           index,
           frame_pairs.size(),
           {left, right},
-          {frame_pairs[index].left_source, frame_pairs[index].right_source}));
+          {frame_pairs[index].source(0), frame_pairs[index].source(1)}));
     }
     if (index == 0) {
       left_source_size = left.size();
@@ -3512,8 +3512,8 @@ absl::Status create_control_points(
     recorded_frame.images = {input_files[index].first, input_files[index].second};
     recorded_frame.sizes = {left.size(), right.size()};
     recorded_frame.source_paths = {
-        frame_pairs[index].left_source.video.string(), frame_pairs[index].right_source.video.string()};
-    recorded_frame.source_seconds = {frame_pairs[index].left_source.seconds, frame_pairs[index].right_source.seconds};
+        frame_pairs[index].source(0).video.string(), frame_pairs[index].source(1).video.string()};
+    recorded_frame.source_seconds = {frame_pairs[index].source(0).seconds, frame_pairs[index].source(1).seconds};
     FeatureMatchResult frame_matches;
     if (manual_matches) {
       HM_ASSIGN_OR_RETURN(

@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
+#include "hstream/src/libs/stitching/CalibrationReferenceFrames.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/preputils.h"
@@ -1030,7 +1031,7 @@ absl::Status StitcherPriv::capture_calibration_pair(
     const NvDsFrameMeta* left_meta,
     const NvDsFrameMeta* right_meta,
     uint64_t pair_pts_ns) {
-  const size_t required_frame_count = calibration_frame_count_;
+  const size_t required_frame_count = end_relative_calibration_ ? 1 : calibration_frame_count_;
   if (captured_calibration_frame_pairs_.size() >= required_frame_count) {
     return absl::OkStatus();
   }
@@ -1064,6 +1065,7 @@ std::vector<hm::stitching::StitchingCalibrationFramePair> StitcherPriv::captured
 }
 
 absl::Status StitcherPriv::initialize_calibration_frame_selection() {
+  end_relative_calibration_ = false;
   calibration_frame_selector_.reset();
   cached_calibration_frame_pairs_.clear();
   captured_frame_selection_fingerprint_.clear();
@@ -1108,6 +1110,18 @@ absl::Status StitcherPriv::initialize_calibration_frame_selection() {
     return absl::InvalidArgumentError("Selected-frame input cache reference must be a fingerprint");
   const std::string required_cache = cached_marker && !cached_marker.IsNull() ? cached_marker.as<std::string>() : "";
   const YAML::Node selection = stitching_config["calibration_frame_selection"];
+  const auto reference = stitching_config["stitch_frame_time"];
+  try {
+    if (reference && hm::stitch_frame_time_to_nanoseconds(reference.as<std::string>()) < 0) {
+      if (selection && !selection.IsNull())
+        return absl::FailedPreconditionError(
+            "End-relative calibration uses circular frame sampling; clear the retained player-rich selection first");
+      end_relative_calibration_ = true;
+    }
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Invalid first calibration frame: " + std::string(error.what()));
+  }
+
   if (!selection || selection.IsNull()) {
     if (!required_cache.empty())
       return absl::FailedPreconditionError("Selected-frame input cache reference has no matching frame plan");
@@ -1296,13 +1310,32 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
         }
         orientation_ran_ = true;
       }
-      absl::Status configure_status = stitching::configure_stitching(
-          config_file_,
-          frame_pairs,
-          calibration_invalidation_id_,
-          [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
-          max_output_width_,
-          captured_frame_selection_fingerprint_);
+      absl::Status configure_status;
+      if (end_relative_calibration_) {
+        auto config = stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml");
+        if (!config.ok() || !*config)
+          return config.ok() ? absl::NotFoundError("Calibration config disappeared") : config.status();
+        std::vector<stitching::CalibrationFrameInput> inputs;
+        HM_ASSIGN_OR_RETURN(
+            inputs, stitching::EndRelativeCalibrationInputs(config_file_, **config, calibration_frame_count_, [this] {
+              return calibration_cancelled_.load(std::memory_order_acquire);
+            }));
+        configure_status = stitching::configure_stitching(
+            config_file_,
+            inputs,
+            calibration_invalidation_id_,
+            [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+            max_output_width_,
+            "");
+      } else {
+        configure_status = stitching::configure_stitching(
+            config_file_,
+            frame_pairs,
+            calibration_invalidation_id_,
+            [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+            max_output_width_,
+            captured_frame_selection_fingerprint_);
+      }
       if (!configure_status.ok()) {
         std::cerr << configure_status << "\n" << std::flush;
         if (absl::IsCancelled(configure_status)) {
@@ -1482,7 +1515,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   for (size_t index = 0; index < runtime_frame_keys.size(); ++index) {
     frame_indices[runtime_frame_keys[index].frame_num].emplace(runtime_frame_keys[index].source_id, index);
   }
-  const size_t required_frame_count = calibration_frame_count_;
+  const size_t required_frame_count = end_relative_calibration_ ? 1 : calibration_frame_count_;
   std::vector<std::pair<size_t, size_t>> selected_pairs;
   selected_pairs.reserve(std::min(required_frame_count, frame_indices.size()));
   for (const auto& [frame_num, by_source] : frame_indices) {
@@ -2149,7 +2182,7 @@ absl::Status StitcherPriv::GenerateOutput(
   if (first_pass_will_configure_stitching && !cached_calibration_frame_pairs_.empty()) {
     batch_calibration_frame_pairs = cached_calibration_frame_pairs_;
   } else if (first_pass_will_configure_stitching) {
-    const size_t required_frame_count = calibration_frame_count_;
+    const size_t required_frame_count = end_relative_calibration_ ? 1 : calibration_frame_count_;
     batch_calibration_frame_pairs.reserve(std::min(required_frame_count, frame_source_surfaces.size()));
     for (const auto& [frame_number, source_to_surface] : frame_source_surfaces) {
       (void)frame_number;
