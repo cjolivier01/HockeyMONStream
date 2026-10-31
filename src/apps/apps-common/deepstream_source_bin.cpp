@@ -16,7 +16,9 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -35,6 +37,7 @@
 #include "hstream/src/apps/apps-common/UriPlaylistCapturePoolDrain.h"
 #include "hstream/src/apps/apps-common/UriPlaylistDiscovery.h"
 #include "hstream/src/libs/common/ShutdownWatchdog.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 
 #include "hstream/src/libs/camera/AutoFocus.h"
 #include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
@@ -73,21 +76,34 @@ GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(const gch
       return found->second.duration;
     }
   }
-  // Discoverer may initialize decoders just to obtain the container duration.
-  // Do this once per unchanged chapter, rather than again on every seek.
-  GError* error = nullptr;
-  GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
-  GstDiscovererInfo* info = discoverer ? gst_discoverer_discover_uri(discoverer, uri, &error) : nullptr;
-  GstClockTime duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
-  const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
-  if (info)
-    gst_discoverer_info_unref(info);
-  if (discoverer)
-    g_object_unref(discoverer);
-  if (error)
-    g_error_free(error);
-  if (!discovery_has_usable_duration(result, duration))
-    duration = GST_CLOCK_TIME_NONE;
+  GstClockTime duration = GST_CLOCK_TIME_NONE;
+  // Use the same video-track chapter clock as synchronization and AMD. Audio
+  // tails must not change which chapter or camera frame a source start selects.
+  bool discover_container = !cacheable;
+  if (cacheable) {
+    auto video = hm::stitching::CameraRecordingWindowAt({filename}, 0, std::numeric_limits<double>::max());
+    if (video.ok() && video->duration_seconds < double(G_MAXINT64) / GST_SECOND)
+      duration = std::llround(video->duration_seconds * GST_SECOND);
+    else
+      discover_container = absl::IsNotFound(video.status()); // Audio-only source.
+  }
+  if (discover_container) {
+    // Discoverer may initialize decoders just to obtain the container duration.
+    // Do this once per unchanged chapter, rather than again on every seek.
+    GError* error = nullptr;
+    GstDiscoverer* discoverer = gst_discoverer_new(10 * GST_SECOND, &error);
+    GstDiscovererInfo* info = discoverer ? gst_discoverer_discover_uri(discoverer, uri, &error) : nullptr;
+    duration = info ? gst_discoverer_info_get_duration(info) : GST_CLOCK_TIME_NONE;
+    const GstDiscovererResult result = info ? gst_discoverer_info_get_result(info) : GST_DISCOVERER_ERROR;
+    if (info)
+      gst_discoverer_info_unref(info);
+    if (discoverer)
+      g_object_unref(discoverer);
+    if (error)
+      g_error_free(error);
+    if (!discovery_has_usable_duration(result, duration))
+      duration = GST_CLOCK_TIME_NONE;
+  }
   struct stat after{};
   if (cacheable && GST_CLOCK_TIME_IS_VALID(duration) && stat(filename, &after) == 0 && same_file(before, after)) {
     std::lock_guard<std::mutex> lock(cache_mutex);

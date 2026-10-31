@@ -36,7 +36,7 @@ void field(std::string& bytes, unsigned tag, uint64_t value) {
 }
 void append_gyro(const std::filesystem::path& path, bool raw, double delay, bool stationary = false) {
   std::string gyro;
-  for (int i = 0; i < 3000; ++i) {
+  for (int i = 0; i <= 3200; ++i) {
     const double t = i / 200.0;
     le(gyro, static_cast<uint64_t>(std::llround(1000000 + (t + 0.125) * (raw ? 1000000 : 1000))), 8);
     const double shifted = t + delay;
@@ -232,6 +232,17 @@ int main() {
   ok &= expect(
       tail.ok() && !tail->gyro.empty() && tail->gyro.size() < 100,
       "A short chapter slice must remain available for concatenated IMU windows");
+  const auto across_chapters = calculate_stitching_synchronization(
+      std::vector<std::string>{left, left},
+      std::vector<std::string>{left, left},
+      {15, 15},
+      SynchronizationMethod::kImu);
+  ok &= expect(
+      across_chapters.ok() && std::abs(across_chapters->video1_frame_offset - 375) < 0.01 &&
+          std::abs(across_chapters->video2_frame_offset - 375) < 0.01,
+      "Positioned Insta360 windows must exclude chapter endpoints before concatenating the next chapter");
+  if (!across_chapters.ok())
+    std::cerr << across_chapters.status() << '\n';
   const auto sync = calculate_stitching_synchronization(left, right, SynchronizationMethod::kImu);
   const auto reverse = calculate_stitching_synchronization(right, left, SynchronizationMethod::kAuto);
   ok &= expect(

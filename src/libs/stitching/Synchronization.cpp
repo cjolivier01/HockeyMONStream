@@ -173,7 +173,7 @@ absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
       return status;
     const int video = av_find_best_stream(input.format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (video < 0)
-      return absl::FailedPreconditionError("Camera chapter has no video: " + file);
+      return absl::NotFoundError("Camera chapter has no video: " + file);
     const auto* stream = input.format->streams[video];
     const double fps = av_q2d(stream->avg_frame_rate);
     const double duration = stream->duration == AV_NOPTS_VALUE ? 0 : stream->duration * av_q2d(stream->time_base);
