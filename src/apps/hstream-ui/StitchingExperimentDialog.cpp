@@ -2112,7 +2112,10 @@ struct StitchingExperimentDialog::Impl {
         frame_selection_policy(candidate).first,
         candidate_image_size(candidate),
         candidate_matcher_label(candidate),
-        settings.camera ? QString::fromStdString(settings.camera->input_lens.projection) : QString("Saved setting"),
+        settings.camera
+            ? (settings.camera->input_cameras.empty() ? QString::fromStdString(settings.camera->input_lens.projection)
+                                                      : QString("Per-camera"))
+            : QString("Saved setting"),
     };
     for (int column = 0; column < columns.size(); ++column) {
       auto* item = new QTableWidgetItem(columns[column]);
@@ -2120,18 +2123,24 @@ struct StitchingExperimentDialog::Impl {
       table->setItem(row, column, item);
     }
     if (settings.camera) {
-      const auto& lens = settings.camera->input_lens;
-      table->item(row, 9)->setToolTip(
-          QString(
-              "Camera horizontal FOV: %1°\nCalibration: %2\nDistortion a/b/c: %3 / %4 / %5\n"
-              "Center offset X/Y: %6% / %7%")
-              .arg(settings.camera->horizontal_fov, 0, 'g', 12)
-              .arg(QString::fromStdString(lens.optimization))
-              .arg(lens.distortion[0], 0, 'g', 12)
-              .arg(lens.distortion[1], 0, 'g', 12)
-              .arg(lens.distortion[2], 0, 'g', 12)
-              .arg(lens.center_offset[0] * 100, 0, 'g', 12)
-              .arg(lens.center_offset[1] * 100, 0, 'g', 12));
+      const auto describe = [](const hm::stitching::StitchCameraSelection& camera) {
+        const auto& lens = camera.input_lens;
+        return QString(
+                   "Camera horizontal FOV: %1°\nCalibration: %2\nDistortion a/b/c: %3 / %4 / %5\n"
+                   "Center offset X/Y: %6% / %7%\nProjection: %8")
+            .arg(camera.horizontal_fov, 0, 'g', 12)
+            .arg(QString::fromStdString(lens.optimization))
+            .arg(lens.distortion[0], 0, 'g', 12)
+            .arg(lens.distortion[1], 0, 'g', 12)
+            .arg(lens.distortion[2], 0, 'g', 12)
+            .arg(lens.center_offset[0] * 100, 0, 'g', 12)
+            .arg(lens.center_offset[1] * 100, 0, 'g', 12)
+            .arg(QString::fromStdString(lens.projection));
+      };
+      QStringList descriptions;
+      for (const auto& [source, values] : settings.camera->input_cameras)
+        descriptions << QString::fromStdString(source) + "\n" + describe(settings.camera->for_source(source));
+      table->item(row, 9)->setToolTip(descriptions.empty() ? describe(*settings.camera) : descriptions.join("\n\n"));
     }
     table->item(row, 6)->setToolTip(frame_selection_policy(candidate).second);
     table->item(row, 5)->setToolTip(candidate.failure);
@@ -3467,8 +3476,6 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.camera_result = auto_lens;
     camera = auto_lens.camera;
     s.input_lens->setCameraDetails(auto_lens);
-    SetSharedCameraFovVisible(s.camera_horizontal_fov, camera->input_cameras.empty());
-    SetSharedCameraFovVisible(s.camera_vertical_fov, camera->input_cameras.empty());
     s.input_lens->setMetadataStatus(
         QString::fromStdString(auto_lens.lens_message), camera->automatic_lens(), auto_lens.lens_from_mp4);
     s.camera_auto_fov->setChecked(camera->automatic_fov());
@@ -3642,6 +3649,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   fov_form->addRow(s.camera_fov_status);
   fov_form->addRow("Camera horizontal FOV", s.camera_horizontal_fov);
   fov_form->addRow("Camera vertical FOV", s.camera_vertical_fov);
+  SetSharedCameraFovVisible(s.camera_horizontal_fov, s.camera_settings.input_cameras.empty());
+  SetSharedCameraFovVisible(s.camera_vertical_fov, s.camera_settings.input_cameras.empty());
   camera_form->addRow(s.camera_fov_group);
   camera_form->addRow(s.input_lens);
   matrix_layout->addRow(camera_group);

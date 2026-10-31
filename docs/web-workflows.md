@@ -380,8 +380,12 @@ Its frozen finalizer run ID owns the existing manifest, runtime directory and
 publication transaction. Supervisor arguments, including the reserved signaling
 port and private preview run ID, pass through to the CLI unchanged. The bridge
 reads `work/game/runs/<native-id>/pipeline.log` while the finalizer owns stdout.
-Graceful Stop drains completed files into exact native receipts; cancellation
-or failed encoding cannot publish them. Preview-only sessions continue to use
+Stop asks whether to publish partial video/telemetry. The default and Escape
+cancel publication; only an explicit Publish choice drains completed files into
+exact native receipts. Qt sends cancellation for internal Stop/restart too, and
+the browser uses durable run cancellation. Both browser command endpoints require
+literal `publish_partial: true` before accepting a publishing Stop. Cancellation
+or failed encoding cannot publish files. Preview-only sessions continue to use
 `--interactive` and require no archive receipt.
 
 The baseline's `hstream_ui.archive_routes` initializes both interfaces; the

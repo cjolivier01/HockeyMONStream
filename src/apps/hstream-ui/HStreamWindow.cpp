@@ -6351,7 +6351,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   connect(start_button_, &QPushButton::clicked, this, [this]() { startPipeline(); });
   connect(pause_button_, &QPushButton::clicked, this, [this]() { pauseOrResumePipeline(); });
-  connect(stop_button_, &QPushButton::clicked, this, [this]() { stopPipeline(); });
+  connect(stop_button_, &QPushButton::clicked, this, [this]() { confirmStopPipeline(); });
   connect(restart, &QPushButton::clicked, this, [this]() { restartStage(); });
   connect(save_preset_button_, &QPushButton::clicked, this, [this]() { savePreset(); });
   connect(reset, &QPushButton::clicked, this, [this]() { resetCameraControls(); });
@@ -12123,6 +12123,7 @@ void HStreamWindow::startPipeline() {
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = false;
+  pipeline_publish_partial_ = false;
   pipeline_final_output_draining_ = false;
 
   setPlaybackStartupStage("process", "Starting the pipeline process");
@@ -12242,7 +12243,42 @@ void HStreamWindow::pauseOrResumePipeline() {
 #endif
 }
 
-void HStreamWindow::stopPipeline() {
+void HStreamWindow::confirmStopPipeline() {
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || pipeline_stop_requested_)
+    return;
+  const auto generation = pipeline_run_generation_;
+  const bool has_outputs = active_run_telemetry_requested_ || !active_archive_output_path_.isEmpty() ||
+      !active_program_4k_output_path_.isEmpty() || !active_stitched_archive_output_path_.isEmpty();
+  bool publish_partial = false;
+  if (has_outputs && !calibration_pending_) {
+    QMessageBox question(
+        QMessageBox::Question,
+        "Stop processing",
+        "Publish the video and telemetry processed so far?",
+        QMessageBox::NoButton,
+        this);
+    question.setObjectName("stopPublicationDialog");
+    question.setInformativeText(
+        "Without publishing, partial outputs stay in working storage and are not added to the game directory.");
+    auto* discard = question.addButton("Don't publish", QMessageBox::NoRole);
+    auto* publish = question.addButton("Publish partial outputs", QMessageBox::YesRole);
+    auto* cancel = question.addButton("Keep processing", QMessageBox::RejectRole);
+    discard->setIcon(action_icon(ActionIcon::Stop));
+    publish->setIcon(action_icon(ActionIcon::Save));
+    cancel->setIcon(action_icon(ActionIcon::Play));
+    question.setDefaultButton(discard);
+    question.setEscapeButton(discard);
+    question.exec();
+    if (question.clickedButton() == cancel)
+      return;
+    publish_partial = question.clickedButton() == publish;
+  }
+  // The process may have finished naturally while the question was open.
+  if (generation == pipeline_run_generation_ && pipeline_process_->state() != QProcess::NotRunning)
+    stopPipeline(publish_partial);
+}
+
+void HStreamWindow::stopPipeline(bool publish_partial) {
   hm::diagnostics::Breadcrumb("pipeline", "stop requested");
   deferred_play_requested_ = false;
   deferred_restart_requested_ = false;
@@ -12270,6 +12306,7 @@ void HStreamWindow::stopPipeline() {
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = true;
+  pipeline_publish_partial_ = publish_partial;
   deferred_playback_seek_ns_.reset();
   pending_playback_seek_target_ns_.reset();
   resume_progress_reset_waiting_for_seek_ = false;
@@ -12284,9 +12321,10 @@ void HStreamWindow::stopPipeline() {
     pipeline_cooperative_pause_ = false;
   }
 #endif
-  // Native q drains playback without marking its publication receipt
-  // interrupted. SIGINT remains cancellation during startup/calibration and a
-  // local-render seek, whose reconstruction worker cannot consume stdin yet.
+  // Only explicit publication consent permits q to drain playback without
+  // marking its receipt interrupted. Otherwise SIGINT cancels publication,
+  // including during startup/calibration and a local-render seek, whose
+  // reconstruction worker cannot consume stdin yet.
   // Preview readiness proves the command poll was installed; processed stage-0
   // progress also covers archive runs with Render off.
   const bool native_playback_ready = preview_runtime_ready_ || (playback_stage_ == "0" && playback_position_ns_ > 0);
@@ -12297,7 +12335,7 @@ void HStreamWindow::stopPipeline() {
   // Python also needs q: signalling its process guard cancels the worker before
   // it can drain archives and telemetry.
   const bool cooperative_stop =
-      (active_hockeymon_program_ || finish_native_playback) && pipeline_process_->write("q\n") == 2;
+      publish_partial && (active_hockeymon_program_ || finish_native_playback) && pipeline_process_->write("q\n") == 2;
   if (!cooperative_stop) {
 #ifdef Q_OS_UNIX
     if (pid > 0)
@@ -12420,8 +12458,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   const bool completed_successfully =
       exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
   bool archive_completed = completed_successfully;
-  if (stopped_by_user && exit_status == QProcess::NormalExit && exit_code == 0 && !calibration_pending_ &&
-      !managed_archive_manifest_.isEmpty()) {
+  if (stopped_by_user && pipeline_publish_partial_ && exit_status == QProcess::NormalExit && exit_code == 0 &&
+      !calibration_pending_ && !managed_archive_manifest_.isEmpty()) {
     try {
       // A capable runner drains deliberate Stop through mux EOS and commits
       // its manifest. Keep playback's stopped state, but publish that completed
@@ -12510,6 +12548,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     backend_preview_->poll();
   }
   pipeline_stop_requested_ = false;
+  pipeline_publish_partial_ = false;
   if (calibration_pending_ && !stopped_by_user) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
     if (!calibration_dialog_failed_) {
@@ -12759,6 +12798,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   pipeline_uses_process_group_ = false;
   pipeline_render_embedded_ = false;
   pipeline_stop_requested_ = false;
+  pipeline_publish_partial_ = false;
   clearPreviewFrames();
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();

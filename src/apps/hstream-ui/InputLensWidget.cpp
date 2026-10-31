@@ -38,7 +38,8 @@ void SetInputOpticsMetadataHighlight(QWidget* widget, bool from_mp4) {
 
 void SetSharedCameraFovVisible(QDoubleSpinBox* spin, bool visible) {
   spin->setVisible(visible);
-  if (auto* form = qobject_cast<QFormLayout*>(spin->parentWidget()->layout()))
+  const auto* parent = spin->parentWidget();
+  if (auto* form = parent ? qobject_cast<QFormLayout*>(parent->layout()) : nullptr)
     if (auto* label = form->labelForField(spin))
       label->setVisible(visible);
 }

@@ -12,6 +12,9 @@
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  QDoubleSpinBox unattached_fov;
+  SetSharedCameraFovVisible(&unattached_fov, false);
+  SetSharedCameraFovVisible(&unattached_fov, true);
   InputLensWidget widget;
   hm::stitching::StitchInputLens lens;
   lens.projection = "full-frame-fisheye";

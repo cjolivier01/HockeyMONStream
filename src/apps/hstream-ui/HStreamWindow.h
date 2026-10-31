@@ -240,7 +240,8 @@ class HStreamWindow : public QMainWindow {
 
   void startPipeline();
   void pauseOrResumePipeline();
-  void stopPipeline();
+  void confirmStopPipeline();
+  void stopPipeline(bool publish_partial = false);
   void handlePipelineStarted();
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
@@ -815,6 +816,7 @@ class HStreamWindow : public QMainWindow {
   quint64 pending_process_resume_generation_{0};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
+  bool pipeline_publish_partial_{false};
   bool pipeline_final_output_draining_{false};
   bool pipeline_render_embedded_{false};
   QString playback_elapsed_;
