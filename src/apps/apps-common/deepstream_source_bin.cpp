@@ -4618,8 +4618,8 @@ gboolean configure_uri_playlist_initial_offsets(
         // Starting at or beyond permanent camera EOS can never create exact pair zero.
         if (error) {
           gchar* message = g_strdup_printf(
-              "Requested start " GST_TIME_FORMAT " with camera %u offset " GST_TIME_FORMAT
-              " reaches or exceeds that recording's duration " GST_TIME_FORMAT
+              "Requested start %" GST_TIME_FORMAT " with camera %u offset %" GST_TIME_FORMAT
+              " reaches or exceeds that recording's duration %" GST_TIME_FORMAT
               ". Set Start within the recording; times use HH:MM:SS.",
               GST_TIME_ARGS(start_time_ns),
               source_id + 1,

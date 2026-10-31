@@ -1232,6 +1232,7 @@ int run_decode_compose_encode(
       const bool accepted = configure_uri_playlist_initial_offsets(
           &src_parent, 0, source_id == 1 ? 86400 * GST_SECOND : 0, 0, source_id == 0 ? 86400 * GST_SECOND : 0, &error);
       if (accepted || error.find("camera " + std::to_string(source_id + 1)) == std::string::npos ||
+          error.find("24:00:00.000000000") == std::string::npos ||
           error.find("recording's duration") == std::string::npos || error.find("HH:MM:SS") == std::string::npos ||
           src_parent.uri_playlist_initial_offsets_configured || src_parent.sub_bins[0].uri_list_index != 0 ||
           src_parent.sub_bins[1].uri_list_index != 0) {
