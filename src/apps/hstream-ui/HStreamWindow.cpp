@@ -8477,7 +8477,8 @@ bool HStreamWindow::runAutooptimizer() const {
 }
 
 QString HStreamWindow::stitchFrameTime() const {
-  return stitch_frame_time_edit_ ? stitch_frame_time_edit_->text().trimmed() : default_stitch_frame_time_;
+  const auto text = stitch_frame_time_edit_ ? stitch_frame_time_edit_->text().trimmed() : default_stitch_frame_time_;
+  return parse_calibration_reference(text).value_or(text);
 }
 
 QString HStreamWindow::controlPointMatcher() const {
@@ -18864,6 +18865,13 @@ bool HStreamWindow::saveDefaultsPreset() {
 }
 
 bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validation_error) {
+  if (!parse_calibration_reference(stitchFrameTime())) {
+    const QString error = "Reference frame must be [-]HH:MM:SS[.mmm], within 24 hours. Negative zero has no frame.";
+    if (validation_error)
+      *validation_error = error;
+    appendLog("Could not save preset: " + error);
+    return false;
+  }
   if (editing_defaults_)
     return saveDefaultsPreset();
   if (!ensureSavedControlConfigLoaded())
@@ -20618,6 +20626,11 @@ bool HStreamWindow::applySavedControlConfig(
   }
   if (published_playtracker_sidecar) {
     published_playtracker_sidecar->clear();
+  }
+  if (!parse_calibration_reference(stitchFrameTime())) {
+    appendLog(
+        "Could not save preset: Reference frame must be [-]HH:MM:SS[.mmm], within 24 hours. Negative zero has no frame.");
+    return false;
   }
   if (mappingBackend() == "nona" && !runAutooptimizer()) {
     appendLog("could not save preset: the NONA mapping backend requires Run panorama autooptimizer");

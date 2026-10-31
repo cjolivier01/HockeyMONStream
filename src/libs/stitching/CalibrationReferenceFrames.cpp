@@ -35,7 +35,8 @@ absl::StatusOr<std::vector<std::array<CalibrationFrameSource, 2>>> PlanCalibrati
           const double last_frame = chapter.start_seconds + chapter.duration_seconds - 1.0 / cameras[camera].fps;
           if (!std::isfinite(last_frame) || last_frame < chapter.start_seconds)
             return absl::OutOfRangeError("Calibration sample has no complete video frame after the camera start");
-          result[index][camera] = {chapter.file, std::min(chapter.start_seconds + remaining, last_frame)};
+          result[index][camera] = {
+              chapter.file, chapter.timestamp_origin_seconds + std::min(chapter.start_seconds + remaining, last_frame)};
           break;
         }
         remaining -= chapter.duration_seconds;
@@ -68,11 +69,10 @@ CalibrationImageWriter Writer(
     // one still is encoded. CPU image access is confined to offline calibration,
     // whose feature matcher and PNG/EXIF store already consume CPU images.
     const int status = hm::run_command(
-        {ffmpeg,          "-nostdin",  "-v",          "info",      "-hwaccel", "auto",
-         "-noautorotate", "-ss",       time.str(),    "-copyts",   "-i",       requested.video.string(),
-         "-map",          "0:v:0",     "-an",         "-frames:v", "1",        "-vf",
-         "showinfo",      "-fps_mode", "passthrough", "-pix_fmt",  "rgb48be",  "-y",
-         output.string()},
+        {ffmpeg,      "-seek_timestamp", "1",        "-nostdin",  "-v",      "info",         "-hwaccel",
+         "auto",      "-noautorotate",   "-ss",      time.str(),  "-copyts", "-i",           requested.video.string(),
+         "-map",      "0:v:0",           "-an",      "-frames:v", "1",       "-vf",          "showinfo",
+         "-fps_mode", "passthrough",     "-pix_fmt", "rgb48be",   "-y",      output.string()},
         "",
         {{"LC_ALL", "C"}},
         [&](const std::string& error, const std::string&) {

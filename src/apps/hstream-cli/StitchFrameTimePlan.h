@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace hm::pipeline_internal {
@@ -18,10 +19,13 @@ inline uint64_t stitch_frame_initial_position(
     uint64_t start_time_ns,
     int64_t stitch_frame_time_ns,
     bool calibration_required,
-    bool rewind_complete) {
+    bool rewind_complete,
+    std::optional<uint64_t> resolved_reference = std::nullopt) {
   if (!calibration_required || rewind_complete) {
     return start_time_ns;
   }
+  if (resolved_reference)
+    return *resolved_reference;
   // End-relative stills are extracted by explicit seeks after generation preflight.
   // One initial synchronized pair establishes the graph; playback restarts separately.
   if (stitch_frame_time_ns < 0)

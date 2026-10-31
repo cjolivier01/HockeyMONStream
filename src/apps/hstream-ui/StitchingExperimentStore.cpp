@@ -217,7 +217,7 @@ StitchingExperimentSettings parse_settings(const YAML::Node& node) {
   require(control_points > 0 && control_points <= std::numeric_limits<int>::max(), "Invalid control-point budget");
   settings.control_points = static_cast<int>(control_points);
   settings.frame_count = count_value(node["frame_count"]);
-  settings.stitch_frame_time = string_value(node["reference"], 12);
+  settings.stitch_frame_time = string_value(node["reference"], 13);
   if (node["camera"]) {
     YAML::Node saved;
     saved["stitching"] = YAML::Clone(node["camera"]);

@@ -1384,3 +1384,5 @@ next-Play mini-map consumer belong to the NVIDIA WebPreviewSession; no AMD brows
 EGL/HIP interoperability qualification is implied.
 
 Signed end-relative calibration references are accepted when validating saved Program calibration identities. Fresh automatic calibration, including circular frame extraction, retains the existing AMD calibration limitation; this does not add a new AMD calibration graph.
+The shared CPU extraction, signed-reference planning, Defaults and experiment-store regressions pass on `ripper`.
+The full `hstream-web-job` executable still depends on `@local_cuda//:cuda`, so its native experiment-create regression is qualified on NVIDIA only.

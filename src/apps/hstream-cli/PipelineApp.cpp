@@ -7927,13 +7927,12 @@ uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx)
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask)
     return rink_mask_position_ns_;
   const auto resolved = resolved_stitch_frame_positions_.find(app_ctx);
-  const int64_t reference = resolved == resolved_stitch_frame_positions_.end() ? stitch_frame_time_ns_
-                                                                               : static_cast<int64_t>(resolved->second);
   const uint64_t configured_position = hm::pipeline_internal::stitch_frame_initial_position(
       start_time_ns_,
-      reference,
+      stitch_frame_time_ns_,
       app_ctx && app_ctx->configurator().stitching_calibration_required(),
-      app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0);
+      app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0,
+      resolved == resolved_stitch_frame_positions_.end() ? std::nullopt : std::optional<uint64_t>(resolved->second));
   const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
   return runtime_offset_ns > G_MAXUINT64 - configured_position ? G_MAXUINT64 : configured_position + runtime_offset_ns;
 }

@@ -90,6 +90,49 @@ int main() {
   expect(
       cancelled.ok() && absl::IsCancelled(cancelled->front().left(output)) && !std::filesystem::exists(output),
       "Cancellation must prevent extraction and publication");
+  const auto shifted = game / "shifted.mp4";
+  expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-f",
+           "lavfi",
+           "-i",
+           "testsrc2=size=64x48:rate=25:duration=4",
+           "-f",
+           "lavfi",
+           "-i",
+           "anullsrc=r=48000:cl=mono:d=6",
+           "-vf",
+           "setpts=PTS+2/TB",
+           "-fps_mode",
+           "passthrough",
+           "-c:v",
+           "libx264",
+           "-g",
+           "25",
+           "-c:a",
+           "aac",
+           shifted.string()},
+          "",
+          {},
+          {}) == 0,
+      "Generate video whose PTS origin differs from the audio/container origin");
+  config["game"]["videos"]["left"][0] = "shifted.mp4";
+  config["game"]["videos"]["right"][0] = "shifted.mp4";
+  config["game"]["stitching"]["frame_offsets"]["right"] = 0;
+  config["stitching"]["stitch_frame_time"] = "-00:00:01";
+  auto shifted_inputs = EndRelativeCalibrationInputs(game, config, 1, {});
+  expect(shifted_inputs.ok(), "Plan an end-relative frame on the video clock");
+  if (shifted_inputs.ok()) {
+    const auto status = shifted_inputs->front().left(game / "shifted.png");
+    if (!status.ok())
+      std::cerr << status << '\n';
+    expect(
+        status.ok() && std::abs(shifted_inputs->front().source(0).seconds - 5) < 0.001,
+        "A one-second end-relative reference must select physical PTS5 from video starting at PTS2");
+  }
   std::filesystem::remove_all(game);
   return ok ? 0 : 1;
 }

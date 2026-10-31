@@ -290,6 +290,13 @@ int main(int argc, char** argv) {
             saved_defaults["hstream_ui"]["show_leveling_dialog"].as<bool>() == baseline_crop &&
             saved_defaults["stitching"]["stitch_frame_time"].as<std::string>() == "-00:00:01.125",
         "Calibration defaults were not saved under canonical keys");
+    const auto valid_reference_defaults = Read(defaults_path);
+    for (const char* invalid : {"", "abc", "-00:00:00", "24:00:00"}) {
+      reference->setText(invalid);
+      Require(!HStreamWindowTestAccess::Save(calibration), "Invalid reference must not save Defaults");
+      Require(Read(defaults_path) == valid_reference_defaults, "Invalid reference changed Defaults on disk");
+    }
+    reference->setText("-00:00:01.125");
     {
       HStreamWindow calibration_reopened;
       Find<QComboBox>(calibration_reopened, "gameSelector")->setCurrentIndex(0);
@@ -308,7 +315,19 @@ int main(int argc, char** argv) {
     leveling->setChecked(false);
     reference->setText("00:00:00");
     Require(HStreamWindowTestAccess::Save(calibration), "Cannot save explicit game calibration settings");
+    const auto initial_game = YAML::Load(Read(games.filePath("inherit/config.yaml")).toStdString());
+    reference->setText("00:00:00.000");
+    Require(HStreamWindowTestAccess::Save(calibration), "Equivalent reference spelling should save");
     const auto explicit_game = Read(games.filePath("inherit/config.yaml"));
+    const auto equivalent_game = YAML::Load(explicit_game.toStdString());
+    Require(
+        equivalent_game["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
+            YAML::Dump(equivalent_game["hstream_ui"]["stitching_calibration"]) ==
+                YAML::Dump(initial_game["hstream_ui"]["stitching_calibration"]),
+        "Equivalent reference changed calibration identity");
+    reference->setText("-00:00:00");
+    Require(!HStreamWindowTestAccess::Save(calibration), "Invalid reference must not save a game");
+    Require(Read(games.filePath("inherit/config.yaml")) == explicit_game, "Invalid reference changed the saved game");
     calibration_selector->setCurrentIndex(0);
     calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
     Require(
