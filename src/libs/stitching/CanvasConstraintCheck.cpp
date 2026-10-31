@@ -725,7 +725,7 @@ absl::StatusOr<std::string> read_bounded_stitch_file(
 }
 
 absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir) {
-  auto contents = read_bounded_stitch_file(game_dir / "stitching_canvas_provenance", 4 * 1024, "canvas provenance");
+  auto contents = read_bounded_stitch_file(game_dir / "stitching_canvas_provenance", 64 * 1024, "canvas provenance");
   if (!contents.ok())
     return contents.status();
   std::istringstream input(*contents);
@@ -737,12 +737,15 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool filtering_aware =
-      (lines.size() == 33 && lines[0] == "version=14") || (lines.size() == 34 && lines[0] == "version=15");
+  const bool input_cameras_aware =
+      (lines.size() == 34 && lines[0] == "version=16") || (lines.size() == 35 && lines[0] == "version=17");
+  const bool filtering_aware = input_cameras_aware || (lines.size() == 33 && lines[0] == "version=14") ||
+      (lines.size() == 34 && lines[0] == "version=15");
   const bool lens_aware = filtering_aware || (lines.size() == 32 && lines[0] == "version=12") ||
       (lines.size() == 33 && lines[0] == "version=13");
-  const bool manual_aware = (lines.size() == 34 && lines[0] == "version=15") ||
-      (lines.size() == 32 && lines[0] == "version=11") || (lines.size() == 33 && lines[0] == "version=13");
+  const bool manual_aware = (lines.size() == 35 && lines[0] == "version=17") ||
+      (lines.size() == 34 && lines[0] == "version=15") || (lines.size() == 32 && lines[0] == "version=11") ||
+      (lines.size() == 33 && lines[0] == "version=13");
   const size_t manual_index = lens_aware ? 32 : 31;
   const bool selection_aware = (lines.size() == 31 && lines[0] == "version=10") || manual_aware || lens_aware;
   const bool resolution_aware = (lines.size() == 29 && lines[0] == "version=9") || selection_aware;
@@ -760,6 +763,15 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
     const std::string prefix = "input-lens=";
     if (lines[31].rfind(prefix, 0) != 0 || !ParseStitchInputLens(lines[31].substr(prefix.size())).ok())
       return absl::FailedPreconditionError("Invalid canvas provenance input lens");
+  }
+  if (input_cameras_aware) {
+    const std::string prefix = "input-cameras=";
+    const auto& line = lines[lines.size() - 2];
+    if (line.rfind(prefix, 0) != 0)
+      return absl::FailedPreconditionError("Invalid canvas provenance input cameras");
+    const auto cameras = ParseStitchInputCameras(line.substr(prefix.size()));
+    if (!cameras.ok() || cameras->size() != 2)
+      return absl::FailedPreconditionError("Invalid canvas provenance input cameras");
   }
   if (manual_aware) {
     constexpr char prefix[] = "manual-control-points=";

@@ -645,6 +645,17 @@ void exercise_matcher_queue(const QString& game, const QString& root) {
     require(table->item(row, 8)->text() == labels[row], "Saved matcher labels must survive main config changes");
 }
 
+template <typename T>
+T* camera_widget(StitchingExperimentDialog& dialog, const char* name) {
+  auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentCameraTabs");
+  require(
+      tabs->count() == 2 && tabs->tabText(0) == "Left camera" && tabs->tabText(1) == "Right camera",
+      "Experiment optics must have one ordered tab per camera");
+  auto* result = tabs->widget(0)->findChild<T*>(name);
+  require(result != nullptr, "Missing camera optics control");
+  return result;
+}
+
 void exercise_input_lens_queue(const QString& game, const QString& root) {
   using namespace hm::stitching;
   auto config = YAML::Load(read(game + "/config.yaml").toStdString());
@@ -658,8 +669,9 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(empty)));
     StitchingExperimentDialog dialog(
         game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
-    require(widget<QComboBox>(dialog, "stitchExperimentCameraConfiguration")->currentData() == "auto",
-            "Inherit-only game optics must retain Auto in experiments");
+    require(
+        camera_widget<QComboBox>(dialog, "cameraProfileCombo")->currentData() == "auto",
+        "Inherit-only game optics must retain Auto in experiments");
   }
   {
     auto legacy = YAML::Clone(config);
@@ -668,9 +680,10 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(legacy)));
     StitchingExperimentDialog dialog(
         game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
-    require(widget<QComboBox>(dialog, "stitchExperimentCameraConfiguration")->currentData() == "manual" &&
-                widget<QDoubleSpinBox>(dialog, "stitchExperimentCameraHorizontalFov")->value() == 123,
-            "A null camera selector must preserve explicit legacy optics in experiments");
+    require(
+        camera_widget<QComboBox>(dialog, "cameraProfileCombo")->currentData() == "manual" &&
+            camera_widget<QDoubleSpinBox>(dialog, "sourceCameraHorizontalFovSpin")->value() == 123,
+        "A null camera selector must preserve explicit legacy optics in experiments");
   }
   StitchCameraSelection camera{"gopro-hero-11", 121.413487813061, 90};
   camera.input_lens.projection = "full-frame-fisheye";
@@ -687,10 +700,10 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
       StitchingExperimentDialog dialog(
           game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
       require(
-          widget<QCheckBox>(dialog, "stitchExperimentCameraAutoFov")->isChecked() == auto_fov &&
-              widget<QCheckBox>(dialog, "inputLensAutoCheck")->isChecked() == auto_lens &&
-              widget<QDoubleSpinBox>(dialog, "stitchExperimentCameraHorizontalFov")->isReadOnly() == auto_fov &&
-              widget<QDoubleSpinBox>(dialog, "inputLensBSpin")->isReadOnly() == auto_lens,
+          camera_widget<QCheckBox>(dialog, "sourceCameraAutoFovCheck")->isChecked() == auto_fov &&
+              camera_widget<QCheckBox>(dialog, "sourceOptics_inputLensAutoCheck")->isChecked() == auto_lens &&
+              camera_widget<QDoubleSpinBox>(dialog, "sourceCameraHorizontalFovSpin")->isReadOnly() == auto_fov &&
+              camera_widget<QDoubleSpinBox>(dialog, "sourceOptics_inputLensBSpin")->isReadOnly() == auto_lens,
           "Experiments must inherit both saved main-camera policies, including explicit manual and mixed choices");
     }
   }
@@ -700,16 +713,17 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     StitchingExperimentDialog dialog(
         game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
     require(
-        widget<QComboBox>(dialog, "inputLensProjectionCombo")->currentData() == "full-frame-fisheye" &&
-            widget<QComboBox>(dialog, "inputLensOptimizationCombo")->currentData() == "fixed",
+        camera_widget<QComboBox>(dialog, "sourceOptics_inputLensProjectionCombo")->currentData() ==
+                "full-frame-fisheye" &&
+            camera_widget<QComboBox>(dialog, "sourceOptics_inputLensOptimizationCombo")->currentData() == "fixed",
         "Experiment lens controls must initialize from the game");
     require(
         std::abs(
-            widget<QDoubleSpinBox>(dialog, "inputLensCenterYSpin")->value() -
+            camera_widget<QDoubleSpinBox>(dialog, "sourceOptics_inputLensCenterYSpin")->value() -
             camera.input_lens.center_offset[1] * 100) < 0.000001,
         "Center offsets must display percentages");
     add_options(dialog);
-    widget<QDoubleSpinBox>(dialog, "inputLensBSpin")->setValue(0.03);
+    camera_widget<QDoubleSpinBox>(dialog, "sourceOptics_inputLensBSpin")->setValue(0.03);
     add_options(dialog);
     add_options(dialog);
     auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
@@ -730,7 +744,9 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     const auto yaml = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
     const auto actual = read_stitch_camera_selection(yaml);
     require(
-        workspace.settings.camera == expected && actual.ok() && *actual == expected,
+        workspace.settings.camera && workspace.settings.camera->input_cameras.size() == 2 &&
+            workspace.settings.camera->for_source("left.mp4") == expected && actual.ok() &&
+            actual->for_source("left.mp4") == expected && actual->for_source("right.mp4") == camera,
         "Candidate config and saved history must retain full precision optics and FOV");
     require(!yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
             "Named candidates must not freeze a future Auto selection");
@@ -746,52 +762,59 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   add_options(reopened);
   add_options(reopened);
   require(restored_table->rowCount() == 3, "Reopened lens additions must follow the ordinary retry policy");
-  auto* profiles = widget<QComboBox>(reopened, "stitchExperimentCameraConfiguration");
+  auto* profiles = camera_widget<QComboBox>(reopened, "cameraProfileCombo");
   profiles->setCurrentIndex(profiles->findData("gopro-mission-1"));
   require(
-      widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->isChecked() &&
-          widget<QCheckBox>(reopened, "inputLensAutoCheck")->isChecked() &&
-          widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
-          widget<QDoubleSpinBox>(reopened, "inputLensBSpin")->isReadOnly(),
+      camera_widget<QCheckBox>(reopened, "sourceCameraAutoFovCheck")->isChecked() &&
+          camera_widget<QCheckBox>(reopened, "sourceOptics_inputLensAutoCheck")->isChecked() &&
+          camera_widget<QDoubleSpinBox>(reopened, "sourceCameraHorizontalFovSpin")->isReadOnly() &&
+          camera_widget<QDoubleSpinBox>(reopened, "sourceOptics_inputLensBSpin")->isReadOnly(),
       "Selecting a named profile must enable both Auto policies for new candidates");
-  require(widget<QComboBox>(reopened, "inputLensProjectionCombo")->currentData() == "full-frame-fisheye" &&
-              widget<QComboBox>(reopened, "inputLensOptimizationCombo")->currentData() == "fixed" &&
-              std::abs(widget<QDoubleSpinBox>(reopened, "inputLensCenterYSpin")->value() -
-                       camera.input_lens.center_offset[1] * 100) < 0.000001,
-          "Changing the candidate camera must reset its lens to the selected profile defaults");
+  require(
+      camera_widget<QComboBox>(reopened, "sourceOptics_inputLensProjectionCombo")->currentData() ==
+              "full-frame-fisheye" &&
+          camera_widget<QComboBox>(reopened, "sourceOptics_inputLensOptimizationCombo")->currentData() == "fixed" &&
+          std::abs(
+              camera_widget<QDoubleSpinBox>(reopened, "sourceOptics_inputLensCenterYSpin")->value() -
+              camera.input_lens.center_offset[1] * 100) < 0.000001,
+      "Changing the candidate camera must reset its lens to the selected profile defaults");
   add_options(reopened);
   require(restored_table->rowCount() == 4, "Changed camera profile must create a separate candidate");
   const auto changed_profile = LoadStitchingExperimentStore(*store);
   require(
       changed_profile.ok() && changed_profile->experiments.back().workspace.settings.camera &&
-          changed_profile->experiments.back().workspace.settings.camera->configuration == "gopro-mission-1" &&
-          changed_profile->experiments.back().workspace.settings.camera->automatic_fov() &&
-          changed_profile->experiments.back().workspace.settings.camera->automatic_lens() &&
-          changed_profile->experiments.back().workspace.settings.camera->horizontal_fov == 108 &&
-          changed_profile->experiments.back().workspace.settings.camera->input_lens == camera.input_lens,
+          changed_profile->experiments.back().workspace.settings.camera->for_source("left.mp4").configuration ==
+              "gopro-mission-1" &&
+          changed_profile->experiments.back().workspace.settings.camera->for_source("left.mp4").automatic_fov() &&
+          changed_profile->experiments.back().workspace.settings.camera->for_source("left.mp4").automatic_lens() &&
+          changed_profile->experiments.back().workspace.settings.camera->for_source("left.mp4").horizontal_fov == 108 &&
+          changed_profile->experiments.back().workspace.settings.camera->for_source("left.mp4").input_lens ==
+              camera.input_lens,
       "Candidate history must freeze the selected camera and its lens defaults");
   profiles->setCurrentIndex(profiles->findData("auto"));
-  require(!widget<QLabel>(reopened, "inputLensMetadataStatus")->text().isEmpty() &&
-              widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
-              !widget<QComboBox>(reopened, "inputLensProjectionCombo")->isEnabled(),
-          "Experiment Auto must explain its metadata result and protect imported values");
+  require(
+      !camera_widget<QLabel>(reopened, "sourceOptics_inputLensMetadataStatus")->text().isEmpty() &&
+          camera_widget<QDoubleSpinBox>(reopened, "sourceCameraHorizontalFovSpin")->isReadOnly() &&
+          !camera_widget<QComboBox>(reopened, "sourceOptics_inputLensProjectionCombo")->isEnabled(),
+      "Experiment Auto must explain its metadata result and protect imported values");
   add_options(reopened);
   const auto automatic = LoadStitchingExperimentStore(*store);
-  require(automatic.ok() && automatic->experiments.back().workspace.settings.camera &&
-              automatic->experiments.back().workspace.settings.camera->configuration == "auto" &&
-              automatic->experiments.back().workspace.settings.camera->horizontal_fov == 117.25,
-          "New Auto candidate keeps its camera selection and game-specific fallback");
+  require(
+      automatic.ok() && automatic->experiments.back().workspace.settings.camera &&
+          automatic->experiments.back().workspace.settings.camera->for_source("left.mp4").configuration == "auto" &&
+          automatic->experiments.back().workspace.settings.camera->for_source("left.mp4").horizontal_fov == 117.25,
+      "New Auto candidate keeps its camera selection and game-specific fallback");
   const auto automatic_config = YAML::LoadFile((automatic->experiments.back().workspace.game_directory / "config.yaml").string());
   require(automatic_config["stitching"]["auto_input_lens_frozen"].as<bool>(),
           "Auto candidate snapshots must disable metadata reimport in the runner");
   const int auto_rows = restored_table->rowCount();
-  widget<QCheckBox>(reopened, "inputLensAutoCheck")->setChecked(false);
+  camera_widget<QCheckBox>(reopened, "sourceOptics_inputLensAutoCheck")->setChecked(false);
   add_options(reopened);
   add_options(reopened);
   require(
       restored_table->rowCount() == auto_rows + 1,
       "A policy-only lens change creates a distinct candidate, while identical additions deduplicate");
-  widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->setChecked(false);
+  camera_widget<QCheckBox>(reopened, "sourceCameraAutoFovCheck")->setChecked(false);
   add_options(reopened);
   require(
       restored_table->rowCount() == auto_rows + 2,
@@ -799,32 +822,34 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   const auto manual_policy = LoadStitchingExperimentStore(*store);
   require(
       manual_policy.ok() && manual_policy->experiments.back().workspace.settings.camera &&
-          !manual_policy->experiments.back().workspace.settings.camera->automatic_fov() &&
-          !manual_policy->experiments.back().workspace.settings.camera->automatic_lens(),
+          !manual_policy->experiments.back().workspace.settings.camera->for_source("left.mp4").automatic_fov() &&
+          !manual_policy->experiments.back().workspace.settings.camera->for_source("left.mp4").automatic_lens(),
       "Candidate history must retain the selected independent policies");
   profiles->setCurrentIndex(profiles->findData("gopro-hero-11"));
-  widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->setChecked(true);
-  widget<QCheckBox>(reopened, "inputLensAutoCheck")->setChecked(false);
+  camera_widget<QCheckBox>(reopened, "sourceCameraAutoFovCheck")->setChecked(true);
+  camera_widget<QCheckBox>(reopened, "sourceOptics_inputLensAutoCheck")->setChecked(false);
   require(
-      widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
-          !widget<QDoubleSpinBox>(reopened, "inputLensBSpin")->isReadOnly(),
+      camera_widget<QDoubleSpinBox>(reopened, "sourceCameraHorizontalFovSpin")->isReadOnly() &&
+          !camera_widget<QDoubleSpinBox>(reopened, "sourceOptics_inputLensBSpin")->isReadOnly(),
       "Experiment FOV and correction automation must be independent");
   add_options(reopened);
   const auto mixed = LoadStitchingExperimentStore(*store);
   require(mixed.ok(), "Mixed-source candidate must save");
   const auto& mixed_workspace = mixed->experiments.back().workspace;
   const auto mixed_yaml = YAML::LoadFile((mixed_workspace.game_directory / "config.yaml").string());
-  const auto mixed_camera = read_stitch_camera_selection(mixed_yaml);
+  const auto mixed_selection = read_stitch_camera_selection(mixed_yaml);
+  require(mixed_selection.ok(), "Mixed-source selection must read");
+  const auto mixed_camera = mixed_selection->for_source("left.mp4");
   require(
-      mixed_camera.ok() && mixed_camera->configuration == "gopro-hero-11" && mixed_camera->automatic_fov() &&
-          !mixed_camera->automatic_lens() && mixed_yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
+      mixed_camera.configuration == "gopro-hero-11" && mixed_camera.automatic_fov() && !mixed_camera.automatic_lens() &&
+          mixed_yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
       "Named profiles with one automatic source must freeze both resolved values for replay");
   profiles->setCurrentIndex(profiles->findData("manual"));
   require(
-      !widget<QCheckBox>(reopened, "stitchExperimentCameraAutoFov")->isChecked() &&
-          !widget<QCheckBox>(reopened, "inputLensAutoCheck")->isChecked() &&
-          !widget<QDoubleSpinBox>(reopened, "stitchExperimentCameraHorizontalFov")->isReadOnly() &&
-          !widget<QDoubleSpinBox>(reopened, "inputLensBSpin")->isReadOnly(),
+      !camera_widget<QCheckBox>(reopened, "sourceCameraAutoFovCheck")->isChecked() &&
+          !camera_widget<QCheckBox>(reopened, "sourceOptics_inputLensAutoCheck")->isChecked() &&
+          !camera_widget<QDoubleSpinBox>(reopened, "sourceCameraHorizontalFovSpin")->isReadOnly() &&
+          !camera_widget<QDoubleSpinBox>(reopened, "sourceOptics_inputLensBSpin")->isReadOnly(),
       "Selecting Manual must turn off both policies and allow editing candidate optics");
 }
 
@@ -3094,6 +3119,26 @@ int main(int argc, char** argv) {
   QApplication application(argc, argv);
   install_button_icon_style();
   try {
+    if (argc == 3 && QString(argv[1]) == "--open-only") {
+      const QString game = QString::fromLocal8Bit(argv[2]);
+      StitchingExperimentDialog dialog(
+          game,
+          "/bin/false",
+          game,
+          game + "/config.yaml",
+          QProcessEnvironment::systemEnvironment(),
+          100,
+          1,
+          "00:00:00");
+      dialog.show();
+      QCoreApplication::processEvents();
+      require(dialog.isVisible(), "Experiment dialog must open");
+      const auto screenshot = qEnvironmentVariable("HSTREAM_EXPERIMENT_SCREENSHOT");
+      if (!screenshot.isEmpty())
+        require(dialog.grab().save(screenshot), "Could not capture experiment dialog");
+      std::cout << "Stitching experiment open check passed\n";
+      return 0;
+    }
     // Real mode requires a disposable game copy: explicit selection changes it.
     if (argc == 5 && (QString(argv[1]) == "--gpu-smoke" || QString(argv[1]) == "--gpu-player-smoke")) {
       const QString repo = QString::fromLocal8Bit(argv[3]);

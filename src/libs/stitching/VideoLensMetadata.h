@@ -38,6 +38,19 @@ absl::StatusOr<VideoLensMetadata> ParseDjiLensMetadata(
     size_t width,
     size_t height);
 
+struct InputCameraMetadata {
+  std::string role;
+  std::string message;
+  std::string fov_message;
+  std::string lens_message;
+  std::string recording_message;
+  bool mismatch{false};
+  bool recording_metadata_found{false};
+  bool horizontal_fov_from_mp4{false};
+  bool vertical_fov_from_mp4{false};
+  bool lens_from_mp4{false};
+};
+
 struct AutoInputLensResult {
   StitchCameraSelection camera;
   std::string message;
@@ -52,6 +65,12 @@ struct AutoInputLensResult {
   bool horizontal_fov_from_mp4{false};
   bool vertical_fov_from_mp4{false};
   bool lens_from_mp4{false};
+  // Read-only source-camera diagnostics, including independent prescriptions.
+  std::string camera_details;
+  // Source-bound controls use these individual statuses instead of treating
+  // differences between cameras as a metadata error.
+  std::map<std::string, InputCameraMetadata> source_metadata;
+  bool panorama{false};
 };
 
 // Inspects every selected chapter. Only agrees to a shared prescription when
@@ -61,5 +80,14 @@ AutoInputLensResult ResolveAutoInputLens(
     const std::vector<std::filesystem::path>& videos,
     const StitchCameraSelection& fallback,
     const std::vector<StitchCameraConfiguration>& profiles = {});
+
+AutoInputLensResult ResolveAutoInputLensForCameras(
+    const std::vector<std::filesystem::path>& left,
+    const std::vector<std::filesystem::path>& right,
+    const StitchCameraSelection& fallback,
+    const std::vector<StitchCameraConfiguration>& profiles = {},
+    bool roles_known = true,
+    const std::filesystem::path& game = {},
+    bool frozen = false);
 
 } // namespace hm::stitching

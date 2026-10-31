@@ -353,9 +353,11 @@ absl::Status configure_candidate(
   HM_ASSIGN_OR_RETURN(selection, reusable_selection_fingerprint(config, settings));
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
   if (settings.camera) {
-    hm::stitching::write_stitch_camera_selection(config, *settings.camera);
-    config["stitching"]["auto_input_lens_frozen"] =
-        (settings.camera->automatic_fov() || settings.camera->automatic_lens());
+    auto snapshot = *settings.camera;
+    for (auto& [source, values] : snapshot.input_cameras)
+      values.frozen = true;
+    hm::stitching::write_stitch_camera_selection(config, snapshot);
+    config["stitching"]["auto_input_lens_frozen"] = snapshot.has_automatic_optics();
     config["hstream_ui"].remove("generated_stitching_backend_choices");
   }
   if (settings.manual_control_points) {
@@ -619,7 +621,8 @@ absl::Status copy_selected_frame_inputs(
   config["game"]["stitching"]["frame_offsets"] = YAML::Clone(source_offsets);
   config["stitching"].remove("frame_offsets");
   if (freeze_camera) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"})
+    for (const char* key :
+         {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"})
       copy_node(config["stitching"], source_config["stitching"], key);
   }
   copy_node(config["stitching"], source_config["stitching"], "stitch_frame_time");
@@ -1045,6 +1048,9 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
       frozen_settings.camera =
           hm::stitching::ReadAutoInputLensForGame(workspace_path, metadata_config, *frozen_settings.camera).camera;
     }
+    if (frozen_settings.camera)
+      for (auto& [source, values] : frozen_settings.camera->input_cameras)
+        values.frozen = true;
     promote_generated_video_roles(config);
     const std::string invalidation_id = "stitch-experiment-" + std::to_string(::getpid()) + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence);
@@ -1266,6 +1272,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "auto_input_lens_frozen",
           "camera_automation",
           "input_lens",
+          "input_cameras",
           "camera_fov",
           "control_point_execution_provider",
           "control_point_matcher",

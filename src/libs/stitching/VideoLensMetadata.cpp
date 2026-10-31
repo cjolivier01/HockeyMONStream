@@ -819,6 +819,14 @@ std::string recording_description(const VideoLensMetadata& video) {
     description << "; mode: " << (video.mode == "W" ? "Wide" : video.mode);
   if (!video.stabilization.empty())
     description << "; stabilization: " << video.stabilization;
+  const auto zoom = video.recording_mode.find("zoom");
+  if (zoom != video.recording_mode.end())
+    description << "; zoom: " << std::setprecision(6) << std::stod(zoom->second) << "x";
+  description << std::fixed << std::setprecision(2);
+  if (video.horizontal_fov)
+    description << "; horizontal coverage: " << *video.horizontal_fov << "°";
+  if (video.vertical_fov)
+    description << "; vertical coverage: " << *video.vertical_fov << "°";
   return description.str();
 }
 } // namespace
@@ -990,5 +998,105 @@ AutoInputLensResult ResolveAutoInputLens(
       fov_note = fov_unavailable;
   }
   return finish();
+}
+
+AutoInputLensResult ResolveAutoInputLensForCameras(
+    const std::vector<std::filesystem::path>& left,
+    const std::vector<std::filesystem::path>& right,
+    const StitchCameraSelection& fallback,
+    const std::vector<StitchCameraConfiguration>& profiles,
+    bool roles_known,
+    const std::filesystem::path& game,
+    bool frozen) {
+  AutoInputLensResult result{fallback, "Each camera uses its own optics."};
+  result.camera.input_cameras.clear();
+  result.horizontal_fov_from_mp4 = result.vertical_fov_from_mp4 = result.lens_from_mp4 = true;
+  result.detected = true;
+  std::ostringstream details;
+  size_t count = 0;
+  for (const auto& [paths, role] : std::array<std::pair<const std::vector<std::filesystem::path>*, std::string>, 2>{
+           std::make_pair(&left, roles_known ? "left" : "auto"),
+           std::make_pair(&right, roles_known ? "right" : "auto")}) {
+    if (paths->empty())
+      continue;
+    const auto key = game.empty() ? paths->front().generic_string() : stitch_input_camera_key(game, paths->front());
+    auto selected = fallback.for_source(key);
+    const auto retained = fallback.input_cameras.find(key);
+    const bool source_frozen =
+        frozen || (retained != fallback.input_cameras.end() && retained->second.frozen.value_or(false));
+    // Each source has its own fallback profile. Manual components always keep
+    // their exact values while automatic components refresh independently.
+    for (const auto& profile : profiles)
+      if (!source_frozen && profile.id == selected.configuration) {
+        if (selected.automatic_fov()) {
+          selected.horizontal_fov = profile.horizontal_fov;
+          selected.vertical_fov = profile.vertical_fov;
+        }
+        if (selected.automatic_lens())
+          selected.input_lens = profile.input_lens;
+        break;
+      }
+    auto resolved = source_frozen ? AutoInputLensResult{selected, "Saved camera optics snapshot"}
+                                  : ResolveAutoInputLens(*paths, selected, profiles);
+    if (source_frozen) {
+      resolved.fov_message = resolved.lens_message = "Saved camera optics snapshot";
+      resolved.recording_message = "Using saved values without rereading the recording.";
+    }
+    if (count == 0) {
+      if (fallback.automatic_fov()) {
+        result.camera.horizontal_fov = resolved.camera.horizontal_fov;
+        result.camera.vertical_fov = resolved.camera.vertical_fov;
+      }
+      if (fallback.automatic_lens())
+        result.camera.input_lens = resolved.camera.input_lens;
+      result.fov_message = resolved.fov_message;
+      result.lens_message = resolved.lens_message;
+    }
+    StitchCameraOptics optics{resolved.camera.horizontal_fov, resolved.camera.vertical_fov, resolved.camera.input_lens};
+    optics.configuration = selected.configuration;
+    optics.frozen = source_frozen;
+    optics.auto_fov = selected.automatic_fov();
+    optics.auto_lens = selected.automatic_lens();
+    if (const auto old = fallback.input_cameras.find(key); old != fallback.input_cameras.end())
+      optics.source_size = old->second.source_size;
+    if (!source_frozen && (selected.automatic_fov() || selected.automatic_lens())) {
+      const auto metadata = ReadVideoLensMetadata(paths->front());
+      if (metadata.ok() && metadata->width > 0 && metadata->height > 0 && metadata->width <= 32768 &&
+          metadata->height <= 32768)
+        optics.source_size = std::array<int, 2>{static_cast<int>(metadata->width), static_cast<int>(metadata->height)};
+    }
+    result.camera.input_cameras.emplace(key, optics);
+    result.source_metadata[key] = {
+        role,
+        resolved.message,
+        resolved.fov_message,
+        resolved.lens_message,
+        resolved.recording_message,
+        resolved.mismatch,
+        resolved.recording_metadata_found,
+        resolved.horizontal_fov_from_mp4,
+        resolved.vertical_fov_from_mp4,
+        resolved.lens_from_mp4};
+    result.mismatch |= resolved.mismatch;
+    result.recording_metadata_found |= resolved.recording_metadata_found;
+    result.horizontal_fov_from_mp4 &= resolved.horizontal_fov_from_mp4;
+    result.vertical_fov_from_mp4 &= resolved.vertical_fov_from_mp4;
+    result.lens_from_mp4 &= resolved.lens_from_mp4;
+    result.detected &= resolved.detected;
+    details << (count ? "\n" : "")
+            << (role == "left"        ? "Left camera"
+                    : role == "right" ? "Right camera"
+                                      : "Camera " + std::to_string(count + 1))
+            << " (" << paths->front().filename().string() << "): " << resolved.recording_message << "\nHorizontal FOV "
+            << std::setprecision(10) << optics.horizontal_fov << "°, vertical FOV " << optics.vertical_fov << "°.";
+    ++count;
+  }
+  if (!count) {
+    result.detected = result.horizontal_fov_from_mp4 = result.vertical_fov_from_mp4 = result.lens_from_mp4 = false;
+    result.message = "No source cameras selected.";
+  }
+  result.camera_details = details.str();
+  result.recording_message = result.camera_details;
+  return result;
 }
 } // namespace hm::stitching

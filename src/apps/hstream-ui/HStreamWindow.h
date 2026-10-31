@@ -31,6 +31,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveRotationConfigOwner.h"
+#include "hstream/src/libs/stitching/VideoLensMetadata.h"
 
 #include <array>
 #include <deque>
@@ -128,6 +129,7 @@ QString configured_gpu_memory_profile(
 } // namespace hm::ui_internal
 
 class InputLensWidget;
+class CameraOpticsWidget;
 
 class HStreamWindow : public QMainWindow {
   friend struct HStreamWindowTestAccess;
@@ -238,7 +240,8 @@ class HStreamWindow : public QMainWindow {
 
   void startPipeline();
   void pauseOrResumePipeline();
-  void stopPipeline();
+  void confirmStopPipeline();
+  void stopPipeline(bool publish_partial = false);
   void handlePipelineStarted();
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
   void handlePipelineError(QProcess::ProcessError error);
@@ -487,6 +490,8 @@ class HStreamWindow : public QMainWindow {
   absl::StatusOr<hm::stitching::StitchProjectionFraming> stitchProjectionFramingFromGameConfig(
       const YAML::Node& config) const;
   void applyCameraConfigurationDefaults(bool reset_defaults = true);
+  void updateInputCameraTabs(const hm::stitching::AutoInputLensResult& result);
+  void changeInputCameraOptics(size_t index, bool refresh);
   QString stitchProjection() const;
   std::vector<double> stitchProjectionParameters() const;
   hm::stitching::StitchProjectionFraming stitchProjectionFraming() const;
@@ -651,6 +656,10 @@ class HStreamWindow : public QMainWindow {
   QGroupBox* camera_metadata_group_{nullptr};
   QLabel* camera_metadata_label_{nullptr};
   QGroupBox* camera_fov_group_{nullptr};
+  QGroupBox* input_camera_defaults_group_{nullptr};
+  std::vector<CameraOpticsWidget*> camera_optics_widgets_;
+  std::vector<std::string> camera_optics_sources_;
+  hm::stitching::AutoInputLensResult camera_optics_result_;
   QLabel* camera_fov_source_label_{nullptr};
   QDoubleSpinBox* camera_horizontal_fov_spin_{nullptr};
   QDoubleSpinBox* camera_vertical_fov_spin_{nullptr};
@@ -807,6 +816,7 @@ class HStreamWindow : public QMainWindow {
   quint64 pending_process_resume_generation_{0};
   bool pipeline_uses_process_group_{false};
   bool pipeline_stop_requested_{false};
+  bool pipeline_publish_partial_{false};
   bool pipeline_final_output_draining_{false};
   bool pipeline_render_embedded_{false};
   QString playback_elapsed_;

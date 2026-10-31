@@ -11,7 +11,8 @@
 namespace hm::config {
 using LeafRanks = std::map<std::string, int>;
 
-// Native configuration merge semantics: maps recurse; other overlay values
+// Native configuration merge semantics: maps recurse except complete input_cameras
+// snapshots, which replace atomically. Other overlay values
 // replace leaves. Like YAML::Node assignment, returned nodes may alias inputs.
 // Clone documents at an ownership boundary before calling this primitive.
 YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest);

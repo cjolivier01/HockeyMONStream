@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/InputLensWidget.h"
 
+#include <QtCore/QEvent>
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QPalette>
 #include <QtWidgets/QCheckBox>
@@ -7,6 +8,7 @@
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QVBoxLayout>
 
 void SetInputOpticsMetadataHighlight(QWidget* widget, bool from_mp4) {
   widget->setProperty("mp4Metadata", from_mp4);
@@ -34,10 +36,29 @@ void SetInputOpticsMetadataHighlight(QWidget* widget, bool from_mp4) {
   widget->setAutoFillBackground(true);
 }
 
+void SetSharedCameraFovVisible(QDoubleSpinBox* spin, bool visible) {
+  spin->setVisible(visible);
+  const auto* parent = spin->parentWidget();
+  if (auto* form = parent ? qobject_cast<QFormLayout*>(parent->layout()) : nullptr)
+    if (auto* label = form->labelForField(spin))
+      label->setVisible(visible);
+}
+
 InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens correction", parent) {
   setObjectName("stitchInputLensControls");
-  setToolTip("Shared source-camera optics. Non-default correction requires the NONA mapping backend.");
+  setToolTip("Source-camera optics. Independent values and non-default correction requires the NONA mapping backend.");
   auto* layout = new QFormLayout(this);
+  mismatch_group_ = new QGroupBox("Different camera optics", this);
+  mismatch_group_->setObjectName("inputLensMismatchGroup");
+  auto* mismatch_layout = new QVBoxLayout(mismatch_group_);
+  mismatch_status_ = new QLabel(mismatch_group_);
+  mismatch_status_->setObjectName("inputLensMismatchStatus");
+  mismatch_status_->setWordWrap(true);
+  mismatch_status_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+  mismatch_status_->setTextFormat(Qt::PlainText);
+  mismatch_layout->addWidget(mismatch_status_);
+  mismatch_group_->hide();
+  layout->addRow(mismatch_group_);
   automatic_ = new QCheckBox("Auto lens correction", this);
   automatic_->setObjectName("inputLensAutoCheck");
   automatic_->setToolTip(
@@ -86,7 +107,7 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
       spin->setSuffix(" %");
     spin->setToolTip(
         i < 3
-            ? "Hugin radial lens coefficient, shared by the two source cameras. Used as a seed unless lens correction is fixed."
+            ? "Hugin radial lens coefficient for this camera. Used as a seed unless lens correction is fixed."
             : "Hugin optical-center shift as a percentage of the full source width (X) or height (Y). Scales with source resolution.");
     values_layout->addRow(labels[i], spin);
     connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, spin]() {
@@ -153,4 +174,27 @@ void InputLensWidget::setMetadataStatus(const QString& message, bool automatic, 
 
 bool InputLensWidget::automatic() const {
   return automatic_->isChecked();
+}
+
+void InputLensWidget::setCameraDetails(const hm::stitching::AutoInputLensResult& result) {
+  input_cameras_ = result.camera.input_cameras;
+  values_group_->setVisible(input_cameras_.empty());
+  optimization_->setVisible(input_cameras_.empty());
+  if (auto* form = qobject_cast<QFormLayout*>(layout()))
+    if (auto* label = form->labelForField(optimization_))
+      label->setVisible(input_cameras_.empty());
+  mismatch_group_->setTitle(input_cameras_.empty() ? "Different camera optics" : "Independent camera optics");
+  mismatch_status_->setText(QString::fromStdString(result.camera_details));
+  mismatch_group_->setVisible(!result.camera_details.empty());
+}
+
+QWidget* InputLensWidget::takeCameraDetailsWidget() {
+  layout()->removeWidget(mismatch_group_);
+  return mismatch_group_;
+}
+
+void InputLensWidget::changeEvent(QEvent* event) {
+  QGroupBox::changeEvent(event);
+  if (event->type() == QEvent::EnabledChange)
+    mismatch_group_->setEnabled(isEnabled());
 }

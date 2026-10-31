@@ -43,19 +43,83 @@ struct StitchCameraSelection {
   // not include policy: changing provenance alone does not rebuild maps.
   std::optional<bool> auto_fov;
   std::optional<bool> auto_lens;
+  // Keyed by the first selected chapter's workspace-relative path (or an
+  // explicitly selected absolute path). This binds optics before Left/Right
+  // orientation is known without confusing discovery order with camera roles.
+  StitchInputCameras input_cameras;
   bool automatic_fov() const {
     return auto_fov.value_or(configuration == "auto");
   }
   bool automatic_lens() const {
     return auto_lens.value_or(configuration == "auto");
   }
-  bool same_automation(const StitchCameraSelection& other) const {
-    return automatic_fov() == other.automatic_fov() && automatic_lens() == other.automatic_lens();
+  StitchCameraSelection for_source(const std::string& source) const {
+    auto result = *this;
+    result.input_cameras.clear();
+    const auto found = input_cameras.find(source);
+    if (found == input_cameras.end())
+      return result;
+    const auto& camera = found->second;
+    result.horizontal_fov = camera.horizontal_fov;
+    result.vertical_fov = camera.vertical_fov;
+    result.input_lens = camera.input_lens;
+    if (!camera.configuration.empty()) {
+      result.configuration = camera.configuration;
+      result.auto_fov = camera.auto_fov;
+      result.auto_lens = camera.auto_lens;
+    } else {
+      if (camera.auto_fov.has_value())
+        result.auto_fov = camera.auto_fov;
+      if (camera.auto_lens.has_value())
+        result.auto_lens = camera.auto_lens;
+    }
+    return result;
+  }
+  bool requires_lens_mapping() const {
+    if (input_cameras.empty())
+      return input_lens != StitchInputLens{};
+    const auto& first = input_cameras.begin()->second;
+    for (const auto& [source, camera] : input_cameras)
+      if (camera.input_lens != StitchInputLens{} || camera.horizontal_fov != first.horizontal_fov ||
+          camera.vertical_fov != first.vertical_fov)
+        return true;
+    return false;
+  }
+  bool has_automatic_optics() const {
+    if (input_cameras.empty())
+      return automatic_fov() || automatic_lens();
+    for (const auto& [source, _] : input_cameras) {
+      const auto camera = for_source(source);
+      if (camera.automatic_fov() || camera.automatic_lens())
+        return true;
+    }
+    return false;
+  }
+  bool same_automation(const StitchCameraSelection& other, bool include_frozen = false) const {
+    if (automatic_fov() != other.automatic_fov() || automatic_lens() != other.automatic_lens())
+      return false;
+    for (const auto* cameras : {&input_cameras, &other.input_cameras})
+      for (const auto& [source, _] : *cameras) {
+        if (include_frozen) {
+          const auto a = input_cameras.find(source), b = other.input_cameras.find(source);
+          const auto af = a == input_cameras.end() ? std::optional<bool>{} : a->second.frozen;
+          const auto bf = b == other.input_cameras.end() ? std::optional<bool>{} : b->second.frozen;
+          if (af != bf)
+            return false;
+        }
+        const auto left = for_source(source), right = other.for_source(source);
+        if (left.configuration != right.configuration || left.automatic_fov() != right.automatic_fov() ||
+            left.automatic_lens() != right.automatic_lens())
+          return false;
+      }
+    return true;
   }
 
   bool operator==(const StitchCameraSelection& other) const {
+    if (!input_cameras.empty() && !other.input_cameras.empty())
+      return input_cameras == other.input_cameras;
     return configuration == other.configuration && horizontal_fov == other.horizontal_fov &&
-        vertical_fov == other.vertical_fov && input_lens == other.input_lens;
+        vertical_fov == other.vertical_fov && input_lens == other.input_lens && input_cameras == other.input_cameras;
   }
   bool operator!=(const StitchCameraSelection& other) const {
     return !(*this == other);
@@ -190,6 +254,15 @@ absl::Status validate_player_frame_selection_sources(const YAML::Node& config);
 absl::StatusOr<std::vector<StitchCameraConfiguration>> read_stitch_camera_configurations(const YAML::Node& config);
 absl::StatusOr<StitchCameraSelection> read_stitch_camera_selection(const YAML::Node& config);
 void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelection& selection);
+// Keep explicit components while retaining a frozen automatic snapshot.
+StitchCameraSelection merge_stitch_camera_snapshot(
+    StitchCameraSelection snapshot,
+    const StitchCameraSelection& current);
+std::string stitch_input_camera_key(const std::filesystem::path& game, const std::filesystem::path& source);
+absl::StatusOr<std::array<StitchCameraOptics, 2>> resolve_stitch_input_camera_order(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    const StitchCameraSelection& camera);
 
 // Projection parameters are stored under
 // stitching.projection_parameters.<canonical-projection-name>. Missing entries

@@ -61,6 +61,15 @@ int main() {
     Check(
         sequence.ok() && sequence->values["rink"].IsSequence() && sequence->values["rink"].size() == 2,
         "Sequence overlay merged as a map");
+    const auto old_optics = YAML::Load("stitching: {input_cameras: {old_left: {}, old_right: {}}}");
+    const auto shared_optics =
+        hm::config::MergeNodes(YAML::Clone(old_optics), YAML::Load("stitching: {input_cameras: {}}"), false);
+    Check(shared_optics["stitching"]["input_cameras"].size() == 0, "Shared optics must clear an inherited source pair");
+    const auto new_optics = hm::config::MergeNodes(
+        YAML::Clone(old_optics), YAML::Load("stitching: {input_cameras: {left: {}, right: {}}}"), false);
+    Check(
+        new_optics["stitching"]["input_cameras"].size() == 2 && !new_optics["stitching"]["input_cameras"]["old_left"],
+        "A new source pair must replace the inherited pair atomically");
     const auto null_pipeline = YAML::Load("pipeline: null");
     auto native = hm::config::ResolveProgramConfiguration(baseline, user, null_pipeline, app, {});
     Check(

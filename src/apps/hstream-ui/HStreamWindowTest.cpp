@@ -10,6 +10,8 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
+#include "src/apps/hstream-ui/CameraOpticsWidget.h"
+#include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
@@ -65,6 +67,7 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QStyleOptionButton>
 #include <QtWidgets/QStyleOptionSlider>
 #include <QtWidgets/QTabBar>
@@ -4821,10 +4824,6 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* camera2_surface = require_child<QWidget>(window, "camera2PreviewSurface");
   auto* camera2_target = require_child<QWidget>(window, "camera2PreviewRenderTarget");
   auto* camera2_focus = require_child<QPushButton>(window, "camera2FocusButton");
-  auto* camera3_host = require_child<QWidget>(window, "camera3LetterboxHost");
-  auto* camera3_surface = require_child<QWidget>(window, "camera3PreviewSurface");
-  auto* camera3_target = require_child<QWidget>(window, "camera3PreviewRenderTarget");
-  auto* camera3_focus = require_child<QPushButton>(window, "camera3FocusButton");
   auto* external_notice = require_child<QLabel>(window, "programExternalRenderNotice");
   auto* camera1_notice = require_child<QLabel>(window, "camera1ExternalRenderNotice");
   auto* stitched_status = require_child<QLabel>(window, "stitchedPreviewStatusLabel");
@@ -4869,12 +4868,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       !show_rink_mask || !drivegpt_csv || !log || !clear_log || !main_log_splitter || !setup_preview_splitter ||
       !output_routing || !preview_tabs || !pipeline_inspector || !program_host || !preview_surface || !preview_target ||
       !stitched_surface || !stitched_target || !stitched_host || !camera1_host || !camera1_surface || !camera1_target ||
-      !camera1_focus || !camera2_host || !camera2_surface || !camera2_target || !camera2_focus || !camera3_host ||
-      !camera3_surface || !camera3_target || !camera3_focus || !external_notice || !camera1_notice ||
-      !stitched_status || !preview_status || !program_controls || !program_controls_toggle || !stitched_controls ||
-      !stitched_controls_toggle || !stitched_bring_up_shadows || !stitched_exposure || !stitched_lift_black_point ||
-      !stitched_force_high_bit || !stitched_precision_status || !projection_scroll || !projection_page ||
-      !alignment_scroll || !alignment_page || !program_control_tabs || !stitched_control_tabs ||
+      !camera1_focus || !camera2_host || !camera2_surface || !camera2_target || !camera2_focus || !external_notice ||
+      !camera1_notice || !stitched_status || !preview_status || !program_controls || !program_controls_toggle ||
+      !stitched_controls || !stitched_controls_toggle || !stitched_bring_up_shadows || !stitched_exposure ||
+      !stitched_lift_black_point || !stitched_force_high_bit || !stitched_precision_status || !projection_scroll ||
+      !projection_page || !alignment_scroll || !alignment_page || !program_control_tabs || !stitched_control_tabs ||
       !program_controls_splitter || !stitched_controls_splitter || !program_focus || !stitched_focus || !top_bar ||
       !setup_row || !log_panel || !playback_progress || !seek_slider || !seek_back || !seek_forward || !seek_position ||
       !pipeline_process) {
@@ -5390,12 +5388,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   preview_tabs->setCurrentIndex(0);
   QApplication::processEvents();
-  const std::array<std::pair<QWidget*, QPushButton*>, 5> stopped_focus_controls = {{
+  const std::array<std::pair<QWidget*, QPushButton*>, 4> stopped_focus_controls = {{
       {preview_target, program_focus},
       {stitched_target, stitched_focus},
       {camera1_target, camera1_focus},
       {camera2_target, camera2_focus},
-      {camera3_target, camera3_focus},
   }};
   const bool all_stopped_focus_controls_ready =
       std::all_of(stopped_focus_controls.begin(), stopped_focus_controls.end(), [](const auto& item) {
@@ -5929,7 +5926,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(startup_hold.isValid(), "Could not prepare the startup-stage hold"))
     return false;
   qputenv("HSTREAM_UI_TEST_STARTUP_HOLD_DIR", startup_hold.path().toLocal8Bit());
-  for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface, camera3_surface}) {
+  for (QWidget* surface : {preview_surface, stitched_surface, camera1_surface, camera2_surface}) {
     surface->setProperty("previewRendererState", "ready");
   }
   activate(start);
@@ -5959,8 +5956,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           (initial_program_preview_state == "idle" || initial_program_preview_state == "activating") &&
               stitched_surface->property("previewRendererState").toString() == "idle" &&
               camera1_surface->property("previewRendererState").toString() == "idle" &&
-              camera2_surface->property("previewRendererState").toString() == "idle" &&
-              camera3_surface->property("previewRendererState").toString() == "idle",
+              camera2_surface->property("previewRendererState").toString() == "idle",
           "Starting a new pipeline should reset every GPU preview before the backend-ready handshake activates "
           "Program")) {
     return false;
@@ -7317,11 +7313,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     QPushButton* button;
     double expected_aspect;
   };
-  const std::array<FocusPreviewCase, 4> additional_focus_cases = {{
+  const std::array<FocusPreviewCase, 3> additional_focus_cases = {{
       {1, "stitched", stitched_host, stitched_target, stitched_focus, 4096.0 / 1080.0},
       {2, "source0", camera1_host, camera1_target, camera1_focus, 16.0 / 9.0},
       {3, "source1", camera2_host, camera2_target, camera2_focus, 16.0 / 9.0},
-      {4, "source2", camera3_host, camera3_target, camera3_focus, 16.0 / 9.0},
   }};
   QWidget* previous_target = preview_target;
   for (const FocusPreviewCase& focus_case : additional_focus_cases) {
@@ -7403,8 +7398,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           preview_surface->property("previewRendererState").toString() == "idle" &&
               stitched_surface->property("previewRendererState").toString() == "idle" &&
               camera1_surface->property("previewRendererState").toString() == "idle" &&
-              camera2_surface->property("previewRendererState").toString() == "idle" &&
-              camera3_surface->property("previewRendererState").toString() == "idle",
+              camera2_surface->property("previewRendererState").toString() == "idle",
           "Finishing a pipeline should clear every GPU renderer state")) {
     return false;
   }
@@ -7514,12 +7508,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   std::sort(expected_calibration_channels.begin(), expected_calibration_channels.end());
   const bool x11_calibration_preview_ok = preview_channels == expected_calibration_channels &&
       !preview_channels.contains("program") && latest_calibration_command.contains("--ui-preview-active=stitched") &&
-      !stitched_surface->isHidden() && camera1_surface->isHidden() && camera2_surface->isHidden() &&
-      camera3_surface->isHidden();
+      !stitched_surface->isHidden() && camera1_surface->isHidden() && camera2_surface->isHidden();
   if (QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0 && !x11_calibration_preview_ok) {
     std::cerr << "calibration preview visibility stitched=" << !stitched_surface->isHidden()
-              << " camera1=" << !camera1_surface->isHidden() << " camera2=" << !camera2_surface->isHidden()
-              << " camera3=" << !camera3_surface->isHidden() << '\n';
+              << " camera1=" << !camera1_surface->isHidden() << " camera2=" << !camera2_surface->isHidden() << '\n';
     std::cerr << window->logText().right(4000).toStdString() << '\n';
   }
   if (!expect(
@@ -7563,7 +7555,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 #endif
                   window->logText().contains("--show-scaled=0.3012048193") &&
                   !window->logText().contains("--source-render-window-ids=") && stitched_surface->isHidden() &&
-                  camera1_surface->isHidden() && camera2_surface->isHidden() && camera3_surface->isHidden(),
+                  camera1_surface->isHidden() && camera2_surface->isHidden(),
           "Only the X11 test backend should expose the selected embedded stitched preview window") ||
       !expect(
           window->logText().contains("ANSI blue runner line"), "ANSI-colored runner output should remain visible") ||
@@ -11180,6 +11172,15 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           input_b->value() == 0.02 && input_center_y->value() == 14.35 && !save->isEnabled(),
       "Reloading the main UI must restore source optics without dirtying the preset");
 
+  for (const char* key : {"left", "right", "camera1", "camera2", "average"})
+    if (!expect(
+            !window->findChild<QPushButton*>(QString("inputLensUse_%1").arg(key)),
+            "Camera optics must not expose copy/average shortcuts"))
+      return false;
+
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY"))
+    return input_lens_saved && input_lens_reloaded && camera_override_reloaded;
+
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   if (!expect(input_projection->currentData() == "rectilinear" && input_optimization->currentData() == "auto" &&
                   input_b->value() == 0 && input_center_y->value() == 0,
@@ -12632,7 +12633,6 @@ bool test_camera_controls(HStreamWindow* window) {
       "stitchedFocusButton",
       "camera1FocusButton",
       "camera2FocusButton",
-      "camera3FocusButton",
       "programControlsToggle",
       "stitchedControlsToggle",
       "projectionAutoFovCheck",
@@ -22307,6 +22307,109 @@ bool test_active_process_destruction() {
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
+  if (argc == 2 && QByteArray(argv[1]) == "--camera-tabs-preflight") {
+    QTemporaryDir games_root;
+    const auto game = std::filesystem::path(games_root.path().toStdString()) / "tabs";
+    std::filesystem::create_directories(game);
+    auto write = [&](const YAML::Node& config) { std::ofstream(game / "config.yaml") << config; };
+    YAML::Node config;
+    config["stitching"]["camera_config"] = "manual";
+    write(config);
+    qputenv("HM_GAME_DIR", games_root.path().toLocal8Bit());
+    QApplication app(argc, argv);
+    HStreamWindow window;
+    auto* games = require_child<QComboBox>(&window, "gameSelector");
+    games->setCurrentIndex(games->findText("tabs"));
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    auto* tabs = require_child<QTabWidget>(&window, "previewTabs");
+    if (!expect(
+            tabs && !tabs->isTabVisible(2) && !tabs->isTabVisible(3) && tabs->count() == 5,
+            "An empty recording must have no camera tabs or third-camera placeholder"))
+      return 1;
+    config["hstream_ui"]["video_roles"]["right"].push_back("right.mp4");
+    write(config);
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    if (!expect(
+            tabs->isTabVisible(2) && !tabs->isTabVisible(3) && tabs->tabText(2) == "Right camera",
+            "The first assigned source must expose only its camera tab, even before metadata is available"))
+      return 1;
+    config["hstream_ui"]["video_roles"]["left"].push_back("left.mp4");
+    write(config);
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    auto* left = static_cast<CameraOpticsWidget*>(require_child<QWidget>(&window, "camera1OpticsControls"));
+    auto* right = static_cast<CameraOpticsWidget*>(require_child<QWidget>(&window, "camera2OpticsControls"));
+    if (!expect(
+            tabs->tabText(2) == "Left camera" && tabs->tabText(3) == "Right camera" && tabs->isTabVisible(3) &&
+                left->property("cameraSource") == "left.mp4" && right->property("cameraSource") == "right.mp4",
+            "Adding the left camera must order tabs by position and retain source identities"))
+      return 1;
+    auto before = HStreamWindowTestAccess::currentCameraSelection(&window);
+    left->findChild<QDoubleSpinBox*>("sourceCameraHorizontalFovSpin")->setValue(119.25);
+    auto edited = HStreamWindowTestAccess::currentCameraSelection(&window);
+    if (!expect(
+            edited.input_cameras.at("left.mp4").horizontal_fov == 119.25 &&
+                edited.input_cameras.at("right.mp4") == before.input_cameras.at("right.mp4"),
+            "Editing left optics must preserve the right camera"))
+      return 1;
+    if (!HStreamWindowTestAccess::savePreset(&window))
+      return 1;
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    if (!expect(
+            HStreamWindowTestAccess::currentCameraSelection(&window).input_cameras.at("left.mp4").horizontal_fov ==
+                119.25,
+            "Per-camera values must survive saving and reopening"))
+      return 1;
+    config["hstream_ui"]["video_roles"] = YAML::Load("{center: [panorama.mp4]}");
+    write(config);
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    if (!expect(
+            !tabs->isTabVisible(2) && !tabs->isTabVisible(3) && tabs->tabText(1) == "Panorama",
+            "One panorama must replace camera tabs with the Panorama label"))
+      return 1;
+    std::cout << "Camera tab workflows passed\n";
+    return 0;
+  }
+  // Exercise the full saved-game loading path against original MP4 metadata.
+  if (argc == 3 && QByteArray(argv[1]) == "--optics-preflight") {
+    const QFileInfo game(QString::fromLocal8Bit(argv[2]));
+    QFile config(QDir(game.absoluteFilePath()).filePath("config.yaml"));
+    if (!game.isDir() || !config.open(QIODevice::ReadOnly))
+      return 1;
+    const QByteArray original_config = config.readAll();
+    config.close();
+    qputenv("HM_GAME_DIR", game.absolutePath().toLocal8Bit());
+    QApplication app(argc, argv);
+    HStreamWindow window;
+    auto* games = window.findChild<QComboBox*>("gameSelector");
+    games->setCurrentIndex(games->findText(game.fileName()));
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    auto* tabs = window.findChild<QTabWidget*>("previewTabs");
+    auto* editor = static_cast<CameraOpticsWidget*>(window.findChild<QWidget*>("camera1OpticsControls"));
+    if (!tabs || !editor)
+      return 1;
+    tabs->setCurrentIndex(2);
+    window.resize(1600, 1200);
+    window.show();
+    QApplication::processEvents();
+    for (auto* label : window.findChildren<QLabel*>())
+      if (label->objectName().contains("Metadata") || label->objectName().contains("Mismatch"))
+        std::cout << label->objectName().toStdString() << ": " << label->text().toStdString() << '\n';
+    const auto imported = HStreamWindowTestAccess::currentCameraSelection(&window);
+    bool independent = editor->isVisible() && imported.input_cameras.size() == 2 &&
+        imported.input_cameras.begin()->second.horizontal_fov !=
+            imported.input_cameras.rbegin()->second.horizontal_fov &&
+        tabs->isTabVisible(2) && tabs->isTabVisible(3) && tabs->count() == 5 &&
+        !window.findChild<QGroupBox*>("stitchCameraOpticsGroup")->isVisible();
+    for (const char* key : {"left", "right", "camera1", "camera2", "average"})
+      independent &= !window.findChild<QPushButton*>(QString("inputLensUse_%1").arg(key));
+    window.grab().save("/tmp/hstream-optics-full-window.png");
+    std::cout << window.logText().toStdString() << '\n';
+    return expect(
+               independent && config.open(QIODevice::ReadOnly) && config.readAll() == original_config,
+               "Real game must load independent optics without copy/average actions or changing its config")
+        ? 0
+        : 1;
+  }
   // Read-only smoke for a saved game whose crop review should be deferred or
   // already satisfied. Load the real window's effective profile defaults.
   if (argc == 3 && QByteArray(argv[1]) == "--crop-preflight") {
@@ -22413,6 +22516,11 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_game_setup(&window, source_root.path()) && test_projection_parameter_persistence(&window) ? 0 : 1;
+  }
   if (!test_scoreboard_proposal_wait())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SCOREBOARD_PROPOSAL_WAIT_ONLY"))

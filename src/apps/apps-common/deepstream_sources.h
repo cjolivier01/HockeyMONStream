@@ -311,7 +311,8 @@ gboolean configure_uri_playlist_initial_offsets(
     guint64 left_video_offset_ns,
     guint64 right_video_offset_ns,
     guint audio_source_id,
-    guint64 start_time_ns);
+    guint64 start_time_ns,
+    std::string* error = nullptr);
 
 /** Configure a non-paired URI playlist to begin at a logical timestamp before preroll. */
 gboolean configure_uri_playlist_initial_position(NvDsSrcParentBin* bin, guint64 start_time_ns);

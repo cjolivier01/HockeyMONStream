@@ -4575,7 +4575,11 @@ gboolean configure_uri_playlist_initial_offsets(
     guint64 left_video_offset_ns,
     guint64 right_video_offset_ns,
     guint audio_source_id,
-    guint64 start_time_ns) {
+    guint64 start_time_ns,
+    std::string* error) {
+  if (error) {
+    *error = "Could not configure initial camera offsets before lossless sequence admission began";
+  }
   if (!bin || !bin->uri_playlist_exact_pairing_enabled || bin->num_bins != 2 || audio_source_id >= bin->num_bins) {
     return FALSE;
   }
@@ -4612,6 +4616,18 @@ gboolean configure_uri_playlist_initial_offsets(
       }
       if (plans[source_id].index + 1 == source->num_uri_list) {
         // Starting at or beyond permanent camera EOS can never create exact pair zero.
+        if (error) {
+          gchar* message = g_strdup_printf(
+              "Requested start %" GST_TIME_FORMAT " with camera %u offset %" GST_TIME_FORMAT
+              " reaches or exceeds that recording's duration %" GST_TIME_FORMAT
+              ". Set Start within the recording; times use HH:MM:SS.",
+              GST_TIME_ARGS(start_time_ns),
+              source_id + 1,
+              GST_TIME_ARGS(video_offsets[source_id]),
+              GST_TIME_ARGS(plans[source_id].skipped_base + duration));
+          *error = message;
+          g_free(message);
+        }
         return FALSE;
       }
       plans[source_id].skipped_base += duration;
@@ -4638,6 +4654,9 @@ gboolean configure_uri_playlist_initial_offsets(
     }
   }
   if (configured) {
+    if (error) {
+      error->clear();
+    }
     for (guint source_id = 0; source_id < 2; ++source_id) {
       NvDsSrcBin* source = &bin->sub_bins[source_id];
       source->uri_playlist_initial_video_offset_ns = video_offsets[source_id] + start_time_ns;

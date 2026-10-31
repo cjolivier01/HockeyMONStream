@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 
 #include "hstream/src/libs/stitching/Orientation.h"
@@ -51,6 +53,8 @@ void PreserveLegacyInputLensSelection(YAML::Node& effective, const YAML::Node& l
   const auto selected = child(stitching, "camera_config");
   const auto automation = child(stitching, "camera_automation");
   if (selected && selected.IsScalar()) {
+    if (!child(stitching, "input_cameras").IsMap())
+      effective["stitching"]["input_cameras"] = YAML::Node(YAML::NodeType::Map);
     // A higher-layer selector replaces inherited policies, just as it does in
     // the CLI. Explicit independent choices in this layer still take priority.
     for (const char* key : {"fov", "lens"})
@@ -79,10 +83,22 @@ void PreserveLegacyInputLensSelection(YAML::Node& effective, const YAML::Node& l
           manual.auto_lens = false;
       }
   }
+  if (!child(stitching, "input_cameras").IsMap()) {
+    const auto fov = child(stitching, "camera_fov"), lens = child(stitching, "input_lens");
+    for (auto& [source, value] : manual.input_cameras) {
+      if (child(fov, "horizontal_fov").IsScalar())
+        value.horizontal_fov = manual.horizontal_fov;
+      if (child(fov, "vertical_fov").IsScalar())
+        value.vertical_fov = manual.vertical_fov;
+      const auto updated = ReadStitchInputLens(lens, value.input_lens);
+      if (updated.ok())
+        value.input_lens = *updated;
+    }
+  }
   write_stitch_camera_selection(effective, manual);
 }
 
-AutoInputLensResult ReadAutoInputLensForGame(
+static AutoInputLensResult read_auto_input_lens_for_game(
     const std::filesystem::path& game,
     const YAML::Node& config,
     const StitchCameraSelection& selection,
@@ -92,12 +108,23 @@ AutoInputLensResult ReadAutoInputLensForGame(
   result.fov_message = "Manual / selected profile (MP4 import off)";
   result.lens_message = "Manual / selected profile (MP4 import off)";
   result.recording_message = "Not checked: automatic camera settings are off.";
-  if (!selection.automatic_fov() && !selection.automatic_lens())
-    return result;
   try {
     const auto stitching = child(config, "stitching");
+    auto selected_roles = child(child(config, "hstream_ui"), "video_roles");
+    if (!child(selected_roles, "center").IsSequence())
+      selected_roles.reset(child(child(config, "game"), "videos"));
+    if (!paths(child(selected_roles, "center"), game).empty() && paths(child(selected_roles, "left"), game).empty() &&
+        paths(child(selected_roles, "right"), game).empty()) {
+      result.camera.input_cameras.clear();
+      result.panorama = true;
+      result.recording_message = "Panorama input: source-camera optics are not applied.";
+      return result;
+    }
     const auto frozen = child(stitching, "auto_input_lens_frozen");
-    if (frozen && frozen.IsScalar() && frozen.as<bool>()) {
+    const bool frozen_default = frozen && frozen.IsScalar() && frozen.as<bool>();
+    if (frozen_default && !selection.input_cameras.empty()) {
+      for (auto& [source, camera] : result.camera.input_cameras)
+        camera.frozen = true;
       result.message = "Auto: using the saved experiment optics snapshot.";
       result.fov_message = "Saved experiment snapshot";
       result.lens_message = "Saved experiment snapshot";
@@ -110,7 +137,7 @@ AutoInputLensResult ReadAutoInputLensForGame(
     if (!profiles.ok())
       throw std::runtime_error(profiles.status().ToString());
     for (const auto& profile : *profiles)
-      if (profile.id == selection.configuration) {
+      if (!frozen_default && profile.id == selection.configuration) {
         profile_name = profile.display_name;
         if (selection.automatic_fov()) {
           fallback.horizontal_fov = profile.horizontal_fov;
@@ -120,6 +147,7 @@ AutoInputLensResult ReadAutoInputLensForGame(
           fallback.input_lens = profile.input_lens;
       }
     result.camera = fallback;
+    result.camera.input_cameras.clear();
     const std::string baseline_source = "Fallback defaults: " + profile_name + " (not from MP4)";
     if (selection.automatic_fov())
       result.fov_message = baseline_source;
@@ -137,13 +165,27 @@ AutoInputLensResult ReadAutoInputLensForGame(
     }
     const auto roles = child(child(config, "hstream_ui"), "video_roles");
     auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
+    if (frozen_default) {
+      if (left.empty())
+        left = paths(child(child(child(config, "game"), "videos"), "left"), game);
+      if (right.empty())
+        right = paths(child(child(child(config, "game"), "videos"), "right"), game);
+    }
     if (!left.empty() && !right.empty()) {
-      left.insert(left.end(), right.begin(), right.end());
-      return ResolveAutoInputLens(left, fallback, *profiles);
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);
     }
     auto discovered = get_available_videos(game.string());
-    if (!discovered.ok())
+    if (!discovered.ok()) {
+      if (!left.empty() || !right.empty())
+        return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);
       throw std::runtime_error(discovered.status().ToString());
+    }
+    if (discovered->count("stitched") && left.empty() && right.empty()) {
+      result.camera.input_cameras.clear();
+      result.panorama = true;
+      result.recording_message = "Panorama input: source-camera optics are not applied.";
+      return result;
+    }
     const bool explicit_roles = !left.empty() || !right.empty();
     const bool cam_dirs = std::any_of(discovered->begin(), discovered->end(), [](const auto& v) {
       std::string key = v.first;
@@ -164,21 +206,23 @@ AutoInputLensResult ReadAutoInputLensForGame(
         append(discovered->at("left"), left);
       if (right.empty() && discovered->count("right"))
         append(discovered->at("right"), right);
-      if (left.empty() || right.empty())
-        throw std::runtime_error("Select both Left and Right camera sources");
     } else {
       size_t cameras = 0;
       for (const auto& [key, chapters] : *discovered) {
         if (key == "stitched" || chapters.empty())
           continue;
-        append(chapters, left);
+        append(chapters, cameras == 0 ? left : right);
         ++cameras;
       }
-      if (cameras != 2)
-        throw std::runtime_error("Auto lens import requires two selected source cameras");
+      if (cameras > 2)
+        throw std::runtime_error("Camera optics support at most two source cameras");
+      if (cameras == 0)
+        return result;
+      // Discovery groups chapters before orientation is known. Preserve those
+      // groups and identify choices by filename instead of guessing Left/Right.
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, false, game, frozen_default);
     }
-    left.insert(left.end(), right.begin(), right.end());
-    return ResolveAutoInputLens(left, fallback, *profiles);
+    return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);
   } catch (const std::exception& error) {
     result.message = "Auto unavailable: " + std::string(error.what()) + ". Using baseline defaults.";
     result.recording_message = "Not read: " + std::string(error.what());
@@ -188,5 +232,53 @@ AutoInputLensResult ReadAutoInputLensForGame(
       result.lens_message = result.message;
     return result;
   }
+}
+AutoInputLensResult ReadAutoInputLensForGame(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    const StitchCameraSelection& selection,
+    bool force_video_discovery,
+    bool live_sources) {
+  auto result = read_auto_input_lens_for_game(game, config, selection, force_video_discovery, live_sources);
+  if (!result.camera.input_cameras.empty()) {
+    std::ostringstream description;
+    description << "Each source camera uses its own optics.\n" << std::setprecision(10);
+    size_t index = 0;
+    for (const auto& [source, values] : result.camera.input_cameras) {
+      auto& metadata = result.source_metadata[source];
+      if (metadata.message.empty()) {
+        metadata.message = result.message;
+        metadata.fov_message = result.fov_message;
+        metadata.lens_message = result.lens_message;
+        metadata.recording_message = result.recording_message;
+        metadata.role = "auto";
+        for (const char* role : {"left", "right"}) {
+          auto selected = paths(child(child(child(config, "hstream_ui"), "video_roles"), role), game);
+          if (selected.empty())
+            selected = paths(child(child(child(config, "game"), "videos"), role), game);
+          if (!selected.empty() && stitch_input_camera_key(game, selected.front()) == source)
+            metadata.role = role;
+        }
+      }
+      // Saved orientation can label a discovered source only when it names this
+      // exact chapter. It never changes the source-bound prescription.
+      if (metadata.role == "auto" && !force_video_discovery) {
+        for (const char* role : {"left", "right"}) {
+          const auto chapters = paths(child(child(child(config, "game"), "videos"), role), game);
+          if (!chapters.empty() && stitch_input_camera_key(game, chapters.front()) == source)
+            metadata.role = role;
+        }
+      }
+      description << "Camera " << ++index << " (" << source << "): horizontal FOV " << values.horizontal_fov
+                  << "°, vertical FOV " << values.vertical_fov << "°.\n"
+                  << values.input_lens.projection << "; " << values.input_lens.optimization << " correction. "
+                  << "Distortion a/b/c: " << values.input_lens.distortion[0] << ", " << values.input_lens.distortion[1]
+                  << ", " << values.input_lens.distortion[2]
+                  << ". Center X/Y: " << values.input_lens.center_offset[0] * 100 << "%, "
+                  << values.input_lens.center_offset[1] * 100 << "%.\n";
+    }
+    result.camera_details = description.str();
+  }
+  return result;
 }
 } // namespace hm::stitching

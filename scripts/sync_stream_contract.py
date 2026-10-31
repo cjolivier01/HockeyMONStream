@@ -365,6 +365,12 @@ def qt_layout(root):
     return {
         "main_tabs": main,
         "stage_tabs": {"program": program, "stitched": stitched},
+        "camera_tabs": {
+            "controls": ["Optics"],
+            "visibility": "selected-sources",
+            "order": ["left", "right"],
+            "panorama_label": "Panorama",
+        },
         "tab_icons": tab_icons,
     }
 
@@ -1186,6 +1192,7 @@ def generate(root, *, native_revision=None, include_revision=True):
         "highlight_defaults": {"base_name": highlight_base_name},
         "stitching_experiments": baseline["hstream_ui"]["stitching_experiments"],
         "stitching_camera_profiles": baseline["stitching"]["camera_configs"],
+        "stitching_input_cameras": baseline["stitching"]["input_cameras"],
         "stitching_control_policies": stitching_control_policies(root),
         "stitching_camera_automation": {
             **baseline["stitching"]["camera_automation"],
@@ -1241,6 +1248,11 @@ def generate(root, *, native_revision=None, include_revision=True):
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in (
                 "src/apps/hstream-ui/HStreamWindow.cpp",
+                "src/apps/hstream-ui/CameraOpticsWidget.cpp",
+                "src/apps/hstream-ui/CameraOpticsWidget.h",
+                "src/apps/hstream-ui/ValueControlWheel.cpp",
+                "src/apps/hstream-ui/ValueControlWheel.h",
+                "src/apps/hstream-ui/main.cpp",
                 "src/apps/hstream-ui/DetectorOptions.cpp",
                 "src/apps/hstream-ui/DetectorOptions.h",
                 "src/apps/hstream-ui/RuntimeOptions.cpp",

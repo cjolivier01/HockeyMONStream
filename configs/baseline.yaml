@@ -576,6 +576,9 @@ stitching:
         center_offset: [0, 0]
     # END GENERATED CAMERA LENS CATALOG
   camera_config: "auto"
+  # Resolved per-camera optics, keyed by each original first-chapter path.
+  # Empty keeps shared values; Auto fills separate prescriptions when needed.
+  input_cameras: {}
   # Independent input-camera sources. Null follows the selector: both Auto for
   # the auto profile, both manual for named profiles. Explicit booleans allow
   # metadata FOV with manual correction, or manual FOV with automatic correction.
