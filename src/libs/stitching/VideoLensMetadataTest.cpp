@@ -334,6 +334,26 @@ int main(int argc, char** argv) {
     expect(selected.ok(), "Auto profile reads without filesystem work");
     auto game_result = ReadAutoInputLensForGame(dir, config, *selected);
     expect(game_result.detected, "Auto discovers both originals");
+    const auto discovered_game = dir / "unassigned";
+    std::filesystem::create_directory(discovered_game);
+    for (int chapter = 1; chapter <= 2; ++chapter) {
+      write(discovered_game / ("GX0" + std::to_string(chapter) + "0103.MP4"), good);
+      write(
+          discovered_game / ("GX0" + std::to_string(chapter) + "0104.MP4"),
+          movie(gopro(0.36623674631118774f, "HS EIS", false, true, false)));
+    }
+    auto unassigned = ReadAutoInputLensForGame(discovered_game, config, *selected);
+    expect(
+        unassigned.shared_choices.size() == 3 && unassigned.shared_choices.count("camera1") &&
+            unassigned.shared_choices.count("camera2") && unassigned.shared_choices.count("average") &&
+            unassigned.shared_choices_message.find("GX010103.MP4") != std::string::npos &&
+            unassigned.shared_choices_message.find("GX010104.MP4") != std::string::npos,
+        "Auto-discovered camera groups must offer choices before Left/Right orientation is known");
+    write(discovered_game / "GX020104.MP4", good);
+    unassigned = ReadAutoInputLensForGame(discovered_game, config, *selected);
+    expect(
+        unassigned.shared_choices.size() == 1 && unassigned.shared_choices.count("camera1"),
+        "Auto discovery must inspect every chapter before offering a camera or average");
     const auto live = ReadAutoInputLensForGame(dir, config, *selected, false, true);
     expect(
         !live.detected && live.camera == *selected && live.message.find("live cameras") != std::string::npos,

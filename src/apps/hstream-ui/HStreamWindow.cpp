@@ -7823,6 +7823,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* camera_group = new QGroupBox("Input cameras — shared calibration");
     camera_group->setObjectName("stitchCameraOpticsGroup");
     auto* camera_layout = new QFormLayout(camera_group);
+    camera_layout->addRow(input_lens_widget_->takeSharedChoicesWidget());
     camera_layout->addRow(camera_configuration_label, camera_configuration_combo_);
     camera_layout->addRow(camera_metadata_group_);
     auto* fov_layout = new QFormLayout(camera_fov_group_);
@@ -19580,6 +19581,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   if (camera_vertical_fov_spin_) {
     const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
     input_lens_widget_->setLens(default_camera_selection_.input_lens);
+    input_lens_widget_->setSharedChoices({});
     input_lens_widget_->setMetadataStatus("Defaults (not read from MP4)", default_camera_selection_.automatic_lens());
     const QSignalBlocker auto_blocker(camera_auto_fov_check_);
     camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());

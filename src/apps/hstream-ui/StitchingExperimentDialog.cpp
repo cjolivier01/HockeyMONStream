@@ -3635,6 +3635,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* camera_group = new QGroupBox("Input cameras — shared calibration");
   camera_group->setObjectName("stitchExperimentCameraGroup");
   auto* camera_form = new QFormLayout(camera_group);
+  camera_form->addRow(s.input_lens->takeSharedChoicesWidget());
   camera_form->addRow("Camera / recording-mode defaults", s.camera_configuration);
   camera_form->addRow(s.camera_metadata_group);
   auto* fov_form = new QFormLayout(s.camera_fov_group);

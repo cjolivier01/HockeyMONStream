@@ -170,16 +170,16 @@ AutoInputLensResult ReadAutoInputLensForGame(
       for (const auto& [key, chapters] : *discovered) {
         if (key == "stitched" || chapters.empty())
           continue;
-        append(chapters, left);
+        append(chapters, cameras == 0 ? left : right);
         ++cameras;
       }
       if (cameras != 2)
         throw std::runtime_error("Auto lens import requires two selected source cameras");
+      // Discovery groups chapters before orientation is known. Preserve those
+      // groups and identify choices by filename instead of guessing Left/Right.
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, false);
     }
-    if (!left.empty() && !right.empty())
-      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles);
-    left.insert(left.end(), right.begin(), right.end());
-    return ResolveAutoInputLens(left, fallback, *profiles);
+    return ResolveAutoInputLensForCameras(left, right, fallback, *profiles);
   } catch (const std::exception& error) {
     result.message = "Auto unavailable: " + std::string(error.what()) + ". Using baseline defaults.";
     result.recording_message = "Not read: " + std::string(error.what());

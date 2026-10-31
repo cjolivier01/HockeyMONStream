@@ -53,7 +53,7 @@ struct AutoInputLensResult {
   bool vertical_fov_from_mp4{false};
   bool lens_from_mp4{false};
   // Explicit, fully resolved manual snapshots. Offered only for a mismatch
-  // between known Left/Right roles, with consistent chapters within each role.
+  // between camera groups, with consistent chapters within each group.
   std::map<std::string, StitchCameraSelection> shared_choices;
   std::string shared_choices_message;
 };
@@ -70,6 +70,7 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     const std::vector<std::filesystem::path>& left,
     const std::vector<std::filesystem::path>& right,
     const StitchCameraSelection& fallback,
-    const std::vector<StitchCameraConfiguration>& profiles = {});
+    const std::vector<StitchCameraConfiguration>& profiles = {},
+    bool roles_known = true);
 
 } // namespace hm::stitching

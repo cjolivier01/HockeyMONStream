@@ -25,6 +25,13 @@ class InputLensWidget : public QGroupBox {
   void setMetadataStatus(const QString& message, bool automatic, bool from_mp4 = false);
   void setSharedChoices(const hm::stitching::AutoInputLensResult& result);
   bool automatic() const;
+  // Hosts can put the decision above both FOV and lens controls.
+  QWidget* takeSharedChoicesWidget();
+
+ protected:
+  void changeEvent(QEvent* event) override;
+
+ public:
   std::function<void()> automationChanged;
   std::function<void()> changed;
   std::function<void(const hm::stitching::StitchCameraSelection&)> sharedChoiceSelected;

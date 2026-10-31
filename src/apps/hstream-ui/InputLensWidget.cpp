@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/InputLensWidget.h"
 
+#include <QtCore/QEvent>
 #include <QtCore/QSignalBlocker>
 #include <QtGui/QPalette>
 #include <QtWidgets/QCheckBox>
@@ -50,10 +51,11 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
   mismatch_status_->setWordWrap(true);
   mismatch_status_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
   mismatch_status_->setTextFormat(Qt::PlainText);
-  mismatch_layout->addWidget(mismatch_status_);
-  for (const auto& [key, label] : std::array<std::pair<std::string, QString>, 3>{
+  for (const auto& [key, label] : std::array<std::pair<std::string, QString>, 5>{
            {{"left", "Use Left for both"},
             {"right", "Use Right for both"},
+            {"camera1", "Use Camera 1 for both"},
+            {"camera2", "Use Camera 2 for both"},
             {"average", "Average for both (approximation)"}}}) {
     auto* button = new QPushButton(action_icon(ActionIcon::Apply), label, mismatch_group_);
     button->setObjectName(QString::fromStdString("inputLensUse_" + key));
@@ -69,6 +71,7 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
       }
     });
   }
+  mismatch_layout->addWidget(mismatch_status_);
   mismatch_group_->hide();
   layout->addRow(mismatch_group_);
   automatic_ = new QCheckBox("Auto lens correction", this);
@@ -192,6 +195,20 @@ void InputLensWidget::setSharedChoices(const hm::stitching::AutoInputLensResult&
   choices_ = result.shared_choices;
   mismatch_status_->setText(QString::fromStdString(result.shared_choices_message));
   mismatch_group_->setVisible(!result.shared_choices_message.empty());
-  for (const auto& [key, button] : choice_buttons_)
+  const bool unassigned = choices_.count("camera1") || choices_.count("camera2");
+  for (const auto& [key, button] : choice_buttons_) {
+    button->setVisible(key == "average" || ((key == "camera1" || key == "camera2") == unassigned));
     button->setEnabled(choices_.count(key) != 0);
+  }
+}
+
+QWidget* InputLensWidget::takeSharedChoicesWidget() {
+  layout()->removeWidget(mismatch_group_);
+  return mismatch_group_;
+}
+
+void InputLensWidget::changeEvent(QEvent* event) {
+  QGroupBox::changeEvent(event);
+  if (event->type() == QEvent::EnabledChange)
+    mismatch_group_->setEnabled(isEnabled());
 }

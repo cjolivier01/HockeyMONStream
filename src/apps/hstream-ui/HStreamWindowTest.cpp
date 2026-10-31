@@ -66,6 +66,7 @@
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QStyleOptionButton>
 #include <QtWidgets/QStyleOptionSlider>
 #include <QtWidgets/QTabBar>
@@ -11201,6 +11202,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       return false;
   }
 
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY"))
+    return input_lens_saved && input_lens_reloaded && camera_override_reloaded;
+
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   if (!expect(input_projection->currentData() == "rectilinear" && input_optimization->currentData() == "auto" &&
                   input_b->value() == 0 && input_center_y->value() == 0,
@@ -22328,6 +22332,61 @@ bool test_active_process_destruction() {
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
+  // Exercise the full saved-game loading path against original MP4 metadata.
+  if (argc == 3 && QByteArray(argv[1]) == "--optics-preflight") {
+    const QFileInfo game(QString::fromLocal8Bit(argv[2]));
+    QFile config(QDir(game.absoluteFilePath()).filePath("config.yaml"));
+    if (!game.isDir() || !config.open(QIODevice::ReadOnly))
+      return 1;
+    const QByteArray original_config = config.readAll();
+    config.close();
+    qputenv("HM_GAME_DIR", game.absolutePath().toLocal8Bit());
+    QApplication app(argc, argv);
+    HStreamWindow window;
+    auto* games = window.findChild<QComboBox*>("gameSelector");
+    games->setCurrentIndex(games->findText(game.fileName()));
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    auto* group = window.findChild<QGroupBox*>("inputLensMismatchGroup");
+    for (QWidget* child = group; child && child->parentWidget(); child = child->parentWidget()) {
+      if (auto* stack = qobject_cast<QStackedWidget*>(child->parentWidget())) {
+        if (auto* tabs = qobject_cast<QTabWidget*>(stack->parentWidget()))
+          tabs->setCurrentWidget(child);
+        else
+          stack->setCurrentWidget(child);
+      }
+    }
+    window.resize(1600, 1200);
+    window.show();
+    QApplication::processEvents();
+    for (auto* label : window.findChildren<QLabel*>())
+      if (label->objectName().contains("Metadata") || label->objectName().contains("Mismatch"))
+        std::cout << label->objectName().toStdString() << ": " << label->text().toStdString() << '\n';
+    bool choices = group && group->isVisible();
+    const bool unassigned = !window.findChild<QPushButton*>("inputLensUse_camera1")->isHidden();
+    const std::array<const char*, 3> keys = unassigned ? std::array<const char*, 3>{"camera1", "camera2", "average"}
+                                                       : std::array<const char*, 3>{"left", "right", "average"};
+    for (const char* key : keys) {
+      auto* button = window.findChild<QPushButton*>(QString("inputLensUse_%1").arg(key));
+      std::cout << key << " visible=" << button->isVisible() << " enabled=" << button->isEnabled() << '\n';
+      choices &= button->isVisible() && button->isEnabled();
+    }
+    window.grab().save("/tmp/hstream-optics-full-window.png");
+    for (const char* key : keys) {
+      HStreamWindowTestAccess::reloadSavedControls(&window);
+      window.findChild<QPushButton*>(QString("inputLensUse_%1").arg(key))->click();
+      const auto selected = HStreamWindowTestAccess::currentCameraSelection(&window);
+      choices &= selected.configuration == "manual" && !selected.automatic_fov() && !selected.automatic_lens() &&
+          selected.input_lens.projection == "full-frame-fisheye" && selected.input_lens.distortion[1] != 0;
+      std::cout << key << " selected FOV=" << selected.horizontal_fov << " b=" << selected.input_lens.distortion[1]
+                << '\n';
+    }
+    std::cout << window.logText().toStdString() << '\n';
+    return expect(
+               choices && config.open(QIODevice::ReadOnly) && config.readAll() == original_config,
+               "Real game must load all three optics choices without changing its config")
+        ? 0
+        : 1;
+  }
   // Read-only smoke for a saved game whose crop review should be deferred or
   // already satisfied. Load the real window's effective profile defaults.
   if (argc == 3 && QByteArray(argv[1]) == "--crop-preflight") {
@@ -22434,6 +22493,11 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_game_setup(&window, source_root.path()) && test_projection_parameter_persistence(&window) ? 0 : 1;
+  }
   if (!test_scoreboard_proposal_wait())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SCOREBOARD_PROPOSAL_WAIT_ONLY"))

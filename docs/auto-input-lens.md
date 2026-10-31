@@ -46,10 +46,11 @@ fallback rather than applying incompatible numbers.
 
 Both cameras and every selected chapter must agree on recording mode and
 available geometry. A mismatch warns and leaves the automatic components on
-baseline defaults; manual components are retained. When Left/Right roles are known, **Different
-camera optics** shows each camera's zoom, recorded coverage and converted lens
-values. **Use Left for both**, **Use Right for both**, and **Average for both
-(approximation)** copy a complete prescription into manual FOV/lens controls.
+baseline defaults; manual components are retained. **Different camera optics**
+shows each camera's zoom, recorded coverage and converted lens values. Before
+Left/Right orientation is known, choices use Camera 1/2 and identify each first
+chapter by filename. **Use Left for both**, **Use Right for both**, and **Average
+for both (approximation)** copy a complete prescription into manual FOV/lens controls.
 They do not save or change an active run. Save Preset/Play uses the normal
 calibration invalidation path; experiments retain the exact selected numbers.
 A camera with missing metadata or inconsistent chapters cannot supply a choice.

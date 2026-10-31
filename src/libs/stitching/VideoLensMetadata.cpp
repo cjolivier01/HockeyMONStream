@@ -1004,7 +1004,8 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     const std::vector<std::filesystem::path>& left,
     const std::vector<std::filesystem::path>& right,
     const StitchCameraSelection& fallback,
-    const std::vector<StitchCameraConfiguration>& profiles) {
+    const std::vector<StitchCameraConfiguration>& profiles,
+    bool roles_known) {
   auto videos = left;
   videos.insert(videos.end(), right.begin(), right.end());
   auto result = ResolveAutoInputLens(videos, fallback, profiles);
@@ -1016,7 +1017,7 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
   const auto l = ResolveAutoInputLens(left, automatic, profiles);
   const auto r = ResolveAutoInputLens(right, automatic, profiles);
   const auto lm = ReadVideoLensMetadata(left.front()), rm = ReadVideoLensMetadata(right.front());
-  auto describe = [](const char* role, const AutoInputLensResult& resolved, const auto& metadata) {
+  auto describe = [](const std::string& role, const AutoInputLensResult& resolved, const auto& metadata) {
     std::ostringstream out;
     out << role << ": " << (metadata.ok() ? recording_description(*metadata) : "Metadata unavailable");
     if (resolved.lens_from_mp4)
@@ -1029,8 +1030,9 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
       out << "\nChapters within this camera disagree; its values cannot be used for both cameras.";
     return out.str();
   };
-  result.shared_choices_message = "The cameras have different recording metadata.\n" + describe("Left", l, lm) + "\n" +
-      describe("Right", r, rm) +
+  result.shared_choices_message = "The cameras have different recording metadata.\n" +
+      describe(roles_known ? "Left" : "Camera 1 (" + left.front().filename().string() + ")", l, lm) + "\n" +
+      describe(roles_known ? "Right" : "Camera 2 (" + right.front().filename().string() + ")", r, rm) +
       "\nChoose a shared approximation below, or keep the fallback. A choice copies FOV and lens values into manual settings for both cameras.";
   auto complete = [](const AutoInputLensResult& value) {
     return !value.mismatch && value.recording_metadata_found && value.horizontal_fov_from_mp4 &&
@@ -1042,9 +1044,9 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     return camera;
   };
   if (complete(l))
-    result.shared_choices["left"] = manual(l.camera);
+    result.shared_choices[roles_known ? "left" : "camera1"] = manual(l.camera);
   if (complete(r))
-    result.shared_choices["right"] = manual(r.camera);
+    result.shared_choices[roles_known ? "right" : "camera2"] = manual(r.camera);
   if (complete(l) && complete(r) && lm.ok() && rm.ok() && lm->width == rm->width && lm->height == rm->height &&
       l.camera.input_lens.projection == r.camera.input_lens.projection &&
       l.camera.input_lens.optimization == r.camera.input_lens.optimization) {
