@@ -2602,11 +2602,17 @@ absl::Status HuginProject::Configure(
   if (options.ordered_input_cameras)
     for (const auto& camera : *options.ordered_input_cameras)
       HM_RETURN_IF_ERROR(ValidateStitchCameraOptics(camera));
-  if ((!options.input_cameras.empty() || options.input_lens != StitchInputLens{}) &&
-      options.mapping_backend != MappingBackend::kNona)
+  const StitchCameraSelection camera_selection{
+      options.camera_configuration,
+      options.horizontal_fov,
+      options.vertical_fov,
+      options.input_lens,
+      {},
+      {},
+      options.input_cameras};
+  if (camera_selection.requires_lens_mapping() && options.mapping_backend != MappingBackend::kNona)
     return absl::InvalidArgumentError("Input lens correction requires the NONA mapping backend");
-  if ((!options.input_cameras.empty() || options.input_lens != StitchInputLens{}) &&
-      options.akaze_calibration.left.has_value())
+  if (camera_selection.requires_lens_mapping() && options.akaze_calibration.left.has_value())
     return absl::InvalidArgumentError("Input lens correction cannot also use rectified AKAZE lens profiles");
   if (options.camera_configuration.empty())
     return absl::InvalidArgumentError("Camera configuration identifier must not be empty");

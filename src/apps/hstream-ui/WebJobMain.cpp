@@ -565,6 +565,17 @@ QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
         {"input_lens", input_lens_json(values.input_lens)}};
     if (values.source_size)
       prescription.insert("source_size", QJsonArray{(*values.source_size)[0], (*values.source_size)[1]});
+    if (!values.configuration.empty())
+      prescription.insert("camera_config", text(values.configuration));
+    QJsonObject policies;
+    if (values.auto_fov.has_value())
+      policies.insert("fov", *values.auto_fov);
+    if (values.auto_lens.has_value())
+      policies.insert("lens", *values.auto_lens);
+    if (values.frozen.has_value())
+      prescription.insert("auto_input_lens_frozen", *values.frozen);
+    if (!policies.empty())
+      prescription.insert("camera_automation", policies);
     inputs.insert(text(source), prescription);
   }
   QJsonObject automation;
@@ -592,8 +603,14 @@ QJsonObject read_camera_optics(const Request& request) {
   merge_settings(config, controls);
   const auto current_selection = take(hm::stitching::read_stitch_camera_selection(config));
   std::unique_ptr<hm::stitching::GameConfigTransactionLock> snapshot;
-  if (request.runtime.value("saved_optics").toBool()) {
+  YAML::Node saved_orientation;
+  if (request.runtime.value("saved_orientation").toBool() || request.runtime.value("saved_optics").toBool()) {
     snapshot = take(hm::stitching::GameConfigTransactionLock::TryAcquireSnapshot(request.game));
+    const auto path = Contained(request.game, "config.yaml");
+    require(fs::file_size(path) <= 4 * 1024 * 1024, "Saved optics config exceeds its input limit");
+    saved_orientation = YAML::LoadFile(path.string())["game"]["videos"];
+  }
+  if (request.runtime.value("saved_optics").toBool()) {
     const auto path = Contained(request.game, "config.yaml");
     require(fs::file_size(path) <= 4 * 1024 * 1024, "Saved optics config exceeds its input limit");
     const auto saved = YAML::LoadFile(path.string())["stitching"];
@@ -602,10 +619,7 @@ QJsonObject read_camera_optics(const Request& request) {
       if (const auto value = saved[key.toStdString()]; value)
         config["stitching"][key.toStdString()] = YAML::Clone(value);
     auto saved_selection = take(hm::stitching::read_stitch_camera_selection(config));
-    require(
-        saved_selection.automatic_fov() == current_selection.automatic_fov() &&
-            saved_selection.automatic_lens() == current_selection.automatic_lens(),
-        "Saved optics policy changed");
+    require(saved_selection.same_automation(current_selection), "Saved optics policy changed");
     saved_selection = hm::stitching::merge_stitch_camera_snapshot(saved_selection, current_selection);
     hm::stitching::write_stitch_camera_selection(config, saved_selection);
     config["stitching"]["auto_input_lens_frozen"] = true;
@@ -649,12 +663,39 @@ QJsonObject read_camera_optics(const Request& request) {
       config["hstream_ui"]["video_roles"][role.toStdString()].push_back(destination.string());
     pinned.push_back(std::move(owner));
   }
-  const auto resolved = hm::stitching::ReadAutoInputLensForGame(game, config, selection, true);
+  auto resolved = hm::stitching::ReadAutoInputLensForGame(game, config, selection, true);
+  if (saved_orientation && saved_orientation.IsMap())
+    for (const char* role : {"left", "right"}) {
+      const auto chapters = saved_orientation[role];
+      if (!chapters || !chapters.IsSequence() || chapters.size() == 0 || !chapters[0].IsScalar())
+        continue;
+      const auto source = chapters[0].as<std::string>();
+      // Only workspace-relative, admitted source identities may name a side.
+      if (aliases.count(text(source)) && resolved.source_metadata.count(source))
+        resolved.source_metadata[source].role = role;
+    }
   for (const auto& input : pinned)
     input->Verify();
   require(!interrupted, "Optics metadata read cancelled");
+  QJsonObject source_metadata;
+  for (const auto& [source, value] : resolved.source_metadata)
+    source_metadata.insert(
+        text(source),
+        QJsonObject{
+            {"role", text(value.role)},
+            {"message", text(value.message)},
+            {"fov_message", text(value.fov_message)},
+            {"lens_message", text(value.lens_message)},
+            {"recording_message", text(value.recording_message)},
+            {"mismatch", value.mismatch},
+            {"recording_metadata_found", value.recording_metadata_found},
+            {"horizontal_fov_from_mp4", value.horizontal_fov_from_mp4},
+            {"vertical_fov_from_mp4", value.vertical_fov_from_mp4},
+            {"lens_from_mp4", value.lens_from_mp4}});
   return {
       {"version", 1},
+      {"source_metadata", source_metadata},
+      {"panorama", resolved.panorama},
       {"camera_details", text(resolved.camera_details)},
       {"camera", camera_json(resolved.camera)},
       {"message", text(resolved.message)},

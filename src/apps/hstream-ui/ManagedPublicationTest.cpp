@@ -6,9 +6,13 @@
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QTemporaryDir>
+#include <QtCore/QTimer>
+#include <QtGui/QKeyEvent>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QMessageBox>
+#include <QtWidgets/QPushButton>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -17,6 +21,42 @@
 
 namespace fs = std::filesystem;
 struct HStreamWindowTestAccess {
+  static bool stopChoice(
+      HStreamWindow& window,
+      const fs::path& helper,
+      const fs::path& result,
+      bool publish,
+      bool hockeymon_video) {
+    window.pipeline_process_->start(
+        "/usr/bin/python3", {QString::fromStdString(helper.string()), QString::fromStdString(result.string())});
+    if (!window.pipeline_process_->waitForStarted())
+      return false;
+    QTest::qWait(100);
+    window.active_hockeymon_program_ = hockeymon_video;
+    window.active_backend_output_kinds_ = hockeymon_video ? QStringList{"archive-file"} : QStringList{};
+    window.active_run_telemetry_requested_ = !hockeymon_video;
+    window.preview_runtime_ready_ = true;
+    window.calibration_pending_ = false;
+    bool checked_default = false;
+    QTimer::singleShot(0, [&] {
+      auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+      if (!dialog)
+        return;
+      checked_default = dialog->defaultButton() && dialog->defaultButton()->text() == "Don't publish";
+      if (const auto path = qEnvironmentVariable("HSTREAM_STOP_SCREENSHOT"); !path.isEmpty())
+        dialog->grab().save(path);
+      if (publish) {
+        for (auto* button : dialog->buttons())
+          if (button->text() == "Publish partial outputs")
+            button->click();
+      } else {
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(dialog, &escape);
+      }
+    });
+    window.confirmStopPipeline();
+    return checked_default && window.pipeline_process_->state() == QProcess::NotRunning;
+  }
   static bool clean(HStreamWindow& window, const fs::path& runner, const QProcessEnvironment& env) {
     return window.runStitchingClean(
         QString::fromStdString(runner.string()), QString::fromStdString(runner.parent_path().string()), env, false, {});
@@ -49,11 +89,13 @@ struct HStreamWindowTestAccess {
       bool telemetry_only,
       int exit_code,
       QProcess::ExitStatus exit_status,
-      bool stopped_by_user) {
+      bool stopped_by_user,
+      bool publish_partial = false) {
     window.managed_archive_manifest_ = QString::fromStdString(manifest.string());
     window.active_run_game_id_ = "game";
     window.active_run_telemetry_requested_ = telemetry_only;
     window.pipeline_stop_requested_ = stopped_by_user;
+    window.pipeline_publish_partial_ = publish_partial;
     window.calibration_pending_ = false;
     window.archive_finalize_failed_ = false;
     if (!telemetry_only) {
@@ -123,6 +165,24 @@ int main(int argc, char** argv) {
              QString::fromStdString(fixture.string())}) == 0,
         "create fixture");
     HStreamWindow window;
+    const auto stop_helper = path / "stop-helper.py";
+    std::ofstream(stop_helper) << "import signal,sys\n"
+                                  "def stopped(*args):\n"
+                                  " open(sys.argv[1], 'w').write('interrupted')\n"
+                                  " sys.exit(0)\n"
+                                  "signal.signal(signal.SIGINT, stopped)\n"
+                                  "print('ready', flush=True)\n"
+                                  "line=sys.stdin.readline().strip()\n"
+                                  "open(sys.argv[1], 'w').write(line)\n";
+    for (const bool hockeymon_video : {true, false})
+      for (const bool publish : {false, true}) {
+        const auto result = path / (publish ? "publish-stop" : "discard-stop");
+        require(
+            HStreamWindowTestAccess::stopChoice(window, stop_helper, result, publish, hockeymon_video),
+            "Stop must ask and default to no publication for telemetry and either backend's videos");
+        require(
+            readFile(result) == (publish ? "q" : "interrupted"), "Only explicit consent may send a publishing stop");
+      }
     const auto clean_helper = path / "clean-helper.sh";
     std::ofstream(clean_helper) << "#!/bin/sh\n"
                                    "test -z \"${HSTREAM_JOB_MANIFEST+x}\" || exit 21\n"
@@ -138,7 +198,7 @@ int main(int argc, char** argv) {
         HStreamWindowTestAccess::clean(window, clean_helper, clean_env), "clean helper cannot close the archive run");
     require(clean_env.contains("HSTREAM_JOB_MANIFEST"), "archive launch environment retains its manifest");
     for (const bool telemetry_only : {true, false}) {
-      for (const std::string outcome : {"nonzero", "crash", "graceful-stop"}) {
+      for (const std::string outcome : {"nonzero", "crash", "graceful-stop", "stop-without-publication"}) {
         const bool success = outcome == "graceful-stop";
         const std::string id = std::string("ui-finished-") + (telemetry_only ? "telemetry-" : "video-") + outcome;
         const auto finished_game = path / id / "game";
@@ -176,6 +236,7 @@ int main(int argc, char** argv) {
             telemetry_only,
             outcome == "nonzero" ? 42 : 0,
             outcome == "crash" ? QProcess::CrashExit : QProcess::NormalExit,
+            success || outcome == "stop-without-publication",
             success);
         if (!success) {
           require(!HStreamWindowTestAccess::busy(window), id + ": failed runner cannot start publication");

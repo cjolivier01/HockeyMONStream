@@ -127,14 +127,25 @@ uint64_t anchor(const StitchingExperimentSettings& settings) {
   return hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
 }
 
+bool same_camera_snapshot(
+    const hm::stitching::StitchCameraSelection& left,
+    const hm::stitching::StitchCameraSelection& right) {
+  // Geometry equality ignores unused shared defaults and automation policy.
+  // A saved candidate retains those settings too, even with independent optics.
+  return left.configuration == right.configuration && left.horizontal_fov == right.horizontal_fov &&
+      left.vertical_fov == right.vertical_fov && left.input_lens == right.input_lens &&
+      left.input_cameras == right.input_cameras && left.same_automation(right, true);
+}
+
 bool same_settings(const StitchingExperimentSettings& left, const StitchingExperimentSettings& right) {
   return left.control_points == right.control_points && left.frame_count == right.frame_count &&
       left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
       left.control_point_resolution == right.control_point_resolution &&
       left.control_point_filtering == right.control_point_filtering &&
       left.control_point_matcher == right.control_point_matcher &&
-      left.manual_control_points == right.manual_control_points && left.camera == right.camera &&
-      (!left.camera || left.camera->same_automation(*right.camera));
+      left.manual_control_points == right.manual_control_points &&
+      left.camera.has_value() == right.camera.has_value() &&
+      (!left.camera || same_camera_snapshot(*left.camera, *right.camera));
 }
 
 YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
@@ -435,7 +446,7 @@ absl::StatusOr<YAML::Node> validate_workspace_config(
   if (workspace.settings.camera) {
     const auto actual = hm::stitching::read_stitch_camera_selection(config);
     require(
-        actual.ok() && *actual == *workspace.settings.camera,
+        actual.ok() && same_camera_snapshot(*actual, *workspace.settings.camera),
         "Saved experiment input lens or FOV no longer matches its workspace");
   }
   if (workspace.settings.control_point_matcher) {

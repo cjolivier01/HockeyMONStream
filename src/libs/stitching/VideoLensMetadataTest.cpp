@@ -278,11 +278,11 @@ int main(int argc, char** argv) {
     write(dir / "zoomed.mp4", movie(gopro(0.36623674631118774f, "HS EIS", false, true, false)));
     const auto pair = ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, {"auto"});
     expect(
-        pair.mismatch && pair.detected && pair.camera.input_cameras.size() == 2,
+        !pair.mismatch && pair.detected && pair.camera.input_cameras.size() == 2,
         "Different supported camera optics must import independently");
     expect(
-        pair.camera_details.find("Left:") != std::string::npos &&
-            pair.camera_details.find("Right:") != std::string::npos &&
+        pair.camera_details.find("Left camera") != std::string::npos &&
+            pair.camera_details.find("Right camera") != std::string::npos &&
             pair.camera_details.find("125.122") != std::string::npos &&
             pair.camera_details.find("97.077") != std::string::npos,
         "Mismatch explanation identifies both cameras and their differing calibration FOV");
@@ -292,6 +292,34 @@ int main(int argc, char** argv) {
         left_camera.input_lens == ReadVideoLensMetadata(dir / "left.mp4")->camera.input_lens &&
             right_camera.input_lens == ReadVideoLensMetadata(dir / "zoomed.mp4")->camera.input_lens,
         "Independent cameras retain each original prescription");
+    const auto identical = ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "right.mp4"}, {"auto"});
+    expect(
+        !identical.mismatch && identical.camera.input_cameras.size() == 2,
+        "Identical cameras also use source-bound optics by default");
+    const auto single = ResolveAutoInputLensForCameras({dir / "left.mp4"}, {}, {"auto"}, {}, false);
+    expect(single.camera.input_cameras.size() == 1, "The first camera gets controls before the second arrives");
+    auto per_camera = pair.camera;
+    auto& manual_left = per_camera.input_cameras.at((dir / "left.mp4").string());
+    manual_left.auto_fov = manual_left.auto_lens = false;
+    manual_left.horizontal_fov = 111.123456789;
+    const auto independent_policies =
+        ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, per_camera);
+    expect(
+        independent_policies.camera.input_cameras.at((dir / "left.mp4").string()).horizontal_fov == 111.123456789 &&
+            independent_policies.camera.input_cameras.at((dir / "zoomed.mp4").string()) == right_camera,
+        "A manual camera does not change the other camera's automatic optics");
+    auto frozen_sources = pair.camera;
+    frozen_sources.input_cameras.at((dir / "left.mp4").string()).frozen = false;
+    frozen_sources.input_cameras.at((dir / "zoomed.mp4").string()).frozen = true;
+    frozen_sources.input_cameras.at((dir / "zoomed.mp4").string()).horizontal_fov = 75;
+    const auto one_refreshed =
+        ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, frozen_sources, {}, true, {}, false);
+    expect(
+        one_refreshed.camera.input_cameras.at((dir / "left.mp4").string()) == left_camera &&
+            one_refreshed.camera.input_cameras.at((dir / "zoomed.mp4").string()).horizontal_fov == 75 &&
+            one_refreshed.source_metadata.at((dir / "left.mp4").string()).horizontal_fov_from_mp4 &&
+            !one_refreshed.source_metadata.at((dir / "zoomed.mp4").string()).horizontal_fov_from_mp4,
+        "Refreshing one camera preserves the other camera's frozen snapshot and provenance");
     StitchCameraSelection right_choice{
         "manual", right_camera.horizontal_fov, right_camera.vertical_fov, right_camera.input_lens};
     right_choice.auto_fov = right_choice.auto_lens = false;
@@ -300,19 +328,28 @@ int main(int argc, char** argv) {
     const auto reopened = read_stitch_camera_selection(snapshot);
     expect(
         reopened.ok() && *reopened == right_choice && reopened->same_automation(right_choice) &&
-            ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, *reopened).camera == right_choice,
+            ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, *reopened)
+                    .camera.input_cameras.at((dir / "left.mp4").string())
+                    .horizontal_fov == right_choice.horizontal_fov,
         "A saved manual choice survives reopening and cannot be replaced by automatic metadata");
     const auto inconsistent =
         ResolveAutoInputLensForCameras({dir / "left.mp4", dir / "zoomed.mp4"}, {dir / "zoomed.mp4"}, {"auto"});
     expect(
-        inconsistent.mismatch && inconsistent.camera.input_cameras.empty(),
-        "Inconsistent chapters cannot supply independent automatic optics");
+        inconsistent.mismatch && inconsistent.camera.input_cameras.size() == 2 &&
+            inconsistent.source_metadata.at((dir / "left.mp4").string()).mismatch &&
+            !inconsistent.source_metadata.at((dir / "zoomed.mp4").string()).mismatch,
+        "Inconsistent chapters fall back only for their source camera");
     const auto incomplete =
         ResolveAutoInputLensForCameras({dir / "left.mp4", dir / "missing.mp4"}, {dir / "zoomed.mp4"}, {"auto"});
-    expect(incomplete.camera.input_cameras.empty(), "Incomplete metadata must preserve the existing fallback");
+    expect(
+        incomplete.camera.input_cameras.size() == 2 &&
+            incomplete.camera.input_cameras.at((dir / "zoomed.mp4").string()) == right_camera,
+        "Incomplete metadata in one camera must preserve the other camera's imported optics");
     auto manual_lenses = pair.camera;
     manual_lenses.auto_fov = true;
     manual_lenses.auto_lens = false;
+    for (auto& [source, camera] : manual_lenses.input_cameras)
+      camera.auto_lens = false;
     manual_lenses.input_cameras.at((dir / "left.mp4").string()).input_lens.distortion = {0, 0.02, 0};
     manual_lenses.input_cameras.at((dir / "zoomed.mp4").string()).input_lens.distortion = {0, 0.03, 0};
     const auto mixed_pair = ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, manual_lenses);
@@ -328,7 +365,10 @@ int main(int argc, char** argv) {
           "Each automatic FOV must be converted for that camera's retained manual correction");
     }
     YAML::Node frozen_pair;
-    write_stitch_camera_selection(frozen_pair, pair.camera);
+    auto frozen_camera = pair.camera;
+    for (auto& [source, camera] : frozen_camera.input_cameras)
+      camera.frozen = true;
+    write_stitch_camera_selection(frozen_pair, frozen_camera);
     frozen_pair["stitching"]["auto_input_lens_frozen"] = true;
     const auto frozen_selection = read_stitch_camera_selection(frozen_pair);
     const auto frozen_result = ReadAutoInputLensForGame(dir / "no-media", frozen_pair, *frozen_selection);
@@ -338,6 +378,8 @@ int main(int argc, char** argv) {
         "Frozen independent optics retain both prescriptions and diagnostics without reopening original media");
     auto retained = pair.camera;
     retained.auto_lens = false;
+    for (auto& [source, camera] : retained.input_cameras)
+      camera.auto_lens = false;
     retained.input_cameras.at((dir / "zoomed.mp4").string()).input_lens.center_offset[0] = 0.04;
     const auto partial_pair =
         ResolveAutoInputLensForCameras({dir / "left.mp4", dir / "missing.mp4"}, {dir / "zoomed.mp4"}, retained);
@@ -379,7 +421,7 @@ int main(int argc, char** argv) {
     write(discovered_game / "GX020104.MP4", good);
     unassigned = ReadAutoInputLensForGame(discovered_game, config, *selected);
     expect(
-        unassigned.camera.input_cameras.empty() && unassigned.mismatch,
+        unassigned.camera.input_cameras.size() == 2 && unassigned.mismatch,
         "Auto discovery must inspect every chapter before importing independent optics");
     YAML::Node independent_layer;
     write_stitch_camera_selection(independent_layer, pair.camera);
@@ -536,7 +578,17 @@ int main(int argc, char** argv) {
     independent.configuration = "manual";
     result = ReadAutoInputLensForGame(dir, roundtrip, independent, true);
     expect(
-        result.camera == independent && !result.detected,
+        result.camera.configuration == independent.configuration &&
+            result.camera.horizontal_fov == independent.horizontal_fov &&
+            result.camera.input_lens == independent.input_lens && !result.detected &&
+            std::all_of(
+                result.camera.input_cameras.begin(),
+                result.camera.input_cameras.end(),
+                [&](const auto& entry) {
+                  return entry.second.frozen.value_or(false) &&
+                      entry.second.horizontal_fov == independent.horizontal_fov &&
+                      entry.second.input_lens == independent.input_lens;
+                }),
         "Mixed automatic/manual experiments freeze under every selector");
     // An extended-size, sparse 5 GiB mdat must be skipped with a seek.
     const auto huge = dir / "huge.mp4";

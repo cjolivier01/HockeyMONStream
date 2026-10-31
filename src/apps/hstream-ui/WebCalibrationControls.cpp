@@ -637,15 +637,14 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       // is reverted; the supervisor binds that explicit intent to its source.
       if (sources_changed || fresh_source || explicitly_released ||
           previous_stitching.value("camera_config") != desired_stitching.value("camera_config") ||
-          before.controls.camera.automatic_fov() != camera.automatic_fov() ||
-          before.controls.camera.automatic_lens() != camera.automatic_lens())
+          !before.controls.camera.same_automation(camera))
         effective["stitching"]["auto_input_lens_frozen"] = false;
       else if (at(effective, {"stitching", "auto_input_lens_frozen"}).as<bool>(false)) {
         camera = st::merge_stitch_camera_snapshot(before.controls.camera, camera);
         st::write_stitch_camera_selection(effective, camera);
       }
       auto optics_config = YAML::Clone(effective);
-      if (camera.automatic_fov() || camera.automatic_lens()) {
+      if (camera.has_automatic_optics()) {
         auto roles = at(effective, {"hstream_ui", "video_roles"});
         if (!at(roles, {"left"}).IsSequence() && !at(roles, {"right"}).IsSequence())
           roles.reset(at(effective, {"game", "videos"}));

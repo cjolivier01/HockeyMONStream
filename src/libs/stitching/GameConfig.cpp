@@ -93,7 +93,7 @@ absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config
     if (camera.input_lens != StitchInputLens{})
       context["input_lens"] = WriteStitchInputLens(camera.input_lens);
     if (!camera.input_cameras.empty())
-      context["input_cameras"] = WriteStitchInputCameras(camera.input_cameras);
+      context["input_cameras"] = WriteStitchInputCameras(camera.input_cameras, false);
     context["stitch_frame_time"] =
         stitching && stitching["stitch_frame_time"] ? stitching["stitch_frame_time"].as<std::string>() : "00:00:00";
     const YAML::Node game = config["game"];
@@ -1003,7 +1003,7 @@ void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelecti
 StitchCameraSelection merge_stitch_camera_snapshot(
     StitchCameraSelection snapshot,
     const StitchCameraSelection& current) {
-  if (!current.automatic_fov() && !current.automatic_lens())
+  if (!current.has_automatic_optics())
     return current;
   snapshot.configuration = current.configuration;
   snapshot.auto_fov = current.auto_fov;
@@ -1019,16 +1019,16 @@ StitchCameraSelection merge_stitch_camera_snapshot(
       snapshot.input_cameras[source] = {
           snapshot.horizontal_fov, snapshot.vertical_fov, snapshot.input_lens, values.source_size};
   for (auto& [source, values] : snapshot.input_cameras) {
-    const auto found = current.input_cameras.find(source);
-    const StitchCameraOptics manual = found != current.input_cameras.end()
-        ? found->second
-        : StitchCameraOptics{current.horizontal_fov, current.vertical_fov, current.input_lens};
-    if (!current.automatic_fov()) {
-      values.horizontal_fov = manual.horizontal_fov;
-      values.vertical_fov = manual.vertical_fov;
+    const auto selected = current.for_source(source);
+    if (!selected.automatic_fov()) {
+      values.horizontal_fov = selected.horizontal_fov;
+      values.vertical_fov = selected.vertical_fov;
     }
-    if (!current.automatic_lens())
-      values.input_lens = manual.input_lens;
+    if (!selected.automatic_lens())
+      values.input_lens = selected.input_lens;
+    values.configuration = selected.configuration;
+    values.auto_fov = selected.automatic_fov();
+    values.auto_lens = selected.automatic_lens();
   }
   return snapshot;
 }
@@ -2612,7 +2612,7 @@ void write_camera_selection_node(YAML::Node node, const StitchCameraSelection& c
   else
     node.remove("input_lens");
   if (!camera.input_cameras.empty())
-    node["input_cameras"] = WriteStitchInputCameras(camera.input_cameras);
+    node["input_cameras"] = WriteStitchInputCameras(camera.input_cameras, false);
   else
     node.remove("input_cameras");
 }

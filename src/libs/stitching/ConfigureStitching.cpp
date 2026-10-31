@@ -2876,8 +2876,7 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(config));
   StitchCameraSelection camera;
   HM_ASSIGN_OR_RETURN(camera, read_stitch_camera_selection(config));
-  if ((!camera.input_cameras.empty() || camera.input_lens != StitchInputLens{}) &&
-      mapping_backend != MappingBackend::kNona)
+  if (camera.requires_lens_mapping() && mapping_backend != MappingBackend::kNona)
     return absl::InvalidArgumentError("Input lens correction requires the NONA mapping backend");
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(mapping_backend, projection));
   if (mapping_backend == MappingBackend::kNona)

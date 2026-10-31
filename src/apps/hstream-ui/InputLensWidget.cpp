@@ -38,7 +38,8 @@ void SetInputOpticsMetadataHighlight(QWidget* widget, bool from_mp4) {
 
 void SetSharedCameraFovVisible(QDoubleSpinBox* spin, bool visible) {
   spin->setVisible(visible);
-  if (auto* form = qobject_cast<QFormLayout*>(spin->parentWidget()->layout()))
+  const auto* parent = spin->parentWidget();
+  if (auto* form = parent ? qobject_cast<QFormLayout*>(parent->layout()) : nullptr)
     if (auto* label = form->labelForField(spin))
       label->setVisible(visible);
 }
@@ -106,7 +107,7 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
       spin->setSuffix(" %");
     spin->setToolTip(
         i < 3
-            ? "Hugin radial lens coefficient, shared by the two source cameras. Used as a seed unless lens correction is fixed."
+            ? "Hugin radial lens coefficient for this camera. Used as a seed unless lens correction is fixed."
             : "Hugin optical-center shift as a percentage of the full source width (X) or height (Y). Scales with source resolution.");
     values_layout->addRow(labels[i], spin);
     connect(spin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this, spin]() {

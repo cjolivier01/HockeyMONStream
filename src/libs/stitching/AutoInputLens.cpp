@@ -108,12 +108,23 @@ static AutoInputLensResult read_auto_input_lens_for_game(
   result.fov_message = "Manual / selected profile (MP4 import off)";
   result.lens_message = "Manual / selected profile (MP4 import off)";
   result.recording_message = "Not checked: automatic camera settings are off.";
-  if (!selection.automatic_fov() && !selection.automatic_lens())
-    return result;
   try {
     const auto stitching = child(config, "stitching");
+    auto selected_roles = child(child(config, "hstream_ui"), "video_roles");
+    if (!child(selected_roles, "center").IsSequence())
+      selected_roles.reset(child(child(config, "game"), "videos"));
+    if (!paths(child(selected_roles, "center"), game).empty() && paths(child(selected_roles, "left"), game).empty() &&
+        paths(child(selected_roles, "right"), game).empty()) {
+      result.camera.input_cameras.clear();
+      result.panorama = true;
+      result.recording_message = "Panorama input: source-camera optics are not applied.";
+      return result;
+    }
     const auto frozen = child(stitching, "auto_input_lens_frozen");
-    if (frozen && frozen.IsScalar() && frozen.as<bool>()) {
+    const bool frozen_default = frozen && frozen.IsScalar() && frozen.as<bool>();
+    if (frozen_default && !selection.input_cameras.empty()) {
+      for (auto& [source, camera] : result.camera.input_cameras)
+        camera.frozen = true;
       result.message = "Auto: using the saved experiment optics snapshot.";
       result.fov_message = "Saved experiment snapshot";
       result.lens_message = "Saved experiment snapshot";
@@ -126,7 +137,7 @@ static AutoInputLensResult read_auto_input_lens_for_game(
     if (!profiles.ok())
       throw std::runtime_error(profiles.status().ToString());
     for (const auto& profile : *profiles)
-      if (profile.id == selection.configuration) {
+      if (!frozen_default && profile.id == selection.configuration) {
         profile_name = profile.display_name;
         if (selection.automatic_fov()) {
           fallback.horizontal_fov = profile.horizontal_fov;
@@ -136,6 +147,7 @@ static AutoInputLensResult read_auto_input_lens_for_game(
           fallback.input_lens = profile.input_lens;
       }
     result.camera = fallback;
+    result.camera.input_cameras.clear();
     const std::string baseline_source = "Fallback defaults: " + profile_name + " (not from MP4)";
     if (selection.automatic_fov())
       result.fov_message = baseline_source;
@@ -153,12 +165,27 @@ static AutoInputLensResult read_auto_input_lens_for_game(
     }
     const auto roles = child(child(config, "hstream_ui"), "video_roles");
     auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
+    if (frozen_default) {
+      if (left.empty())
+        left = paths(child(child(child(config, "game"), "videos"), "left"), game);
+      if (right.empty())
+        right = paths(child(child(child(config, "game"), "videos"), "right"), game);
+    }
     if (!left.empty() && !right.empty()) {
-      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game);
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);
     }
     auto discovered = get_available_videos(game.string());
-    if (!discovered.ok())
+    if (!discovered.ok()) {
+      if (!left.empty() || !right.empty())
+        return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);
       throw std::runtime_error(discovered.status().ToString());
+    }
+    if (discovered->count("stitched") && left.empty() && right.empty()) {
+      result.camera.input_cameras.clear();
+      result.panorama = true;
+      result.recording_message = "Panorama input: source-camera optics are not applied.";
+      return result;
+    }
     const bool explicit_roles = !left.empty() || !right.empty();
     const bool cam_dirs = std::any_of(discovered->begin(), discovered->end(), [](const auto& v) {
       std::string key = v.first;
@@ -179,8 +206,6 @@ static AutoInputLensResult read_auto_input_lens_for_game(
         append(discovered->at("left"), left);
       if (right.empty() && discovered->count("right"))
         append(discovered->at("right"), right);
-      if (left.empty() || right.empty())
-        throw std::runtime_error("Select both Left and Right camera sources");
     } else {
       size_t cameras = 0;
       for (const auto& [key, chapters] : *discovered) {
@@ -189,13 +214,15 @@ static AutoInputLensResult read_auto_input_lens_for_game(
         append(chapters, cameras == 0 ? left : right);
         ++cameras;
       }
-      if (cameras != 2)
-        throw std::runtime_error("Auto lens import requires two selected source cameras");
+      if (cameras > 2)
+        throw std::runtime_error("Camera optics support at most two source cameras");
+      if (cameras == 0)
+        return result;
       // Discovery groups chapters before orientation is known. Preserve those
       // groups and identify choices by filename instead of guessing Left/Right.
-      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, false, game);
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, false, game, frozen_default);
     }
-    return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game);
+    return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game, frozen_default);
   } catch (const std::exception& error) {
     result.message = "Auto unavailable: " + std::string(error.what()) + ". Using baseline defaults.";
     result.recording_message = "Not read: " + std::string(error.what());
@@ -218,6 +245,30 @@ AutoInputLensResult ReadAutoInputLensForGame(
     description << "Each source camera uses its own optics.\n" << std::setprecision(10);
     size_t index = 0;
     for (const auto& [source, values] : result.camera.input_cameras) {
+      auto& metadata = result.source_metadata[source];
+      if (metadata.message.empty()) {
+        metadata.message = result.message;
+        metadata.fov_message = result.fov_message;
+        metadata.lens_message = result.lens_message;
+        metadata.recording_message = result.recording_message;
+        metadata.role = "auto";
+        for (const char* role : {"left", "right"}) {
+          auto selected = paths(child(child(child(config, "hstream_ui"), "video_roles"), role), game);
+          if (selected.empty())
+            selected = paths(child(child(child(config, "game"), "videos"), role), game);
+          if (!selected.empty() && stitch_input_camera_key(game, selected.front()) == source)
+            metadata.role = role;
+        }
+      }
+      // Saved orientation can label a discovered source only when it names this
+      // exact chapter. It never changes the source-bound prescription.
+      if (metadata.role == "auto" && !force_video_discovery) {
+        for (const char* role : {"left", "right"}) {
+          const auto chapters = paths(child(child(child(config, "game"), "videos"), role), game);
+          if (!chapters.empty() && stitch_input_camera_key(game, chapters.front()) == source)
+            metadata.role = role;
+        }
+      }
       description << "Camera " << ++index << " (" << source << "): horizontal FOV " << values.horizontal_fov
                   << "°, vertical FOV " << values.vertical_fov << "°.\n"
                   << values.input_lens.projection << "; " << values.input_lens.optimization << " correction. "
@@ -227,7 +278,6 @@ AutoInputLensResult ReadAutoInputLensForGame(
                   << values.input_lens.center_offset[1] * 100 << "%.\n";
     }
     result.camera_details = description.str();
-    result.mismatch = true;
   }
   return result;
 }

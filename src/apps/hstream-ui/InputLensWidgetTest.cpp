@@ -1,4 +1,6 @@
 #include "src/apps/hstream-ui/InputLensWidget.h"
+#include <QtWidgets/QCheckBox>
+#include "src/apps/hstream-ui/CameraOpticsWidget.h"
 
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
@@ -10,6 +12,9 @@
 
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  QDoubleSpinBox unattached_fov;
+  SetSharedCameraFovVisible(&unattached_fov, false);
+  SetSharedCameraFovVisible(&unattached_fov, true);
   InputLensWidget widget;
   hm::stitching::StitchInputLens lens;
   lens.projection = "full-frame-fisheye";
@@ -71,6 +76,26 @@ int main(int argc, char** argv) {
   widget.setCameraDetails({});
   if (!widget.inputCameras().empty() || values->isHidden() || calibration->isHidden() ||
       !widget.findChild<QGroupBox*>("inputLensMismatchGroup")->isHidden())
+    return 1;
+  const std::vector<hm::stitching::StitchCameraConfiguration> profiles{
+      {"manual", "Manual", 100, 60}, {"auto", "Auto", 110, 70}};
+  CameraOpticsWidget left(profiles), right(profiles);
+  hm::stitching::StitchCameraSelection exact{"manual", 125.12273264892974, 70.36576080322266, lens};
+  exact.auto_fov = exact.auto_lens = false;
+  left.setCamera(exact, {});
+  right.setCamera(exact, {});
+  int left_changes = 0, right_changes = 0;
+  left.changed = [&](bool) { ++left_changes; };
+  right.changed = [&](bool) { ++right_changes; };
+  left.findChild<QDoubleSpinBox*>("sourceCameraHorizontalFovSpin")->setValue(115.25);
+  if (left.camera().horizontal_fov != 115.25 || left.camera().vertical_fov != exact.vertical_fov ||
+      right.camera() != exact || left_changes != 1 || right_changes)
+    return 1;
+  left.findChild<QCheckBox*>("sourceCameraAutoFovCheck")->setChecked(true);
+  if (!left.camera().automatic_fov() || right.camera().automatic_fov() || right_changes)
+    return 1;
+  left.findChild<QComboBox*>("cameraProfileCombo")->setCurrentIndex(1);
+  if (!left.camera().automatic_lens() || right.camera().automatic_lens() || right_changes)
     return 1;
   return 0;
 }
