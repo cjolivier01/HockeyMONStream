@@ -11,6 +11,7 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/parseutils.h>
 #include <libswresample/swresample.h>
 }
 
@@ -48,6 +49,52 @@ struct AudioInput {
     return absl::OkStatus();
   }
 };
+
+absl::StatusOr<double> VideoDuration(AudioInput& input, int video, double fps) {
+  const auto* stream = input.format->streams[video];
+  const double unit = av_q2d(stream->time_base);
+  if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0)
+    return stream->duration * unit;
+  const double origin = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time * unit;
+  // Matroska commonly records only a per-track end timestamp. Its container
+  // duration includes audio tails and must never define the video chapter clock.
+  if (const auto* tag = av_dict_get(stream->metadata, "DURATION", nullptr, 0)) {
+    int64_t end = 0;
+    if (av_parse_time(&end, tag->value, 1) == 0 && end / double(AV_TIME_BASE) > origin)
+      return end / double(AV_TIME_BASE) - origin;
+  }
+  if (stream->nb_frames > 0)
+    return stream->nb_frames / fps;
+  // Use the container end only as a seek hint, then inspect compressed video
+  // timestamps. Never decode the recording to discover its duration. The input
+  // deadline and packet cap also bound containers with absent/broken indexes.
+  if (input.format->duration == AV_NOPTS_VALUE || input.format->duration <= 0 || unit <= 0)
+    return absl::FailedPreconditionError("Camera chapter has no video duration or seekable end");
+  for (unsigned index = 0; index < input.format->nb_streams; ++index)
+    if (int(index) != video)
+      input.format->streams[index]->discard = AVDISCARD_ALL;
+  const auto end_hint = av_rescale_q(input.format->duration, AVRational{1, AV_TIME_BASE}, stream->time_base);
+  if (av_seek_frame(input.format, video, end_hint, AVSEEK_FLAG_BACKWARD) < 0)
+    return absl::FailedPreconditionError("Cannot seek camera video to determine its duration");
+  input.packet = av_packet_alloc();
+  if (!input.packet)
+    return absl::ResourceExhaustedError("Cannot allocate camera duration packet");
+  double end = origin;
+  for (size_t packets = 0; packets < 100000; ++packets) {
+    if (std::chrono::steady_clock::now() > input.deadline)
+      break;
+    const int status = av_read_frame(input.format, input.packet);
+    if (status == AVERROR_EOF && end > origin)
+      return end - origin;
+    if (status < 0)
+      return absl::FailedPreconditionError("Cannot read camera video end timestamps");
+    if (input.packet->stream_index == video && input.packet->pts != AV_NOPTS_VALUE)
+      end = std::max(
+          end, input.packet->pts * unit + (input.packet->duration > 0 ? input.packet->duration * unit : 1.0 / fps));
+    av_packet_unref(input.packet);
+  }
+  return absl::FailedPreconditionError("Camera video duration inspection exceeded its bounded window");
+}
 
 absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window, double seconds, int& rate) {
   std::vector<float> output;
@@ -176,8 +223,13 @@ absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
       return absl::NotFoundError("Camera chapter has no video: " + file);
     const auto* stream = input.format->streams[video];
     const double fps = av_q2d(stream->avg_frame_rate);
-    const double duration = stream->duration == AV_NOPTS_VALUE ? 0 : stream->duration * av_q2d(stream->time_base);
-    if (!std::isfinite(fps) || fps <= 0 || !std::isfinite(duration) || duration <= 0)
+    if (!std::isfinite(fps) || fps <= 0)
+      return absl::FailedPreconditionError("Camera chapter requires a known frame rate: " + file);
+    const auto measured = VideoDuration(input, video, fps);
+    if (!measured.ok())
+      return absl::FailedPreconditionError(std::string(measured.status().message()) + ": " + file);
+    const double duration = *measured;
+    if (!std::isfinite(duration) || duration <= 0)
       return absl::FailedPreconditionError("Camera chapter requires a known duration and frame rate: " + file);
     if (result.fps != 0 && std::abs(result.fps - fps) > 1e-5)
       return absl::FailedPreconditionError("Camera chapters have different frame rates");

@@ -124,6 +124,54 @@ int main() {
   }
   if (!ok)
     return 1;
+  const auto matroska = (dir / "audio-tail.mkv").string();
+  ok &= expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=s=16x16:r=25:d=1",
+           "-f",
+           "lavfi",
+           "-i",
+           "anoisesrc=r=8000:seed=42:d=1.5",
+           "-c:v",
+           "mpeg4",
+           "-c:a",
+           "pcm_s16le",
+           matroska},
+          "",
+          {},
+          {}) == 0,
+      "Create Matroska camera with a longer audio track");
+  for (bool remove_duration_tag : {false, true}) {
+    if (remove_duration_tag) {
+      std::ifstream source(matroska, std::ios::binary);
+      std::string bytes((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+      source.close();
+      for (size_t pos = 0; (pos = bytes.find("DURATION", pos)) != std::string::npos; ++pos)
+        bytes[pos] = 'X';
+      std::ofstream(matroska, std::ios::binary | std::ios::trunc).write(bytes.data(), bytes.size());
+    }
+    const auto window = CameraRecordingWindowAt({matroska, matroska}, 1.2, 10);
+    ok &= expect(
+        window.ok() && std::abs(window->duration_seconds - 0.8) < 0.001 && window->chapters.size() == 1 &&
+            std::abs(window->chapters.front().start_seconds - 0.2) < 0.001,
+        "Matroska chapter windows must use video end with and without track duration tags");
+    if (!window.ok())
+      std::cerr << window.status() << '\n';
+    const auto synced = calculate_stitching_synchronization(matroska, matroska);
+    ok &= expect(
+        synced.ok() && synced->video1_frame_offset < 0.01 && synced->video2_frame_offset < 0.01,
+        "Matroska without stream duration must remain synchronizable");
+    if (!synced.ok())
+      std::cerr << synced.status() << '\n';
+  }
+  if (!ok)
+    return 1;
   const auto continuous = (dir / "continuous.mp4").string();
   ok &= expect(
       hm::run_command(
