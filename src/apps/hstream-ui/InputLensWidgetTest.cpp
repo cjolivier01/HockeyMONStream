@@ -60,58 +60,17 @@ int main(int argc, char** argv) {
       !widget.findChild<QComboBox*>("inputLensProjectionCombo")->isEnabled())
     return 1;
   hm::stitching::AutoInputLensResult mismatch;
-  mismatch.shared_choices_message = "Left: 1x zoom; Right: 1.3x zoom";
-  hm::stitching::StitchCameraSelection choice{"manual", 97.077571333536923, 54.593467712402344, lens};
-  choice.auto_fov = choice.auto_lens = false;
-  mismatch.shared_choices["right"] = choice;
-  int selections = 0;
-  widget.sharedChoiceSelected = [&](const auto& selected) {
-    if (selected == choice && selected.same_automation(choice))
-      ++selections;
-    widget.setSharedChoices({}); // The callback may clear its own source choices.
-  };
+  mismatch.camera_details = "Left: 1x zoom; Right: 1.3x zoom";
   mismatch.camera.input_cameras = {{"left.mp4", {125.12, 70.36, lens}}, {"right.mp4", {97.07, 54.59, lens}}};
-  widget.setSharedChoices(mismatch);
+  widget.setCameraDetails(mismatch);
   if (widget.inputCameras() != mismatch.camera.input_cameras || !values->isHidden() || !calibration->isHidden())
     return 1;
-  auto* right = widget.findChild<QPushButton*>("inputLensUse_right");
-  if (right->icon().isNull() || !right->isEnabled() ||
-      widget.findChild<QPushButton*>("inputLensUse_left")->isEnabled() ||
-      widget.findChild<QPushButton*>("inputLensUse_average")->isEnabled())
+  if (!widget.findChildren<QPushButton*>().empty() ||
+      widget.findChild<QLabel*>("inputLensMismatchStatus")->text() != QString::fromStdString(mismatch.camera_details))
     return 1;
-  widget.setEnabled(false);
-  right->click();
-  if (selections)
+  widget.setCameraDetails({});
+  if (!widget.inputCameras().empty() || values->isHidden() || calibration->isHidden() ||
+      !widget.findChild<QGroupBox*>("inputLensMismatchGroup")->isHidden())
     return 1;
-  widget.setEnabled(true);
-  right->click();
-  if (selections != 1 || !widget.findChild<QGroupBox*>("inputLensMismatchGroup")->isHidden())
-    return 1;
-  const auto screenshot = qEnvironmentVariable("HSTREAM_TEST_OPTICS_SCREENSHOT");
-  if (!screenshot.isEmpty()) {
-    const auto report = YAML::LoadFile(qEnvironmentVariable("HSTREAM_TEST_OPTICS_REPORT").toStdString());
-    mismatch.shared_choices_message = report["message"].as<std::string>();
-    mismatch.shared_choices.clear();
-    for (const auto& entry : report["choices"]) {
-      YAML::Node config;
-      config["stitching"] = entry.second;
-      const auto camera = hm::stitching::read_stitch_camera_selection(config);
-      if (!camera.ok())
-        return 1;
-      mismatch.shared_choices[entry.first.as<std::string>()] = *camera;
-    }
-    widget.setLens({});
-    widget.setMetadataStatus(
-        "Fallback defaults: Auto (detect recording mode) (not from MP4)\nWarning: camera/chapter metadata differs; using shared baseline defaults.",
-        true);
-    widget.resize(720, 600);
-    widget.show();
-    app.processEvents();
-    widget.grab().save(screenshot + "-before.png");
-    widget.setSharedChoices(mismatch);
-    widget.resize(720, 1000);
-    app.processEvents();
-    widget.grab().save(screenshot + "-after.png");
-  }
   return 0;
 }

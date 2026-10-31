@@ -3460,7 +3460,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     const auto auto_lens =
         hm::stitching::ReadAutoInputLensForGame(game_directory.toStdString(), source_config, *camera);
     camera = auto_lens.camera;
-    s.input_lens->setSharedChoices(auto_lens);
+    s.input_lens->setCameraDetails(auto_lens);
     SetSharedCameraFovVisible(s.camera_horizontal_fov, camera->input_cameras.empty());
     SetSharedCameraFovVisible(s.camera_vertical_fov, camera->input_cameras.empty());
     s.input_lens->setMetadataStatus(
@@ -3588,7 +3588,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
         ? hm::stitching::
               AutoInputLensResult{s.camera_settings, "Auto unavailable: " + source_config.status().ToString()}
         : hm::stitching::ReadAutoInputLensForGame(s.game_directory.toStdString(), effective, s.camera_settings);
-    s.input_lens->setSharedChoices(resolved);
+    s.input_lens->setCameraDetails(resolved);
     SetSharedCameraFovVisible(s.camera_horizontal_fov, resolved.camera.input_cameras.empty());
     SetSharedCameraFovVisible(s.camera_vertical_fov, resolved.camera.input_cameras.empty());
     s.camera_settings = resolved.camera;
@@ -3619,20 +3619,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   };
   connect(s.camera_configuration, &QComboBox::currentIndexChanged, this, [&s]() { s.refresh_camera(true); });
   connect(s.camera_auto_fov, &QCheckBox::toggled, this, [&s]() { s.refresh_camera(false); });
-  s.input_lens->sharedChoiceSelected = [&s](const hm::stitching::StitchCameraSelection& camera) {
-    const QSignalBlocker profile_block(s.camera_configuration), fov_block(s.camera_auto_fov);
-    s.camera_configuration->setCurrentIndex(s.camera_configuration->findData("manual"));
-    s.camera_settings = camera;
-    s.camera_auto_fov->setChecked(false);
-    s.camera_horizontal_fov->setValue(camera.horizontal_fov);
-    s.camera_horizontal_fov->setProperty("exactLensFov", camera.horizontal_fov);
-    s.camera_vertical_fov->setValue(camera.vertical_fov);
-    s.camera_vertical_fov->setProperty("exactLensFov", camera.vertical_fov);
-    s.input_lens->setSharedChoices({});
-    s.input_lens->setLens(camera.input_lens);
-    s.input_lens->setMetadataStatus("Manual shared approximation", false);
-    s.refresh_camera(false);
-  };
+
   s.input_lens->automationChanged = [&s]() { s.refresh_camera(false); };
   s.input_lens->changed = [&s]() {
     if (s.camera_auto_fov->isChecked())
@@ -3641,7 +3628,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   auto* camera_group = new QGroupBox("Input camera optics");
   camera_group->setObjectName("stitchExperimentCameraGroup");
   auto* camera_form = new QFormLayout(camera_group);
-  camera_form->addRow(s.input_lens->takeSharedChoicesWidget());
+  camera_form->addRow(s.input_lens->takeCameraDetailsWidget());
   camera_form->addRow("Camera / recording-mode defaults", s.camera_configuration);
   camera_form->addRow(s.camera_metadata_group);
   auto* fov_form = new QFormLayout(s.camera_fov_group);

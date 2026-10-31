@@ -5991,18 +5991,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   input_lens_widget_ = new InputLensWidget();
   input_lens_widget_->setLens(default_camera_selection_.input_lens);
   input_lens_widget_->setMetadataStatus("", default_camera_selection_.automatic_lens());
-  input_lens_widget_->sharedChoiceSelected = [this](const hm::stitching::StitchCameraSelection& camera) {
-    const QSignalBlocker profile_block(camera_configuration_combo_), fov_block(camera_auto_fov_check_);
-    camera_configuration_combo_->setCurrentIndex(camera_configuration_combo_->findData("manual"));
-    camera_configuration_combo_->setProperty("autoInputLensFrozen", false);
-    camera_auto_fov_check_->setChecked(false);
-    set_calibration_spin_value(camera_horizontal_fov_spin_, camera.horizontal_fov);
-    set_calibration_spin_value(camera_vertical_fov_spin_, camera.vertical_fov);
-    input_lens_widget_->setSharedChoices({});
-    input_lens_widget_->setLens(camera.input_lens);
-    input_lens_widget_->setMetadataStatus("Manual shared approximation", false);
-    applyCameraConfigurationDefaults(false);
-  };
+
   input_lens_widget_->automationChanged = [this]() { applyCameraConfigurationDefaults(false); };
   input_lens_widget_->changed = [this]() {
     if (camera_auto_fov_check_->isChecked())
@@ -7824,7 +7813,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     auto* camera_group = new QGroupBox("Input camera optics");
     camera_group->setObjectName("stitchCameraOpticsGroup");
     auto* camera_layout = new QFormLayout(camera_group);
-    camera_layout->addRow(input_lens_widget_->takeSharedChoicesWidget());
+    camera_layout->addRow(input_lens_widget_->takeCameraDetailsWidget());
     camera_layout->addRow(camera_configuration_label, camera_configuration_combo_);
     camera_layout->addRow(camera_metadata_group_);
     auto* fov_layout = new QFormLayout(camera_fov_group_);
@@ -8614,7 +8603,7 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
     camera_vertical_fov_spin_->setReadOnly(camera.automatic_fov());
   }
   if (input_lens_widget_) {
-    input_lens_widget_->setSharedChoices(resolved);
+    input_lens_widget_->setCameraDetails(resolved);
     input_lens_widget_->setLens(camera.input_lens);
     input_lens_widget_->setMetadataStatus(
         QString::fromStdString(resolved.lens_message.empty() ? resolved.message : resolved.lens_message),
@@ -19063,7 +19052,7 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(camera_configuration_combo_, QString::fromStdString(default_camera_selection_.configuration));
     set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
     set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
-    input_lens_widget_->setSharedChoices({});
+    input_lens_widget_->setCameraDetails({});
     SetSharedCameraFovVisible(camera_horizontal_fov_spin_, true);
     SetSharedCameraFovVisible(camera_vertical_fov_spin_, true);
     input_lens_widget_->setLens(default_camera_selection_.input_lens);
@@ -19592,11 +19581,11 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   }
   if (camera_vertical_fov_spin_) {
     const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
-    input_lens_widget_->setSharedChoices({});
+    input_lens_widget_->setCameraDetails({});
     SetSharedCameraFovVisible(camera_horizontal_fov_spin_, true);
     SetSharedCameraFovVisible(camera_vertical_fov_spin_, true);
     input_lens_widget_->setLens(default_camera_selection_.input_lens);
-    input_lens_widget_->setSharedChoices({});
+    input_lens_widget_->setCameraDetails({});
     input_lens_widget_->setMetadataStatus("Defaults (not read from MP4)", default_camera_selection_.automatic_lens());
     const QSignalBlocker auto_blocker(camera_auto_fov_check_);
     camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
@@ -20259,7 +20248,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     const YAML::Node frozen_lens = config["stitching"]["auto_input_lens_frozen"];
     camera_configuration_combo_->setProperty(
         "autoInputLensFrozen", frozen_lens && frozen_lens.IsScalar() && frozen_lens.as<bool>());
-    input_lens_widget_->setSharedChoices(auto_lens);
+    input_lens_widget_->setCameraDetails(auto_lens);
     SetSharedCameraFovVisible(camera_horizontal_fov_spin_, staged_camera_selection.input_cameras.empty());
     SetSharedCameraFovVisible(camera_vertical_fov_spin_, staged_camera_selection.input_cameras.empty());
     input_lens_widget_->setLens(staged_camera_selection.input_lens);

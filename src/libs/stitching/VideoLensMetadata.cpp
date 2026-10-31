@@ -1034,47 +1034,17 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
           << ". Center X/Y: " << resolved.camera.input_lens.center_offset[0] * 100 << "%, "
           << resolved.camera.input_lens.center_offset[1] * 100 << "%.";
     if (resolved.mismatch)
-      out << "\nChapters within this camera disagree; its values cannot be used for both cameras.";
+      out << "\nChapters within this camera disagree; automatic optics are unavailable.";
     return out.str();
   };
-  result.shared_choices_message = "The cameras have different recording metadata.\n" +
+  result.camera_details = "The cameras have different recording metadata.\n" +
       describe(roles_known ? "Left" : "Camera 1 (" + left.front().filename().string() + ")", l, lm) + "\n" +
       describe(roles_known ? "Right" : "Camera 2 (" + right.front().filename().string() + ")", r, rm) +
-      "\nChoose a shared approximation below, or keep the fallback. A choice copies FOV and lens values into manual settings for both cameras.";
+      "\nIndependent optics require consistent, supported metadata within each camera.";
   auto complete = [](const AutoInputLensResult& value) {
     return !value.mismatch && value.recording_metadata_found && value.horizontal_fov_from_mp4 &&
         value.vertical_fov_from_mp4 && value.lens_from_mp4;
   };
-  auto manual = [](StitchCameraSelection camera) {
-    camera.configuration = "manual";
-    camera.input_cameras.clear();
-    camera.auto_fov = camera.auto_lens = false;
-    return camera;
-  };
-  if (complete(l))
-    result.shared_choices[roles_known ? "left" : "camera1"] = manual(l.camera);
-  if (complete(r))
-    result.shared_choices[roles_known ? "right" : "camera2"] = manual(r.camera);
-  if (complete(l) && complete(r) && lm.ok() && rm.ok() && lm->width == rm->width && lm->height == rm->height &&
-      l.camera.input_lens.projection == r.camera.input_lens.projection &&
-      l.camera.input_lens.optimization == r.camera.input_lens.optimization) {
-    auto average = manual(l.camera);
-    average.horizontal_fov = (l.camera.horizontal_fov + r.camera.horizontal_fov) / 2;
-    average.vertical_fov = (l.camera.vertical_fov + r.camera.vertical_fov) / 2;
-    for (size_t i = 0; i < average.input_lens.distortion.size(); ++i)
-      average.input_lens.distortion[i] = (l.camera.input_lens.distortion[i] + r.camera.input_lens.distortion[i]) / 2;
-    for (size_t i = 0; i < average.input_lens.center_offset.size(); ++i)
-      average.input_lens.center_offset[i] =
-          (l.camera.input_lens.center_offset[i] + r.camera.input_lens.center_offset[i]) / 2;
-    try {
-      // Averaging coefficients can introduce a folding radial branch. Check
-      // the entire image before offering the approximation.
-      hugin_fov(average.horizontal_fov, lm->width, lm->height, average.input_lens, true);
-      result.shared_choices["average"] = average;
-    } catch (const std::exception&) {
-      result.shared_choices_message += "\nAverage unavailable: the combined lens model is not invertible.";
-    }
-  }
   const bool keep_manual = retained_manual &&
       fallback.input_cameras.count(
           game.empty() ? left.front().generic_string() : stitch_input_camera_key(game, left.front())) &&
@@ -1138,41 +1108,10 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
             ? "Automatic lens: " + effective_left.lens_message + "; " + effective_right.lens_message
             : "Retained independent lens correction";
       }
-      const auto choice_note = result.shared_choices_message.find("Choose a shared approximation");
-      if (choice_note != std::string::npos)
-        result.shared_choices_message.replace(
-            choice_note,
-            std::string::npos,
-            "Each camera will use its own optics. The buttons above instead copy a shared approximation into manual settings for both cameras.");
+      result.camera_details += "\nEach camera uses its own optics.";
     }
   }
-  result.message += "\n" + result.shared_choices_message;
+  result.message += "\n" + result.camera_details;
   return result;
-}
-std::optional<StitchCameraSelection> AverageStitchInputCameras(const StitchInputCameras& cameras) {
-  if (cameras.size() != 2)
-    return std::nullopt;
-  const auto& left = cameras.begin()->second;
-  const auto& right = cameras.rbegin()->second;
-  if (!left.source_size || left.source_size != right.source_size ||
-      left.input_lens.projection != right.input_lens.projection ||
-      left.input_lens.optimization != right.input_lens.optimization)
-    return std::nullopt;
-  StitchCameraSelection average{
-      "manual",
-      (left.horizontal_fov + right.horizontal_fov) / 2,
-      (left.vertical_fov + right.vertical_fov) / 2,
-      left.input_lens};
-  average.auto_fov = average.auto_lens = false;
-  for (size_t i = 0; i < average.input_lens.distortion.size(); ++i)
-    average.input_lens.distortion[i] = (left.input_lens.distortion[i] + right.input_lens.distortion[i]) / 2;
-  for (size_t i = 0; i < average.input_lens.center_offset.size(); ++i)
-    average.input_lens.center_offset[i] = (left.input_lens.center_offset[i] + right.input_lens.center_offset[i]) / 2;
-  try {
-    hugin_fov(average.horizontal_fov, (*left.source_size)[0], (*left.source_size)[1], average.input_lens, true);
-    return average;
-  } catch (const std::exception&) {
-    return std::nullopt;
-  }
 }
 } // namespace hm::stitching

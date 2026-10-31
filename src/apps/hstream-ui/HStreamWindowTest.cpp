@@ -11182,25 +11182,11 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
           input_b->value() == 0.02 && input_center_y->value() == 14.35 && !save->isEnabled(),
       "Reloading the main UI must restore source optics without dirtying the preset");
 
-  auto* lens_widget = dynamic_cast<InputLensWidget*>(require_child<QGroupBox>(window, "stitchInputLensControls"));
-  for (const char* key : {"left", "right", "average"}) {
-    hm::stitching::StitchCameraSelection choice{"manual", 97.077571333536923, 54.593467712402344};
-    choice.auto_fov = choice.auto_lens = false;
-    choice.input_lens = lens_camera->input_lens;
-    choice.input_lens.distortion[1] = 0.021905029420311552;
-    hm::stitching::AutoInputLensResult mismatch;
-    mismatch.shared_choices[key] = choice;
-    mismatch.shared_choices_message = "Left and Right optics differ";
-    lens_widget->setSharedChoices(mismatch);
-    activate(require_child<QPushButton>(window, QString("inputLensUse_%1").arg(key).toUtf8().constData()));
-    activate(save);
-    activate(create);
-    const auto saved_choice = hm::stitching::read_stitch_camera_selection(YAML::LoadFile(config_path.string()));
-    if (!expect(saved_choice.ok() && *saved_choice == choice && saved_choice->same_automation(choice) &&
-                    !camera_auto->isChecked() && !lens_auto->isChecked() && !save->isEnabled(),
-                "Each shared optics action must save and reopen the exact manual FOV/lens snapshot"))
+  for (const char* key : {"left", "right", "camera1", "camera2", "average"})
+    if (!expect(
+            !window->findChild<QPushButton*>(QString("inputLensUse_%1").arg(key)),
+            "Camera optics must not expose copy/average shortcuts"))
       return false;
-  }
 
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY"))
     return input_lens_saved && input_lens_reloaded && camera_override_reloaded;
@@ -22362,33 +22348,17 @@ int main(int argc, char** argv) {
       if (label->objectName().contains("Metadata") || label->objectName().contains("Mismatch"))
         std::cout << label->objectName().toStdString() << ": " << label->text().toStdString() << '\n';
     const auto imported = HStreamWindowTestAccess::currentCameraSelection(&window);
-    bool choices = group && group->isVisible() && imported.input_cameras.size() == 2 &&
+    bool independent = group && group->isVisible() && imported.input_cameras.size() == 2 &&
         imported.input_cameras.begin()->second.horizontal_fov !=
             imported.input_cameras.rbegin()->second.horizontal_fov &&
         window.findChild<QDoubleSpinBox*>("cameraHorizontalFovSpin")->isHidden();
-    const bool unassigned = !window.findChild<QPushButton*>("inputLensUse_camera1")->isHidden();
-    const std::array<const char*, 3> keys = unassigned ? std::array<const char*, 3>{"camera1", "camera2", "average"}
-                                                       : std::array<const char*, 3>{"left", "right", "average"};
-    for (const char* key : keys) {
-      auto* button = window.findChild<QPushButton*>(QString("inputLensUse_%1").arg(key));
-      std::cout << key << " visible=" << button->isVisible() << " enabled=" << button->isEnabled() << '\n';
-      choices &= button->isVisible() && button->isEnabled();
-    }
+    for (const char* key : {"left", "right", "camera1", "camera2", "average"})
+      independent &= !window.findChild<QPushButton*>(QString("inputLensUse_%1").arg(key));
     window.grab().save("/tmp/hstream-optics-full-window.png");
-    for (const char* key : keys) {
-      HStreamWindowTestAccess::reloadSavedControls(&window);
-      window.findChild<QPushButton*>(QString("inputLensUse_%1").arg(key))->click();
-      const auto selected = HStreamWindowTestAccess::currentCameraSelection(&window);
-      choices &= selected.input_cameras.empty() && selected.configuration == "manual" && !selected.automatic_fov() &&
-          !selected.automatic_lens() && selected.input_lens.projection == "full-frame-fisheye" &&
-          selected.input_lens.distortion[1] != 0;
-      std::cout << key << " selected FOV=" << selected.horizontal_fov << " b=" << selected.input_lens.distortion[1]
-                << '\n';
-    }
     std::cout << window.logText().toStdString() << '\n';
     return expect(
-               choices && config.open(QIODevice::ReadOnly) && config.readAll() == original_config,
-               "Real game must load all three optics choices without changing its config")
+               independent && config.open(QIODevice::ReadOnly) && config.readAll() == original_config,
+               "Real game must load independent optics without copy/average actions or changing its config")
         ? 0
         : 1;
   }

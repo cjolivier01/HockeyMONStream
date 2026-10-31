@@ -52,10 +52,8 @@ struct AutoInputLensResult {
   bool horizontal_fov_from_mp4{false};
   bool vertical_fov_from_mp4{false};
   bool lens_from_mp4{false};
-  // Explicit, fully resolved manual snapshots. Offered only for a mismatch
-  // between camera groups, with consistent chapters within each group.
-  std::map<std::string, StitchCameraSelection> shared_choices;
-  std::string shared_choices_message;
+  // Read-only source-camera diagnostics, including independent prescriptions.
+  std::string camera_details;
 };
 
 // Inspects every selected chapter. Only agrees to a shared prescription when
@@ -73,8 +71,5 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     const std::vector<StitchCameraConfiguration>& profiles = {},
     bool roles_known = true,
     const std::filesystem::path& game = {});
-
-// Validates a shared approximation using retained dimensions, with no media reads.
-std::optional<StitchCameraSelection> AverageStitchInputCameras(const StitchInputCameras& cameras);
 
 } // namespace hm::stitching

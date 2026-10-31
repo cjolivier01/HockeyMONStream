@@ -35,8 +35,8 @@ struct StitchCameraOptics {
   double horizontal_fov{0};
   double vertical_fov{0};
   StitchInputLens input_lens;
-  // Optional original dimensions let frozen snapshots validate shared averages
-  // without opening source media. They do not change the solved intrinsics.
+  // Optional original recording dimensions survive frozen snapshots without
+  // opening source media. They do not change the solved intrinsics.
   std::optional<std::array<int, 2>> source_size;
   bool operator==(const StitchCameraOptics& other) const {
     return horizontal_fov == other.horizontal_fov && vertical_fov == other.vertical_fov &&

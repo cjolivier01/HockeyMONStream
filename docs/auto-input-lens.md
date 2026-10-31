@@ -50,21 +50,17 @@ When both cameras have complete supported metadata but differ, Auto retains
 optical-center offsets. The summary shows each source's prescription; shared
 numeric controls are hidden while independent values are active.
 
-**Use Left for both**, **Use Right for both**, and **Average for both
-(approximation)** remain available to deliberately replace the independent pair
-with one manual prescription. Before orientation is known, Camera 1/2 choices
-identify their first chapters by filename. These actions change controls; Save
-Preset or Play applies normal calibration invalidation. A camera with missing
-metadata or inconsistent chapters cannot supply an automatic prescription or
-shared choice. Averaging requires complete metadata, matching dimensions and
-projection, and an invertible averaged radial model.
+The summary is informational; there are no copy-one-camera or average shortcuts.
+Existing shared/manual presets remain usable. Selecting Manual restores the
+shared numeric controls. A camera with missing metadata or inconsistent chapters
+cannot supply an automatic prescription and explains the fallback.
 
 `stitching.input_cameras` stores two complete prescriptions keyed by each
 camera's first selected chapter path, relative to the game when possible. The
-optional `source_size: [width, height]` records the original dimensions so
-frozen snapshots can validate the average without rereading video. The
-empty baseline map retains shared `camera_fov`/`input_lens` behavior. The pair
-replaces an inherited pair atomically; selecting a shared choice clears it.
+optional `source_size: [width, height]` retains the original recording dimensions
+in saved snapshots without changing the solved intrinsics. The empty baseline
+map retains shared `camera_fov`/`input_lens` behavior. The pair replaces an
+inherited pair atomically.
 The solve binds prescriptions to resolved Left/Right playlists, so discovery
 order cannot swap their optics. A snapshot for different recordings fails
 visibly and requires refreshing Auto. Manual components remain independent

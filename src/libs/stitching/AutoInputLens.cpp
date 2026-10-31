@@ -226,19 +226,7 @@ AutoInputLensResult ReadAutoInputLensForGame(
                   << ". Center X/Y: " << values.input_lens.center_offset[0] * 100 << "%, "
                   << values.input_lens.center_offset[1] * 100 << "%.\n";
     }
-    description << "Use one of the shared choices to apply the same numbers to both cameras.";
-    result.shared_choices_message = description.str();
-    if (result.shared_choices.empty()) {
-      index = 0;
-      for (const auto& [source, values] : result.camera.input_cameras) {
-        StitchCameraSelection shared{"manual", values.horizontal_fov, values.vertical_fov, values.input_lens};
-        shared.auto_fov = shared.auto_lens = false;
-        result.shared_choices["camera" + std::to_string(++index)] = std::move(shared);
-      }
-    }
-    if (!result.shared_choices.count("average"))
-      if (const auto average = AverageStitchInputCameras(result.camera.input_cameras))
-        result.shared_choices["average"] = *average;
+    result.camera_details = description.str();
     result.mismatch = true;
   }
   return result;
