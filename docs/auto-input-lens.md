@@ -1,7 +1,7 @@
 # Automatic input lens
 
 New games select **Auto (detect recording mode)** in Stitched → Projection
-and Stitching Experiments. The **Input cameras — shared calibration** section
+and Stitching Experiments. The **Input camera optics** section
 separates two independent controls:
 
 - **Auto camera FOV** uses valid MP4 axis coverage, then a verified matching
