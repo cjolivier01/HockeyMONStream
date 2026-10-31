@@ -12248,7 +12248,8 @@ void HStreamWindow::confirmStopPipeline() {
     return;
   const auto generation = pipeline_run_generation_;
   const bool has_outputs = active_run_telemetry_requested_ || !active_archive_output_path_.isEmpty() ||
-      !active_program_4k_output_path_.isEmpty() || !active_stitched_archive_output_path_.isEmpty();
+      !active_program_4k_output_path_.isEmpty() || !active_stitched_archive_output_path_.isEmpty() ||
+      !active_backend_output_kinds_.isEmpty();
   bool publish_partial = false;
   if (has_outputs && !calibration_pending_) {
     QMessageBox question(

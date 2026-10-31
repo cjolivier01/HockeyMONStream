@@ -21,13 +21,20 @@
 
 namespace fs = std::filesystem;
 struct HStreamWindowTestAccess {
-  static bool stopChoice(HStreamWindow& window, const fs::path& helper, const fs::path& result, bool publish) {
+  static bool stopChoice(
+      HStreamWindow& window,
+      const fs::path& helper,
+      const fs::path& result,
+      bool publish,
+      bool hockeymon_video) {
     window.pipeline_process_->start(
         "/usr/bin/python3", {QString::fromStdString(helper.string()), QString::fromStdString(result.string())});
     if (!window.pipeline_process_->waitForStarted())
       return false;
     QTest::qWait(100);
-    window.active_run_telemetry_requested_ = true;
+    window.active_hockeymon_program_ = hockeymon_video;
+    window.active_backend_output_kinds_ = hockeymon_video ? QStringList{"archive-file"} : QStringList{};
+    window.active_run_telemetry_requested_ = !hockeymon_video;
     window.preview_runtime_ready_ = true;
     window.calibration_pending_ = false;
     bool checked_default = false;
@@ -167,13 +174,15 @@ int main(int argc, char** argv) {
                                   "print('ready', flush=True)\n"
                                   "line=sys.stdin.readline().strip()\n"
                                   "open(sys.argv[1], 'w').write(line)\n";
-    for (const bool publish : {false, true}) {
-      const auto result = path / (publish ? "publish-stop" : "discard-stop");
-      require(
-          HStreamWindowTestAccess::stopChoice(window, stop_helper, result, publish),
-          "Stop must default to no publication");
-      require(readFile(result) == (publish ? "q" : "interrupted"), "Only explicit consent may send a publishing stop");
-    }
+    for (const bool hockeymon_video : {true, false})
+      for (const bool publish : {false, true}) {
+        const auto result = path / (publish ? "publish-stop" : "discard-stop");
+        require(
+            HStreamWindowTestAccess::stopChoice(window, stop_helper, result, publish, hockeymon_video),
+            "Stop must ask and default to no publication for telemetry and either backend's videos");
+        require(
+            readFile(result) == (publish ? "q" : "interrupted"), "Only explicit consent may send a publishing stop");
+      }
     const auto clean_helper = path / "clean-helper.sh";
     std::ofstream(clean_helper) << "#!/bin/sh\n"
                                    "test -z \"${HSTREAM_JOB_MANIFEST+x}\" || exit 21\n"
