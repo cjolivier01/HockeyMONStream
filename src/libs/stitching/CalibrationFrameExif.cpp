@@ -295,7 +295,8 @@ namespace frame_exif {
 absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
     const std::filesystem::path& video,
     unsigned type,
-    size_t max_bytes) {
+    size_t max_bytes,
+    size_t byte_offset) {
   std::ifstream input(video, std::ios::binary | std::ios::ate);
   if (!input)
     return absl::NotFoundError("Cannot open camera metadata source: " + video.string());
@@ -390,8 +391,10 @@ absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
     }
     if ((little_endian(header, 2) >> 8) != type)
       continue;
-    std::vector<unsigned char> data(std::min<uint64_t>(length, max_bytes));
-    input.seekg(end);
+    if (byte_offset > length)
+      return absl::OutOfRangeError("Insta360 metadata offset exceeds record size");
+    std::vector<unsigned char> data(std::min<uint64_t>(length - byte_offset, max_bytes));
+    input.seekg(end + static_cast<std::streamoff>(byte_offset));
     if (!input.read(reinterpret_cast<char*>(data.data()), data.size()))
       return absl::DataLossError("Truncated Insta360 metadata");
     return std::optional<Insta360Record>(Insta360Record{std::move(data), static_cast<size_t>(length)});

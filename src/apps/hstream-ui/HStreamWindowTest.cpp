@@ -625,6 +625,12 @@ while True:
   static hm::stitching::StitchCameraSelection currentCameraSelection(HStreamWindow* window) {
     return window->stitchCameraSelection();
   }
+  static void discoverCameraRoles(HStreamWindow* window, bool reverse) {
+    auto result = window->camera_optics_result_;
+    result.source_metadata["left.mp4"].role = reverse ? "right" : "left";
+    result.source_metadata["right.mp4"].role = reverse ? "left" : "right";
+    window->updateInputCameraTabs(result);
+  }
   static absl::StatusOr<hm::stitching::StitchCameraSelection> cameraSelection(
       HStreamWindow* window, const YAML::Node& config) {
     return window->stitchCameraSelectionFromGameConfig(config);
@@ -22343,11 +22349,28 @@ int main(int argc, char** argv) {
                 left->property("cameraSource") == "left.mp4" && right->property("cameraSource") == "right.mp4",
             "Adding the left camera must order tabs by position and retain source identities"))
       return 1;
+    auto* left_start = require_child<QWidget>(&window, "camera1StartControls");
+    auto* right_start = require_child<QWidget>(&window, "camera2StartControls");
+    left_start->findChild<QTimeEdit*>("cameraSourceStartTime")->setTime(QTime(0, 0, 5));
+    right_start->findChild<QTimeEdit*>("cameraSourceStartTime")->setTime(QTime(0, 1, 48));
     auto before = HStreamWindowTestAccess::currentCameraSelection(&window);
+    if (!expect(
+            before.input_start_times == hm::stitching::CameraSourceStarts{{"left.mp4", 5}, {"right.mp4", 108}},
+            "Each camera start must bind to its source, independently of optical values"))
+      return 1;
+    HStreamWindowTestAccess::discoverCameraRoles(&window, true);
+    if (!expect(
+            HStreamWindowTestAccess::currentCameraSelection(&window).input_start_times == before.input_start_times &&
+                left_start->findChild<QTimeEdit*>("cameraSourceStartTime")->time() == QTime(0, 1, 48) &&
+                right_start->findChild<QTimeEdit*>("cameraSourceStartTime")->time() == QTime(0, 0, 5),
+            "Auto role discovery must retain start-only edits and reorder their controls by source"))
+      return 1;
+    HStreamWindowTestAccess::discoverCameraRoles(&window, false);
     left->findChild<QDoubleSpinBox*>("sourceCameraHorizontalFovSpin")->setValue(119.25);
     auto edited = HStreamWindowTestAccess::currentCameraSelection(&window);
     if (!expect(
-            edited.input_cameras.at("left.mp4").horizontal_fov == 119.25 &&
+            edited.input_start_times == before.input_start_times &&
+                edited.input_cameras.at("left.mp4").horizontal_fov == 119.25 &&
                 edited.input_cameras.at("right.mp4") == before.input_cameras.at("right.mp4"),
             "Editing left optics must preserve the right camera"))
       return 1;
@@ -22359,6 +22382,20 @@ int main(int argc, char** argv) {
                 119.25,
             "Per-camera values must survive saving and reopening"))
       return 1;
+    if (!expect(
+            HStreamWindowTestAccess::currentCameraSelection(&window).input_start_times == before.input_start_times,
+            "Camera source starts must survive Save Preset and reload"))
+      return 1;
+    const auto capture = qEnvironmentVariable("HSTREAM_CAMERA_START_SCREENSHOT");
+    if (!capture.isEmpty()) {
+      window.resize(1400, 950);
+      window.show();
+      tabs->setCurrentIndex(3);
+      require_child<QTabWidget>(&window, "camera2ControlTabs")->setCurrentIndex(1);
+      QApplication::processEvents();
+      if (!window.grab().save(capture))
+        return 1;
+    }
     config["hstream_ui"]["video_roles"] = YAML::Load("{center: [panorama.mp4]}");
     write(config);
     HStreamWindowTestAccess::reloadSavedControls(&window);

@@ -126,6 +126,13 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video2,
     SynchronizationMethod method = SynchronizationMethod::kAudio);
 
+// Effective offsets include each source trim plus synchronization's residual.
+absl::StatusOr<Synchronization> calculate_stitching_synchronization(
+    const std::vector<std::string>& left,
+    const std::vector<std::string>& right,
+    const std::array<double, 2>& source_starts,
+    SynchronizationMethod method);
+
 absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t max_output_width = 0);
 
 // Content-validates one artifact generation, normalizes its seam, and retains
@@ -364,7 +371,8 @@ absl::Status clean_stitching_artifacts_from_control_points(
 absl::Status configure_orientation(
     const std::string& game_dir,
     const std::string& expected_invalidation_id = {},
-    const std::function<bool()>& is_cancelled = {});
+    const std::function<bool()>& is_cancelled = {},
+    const CameraSourceStarts& source_starts = {});
 
 bool is_scoreboard_configured(const std::string& game_dir);
 

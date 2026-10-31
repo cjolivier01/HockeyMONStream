@@ -1223,6 +1223,24 @@ int main() {
       fs::is_symlink(workspace->game_directory / "cam2" / "right-calibration.yaml"),
       "camera-directory calibration must be linked");
 
+  auto trimmed_settings = settings;
+  trimmed_settings.camera = *hm::stitching::read_stitch_camera_selection(
+      YAML::LoadFile((workspace->game_directory / "config.yaml").string()));
+  trimmed_settings.camera->input_start_times = {{"cam1/left.mp4", 5}, {"cam2/right.mp4", 108}};
+  const auto trimmed = CreateStitchingExperimentWorkspace(game, experiments, trimmed_settings, 51);
+  ok &= expect(trimmed.ok(), "A candidate must accept independent camera starts");
+  if (trimmed.ok()) {
+    const auto trimmed_config = YAML::LoadFile((trimmed->game_directory / "config.yaml").string());
+    ok &= expect(
+        trimmed_config["stitching"]["input_start_times"]["cam2/right.mp4"].as<double>() == 108 &&
+            trimmed_config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input" &&
+            !trimmed_config["game"]["stitching"]["frame_offsets"],
+        "Changed starts must survive the candidate snapshot and retire old synchronization");
+    ok &= expect(
+        trimmed->settings.camera->input_start_times == trimmed_settings.camera->input_start_times,
+        "An experiment must freeze its independent starts");
+  }
+
   const fs::path outside = root / "outside.mp4";
   if (!write(outside, "outside"))
     return 4;

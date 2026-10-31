@@ -150,7 +150,8 @@ void matrix(const fs::path& game) {
             desired["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() == "new-owner",
         "Unchanged Play must reserve an owner without requesting calibration");
   }
-  for (const auto& name : {"budget", "matcher", "provider", "camera", "backend", "count", "sync", "time", "sources"}) {
+  for (const auto& name :
+       {"budget", "matcher", "provider", "camera", "backend", "count", "sync", "time", "sources", "starts"}) {
     auto before = baseline(true, true), desired = YAML::Clone(before);
     const std::string kind(name);
     if (kind == "budget")
@@ -167,6 +168,8 @@ void matrix(const fs::path& game) {
     }
     if (kind == "count")
       desired["stitching"]["calibration_frame_count"] = 3;
+    if (kind == "starts")
+      desired["stitching"]["input_start_times"]["right.mp4"] = 108;
     if (kind == "sync")
       desired["stitching"]["sync_method"] = "imu";
     if (kind == "time") {
@@ -193,7 +196,7 @@ void matrix(const fs::path& game) {
       desired["stitching"].remove("calibration_frame_inputs_fingerprint");
     }
     const auto plan = prepare(game, before, desired, kind == "sources");
-    const bool input = kind == "count" || kind == "sync" || kind == "time" || kind == "sources";
+    const bool input = kind == "count" || kind == "sync" || kind == "time" || kind == "sources" || kind == "starts";
     const bool features = kind == "budget" || kind == "matcher" || kind == "provider";
     require(
         plan.required &&
@@ -203,14 +206,14 @@ void matrix(const fs::path& game) {
                                 : "canvas"),
         "Shared planner selected the wrong dependency stage");
     require(
-        plan.retain_selected_frames == (kind != "count" && kind != "time" && kind != "sources"),
+        plan.retain_selected_frames == (kind != "count" && kind != "time" && kind != "sources" && kind != "starts"),
         "Shared planner changed exact selected-frame retention");
     require(plan.retain_manual_matches == (kind == "backend"), "Shared planner changed manual-match retention");
-    const auto cleanup = kind == "count" || kind == "time" || kind == "sources"
+    const auto cleanup = kind == "count" || kind == "time" || kind == "sources" || kind == "starts"
         ? st::StitchingCalibrationCleanup::kAll
         : st::StitchingCalibrationCleanup::kControlPoints;
     require(plan.cleanup == cleanup, "Shared planner selected the wrong cleanup scope");
-    if (kind == "sources")
+    if (kind == "sources" || kind == "starts")
       require(
           !desired["rink"]["mask_frame"]["input_id"] && !desired["stitching"]["frame_offsets"],
           "Source-role edits retained incompatible mask or synchronization ownership");

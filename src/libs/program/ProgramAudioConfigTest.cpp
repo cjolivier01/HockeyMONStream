@@ -35,15 +35,18 @@ int main(int argc, char** argv) {
          {"pipeline.hmaudio.src=0",
           "pipeline.hmaudio.dest=2",
           "pipeline.hmaudio.sink-id=1",
-          "pipeline.hmaudio.source-id=1",
           "pipeline.hmaudio.source-id=2",
-          "pipeline.hmaudio.source_id=1",
           "pipeline.hmaudio.sink_id=1",
           "runtime.amd.audio.queue_samples=1",
           "runtime.amd.audio.bitrate=0",
           "runtime.amd.audio.maximum_packet_bytes=-1"})
       Check(!resolve({invalid}).ok(), std::string("Invalid audio choice accepted: ") + invalid);
-    Check(!resolve({}, {1, 2}).ok(), "Audio with no zero-offset source accepted");
+    Check(resolve({}, {1, 2}).ok(), "Independent nonzero source starts rejected");
+    const auto selected = resolve({"pipeline.hmaudio.source-id=1"}, {1, 2});
+    Check(
+        selected.ok() && selected->has_value() && (*selected)->camera == 1,
+        "Explicit audio camera with a nonzero source start rejected");
+    Check(!resolve({}, {-1, 2}).ok(), "Negative source start accepted");
     auto lower = YAML::Load("pipeline: {hmaudio: {enable: 0}} ");
     Check(
         resolve({"pipeline.hmaudio0.enable=1"}, {0, 1}, lower)->has_value(),

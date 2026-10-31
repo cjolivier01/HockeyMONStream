@@ -1010,6 +1010,7 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     bool frozen) {
   AutoInputLensResult result{fallback, "Each camera uses its own optics."};
   result.camera.input_cameras.clear();
+  result.camera.input_start_times.clear();
   result.horizontal_fov_from_mp4 = result.vertical_fov_from_mp4 = result.lens_from_mp4 = true;
   result.detected = true;
   std::ostringstream details;
@@ -1020,6 +1021,9 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     if (paths->empty())
       continue;
     const auto key = game.empty() ? paths->front().generic_string() : stitch_input_camera_key(game, paths->front());
+    const double start = CameraSourceStart(fallback.input_start_times, game, key);
+    if (start != 0)
+      result.camera.input_start_times[key] = start;
     auto selected = fallback.for_source(key);
     const auto retained = fallback.input_cameras.find(key);
     const bool source_frozen =

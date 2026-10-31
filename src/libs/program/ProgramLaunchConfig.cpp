@@ -1,4 +1,5 @@
 #include "hstream/src/libs/program/ProgramLaunchConfig.h"
+#include "hstream/src/libs/stitching/CameraSourceStart.h"
 
 #include <cmath>
 
@@ -119,6 +120,21 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       if (!std::isfinite(result.frame_offsets[index]) || result.frame_offsets[index] < 0)
         return absl::InvalidArgumentError("Camera synchronization must be a finite nonnegative frame offset");
     }
+    const auto requested_starts = hm::stitching::ReadCameraSourceStarts(
+        get_node(result.configuration.values, "stitching.input_start_times").value_or(YAML::Node()));
+    const auto saved_starts = hm::stitching::ReadCameraSourceStarts(
+        get_node(result.configuration.values, "game.stitching.input_start_times").value_or(YAML::Node()));
+    if (!requested_starts.ok())
+      return requested_starts.status();
+    if (!saved_starts.ok())
+      return saved_starts.status();
+    const auto starts_status = hm::stitching::ValidateCameraSourceStarts(
+        *requested_starts, result.game, {result.chapters[0].front().string(), result.chapters[1].front().string()});
+    if (!starts_status.ok())
+      return starts_status;
+    if (*requested_starts != *saved_starts)
+      return absl::FailedPreconditionError(
+          "Camera source starts changed; synchronize and calibrate before Program playback");
     return result;
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(std::string("Program startup configuration: ") + error.what());

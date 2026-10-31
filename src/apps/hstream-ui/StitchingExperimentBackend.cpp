@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
+#include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
@@ -319,6 +320,16 @@ void remove_downstream_generation(YAML::Node config) {
 absl::StatusOr<std::string> reusable_selection_fingerprint(
     const YAML::Node& config,
     const StitchingExperimentSettings& settings) {
+  if (settings.camera) {
+    hm::stitching::CameraSourceStarts starts;
+    const YAML::Node stitching = config["stitching"];
+    HM_ASSIGN_OR_RETURN(
+        starts,
+        hm::stitching::ReadCameraSourceStarts(
+            stitching && stitching.IsMap() ? stitching["input_start_times"] : YAML::Node()));
+    if (starts != settings.camera->input_start_times)
+      return std::string();
+  }
   std::string fingerprint;
   HM_ASSIGN_OR_RETURN(fingerprint, hm::stitching::player_frame_selection_fingerprint(config));
   if (fingerprint.empty())
@@ -349,6 +360,11 @@ absl::Status configure_candidate(
     YAML::Node config,
     const StitchingExperimentSettings& settings,
     const std::string& invalidation_id) {
+  hm::stitching::CameraSourceStarts previous_starts;
+  HM_ASSIGN_OR_RETURN(previous_starts, hm::stitching::ReadCameraSourceStarts(config["stitching"]["input_start_times"]));
+  const bool starts_changed = settings.camera && previous_starts != settings.camera->input_start_times;
+  if (starts_changed)
+    hm::stitching::InvalidateStitchingSourceInputs(config);
   std::string selection;
   HM_ASSIGN_OR_RETURN(selection, reusable_selection_fingerprint(config, settings));
   config["stitching"]["calibration_frame_count"] = settings.frame_count;
@@ -405,10 +421,9 @@ absl::Status configure_candidate(
   calibration["frame_count"] = settings.frame_count;
   calibration["status"] = "pending";
   calibration["rink_mask_status"] = "pending";
-  // Experiment settings change the solve, not camera synchronization. Input
-  // cleanup would discard the copied offsets and let the baseline resynchronize
-  // independently of the siblings that will consume its selected frame pairs.
-  calibration["stale_from"] = "features";
+  // Optical edits retain the synchronized inputs; a source trim starts a new
+  // input timeline and must discard the old offsets and selected frames.
+  calibration["stale_from"] = starts_changed ? "input" : "features";
   calibration["artifacts_invalidated"] = false;
   calibration["invalidation_id"] = invalidation_id;
   remove_downstream_generation(config);
@@ -579,6 +594,17 @@ absl::Status copy_selected_frame_inputs(
     const fs::path& source_directory,
     const fs::path& candidate_directory,
     bool freeze_camera) {
+  hm::stitching::CameraSourceStarts candidate_starts, selected_starts;
+  HM_ASSIGN_OR_RETURN(
+      candidate_starts, hm::stitching::ReadCameraSourceStarts(config["stitching"]["input_start_times"]));
+  const YAML::Node source_stitching = source_config["stitching"];
+  HM_ASSIGN_OR_RETURN(
+      selected_starts,
+      hm::stitching::ReadCameraSourceStarts(
+          source_stitching && source_stitching.IsMap() ? source_stitching["input_start_times"] : YAML::Node()));
+  if (candidate_starts != selected_starts)
+    return absl::FailedPreconditionError(
+        "Saved player frames use different camera starts. Remove that frame-count group or choose another frame count.");
   YAML::Node localized = YAML::Clone(source_config);
   YAML::Node videos = localized["game"]["videos"];
   for (const char* role : {"left", "right"}) {
@@ -619,10 +645,17 @@ absl::Status copy_selected_frame_inputs(
   }
   config["game"]["videos"] = YAML::Clone(videos);
   config["game"]["stitching"]["frame_offsets"] = YAML::Clone(source_offsets);
+  copy_node(config["game"]["stitching"], source_config["game"]["stitching"], "input_start_times");
   config["stitching"].remove("frame_offsets");
   if (freeze_camera) {
     for (const char* key :
-         {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"})
+         {"camera_configs",
+          "camera_config",
+          "camera_fov",
+          "input_lens",
+          "camera_automation",
+          "input_cameras",
+          "input_start_times"})
       copy_node(config["stitching"], source_config["stitching"], key);
   }
   copy_node(config["stitching"], source_config["stitching"], "stitch_frame_time");
@@ -1273,6 +1306,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "camera_automation",
           "input_lens",
           "input_cameras",
+          "input_start_times",
           "camera_fov",
           "control_point_execution_provider",
           "control_point_matcher",
@@ -1289,6 +1323,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
       copy_node(current_stitching, selected_stitching, key);
     }
     copy_node(current["game"]["stitching"], selected["game"]["stitching"], "frame_offsets");
+    copy_node(current["game"]["stitching"], selected["game"]["stitching"], "input_start_times");
     current["hstream_ui"]["stitching_calibration"] = YAML::Clone(selected["hstream_ui"]["stitching_calibration"]);
     YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
     calibration["status"] = "complete";

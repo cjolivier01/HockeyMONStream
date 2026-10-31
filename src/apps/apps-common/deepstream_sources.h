@@ -215,7 +215,7 @@ typedef struct {
   gboolean uri_list_permanently_ended;
   /** Initial decoded-video trim, applied before sequence metadata and exact-pair admission begin. */
   guint64 uri_playlist_initial_video_offset_ns;
-  /** Initial selected-audio trim. Kept on the zero-video-offset source so muxed audio starts with pair zero. */
+  /** Initial selected-audio trim, at its camera's effective source start so audio begins with pair zero. */
   guint64 uri_playlist_initial_audio_offset_ns;
   /** Raw logical PTS of the first retained video frame; retained video timestamps are rebased from this epoch. */
   guint64 uri_playlist_video_origin_ns;

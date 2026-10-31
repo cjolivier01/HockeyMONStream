@@ -70,13 +70,12 @@ absl::StatusOr<std::optional<ProgramAudioConfig>> ResolveProgramAudioConfig(
       if (Choice(config, block, "src").as<int>() != 2 || Choice(config, block, "dest").as<int>() != 1 ||
           Choice(config, block, "sink-id").as<int>() != -1)
         return absl::UnimplementedError("AMD Program audio requires src=2, dest=1 and sink-id=-1");
-      if ((!std::isfinite(offsets[0]) || offsets[0] < 0) || (!std::isfinite(offsets[1]) || offsets[1] < 0) ||
-          (offsets[0] != 0 && offsets[1] != 0))
-        return absl::InvalidArgumentError("Program audio requires a camera with zero stitching offset");
+      if ((!std::isfinite(offsets[0]) || offsets[0] < 0) || (!std::isfinite(offsets[1]) || offsets[1] < 0))
+        return absl::InvalidArgumentError("Program audio requires finite nonnegative camera offsets");
       const auto selected = Choice(config, block, "source-id");
-      const int camera = selected.IsNull() ? (offsets[0] == 0 ? 0 : 1) : selected.as<int>();
-      if (camera < 0 || camera > 1 || offsets[camera] != 0)
-        return absl::InvalidArgumentError("Program audio must select a camera with zero stitching offset");
+      const int camera = selected.IsNull() ? (offsets[0] <= offsets[1] ? 0 : 1) : selected.as<int>();
+      if (camera < 0 || camera > 1)
+        return absl::InvalidArgumentError("Program audio must select one of the two camera sources");
       ProgramAudioConfig result{};
       result.camera = camera;
       const auto paced = hm::gst::ReadPacedPlaybackSettings(config.values);

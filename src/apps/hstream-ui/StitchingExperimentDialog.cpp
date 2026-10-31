@@ -260,10 +260,11 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
         "camera_fov",
         "input_lens",
         "input_cameras",
+        "input_start_times",
         "auto_input_lens_frozen",
         "camera_automation"}) {
     if (stitching[key]) {
-      if (stitching[key].IsMap() && effective["stitching"][key].IsMap())
+      if (std::string(key) != "input_start_times" && stitching[key].IsMap() && effective["stitching"][key].IsMap())
         merge_feature_map(effective["stitching"][key], stitching[key]);
       else
         effective["stitching"][key] = YAML::Clone(stitching[key]);
@@ -587,6 +588,7 @@ struct StitchingExperimentDialog::Impl {
   QCheckBox* camera_auto_fov{nullptr};
   hm::stitching::AutoInputLensResult camera_result;
   std::vector<CameraOpticsWidget*> camera_editors;
+  std::vector<CameraSourceStartWidget*> camera_start_editors;
   QGroupBox* camera_metadata_group{nullptr};
   QLabel* camera_metadata_status{nullptr};
   QGroupBox* camera_fov_group{nullptr};
@@ -868,6 +870,8 @@ struct StitchingExperimentDialog::Impl {
     camera_vertical_fov->setEnabled(editing_batch && feature_settings_error.isEmpty());
     camera_auto_fov->setEnabled(editing_batch && feature_settings_error.isEmpty());
     for (auto* editor : camera_editors)
+      editor->setEnabled(editing_batch && feature_settings_error.isEmpty());
+    for (auto* editor : camera_start_editors)
       editor->setEnabled(editing_batch && feature_settings_error.isEmpty());
     control_point_resolution->setEnabled(editing_batch && feature_settings_error.isEmpty() && feature_size_selectable);
     epipolar_ransac->setEnabled(editing_batch && feature_settings_error.isEmpty());
@@ -3675,7 +3679,20 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       const QString label = metadata.role == "left" ? "Left camera"
           : metadata.role == "right"                ? "Right camera"
                                                     : QString("Camera %1").arg(s.camera_editors.size() + 1);
-      camera_tabs->addTab(scroll, tab_icon(label), label);
+      auto* controls = new QTabWidget(camera_tabs);
+      auto* source_start = new CameraSourceStartWidget(controls);
+      source_start->setProperty("cameraSource", QString::fromStdString(source));
+      source_start->setStart(hm::stitching::CameraSourceStart(s.camera_settings.input_start_times, {}, source));
+      source_start->changed = [&s, source](double seconds) {
+        if (seconds == 0)
+          s.camera_settings.input_start_times.erase(source);
+        else
+          s.camera_settings.input_start_times[source] = seconds;
+      };
+      s.camera_start_editors.push_back(source_start);
+      controls->addTab(scroll, tab_icon("Optics"), "Optics");
+      controls->addTab(source_start, tab_icon("Input"), "Input");
+      camera_tabs->addTab(controls, tab_icon(label), label);
       editor->setProperty("cameraSource", QString::fromStdString(source));
       editor->setCamera(s.camera_settings.for_source(source), metadata);
       s.camera_editors.push_back(editor);

@@ -532,7 +532,7 @@ QJsonObject editable_matches_result(const Request& request, const Request& sourc
 void merge_settings(YAML::Node destination, const YAML::Node& overlay) {
   for (const auto& entry : overlay) {
     const auto key = entry.first.as<std::string>();
-    if (key != "input_cameras" && entry.second.IsMap() && destination[key].IsMap())
+    if (key != "input_cameras" && key != "input_start_times" && entry.second.IsMap() && destination[key].IsMap())
       merge_settings(destination[key], entry.second);
     else
       destination[key] = YAML::Clone(entry.second);
@@ -557,6 +557,9 @@ QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
   hm::stitching::write_stitch_camera_selection(saved, camera);
   const auto optics = saved["stitching"];
   const auto input = input_lens_json(camera.input_lens);
+  QJsonObject starts;
+  for (const auto& [source, seconds] : camera.input_start_times)
+    starts.insert(text(source), seconds);
   QJsonObject inputs;
   for (const auto& [source, values] : camera.input_cameras) {
     QJsonObject prescription{
@@ -588,13 +591,15 @@ QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
       {"camera_fov", QJsonObject{{"horizontal_fov", camera.horizontal_fov}, {"vertical_fov", camera.vertical_fov}}},
       {"input_lens", input},
       {"camera_automation", automation},
-      {"input_cameras", inputs}};
+      {"input_cameras", inputs},
+      {"input_start_times", starts}};
 }
 
 QJsonObject read_camera_optics(const Request& request) {
   require(request.payload.size() == 1 && request.payload.value("camera").isObject(), "Expected camera optics controls");
   const auto camera = request.payload.value("camera").toObject();
-  const std::set<QString> allowed{"camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"};
+  const std::set<QString> allowed{
+      "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras", "input_start_times"};
   for (auto item = camera.begin(); item != camera.end(); ++item)
     require(allowed.count(item.key()), "Unsupported camera optics control");
   auto config = YAML::Clone(take(hm::baseline_config::load()).values);
@@ -727,7 +732,8 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
   if (object.contains("camera")) {
     require(object.value("camera").isObject(), "Expected camera optics settings");
     const auto camera = object.value("camera").toObject();
-    const std::set<QString> allowed{"camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"};
+    const std::set<QString> allowed{
+        "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras", "input_start_times"};
     for (auto item = camera.begin(); item != camera.end(); ++item)
       require(allowed.count(item.key()), "Unsupported experiment camera setting");
     // A profile-only selection resolves that profile's optics, rather than

@@ -7,7 +7,9 @@
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QGroupBox>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QVBoxLayout>
+#include <cmath>
 
 #include "src/apps/hstream-ui/InputLensWidget.h"
 
@@ -128,4 +130,31 @@ void CameraOpticsWidget::setCamera(
 void CameraOpticsWidget::notify(bool refresh) {
   if (changed)
     changed(refresh);
+}
+
+CameraSourceStartWidget::CameraSourceStartWidget(QWidget* parent) : QWidget(parent) {
+  auto* layout = new QVBoxLayout(this);
+  auto* form = new QFormLayout();
+  start_ = new QTimeEdit(this);
+  start_->setObjectName("cameraSourceStartTime");
+  start_->setDisplayFormat("HH:mm:ss.zzz");
+  start_->setKeyboardTracking(false);
+  form->addRow("Source start", start_);
+  layout->addLayout(form);
+  auto* description = new QLabel(
+      "Skip to this position in this camera's recording before orientation, synchronization, or calibration. "
+      "Times span all chapters. Set both cameras near the same event; automatic sync refines the difference. "
+      "Playback and calibration reference times are measured after these starts.",
+      this);
+  description->setWordWrap(true);
+  layout->addWidget(description);
+  layout->addStretch();
+  connect(start_, &QTimeEdit::timeChanged, this, [this](const QTime& time) {
+    if (changed)
+      changed(time.msecsSinceStartOfDay() / 1000.0);
+  });
+}
+void CameraSourceStartWidget::setStart(double seconds) {
+  const QSignalBlocker blocker(start_);
+  start_->setTime(QTime::fromMSecsSinceStartOfDay(std::min(86399999, int(std::llround(seconds * 1000)))));
 }

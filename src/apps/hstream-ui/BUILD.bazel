@@ -521,6 +521,7 @@ cc_library(
         "//src/libs/stitching:player_frame_input_store",
         "//src/libs/stitching:player_frame_selection",
         "//src/libs/stitching:stitching_core",
+        "//src/libs/stitching:stitching_calibration_controls",
         "//src/libs/stitching:transaction_state",
         "@yaml-cpp",
     ],

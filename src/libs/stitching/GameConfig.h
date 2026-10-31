@@ -16,6 +16,7 @@
 #include "yaml-cpp/yaml.h"
 
 #include "hstream/src/libs/onnx/ExecutionProvider.h"
+#include "hstream/src/libs/stitching/CameraSourceStart.h"
 #include "hstream/src/libs/stitching/ControlPointMatcher.h"
 #include "hstream/src/libs/stitching/InputLens.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
@@ -47,6 +48,7 @@ struct StitchCameraSelection {
   // explicitly selected absolute path). This binds optics before Left/Right
   // orientation is known without confusing discovery order with camera roles.
   StitchInputCameras input_cameras;
+  CameraSourceStarts input_start_times;
   bool automatic_fov() const {
     return auto_fov.value_or(configuration == "auto");
   }
@@ -116,6 +118,8 @@ struct StitchCameraSelection {
   }
 
   bool operator==(const StitchCameraSelection& other) const {
+    if (input_start_times != other.input_start_times)
+      return false;
     if (!input_cameras.empty() && !other.input_cameras.empty())
       return input_cameras == other.input_cameras;
     return configuration == other.configuration && horizontal_fov == other.horizontal_fov &&

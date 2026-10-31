@@ -247,8 +247,6 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
       // are decimal frames, not seconds, and conversion truncates to ns.
       camera.offset_ns = static_cast<std::uint64_t>(ns);
     }
-    if (media.cameras[0].offset_ns && media.cameras[1].offset_ns)
-      return absl::InvalidArgumentError("One camera must have the recorded zero synchronization offset");
     bool automatic_high_bit_depth = true;
     for (const auto& camera : media.cameras) {
       for (const auto& path : camera.files) {
@@ -376,7 +374,7 @@ bool CameraExperimentSource::Build(
           s.sources.get(),
           media.cameras[0].offset_ns,
           media.cameras[1].offset_ns,
-          media.cameras[0].offset_ns == 0 ? 0 : 1,
+          media.cameras[0].offset_ns <= media.cameras[1].offset_ns ? 0 : 1,
           start_ns) ||
       !arm_uri_playlist_initial_seeks(s.sources.get()))
     return fail(error, "The selected passage is outside the original camera playlists");

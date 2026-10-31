@@ -53,7 +53,7 @@ void overlay(YAML::Node& destination, const YAML::Node& source) {
     return;
   for (const auto& entry : source) {
     const auto key = entry.first.as<std::string>();
-    if (key != "input_cameras" && entry.second.IsMap()) {
+    if (key != "input_cameras" && key != "input_start_times" && entry.second.IsMap()) {
       if (!destination[key] || !destination[key].IsMap())
         destination[key] = YAML::Node(YAML::NodeType::Map);
       YAML::Node child = destination[key];
@@ -243,6 +243,8 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
     solver["input_lens"] = WriteStitchInputLens(choices.camera.input_lens);
   if (!choices.camera.input_cameras.empty())
     solver["input_cameras"] = WriteStitchInputCameras(choices.camera.input_cameras, false);
+  if (!choices.camera.input_start_times.empty())
+    solver["input_start_times"] = WriteCameraSourceStarts(choices.camera.input_start_times);
   solver["calibration_frame_selection_fingerprint"] = choices.calibration_frame_selection_fingerprint;
   if (!choices.manual_control_point_fingerprint.empty())
     solver["manual_control_points"] = choices.manual_control_point_fingerprint;

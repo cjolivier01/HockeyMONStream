@@ -6638,6 +6638,10 @@ absl::Status Configurator::gather_stitching_videos(
   bool explicit_right = explicit_selection.right_is_explicit;
   const bool runtime_videos_owned_by_ui_roles = explicit_selection.ui_roles_are_authoritative;
 
+  stitching::CameraSourceStarts source_starts;
+  HM_ASSIGN_OR_RETURN(
+      source_starts,
+      stitching::ReadCameraSourceStarts(get_node(config_, "stitching.input_start_times").value_or(YAML::Node())));
   stitching::VideosDict videos;
   HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
   const bool has_cam_auto =
@@ -6712,7 +6716,8 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
-    HM_RETURN_IF_ERROR(stitching::configure_orientation(game_dir, active_stitching_invalidation_id_));
+    HM_RETURN_IF_ERROR(
+        stitching::configure_orientation(game_dir, active_stitching_invalidation_id_, {}, source_starts));
     HM_RETURN_IF_ERROR(import_stitching_orientation(game_dir));
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
@@ -6737,13 +6742,32 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if (!left_files.empty() && !right_files.empty()) {
-    if (!has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) ||
+    HM_RETURN_IF_ERROR(
+        stitching::ValidateCameraSourceStarts(source_starts, game_dir, {left_files.front(), right_files.front()}));
+    stitching::CameraSourceStarts synchronized_starts;
+    HM_ASSIGN_OR_RETURN(
+        synchronized_starts,
+        stitching::ReadCameraSourceStarts(
+            get_node(config_, "game.stitching.input_start_times").value_or(YAML::Node())));
+    if (source_starts != synchronized_starts ||
+        !has_node(config_, "game.stitching.frame_offsets.left", /*non_null=*/true) ||
         !has_node(config_, "game.stitching.frame_offsets.right", /*non_null=*/true) || force) {
+      std::vector<std::string> left_paths, right_paths;
+      for (const auto& file : left_files)
+        left_paths.push_back(file_maybe_in_game_dir(file));
+      for (const auto& file : right_files)
+        right_paths.push_back(file_maybe_in_game_dir(file));
       stitching::Synchronization sync;
       HM_ASSIGN_OR_RETURN(
           sync,
           stitching::calculate_stitching_synchronization(
-              game_dir / left_files[0], game_dir / right_files[0], sync_method));
+              left_paths,
+              right_paths,
+              {stitching::CameraSourceStart(source_starts, game_dir, left_files.front()),
+               stitching::CameraSourceStart(source_starts, game_dir, right_files.front())},
+              sync_method));
+      private_config_["game"]["stitching"]["input_start_times"] = stitching::WriteCameraSourceStarts(source_starts);
+      config_["game"]["stitching"]["input_start_times"] = stitching::WriteCameraSourceStarts(source_starts);
       offsets["left"] = std::to_string(sync.video1_frame_offset);
       offsets["right"] = std::to_string(sync.video2_frame_offset);
       private_config_["game"]["stitching"]["frame_offsets"]["left"] = std::to_string(sync.video1_frame_offset);
@@ -6942,11 +6966,10 @@ void Configurator::configure_audio(
       // conversion and nvstreammux. Requiring it makes total metadata loss a hard error instead of silently trusting
       // a mux-local frame counter that cannot reveal an upstream drop.
       pipeline["hmstitcher"]["private-properties"]["require-decoded-frame-sequence-meta"] = "1";
-      if (get_node_value<double>(offsets, "left", 0.0) == 0) {
+      if (get_node_value<double>(offsets, "left", 0.0) <= get_node_value<double>(offsets, "right", 0.0)) {
         possible_audio_uri = src0["uri"].as<std::string>();
         audio_source_id = src0["source-id"].as<int>();
       } else {
-        assert(get_node_value<double>(offsets, "right", 0.0) == 0);
         possible_audio_uri = src1["uri"].as<std::string>();
         audio_source_id = src1["source-id"].as<int>();
       }
@@ -8565,7 +8588,13 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const YAML::Node private_stitching = private_config_["stitching"];
   if (private_stitching && private_stitching.IsMap()) {
     for (const char* key :
-         {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"}) {
+         {"camera_configs",
+          "camera_config",
+          "camera_fov",
+          "input_lens",
+          "camera_automation",
+          "input_cameras",
+          "input_start_times"}) {
       const YAML::Node value = private_stitching[key];
       if (value && value.IsDefined())
         private_camera_config["stitching"][key] = YAML::Clone(value);
@@ -9381,6 +9410,7 @@ absl::Status Configurator::complete_configuration(
               "camera_automation",
               "input_lens",
               "input_cameras",
+              "input_start_times",
               "camera_fov"})
           latest["stitching"][key] = YAML::Clone(desired["stitching"][key]);
         // Record resolved framing even when the request inherited a rink angle.
@@ -9843,13 +9873,11 @@ absl::Status Configurator::prepare_initial_pipeline_position(
       audio_source_id = audio_config.source_id;
     }
     if (audio_source_id == G_MAXUINT) {
-      audio_source_id = config.hmsticher_config.left_frame_offset_ns == 0 ? 0 : 1;
+      audio_source_id =
+          config.hmsticher_config.left_frame_offset_ns <= config.hmsticher_config.right_frame_offset_ns ? 0 : 1;
     }
-    if (audio_source_id >= 2 || (audio_source_id == 0 && config.hmsticher_config.left_frame_offset_ns != 0) ||
-        (audio_source_id == 1 && config.hmsticher_config.right_frame_offset_ns != 0)) {
-      return absl::FailedPreconditionError(
-          "Lossless startup audio must use the camera with zero stitching frame offset");
-    }
+    if (audio_source_id >= 2)
+      return absl::FailedPreconditionError("Lossless startup audio must select one of the camera sources");
     std::string position_error;
     if (!configure_uri_playlist_initial_offsets(
             &pipeline.multi_src_bin,

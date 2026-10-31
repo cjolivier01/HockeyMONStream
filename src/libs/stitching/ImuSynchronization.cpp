@@ -107,11 +107,37 @@ absl::Status parse_gpmf(
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::vector<Sample>> read_insta(const std::string& video, const frame_exif::Insta360Clock& clock) {
+absl::StatusOr<std::vector<Sample>> read_insta(
+    const std::string& video,
+    const frame_exif::Insta360Clock& clock,
+    double start,
+    double duration) {
   // 200k samples cover over 30s even at 3.2kHz; never load a full match's IMU data.
   const bool raw = clock.scale == 0.001;
   const size_t stride = raw ? 20 : 56;
-  const auto record = frame_exif::ReadInsta360Record(video, 3, stride * kMaxSamples);
+  auto record = frame_exif::ReadInsta360Record(video, 3, stride);
+  if (!record.ok())
+    return record.status();
+  if (!record->has_value())
+    return absl::NotFoundError("No Insta360 gyroscope record");
+  if (record->value().full_size % stride != 0)
+    return absl::DataLossError("Invalid Insta360 gyro record size");
+  size_t begin = 0, end = record->value().full_size / stride;
+  while (begin < end) {
+    const size_t middle = begin + (end - begin) / 2;
+    auto sample = frame_exif::ReadInsta360Record(video, 3, stride, middle * stride);
+    if (!sample.ok())
+      return sample.status();
+    if (!sample->has_value() || sample->value().data.size() != stride)
+      return absl::DataLossError("Truncated Insta360 gyro timestamp");
+    const double time =
+        (read_integer(sample->value().data.data(), 8, true) / 1000.0 - clock.origin) * clock.scale - clock.gyro_offset;
+    if (time < start)
+      begin = middle + 1;
+    else
+      end = middle;
+  }
+  record = frame_exif::ReadInsta360Record(video, 3, stride * kMaxSamples, begin * stride);
   if (!record.ok())
     return record.status();
   if (!record->has_value())
@@ -123,7 +149,7 @@ absl::StatusOr<std::vector<Sample>> read_insta(const std::string& video, const f
   for (size_t pos = 0; pos + stride <= bytes.size(); pos += stride) {
     const auto* p = bytes.data() + pos;
     const double time = (read_integer(p, 8, true) / 1000.0 - clock.origin) * clock.scale - clock.gyro_offset;
-    if (time > kDuration + kMaxOffset)
+    if (time >= start + duration)
       break;
     double axes[3];
     for (size_t axis = 0; axis < 3; ++axis) {
@@ -131,13 +157,13 @@ absl::StatusOr<std::vector<Sample>> read_insta(const std::string& video, const f
       axes[axis] = raw ? static_cast<double>(read_integer(p + 14 + axis * 2, 2, true)) - 32768.0
                        : read_double(p + 32 + axis * 8);
     }
-    samples.push_back({time, axes[0], axes[1], axes[2]});
+    samples.push_back({time - start, axes[0], axes[1], axes[2]});
   }
   return samples;
 }
 
-absl::Status validate(const std::vector<Sample>& samples) {
-  if (samples.size() < 100 || samples.size() > kMaxSamples)
+absl::Status validate(const std::vector<Sample>& samples, bool require_window = true) {
+  if ((require_window && samples.size() < 100) || samples.size() > kMaxSamples)
     return absl::FailedPreconditionError("IMU synchronization requires 100 to 200000 gyro samples per camera");
   double previous = -std::numeric_limits<double>::infinity();
   for (const auto& sample : samples) {
@@ -178,7 +204,10 @@ absl::StatusOr<std::vector<Sample>> ParseGpmf(const unsigned char* data, size_t 
   return result;
 }
 
-absl::StatusOr<Recording> Read(const std::string& video) {
+absl::StatusOr<Recording> Read(const std::string& video, double start_seconds, double duration_seconds) {
+  if (!std::isfinite(start_seconds) || start_seconds < 0 || !std::isfinite(duration_seconds) || duration_seconds <= 0 ||
+      duration_seconds > kDuration + kMaxOffset)
+    return absl::InvalidArgumentError("Invalid IMU synchronization window");
   // Mixed system and /usr/local FFmpeg installations can link successfully but
   // use incompatible public struct layouts. Check before dereferencing any.
   if ((avformat_version() >> 16) != LIBAVFORMAT_VERSION_MAJOR ||
@@ -216,7 +245,7 @@ absl::StatusOr<Recording> Read(const std::string& video) {
   if (!clock.ok())
     return clock.status();
   if (clock->has_value()) {
-    auto samples = read_insta(video, clock->value());
+    auto samples = read_insta(video, clock->value(), start_seconds, duration_seconds);
     if (!samples.ok())
       return samples.status();
     result.gyro = std::move(*samples);
@@ -236,27 +265,34 @@ absl::StatusOr<Recording> Read(const std::string& video) {
     if (!packet)
       return absl::ResourceExhaustedError("Cannot allocate metadata packet");
     const double time_base = av_q2d(context->streams[gyro_stream]->time_base);
+    if (av_seek_frame(context, gyro_stream, std::llround((origin + start_seconds) / time_base), AVSEEK_FLAG_BACKWARD) <
+        0)
+      return absl::FailedPreconditionError("Cannot seek GPMF to the camera start");
     int code;
     while ((code = av_read_frame(context, packet.get())) >= 0) {
       if (packet->stream_index == gyro_stream) {
         if (packet->pts == AV_NOPTS_VALUE)
           return absl::DataLossError("GPMF packet has no timestamp");
-        const double time = packet->pts * time_base - origin;
-        if (time > kDuration + kMaxOffset)
+        const double time = packet->pts * time_base - origin - start_seconds;
+        if (time > duration_seconds)
           break;
         auto samples = ParseGpmf(packet->data, packet->size, time, packet->duration * time_base);
         if (!samples.ok())
           return samples.status();
         if (result.gyro.size() + samples->size() > kMaxSamples)
           return absl::ResourceExhaustedError("Too many GPMF samples in synchronization window");
-        result.gyro.insert(result.gyro.end(), samples->begin(), samples->end());
+        for (const auto& sample : *samples)
+          if (sample.seconds >= 0 && sample.seconds < duration_seconds)
+            result.gyro.push_back(sample);
       }
       av_packet_unref(packet.get());
     }
     if (code < 0 && code != AVERROR_EOF)
       return absl::DataLossError("Failed or timed out reading GPMF packets");
   }
-  const auto status = validate(result.gyro);
+  // A chapter boundary can leave fewer than 100 samples here. The complete
+  // concatenated window is validated by EstimateOffset.
+  const auto status = validate(result.gyro, false);
   if (!status.ok())
     return status;
   return result;
