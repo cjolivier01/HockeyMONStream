@@ -1242,6 +1242,9 @@ def generate(root, *, native_revision=None, include_revision=True):
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in (
                 "src/apps/hstream-ui/HStreamWindow.cpp",
+                "src/apps/hstream-ui/ValueControlWheel.cpp",
+                "src/apps/hstream-ui/ValueControlWheel.h",
+                "src/apps/hstream-ui/main.cpp",
                 "src/apps/hstream-ui/DetectorOptions.cpp",
                 "src/apps/hstream-ui/DetectorOptions.h",
                 "src/apps/hstream-ui/RuntimeOptions.cpp",
