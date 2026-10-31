@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QDebug>
@@ -42,6 +43,7 @@ int main(int argc, char** argv) {
   }
 #endif
   QApplication app(argc, argv);
+  install_value_control_wheel_guard();
   QCommandLineParser parser;
   parser.addHelpOption();
   parser.addOptions({

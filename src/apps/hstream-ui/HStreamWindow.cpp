@@ -4939,8 +4939,7 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
   development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application_path);
   setWindowIcon(hm::ui_internal::application_icon());
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
-  // Value controls live inside scrolling control panes.  An application-level
-  // filter catches controls created later as well as the initial widgets.
+  install_value_control_wheel_guard();
   qApp->installEventFilter(this);
   pipeline_process_ = new QProcess(this);
   pipeline_process_->setProcessChannelMode(QProcess::SeparateChannels);
