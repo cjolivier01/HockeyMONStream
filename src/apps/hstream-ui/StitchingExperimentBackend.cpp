@@ -619,7 +619,8 @@ absl::Status copy_selected_frame_inputs(
   config["game"]["stitching"]["frame_offsets"] = YAML::Clone(source_offsets);
   config["stitching"].remove("frame_offsets");
   if (freeze_camera) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"})
+    for (const char* key :
+         {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"})
       copy_node(config["stitching"], source_config["stitching"], key);
   }
   copy_node(config["stitching"], source_config["stitching"], "stitch_frame_time");
@@ -1266,6 +1267,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "auto_input_lens_frozen",
           "camera_automation",
           "input_lens",
+          "input_cameras",
           "camera_fov",
           "control_point_execution_provider",
           "control_point_matcher",

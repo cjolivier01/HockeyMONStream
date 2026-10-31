@@ -1186,6 +1186,7 @@ def generate(root, *, native_revision=None, include_revision=True):
         "highlight_defaults": {"base_name": highlight_base_name},
         "stitching_experiments": baseline["hstream_ui"]["stitching_experiments"],
         "stitching_camera_profiles": baseline["stitching"]["camera_configs"],
+        "stitching_input_cameras": baseline["stitching"]["input_cameras"],
         "stitching_control_policies": stitching_control_policies(root),
         "stitching_camera_automation": {
             **baseline["stitching"]["camera_automation"],

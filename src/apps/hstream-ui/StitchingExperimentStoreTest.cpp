@@ -540,6 +540,9 @@ bool lens_settings(const fs::path& root) {
   record.workspace.settings.camera = StitchCameraSelection{"gopro-hero-11", 121.413487813061, 90};
   record.workspace.settings.camera->input_lens.projection = "full-frame-fisheye";
   record.workspace.settings.camera->input_lens.optimization = "fixed";
+  record.workspace.settings.camera->input_cameras = {
+      {"cam1/source.mp4", {125.12, 70.36, record.workspace.settings.camera->input_lens}},
+      {"cam2/source.mp4", {97.07, 54.59, record.workspace.settings.camera->input_lens}}};
   auto config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
   write_stitch_camera_selection(config, *record.workspace.settings.camera);
   write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));

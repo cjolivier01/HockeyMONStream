@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <map>
 #include <string>
 
 #include "absl/status/status.h"
@@ -27,6 +28,28 @@ struct StitchInputLens {
   }
 };
 
+// A complete source-camera prescription. Zero FOV is an invalid sentinel;
+// these values must come from resolved configuration or recording metadata.
+struct StitchCameraOptics {
+  double horizontal_fov{0};
+  double vertical_fov{0};
+  StitchInputLens input_lens;
+  bool operator==(const StitchCameraOptics& other) const {
+    return horizontal_fov == other.horizontal_fov && vertical_fov == other.vertical_fov &&
+        input_lens == other.input_lens;
+  }
+  bool operator!=(const StitchCameraOptics& other) const {
+    return !(*this == other);
+  }
+};
+
+using StitchInputCameras = std::map<std::string, StitchCameraOptics>;
+absl::Status ValidateStitchCameraOptics(const StitchCameraOptics& camera);
+absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node);
+YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras);
+std::string SerializeStitchInputCameras(const StitchInputCameras& cameras);
+absl::StatusOr<StitchInputCameras> ParseStitchInputCameras(const std::string& text);
+
 absl::Status ValidateStitchInputLens(const StitchInputLens& lens);
 absl::StatusOr<StitchInputLens> ReadStitchInputLens(const YAML::Node& node, const StitchInputLens& defaults = {});
 YAML::Node WriteStitchInputLens(const StitchInputLens& lens);
@@ -38,5 +61,11 @@ int StitchInputLensProjection(const StitchInputLens& lens);
 // optimization modes, replaces the optimizer variables. Camera poses still fit
 // the matches; fixed optics never disable alignment.
 absl::StatusOr<std::string> ApplyStitchInputLens(const std::string& pto, const StitchInputLens& lens);
+
+// Independent intrinsics are never linked between the source images. Every
+// camera retains its own FOV, distortion, center and optimization policy.
+absl::StatusOr<std::string> ApplyStitchInputCameras(
+    const std::string& pto,
+    const std::array<StitchCameraOptics, 2>& cameras);
 
 } // namespace hm::stitching

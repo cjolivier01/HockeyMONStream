@@ -53,7 +53,7 @@ void overlay(YAML::Node& destination, const YAML::Node& source) {
     return;
   for (const auto& entry : source) {
     const auto key = entry.first.as<std::string>();
-    if (entry.second.IsMap()) {
+    if (key != "input_cameras" && entry.second.IsMap()) {
       if (!destination[key] || !destination[key].IsMap())
         destination[key] = YAML::Node(YAML::NodeType::Map);
       YAML::Node child = destination[key];
@@ -146,6 +146,14 @@ std::string solver_text(const YAML::Node& solver) {
     normalize_numbers(node_at(normalized, {key}));
   for (const char* key : {"distortion", "center_offset"})
     normalize_numbers(node_at(normalized, {"input_lens", key}));
+  const auto cameras = node_at(normalized, {"input_cameras"});
+  if (cameras && cameras.IsMap())
+    for (auto camera : cameras) {
+      for (const char* key : {"horizontal_fov", "vertical_fov"})
+        normalize_numbers(camera.second[key]);
+      for (const char* key : {"distortion", "center_offset"})
+        normalize_numbers(camera.second["input_lens"][key]);
+    }
   return canonical_text(normalized);
 }
 
@@ -233,6 +241,8 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   solver["camera_fov"]["vertical_fov"] = choices.camera.vertical_fov;
   if (choices.camera.input_lens != StitchInputLens{})
     solver["input_lens"] = WriteStitchInputLens(choices.camera.input_lens);
+  if (!choices.camera.input_cameras.empty())
+    solver["input_cameras"] = WriteStitchInputCameras(choices.camera.input_cameras);
   solver["calibration_frame_selection_fingerprint"] = choices.calibration_frame_selection_fingerprint;
   if (!choices.manual_control_point_fingerprint.empty())
     solver["manual_control_points"] = choices.manual_control_point_fingerprint;
@@ -376,12 +386,13 @@ absl::StatusOr<HuginProject::CanvasProvenance> source_provenance(const fs::path&
   HM_ASSIGN_OR_RETURN(
       contents,
       read_bounded_regular_file_no_follow(
-          directory / kStitchCanvasProvenanceArtifact, 4096, "reframe canvas provenance"));
+          directory / kStitchCanvasProvenanceArtifact, 64 * 1024, "reframe canvas provenance"));
   if (contents.rfind("version=10\n", 0) != 0 && contents.rfind("version=11\n", 0) != 0 &&
       contents.rfind("version=12\n", 0) != 0 && contents.rfind("version=13\n", 0) != 0 &&
-      contents.rfind("version=14\n", 0) != 0 && contents.rfind("version=15\n", 0) != 0)
+      contents.rfind("version=14\n", 0) != 0 && contents.rfind("version=15\n", 0) != 0 &&
+      contents.rfind("version=16\n", 0) != 0 && contents.rfind("version=17\n", 0) != 0)
     return absl::FailedPreconditionError(
-        "Reframing requires complete version-10 through version-15 alignment provenance");
+        "Reframing requires complete version-10 through version-17 alignment provenance");
   const auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
   if (!provenance.ok())
     return provenance.status();

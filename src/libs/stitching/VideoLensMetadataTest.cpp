@@ -214,6 +214,9 @@ int main(int argc, char** argv) {
     const auto result = ResolveAutoInputLensForCameras({argv[2]}, {argv[3]}, {"auto"});
     YAML::Node report;
     report["message"] = result.shared_choices_message;
+    YAML::Node imported;
+    write_stitch_camera_selection(imported, result.camera);
+    report["camera"] = imported["stitching"];
     for (const auto& [key, camera] : result.shared_choices) {
       YAML::Node config;
       write_stitch_camera_selection(config, camera);
@@ -280,8 +283,8 @@ int main(int argc, char** argv) {
     write(dir / "zoomed.mp4", movie(gopro(0.36623674631118774f, "HS EIS", false, true, false)));
     const auto pair = ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, {"auto"});
     expect(
-        pair.mismatch && !pair.detected && pair.shared_choices.size() == 3,
-        "Different supported camera optics need explicit choices, not an automatic import");
+        pair.mismatch && pair.detected && pair.camera.input_cameras.size() == 2 && pair.shared_choices.size() == 3,
+        "Different supported camera optics must import independently and retain shared alternatives");
     expect(
         pair.shared_choices_message.find("Left:") != std::string::npos &&
             pair.shared_choices_message.find("Right:") != std::string::npos &&
@@ -318,6 +321,16 @@ int main(int argc, char** argv) {
     expect(
         !incomplete.shared_choices.count("left") && !incomplete.shared_choices.count("average"),
         "Incomplete camera metadata cannot supply a choice or average");
+    auto retained = pair.camera;
+    retained.auto_lens = false;
+    retained.input_cameras.at((dir / "zoomed.mp4").string()).input_lens.center_offset[0] = 0.04;
+    const auto partial_pair =
+        ResolveAutoInputLensForCameras({dir / "left.mp4", dir / "missing.mp4"}, {dir / "zoomed.mp4"}, retained);
+    expect(
+        partial_pair.camera.input_cameras.size() == 2 &&
+            partial_pair.camera.input_cameras.at((dir / "zoomed.mp4").string()).input_lens.center_offset[0] == 0.04 &&
+            partial_pair.recording_message.find("Incomplete") != std::string::npos,
+        "Unavailable automatic metadata must not discard independent manual correction");
     std::filesystem::remove(dir / "zoomed.mp4");
     auto result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {"auto"});
     expect(result.detected && !result.mismatch, "Agreeing sources should import");
@@ -354,6 +367,24 @@ int main(int argc, char** argv) {
     expect(
         unassigned.shared_choices.size() == 1 && unassigned.shared_choices.count("camera1"),
         "Auto discovery must inspect every chapter before offering a camera or average");
+    YAML::Node independent_layer;
+    write_stitch_camera_selection(independent_layer, pair.camera);
+    auto profile_layer = YAML::Load("stitching: {camera_config: manual}");
+    auto replaced = hm::config::MergeNodes(YAML::Clone(independent_layer), profile_layer, false);
+    PreserveLegacyInputLensSelection(replaced, profile_layer);
+    expect(
+        read_stitch_camera_selection(replaced)->input_cameras.empty(),
+        "A profile selection clears inherited independent optics");
+    auto fov_layer = YAML::Load("stitching: {camera_fov: {horizontal_fov: 110}}");
+    auto edited_pair = hm::config::MergeNodes(YAML::Clone(independent_layer), fov_layer, false);
+    PreserveLegacyInputLensSelection(edited_pair, fov_layer);
+    const auto edited_selection = read_stitch_camera_selection(edited_pair);
+    expect(
+        edited_selection.ok() && edited_selection->input_cameras.begin()->second.horizontal_fov == 110 &&
+            edited_selection->input_cameras.rbegin()->second.horizontal_fov == 110 &&
+            edited_selection->input_cameras.rbegin()->second.vertical_fov ==
+                pair.camera.input_cameras.rbegin()->second.vertical_fov,
+        "A shared component override updates only that component in both independent prescriptions");
     const auto live = ReadAutoInputLensForGame(dir, config, *selected, false, true);
     expect(
         !live.detected && live.camera == *selected && live.message.find("live cameras") != std::string::npos,

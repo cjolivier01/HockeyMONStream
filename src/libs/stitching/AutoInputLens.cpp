@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <iomanip>
+#include <sstream>
 #include <stdexcept>
 
 #include "hstream/src/libs/stitching/Orientation.h"
@@ -51,6 +53,8 @@ void PreserveLegacyInputLensSelection(YAML::Node& effective, const YAML::Node& l
   const auto selected = child(stitching, "camera_config");
   const auto automation = child(stitching, "camera_automation");
   if (selected && selected.IsScalar()) {
+    if (!child(stitching, "input_cameras").IsMap())
+      effective["stitching"]["input_cameras"] = YAML::Node(YAML::NodeType::Map);
     // A higher-layer selector replaces inherited policies, just as it does in
     // the CLI. Explicit independent choices in this layer still take priority.
     for (const char* key : {"fov", "lens"})
@@ -79,10 +83,22 @@ void PreserveLegacyInputLensSelection(YAML::Node& effective, const YAML::Node& l
           manual.auto_lens = false;
       }
   }
+  if (!child(stitching, "input_cameras").IsMap()) {
+    const auto fov = child(stitching, "camera_fov"), lens = child(stitching, "input_lens");
+    for (auto& [source, value] : manual.input_cameras) {
+      if (child(fov, "horizontal_fov").IsScalar())
+        value.horizontal_fov = manual.horizontal_fov;
+      if (child(fov, "vertical_fov").IsScalar())
+        value.vertical_fov = manual.vertical_fov;
+      const auto updated = ReadStitchInputLens(lens, value.input_lens);
+      if (updated.ok())
+        value.input_lens = *updated;
+    }
+  }
   write_stitch_camera_selection(effective, manual);
 }
 
-AutoInputLensResult ReadAutoInputLensForGame(
+static AutoInputLensResult read_auto_input_lens_for_game(
     const std::filesystem::path& game,
     const YAML::Node& config,
     const StitchCameraSelection& selection,
@@ -138,7 +154,7 @@ AutoInputLensResult ReadAutoInputLensForGame(
     const auto roles = child(child(config, "hstream_ui"), "video_roles");
     auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
     if (!left.empty() && !right.empty()) {
-      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles);
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game);
     }
     auto discovered = get_available_videos(game.string());
     if (!discovered.ok())
@@ -177,9 +193,9 @@ AutoInputLensResult ReadAutoInputLensForGame(
         throw std::runtime_error("Auto lens import requires two selected source cameras");
       // Discovery groups chapters before orientation is known. Preserve those
       // groups and identify choices by filename instead of guessing Left/Right.
-      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, false);
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, false, game);
     }
-    return ResolveAutoInputLensForCameras(left, right, fallback, *profiles);
+    return ResolveAutoInputLensForCameras(left, right, fallback, *profiles, true, game);
   } catch (const std::exception& error) {
     result.message = "Auto unavailable: " + std::string(error.what()) + ". Using baseline defaults.";
     result.recording_message = "Not read: " + std::string(error.what());
@@ -189,5 +205,39 @@ AutoInputLensResult ReadAutoInputLensForGame(
       result.lens_message = result.message;
     return result;
   }
+}
+AutoInputLensResult ReadAutoInputLensForGame(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    const StitchCameraSelection& selection,
+    bool force_video_discovery,
+    bool live_sources) {
+  auto result = read_auto_input_lens_for_game(game, config, selection, force_video_discovery, live_sources);
+  if (!result.camera.input_cameras.empty()) {
+    std::ostringstream description;
+    description << "Each source camera uses its own optics.\n" << std::setprecision(10);
+    size_t index = 0;
+    for (const auto& [source, values] : result.camera.input_cameras) {
+      description << "Camera " << ++index << " (" << source << "): horizontal FOV " << values.horizontal_fov
+                  << "°, vertical FOV " << values.vertical_fov << "°.\n"
+                  << values.input_lens.projection << "; " << values.input_lens.optimization << " correction. "
+                  << "Distortion a/b/c: " << values.input_lens.distortion[0] << ", " << values.input_lens.distortion[1]
+                  << ", " << values.input_lens.distortion[2]
+                  << ". Center X/Y: " << values.input_lens.center_offset[0] * 100 << "%, "
+                  << values.input_lens.center_offset[1] * 100 << "%.\n";
+    }
+    description << "Use one of the shared choices to apply the same numbers to both cameras.";
+    result.shared_choices_message = description.str();
+    if (result.shared_choices.empty()) {
+      index = 0;
+      for (const auto& [source, values] : result.camera.input_cameras) {
+        StitchCameraSelection shared{"manual", values.horizontal_fov, values.vertical_fov, values.input_lens};
+        shared.auto_fov = shared.auto_lens = false;
+        result.shared_choices["camera" + std::to_string(++index)] = std::move(shared);
+      }
+    }
+    result.mismatch = true;
+  }
+  return result;
 }
 } // namespace hm::stitching

@@ -70,7 +70,10 @@ int main(int argc, char** argv) {
       ++selections;
     widget.setSharedChoices({}); // The callback may clear its own source choices.
   };
+  mismatch.camera.input_cameras = {{"left.mp4", {125.12, 70.36, lens}}, {"right.mp4", {97.07, 54.59, lens}}};
   widget.setSharedChoices(mismatch);
+  if (widget.inputCameras() != mismatch.camera.input_cameras || !values->isHidden() || !calibration->isHidden())
+    return 1;
   auto* right = widget.findChild<QPushButton*>("inputLensUse_right");
   if (right->icon().isNull() || !right->isEnabled() ||
       widget.findChild<QPushButton*>("inputLensUse_left")->isEnabled() ||

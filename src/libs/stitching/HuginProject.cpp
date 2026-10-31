@@ -375,12 +375,15 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
   const bool framing_aware = lines.size() == 16 && lines[0] == "version=5";
   const bool calibration_aware = lines.size() == 18 && lines[0] == "version=6";
-  const bool filtering_aware =
-      (lines.size() == 33 && lines[0] == "version=14") || (lines.size() == 34 && lines[0] == "version=15");
+  const bool input_cameras_aware =
+      (lines.size() == 34 && lines[0] == "version=16") || (lines.size() == 35 && lines[0] == "version=17");
+  const bool filtering_aware = input_cameras_aware || (lines.size() == 33 && lines[0] == "version=14") ||
+      (lines.size() == 34 && lines[0] == "version=15");
   const bool lens_aware = filtering_aware || (lines.size() == 32 && lines[0] == "version=12") ||
       (lines.size() == 33 && lines[0] == "version=13");
-  const bool manual_aware = (lines.size() == 34 && lines[0] == "version=15") ||
-      (lines.size() == 32 && lines[0] == "version=11") || (lines.size() == 33 && lines[0] == "version=13");
+  const bool manual_aware = (lines.size() == 35 && lines[0] == "version=17") ||
+      (lines.size() == 34 && lines[0] == "version=15") || (lines.size() == 32 && lines[0] == "version=11") ||
+      (lines.size() == 33 && lines[0] == "version=13");
   const size_t manual_index = lens_aware ? 32 : 31;
   const bool selection_aware = (lines.size() == 31 && lines[0] == "version=10") || manual_aware || lens_aware;
   const bool resolution_aware = (lines.size() == 29 && lines[0] == "version=9") || selection_aware;
@@ -518,6 +521,13 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
         std::string lens;
         HM_ASSIGN_OR_RETURN(lens, parse_canvas_provenance_string(lines[31], "input-lens"));
         HM_ASSIGN_OR_RETURN(camera.input_lens, ParseStitchInputLens(lens));
+      }
+      if (input_cameras_aware) {
+        std::string cameras;
+        HM_ASSIGN_OR_RETURN(cameras, parse_canvas_provenance_string(lines[lines.size() - 2], "input-cameras"));
+        HM_ASSIGN_OR_RETURN(camera.input_cameras, ParseStitchInputCameras(cameras));
+        if (camera.input_cameras.size() != 2)
+          return absl::FailedPreconditionError("Independent camera provenance requires two source prescriptions");
       }
       provenance.camera = camera;
     }
@@ -1494,8 +1504,10 @@ absl::Status run_autooptimiser(
     const fs::path& directory,
     double configured_horizontal_fov,
     const StitchInputLens& input_lens,
+    const std::optional<std::array<StitchCameraOptics, 2>>& cameras,
     const std::function<bool()>& is_cancelled = {}) {
-  std::vector<std::string> command = {autooptimiser, input_lens.optimization == "auto" ? "-a" : "-n", "-l", "-s", "-q"};
+  std::vector<std::string> command = {
+      autooptimiser, !cameras && input_lens.optimization == "auto" ? "-a" : "-n", "-l", "-s", "-q"};
   command.insert(command.end(), {"-o", "autooptimiser_out.pto", "hm_project.pto"});
   std::string output;
   auto status = run_checked(command, directory, &output, is_cancelled);
@@ -1545,11 +1557,15 @@ absl::Status run_autooptimiser(
       }
       break;
     }
-    if (!std::isfinite(fov) || fov < configured_horizontal_fov / 4.0 ||
-        fov >= (input_lens.projection == "rectilinear" ? 180.0 : 360.0) || fov > configured_horizontal_fov * 4.0) {
+    if (camera_fovs.size() >= 2)
+      return absl::FailedPreconditionError("Optimized Hugin project must contain two camera images");
+    const double expected_fov = cameras ? (*cameras)[camera_fovs.size()].horizontal_fov : configured_horizontal_fov;
+    const auto& expected_lens = cameras ? (*cameras)[camera_fovs.size()].input_lens : input_lens;
+    if (!std::isfinite(fov) || fov < expected_fov / 4.0 ||
+        fov >= (expected_lens.projection == "rectilinear" ? 180.0 : 360.0) || fov > expected_fov * 4.0) {
       return absl::FailedPreconditionError(
           "Degenerate Hugin camera " + std::to_string(camera_fovs.size()) + " horizontal FOV: " + std::to_string(fov) +
-          " degrees (configured " + std::to_string(configured_horizontal_fov) + " degrees)");
+          " degrees (configured " + std::to_string(expected_fov) + " degrees)");
     }
     camera_fovs.push_back(fov);
   }
@@ -2098,7 +2114,7 @@ absl::StatusOr<std::optional<HuginProject::CanvasProvenance>> HuginProject::Read
       return absl::InternalError("Unable to inspect stitching canvas provenance: " + error.message());
     return std::nullopt;
   }
-  auto contents = read_bounded_hugin_file(path, 4 * 1024);
+  auto contents = read_bounded_hugin_file(path, 64 * 1024);
   if (!contents.ok())
     return contents.status();
   CanvasProvenance provenance;
@@ -2581,9 +2597,16 @@ absl::Status HuginProject::Configure(
     return absl::InvalidArgumentError("Camera vertical field of view must be between 0 and 180 degrees");
   }
   HM_RETURN_IF_ERROR(ValidateStitchInputLens(options.input_lens));
-  if (options.input_lens != StitchInputLens{} && options.mapping_backend != MappingBackend::kNona)
+  if (options.input_cameras.empty() == options.ordered_input_cameras.has_value())
+    return absl::InvalidArgumentError("Independent input optics require a source-bound camera order");
+  if (options.ordered_input_cameras)
+    for (const auto& camera : *options.ordered_input_cameras)
+      HM_RETURN_IF_ERROR(ValidateStitchCameraOptics(camera));
+  if ((!options.input_cameras.empty() || options.input_lens != StitchInputLens{}) &&
+      options.mapping_backend != MappingBackend::kNona)
     return absl::InvalidArgumentError("Input lens correction requires the NONA mapping backend");
-  if (options.input_lens != StitchInputLens{} && options.akaze_calibration.left.has_value())
+  if ((!options.input_cameras.empty() || options.input_lens != StitchInputLens{}) &&
+      options.akaze_calibration.left.has_value())
     return absl::InvalidArgumentError("Input lens correction cannot also use rectified AKAZE lens profiles");
   if (options.camera_configuration.empty())
     return absl::InvalidArgumentError("Camera configuration identifier must not be empty");
@@ -2684,7 +2707,8 @@ absl::Status HuginProject::Configure(
   auto with_points = InsertControlPoints(*project, matches, minimum_usable_matches);
   if (!with_points.ok())
     return with_points.status();
-  auto with_lens = ApplyStitchInputLens(*with_points, options.input_lens);
+  auto with_lens = options.ordered_input_cameras ? ApplyStitchInputCameras(*with_points, *options.ordered_input_cameras)
+                                                 : ApplyStitchInputLens(*with_points, options.input_lens);
   if (!with_lens.ok())
     return with_lens.status();
   status = write_file(staging / "hm_project.pto", *with_lens);
@@ -2695,8 +2719,13 @@ absl::Status HuginProject::Configure(
     auto autooptimiser = executable("HM_AUTOOPTIMISER", "autooptimiser");
     if (!autooptimiser.ok())
       return autooptimiser.status();
-    status =
-        run_autooptimiser(*autooptimiser, staging, options.horizontal_fov, options.input_lens, options.is_cancelled);
+    status = run_autooptimiser(
+        *autooptimiser,
+        staging,
+        options.horizontal_fov,
+        options.input_lens,
+        options.ordered_input_cameras,
+        options.is_cancelled);
     if (!status.ok())
       return status;
     if (options.alignment_complete)
@@ -3133,7 +3162,9 @@ absl::Status render_staged_project(
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
   provenance.imbue(std::locale::classic());
   provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
-             << (options.manual_control_point_fingerprint.empty() ? "version=14\n" : "version=15\n")
+             << (options.input_cameras.empty()
+                     ? (options.manual_control_point_fingerprint.empty() ? "version=14\n" : "version=15\n")
+                     : (options.manual_control_point_fingerprint.empty() ? "version=16\n" : "version=17\n"))
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -3184,6 +3215,8 @@ absl::Status render_staged_project(
   provenance << "input-lens=" << SerializeStitchInputLens(options.input_lens) << '\n';
   if (!options.manual_control_point_fingerprint.empty())
     provenance << "manual-control-points=" << options.manual_control_point_fingerprint << '\n';
+  if (!options.input_cameras.empty())
+    provenance << "input-cameras=" << SerializeStitchInputCameras(options.input_cameras) << '\n';
   provenance << "control-point-filtering=" << (options.control_point_filtering.epipolar_ransac ? 1 : 0) << ','
              << (options.control_point_filtering.homography_consistency ? 1 : 0) << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
@@ -3270,6 +3303,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
   options.horizontal_fov = provenance->camera->horizontal_fov;
   options.vertical_fov = provenance->camera->vertical_fov;
   options.input_lens = provenance->camera->input_lens;
+  options.input_cameras = provenance->camera->input_cameras;
   options.control_point_matcher = *provenance->control_point_matcher;
   options.control_point_resolution = *provenance->control_point_resolution;
   options.control_point_filtering =

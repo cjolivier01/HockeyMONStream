@@ -8067,6 +8067,22 @@ absl::Status Configurator::resolve_effective_stitching_camera(bool force_video_d
     if (lens_rank > auto_lens_rank && (lens_rank > camera_rank || lens_rank >= 3))
       camera.auto_lens = false;
   }
+  const int input_cameras_rank = rank("stitching.input_cameras");
+  if (camera_rank > input_cameras_rank)
+    camera.input_cameras.clear();
+  for (auto& [source, values] : camera.input_cameras) {
+    if (rank("stitching.camera_fov.horizontal_fov") > input_cameras_rank)
+      values.horizontal_fov = camera.horizontal_fov;
+    if (rank("stitching.camera_fov.vertical_fov") > input_cameras_rank)
+      values.vertical_fov = camera.vertical_fov;
+    YAML::Node lens;
+    for (const char* key : {"projection", "optimization", "distortion", "center_offset"}) {
+      const auto path = std::string("stitching.input_lens.") + key;
+      if (rank(path.c_str()) > input_cameras_rank)
+        lens[key] = YAML::Clone(config_["stitching"]["input_lens"][key]);
+    }
+    HM_ASSIGN_OR_RETURN(values.input_lens, stitching::ReadStitchInputLens(lens, values.input_lens));
+  }
   // Re-selecting an automatic source explicitly releases an older snapshot.
   const int auto_rank = std::max(
       {camera_rank, camera.automatic_fov() ? auto_fov_rank : -1, camera.automatic_lens() ? auto_lens_rank : -1});
@@ -8548,7 +8564,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   YAML::Node private_camera_config = YAML::Clone(lower_layer_config_);
   const YAML::Node private_stitching = private_config_["stitching"];
   if (private_stitching && private_stitching.IsMap()) {
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation"}) {
+    for (const char* key :
+         {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"}) {
       const YAML::Node value = private_stitching[key];
       if (value && value.IsDefined())
         private_camera_config["stitching"][key] = YAML::Clone(value);
@@ -9363,6 +9380,7 @@ absl::Status Configurator::complete_configuration(
               "auto_input_lens_frozen",
               "camera_automation",
               "input_lens",
+              "input_cameras",
               "camera_fov"})
           latest["stitching"][key] = YAML::Clone(desired["stitching"][key]);
         // Record resolved framing even when the request inherited a rink angle.

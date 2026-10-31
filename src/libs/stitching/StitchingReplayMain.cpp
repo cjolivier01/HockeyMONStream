@@ -17,7 +17,7 @@ namespace stitching = hm::stitching;
 void merge(YAML::Node destination, const YAML::Node& overlay) {
   for (const auto& entry : overlay) {
     const auto key = entry.first.as<std::string>();
-    if (entry.second.IsMap() && destination[key].IsMap())
+    if (key != "input_cameras" && entry.second.IsMap() && destination[key].IsMap())
       merge(destination[key], entry.second);
     else
       destination[key] = YAML::Clone(entry.second);
@@ -86,11 +86,22 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   options.projection = checked(stitching::ParseStitchProjection(config["stitching"]["projection"].as<std::string>()));
   options.projection_parameters = checked(stitching::read_stitch_projection_parameters(config, *options.projection));
   options.projection_framing = checked(stitching::read_stitch_projection_framing(config));
-  const auto camera = checked(stitching::read_stitch_camera_selection(config));
+  auto camera = checked(stitching::read_stitch_camera_selection(config));
   options.camera_configuration = camera.configuration;
   options.horizontal_fov = camera.horizontal_fov;
   options.vertical_fov = camera.vertical_fov;
   options.input_lens = camera.input_lens;
+  if (!camera.input_cameras.empty()) {
+    options.ordered_input_cameras = checked(stitching::resolve_stitch_input_camera_order(source, config, camera));
+    camera.input_cameras.clear();
+    size_t index = 0;
+    for (const char* side : {"left", "right"})
+      camera.input_cameras[stitching::stitch_input_camera_key(
+          destination, config["game"]["videos"][side][0].as<std::string>())] =
+          (*options.ordered_input_cameras)[index++];
+    stitching::write_stitch_camera_selection(config, camera);
+  }
+  options.input_cameras = camera.input_cameras;
   options.max_output_width = config["stitching"]["max_output_width"].as<size_t>(3840);
   config["stitching"]["max_output_width"] = *options.max_output_width;
 

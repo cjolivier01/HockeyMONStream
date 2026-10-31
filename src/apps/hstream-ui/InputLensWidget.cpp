@@ -39,9 +39,16 @@ void SetInputOpticsMetadataHighlight(QWidget* widget, bool from_mp4) {
   widget->setAutoFillBackground(true);
 }
 
+void SetSharedCameraFovVisible(QDoubleSpinBox* spin, bool visible) {
+  spin->setVisible(visible);
+  if (auto* form = qobject_cast<QFormLayout*>(spin->parentWidget()->layout()))
+    if (auto* label = form->labelForField(spin))
+      label->setVisible(visible);
+}
+
 InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens correction", parent) {
   setObjectName("stitchInputLensControls");
-  setToolTip("Shared source-camera optics. Non-default correction requires the NONA mapping backend.");
+  setToolTip("Source-camera optics. Independent values and non-default correction requires the NONA mapping backend.");
   auto* layout = new QFormLayout(this);
   mismatch_group_ = new QGroupBox("Different camera optics", this);
   mismatch_group_->setObjectName("inputLensMismatchGroup");
@@ -193,6 +200,13 @@ bool InputLensWidget::automatic() const {
 
 void InputLensWidget::setSharedChoices(const hm::stitching::AutoInputLensResult& result) {
   choices_ = result.shared_choices;
+  input_cameras_ = result.camera.input_cameras;
+  values_group_->setVisible(input_cameras_.empty());
+  optimization_->setVisible(input_cameras_.empty());
+  if (auto* form = qobject_cast<QFormLayout*>(layout()))
+    if (auto* label = form->labelForField(optimization_))
+      label->setVisible(input_cameras_.empty());
+  mismatch_group_->setTitle(input_cameras_.empty() ? "Different camera optics" : "Independent camera optics");
   mismatch_status_->setText(QString::fromStdString(result.shared_choices_message));
   mismatch_group_->setVisible(!result.shared_choices_message.empty());
   const bool unassigned = choices_.count("camera1") || choices_.count("camera2");

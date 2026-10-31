@@ -44,20 +44,38 @@ resolver converts it to that correction's normalization, checking radial
 invertibility through the image corners. A failed conversion explains its
 fallback rather than applying incompatible numbers.
 
-Both cameras and every selected chapter must agree on recording mode and
-available geometry. A mismatch warns and leaves the automatic components on
-baseline defaults; manual components are retained. **Different camera optics**
-shows each camera's zoom, recorded coverage and converted lens values. Before
-Left/Right orientation is known, choices use Camera 1/2 and identify each first
-chapter by filename. **Use Left for both**, **Use Right for both**, and **Average
-for both (approximation)** copy a complete prescription into manual FOV/lens controls.
-They do not save or change an active run. Save Preset/Play uses the normal
-calibration invalidation path; experiments retain the exact selected numbers.
-A camera with missing metadata or inconsistent chapters cannot supply a choice.
-Averaging requires complete metadata from both cameras, matching image dimensions
-and projection, and an invertible averaged radial model. It averages calibration
-FOV, distortion and normalized center offsets; it is a shared approximation, not
-an independently calibrated model for either camera.
+Each camera's selected chapters must agree on recording mode and geometry.
+When both cameras have complete supported metadata but differ, Auto retains
+**independent camera optics**: separate FOV, projection, radial distortion and
+optical-center offsets. The summary shows each source's prescription; shared
+numeric controls are hidden while independent values are active.
+
+**Use Left for both**, **Use Right for both**, and **Average for both
+(approximation)** remain available to deliberately replace the independent pair
+with one manual prescription. Before orientation is known, Camera 1/2 choices
+identify their first chapters by filename. These actions change controls; Save
+Preset or Play applies normal calibration invalidation. A camera with missing
+metadata or inconsistent chapters cannot supply an automatic prescription or
+shared choice. Averaging requires complete metadata, matching dimensions and
+projection, and an invertible averaged radial model.
+
+`stitching.input_cameras` stores two complete prescriptions keyed by each
+camera's first selected chapter path, relative to the game when possible. The
+empty baseline map retains shared `camera_fov`/`input_lens` behavior. The pair
+replaces an inherited pair atomically; selecting a shared choice clears it.
+The solve binds prescriptions to resolved Left/Right playlists, so discovery
+order cannot swap their optics. A snapshot for different recordings fails
+visibly and requires refreshing Auto. Manual components remain independent
+when the other automatic component refreshes or falls back.
+
+The NONA path writes independent PTO `f/v/a/b/c/d/e` values and explicit
+optimizer variables for each camera. Fixed preserves its intrinsics; Refine
+fits FOV, b and center; Auto can fit all lens terms. Existing Hugin tools support
+this without a fork. Other mapping backends and rectified AKAZE profiles reject
+independent prescriptions. Provenance versions 16/17 retain both source-bound
+prescriptions through generation checks, experiments and reframing; versions
+2–15 remain readable. This supports differing cameras, not optics that change
+between chapters of one camera.
 
 Missing files never allow
 one camera's prescription to be copied onto an unknown second camera. Live

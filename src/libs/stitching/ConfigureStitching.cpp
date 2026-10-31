@@ -2028,7 +2028,8 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     const bool projection_present = projection_node && !projection_node.IsNull();
     const bool camera_present = camera_node && !camera_node.IsNull();
     const bool camera_fov_present = (camera_fov_node && !camera_fov_node.IsNull()) ||
-        (stitching["input_lens"] && !stitching["input_lens"].IsNull());
+        (stitching["input_lens"] && !stitching["input_lens"].IsNull()) ||
+        (stitching["input_cameras"] && !stitching["input_cameras"].IsNull());
     const bool resolution_present =
         stitching["control_point_resolution"] && !stitching["control_point_resolution"].IsNull();
     const bool selection_present =
@@ -2063,7 +2064,7 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(**loaded));
     StitchCameraSelection camera;
     YAML::Node effective_camera_config = YAML::Clone(baseline->values);
-    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens"}) {
+    for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "input_cameras"}) {
       const YAML::Node value = stitching[key];
       if (value && value.IsDefined())
         effective_camera_config["stitching"][key] = YAML::Clone(value);
@@ -2875,7 +2876,8 @@ absl::StatusOr<StitchingBackendChoices> read_stitching_backend_choices(const YAM
   HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(config));
   StitchCameraSelection camera;
   HM_ASSIGN_OR_RETURN(camera, read_stitch_camera_selection(config));
-  if (camera.input_lens != StitchInputLens{} && mapping_backend != MappingBackend::kNona)
+  if ((!camera.input_cameras.empty() || camera.input_lens != StitchInputLens{}) &&
+      mapping_backend != MappingBackend::kNona)
     return absl::InvalidArgumentError("Input lens correction requires the NONA mapping backend");
   HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(mapping_backend, projection));
   if (mapping_backend == MappingBackend::kNona)
@@ -3167,6 +3169,7 @@ absl::Status create_control_points(
   size_t max_control_points = 0;
   const auto max_canvas_dimension = live_stitch_max_canvas_dimension();
   StitchingBackendChoices backend_choices;
+  std::optional<std::array<StitchCameraOptics, 2>> ordered_input_cameras;
   std::optional<PlayerFrameSelectionPlan> selected_plan;
   const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
   try {
@@ -3192,6 +3195,12 @@ absl::Status create_control_points(
       if (private_stitching && !private_stitching.IsNull() && !private_stitching.IsMap())
         return absl::InvalidArgumentError("stitching must be a map");
       HM_ASSIGN_OR_RETURN(backend_choices, read_stitching_backend_choices(effective_config));
+      if (!backend_choices.camera.input_cameras.empty()) {
+        std::array<StitchCameraOptics, 2> ordered;
+        HM_ASSIGN_OR_RETURN(
+            ordered, resolve_stitch_input_camera_order(game_dir, effective_config, backend_choices.camera));
+        ordered_input_cameras = std::move(ordered);
+      }
       if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
         PlayerFrameSelectionPlan plan;
         HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]));
@@ -3570,6 +3579,8 @@ absl::Status create_control_points(
   options.horizontal_fov = backend_choices.camera.horizontal_fov;
   options.vertical_fov = backend_choices.camera.vertical_fov;
   options.input_lens = backend_choices.camera.input_lens;
+  options.input_cameras = backend_choices.camera.input_cameras;
+  options.ordered_input_cameras = ordered_input_cameras;
   options.max_canvas_dimension = max_canvas_dimension;
   if (max_output_width > 0)
     options.max_output_width = max_output_width;

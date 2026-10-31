@@ -43,6 +43,10 @@ struct StitchCameraSelection {
   // not include policy: changing provenance alone does not rebuild maps.
   std::optional<bool> auto_fov;
   std::optional<bool> auto_lens;
+  // Keyed by the first selected chapter's workspace-relative path (or an
+  // explicitly selected absolute path). This binds optics before Left/Right
+  // orientation is known without confusing discovery order with camera roles.
+  StitchInputCameras input_cameras;
   bool automatic_fov() const {
     return auto_fov.value_or(configuration == "auto");
   }
@@ -55,7 +59,7 @@ struct StitchCameraSelection {
 
   bool operator==(const StitchCameraSelection& other) const {
     return configuration == other.configuration && horizontal_fov == other.horizontal_fov &&
-        vertical_fov == other.vertical_fov && input_lens == other.input_lens;
+        vertical_fov == other.vertical_fov && input_lens == other.input_lens && input_cameras == other.input_cameras;
   }
   bool operator!=(const StitchCameraSelection& other) const {
     return !(*this == other);
@@ -190,6 +194,15 @@ absl::Status validate_player_frame_selection_sources(const YAML::Node& config);
 absl::StatusOr<std::vector<StitchCameraConfiguration>> read_stitch_camera_configurations(const YAML::Node& config);
 absl::StatusOr<StitchCameraSelection> read_stitch_camera_selection(const YAML::Node& config);
 void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelection& selection);
+// Keep explicit components while retaining a frozen automatic snapshot.
+StitchCameraSelection merge_stitch_camera_snapshot(
+    StitchCameraSelection snapshot,
+    const StitchCameraSelection& current);
+std::string stitch_input_camera_key(const std::filesystem::path& game, const std::filesystem::path& source);
+absl::StatusOr<std::array<StitchCameraOptics, 2>> resolve_stitch_input_camera_order(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    const StitchCameraSelection& camera);
 
 // Projection parameters are stored under
 // stitching.projection_parameters.<canonical-projection-name>. Missing entries

@@ -22361,7 +22361,11 @@ int main(int argc, char** argv) {
     for (auto* label : window.findChildren<QLabel*>())
       if (label->objectName().contains("Metadata") || label->objectName().contains("Mismatch"))
         std::cout << label->objectName().toStdString() << ": " << label->text().toStdString() << '\n';
-    bool choices = group && group->isVisible();
+    const auto imported = HStreamWindowTestAccess::currentCameraSelection(&window);
+    bool choices = group && group->isVisible() && imported.input_cameras.size() == 2 &&
+        imported.input_cameras.begin()->second.horizontal_fov !=
+            imported.input_cameras.rbegin()->second.horizontal_fov &&
+        window.findChild<QDoubleSpinBox*>("cameraHorizontalFovSpin")->isHidden();
     const bool unassigned = !window.findChild<QPushButton*>("inputLensUse_camera1")->isHidden();
     const std::array<const char*, 3> keys = unassigned ? std::array<const char*, 3>{"camera1", "camera2", "average"}
                                                        : std::array<const char*, 3>{"left", "right", "average"};
@@ -22375,8 +22379,9 @@ int main(int argc, char** argv) {
       HStreamWindowTestAccess::reloadSavedControls(&window);
       window.findChild<QPushButton*>(QString("inputLensUse_%1").arg(key))->click();
       const auto selected = HStreamWindowTestAccess::currentCameraSelection(&window);
-      choices &= selected.configuration == "manual" && !selected.automatic_fov() && !selected.automatic_lens() &&
-          selected.input_lens.projection == "full-frame-fisheye" && selected.input_lens.distortion[1] != 0;
+      choices &= selected.input_cameras.empty() && selected.configuration == "manual" && !selected.automatic_fov() &&
+          !selected.automatic_lens() && selected.input_lens.projection == "full-frame-fisheye" &&
+          selected.input_lens.distortion[1] != 0;
       std::cout << key << " selected FOV=" << selected.horizontal_fov << " b=" << selected.input_lens.distortion[1]
                 << '\n';
     }

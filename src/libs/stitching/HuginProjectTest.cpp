@@ -366,9 +366,13 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
              (*parsed)->control_point_resolution == hm::stitching::ControlPointResolution::k1K) &&
             (*parsed)->calibration_frame_selection_fingerprint == (selected ? fingerprint : std::string()) &&
             (*parsed)->manual_control_point_fingerprint ==
-                ((fields[0] == "version=11" || fields[0] == "version=13" || fields[0] == "version=15")
-                     ? fields[fields[0] == "version=15" ? fields.size() - 2 : fields.size() - 1].substr(
-                           std::string("manual-control-points=").size())
+                ((fields[0] == "version=11" || fields[0] == "version=13" || fields[0] == "version=15" ||
+                  fields[0] == "version=17")
+                     ? fields
+                           [fields[0] == "version=17"       ? 32
+                                : fields[0] == "version=15" ? fields.size() - 2
+                                                            : fields.size() - 1]
+                               .substr(std::string("manual-control-points=").size())
                      : std::string()) &&
             (!selected || (*parsed)->calibration_frame_diagnostics == diagnostics),
         "both readers must accept supported provenance and preserve the exact plan identity/diagnostics");
@@ -391,6 +395,23 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
       ok &= check(filtering_fields, true, true);
     }
   }
+  hm::stitching::StitchInputCameras cameras{
+      {"cam1/GX010103.MP4", {125.12273264892974, 70.3657608, {}}},
+      {"cam2/GX010104.MP4", {97.07757133353692, 54.5934677, {}}}};
+  cameras.begin()->second.input_lens.distortion[1] = 0.040574376563952526;
+  auto separate = lines;
+  separate[0] = "version=16";
+  separate.insert(separate.end() - 1, "input-cameras=" + hm::stitching::SerializeStitchInputCameras(cameras));
+  ok &= check(separate, true, true);
+  const auto independent = hm::stitching::HuginProject::ReadCanvasProvenanceLocked(directory);
+  ok &= expect(
+      independent.ok() && independent->has_value() && (*independent)->camera->input_cameras == cameras,
+      "Independent provenance must retain both source identities and exact prescriptions");
+  separate[0] = "version=17";
+  separate.insert(separate.begin() + 32, "manual-control-points=" + std::string(64, 'b'));
+  ok &= check(separate, true, true);
+  separate[separate.size() - 2] = "input-cameras={}";
+  ok &= check(separate, false, true);
   // Continue exercising all older provenance formats.
   lines.resize(31);
   lines[0] = "version=10";
@@ -667,6 +688,11 @@ bool test_reframe_publication(const std::filesystem::path& root) {
       return false;
     provenance.replace(start, provenance.find('\n', start) - start, key + (index == 0 ? "10" : "0"));
   }
+  hm::stitching::StitchInputCameras source_optics{{"left.mp4", {125.12, 70.36, {}}}, {"right.mp4", {97.07, 54.59, {}}}};
+  provenance.replace(0, std::string("version=14").size(), "version=16");
+  provenance.insert(
+      provenance.find("control-point-filtering="),
+      "input-cameras=" + SerializeStitchInputCameras(source_optics) + "\n");
   std::ofstream(game / "stitching_canvas_provenance") << provenance;
   const std::string pending_config =
       "hstream_ui:\n  stitching_calibration:\n    invalidation_id: reframe-fixture\n    status: pending\n"
@@ -803,6 +829,11 @@ bool test_reframe_publication(const std::filesystem::path& root) {
   ok &= expect(
       !interrupted.ok() && recovered.ok() && config_saw_final_geometry,
       "reframe recovery commits the complete view after interrupted config-aware publication");
+  const auto reframed_provenance = HuginProject::ReadCanvasProvenanceLocked(game);
+  ok &= expect(
+      reframed_provenance.ok() && reframed_provenance->has_value() &&
+          (*reframed_provenance)->camera->input_cameras == source_optics,
+      "Reframing must preserve both independent prescriptions and source identities");
   const std::string reframed = read_text_file(game / "autooptimiser_out.pto");
   const auto left = HuginProject::ParseCameraPose(reframed, 0);
   const auto right = HuginProject::ParseCameraPose(reframed, 1);
@@ -2891,7 +2922,7 @@ int main(int argc, char** argv) {
   const fs::path oversized_manifest_transaction = oversized_manifest_root / ".hstream-stitch-oversized";
   fs::create_directories(oversized_manifest_transaction / "previous");
   std::ofstream(oversized_manifest_root / "sentinel") << "preserved\n";
-  std::ofstream(oversized_manifest_transaction / "artifacts") << std::string(5000, 'x');
+  std::ofstream(oversized_manifest_transaction / "artifacts") << std::string(65537, 'x');
   std::ofstream(oversized_manifest_transaction / "journal_version") << "2\n";
   std::ofstream(oversized_manifest_transaction / "state") << "PREPARED\n";
   const auto oversized_manifest_recovery = hm::stitching::HuginProject::Recover(oversized_manifest_root);
@@ -2905,7 +2936,7 @@ int main(int argc, char** argv) {
   const fs::path oversized_prior_transaction = oversized_prior_root / ".hstream-stitch-oversized-prior";
   fs::create_directories(oversized_prior_root);
   write_legacy_transaction_fixture(oversized_prior_root, oversized_prior_transaction);
-  std::ofstream(oversized_prior_transaction / "previous_artifacts") << std::string(5000, 'x');
+  std::ofstream(oversized_prior_transaction / "previous_artifacts") << std::string(65537, 'x');
   std::ofstream(oversized_prior_transaction / "journal_version") << "2\n";
   std::ofstream(oversized_prior_transaction / "state") << "PREPARED\n";
   const auto oversized_prior_recovery = hm::stitching::HuginProject::Recover(oversized_prior_root);
@@ -2918,7 +2949,7 @@ int main(int argc, char** argv) {
   const fs::path provenance_path = root / "game" / "stitching_canvas_provenance";
   const std::string valid_provenance = read_text_file(provenance_path);
   const auto valid_provenance_time = fs::last_write_time(provenance_path);
-  std::ofstream(provenance_path, std::ios::binary | std::ios::trunc) << std::string(5000, 'x');
+  std::ofstream(provenance_path, std::ios::binary | std::ios::trunc) << std::string(65537, 'x');
   fs::last_write_time(provenance_path, valid_provenance_time);
   auto oversized_provenance_lock = hm::stitching::HuginProject::RecoverAndLock(root / "game");
   ok &= expect(oversized_provenance_lock.ok(), "oversized canvas provenance fixture must lock");

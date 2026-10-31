@@ -71,6 +71,7 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     const std::vector<std::filesystem::path>& right,
     const StitchCameraSelection& fallback,
     const std::vector<StitchCameraConfiguration>& profiles = {},
-    bool roles_known = true);
+    bool roles_known = true,
+    const std::filesystem::path& game = {});
 
 } // namespace hm::stitching

@@ -1005,14 +1005,21 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     const std::vector<std::filesystem::path>& right,
     const StitchCameraSelection& fallback,
     const std::vector<StitchCameraConfiguration>& profiles,
-    bool roles_known) {
+    bool roles_known,
+    const std::filesystem::path& game) {
   auto videos = left;
   videos.insert(videos.end(), right.begin(), right.end());
-  auto result = ResolveAutoInputLens(videos, fallback, profiles);
-  if (!result.mismatch || left.empty() || right.empty() || videos.size() > 256)
+  if (!fallback.automatic_fov() && !fallback.automatic_lens())
+    return ResolveAutoInputLens(videos, fallback, profiles);
+  auto shared_fallback = fallback;
+  shared_fallback.input_cameras.clear();
+  auto result = ResolveAutoInputLens(videos, shared_fallback, profiles);
+  const bool retained_manual =
+      !fallback.input_cameras.empty() && (!fallback.automatic_fov() || !fallback.automatic_lens());
+  if ((!result.mismatch && !retained_manual) || left.empty() || right.empty() || videos.size() > 256)
     return result;
 
-  auto automatic = fallback;
+  auto automatic = shared_fallback;
   automatic.auto_fov = automatic.auto_lens = true;
   const auto l = ResolveAutoInputLens(left, automatic, profiles);
   const auto r = ResolveAutoInputLens(right, automatic, profiles);
@@ -1040,6 +1047,7 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
   };
   auto manual = [](StitchCameraSelection camera) {
     camera.configuration = "manual";
+    camera.input_cameras.clear();
     camera.auto_fov = camera.auto_lens = false;
     return camera;
   };
@@ -1065,6 +1073,59 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
       result.shared_choices["average"] = average;
     } catch (const std::exception&) {
       result.shared_choices_message += "\nAverage unavailable: the combined lens model is not invertible.";
+    }
+  }
+  const bool keep_manual = retained_manual &&
+      fallback.input_cameras.count(
+          game.empty() ? left.front().generic_string() : stitch_input_camera_key(game, left.front())) &&
+      fallback.input_cameras.count(
+          game.empty() ? right.front().generic_string() : stitch_input_camera_key(game, right.front()));
+  if ((complete(l) && complete(r)) || keep_manual) {
+    const std::array<std::pair<std::filesystem::path, StitchCameraSelection>, 2> sources{
+        std::make_pair(left.front(), l.camera), std::make_pair(right.front(), r.camera)};
+    for (const auto& [path, detected] : sources) {
+      const auto key = game.empty() ? path.generic_string() : stitch_input_camera_key(game, path);
+      StitchCameraOptics value{detected.horizontal_fov, detected.vertical_fov, detected.input_lens};
+      const auto retained = fallback.input_cameras.find(key);
+      const StitchCameraOptics manual_values = retained == fallback.input_cameras.end()
+          ? StitchCameraOptics{fallback.horizontal_fov, fallback.vertical_fov, fallback.input_lens}
+          : retained->second;
+      if (!fallback.automatic_fov()) {
+        value.horizontal_fov = manual_values.horizontal_fov;
+        value.vertical_fov = manual_values.vertical_fov;
+      }
+      if (!fallback.automatic_lens())
+        value.input_lens = manual_values.input_lens;
+      result.camera.input_cameras.emplace(key, value);
+    }
+    if (result.camera.input_cameras.size() == 2) {
+      const bool complete_pair = complete(l) && complete(r);
+      result.detected = complete_pair;
+      result.horizontal_fov_from_mp4 =
+          fallback.automatic_fov() && l.horizontal_fov_from_mp4 && r.horizontal_fov_from_mp4;
+      result.vertical_fov_from_mp4 = fallback.automatic_fov() && l.vertical_fov_from_mp4 && r.vertical_fov_from_mp4;
+      result.lens_from_mp4 = fallback.automatic_lens() && l.lens_from_mp4 && r.lens_from_mp4;
+      result.recording_metadata_found = true;
+      result.recording_message = "The cameras have different optics; each camera keeps its own values.";
+      result.fov_message =
+          fallback.automatic_fov() ? "MP4: independent FOV for each camera" : "Retained independent camera FOV";
+      result.lens_message = fallback.automatic_lens() ? "MP4: independent lens correction for each camera"
+                                                      : "Retained independent lens correction";
+      result.message = "Using independent input-camera optics.";
+      if (!complete_pair) {
+        result.recording_message =
+            "Incomplete recording metadata. Retaining each camera's manual values and using profile fallbacks for unavailable automatic values.";
+        result.fov_message = fallback.automatic_fov() ? "Automatic FOV: " + l.fov_message + "; " + r.fov_message
+                                                      : "Retained independent camera FOV";
+        result.lens_message = fallback.automatic_lens() ? "Automatic lens: " + l.lens_message + "; " + r.lens_message
+                                                        : "Retained independent lens correction";
+      }
+      const auto choice_note = result.shared_choices_message.find("Choose a shared approximation");
+      if (choice_note != std::string::npos)
+        result.shared_choices_message.replace(
+            choice_note,
+            std::string::npos,
+            "Each camera will use its own optics. The buttons above instead copy a shared approximation into manual settings for both cameras.");
     }
   }
   result.message += "\n" + result.shared_choices_message;

@@ -57,7 +57,7 @@ YAML::Node at(const YAML::Node& root, std::initializer_list<const char*> path) {
 void merge(YAML::Node target, const YAML::Node& source) {
   for (const auto& entry : source) {
     const auto key = entry.first.as<std::string>();
-    if (entry.second.IsMap() && target[key].IsMap())
+    if (key != "input_cameras" && entry.second.IsMap() && target[key].IsMap())
       merge(target[key], entry.second);
     else
       target[key] = YAML::Clone(entry.second);
@@ -79,6 +79,7 @@ const std::set<QString>& control_roots() {
       "stitching.camera_fov",
       "stitching.camera_automation",
       "stitching.input_lens",
+      "stitching.input_cameras",
       "stitching.auto_input_lens_frozen",
       "stitching.run_autooptimizer",
       "stitching.projection",
@@ -117,6 +118,11 @@ void validate_controls(const QJsonObject& object, const QString& prefix = {}, si
       parent = parent || root.startsWith(path + ".");
     }
     require(selected || parent, "Unsupported calibration control: " + path.toStdString());
+    if (path == "stitching.input_cameras") {
+      require(item->isObject(), "Input cameras must be an object");
+      take(st::ReadStitchInputCameras(YAML::Load(QJsonDocument(item->toObject()).toJson().toStdString())));
+      continue;
+    }
     if (path == "rink.camera.fixed_edge_rotation_angle") {
       require(
           item->isNull() || item->isDouble() ||
@@ -158,7 +164,7 @@ void apply_changes(YAML::Node target, const QJsonObject& before, const QJsonObje
     if (previous == next)
       continue;
     const auto key = name.toStdString();
-    if (next.isObject() || (next.isUndefined() && previous.isObject())) {
+    if (key != "input_cameras" && (next.isObject() || (next.isUndefined() && previous.isObject()))) {
       if (!target[key].IsMap())
         target[key] = YAML::Node(YAML::NodeType::Map);
       apply_changes(target[key], previous.toObject(), next.toObject());
@@ -622,7 +628,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
         desired_stitching.value("auto_input_lens_frozen").isBool() &&
         !desired_stitching.value("auto_input_lens_frozen").toBool();
     refresh_optics = refresh_optics || explicitly_released;
-    for (const char* key : {"camera_config", "camera_fov", "camera_automation", "input_lens"})
+    for (const char* key : {"camera_config", "camera_fov", "camera_automation", "input_lens", "input_cameras"})
       refresh_optics = refresh_optics || previous_stitching.value(key) != desired_stitching.value(key);
     if (refresh_optics) {
       auto camera = take(st::read_stitch_camera_selection(effective));
@@ -635,12 +641,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
           before.controls.camera.automatic_lens() != camera.automatic_lens())
         effective["stitching"]["auto_input_lens_frozen"] = false;
       else if (at(effective, {"stitching", "auto_input_lens_frozen"}).as<bool>(false)) {
-        if (camera.automatic_fov()) {
-          camera.horizontal_fov = before.controls.camera.horizontal_fov;
-          camera.vertical_fov = before.controls.camera.vertical_fov;
-        }
-        if (camera.automatic_lens())
-          camera.input_lens = before.controls.camera.input_lens;
+        camera = st::merge_stitch_camera_snapshot(before.controls.camera, camera);
         st::write_stitch_camera_selection(effective, camera);
       }
       auto optics_config = YAML::Clone(effective);

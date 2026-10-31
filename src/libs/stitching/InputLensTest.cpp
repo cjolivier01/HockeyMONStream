@@ -83,5 +83,59 @@ int main() {
       config["stitching"]["input_lens"].IsMap() &&
           read_stitch_camera_selection(config)->input_lens == StitchInputLens{},
       "saving default optics must explicitly override inherited correction");
+  std::array<StitchCameraOptics, 2> separate{
+      {{125.12273264892974, 70.3657608, lens}, {97.077571333536923, 54.5934677, lens}}};
+  separate[0].input_lens.optimization = "fixed";
+  separate[1].input_lens.optimization = "refine";
+  separate[1].input_lens.distortion[1] = 0.021905029420311552;
+  separate[1].input_lens.center_offset = {0.02, -0.03};
+  const auto independent = ApplyStitchInputCameras(pto, separate);
+  ok &= expect(
+      independent.ok() && independent->find("v=0") == std::string::npos &&
+          independent->find("b=0") == std::string::npos &&
+          independent->find("v97.077571333536923") != std::string::npos &&
+          independent->find("v125.12273264892974") != std::string::npos &&
+          independent->find("v r0 p0 r1 p1 y1 v1 b1 d1 e1") != std::string::npos,
+      "Separate camera optics must unlink FOV and radial terms while honoring each optimization policy");
+  camera.input_cameras = {{"GX010103.MP4", separate[0]}, {"GX010104.MP4", separate[1]}};
+  write_stitch_camera_selection(config, camera);
+  loaded = read_stitch_camera_selection(config);
+  ok &= expect(loaded.ok() && *loaded == camera, "Both source-bound prescriptions must round-trip exactly");
+  auto same_shared = camera;
+  same_shared.input_cameras.at("GX010104.MP4").horizontal_fov += 1;
+  ok &= expect(same_shared != camera, "Changing only the second camera must invalidate calibration ownership");
+  config["game"]["videos"]["left"].push_back("GX010104.MP4");
+  config["game"]["videos"]["right"].push_back("GX010103.MP4");
+  const auto ordered = resolve_stitch_input_camera_order("/game", config, camera);
+  ok &= expect(
+      ordered.ok() && (*ordered)[0] == separate[1] && (*ordered)[1] == separate[0],
+      "Camera optics must follow discovered orientation, not enumeration order");
+  config["game"]["videos"]["left"][0] = "replacement.MP4";
+  ok &= expect(
+      !resolve_stitch_input_camera_order("/game", config, camera).ok(),
+      "A saved camera snapshot must reject different source recordings");
+  const auto encoded = SerializeStitchInputCameras(camera.input_cameras);
+  const auto decoded = ParseStitchInputCameras(encoded);
+  ok &= expect(decoded.ok() && *decoded == camera.input_cameras, "Provenance serialization must retain both optics");
+  auto invalid_cameras = WriteStitchInputCameras(camera.input_cameras);
+  invalid_cameras["GX010103.MP4"]["input_lens"]["projection"] = YAML::Node();
+  ok &= expect(!ReadStitchInputCameras(invalid_cameras).ok(), "Independent prescriptions cannot omit a lens component");
+  auto snapshot = camera;
+  auto current = camera;
+  current.auto_fov = true;
+  current.auto_lens = false;
+  current.input_cameras.at("GX010104.MP4").input_lens.center_offset[0] = 0.04;
+  const auto merged = merge_stitch_camera_snapshot(snapshot, current);
+  ok &= expect(
+      merged.input_cameras.at("GX010104.MP4").input_lens.center_offset[0] == 0.04 &&
+          merged.input_cameras.at("GX010103.MP4") == snapshot.input_cameras.at("GX010103.MP4"),
+      "Frozen automatic FOV must retain each source's manual lens correction");
+  snapshot.input_cameras.clear();
+  const auto from_shared = merge_stitch_camera_snapshot(snapshot, current);
+  ok &= expect(
+      from_shared.input_cameras.size() == 2 &&
+          from_shared.input_cameras.at("GX010104.MP4").input_lens.center_offset[0] == 0.04 &&
+          from_shared.input_cameras.at("GX010104.MP4").horizontal_fov == snapshot.horizontal_fov,
+      "A shared frozen FOV must retain new independent manual lens corrections");
   return ok ? 0 : 1;
 }
