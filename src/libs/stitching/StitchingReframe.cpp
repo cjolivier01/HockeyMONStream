@@ -333,10 +333,14 @@ absl::StatusOr<std::string> file_sha256(const fs::path& path, size_t maximum_byt
 
 absl::Status validate_provenance(const HuginProject::CanvasProvenance& source, const Snapshot& original) {
   const auto& choices = original.choices;
+  // Canvas provenance records optics, not source starts. The completed backend
+  // generation and solver snapshot separately bind those starts to this solve.
+  auto camera_optics = choices.camera;
+  camera_optics.input_start_times.clear();
   if (!source.mapping_backend || *source.mapping_backend != MappingBackend::kNona || !source.projection ||
       StitchProjectionName(*source.projection) != choices.projection || !source.projection_parameters ||
       *source.projection_parameters != choices.projection_parameters || !source.projection_framing ||
-      *source.projection_framing != choices.projection_framing || !source.camera || *source.camera != choices.camera ||
+      *source.projection_framing != choices.projection_framing || !source.camera || *source.camera != camera_optics ||
       !source.control_point_matcher ||
       ControlPointMatcherName(*source.control_point_matcher) != choices.control_point_matcher ||
       !source.control_point_resolution || *source.control_point_resolution != choices.control_point_resolution ||

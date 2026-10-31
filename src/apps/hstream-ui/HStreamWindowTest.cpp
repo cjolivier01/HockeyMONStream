@@ -22307,6 +22307,38 @@ bool test_active_process_destruction() {
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
+  // Opt-in save check for an isolated copy of a completed calibration.
+  if (argc == 3 && QByteArray(argv[1]) == "--leveling-save-preflight") {
+    const QFileInfo game(QString::fromLocal8Bit(argv[2]));
+    const auto directory = fs::path(game.absoluteFilePath().toStdString());
+    const auto before = YAML::LoadFile((directory / "config.yaml").string());
+    if (!expect(
+            before["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete",
+            "Leveling save requires a completed calibration copy"))
+      return 1;
+    qputenv("HM_GAME_DIR", game.absolutePath().toLocal8Bit());
+    QApplication app(argc, argv);
+    HStreamWindow window;
+    auto* games = require_child<QComboBox>(&window, "gameSelector");
+    games->setCurrentIndex(games->findText(game.fileName()));
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    const auto revision = RinkLevelingDialog::sourceRevision(game.absoluteFilePath());
+    HStreamWindowTestAccess::setTestLevelingRotation(&window, -1.25);
+    HStreamWindowTestAccess::stageTestLeveling(&window, revision);
+    const bool saved = HStreamWindowTestAccess::savePreset(&window);
+    std::cout << window.logText().toStdString() << '\n';
+    const auto after = YAML::LoadFile((directory / "config.yaml").string());
+    const auto state = after["hstream_ui"]["stitching_calibration"];
+    return expect(
+               saved && state["reframe"].IsMap() && state["status"].as<std::string>() == "pending" &&
+                   state["stale_from"].as<std::string>() == "canvas" &&
+                   YAML::Dump(before["stitching"]["input_start_times"]) ==
+                       YAML::Dump(after["stitching"]["input_start_times"]) &&
+                   after["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -1.25,
+               "Leveling save must preserve source starts and request reuse of the completed alignment")
+        ? 0
+        : 1;
+  }
   if (argc == 2 && QByteArray(argv[1]) == "--calibration-reference-preflight") {
     QTemporaryDir games_root;
     const auto game = std::filesystem::path(games_root.path().toStdString()) / "reference";

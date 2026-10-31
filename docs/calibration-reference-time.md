@@ -43,3 +43,7 @@ fresh AMD automatic calibration retains the existing limitations in
 Level Rink accepts version 16/17 per-camera calibration metadata and checks both
 source-bound optics before opening the saved images. It no longer rejects a
 completed independent-camera calibration as an unsupported format.
+Saving a leveling or crop change compares optics with the canvas metadata;
+source start times remain bound separately by the completed backend generation
+and the reframe solver snapshot. An unchanged start override therefore permits
+reuse of the alignment, while changed starts still require a new solve.

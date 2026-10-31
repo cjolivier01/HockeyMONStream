@@ -1241,6 +1241,28 @@ int main(int argc, char** argv) {
     fs::copy_file(game / "canonical.pto", game / "hm_project.pto", fs::copy_options::overwrite_existing);
     provenance(game);
     write(game / "config.yaml", YAML::Dump(config));
+    {
+      QTemporaryDir start_temporary;
+      const fs::path start_root(start_temporary.path().toStdString()), start_game = start_root / "game";
+      fs::copy(game, start_game, fs::copy_options::recursive);
+      auto with_start = YAML::Clone(config);
+      with_start["stitching"]["input_start_times"]["right.mp4"] = 102;
+      with_start["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+      require(reserve_stitching_backend_generation_in_config(with_start, "completed-solve", choices(with_start)));
+      write(start_game / "config.yaml", YAML::Dump(with_start));
+      const auto opened_start = invoke(argv[1], start_root, "calibration-view-read", {{"kind", "leveling"}});
+      QJsonObject selected_start{
+          {"kind", "leveling"}, {"snapshot", opened_start.value("snapshot")}, {"angles", QJsonArray{0, -20, 4}}};
+      invoke(argv[1], start_root, "calibration-view-preview", selected_start);
+      selected_start.insert("preview_verified", true);
+      const auto saved_start = invoke(argv[1], start_root, "calibration-view-save", selected_start);
+      const auto stored_start = YAML::LoadFile((start_game / "config.yaml").string());
+      expect(
+          saved_start.value("alignment_reused").toBool() && saved_start.value("calibration_complete").toBool() &&
+              value(read_stitch_camera_selection(stored_start)).input_start_times.at("right.mp4") == 102 &&
+              value(read_stitch_projection_framing(stored_start)).rotation_degrees == std::array<double, 3>{0, -20, 4},
+          "Web leveling must preserve source starts and complete with the existing alignment");
+    }
     const auto opened = invoke(argv[1], root, "calibration-view-read", {{"kind", "leveling"}});
     controls_staging(argv[1], game);
     restart_controls_staging(argv[1], game);
