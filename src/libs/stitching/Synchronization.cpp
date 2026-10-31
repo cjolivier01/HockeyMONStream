@@ -51,6 +51,7 @@ struct AudioInput {
 
 absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window, double seconds, int& rate) {
   std::vector<float> output;
+  double elapsed = 0;
   for (const auto& chapter : window.chapters) {
     if (seconds <= 0)
       break;
@@ -107,7 +108,10 @@ absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window
     input.frame = av_frame_alloc();
     if (!input.packet || !input.frame)
       return absl::ResourceExhaustedError("Cannot allocate synchronization audio frame");
-    const size_t base = output.size(), count = std::llround(duration * rate);
+    // Keep chapter boundaries on one sample grid; independently rounded
+    // slice lengths can otherwise lose a sample at fractional-frame boundaries.
+    const size_t base = std::llround(elapsed * rate);
+    const size_t count = std::llround((elapsed + duration) * rate) - base;
     output.resize(base + count, 0);
     bool finished = false;
     int code = 0;
@@ -122,7 +126,8 @@ absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window
           if (decoded < 0 || input.frame->best_effort_timestamp == AV_NOPTS_VALUE)
             return absl::DataLossError("Synchronization audio is missing decoded timestamps");
           const int64_t position =
-              std::llround((input.frame->best_effort_timestamp * av_q2d(stream->time_base) - start) * rate);
+              std::llround((input.frame->best_effort_timestamp * av_q2d(stream->time_base) - start + elapsed) * rate) -
+              base;
           std::vector<float> pcm(input.frame->nb_samples);
           uint8_t* destination = reinterpret_cast<uint8_t*>(pcm.data());
           const int converted = swr_convert(
@@ -146,6 +151,7 @@ absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window
     if (code < 0 && code != AVERROR_EOF)
       return absl::DataLossError("Failed or timed out reading synchronization audio");
     seconds -= duration;
+    elapsed += duration;
   }
   return output;
 }

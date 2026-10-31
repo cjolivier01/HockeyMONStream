@@ -11,6 +11,7 @@
 
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/CrossCorrelation.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 
 namespace {
 void le(std::string& bytes, uint64_t value, size_t count) {
@@ -123,6 +124,66 @@ int main() {
   }
   if (!ok)
     return 1;
+  const auto continuous = (dir / "continuous.mp4").string();
+  ok &= expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=s=16x16:r=60000/1001",
+           "-f",
+           "lavfi",
+           "-i",
+           "anoisesrc=r=48000:seed=42",
+           "-t",
+           "16",
+           "-g",
+           "363",
+           "-c:v",
+           "mpeg4",
+           "-c:a",
+           "aac",
+           continuous},
+          "",
+          {},
+          {}) == 0,
+      "Create fractional-rate continuous fixture");
+  ok &= expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-i",
+           continuous,
+           "-map",
+           "0",
+           "-c",
+           "copy",
+           "-f",
+           "segment",
+           "-segment_frames",
+           "363,726",
+           "-reset_timestamps",
+           "1",
+           (dir / "part%02d.mp4").string()},
+          "",
+          {},
+          {}) == 0,
+      "Split identical audio at fractional PCM chapter boundaries");
+  if (!ok)
+    return 1;
+  const auto whole = CameraRecordingWindowAt({continuous}, 0, 35);
+  const auto split = CameraRecordingWindowAt(
+      {(dir / "part00.mp4").string(), (dir / "part01.mp4").string(), (dir / "part02.mp4").string()}, 0, 35);
+  if (!expect(whole.ok() && split.ok(), "Read fractional-rate chapter windows"))
+    return 1;
+  const auto segmented = synchronize_by_audio(*whole, *split);
+  ok &= expect(segmented.ok(), "Identical chapter audio must occupy one cumulative PCM grid");
+  if (!segmented.ok())
+    std::cerr << segmented.status() << '\n';
   const auto left = (dir / "left.mp4").string(), right = (dir / "right.mp4").string();
   const auto audio = calculate_stitching_synchronization(left, left);
   const auto fallback = calculate_stitching_synchronization(left, left, SynchronizationMethod::kAuto);

@@ -6991,6 +6991,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         camera_source_starts_.erase(source);
       else
         camera_source_starts_[source] = seconds;
+      camera_optics_result_.camera.input_start_times = camera_source_starts_;
       updatePresetDirtyState();
     };
     auto* optics_scroll = new QScrollArea(controls);
