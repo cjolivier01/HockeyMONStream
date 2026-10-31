@@ -3459,6 +3459,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     const auto auto_lens =
         hm::stitching::ReadAutoInputLensForGame(game_directory.toStdString(), source_config, *camera);
     camera = auto_lens.camera;
+    s.input_lens->setSharedChoices(auto_lens);
     s.input_lens->setMetadataStatus(
         QString::fromStdString(auto_lens.lens_message), camera->automatic_lens(), auto_lens.lens_from_mp4);
     s.camera_auto_fov->setChecked(camera->automatic_fov());
@@ -3584,6 +3585,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
         ? hm::stitching::
               AutoInputLensResult{s.camera_settings, "Auto unavailable: " + source_config.status().ToString()}
         : hm::stitching::ReadAutoInputLensForGame(s.game_directory.toStdString(), effective, s.camera_settings);
+    s.input_lens->setSharedChoices(resolved);
     s.camera_settings = resolved.camera;
     s.input_lens->setLens(s.camera_settings.input_lens);
     s.input_lens->setMetadataStatus(
@@ -3612,6 +3614,19 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   };
   connect(s.camera_configuration, &QComboBox::currentIndexChanged, this, [&s]() { s.refresh_camera(true); });
   connect(s.camera_auto_fov, &QCheckBox::toggled, this, [&s]() { s.refresh_camera(false); });
+  s.input_lens->sharedChoiceSelected = [&s](const hm::stitching::StitchCameraSelection& camera) {
+    const QSignalBlocker profile_block(s.camera_configuration), fov_block(s.camera_auto_fov);
+    s.camera_configuration->setCurrentIndex(s.camera_configuration->findData("manual"));
+    s.camera_settings = camera;
+    s.camera_auto_fov->setChecked(false);
+    s.camera_horizontal_fov->setValue(camera.horizontal_fov);
+    s.camera_horizontal_fov->setProperty("exactLensFov", camera.horizontal_fov);
+    s.camera_vertical_fov->setValue(camera.vertical_fov);
+    s.camera_vertical_fov->setProperty("exactLensFov", camera.vertical_fov);
+    s.input_lens->setLens(camera.input_lens);
+    s.input_lens->setMetadataStatus("Manual shared approximation", false);
+    s.refresh_camera(false);
+  };
   s.input_lens->automationChanged = [&s]() { s.refresh_camera(false); };
   s.input_lens->changed = [&s]() {
     if (s.camera_auto_fov->isChecked())

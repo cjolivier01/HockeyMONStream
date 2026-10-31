@@ -210,6 +210,18 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
+  if (argc == 4 && std::string(argv[1]) == "--camera-pair") {
+    const auto result = ResolveAutoInputLensForCameras({argv[2]}, {argv[3]}, {"auto"});
+    YAML::Node report;
+    report["message"] = result.shared_choices_message;
+    for (const auto& [key, camera] : result.shared_choices) {
+      YAML::Node config;
+      write_stitch_camera_selection(config, camera);
+      report["choices"][key] = config["stitching"];
+    }
+    std::cout << report << '\n';
+    return result.shared_choices.empty() ? 1 : 0;
+  }
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
       const auto result = ReadVideoLensMetadata(argv[i]);
@@ -265,6 +277,48 @@ int main(int argc, char** argv) {
     auto good = movie(fixture);
     write(dir / "left.mp4", good);
     write(dir / "right.mp4", good);
+    write(dir / "zoomed.mp4", movie(gopro(0.36623674631118774f, "HS EIS", false, true, false)));
+    const auto pair = ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, {"auto"});
+    expect(
+        pair.mismatch && !pair.detected && pair.shared_choices.size() == 3,
+        "Different supported camera optics need explicit choices, not an automatic import");
+    expect(
+        pair.shared_choices_message.find("Left:") != std::string::npos &&
+            pair.shared_choices_message.find("Right:") != std::string::npos &&
+            pair.shared_choices_message.find("125.122") != std::string::npos &&
+            pair.shared_choices_message.find("97.077") != std::string::npos,
+        "Mismatch explanation identifies both cameras and their differing calibration FOV");
+    const auto& left_choice = pair.shared_choices.at("left");
+    const auto& right_choice = pair.shared_choices.at("right");
+    expect(
+        left_choice.input_lens == ReadVideoLensMetadata(dir / "left.mp4")->camera.input_lens &&
+            right_choice.input_lens == ReadVideoLensMetadata(dir / "zoomed.mp4")->camera.input_lens &&
+            !left_choice.automatic_fov() && !left_choice.automatic_lens(),
+        "Explicit camera choices copy the exact prescription and disable both automatic policies");
+    const auto& average = pair.shared_choices.at("average");
+    expect(
+        average.horizontal_fov > right_choice.horizontal_fov && average.horizontal_fov < left_choice.horizontal_fov &&
+            average.input_lens.distortion[1] > right_choice.input_lens.distortion[1] &&
+            average.input_lens.distortion[1] < left_choice.input_lens.distortion[1],
+        "The shared average must be intermediate in both FOV and lens correction");
+    YAML::Node snapshot;
+    write_stitch_camera_selection(snapshot, right_choice);
+    const auto reopened = read_stitch_camera_selection(snapshot);
+    expect(
+        reopened.ok() && *reopened == right_choice && reopened->same_automation(right_choice) &&
+            ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, *reopened).camera == right_choice,
+        "A saved manual choice survives reopening and cannot be replaced by automatic metadata");
+    const auto inconsistent =
+        ResolveAutoInputLensForCameras({dir / "left.mp4", dir / "zoomed.mp4"}, {dir / "zoomed.mp4"}, {"auto"});
+    expect(
+        inconsistent.shared_choices.size() == 1 && inconsistent.shared_choices.count("right"),
+        "A camera with inconsistent chapters cannot supply a shared choice or average");
+    const auto incomplete =
+        ResolveAutoInputLensForCameras({dir / "left.mp4", dir / "missing.mp4"}, {dir / "zoomed.mp4"}, {"auto"});
+    expect(
+        !incomplete.shared_choices.count("left") && !incomplete.shared_choices.count("average"),
+        "Incomplete camera metadata cannot supply a choice or average");
+    std::filesystem::remove(dir / "zoomed.mp4");
     auto result = ResolveAutoInputLens({dir / "left.mp4", dir / "right.mp4"}, {"auto"});
     expect(result.detected && !result.mismatch, "Agreeing sources should import");
     expect(

@@ -819,6 +819,14 @@ std::string recording_description(const VideoLensMetadata& video) {
     description << "; mode: " << (video.mode == "W" ? "Wide" : video.mode);
   if (!video.stabilization.empty())
     description << "; stabilization: " << video.stabilization;
+  const auto zoom = video.recording_mode.find("zoom");
+  if (zoom != video.recording_mode.end())
+    description << "; zoom: " << std::setprecision(6) << std::stod(zoom->second) << "x";
+  description << std::fixed << std::setprecision(2);
+  if (video.horizontal_fov)
+    description << "; horizontal coverage: " << *video.horizontal_fov << "°";
+  if (video.vertical_fov)
+    description << "; vertical coverage: " << *video.vertical_fov << "°";
   return description.str();
 }
 } // namespace
@@ -990,5 +998,74 @@ AutoInputLensResult ResolveAutoInputLens(
       fov_note = fov_unavailable;
   }
   return finish();
+}
+
+AutoInputLensResult ResolveAutoInputLensForCameras(
+    const std::vector<std::filesystem::path>& left,
+    const std::vector<std::filesystem::path>& right,
+    const StitchCameraSelection& fallback,
+    const std::vector<StitchCameraConfiguration>& profiles) {
+  auto videos = left;
+  videos.insert(videos.end(), right.begin(), right.end());
+  auto result = ResolveAutoInputLens(videos, fallback, profiles);
+  if (!result.mismatch || left.empty() || right.empty() || videos.size() > 256)
+    return result;
+
+  auto automatic = fallback;
+  automatic.auto_fov = automatic.auto_lens = true;
+  const auto l = ResolveAutoInputLens(left, automatic, profiles);
+  const auto r = ResolveAutoInputLens(right, automatic, profiles);
+  const auto lm = ReadVideoLensMetadata(left.front()), rm = ReadVideoLensMetadata(right.front());
+  auto describe = [](const char* role, const AutoInputLensResult& resolved, const auto& metadata) {
+    std::ostringstream out;
+    out << role << ": " << (metadata.ok() ? recording_description(*metadata) : "Metadata unavailable");
+    if (resolved.lens_from_mp4)
+      out << "\nCalibration FOV: " << std::setprecision(10) << resolved.camera.horizontal_fov << "°. "
+          << "Distortion a/b/c: " << std::setprecision(6) << resolved.camera.input_lens.distortion[0] << ", "
+          << resolved.camera.input_lens.distortion[1] << ", " << resolved.camera.input_lens.distortion[2]
+          << ". Center X/Y: " << resolved.camera.input_lens.center_offset[0] * 100 << "%, "
+          << resolved.camera.input_lens.center_offset[1] * 100 << "%.";
+    if (resolved.mismatch)
+      out << "\nChapters within this camera disagree; its values cannot be used for both cameras.";
+    return out.str();
+  };
+  result.shared_choices_message = "The cameras have different recording metadata.\n" + describe("Left", l, lm) + "\n" +
+      describe("Right", r, rm) +
+      "\nChoose a shared approximation below, or keep the fallback. A choice copies FOV and lens values into manual settings for both cameras.";
+  auto complete = [](const AutoInputLensResult& value) {
+    return !value.mismatch && value.recording_metadata_found && value.horizontal_fov_from_mp4 &&
+        value.vertical_fov_from_mp4 && value.lens_from_mp4;
+  };
+  auto manual = [](StitchCameraSelection camera) {
+    camera.configuration = "manual";
+    camera.auto_fov = camera.auto_lens = false;
+    return camera;
+  };
+  if (complete(l))
+    result.shared_choices["left"] = manual(l.camera);
+  if (complete(r))
+    result.shared_choices["right"] = manual(r.camera);
+  if (complete(l) && complete(r) && lm.ok() && rm.ok() && lm->width == rm->width && lm->height == rm->height &&
+      l.camera.input_lens.projection == r.camera.input_lens.projection &&
+      l.camera.input_lens.optimization == r.camera.input_lens.optimization) {
+    auto average = manual(l.camera);
+    average.horizontal_fov = (l.camera.horizontal_fov + r.camera.horizontal_fov) / 2;
+    average.vertical_fov = (l.camera.vertical_fov + r.camera.vertical_fov) / 2;
+    for (size_t i = 0; i < average.input_lens.distortion.size(); ++i)
+      average.input_lens.distortion[i] = (l.camera.input_lens.distortion[i] + r.camera.input_lens.distortion[i]) / 2;
+    for (size_t i = 0; i < average.input_lens.center_offset.size(); ++i)
+      average.input_lens.center_offset[i] =
+          (l.camera.input_lens.center_offset[i] + r.camera.input_lens.center_offset[i]) / 2;
+    try {
+      // Averaging coefficients can introduce a folding radial branch. Check
+      // the entire image before offering the approximation.
+      hugin_fov(average.horizontal_fov, lm->width, lm->height, average.input_lens, true);
+      result.shared_choices["average"] = average;
+    } catch (const std::exception&) {
+      result.shared_choices_message += "\nAverage unavailable: the combined lens model is not invertible.";
+    }
+  }
+  result.message += "\n" + result.shared_choices_message;
+  return result;
 }
 } // namespace hm::stitching

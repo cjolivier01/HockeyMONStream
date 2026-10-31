@@ -642,8 +642,13 @@ QJsonObject read_camera_optics(const Request& request) {
   for (const auto& input : pinned)
     input->Verify();
   require(!interrupted, "Optics metadata read cancelled");
+  QJsonObject choices;
+  for (const auto& [key, camera] : resolved.shared_choices)
+    choices.insert(text(key), camera_json(camera));
   return {
       {"version", 1},
+      {"shared_choices", choices},
+      {"shared_choices_message", text(resolved.shared_choices_message)},
       {"camera", camera_json(resolved.camera)},
       {"message", text(resolved.message)},
       {"fov_message", text(resolved.fov_message)},

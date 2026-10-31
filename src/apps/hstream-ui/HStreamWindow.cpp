@@ -5991,6 +5991,17 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   input_lens_widget_ = new InputLensWidget();
   input_lens_widget_->setLens(default_camera_selection_.input_lens);
   input_lens_widget_->setMetadataStatus("", default_camera_selection_.automatic_lens());
+  input_lens_widget_->sharedChoiceSelected = [this](const hm::stitching::StitchCameraSelection& camera) {
+    const QSignalBlocker profile_block(camera_configuration_combo_), fov_block(camera_auto_fov_check_);
+    camera_configuration_combo_->setCurrentIndex(camera_configuration_combo_->findData("manual"));
+    camera_configuration_combo_->setProperty("autoInputLensFrozen", false);
+    camera_auto_fov_check_->setChecked(false);
+    set_calibration_spin_value(camera_horizontal_fov_spin_, camera.horizontal_fov);
+    set_calibration_spin_value(camera_vertical_fov_spin_, camera.vertical_fov);
+    input_lens_widget_->setLens(camera.input_lens);
+    input_lens_widget_->setMetadataStatus("Manual shared approximation", false);
+    applyCameraConfigurationDefaults(false);
+  };
   input_lens_widget_->automationChanged = [this]() { applyCameraConfigurationDefaults(false); };
   input_lens_widget_->changed = [this]() {
     if (camera_auto_fov_check_->isChecked())
@@ -8594,6 +8605,7 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
     camera_vertical_fov_spin_->setReadOnly(camera.automatic_fov());
   }
   if (input_lens_widget_) {
+    input_lens_widget_->setSharedChoices(resolved);
     input_lens_widget_->setLens(camera.input_lens);
     input_lens_widget_->setMetadataStatus(
         QString::fromStdString(resolved.lens_message.empty() ? resolved.message : resolved.lens_message),
@@ -20230,6 +20242,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     const YAML::Node frozen_lens = config["stitching"]["auto_input_lens_frozen"];
     camera_configuration_combo_->setProperty(
         "autoInputLensFrozen", frozen_lens && frozen_lens.IsScalar() && frozen_lens.as<bool>());
+    input_lens_widget_->setSharedChoices(auto_lens);
     input_lens_widget_->setLens(staged_camera_selection.input_lens);
     input_lens_widget_->setMetadataStatus(
         QString::fromStdString(auto_lens.lens_message),

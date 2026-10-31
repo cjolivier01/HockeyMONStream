@@ -138,8 +138,7 @@ AutoInputLensResult ReadAutoInputLensForGame(
     const auto roles = child(child(config, "hstream_ui"), "video_roles");
     auto left = paths(child(roles, "left"), game), right = paths(child(roles, "right"), game);
     if (!left.empty() && !right.empty()) {
-      left.insert(left.end(), right.begin(), right.end());
-      return ResolveAutoInputLens(left, fallback, *profiles);
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles);
     }
     auto discovered = get_available_videos(game.string());
     if (!discovered.ok())
@@ -177,6 +176,8 @@ AutoInputLensResult ReadAutoInputLensForGame(
       if (cameras != 2)
         throw std::runtime_error("Auto lens import requires two selected source cameras");
     }
+    if (!left.empty() && !right.empty())
+      return ResolveAutoInputLensForCameras(left, right, fallback, *profiles);
     left.insert(left.end(), right.begin(), right.end());
     return ResolveAutoInputLens(left, fallback, *profiles);
   } catch (const std::exception& error) {

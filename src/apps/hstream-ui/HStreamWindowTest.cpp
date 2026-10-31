@@ -10,6 +10,7 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
+#include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
@@ -11179,6 +11180,26 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       input_projection->currentData() == "full-frame-fisheye" && input_optimization->currentData() == "fixed" &&
           input_b->value() == 0.02 && input_center_y->value() == 14.35 && !save->isEnabled(),
       "Reloading the main UI must restore source optics without dirtying the preset");
+
+  auto* lens_widget = dynamic_cast<InputLensWidget*>(require_child<QGroupBox>(window, "stitchInputLensControls"));
+  for (const char* key : {"left", "right", "average"}) {
+    hm::stitching::StitchCameraSelection choice{"manual", 97.077571333536923, 54.593467712402344};
+    choice.auto_fov = choice.auto_lens = false;
+    choice.input_lens = lens_camera->input_lens;
+    choice.input_lens.distortion[1] = 0.021905029420311552;
+    hm::stitching::AutoInputLensResult mismatch;
+    mismatch.shared_choices[key] = choice;
+    mismatch.shared_choices_message = "Left and Right optics differ";
+    lens_widget->setSharedChoices(mismatch);
+    activate(require_child<QPushButton>(window, QString("inputLensUse_%1").arg(key).toUtf8().constData()));
+    activate(save);
+    activate(create);
+    const auto saved_choice = hm::stitching::read_stitch_camera_selection(YAML::LoadFile(config_path.string()));
+    if (!expect(saved_choice.ok() && *saved_choice == choice && saved_choice->same_automation(choice) &&
+                    !camera_auto->isChecked() && !lens_auto->isChecked() && !save->isEnabled(),
+                "Each shared optics action must save and reopen the exact manual FOV/lens snapshot"))
+      return false;
+  }
 
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   if (!expect(input_projection->currentData() == "rectilinear" && input_optimization->currentData() == "auto" &&

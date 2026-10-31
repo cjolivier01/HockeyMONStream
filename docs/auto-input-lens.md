@@ -46,7 +46,19 @@ fallback rather than applying incompatible numbers.
 
 Both cameras and every selected chapter must agree on recording mode and
 available geometry. A mismatch warns and leaves the automatic components on
-baseline defaults; manual components are retained. Missing files never allow
+baseline defaults; manual components are retained. When Left/Right roles are known, **Different
+camera optics** shows each camera's zoom, recorded coverage and converted lens
+values. **Use Left for both**, **Use Right for both**, and **Average for both
+(approximation)** copy a complete prescription into manual FOV/lens controls.
+They do not save or change an active run. Save Preset/Play uses the normal
+calibration invalidation path; experiments retain the exact selected numbers.
+A camera with missing metadata or inconsistent chapters cannot supply a choice.
+Averaging requires complete metadata from both cameras, matching image dimensions
+and projection, and an invertible averaged radial model. It averages calibration
+FOV, distortion and normalized center offsets; it is a shared approximation, not
+an independently calibrated model for either camera.
+
+Missing files never allow
 one camera's prescription to be copied onto an unknown second camera. Live
 V4L2/CSI input uses baseline defaults. Reads are bounded, cached metadata I/O;
 there is no video decoding or steady-state playback work.

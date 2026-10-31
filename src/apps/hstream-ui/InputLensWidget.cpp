@@ -7,6 +7,10 @@
 #include <QtWidgets/QDoubleSpinBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QPushButton>
+#include <QtWidgets/QVBoxLayout>
+
+#include "src/apps/hstream-ui/ActionIcons.h"
 
 void SetInputOpticsMetadataHighlight(QWidget* widget, bool from_mp4) {
   widget->setProperty("mp4Metadata", from_mp4);
@@ -38,6 +42,35 @@ InputLensWidget::InputLensWidget(QWidget* parent) : QGroupBox("Camera lens corre
   setObjectName("stitchInputLensControls");
   setToolTip("Shared source-camera optics. Non-default correction requires the NONA mapping backend.");
   auto* layout = new QFormLayout(this);
+  mismatch_group_ = new QGroupBox("Different camera optics", this);
+  mismatch_group_->setObjectName("inputLensMismatchGroup");
+  auto* mismatch_layout = new QVBoxLayout(mismatch_group_);
+  mismatch_status_ = new QLabel(mismatch_group_);
+  mismatch_status_->setObjectName("inputLensMismatchStatus");
+  mismatch_status_->setWordWrap(true);
+  mismatch_status_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
+  mismatch_status_->setTextFormat(Qt::PlainText);
+  mismatch_layout->addWidget(mismatch_status_);
+  for (const auto& [key, label] : std::array<std::pair<std::string, QString>, 3>{
+           {{"left", "Use Left for both"},
+            {"right", "Use Right for both"},
+            {"average", "Average for both (approximation)"}}}) {
+    auto* button = new QPushButton(action_icon(ActionIcon::Apply), label, mismatch_group_);
+    button->setObjectName(QString::fromStdString("inputLensUse_" + key));
+    button->setToolTip(
+        "Copies both camera FOV and lens correction into manual settings. Save Preset or Play applies the change.");
+    choice_buttons_[key] = button;
+    mismatch_layout->addWidget(button);
+    connect(button, &QPushButton::clicked, this, [this, key]() {
+      const auto found = choices_.find(key);
+      if (found != choices_.end() && sharedChoiceSelected) {
+        const auto camera = found->second;
+        sharedChoiceSelected(camera);
+      }
+    });
+  }
+  mismatch_group_->hide();
+  layout->addRow(mismatch_group_);
   automatic_ = new QCheckBox("Auto lens correction", this);
   automatic_->setObjectName("inputLensAutoCheck");
   automatic_->setToolTip(
@@ -153,4 +186,12 @@ void InputLensWidget::setMetadataStatus(const QString& message, bool automatic, 
 
 bool InputLensWidget::automatic() const {
   return automatic_->isChecked();
+}
+
+void InputLensWidget::setSharedChoices(const hm::stitching::AutoInputLensResult& result) {
+  choices_ = result.shared_choices;
+  mismatch_status_->setText(QString::fromStdString(result.shared_choices_message));
+  mismatch_group_->setVisible(!result.shared_choices_message.empty());
+  for (const auto& [key, button] : choice_buttons_)
+    button->setEnabled(choices_.count(key) != 0);
 }

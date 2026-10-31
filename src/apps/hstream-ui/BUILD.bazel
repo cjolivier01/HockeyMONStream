@@ -1380,7 +1380,7 @@ cc_library(
     hdrs = ["InputLensWidget.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["//src/libs/stitching:game_config", "@qt//:qt_widgets"],
+    deps = [":action_icons", "//src/libs/stitching:video_lens_metadata", "@qt//:qt_widgets"],
 )
 
 cc_test(
