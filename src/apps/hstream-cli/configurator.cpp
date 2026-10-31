@@ -9850,14 +9850,15 @@ absl::Status Configurator::prepare_initial_pipeline_position(
       return absl::FailedPreconditionError(
           "Lossless startup audio must use the camera with zero stitching frame offset");
     }
+    std::string position_error;
     if (!configure_uri_playlist_initial_offsets(
             &pipeline.multi_src_bin,
             config.hmsticher_config.left_frame_offset_ns,
             config.hmsticher_config.right_frame_offset_ns,
             audio_source_id,
-            start_time_ns)) {
-      return absl::FailedPreconditionError(
-          "Could not configure initial camera offsets before lossless sequence admission began");
+            start_time_ns,
+            &position_error)) {
+      return absl::FailedPreconditionError(position_error);
     }
     return absl::OkStatus();
   }
