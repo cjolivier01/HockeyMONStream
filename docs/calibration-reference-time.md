@@ -39,3 +39,7 @@ snapshots and saved-match context. It is not passed as a negative ordinary
 playback start. AMD saved-calibration validation accepts the same identity;
 fresh AMD automatic calibration retains the existing limitations in
 `amd-gpu.md`.
+
+Level Rink accepts version 16/17 per-camera calibration metadata and checks both
+source-bound optics before opening the saved images. It no longer rejects a
+completed independent-camera calibration as an unsupported format.

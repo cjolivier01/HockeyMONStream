@@ -22334,9 +22334,17 @@ int main(int argc, char** argv) {
             "Calibration launch must retain the end-relative reference"))
       return 1;
     require_child<QTabWidget>(&window, "previewTabs")->setCurrentIndex(1);
+    auto* controls = require_child<QTabWidget>(&window, "stitchedControlTabs");
+    for (int index = 0; index < controls->count(); ++index)
+      if (controls->widget(index)->isAncestorOf(reference))
+        controls->setCurrentIndex(index);
     window.resize(1400, 1000);
     window.show();
     QApplication::processEvents();
+    require_child<QSplitter>(&window, "stitchedPreviewControlsSplitter")->setSizes({700, 650});
+    QApplication::processEvents();
+    if (!expect(reference->isVisible(), "The signed reference editor must be visible on Alignment"))
+      return 1;
     const auto capture = qEnvironmentVariable("HSTREAM_REFERENCE_SCREENSHOT");
     if (!capture.isEmpty() && !window.grab().save(capture))
       return 1;
