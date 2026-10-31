@@ -625,6 +625,12 @@ while True:
   static hm::stitching::StitchCameraSelection currentCameraSelection(HStreamWindow* window) {
     return window->stitchCameraSelection();
   }
+  static void discoverCameraRoles(HStreamWindow* window, bool reverse) {
+    auto result = window->camera_optics_result_;
+    result.source_metadata["left.mp4"].role = reverse ? "right" : "left";
+    result.source_metadata["right.mp4"].role = reverse ? "left" : "right";
+    window->updateInputCameraTabs(result);
+  }
   static absl::StatusOr<hm::stitching::StitchCameraSelection> cameraSelection(
       HStreamWindow* window, const YAML::Node& config) {
     return window->stitchCameraSelectionFromGameConfig(config);
@@ -22382,6 +22388,14 @@ int main(int argc, char** argv) {
             before.input_start_times == hm::stitching::CameraSourceStarts{{"left.mp4", 5}, {"right.mp4", 108}},
             "Each camera start must bind to its source, independently of optical values"))
       return 1;
+    HStreamWindowTestAccess::discoverCameraRoles(&window, true);
+    if (!expect(
+            HStreamWindowTestAccess::currentCameraSelection(&window).input_start_times == before.input_start_times &&
+                left_start->findChild<QTimeEdit*>("cameraSourceStartTime")->time() == QTime(0, 1, 48) &&
+                right_start->findChild<QTimeEdit*>("cameraSourceStartTime")->time() == QTime(0, 0, 5),
+            "Auto role discovery must retain start-only edits and reorder their controls by source"))
+      return 1;
+    HStreamWindowTestAccess::discoverCameraRoles(&window, false);
     left->findChild<QDoubleSpinBox*>("sourceCameraHorizontalFovSpin")->setValue(119.25);
     auto edited = HStreamWindowTestAccess::currentCameraSelection(&window);
     if (!expect(

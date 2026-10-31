@@ -316,17 +316,21 @@ bool make_synthetic_mp4(
     double seconds,
     int hue_degrees,
     int audio_frequency,
-    bool hevc_main10 = false) {
+    bool hevc_main10 = false,
+    double audio_tail = 0) {
   std::stringstream cmd;
   cmd << "ffmpeg -hide_banner -loglevel error -y "
       << "-f lavfi -i "
-      << "'testsrc2=size=256x144:rate=15,format=yuv420p,hue=h=" << hue_degrees << "' ";
+      << "'testsrc2=size=256x144:rate=15";
+  if (audio_tail > 0)
+    cmd << ":duration=" << seconds;
+  cmd << ",format=yuv420p,hue=h=" << hue_degrees << "' ";
   if (audio_frequency > 0) {
     cmd << "-f lavfi -i 'sine=frequency=" << audio_frequency << ":sample_rate=48000' ";
   }
-  cmd << "-t " << seconds << " ";
+  cmd << "-t " << seconds + audio_tail << " ";
   if (audio_frequency > 0) {
-    cmd << "-shortest -c:a aac -b:a 64k ";
+    cmd << (audio_tail == 0 ? "-shortest " : "") << "-c:a aac -b:a 64k ";
   } else {
     cmd << "-an ";
   }
@@ -1897,6 +1901,28 @@ int main(int argc, char** argv) {
       return rc;
     }
   }
+
+  // A trailing audio interval must not lengthen the video chapter clock.
+  const fs::path audio_tail_chapter = tmpdir / "audio_tail.mp4";
+  if (!make_synthetic_mp4(audio_tail_chapter, 1, 0, 440, false, 0.2))
+    return 2;
+  const std::vector<std::string> audio_tail_uris{to_file_uri(audio_tail_chapter), to_file_uri(a1), to_file_uri(a2)};
+  rc = run_lossless_two_camera_mux(
+      audio_tail_uris,
+      right_uris,
+      true,
+      0,
+      0,
+      ExpectedPipelineFailure::kNone,
+      0,
+      -1,
+      0,
+      GST_SECOND + 200 * GST_MSECOND,
+      GST_SECOND + 200 * GST_MSECOND,
+      0,
+      true);
+  if (rc != 0)
+    return rc;
 
   if (startup_seek_only) {
     fs::remove_all(tmpdir);

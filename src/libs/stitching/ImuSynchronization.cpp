@@ -149,7 +149,7 @@ absl::StatusOr<std::vector<Sample>> read_insta(
   for (size_t pos = 0; pos + stride <= bytes.size(); pos += stride) {
     const auto* p = bytes.data() + pos;
     const double time = (read_integer(p, 8, true) / 1000.0 - clock.origin) * clock.scale - clock.gyro_offset;
-    if (time > start + duration)
+    if (time >= start + duration)
       break;
     double axes[3];
     for (size_t axis = 0; axis < 3; ++axis) {

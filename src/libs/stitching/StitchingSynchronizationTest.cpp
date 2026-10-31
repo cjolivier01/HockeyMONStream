@@ -11,6 +11,7 @@
 
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/CrossCorrelation.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 
 namespace {
 void le(std::string& bytes, uint64_t value, size_t count) {
@@ -35,7 +36,7 @@ void field(std::string& bytes, unsigned tag, uint64_t value) {
 }
 void append_gyro(const std::filesystem::path& path, bool raw, double delay, bool stationary = false) {
   std::string gyro;
-  for (int i = 0; i < 3000; ++i) {
+  for (int i = 0; i <= 3200; ++i) {
     const double t = i / 200.0;
     le(gyro, static_cast<uint64_t>(std::llround(1000000 + (t + 0.125) * (raw ? 1000000 : 1000))), 8);
     const double shifted = t + delay;
@@ -123,6 +124,114 @@ int main() {
   }
   if (!ok)
     return 1;
+  const auto matroska = (dir / "audio-tail.mkv").string();
+  ok &= expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=s=16x16:r=25:d=1",
+           "-f",
+           "lavfi",
+           "-i",
+           "anoisesrc=r=8000:seed=42:d=1.5",
+           "-c:v",
+           "mpeg4",
+           "-c:a",
+           "pcm_s16le",
+           matroska},
+          "",
+          {},
+          {}) == 0,
+      "Create Matroska camera with a longer audio track");
+  for (bool remove_duration_tag : {false, true}) {
+    if (remove_duration_tag) {
+      std::ifstream source(matroska, std::ios::binary);
+      std::string bytes((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+      source.close();
+      for (size_t pos = 0; (pos = bytes.find("DURATION", pos)) != std::string::npos; ++pos)
+        bytes[pos] = 'X';
+      std::ofstream(matroska, std::ios::binary | std::ios::trunc).write(bytes.data(), bytes.size());
+    }
+    const auto window = CameraRecordingWindowAt({matroska, matroska}, 1.2, 10);
+    ok &= expect(
+        window.ok() && std::abs(window->duration_seconds - 0.8) < 0.001 && window->chapters.size() == 1 &&
+            std::abs(window->chapters.front().start_seconds - 0.2) < 0.001,
+        "Matroska chapter windows must use video end with and without track duration tags");
+    if (!window.ok())
+      std::cerr << window.status() << '\n';
+    const auto synced = calculate_stitching_synchronization(matroska, matroska);
+    ok &= expect(
+        synced.ok() && synced->video1_frame_offset < 0.01 && synced->video2_frame_offset < 0.01,
+        "Matroska without stream duration must remain synchronizable");
+    if (!synced.ok())
+      std::cerr << synced.status() << '\n';
+  }
+  if (!ok)
+    return 1;
+  const auto continuous = (dir / "continuous.mp4").string();
+  ok &= expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-f",
+           "lavfi",
+           "-i",
+           "color=s=16x16:r=60000/1001",
+           "-f",
+           "lavfi",
+           "-i",
+           "anoisesrc=r=48000:seed=42",
+           "-t",
+           "16",
+           "-g",
+           "363",
+           "-c:v",
+           "mpeg4",
+           "-c:a",
+           "aac",
+           continuous},
+          "",
+          {},
+          {}) == 0,
+      "Create fractional-rate continuous fixture");
+  ok &= expect(
+      hm::run_command(
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-i",
+           continuous,
+           "-map",
+           "0",
+           "-c",
+           "copy",
+           "-f",
+           "segment",
+           "-segment_frames",
+           "363,726",
+           "-reset_timestamps",
+           "1",
+           (dir / "part%02d.mp4").string()},
+          "",
+          {},
+          {}) == 0,
+      "Split identical audio at fractional PCM chapter boundaries");
+  if (!ok)
+    return 1;
+  const auto whole = CameraRecordingWindowAt({continuous}, 0, 35);
+  const auto split = CameraRecordingWindowAt(
+      {(dir / "part00.mp4").string(), (dir / "part01.mp4").string(), (dir / "part02.mp4").string()}, 0, 35);
+  if (!expect(whole.ok() && split.ok(), "Read fractional-rate chapter windows"))
+    return 1;
+  const auto segmented = synchronize_by_audio(*whole, *split);
+  ok &= expect(segmented.ok(), "Identical chapter audio must occupy one cumulative PCM grid");
+  if (!segmented.ok())
+    std::cerr << segmented.status() << '\n';
   const auto left = (dir / "left.mp4").string(), right = (dir / "right.mp4").string();
   const auto audio = calculate_stitching_synchronization(left, left);
   const auto fallback = calculate_stitching_synchronization(left, left, SynchronizationMethod::kAuto);
@@ -171,6 +280,17 @@ int main() {
   ok &= expect(
       tail.ok() && !tail->gyro.empty() && tail->gyro.size() < 100,
       "A short chapter slice must remain available for concatenated IMU windows");
+  const auto across_chapters = calculate_stitching_synchronization(
+      std::vector<std::string>{left, left},
+      std::vector<std::string>{left, left},
+      {15, 15},
+      SynchronizationMethod::kImu);
+  ok &= expect(
+      across_chapters.ok() && std::abs(across_chapters->video1_frame_offset - 375) < 0.01 &&
+          std::abs(across_chapters->video2_frame_offset - 375) < 0.01,
+      "Positioned Insta360 windows must exclude chapter endpoints before concatenating the next chapter");
+  if (!across_chapters.ok())
+    std::cerr << across_chapters.status() << '\n';
   const auto sync = calculate_stitching_synchronization(left, right, SynchronizationMethod::kImu);
   const auto reverse = calculate_stitching_synchronization(right, left, SynchronizationMethod::kAuto);
   ok &= expect(

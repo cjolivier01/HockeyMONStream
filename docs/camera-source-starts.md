@@ -39,7 +39,7 @@ group must share starts; incompatible saved frames are rejected.
 
 ## Seeking and backends
 
-NVIDIA playback skips complete chapters by duration, requests the preceding
+NVIDIA playback and synchronization use video-track chapter durations, excluding audio tails. NVIDIA playback skips complete chapters by that duration, requests the preceding
 keyframe in the selected chapter, then discards decoded frames before the exact
 start. If the seek fails, the existing exact-trim fallback decodes from that
 chapter's beginning and logs the fallback. NVIDIA decoder restart after preroll
@@ -48,7 +48,7 @@ effective skip and is rebased to the synchronized timeline.
 
 Audio synchronization seeks before decoding a window of at most 15 seconds.
 IMU synchronization reads up to 35 seconds of positioned metadata; Insta360
-trailers use timestamp binary search. Short chapter slices combine before the
+trailers use timestamp binary search. Insta360 and GPMF windows exclude their ending timestamp, so concatenation cannot duplicate a chapter boundary. Short chapter slices combine before the
 IMU correlation validation. Neither path decodes the skipped video.
 
 AMD Program consumes the same saved effective offsets and start marker. Its
