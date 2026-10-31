@@ -2955,19 +2955,50 @@ absl::StatusOr<Synchronization> calculate_stitching_synchronization(
     const std::string& video1,
     const std::string& video2,
     SynchronizationMethod method) {
-  if (method != SynchronizationMethod::kAudio) {
-    const auto imu_offsets = synchronize_by_imu(video1, video2);
-    if (imu_offsets.ok())
-      return Synchronization{imu_offsets->first, imu_offsets->second};
-    if (method == SynchronizationMethod::kImu)
-      return imu_offsets.status();
-    std::cerr << "IMU synchronization unavailable: " << imu_offsets.status() << "; falling back to audio" << std::endl;
-  }
-  auto frame_offsets = synchronize_by_audio(video1, video2);
-  return Synchronization{
-      .video1_frame_offset = frame_offsets.first,
-      .video2_frame_offset = frame_offsets.second,
+  return calculate_stitching_synchronization(
+      std::vector<std::string>{video1}, std::vector<std::string>{video2}, {0, 0}, method);
+}
+
+absl::StatusOr<Synchronization> calculate_stitching_synchronization(
+    const std::vector<std::string>& left,
+    const std::vector<std::string>& right,
+    const std::array<double, 2>& source_starts,
+    SynchronizationMethod method) {
+  CameraRecordingWindow a, b;
+  HM_ASSIGN_OR_RETURN(a, CameraRecordingWindowAt(left, source_starts[0], 35));
+  HM_ASSIGN_OR_RETURN(b, CameraRecordingWindowAt(right, source_starts[1], 35));
+  auto effective = [&](const std::pair<double, double>& residual) {
+    return Synchronization{(source_starts[0] + residual.first) * a.fps, (source_starts[1] + residual.second) * b.fps};
   };
+  if (method != SynchronizationMethod::kAudio) {
+    const auto read = [](const CameraRecordingWindow& window) -> absl::StatusOr<std::vector<imu::Sample>> {
+      std::vector<imu::Sample> samples;
+      double base = 0;
+      for (const auto& chapter : window.chapters) {
+        auto recording = imu::Read(chapter.file, chapter.start_seconds, chapter.duration_seconds);
+        if (!recording.ok())
+          return recording.status();
+        for (auto sample : recording->gyro) {
+          sample.seconds += base;
+          samples.push_back(sample);
+        }
+        base += chapter.duration_seconds;
+      }
+      return samples;
+    };
+    const auto first = read(a), second = read(b);
+    const auto residual = !first.ok() ? absl::StatusOr<double>(first.status())
+        : !second.ok()                ? absl::StatusOr<double>(second.status())
+                                      : imu::EstimateOffset(*first, *second);
+    if (residual.ok())
+      return effective({std::max(0.0, *residual), std::max(0.0, -*residual)});
+    if (method == SynchronizationMethod::kImu)
+      return residual.status();
+    std::cerr << "IMU synchronization unavailable: " << residual.status() << "; falling back to audio" << std::endl;
+  }
+  std::pair<double, double> residual;
+  HM_ASSIGN_OR_RETURN(residual, synchronize_by_audio(a, b));
+  return effective(residual);
 }
 
 absl::Status write_stitching_calibration_frame_inspection(
@@ -5521,7 +5552,8 @@ absl::Status create_field_mask(
 absl::Status configure_orientation(
     const std::string& game_dir,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    const CameraSourceStarts& source_starts) {
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;
@@ -5531,7 +5563,7 @@ absl::Status configure_orientation(
                             "started",
                             "GPU memory exhausted; finding the rink for camera orientation on CPU (may take longer)");
                       }));
-  return configure_game_orientation(game_dir, *model, expected_invalidation_id, is_cancelled);
+  return configure_game_orientation(game_dir, *model, expected_invalidation_id, is_cancelled, source_starts);
 }
 
 bool is_scoreboard_configured(const std::string& game_dir) {

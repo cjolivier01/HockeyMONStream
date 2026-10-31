@@ -219,13 +219,22 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   const auto render_node = std::filesystem::path(std::string("/dev/dri/by-path/pci-") + pci + "-render");
   auto source = Take(hm::gpu::VaStereoVideo::Create(
       {{Reader(launch, 0, render_node), Reader(launch, 1, render_node)}, launch.chapters, launch.frame_offsets}, {}));
+  GstClockTime audio_source_offset = 0;
+  if (audio_config) {
+    const auto camera = audio_config->camera;
+    const auto& info = source->video_info(camera);
+    const long double offset =
+        launch.frame_offsets[camera] * static_cast<long double>(info.fps_d) * GST_SECOND / info.fps_n;
+    Require(offset >= 0 && offset < INT64_MAX / 2, "Audio camera start exceeds the supported clock");
+    audio_source_offset = std::llround(offset);
+  }
   Status(source->Seek(start));
   auto pair = Take(source->Read());
   Require(pair.has_value(), "The requested start has no complete stereo frame");
   std::unique_ptr<hm::media::AudioPlaylist> audio;
   if (audio_config) {
     audio = Take(hm::media::AudioPlaylist::Create(audio_config->reader, launch.chapters[audio_config->camera]));
-    Status(audio->Seek(pair->time));
+    Status(audio->Seek(pair->time + audio_source_offset));
   }
   const auto& left = pair->cameras[0].info;
   const auto& right = pair->cameras[1].info;
@@ -350,7 +359,8 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   std::signal(SIGINT, Stop);
   Cancellation cancellation(*source, audio.get(), outputs, launch.amd.cancellation_poll_ns);
   auto first = pair->time;
-  auto first_audio_sample = audio ? gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND) : 0;
+  auto first_audio_sample =
+      audio ? gst_util_uint64_scale_round(first + audio_source_offset, audio->format().rate, GST_SECOND) : 0;
   uint64_t frames = 0, tracks = 0, completed_video = 0, previous_segments = 0, progress_generation = 0;
   const uint64_t horizon = std::min(source->duration() - start, limit.value_or(source->duration() - start));
   uint64_t playback_position = 0;
@@ -502,8 +512,9 @@ void Run(const hm::program::AmdPipelineOptions& args) {
             if (pair) {
               first = pair->time;
               if (audio) {
-                Status(audio->Seek(first));
-                first_audio_sample = gst_util_uint64_scale_round(first, audio->format().rate, GST_SECOND);
+                Status(audio->Seek(first + audio_source_offset));
+                first_audio_sample =
+                    gst_util_uint64_scale_round(first + audio_source_offset, audio->format().rate, GST_SECOND);
               }
               for (const auto& output : outputs)
                 Status(output->ResetTimeline());
@@ -584,7 +595,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     }
     if (audio) {
       for (;;) {
-        auto pcm = Take(audio->ReadUntil(pair->time + pair->duration));
+        auto pcm = Take(audio->ReadUntil(pair->time + pair->duration + audio_source_offset));
         if (!pcm)
           break;
         pcm->sample -= first_audio_sample;

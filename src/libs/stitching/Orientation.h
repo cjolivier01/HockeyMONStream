@@ -9,6 +9,7 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 
+#include "hstream/src/libs/stitching/CameraSourceStart.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 
 namespace hm {
@@ -34,7 +35,8 @@ absl::Status configure_game_orientation(
     const std::string& game_dir,
     const RinkSegmentation& rink_model,
     const std::string& expected_invalidation_id = {},
-    const std::function<bool()>& is_cancelled = {});
+    const std::function<bool()>& is_cancelled = {},
+    const CameraSourceStarts& source_starts = {});
 
 } // namespace stitching
 } // namespace hm

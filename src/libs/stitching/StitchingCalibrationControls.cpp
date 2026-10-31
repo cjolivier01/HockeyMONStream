@@ -336,6 +336,7 @@ absl::StatusOr<bool> ApplyStitchingCalibrationInputEdits(
   if (desired.control_points < 1 || desired.frame_count < 1 || desired.frame_count > kPlayerFrameMaximumPairs)
     return absl::InvalidArgumentError("Calibration inputs require positive bounded controls");
   const auto& saved = before.controls;
+  sources_changed = sources_changed || saved.camera.input_start_times != desired.camera.input_start_times;
   const bool retain_selected =
       before.selected_frame_count.has_value() && saved.frame_count == desired.frame_count && !sources_changed;
   const bool time_changed = !before.frame_time_valid || saved.frame_time != desired.frame_time;
@@ -375,6 +376,7 @@ absl::StatusOr<StitchingCalibrationPlan> PrepareStitchingCalibrationControlsLock
     plan.owner = owner;
     auto& c = plan.changes;
     const auto& saved = before.controls;
+    sources_changed = sources_changed || saved.camera.input_start_times != desired.camera.input_start_times;
     c.control_points = !before.control_points_present || saved.control_points != desired.control_points;
     c.frame_count = !before.frame_count_present || saved.frame_count != desired.frame_count;
     c.frame_time = !before.frame_time_valid || saved.frame_time != desired.frame_time;

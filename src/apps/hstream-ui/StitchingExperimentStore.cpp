@@ -134,7 +134,8 @@ bool same_camera_snapshot(
   // A saved candidate retains those settings too, even with independent optics.
   return left.configuration == right.configuration && left.horizontal_fov == right.horizontal_fov &&
       left.vertical_fov == right.vertical_fov && left.input_lens == right.input_lens &&
-      left.input_cameras == right.input_cameras && left.same_automation(right, true);
+      left.input_cameras == right.input_cameras && left.input_start_times == right.input_start_times &&
+      left.same_automation(right, true);
 }
 
 bool same_settings(const StitchingExperimentSettings& left, const StitchingExperimentSettings& right) {

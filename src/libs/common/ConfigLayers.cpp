@@ -24,7 +24,8 @@ YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool wa
     }
 
     // If both are maps, recursively merge
-    if (key != "input_cameras" && pair.second.IsMap() && base[key].IsDefined() && base[key].IsMap()) {
+    if (key != "input_cameras" && key != "input_start_times" && pair.second.IsMap() && base[key].IsDefined() &&
+        base[key].IsMap()) {
       result[key] = MergeNodes(base[key], pair.second, warn_if_key_not_in_dest);
     } else {
       result[key] = pair.second;
@@ -35,7 +36,7 @@ YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool wa
 }
 
 void RecordLeafRanks(const YAML::Node& overlay, const std::string& prefix, int rank, LeafRanks& ranks) {
-  if (!overlay.IsMap() || prefix == "stitching.input_cameras") {
+  if (!overlay.IsMap() || (prefix == "stitching.input_cameras" || prefix == "stitching.input_start_times")) {
     if (!prefix.empty())
       ranks[prefix] = rank;
     return;

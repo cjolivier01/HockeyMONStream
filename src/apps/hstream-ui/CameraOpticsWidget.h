@@ -9,6 +9,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class InputLensWidget;
+class QTimeEdit;
 
 // One source owns its complete prescription. Display rounding never changes
 // untouched values; the parent binds the editor to the source, not its tab index.
@@ -36,4 +37,15 @@ class CameraOpticsWidget : public QWidget {
   QLabel* recording_;
   QLabel* fov_status_;
   InputLensWidget* lens_;
+};
+
+// Independent camera trim, shown separately from optical properties.
+class CameraSourceStartWidget : public QWidget {
+ public:
+  explicit CameraSourceStartWidget(QWidget* parent = nullptr);
+  void setStart(double seconds);
+  std::function<void(double)> changed;
+
+ private:
+  QTimeEdit* start_;
 };

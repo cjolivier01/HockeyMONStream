@@ -130,6 +130,7 @@ QString configured_gpu_memory_profile(
 
 class InputLensWidget;
 class CameraOpticsWidget;
+class CameraSourceStartWidget;
 
 class HStreamWindow : public QMainWindow {
   friend struct HStreamWindowTestAccess;
@@ -658,6 +659,8 @@ class HStreamWindow : public QMainWindow {
   QGroupBox* camera_fov_group_{nullptr};
   QGroupBox* input_camera_defaults_group_{nullptr};
   std::vector<CameraOpticsWidget*> camera_optics_widgets_;
+  std::vector<CameraSourceStartWidget*> camera_start_widgets_;
+  hm::stitching::CameraSourceStarts camera_source_starts_;
   std::vector<std::string> camera_optics_sources_;
   hm::stitching::AutoInputLensResult camera_optics_result_;
   QLabel* camera_fov_source_label_{nullptr};

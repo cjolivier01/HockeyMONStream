@@ -8,6 +8,7 @@
  */
 
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
@@ -537,7 +538,8 @@ absl::Status configure_game_orientation(
     const std::string& game_dir_string,
     const RinkSegmentation& rink_model,
     const std::string& expected_invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    const CameraSourceStarts& source_starts) {
   const fs::path game_dir(game_dir_string);
   auto videos = get_available_videos(game_dir.string());
   if (!videos.ok())
@@ -547,23 +549,35 @@ absl::Status configure_game_orientation(
         game_dir, videos->at("left"), videos->at("right"), expected_invalidation_id);
   }
 
+  std::vector<std::string> first_chapters;
+  for (const auto& [camera, chapters] : *videos)
+    if (camera != "stitched" && !chapters.empty())
+      first_chapters.push_back(chapters.begin()->second);
+  const auto starts_status = ValidateCameraSourceStarts(source_starts, game_dir, first_chapters);
+  if (!starts_status.ok())
+    return starts_status;
   std::map<std::string, VideoChapter> oriented;
   for (const auto& [camera, chapters] : *videos) {
     if (is_cancelled && is_cancelled())
       return absl::CancelledError("Camera orientation cancelled");
     if (camera == "stitched" || chapters.empty())
       continue;
-    // Preserve HockeyMOM's current selection semantics: the minimum pathname,
-    // rather than the minimum chapter number, supplies the orientation frame.
-    const auto selected = std::min_element(
-        chapters.begin(), chapters.end(), [](const auto& lhs, const auto& rhs) { return lhs.second < rhs.second; });
-    cv::VideoCapture capture(selected->second);
-    if (!capture.isOpened()) {
-      return absl::NotFoundError("Failed to open orientation video: " + selected->second);
-    }
+    std::vector<std::string> playlist;
+    for (const auto& [number, file] : chapters)
+      playlist.push_back((game_dir / file).string());
+    const double start = CameraSourceStart(source_starts, game_dir, playlist.front());
+    const auto window = CameraRecordingWindowAt(playlist, start, 1);
+    if (!window.ok())
+      return window.status();
+    const auto& selected = window->chapters.front();
+    cv::VideoCapture capture(selected.file);
+    if (!capture.isOpened())
+      return absl::NotFoundError("Failed to open orientation video: " + selected.file);
+    if (selected.start_seconds > 0 && !capture.set(cv::CAP_PROP_POS_MSEC, selected.start_seconds * 1000))
+      return absl::FailedPreconditionError("Failed to seek orientation video to the camera start: " + selected.file);
     cv::Mat first_frame;
     if (!capture.read(first_frame) || first_frame.empty()) {
-      return absl::InternalError("Failed to decode the first orientation frame: " + selected->second);
+      return absl::InternalError("Failed to decode the orientation frame at the camera start: " + selected.file);
     }
     auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled);
     if (!rink.ok()) {

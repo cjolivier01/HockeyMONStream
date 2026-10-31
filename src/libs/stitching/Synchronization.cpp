@@ -1,606 +1,237 @@
 #include "hstream/src/libs/stitching/Synchronization.h"
-#include "hstream/src/libs/stitching/CrossCorrelation.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
-#include <cstdlib>
 #include <iostream>
-#include <limits>
-#include <utility>
-#include <vector>
+#include <memory>
+#include <numeric>
 
-#include <opencv2/opencv.hpp>
-
-// FFmpeg headers
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
-#include <libavutil/opt.h>
-#include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 }
-namespace hm {
-namespace stitching {
+
+#include "hstream/src/libs/stitching/CrossCorrelation.h"
+
+namespace hm::stitching {
 namespace {
-/**
- * @brief Loads audio from a file (typically an MP4) using FFmpeg and returns a waveform
- *        along with its sample rate.
- *
- * The waveform is returned as a two-dimensional vector of doubles with shape
- * [channels][samples]. For example, if the input audio is stereo and you read 720000 samples per channel,
- * then the waveform will have two vectors of length 720000.
- *
- * @param file The path to the audio (or video) file.
- * @param duration_seconds The duration (in seconds) to read from the audio.
- * @param verbose If true, prints debug information.
- * @return A pair containing the waveform and the sample rate.
- */
-#if 1
-std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
-    const std::string& file,
-    double duration_seconds,
-    bool verbose = false) {
-  AVFormatContext* fmt_ctx = nullptr;
-  if (avformat_open_input(&fmt_ctx, file.c_str(), nullptr, nullptr) < 0) {
-    std::cerr << "Could not open file: " << file << std::endl;
-    std::exit(1);
+struct AudioInput {
+  AVFormatContext* format{nullptr};
+  AVCodecContext* codec{nullptr};
+  SwrContext* resampler{nullptr};
+  AVPacket* packet{nullptr};
+  AVFrame* frame{nullptr};
+  std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  ~AudioInput() {
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    swr_free(&resampler);
+    avcodec_free_context(&codec);
+    avformat_close_input(&format);
   }
-  if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-    std::cerr << "Could not retrieve stream info from: " << file << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
+  absl::Status Open(const std::string& file) {
+    if ((avformat_version() >> 16) != LIBAVFORMAT_VERSION_MAJOR ||
+        (avcodec_version() >> 16) != LIBAVCODEC_VERSION_MAJOR || (avutil_version() >> 16) != LIBAVUTIL_VERSION_MAJOR)
+      return absl::FailedPreconditionError("Synchronization requires matching FFmpeg headers and runtime libraries");
+    format = avformat_alloc_context();
+    if (!format)
+      return absl::ResourceExhaustedError("Cannot allocate synchronization demuxer");
+    format->interrupt_callback = {
+        [](void* value) { return int(std::chrono::steady_clock::now() > static_cast<AudioInput*>(value)->deadline); },
+        this};
+    if (avformat_open_input(&format, file.c_str(), nullptr, nullptr) < 0 ||
+        avformat_find_stream_info(format, nullptr) < 0)
+      return absl::NotFoundError("Cannot read synchronization source: " + file);
+    return absl::OkStatus();
   }
+};
 
-  // Find the first audio stream.
-  int audio_stream_index = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-      audio_stream_index = i;
+absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window, double seconds, int& rate) {
+  std::vector<float> output;
+  for (const auto& chapter : window.chapters) {
+    if (seconds <= 0)
       break;
-    }
-  }
-  if (audio_stream_index < 0) {
-    std::cerr << "No audio stream found in: " << file << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  // Set up the codec context.
-  AVCodecParameters* codecpar = fmt_ctx->streams[audio_stream_index]->codecpar;
-  const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
-  if (!codec) {
-    std::cerr << "Codec not found." << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-  AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
-  if (!codec_ctx) {
-    std::cerr << "Could not allocate codec context." << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-  if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0) {
-    std::cerr << "Could not copy codec parameters." << std::endl;
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-  if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
-    std::cerr << "Could not open codec." << std::endl;
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  // Determine the input channel layout and configure resampler.
-  SwrContext* swr_ctx = nullptr;
-  int out_channels = 0;
+    const double duration = std::min(seconds, chapter.duration_seconds);
+    AudioInput input;
+    auto status = input.Open(chapter.file);
+    if (!status.ok())
+      return status;
+    const int audio = av_find_best_stream(input.format, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    const int video = av_find_best_stream(input.format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (audio < 0 || video < 0)
+      return absl::FailedPreconditionError("Synchronization requires video and audio tracks: " + chapter.file);
+    auto* stream = input.format->streams[audio];
+    const auto* decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (!decoder || !(input.codec = avcodec_alloc_context3(decoder)) ||
+        avcodec_parameters_to_context(input.codec, stream->codecpar) < 0 ||
+        avcodec_open2(input.codec, decoder, nullptr) < 0)
+      return absl::FailedPreconditionError("Cannot decode synchronization audio: " + chapter.file);
+    if (rate == 0)
+      rate = input.codec->sample_rate;
+    if (rate <= 0 || input.codec->sample_rate != rate)
+      return absl::FailedPreconditionError("Synchronization audio tracks must have matching sample rates");
 #if LIBAVUTIL_VERSION_MAJOR >= 57
-  AVChannelLayout in_ch_layout{};
-  if (codecpar->ch_layout.nb_channels > 0) {
-    if (av_channel_layout_copy(&in_ch_layout, &codecpar->ch_layout) < 0) {
-      std::cerr << "Could not copy channel layout." << std::endl;
-      avcodec_free_context(&codec_ctx);
-      avformat_close_input(&fmt_ctx);
-      std::exit(1);
-    }
-  } else if (codec_ctx->ch_layout.nb_channels > 0) {
-    if (av_channel_layout_copy(&in_ch_layout, &codec_ctx->ch_layout) < 0) {
-      std::cerr << "Could not copy channel layout from codec context." << std::endl;
-      avcodec_free_context(&codec_ctx);
-      avformat_close_input(&fmt_ctx);
-      std::exit(1);
-    }
-  } else {
-    int fallback_channels = 0;
-#if LIBAVCODEC_VERSION_MAJOR < 61
-    fallback_channels = codecpar->channels;
-#endif
-    if (fallback_channels <= 0) {
-      fallback_channels = codec_ctx->ch_layout.nb_channels;
-    }
-#if LIBAVCODEC_VERSION_MAJOR < 61
-    if (fallback_channels <= 0) {
-      fallback_channels = codec_ctx->channels;
-    }
-#endif
-    if (fallback_channels <= 0) {
-      fallback_channels = 2;
-    }
-    av_channel_layout_default(&in_ch_layout, fallback_channels);
-  }
-
-  out_channels = in_ch_layout.nb_channels;
-  AVChannelLayout out_ch_layout{};
-  if (av_channel_layout_copy(&out_ch_layout, &in_ch_layout) < 0) {
-    std::cerr << "Could not copy output channel layout." << std::endl;
-    av_channel_layout_uninit(&in_ch_layout);
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  if (swr_alloc_set_opts2(
-          &swr_ctx,
-          &out_ch_layout,
-          AV_SAMPLE_FMT_FLT,
-          codec_ctx->sample_rate,
-          &in_ch_layout,
-          codec_ctx->sample_fmt,
-          codec_ctx->sample_rate,
-          0,
-          nullptr) < 0 ||
-      !swr_ctx) {
-    std::cerr << "Could not allocate/configure resampler context." << std::endl;
-    av_channel_layout_uninit(&out_ch_layout);
-    av_channel_layout_uninit(&in_ch_layout);
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
+    AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
+    if (swr_alloc_set_opts2(
+            &input.resampler,
+            &mono,
+            AV_SAMPLE_FMT_FLT,
+            rate,
+            &input.codec->ch_layout,
+            input.codec->sample_fmt,
+            rate,
+            0,
+            nullptr) < 0)
+      return absl::ResourceExhaustedError("Cannot allocate synchronization audio conversion");
 #else
-  int fallback_channels = codecpar->channels;
-  if (fallback_channels <= 0) {
-    fallback_channels = codec_ctx->channels;
-  }
-  if (fallback_channels <= 0) {
-    fallback_channels = 2;
-  }
-
-  uint64_t in_ch_layout = codecpar->channel_layout;
-  if (in_ch_layout == 0) {
-    in_ch_layout = codec_ctx->channel_layout;
-  }
-  if (in_ch_layout == 0) {
-    in_ch_layout = av_get_default_channel_layout(fallback_channels);
-  }
-
-  out_channels = av_get_channel_layout_nb_channels(in_ch_layout);
-  if (out_channels <= 0) {
-    out_channels = fallback_channels;
-  }
-
-  swr_ctx = swr_alloc_set_opts(
-      nullptr,
-      static_cast<int64_t>(in_ch_layout),
-      AV_SAMPLE_FMT_FLT,
-      codec_ctx->sample_rate,
-      static_cast<int64_t>(in_ch_layout),
-      codec_ctx->sample_fmt,
-      codec_ctx->sample_rate,
-      0,
-      nullptr);
-  if (!swr_ctx) {
-    std::cerr << "Could not allocate/configure resampler context." << std::endl;
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
+    const auto layout = input.codec->channel_layout ? input.codec->channel_layout
+                                                    : av_get_default_channel_layout(input.codec->channels);
+    input.resampler = swr_alloc_set_opts(
+        nullptr, AV_CH_LAYOUT_MONO, AV_SAMPLE_FMT_FLT, rate, layout, input.codec->sample_fmt, rate, 0, nullptr);
 #endif
-
-  if (swr_init(swr_ctx) < 0) {
-    std::cerr << "Could not initialize resampler." << std::endl;
-    swr_free(&swr_ctx);
-#if LIBAVUTIL_VERSION_MAJOR >= 57
-    av_channel_layout_uninit(&out_ch_layout);
-    av_channel_layout_uninit(&in_ch_layout);
-#endif
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  int out_sample_rate = codec_ctx->sample_rate;
-  // Total output samples per channel.
-  int64_t total_output_samples = static_cast<int64_t>(duration_seconds * out_sample_rate);
-
-  // Create a 2D vector for storing output audio: one vector per channel.
-  std::vector<std::vector<float>> audio_samples(out_channels);
-  for (int ch = 0; ch < out_channels; ++ch) {
-    audio_samples[ch].reserve(total_output_samples);
-  }
-
-  AVPacket* packet = av_packet_alloc();
-  AVFrame* frame = av_frame_alloc();
-  bool finished = false;
-
-  // Decode and convert audio frames.
-  while (!finished && av_read_frame(fmt_ctx, packet) >= 0) {
-    if (packet->stream_index == audio_stream_index) {
-      int ret = avcodec_send_packet(codec_ctx, packet);
-      if (ret < 0) {
-        std::cerr << "Error sending packet for decoding." << std::endl;
-        break;
-      }
-      while (ret >= 0) {
-        ret = avcodec_receive_frame(codec_ctx, frame);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-          break;
-        if (ret < 0) {
-          std::cerr << "Error during decoding." << std::endl;
-          break;
-        }
-        int nb_samples = frame->nb_samples; // number of samples per channel in this frame
-
-        // Allocate buffer for converted data: converted samples are interleaved.
-        int max_out_samples = nb_samples; // swr_convert returns samples per channel.
-        int buffer_size = max_out_samples * out_channels;
-        float* out_buffer = new float[buffer_size];
-        uint8_t* out_data[1] = {reinterpret_cast<uint8_t*>(out_buffer)};
-
-        int converted_samples =
-            swr_convert(swr_ctx, out_data, max_out_samples, (const uint8_t**)frame->extended_data, nb_samples);
-        if (converted_samples < 0) {
-          std::cerr << "Error converting audio." << std::endl;
-          delete[] out_buffer;
-          break;
-        }
-        // Deinterleave the interleaved output into separate channels.
-        for (int i = 0; i < converted_samples; i++) {
-          for (int ch = 0; ch < out_channels; ch++) {
-            audio_samples[ch].push_back(out_buffer[i * out_channels + ch]);
-          }
-        }
-        delete[] out_buffer;
-        av_frame_unref(frame);
-        // Check if we have reached the desired sample count for each channel.
-        if (audio_samples[0].size() >= static_cast<size_t>(total_output_samples)) {
-          finished = true;
-          break;
+    if (!input.resampler || swr_init(input.resampler) < 0)
+      return absl::FailedPreconditionError("Cannot initialize synchronization audio conversion");
+    const auto* video_stream = input.format->streams[video];
+    const double origin =
+        video_stream->start_time == AV_NOPTS_VALUE ? 0 : video_stream->start_time * av_q2d(video_stream->time_base);
+    const double start = chapter.start_seconds + origin;
+    for (unsigned index = 0; index < input.format->nb_streams; ++index)
+      if (int(index) != audio)
+        input.format->streams[index]->discard = AVDISCARD_ALL;
+    if (av_seek_frame(input.format, audio, std::llround(start / av_q2d(stream->time_base)), AVSEEK_FLAG_BACKWARD) < 0)
+      return absl::FailedPreconditionError("Cannot seek synchronization audio to camera start: " + chapter.file);
+    input.packet = av_packet_alloc();
+    input.frame = av_frame_alloc();
+    if (!input.packet || !input.frame)
+      return absl::ResourceExhaustedError("Cannot allocate synchronization audio frame");
+    const size_t base = output.size(), count = std::llround(duration * rate);
+    output.resize(base + count, 0);
+    bool finished = false;
+    int code = 0;
+    while (!finished && (code = av_read_frame(input.format, input.packet)) >= 0) {
+      if (input.packet->stream_index == audio) {
+        if (avcodec_send_packet(input.codec, input.packet) < 0)
+          return absl::DataLossError("Cannot decode synchronization audio packet");
+        for (;;) {
+          const int decoded = avcodec_receive_frame(input.codec, input.frame);
+          if (decoded == AVERROR(EAGAIN) || decoded == AVERROR_EOF)
+            break;
+          if (decoded < 0 || input.frame->best_effort_timestamp == AV_NOPTS_VALUE)
+            return absl::DataLossError("Synchronization audio is missing decoded timestamps");
+          const int64_t position =
+              std::llround((input.frame->best_effort_timestamp * av_q2d(stream->time_base) - start) * rate);
+          std::vector<float> pcm(input.frame->nb_samples);
+          uint8_t* destination = reinterpret_cast<uint8_t*>(pcm.data());
+          const int converted = swr_convert(
+              input.resampler,
+              &destination,
+              pcm.size(),
+              const_cast<const uint8_t**>(input.frame->extended_data),
+              input.frame->nb_samples);
+          if (converted < 0)
+            return absl::DataLossError("Cannot convert synchronization audio");
+          for (int i = std::max<int64_t>(0, -position); i < converted && position + i < int64_t(count); ++i)
+            output[base + position + i] = pcm[i];
+          finished = position + converted >= int64_t(count);
+          av_frame_unref(input.frame);
+          if (finished)
+            break;
         }
       }
+      av_packet_unref(input.packet);
     }
-    av_packet_unref(packet);
-    if (finished)
-      break;
+    if (code < 0 && code != AVERROR_EOF)
+      return absl::DataLossError("Failed or timed out reading synchronization audio");
+    seconds -= duration;
   }
-
-  av_packet_free(&packet);
-  av_frame_free(&frame);
-  swr_free(&swr_ctx);
-#if LIBAVUTIL_VERSION_MAJOR >= 57
-  av_channel_layout_uninit(&out_ch_layout);
-  av_channel_layout_uninit(&in_ch_layout);
-#endif
-  avcodec_free_context(&codec_ctx);
-  avformat_close_input(&fmt_ctx);
-
-  if (verbose) {
-    std::cout << "Loaded audio from: " << file << ", channels: " << out_channels
-              << ", samples per channel: " << audio_samples[0].size() << ", sample rate: " << out_sample_rate
-              << std::endl;
-  }
-  return {audio_samples, out_sample_rate};
+  return output;
 }
-#else
-std::pair<std::vector<std::vector<float>>, int> load_audio_as_tensor(
-    const std::string& file,
-    double duration_seconds,
-    bool verbose = false) {
-  AVFormatContext* fmt_ctx = nullptr;
-  if (avformat_open_input(&fmt_ctx, file.c_str(), nullptr, nullptr) < 0) {
-    std::cerr << "Could not open file: " << file << std::endl;
-    std::exit(1);
-  }
-  if (avformat_find_stream_info(fmt_ctx, nullptr) < 0) {
-    std::cerr << "Could not retrieve stream info from: " << file << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  // Find the first audio stream.
-  int audio_stream_index = -1;
-  for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
-    if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
-      audio_stream_index = i;
-      break;
-    }
-  }
-  if (audio_stream_index < 0) {
-    std::cerr << "No audio stream found in: " << file << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  // Set up the codec context.
-  AVCodecParameters* codecpar = fmt_ctx->streams[audio_stream_index]->codecpar;
-  const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
-  if (!codec) {
-    std::cerr << "Codec not found." << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-  AVCodecContext* codec_ctx = avcodec_alloc_context3(codec);
-  if (!codec_ctx) {
-    std::cerr << "Could not allocate codec context." << std::endl;
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-  if (avcodec_parameters_to_context(codec_ctx, codecpar) < 0) {
-    std::cerr << "Could not copy codec parameters." << std::endl;
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-  if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
-    std::cerr << "Could not open codec." << std::endl;
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  // Determine the input channel layout.
-  uint64_t in_channel_layout = 0;
-#if LIBAVCODEC_VERSION_MAJOR >= 61
-  uint64_t param_layout = av_codec_parameters_get_channel_layout(codecpar);
-#else
-  uint64_t param_layout = codecpar->channel_layout;
-#endif
-  if (param_layout != 0) {
-    in_channel_layout = param_layout;
-  } else {
-#if LIBAVCODEC_VERSION_MAJOR >= 61
-    int channels = av_codec_parameters_get_channels(codecpar);
-#else
-    int channels = codecpar->channels;
-#endif
-    AVChannelLayout default_layout;
-    av_channel_layout_default(&default_layout, channels);
-    in_channel_layout = default_layout.u.mask;
-  }
-
-  // Determine number of channels (preserve original channels).
-#if LIBAVCODEC_VERSION_MAJOR >= 61
-  int out_channels = av_codec_parameters_get_channels(codecpar);
-#else
-  int out_channels = codecpar->channels;
-#endif
-
-  // Set up the resampler to convert the audio to float format while preserving channel count.
-  SwrContext* swr_ctx = swr_alloc();
-  if (!swr_ctx) {
-    std::cerr << "Could not allocate resampler context." << std::endl;
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-  // Input options.
-  av_opt_set_int(swr_ctx, "in_channel_layout", in_channel_layout, 0);
-  av_opt_set_int(swr_ctx, "in_sample_rate", codec_ctx->sample_rate, 0);
-  av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
-  // Output options: preserve number of channels.
-  av_opt_set_int(swr_ctx, "out_channel_layout", in_channel_layout, 0);
-  av_opt_set_int(swr_ctx, "out_sample_rate", codec_ctx->sample_rate, 0);
-  av_opt_set_sample_fmt(swr_ctx, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
-  if (swr_init(swr_ctx) < 0) {
-    std::cerr << "Could not initialize resampler." << std::endl;
-    swr_free(&swr_ctx);
-    avcodec_free_context(&codec_ctx);
-    avformat_close_input(&fmt_ctx);
-    std::exit(1);
-  }
-
-  int out_sample_rate = codec_ctx->sample_rate;
-  // Total output samples per channel.
-  int64_t total_output_samples = static_cast<int64_t>(duration_seconds * out_sample_rate);
-
-  // Create a 2D vector for storing output audio: one vector per channel.
-  std::vector<std::vector<float>> audio_samples(out_channels);
-  for (int ch = 0; ch < out_channels; ++ch) {
-    audio_samples[ch].reserve(total_output_samples);
-  }
-
-  AVPacket* packet = av_packet_alloc();
-  AVFrame* frame = av_frame_alloc();
-  bool finished = false;
-
-  // Decode and convert audio frames.
-  while (!finished && av_read_frame(fmt_ctx, packet) >= 0) {
-    if (packet->stream_index == audio_stream_index) {
-      int ret = avcodec_send_packet(codec_ctx, packet);
-      if (ret < 0) {
-        std::cerr << "Error sending packet for decoding." << std::endl;
-        break;
-      }
-      while (ret >= 0) {
-        ret = avcodec_receive_frame(codec_ctx, frame);
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-          break;
-        if (ret < 0) {
-          std::cerr << "Error during decoding." << std::endl;
-          break;
-        }
-        int nb_samples = frame->nb_samples; // number of samples per channel in this frame
-
-        // Allocate buffer for converted data: note that converted samples are interleaved.
-        // We request conversion for nb_samples.
-        int max_out_samples = nb_samples; // swr_convert returns samples per channel.
-        int buffer_size = max_out_samples * out_channels;
-        float* out_buffer = new float[buffer_size];
-        uint8_t* out_data[1] = {reinterpret_cast<uint8_t*>(out_buffer)};
-
-        int converted_samples =
-            swr_convert(swr_ctx, out_data, max_out_samples, (const uint8_t**)frame->extended_data, nb_samples);
-        if (converted_samples < 0) {
-          std::cerr << "Error converting audio." << std::endl;
-          delete[] out_buffer;
-          break;
-        }
-        // Deinterleave the interleaved output into separate channels.
-        for (int i = 0; i < converted_samples; i++) {
-          for (int ch = 0; ch < out_channels; ch++) {
-            audio_samples[ch].push_back(static_cast<double>(out_buffer[i * out_channels + ch]));
-          }
-        }
-        delete[] out_buffer;
-        av_frame_unref(frame);
-        // Check if we have reached the desired sample count for each channel.
-        if (audio_samples[0].size() >= static_cast<size_t>(total_output_samples)) {
-          finished = true;
-          break;
-        }
-      }
-    }
-    av_packet_unref(packet);
-    if (finished)
-      break;
-  }
-
-  av_packet_free(&packet);
-  av_frame_free(&frame);
-  swr_free(&swr_ctx);
-  avcodec_free_context(&codec_ctx);
-  avformat_close_input(&fmt_ctx);
-
-  if (verbose) {
-    std::cout << "Loaded audio from: " << file << ", channels: " << out_channels
-              << ", samples per channel: " << audio_samples[0].size() << ", sample rate: " << out_sample_rate
-              << std::endl;
-  }
-  return {audio_samples, out_sample_rate};
-}
-#endif
-
-// Get video FPS and duration (in seconds) using OpenCV.
-std::pair<double, double> get_video_fps_and_duration(const std::string& video_path) {
-  cv::VideoCapture cap(video_path);
-  if (!cap.isOpened()) {
-    std::cerr << "Could not open video: " << video_path << std::endl;
-    std::exit(1);
-  }
-  double fps = cap.get(cv::CAP_PROP_FPS);
-  int frame_count = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
-  cap.release();
-  double duration = frame_count / fps;
-  return {fps, duration};
-}
-
-/**
- * @brief Computes the lag corresponding to the maximum correlation.
- *
- * This mimics the Python code:
- * @code
- * lag = np.argmax(correlation) - audio1.shape[0] + 1
- * @endcode
- *
- * @param correlation The full cross-correlation vector.
- * @param audio1_size The size of the first signal.
- * @return int The computed lag.
- */
-int get_lag(const std::vector<float>& correlation, size_t audio1_size) {
-  // Find the index of the maximum element in the correlation vector.
-  auto max_iter = std::max_element(correlation.begin(), correlation.end());
-  int max_index = std::distance(correlation.begin(), max_iter);
-  // Compute lag such that the zero lag is at index audio1_size - 1.
-  int lag = max_index - static_cast<int>(audio1_size) + 1;
-  return lag;
-}
-
-double sum(const std::vector<float>& array) {
-  double sum1 = 0;
-  std::for_each(array.begin(), array.end(), [&sum1](auto v) { sum1 += v; });
-  return sum1;
-}
-
 } // namespace
 
-// Synchronize two videos by comparing their audio tracks.
-// Returns a pair (left_frame_offset, right_frame_offset) indicating the
-// number of frames to skip in each video so that they are synchronized.
-std::pair<double, double> synchronize_by_audio(
-    const std::string& file1_path,
-    const std::string& file2_path,
-    double seconds,
-    bool verbose) {
-  if (verbose) {
-    std::cout << "Opening videos..." << std::endl;
+absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
+    const std::vector<std::string>& files,
+    double start_seconds,
+    double duration_seconds) {
+  if (files.empty() || !std::isfinite(start_seconds) || start_seconds < 0 || !std::isfinite(duration_seconds) ||
+      duration_seconds <= 0)
+    return absl::InvalidArgumentError("Camera synchronization requires chapters and finite positive window bounds");
+  CameraRecordingWindow result{{}, 0, 0};
+  double skipped = 0;
+  for (const auto& file : files) {
+    AudioInput input;
+    const auto status = input.Open(file);
+    if (!status.ok())
+      return status;
+    const int video = av_find_best_stream(input.format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (video < 0)
+      return absl::FailedPreconditionError("Camera chapter has no video: " + file);
+    const auto* stream = input.format->streams[video];
+    const double fps = av_q2d(stream->avg_frame_rate);
+    const double duration = stream->duration == AV_NOPTS_VALUE ? 0 : stream->duration * av_q2d(stream->time_base);
+    if (!std::isfinite(fps) || fps <= 0 || !std::isfinite(duration) || duration <= 0)
+      return absl::FailedPreconditionError("Camera chapter requires a known duration and frame rate: " + file);
+    if (result.fps != 0 && std::abs(result.fps - fps) > 1e-5)
+      return absl::FailedPreconditionError("Camera chapters have different frame rates");
+    result.fps = fps;
+    if (start_seconds >= skipped + duration) {
+      skipped += duration;
+      continue;
+    }
+    const double local = std::max(0.0, start_seconds - skipped);
+    const double take = std::min(duration - local, duration_seconds - result.duration_seconds);
+    result.chapters.push_back({file, local, take});
+    result.duration_seconds += take;
+    if (result.duration_seconds >= duration_seconds)
+      break;
+    skipped += duration;
   }
-  // Retrieve FPS and duration for both videos.
-  auto [video1_fps, video1_duration] = get_video_fps_and_duration(file1_path);
-  auto [video2_fps, video2_duration] = get_video_fps_and_duration(file2_path);
-
-  // Use a 0.5-second margin to ensure we don't exceed the available duration.
-  seconds = std::min(seconds, std::min(video1_duration - 0.5, video2_duration - 0.5));
-
-  const double video1_subclip_frame_count = video1_fps * seconds;
-  const double video2_subclip_frame_count = video2_fps * seconds;
-
-  if (verbose) {
-    std::cout << "Loading audio..." << std::endl;
-  }
-  // Load audio. The load_audio_as_tensor returns a mono signal.
-  auto [audio1, sample_rate1] = load_audio_as_tensor(file1_path, seconds, verbose);
-  auto [audio2, sample_rate2] = load_audio_as_tensor(file2_path, seconds, verbose);
-
-  double sum1 = sum(audio1[0]);
-  double sum2 = sum(audio2[0]);
-
-  // Calculate the number of audio samples per video frame.
-  const double audio_items_per_frame_1 = static_cast<double>(audio1[0].size()) / video1_subclip_frame_count;
-  const double audio_items_per_frame_2 = static_cast<double>(audio2[0].size()) / video2_subclip_frame_count;
-
-  // Check that the computed samples per frame match the expected value.
-  // const double expected_samples_per_frame1 = static_cast<double>(sample_rate1) / video1_fps;
-  // const double expected_samples_per_frame2 = static_cast<double>(sample_rate2) / video2_fps;
-  // if (std::abs(expected_samples_per_frame1 - audio_items_per_frame_1) > 1e-3 ||
-  //     std::abs(expected_samples_per_frame2 - audio_items_per_frame_2) > 1e-3) {
-  //   std::cerr << "Mismatch in samples per frame calculation!" << std::endl;
-  //   std::exit(1);
-  // }
-
-  if (verbose) {
-    std::cout << "Calculating cross-correlation..." << std::endl;
-  }
-  // Compute the cross-correlation using the first (or only) channel.
-  // std::vector<float> correlation = full_correlate(audio1[0], audio2[0]);
-
-  std::vector<float> correlation = full_correlate_fft(audio1[0], audio2[0]);
-
-  auto sumc = sum(correlation);
-
-  int lag = -get_lag(correlation, audio1[0].size());
-
-  // A positive lag means audio1 lags behind audio2.
-  const double frame_offset = lag / audio_items_per_frame_1;
-  const double time_offset = frame_offset / video1_fps;
-
-  if (verbose) {
-    std::cout << "Calculated frame offset: " << frame_offset << std::endl;
-    std::cout << "Equivalent time offset: " << time_offset << " seconds" << std::endl;
-  }
-
-  // Determine the starting frame offset for each video.
-  const double left_frame_offset = (frame_offset > 0.0) ? frame_offset : 0.0;
-  const double right_frame_offset = (frame_offset < 0.0) ? -frame_offset : 0.0;
-
-  if (verbose) {
-    std::cout << "Left frame offset: " << left_frame_offset << std::endl;
-    std::cout << "Right time offset: " << right_frame_offset << std::endl;
-  }
-
-  return {left_frame_offset, right_frame_offset};
+  if (result.chapters.empty())
+    return absl::OutOfRangeError(
+        "Camera start " + std::to_string(start_seconds) + " seconds reaches or exceeds " + files.front() +
+        " recording duration " + std::to_string(skipped) + " seconds");
+  return result;
 }
 
-} // namespace stitching
-} // namespace hm
+absl::StatusOr<std::pair<double, double>> synchronize_by_audio(
+    const CameraRecordingWindow& left,
+    const CameraRecordingWindow& right) {
+  const double seconds = std::min({15.0, left.duration_seconds, right.duration_seconds});
+  if (seconds < 0.5)
+    return absl::FailedPreconditionError("Camera starts leave less than half a second for audio synchronization");
+  int rate = 0;
+  auto a = ReadAudio(left, seconds, rate);
+  if (!a.ok())
+    return a.status();
+  auto b = ReadAudio(right, seconds, rate);
+  if (!b.ok())
+    return b.status();
+  if (a->size() != b->size() || a->empty())
+    return absl::FailedPreconditionError("Camera starts leave unequal audio synchronization windows");
+  for (auto* samples : {&*a, &*b}) {
+    const double mean = std::accumulate(samples->begin(), samples->end(), 0.0) / samples->size();
+    for (auto& value : *samples)
+      value -= mean;
+  }
+  const auto correlation = full_correlate_fft(*a, *b);
+  const auto peak = std::max_element(correlation.begin(), correlation.end());
+  const auto lag = int64_t(a->size()) - 1 - std::distance(correlation.begin(), peak);
+  double aa = 0, bb = 0, ab = 0;
+  const int64_t begin = std::max<int64_t>(0, -lag), end = std::min<int64_t>(b->size(), a->size() - lag);
+  for (int64_t i = begin; i < end; ++i) {
+    const double x = (*a)[i + lag], y = (*b)[i];
+    aa += x * x;
+    bb += y * y;
+    ab += x * y;
+  }
+  if (end - begin < int64_t(a->size() / 2) || aa <= 0 || bb <= 0 || ab / std::sqrt(aa * bb) < 0.1)
+    return absl::FailedPreconditionError(
+        "Audio synchronization could not find a reliable match. Set each camera's source start to roughly the same "
+        "event before retrying synchronization.");
+  const double offset = double(lag) / rate;
+  std::cout << "Audio synchronization residual left-minus-right skip: " << offset << " seconds\n";
+  return std::make_pair(std::max(0.0, offset), std::max(0.0, -offset));
+}
+} // namespace hm::stitching

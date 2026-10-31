@@ -111,8 +111,8 @@ cc_test(
 
 cc_library(
   name = "game_config",
-  srcs = ["GameConfig.cpp", "InputLens.cpp"],
-  hdrs = ["GameConfig.h", "InputLens.h"],
+  srcs = ["GameConfig.cpp", "InputLens.cpp", "CameraSourceStart.cpp"],
+  hdrs = ["GameConfig.h", "InputLens.h", "CameraSourceStart.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
@@ -1017,4 +1017,10 @@ cc_test(
   name = "rink_mask_input_store_test",
   srcs = ["RinkMaskInputStoreTest.cpp"],
   deps = [":rink_mask_input_store"],
+)
+
+cc_test(
+  name = "camera_source_start_test",
+  srcs = ["CameraSourceStartTest.cpp"],
+  deps = [":game_config"],
 )

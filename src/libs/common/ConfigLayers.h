@@ -11,7 +11,7 @@
 namespace hm::config {
 using LeafRanks = std::map<std::string, int>;
 
-// Native configuration merge semantics: maps recurse except complete input_cameras
+// Native configuration merge semantics: maps recurse except complete input_cameras/input_start_times
 // snapshots, which replace atomically. Other overlay values
 // replace leaves. Like YAML::Node assignment, returned nodes may alias inputs.
 // Clone documents at an ownership boundary before calling this primitive.

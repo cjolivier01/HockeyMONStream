@@ -38,9 +38,12 @@ struct Insta360Record {
   std::vector<unsigned char> data;
   size_t full_size{0};
 };
-// Read a bounded prefix without loading the full gyro/preview trailer.
+// Read a bounded range without loading the full gyro/preview trailer.
 absl::StatusOr<std::optional<Insta360Record>> ReadInsta360Record(
-    const std::filesystem::path& video, unsigned type, size_t max_bytes);
+    const std::filesystem::path& video,
+    unsigned type,
+    size_t max_bytes,
+    size_t byte_offset = 0);
 absl::StatusOr<std::optional<Insta360Clock>> ReadInsta360Clock(const std::filesystem::path& video);
 absl::StatusOr<Metadata> Parse(const std::string& json, const std::optional<Insta360Clock>& clock);
 Tags ForFrame(const Metadata& metadata, double seconds);

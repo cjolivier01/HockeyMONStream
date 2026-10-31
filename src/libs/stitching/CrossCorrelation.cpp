@@ -119,7 +119,7 @@ std::vector<float> full_correlate_fft(const std::vector<float>& x, const std::ve
   std::vector<float> corr_shifted(L);
   int shift = N1 - 1;
   for (int i = 0; i < L; i++) {
-    corr_shifted[i] = corr[(i + shift) % L];
+    corr_shifted[i] = corr[(i - shift + L) % L];
   }
   return corr_shifted;
 }

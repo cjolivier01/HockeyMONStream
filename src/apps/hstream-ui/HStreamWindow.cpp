@@ -4049,7 +4049,7 @@ YAML::Node merge_yaml_maps(const YAML::Node& base, const YAML::Node& overlay) {
   for (const auto& entry : overlay) {
     const std::string key = entry.first.as<std::string>();
     YAML::Node base_child = result[key];
-    if (key != "input_cameras" && entry.second.IsMap() && base_child.IsMap())
+    if (key != "input_cameras" && key != "input_start_times" && entry.second.IsMap() && base_child.IsMap())
       result[key] = merge_yaml_maps(base_child, entry.second);
     else
       result[key] = YAML::Clone(entry.second);
@@ -6980,12 +6980,26 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_preview_layout->addWidget(camera_status);
     auto* controls = new QTabWidget(camera_splitter);
     controls->setObjectName(QString("camera%1ControlTabs").arg(camera_index + 1));
+    auto* source_start = new CameraSourceStartWidget(controls);
+    source_start->setObjectName(QString("camera%1StartControls").arg(camera_index + 1));
+    camera_start_widgets_.push_back(source_start);
+    source_start->changed = [this, camera_index](double seconds) {
+      if (camera_index >= camera_optics_sources_.size())
+        return;
+      const auto& source = camera_optics_sources_[camera_index];
+      if (seconds == 0)
+        camera_source_starts_.erase(source);
+      else
+        camera_source_starts_[source] = seconds;
+      updatePresetDirtyState();
+    };
     auto* optics_scroll = new QScrollArea(controls);
     optics_scroll->setWidgetResizable(true);
     auto* optics = new CameraOpticsWidget(camera_configurations_, optics_scroll);
     optics->setObjectName(QString("camera%1OpticsControls").arg(camera_index + 1));
     optics_scroll->setWidget(optics);
     controls->addTab(optics_scroll, tab_icon("Optics"), "Optics");
+    controls->addTab(source_start, tab_icon("Input"), "Input");
     camera_optics_widgets_.push_back(optics);
     optics->changed = [this, camera_index](bool refresh) { changeInputCameraOptics(camera_index, refresh); };
     camera_splitter->addWidget(camera_preview);
@@ -8537,6 +8551,7 @@ QString HStreamWindow::mappingBackend() const {
 
 hm::stitching::StitchCameraSelection HStreamWindow::stitchCameraSelection() const {
   hm::stitching::StitchCameraSelection selection = default_camera_selection_;
+  selection.input_start_times = camera_source_starts_;
   if (camera_configuration_combo_)
     selection.configuration = camera_configuration_combo_->currentData().toString().toStdString();
   if (camera_horizontal_fov_spin_)
@@ -8562,10 +8577,16 @@ absl::StatusOr<hm::stitching::StitchCameraSelection> HStreamWindow::stitchCamera
     return absl::InvalidArgumentError("stitching must be a map");
   if (stitching && stitching.IsMap()) {
     for (const char* key :
-         {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"}) {
+         {"camera_configs",
+          "camera_config",
+          "camera_fov",
+          "input_lens",
+          "camera_automation",
+          "input_cameras",
+          "input_start_times"}) {
       const YAML::Node value = stitching[key];
       if (value && value.IsDefined())
-        effective["stitching"][key] = std::string(key) == "input_cameras"
+        effective["stitching"][key] = (std::string(key) == "input_cameras" || std::string(key) == "input_start_times")
             ? YAML::Clone(value)
             : merge_yaml_maps(effective["stitching"][key], value);
     }
@@ -8585,6 +8606,7 @@ absl::StatusOr<hm::stitching::StitchProjectionFraming> HStreamWindow::stitchProj
 
 void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResult& result) {
   camera_optics_result_ = result;
+  camera_source_starts_ = result.camera.input_start_times;
   if (input_camera_defaults_group_)
     input_camera_defaults_group_->setVisible(editing_defaults_);
   camera_optics_sources_.clear();
@@ -8625,6 +8647,9 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
     preview_tabs_->setTabText(tab, label);
     if (auto* status = findChild<QLabel*>(QString("camera%1PreviewStatusLabel").arg(index + 1)))
       status->setText(label + " decoded source preview");
+    camera_start_widgets_[index]->setStart(hm::stitching::CameraSourceStart(camera_source_starts_, {}, source));
+    camera_start_widgets_[index]->setEnabled(!running);
+    camera_start_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
     camera_optics_widgets_[index]->setCamera(result.camera.for_source(source), metadata);
     camera_optics_widgets_[index]->setEnabled(!running);
     camera_optics_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
@@ -10035,7 +10060,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         sync_method_changed || control_points_changed || frame_count_changed || control_point_matcher_changed ||
         mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
         projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required;
-    const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count;
+    const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count &&
+        saved_camera_selection.input_start_times == active_camera_selection_.input_start_times;
     replay_selected_frames = retain_selected_frames;
     if (!retain_selected_frames)
       remove_yaml_path(config, {"stitching", "stitch_frame_time"});
@@ -10213,7 +10239,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(saved_mapping_backend, active_mapping_backend_);
     if (camera_changed)
-      reasons << "camera configuration/FOV/input lens";
+      reasons << "camera configuration/FOV/input lens/source start";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(saved_projection, active_projection_);
     if (projection_parameters_changed)
@@ -18526,6 +18552,8 @@ void HStreamWindow::updateRunControls() {
     input_lens_widget_->setEnabled(!running && !finalizing);
   for (auto* controls : camera_optics_widgets_)
     controls->setEnabled(!running && !finalizing);
+  for (auto* controls : camera_start_widgets_)
+    controls->setEnabled(!running && !finalizing);
   if (projection_combo_)
     projection_combo_->setEnabled(!running && !finalizing);
   updateProjectionParameterControls();
@@ -20667,7 +20695,12 @@ bool HStreamWindow::applySavedControlConfig(
   const bool sync_method_changed = saved_iteration_settings_.sync_method != stitchingIterationSettings().sync_method;
   const bool frame_count_changed =
       saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
-  const bool retain_selected_frames = selected_plan_frame_count->has_value() && !frame_count_changed;
+  const bool source_starts_changed =
+      saved_camera_selection_.input_start_times != stitchCameraSelection().input_start_times;
+  const bool retain_selected_frames =
+      selected_plan_frame_count->has_value() && !frame_count_changed && !source_starts_changed;
+  if (source_starts_changed)
+    hm::stitching::InvalidateStitchingSourceInputs(config);
   if (stitch_frame_time_changed && retain_selected_frames) {
     appendLog(
         "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
@@ -20967,7 +21000,8 @@ bool HStreamWindow::applySavedControlConfig(
        projection_parameters_changed || projection_framing_changed || run_autooptimizer_changed ||
        canvas_constraint.calibration_required)) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
-    QString stale_from = stitch_frame_time_changed || sync_method_changed || frame_count_changed
+    QString stale_from =
+        source_starts_changed || stitch_frame_time_changed || sync_method_changed || frame_count_changed
         ? "input"
         : ((control_points_changed || control_point_matcher_changed) ? "features" : "canvas");
     const YAML::Node previous_status = map_value(calibration, "status");
@@ -21012,7 +21046,7 @@ bool HStreamWindow::applySavedControlConfig(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(previous_mapping_backend, selected_mapping_backend);
     if (camera_changed)
-      reasons << "camera configuration/FOV/input lens";
+      reasons << "camera configuration/FOV/input lens/source start";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(previous_projection, selected_projection);
     if (projection_parameters_changed)

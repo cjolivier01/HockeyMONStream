@@ -78,7 +78,13 @@ absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config
     YAML::Node camera_config = YAML::Clone(baseline->values);
     const YAML::Node stitching = config["stitching"];
     for (const char* key :
-         {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"}) {
+         {"camera_configs",
+          "camera_config",
+          "camera_fov",
+          "input_lens",
+          "camera_automation",
+          "input_cameras",
+          "input_start_times"}) {
       if (stitching && stitching.IsMap() && stitching[key] && !stitching[key].IsNull())
         camera_config["stitching"][key] = YAML::Clone(stitching[key]);
     }
@@ -94,6 +100,8 @@ absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config
       context["input_lens"] = WriteStitchInputLens(camera.input_lens);
     if (!camera.input_cameras.empty())
       context["input_cameras"] = WriteStitchInputCameras(camera.input_cameras, false);
+    if (!camera.input_start_times.empty())
+      context["input_start_times"] = WriteCameraSourceStarts(camera.input_start_times);
     context["stitch_frame_time"] =
         stitching && stitching["stitch_frame_time"] ? stitching["stitch_frame_time"].as<std::string>() : "00:00:00";
     const YAML::Node game = config["game"];
@@ -981,6 +989,9 @@ absl::StatusOr<StitchCameraSelection> read_stitch_camera_selection(const YAML::N
     HM_ASSIGN_OR_RETURN(
         result.input_cameras,
         ReadStitchInputCameras(stitching && stitching.IsMap() ? stitching["input_cameras"] : YAML::Node()));
+    HM_ASSIGN_OR_RETURN(
+        result.input_start_times,
+        ReadCameraSourceStarts(stitching && stitching.IsMap() ? stitching["input_start_times"] : YAML::Node()));
     return result;
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Unable to read stitching camera selection: " + std::string(exception.what()));
@@ -994,6 +1005,7 @@ void write_stitch_camera_selection(YAML::Node& config, const StitchCameraSelecti
   // Write the default too, so a game can override a user-level lens correction.
   config["stitching"]["input_lens"] = WriteStitchInputLens(selection.input_lens);
   config["stitching"]["input_cameras"] = WriteStitchInputCameras(selection.input_cameras);
+  config["stitching"]["input_start_times"] = WriteCameraSourceStarts(selection.input_start_times);
   config["stitching"]["camera_automation"]["fov"] =
       selection.auto_fov ? YAML::Node(*selection.auto_fov) : YAML::Node(YAML::NodeType::Null);
   config["stitching"]["camera_automation"]["lens"] =
@@ -1005,6 +1017,7 @@ StitchCameraSelection merge_stitch_camera_snapshot(
     const StitchCameraSelection& current) {
   if (!current.has_automatic_optics())
     return current;
+  snapshot.input_start_times = current.input_start_times;
   snapshot.configuration = current.configuration;
   snapshot.auto_fov = current.auto_fov;
   snapshot.auto_lens = current.auto_lens;
@@ -2604,6 +2617,7 @@ absl::StatusOr<StitchProjectionFraming> read_projection_framing_node(const YAML:
 }
 
 void write_camera_selection_node(YAML::Node node, const StitchCameraSelection& camera) {
+  node["input_start_times"] = WriteCameraSourceStarts(camera.input_start_times);
   node["camera_config"] = camera.configuration;
   node["camera_fov"]["horizontal_fov"] = camera.horizontal_fov;
   node["camera_fov"]["vertical_fov"] = camera.vertical_fov;
@@ -2628,6 +2642,8 @@ absl::StatusOr<StitchCameraSelection> read_camera_selection_node(const YAML::Nod
       wrapper["stitching"]["camera_fov"] = YAML::Clone(node["camera_fov"]);
     if (node["input_cameras"])
       wrapper["stitching"]["input_cameras"] = YAML::Clone(node["input_cameras"]);
+    if (node["input_start_times"])
+      wrapper["stitching"]["input_start_times"] = YAML::Clone(node["input_start_times"]);
   }
   return read_stitch_camera_selection(wrapper);
 }
@@ -2641,7 +2657,13 @@ absl::StatusOr<StitchCameraSelection> read_worker_camera_selection(const YAML::N
   if (stitching && !stitching.IsNull() && !stitching.IsMap())
     return absl::InvalidArgumentError("stitching must be a map");
   for (const char* key :
-       {"camera_configs", "camera_config", "camera_fov", "input_lens", "camera_automation", "input_cameras"}) {
+       {"camera_configs",
+        "camera_config",
+        "camera_fov",
+        "input_lens",
+        "camera_automation",
+        "input_cameras",
+        "input_start_times"}) {
     const YAML::Node value = stitching && stitching.IsMap() ? stitching[key] : YAML::Node();
     if (value && value.IsDefined())
       effective["stitching"][key] = YAML::Clone(value);

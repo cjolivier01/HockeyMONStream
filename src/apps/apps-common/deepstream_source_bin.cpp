@@ -4601,9 +4601,8 @@ gboolean configure_uri_playlist_initial_offsets(
   for (guint source_id = 0; source_id < 2; ++source_id) {
     NvDsSrcBin* source = &bin->sub_bins[source_id];
     const GstClockTime video_target = video_offsets[source_id] + start_time_ns;
-    // A source that owns selected audio cannot skip past the common audio epoch merely because its camera has a
-    // positive synchronization offset. Decode that residual video range so audio remains continuous from time zero.
-    const GstClockTime target = source_id == audio_source_id ? std::min(video_target, start_time_ns) : video_target;
+    // Audio and video from the selected camera share its absolute source start.
+    const GstClockTime target = video_target;
     plans[source_id].target = target;
     while (plans[source_id].index < source->num_uri_list) {
       const GstClockTime duration =
@@ -4660,9 +4659,11 @@ gboolean configure_uri_playlist_initial_offsets(
     for (guint source_id = 0; source_id < 2; ++source_id) {
       NvDsSrcBin* source = &bin->sub_bins[source_id];
       source->uri_playlist_initial_video_offset_ns = video_offsets[source_id] + start_time_ns;
-      source->uri_playlist_initial_audio_offset_ns = source_id == audio_source_id ? start_time_ns : 0;
+      source->uri_playlist_initial_audio_offset_ns =
+          source_id == audio_source_id ? video_offsets[source_id] + start_time_ns : 0;
       source->uri_playlist_video_origin_ns = GST_CLOCK_TIME_NONE;
-      source->uri_playlist_audio_origin_ns = source_id == audio_source_id ? start_time_ns : 0;
+      source->uri_playlist_audio_origin_ns =
+          source_id == audio_source_id ? video_offsets[source_id] + start_time_ns : 0;
       source->uri_list_index = plans[source_id].index;
       source->uri_playlist_initial_uri_index = plans[source_id].index;
       source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
@@ -4917,7 +4918,7 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
           gst_event_new_seek(
               1.0,
               GST_FORMAT_TIME,
-              static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT),
+              static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT | GST_SEEK_FLAG_SNAP_BEFORE),
               GST_SEEK_TYPE_SET,
               static_cast<gint64>(source->uri_playlist_initial_seek_ns),
               GST_SEEK_TYPE_NONE,

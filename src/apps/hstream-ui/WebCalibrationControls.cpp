@@ -57,7 +57,7 @@ YAML::Node at(const YAML::Node& root, std::initializer_list<const char*> path) {
 void merge(YAML::Node target, const YAML::Node& source) {
   for (const auto& entry : source) {
     const auto key = entry.first.as<std::string>();
-    if (key != "input_cameras" && entry.second.IsMap() && target[key].IsMap())
+    if (key != "input_cameras" && key != "input_start_times" && entry.second.IsMap() && target[key].IsMap())
       merge(target[key], entry.second);
     else
       target[key] = YAML::Clone(entry.second);
@@ -80,6 +80,7 @@ const std::set<QString>& control_roots() {
       "stitching.camera_automation",
       "stitching.input_lens",
       "stitching.input_cameras",
+      "stitching.input_start_times",
       "stitching.auto_input_lens_frozen",
       "stitching.run_autooptimizer",
       "stitching.projection",
@@ -118,6 +119,11 @@ void validate_controls(const QJsonObject& object, const QString& prefix = {}, si
       parent = parent || root.startsWith(path + ".");
     }
     require(selected || parent, "Unsupported calibration control: " + path.toStdString());
+    if (path == "stitching.input_start_times") {
+      require(item->isObject(), "Camera start times must be an object");
+      take(st::ReadCameraSourceStarts(YAML::Load(QJsonDocument(item->toObject()).toJson().toStdString())));
+      continue;
+    }
     if (path == "stitching.input_cameras") {
       require(item->isObject(), "Input cameras must be an object");
       take(st::ReadStitchInputCameras(YAML::Load(QJsonDocument(item->toObject()).toJson().toStdString())));
@@ -164,7 +170,8 @@ void apply_changes(YAML::Node target, const QJsonObject& before, const QJsonObje
     if (previous == next)
       continue;
     const auto key = name.toStdString();
-    if (key != "input_cameras" && (next.isObject() || (next.isUndefined() && previous.isObject()))) {
+    if (key != "input_cameras" && key != "input_start_times" &&
+        (next.isObject() || (next.isUndefined() && previous.isObject()))) {
       if (!target[key].IsMap())
         target[key] = YAML::Node(YAML::NodeType::Map);
       apply_changes(target[key], previous.toObject(), next.toObject());
@@ -628,7 +635,8 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
         desired_stitching.value("auto_input_lens_frozen").isBool() &&
         !desired_stitching.value("auto_input_lens_frozen").toBool();
     refresh_optics = refresh_optics || explicitly_released;
-    for (const char* key : {"camera_config", "camera_fov", "camera_automation", "input_lens", "input_cameras"})
+    for (const char* key :
+         {"camera_config", "camera_fov", "camera_automation", "input_lens", "input_cameras", "input_start_times"})
       refresh_optics = refresh_optics || previous_stitching.value(key) != desired_stitching.value(key);
     if (refresh_optics) {
       auto camera = take(st::read_stitch_camera_selection(effective));

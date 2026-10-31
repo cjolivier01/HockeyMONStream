@@ -1875,6 +1875,29 @@ int main(int argc, char** argv) {
     return rc;
   }
 
+  // Both source trims may be nonzero, and selected audio must start at its
+  // own camera's trim even when that position crosses a physical chapter.
+  for (guint selected_audio : {0U, 1U}) {
+    rc = run_lossless_two_camera_mux(
+        left_uris,
+        right_uris,
+        true,
+        selected_audio,
+        0,
+        ExpectedPipelineFailure::kNone,
+        0,
+        -1,
+        0,
+        200 * GST_MSECOND,
+        GST_SECOND + 200 * GST_MSECOND,
+        0,
+        true);
+    if (rc != 0) {
+      fs::remove_all(tmpdir);
+      return rc;
+    }
+  }
+
   if (startup_seek_only) {
     fs::remove_all(tmpdir);
     return 0;

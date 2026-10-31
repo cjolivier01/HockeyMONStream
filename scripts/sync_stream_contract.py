@@ -366,7 +366,7 @@ def qt_layout(root):
         "main_tabs": main,
         "stage_tabs": {"program": program, "stitched": stitched},
         "camera_tabs": {
-            "controls": ["Optics"],
+            "controls": ["Optics", "Input"],
             "visibility": "selected-sources",
             "order": ["left", "right"],
             "panorama_label": "Panorama",
@@ -1193,6 +1193,7 @@ def generate(root, *, native_revision=None, include_revision=True):
         "stitching_experiments": baseline["hstream_ui"]["stitching_experiments"],
         "stitching_camera_profiles": baseline["stitching"]["camera_configs"],
         "stitching_input_cameras": baseline["stitching"]["input_cameras"],
+        "stitching_input_start_times": baseline["stitching"]["input_start_times"],
         "stitching_control_policies": stitching_control_policies(root),
         "stitching_camera_automation": {
             **baseline["stitching"]["camera_automation"],

@@ -20,8 +20,8 @@ struct Recording {
   std::vector<Sample> gyro;
   double fps{0};
 };
-// Setup-only metadata reads, bounded to a prefix of the first physical chapter.
-absl::StatusOr<Recording> Read(const std::string& video);
+// Setup-only metadata reads, bounded to the requested chapter window.
+absl::StatusOr<Recording> Read(const std::string& video, double start_seconds = 0, double duration_seconds = 35);
 // Positive seconds means skip the left recording; negative means skip the right.
 absl::StatusOr<double> EstimateOffset(const std::vector<Sample>& left, const std::vector<Sample>& right);
 // GPMF packet timing is relative to the video track. Exposed for parser tests.

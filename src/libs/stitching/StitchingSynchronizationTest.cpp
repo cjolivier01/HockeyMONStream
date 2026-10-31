@@ -10,6 +10,7 @@
 #include <iostream>
 
 #include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/stitching/CrossCorrelation.h"
 
 namespace {
 void le(std::string& bytes, uint64_t value, size_t count) {
@@ -75,6 +76,13 @@ bool expect(bool ok, const char* message) {
 
 int main() {
   using namespace hm::stitching;
+  bool correlation_ok = true;
+  const std::vector<float> x{0, 2, -1, 3}, y{1, -2, 4};
+  const auto direct = full_correlate(x, y), fft = full_correlate_fft(x, y);
+  for (size_t i = 0; i < direct.size(); ++i)
+    correlation_ok &= expect(std::abs(direct[i] - fft[i]) < 1e-5, "FFT lag must match direct correlation");
+  if (!correlation_ok)
+    return 1;
   const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
   if (!ffmpeg) {
     std::cerr << "Synchronization integration test requires ffmpeg\n";
@@ -135,6 +143,23 @@ int main() {
   ok &= expect(
       calculate_stitching_synchronization(still, still, SynchronizationMethod::kAuto).ok(),
       "Automatic synchronization must also fall back on weak gyro signals");
+  for (bool chapters : {false, true}) {
+    const double chapter_base = chapters ? 16 : 0;
+    const auto trimmed = calculate_stitching_synchronization(
+        chapters ? std::vector<std::string>{left, left} : std::vector<std::string>{left},
+        chapters ? std::vector<std::string>{right, right} : std::vector<std::string>{right},
+        {chapter_base + 5, chapter_base + 6.25},
+        SynchronizationMethod::kAudio);
+    ok &= expect(
+        trimmed.ok() && std::abs(trimmed->video1_frame_offset / 25 - chapter_base - 6.25) < 0.002 &&
+            std::abs(trimmed->video2_frame_offset / 30 - chapter_base - 6.25) < 0.002,
+        "Source trims precede audio sync and span complete chapter playlists");
+    if (!trimmed.ok())
+      std::cerr << trimmed.status() << '\n';
+  }
+  const auto too_late = calculate_stitching_synchronization(
+      std::vector<std::string>{left}, std::vector<std::string>{right}, {16, 0}, SynchronizationMethod::kAuto);
+  ok &= expect(absl::IsOutOfRange(too_late.status()), "Start at recording end must report a range error");
   append_gyro(left, true, 0);
   append_gyro(right, false, 1.25);
   const auto raw = imu::Read(left), legacy = imu::Read(right);
@@ -142,6 +167,10 @@ int main() {
       raw.ok() && legacy.ok() && std::abs(raw->gyro.front().seconds) < 1e-8 &&
           std::abs(legacy->gyro.front().seconds) < 1e-8,
       "Both Insta360 encodings must subtract first-frame and gyro-only clock offsets");
+  const auto tail = imu::Read(left, 14.9, 0.1);
+  ok &= expect(
+      tail.ok() && !tail->gyro.empty() && tail->gyro.size() < 100,
+      "A short chapter slice must remain available for concatenated IMU windows");
   const auto sync = calculate_stitching_synchronization(left, right, SynchronizationMethod::kImu);
   const auto reverse = calculate_stitching_synchronization(right, left, SynchronizationMethod::kAuto);
   ok &= expect(
@@ -149,6 +178,14 @@ int main() {
           sync->video2_frame_offset == 0 && reverse->video1_frame_offset == 0 &&
           std::abs(reverse->video2_frame_offset - 31.25) < 0.13,
       "IMU dispatch must convert the signed delay using the skipped camera's FPS");
+  const auto imu_trimmed = calculate_stitching_synchronization(
+      std::vector<std::string>{left}, std::vector<std::string>{right}, {5, 3.75}, SynchronizationMethod::kImu);
+  ok &= expect(
+      imu_trimmed.ok() && std::abs(imu_trimmed->video1_frame_offset - 125) < 0.13 &&
+          std::abs(imu_trimmed->video2_frame_offset - 112.5) < 0.16,
+      "IMU windows must seek before comparing, including Insta360 trailer data");
+  if (!imu_trimmed.ok())
+    std::cerr << imu_trimmed.status() << '\n';
   std::filesystem::remove_all(dir);
   return ok ? 0 : 1;
 }

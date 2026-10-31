@@ -17,7 +17,8 @@ struct ProgramAudioConfig {
   hm::gst::PacedPlaybackSettings paced_playback;
 };
 // Resolve native numbered/generic audio blocks by layer. The Program playlist
-// uses one source-linked audio track from a zero-offset synchronization camera.
+// uses one source-linked audio track, positioned at that camera's effective
+// source start (trim plus synchronization residual).
 absl::StatusOr<std::optional<ProgramAudioConfig>> ResolveProgramAudioConfig(
     const config::ProgramConfiguration& config,
     const std::array<double, 2>& frame_offsets);
