@@ -51,6 +51,8 @@ filegroup(
         "HighlightPlan.h",
         "HighlightsDialog.cpp",
         "HighlightsDialog.h",
+        "CameraOpticsWidget.cpp",
+        "CameraOpticsWidget.h",
         "InputLensWidget.cpp",
         "InputLensWidget.h",
         "Int8PreparationDialog.cpp",
@@ -1376,8 +1378,8 @@ cc_test(
 
 cc_library(
     name = "input_lens_widget",
-    srcs = ["InputLensWidget.cpp"],
-    hdrs = ["InputLensWidget.h"],
+    srcs = ["InputLensWidget.cpp", "CameraOpticsWidget.cpp"],
+    hdrs = ["InputLensWidget.h", "CameraOpticsWidget.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":action_icons", "//src/libs/stitching:video_lens_metadata", "@qt//:qt_widgets"],

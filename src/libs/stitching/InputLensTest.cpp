@@ -101,6 +101,36 @@ int main() {
   write_stitch_camera_selection(config, camera);
   loaded = read_stitch_camera_selection(config);
   ok &= expect(loaded.ok() && *loaded == camera, "Both source-bound prescriptions must round-trip exactly");
+  auto per_camera_controls = camera;
+  per_camera_controls.input_cameras.at("GX010103.MP4").configuration = "manual";
+  per_camera_controls.input_cameras.at("GX010103.MP4").auto_fov = false;
+  per_camera_controls.input_cameras.at("GX010103.MP4").auto_lens = true;
+  per_camera_controls.input_cameras.at("GX010103.MP4").frozen = true;
+  YAML::Node per_camera_config = YAML::Clone(config);
+  write_stitch_camera_selection(per_camera_config, per_camera_controls);
+  const auto policies = read_stitch_camera_selection(per_camera_config);
+  ok &= expect(
+      policies.ok() && policies->same_automation(per_camera_controls, true) &&
+          !policies->for_source("GX010103.MP4").automatic_fov() &&
+          policies->for_source("GX010103.MP4").automatic_lens() && *policies == camera,
+      "Per-camera profile, Auto and frozen controls persist separately from solved geometry");
+  auto first_only = WriteStitchInputCameras(per_camera_controls.input_cameras);
+  first_only.remove("GX010104.MP4");
+  ok &= expect(ReadStitchInputCameras(first_only).ok(), "One camera can be saved while awaiting the second");
+  auto changed_shared_defaults = camera;
+  changed_shared_defaults.horizontal_fov = 108;
+  changed_shared_defaults.vertical_fov = 90;
+  changed_shared_defaults.input_lens = {};
+  ok &= expect(
+      changed_shared_defaults == camera,
+      "Unused shared defaults must not invalidate an unchanged source-bound calibration");
+  auto neutral = camera;
+  neutral.input_cameras = {{"left.mp4", {108, 90, {}}}, {"right.mp4", {108, 90, {}}}};
+  ok &= expect(
+      !neutral.requires_lens_mapping(),
+      "Identical neutral cameras retain OpenCV compatibility despite unused shared defaults");
+  neutral.input_cameras.at("right.mp4").horizontal_fov = 109;
+  ok &= expect(neutral.requires_lens_mapping(), "Different camera FOV requires the independent mapping backend");
   auto same_shared = camera;
   same_shared.input_cameras.at("GX010104.MP4").horizontal_fov += 1;
   ok &= expect(same_shared != camera, "Changing only the second camera must invalidate calibration ownership");

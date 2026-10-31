@@ -552,6 +552,24 @@ bool lens_settings(const fs::path& root) {
       restored.ok() && restored->experiments.size() == 1 &&
           restored->experiments[0].workspace.settings.camera == record.workspace.settings.camera,
       "stored optics and FOV must survive reopening");
+  auto original = record;
+  for (const std::string field : {"profile", "auto_fov", "auto_lens", "frozen"}) {
+    auto changed = original;
+    auto& camera = changed.workspace.settings.camera->input_cameras.at("cam1/source.mp4");
+    if (field == "profile")
+      camera.configuration = "manual";
+    else if (field == "auto_fov")
+      camera.auto_fov = true;
+    else if (field == "auto_lens")
+      camera.auto_lens = true;
+    else
+      camera.frozen = true;
+    write_stitch_camera_selection(config, *changed.workspace.settings.camera);
+    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+    ok &= expect(!SaveStitchingExperiment(store, original).ok(), "workspace camera policies must match the snapshot");
+    ok &= expect(!SaveStitchingExperiment(store, changed).ok(), "persisted per-camera policies are immutable");
+  }
+  write_stitch_camera_selection(config, *original.workspace.settings.camera);
   config["stitching"]["input_lens"]["optimization"] = "refine";
   write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
   ok &= expect(!SaveStitchingExperiment(store, record).ok(), "a workspace cannot silently change its input optics");

@@ -38,6 +38,12 @@ struct StitchCameraOptics {
   // Optional original recording dimensions survive frozen snapshots without
   // opening source media. They do not change the solved intrinsics.
   std::optional<std::array<int, 2>> source_size;
+  // Absent controls inherit the shared preset for compatibility with existing
+  // games. Newly selected cameras retain their own profile and Auto policies.
+  std::string configuration;
+  std::optional<bool> auto_fov;
+  std::optional<bool> auto_lens;
+  std::optional<bool> frozen;
   bool operator==(const StitchCameraOptics& other) const {
     return horizontal_fov == other.horizontal_fov && vertical_fov == other.vertical_fov &&
         input_lens == other.input_lens && source_size == other.source_size;
@@ -50,7 +56,7 @@ struct StitchCameraOptics {
 using StitchInputCameras = std::map<std::string, StitchCameraOptics>;
 absl::Status ValidateStitchCameraOptics(const StitchCameraOptics& camera);
 absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node);
-YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras);
+YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras, bool include_policies = true);
 std::string SerializeStitchInputCameras(const StitchInputCameras& cameras);
 absl::StatusOr<StitchInputCameras> ParseStitchInputCameras(const std::string& text);
 

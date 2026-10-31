@@ -45,22 +45,25 @@ invertibility through the image corners. A failed conversion explains its
 fallback rather than applying incompatible numbers.
 
 Each camera's selected chapters must agree on recording mode and geometry.
-When both cameras have complete supported metadata but differ, Auto retains
-**independent camera optics**: separate FOV, projection, radial distortion and
-optical-center offsets. The summary shows each source's prescription; shared
-numeric controls are hidden while independent values are active.
+Every selected source now has its own prescription, including identical,
+manual and fallback values. Different supported camera models or zoom levels
+are normal; inconsistent chapters within a single camera explain their fallback.
 
-The summary is informational; there are no copy-one-camera or average shortcuts.
-Existing shared/manual presets remain usable. Selecting Manual restores the
-shared numeric controls. A camera with missing metadata or inconsistent chapters
-cannot supply an automatic prescription and explains the fallback.
+Qt and the browser put each source's profile, Auto FOV, FOV numbers, Auto lens,
+projection, distortion, center and fitting policy in that camera's Optics tab.
+Only selected cameras appear. Unknown orientation uses Camera 1/2; known roles
+use Left camera then Right camera. A single Center/panorama input uses Panorama
+and has no source-camera tabs. This remains a one/two-camera workflow.
+Defaults mode keeps reusable shared camera defaults under Stitched. Legacy
+shared presets seed each source without requiring a migration.
 
-`stitching.input_cameras` stores two complete prescriptions keyed by each
-camera's first selected chapter path, relative to the game when possible. The
-optional `source_size: [width, height]` retains the original recording dimensions
-in saved snapshots without changing the solved intrinsics. The empty baseline
-map retains shared `camera_fov`/`input_lens` behavior. The pair replaces an
-inherited pair atomically.
+`stitching.input_cameras` stores up to two complete prescriptions keyed by each
+camera's first selected chapter path, relative to the game when possible. One
+entry is valid while adding sources; stitching still requires a complete pair.
+Each entry can retain `camera_config`, `camera_automation: {fov, lens}` and
+`auto_input_lens_frozen`. Missing fields inherit the shared selection. The
+optional `source_size: [width, height]` retains original recording dimensions
+without changing solved intrinsics. The map replaces an inherited map atomically.
 The solve binds prescriptions to resolved Left/Right playlists, so discovery
 order cannot swap their optics. A snapshot for different recordings fails
 visibly and requires refreshing Auto. Manual components remain independent
@@ -70,7 +73,8 @@ The NONA path writes independent PTO `f/v/a/b/c/d/e` values and explicit
 optimizer variables for each camera. Fixed preserves its intrinsics; Refine
 fits FOV, b and center; Auto can fit all lens terms. Existing Hugin tools support
 this without a fork. Other mapping backends and rectified AKAZE profiles reject
-independent prescriptions. Provenance versions 16/17 retain both source-bound
+differing prescriptions or non-default lens correction. Identical neutral
+per-camera defaults retain their existing backend compatibility. Provenance versions 16/17 retain both source-bound
 prescriptions through generation checks, experiments and reframing; versions
 2–15 remain readable. This supports differing cameras, not optics that change
 between chapters of one camera.
@@ -95,8 +99,10 @@ Changing source policy alone remains saveable without invalidating identical
 geometry. Experiments store both policies and freeze their resolved optics with
 `stitching.auto_input_lens_frozen`, including mixed automatic/manual selections
 under named profiles. Replay and promotion retain those values without original
-media. Toggling an Auto control or selecting a profile releases the snapshot;
-ordinary saves preserve it. CLI resolution precedes calibration generation
+media. Enabling Auto or selecting a profile releases only that camera's snapshot;
+manual edits preserve its other frozen automatic component and the other camera.
+The global legacy frozen marker freezes all entries until explicitly released.
+Ordinary saves preserve snapshots. CLI resolution precedes calibration generation
 claims. Recalibrated geometry requires reviewing the crop and scoreboard region.
 
 See the [camera lens catalog](camera-lens-catalog.md) for match rules, provenance

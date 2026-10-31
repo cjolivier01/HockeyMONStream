@@ -21,6 +21,7 @@
 #ifndef HSTREAM_USE_HIP
 #include "src/apps/hstream-ui/HighlightsDialog.h"
 #endif
+#include "src/apps/hstream-ui/CameraOpticsWidget.h"
 #include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
@@ -6945,9 +6946,12 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   preview_tabs_->addTab(program, tab_icon("Program"), "Program");
   preview_tabs_->addTab(stitched, tab_icon("Stitched"), "Stitched");
-  for (int camera_index = 0; camera_index < 3; ++camera_index) {
+  for (int camera_index = 0; camera_index < 2; ++camera_index) {
     auto* camera = new QWidget();
     auto* camera_layout = new QVBoxLayout(camera);
+    auto* camera_splitter = new QSplitter(Qt::Horizontal, camera);
+    auto* camera_preview = new QWidget(camera_splitter);
+    auto* camera_preview_layout = new QVBoxLayout(camera_preview);
     auto* camera_host = new LetterboxRenderHost(16.0 / 9.0);
     camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
     configure_host(camera_host, camera_index + 2, QString("camera%1FocusButton").arg(camera_index + 1));
@@ -6969,13 +6973,31 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_notice_layout->setContentsMargins(0, 0, 0, 0);
     camera_notice_layout->addWidget(camera_notice);
 
-    camera_layout->addWidget(camera_host, 1);
+    camera_preview_layout->addWidget(camera_host, 1);
     auto* camera_status = new QLabel(
         QString("Camera %1 decoded source preview — downstream controls do not alter this tab").arg(camera_index + 1));
     camera_status->setObjectName(QString("camera%1PreviewStatusLabel").arg(camera_index + 1));
-    camera_layout->addWidget(camera_status);
+    camera_preview_layout->addWidget(camera_status);
+    auto* controls = new QTabWidget(camera_splitter);
+    controls->setObjectName(QString("camera%1ControlTabs").arg(camera_index + 1));
+    auto* optics_scroll = new QScrollArea(controls);
+    optics_scroll->setWidgetResizable(true);
+    auto* optics = new CameraOpticsWidget(camera_configurations_, optics_scroll);
+    optics->setObjectName(QString("camera%1OpticsControls").arg(camera_index + 1));
+    optics_scroll->setWidget(optics);
+    controls->addTab(optics_scroll, tab_icon("Optics"), "Optics");
+    camera_optics_widgets_.push_back(optics);
+    optics->changed = [this, camera_index](bool refresh) { changeInputCameraOptics(camera_index, refresh); };
+    camera_splitter->addWidget(camera_preview);
+    camera_splitter->addWidget(controls);
+    camera_splitter->setStretchFactor(0, 4);
+    camera_splitter->setStretchFactor(1, 1);
+    camera_splitter->setSizes({960, 320});
+    camera_layout->addWidget(camera_splitter);
     preview_tabs_->addTab(camera, tab_icon(QString("Camera %1").arg(camera_index + 1)), QString("Camera %1").arg(camera_index + 1));
   }
+  for (size_t index = 0; index < camera_optics_widgets_.size(); ++index)
+    preview_tabs_->setTabVisible(static_cast<int>(index) + 2, false);
   pipeline_inspector_ = new PipelineInspectorWidget();
   pipeline_inspector_->setCommandWriter([this](const QByteArray& command) {
     return pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning &&
@@ -7810,7 +7832,9 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     alignment_layout->setRowStretch(10, 1);
 
     auto* projection_layout = add_stitching_tab("stitchingProjection", "Projection");
-    auto* camera_group = new QGroupBox("Input camera optics");
+    auto* camera_group = new QGroupBox("Camera defaults");
+    input_camera_defaults_group_ = camera_group;
+    camera_group->setVisible(editing_defaults_);
     camera_group->setObjectName("stitchCameraOpticsGroup");
     auto* camera_layout = new QFormLayout(camera_group);
     camera_layout->addRow(input_lens_widget_->takeCameraDetailsWidget());
@@ -8559,6 +8583,103 @@ absl::StatusOr<hm::stitching::StitchProjectionFraming> HStreamWindow::stitchProj
   return hm::stitching::read_stitch_projection_framing(merge_yaml_maps(baseline_config_, private_values));
 }
 
+void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResult& result) {
+  camera_optics_result_ = result;
+  if (input_camera_defaults_group_)
+    input_camera_defaults_group_->setVisible(editing_defaults_);
+  camera_optics_sources_.clear();
+  if (!editing_defaults_ && !result.panorama)
+    for (const auto& [source, values] : result.camera.input_cameras)
+      camera_optics_sources_.push_back(source);
+  const auto role = [&](const std::string& source) {
+    const auto found = result.source_metadata.find(source);
+    return found == result.source_metadata.end() ? std::string("auto") : found->second.role;
+  };
+  std::stable_sort(
+      camera_optics_sources_.begin(), camera_optics_sources_.end(), [&](const auto& left, const auto& right) {
+        auto rank = [&](const auto& source) {
+          const auto value = role(source);
+          return value == "left" ? 0 : value == "right" ? 2 : 1;
+        };
+        return rank(left) < rank(right);
+      });
+  if (!preview_tabs_)
+    return;
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  preview_tabs_->setTabText(1, result.panorama ? "Panorama" : "Stitched");
+  for (size_t index = 0; index < camera_optics_widgets_.size(); ++index) {
+    const int tab = static_cast<int>(index) + 2;
+    const bool present = index < camera_optics_sources_.size();
+    if (!present && preview_tabs_->currentIndex() == tab)
+      preview_tabs_->setCurrentIndex(result.panorama ? 1 : 0);
+    preview_tabs_->setTabVisible(tab, present);
+    if (!present)
+      continue;
+    const auto& source = camera_optics_sources_[index];
+    const auto found = result.source_metadata.find(source);
+    const hm::stitching::InputCameraMetadata metadata =
+        found == result.source_metadata.end() ? hm::stitching::InputCameraMetadata{} : found->second;
+    const auto label = metadata.role == "left" ? QString("Left camera")
+        : metadata.role == "right"             ? QString("Right camera")
+                                               : QString("Camera %1").arg(index + 1);
+    preview_tabs_->setTabText(tab, label);
+    if (auto* status = findChild<QLabel*>(QString("camera%1PreviewStatusLabel").arg(index + 1)))
+      status->setText(label + " decoded source preview");
+    camera_optics_widgets_[index]->setCamera(result.camera.for_source(source), metadata);
+    camera_optics_widgets_[index]->setEnabled(!running);
+    camera_optics_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
+  }
+}
+
+void HStreamWindow::changeInputCameraOptics(size_t index, bool refresh) {
+  if (index >= camera_optics_sources_.size() || index >= camera_optics_widgets_.size() ||
+      (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning))
+    return;
+  const auto source = camera_optics_sources_[index];
+  auto selection = stitchCameraSelection();
+  const bool was_frozen = camera_configuration_combo_->property("autoInputLensFrozen").toBool();
+  if (refresh && was_frozen) {
+    for (auto& [key, camera] : selection.input_cameras)
+      camera.frozen = true;
+    camera_configuration_combo_->setProperty("autoInputLensFrozen", false);
+  }
+  const auto edited = camera_optics_widgets_[index]->camera();
+  auto& value = selection.input_cameras.at(source);
+  value.configuration = edited.configuration;
+  value.auto_fov = edited.automatic_fov();
+  value.auto_lens = edited.automatic_lens();
+  value.horizontal_fov = edited.horizontal_fov;
+  value.vertical_fov = edited.vertical_fov;
+  value.input_lens = edited.input_lens;
+  if (refresh)
+    value.frozen = false;
+  const auto retained = selection.input_cameras;
+  // Resolving a change to this editor must not reimport the other camera.
+  for (auto& [key, camera] : selection.input_cameras)
+    if (key != source)
+      camera.frozen = true;
+  const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
+  auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
+  if (!saved.ok()) {
+    camera_configuration_combo_->setProperty("autoInputLensFrozen", was_frozen);
+    updateInputCameraTabs(camera_optics_result_);
+    appendLog(QString::fromStdString(saved.status().ToString()));
+    return;
+  }
+  auto config = saved->has_value() ? merge_yaml_maps(baseline_config_, **saved) : YAML::Clone(baseline_config_);
+  config["stitching"]["auto_input_lens_frozen"] = camera_configuration_combo_->property("autoInputLensFrozen").toBool();
+  auto resolved = hm::stitching::ReadAutoInputLensForGame(game, config, selection);
+  for (auto& [key, camera] : resolved.camera.input_cameras)
+    if (key != source && retained.count(key)) {
+      camera = retained.at(key);
+      if (camera_optics_result_.source_metadata.count(key))
+        resolved.source_metadata[key] = camera_optics_result_.source_metadata.at(key);
+    }
+  input_lens_widget_->setCameraDetails(resolved);
+  updateInputCameraTabs(resolved);
+  updatePresetDirtyState();
+}
+
 void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
   if (!camera_configuration_combo_)
     return;
@@ -8592,6 +8713,7 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
       ? hm::stitching::AutoInputLensResult{camera, "Auto unavailable: " + saved.status().ToString()}
       : hm::stitching::ReadAutoInputLensForGame(game, effective, camera);
   camera = resolved.camera;
+  updateInputCameraTabs(resolved);
   SetSharedCameraFovVisible(camera_horizontal_fov_spin_, camera.input_cameras.empty());
   SetSharedCameraFovVisible(camera_vertical_fov_spin_, camera.input_cameras.empty());
   if (camera_horizontal_fov_spin_) {
@@ -12544,7 +12666,7 @@ void HStreamWindow::updatePreviewTabResolution(const QString& channel, int width
   const int tab_index = channel == "program" ? 0 : (channel == "stitched" ? 1 : -1);
   if (tab_index < 0)
     return;
-  const QString title = channel == "program" ? "Program" : "Stitched";
+  const QString title = channel == "program" ? "Program" : camera_optics_result_.panorama ? "Panorama" : "Stitched";
   if (tab_index < static_cast<int>(preview_hosts_.size())) {
     auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[tab_index]);
     if (host)
@@ -17115,6 +17237,28 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
     return true;
   }
   if (status == "ready") {
+    const bool unknown_roles = std::any_of(
+        camera_optics_result_.source_metadata.begin(),
+        camera_optics_result_.source_metadata.end(),
+        [](const auto& entry) { return entry.second.role == "auto"; });
+    if (unknown_roles) {
+      const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
+      const auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
+      if (saved.ok() && saved->has_value()) {
+        auto result = camera_optics_result_;
+        const YAML::Node config = **saved;
+        const auto videos = config["game"] ? config["game"]["videos"] : YAML::Node();
+        for (const char* role : {"left", "right"}) {
+          const auto chapters = videos && videos.IsMap() ? videos[role] : YAML::Node();
+          if (!chapters || !chapters.IsSequence() || chapters.size() == 0 || !chapters[0].IsScalar())
+            continue;
+          const auto source = hm::stitching::stitch_input_camera_key(game, chapters[0].as<std::string>());
+          if (result.source_metadata.count(source))
+            result.source_metadata[source].role = role;
+        }
+        updateInputCameraTabs(result);
+      }
+    }
     bool width_valid = false;
     bool height_valid = false;
     const int width = match.captured(5).toInt(&width_valid);
@@ -18339,6 +18483,8 @@ void HStreamWindow::updateRunControls() {
     camera_vertical_fov_spin_->setEnabled(!running && !finalizing);
   if (input_lens_widget_)
     input_lens_widget_->setEnabled(!running && !finalizing);
+  for (auto* controls : camera_optics_widgets_)
+    controls->setEnabled(!running && !finalizing);
   if (projection_combo_)
     projection_combo_->setEnabled(!running && !finalizing);
   updateProjectionParameterControls();
@@ -18711,7 +18857,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
       (saved_control_point_resolution_ != control_point_resolution_ ||
        saved_control_point_filtering_ != control_point_filtering_) ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
-      !saved_camera_selection_.same_automation(stitchCameraSelection()) ||
+      !saved_camera_selection_.same_automation(stitchCameraSelection(), true) ||
       saved_camera_selection_ != stitchCameraSelection() || saved_projection_ != stitchProjection() ||
       saved_projection_parameters_ != projection_parameter_values_ ||
       saved_projection_framing_ != stitchProjectionFraming();
@@ -19053,6 +19199,7 @@ void HStreamWindow::resetCameraControls() {
     set_calibration_spin_value(camera_horizontal_fov_spin_, default_camera_selection_.horizontal_fov);
     set_calibration_spin_value(camera_vertical_fov_spin_, default_camera_selection_.vertical_fov);
     input_lens_widget_->setCameraDetails({});
+    updateInputCameraTabs({});
     SetSharedCameraFovVisible(camera_horizontal_fov_spin_, true);
     SetSharedCameraFovVisible(camera_vertical_fov_spin_, true);
     input_lens_widget_->setLens(default_camera_selection_.input_lens);
@@ -19357,7 +19504,7 @@ void HStreamWindow::updatePresetDirtyState() {
        saved_control_point_filtering_ != control_point_filtering_) ||
       saved_blend_mode_ != blendMode() || saved_blend_feather_fraction_ != blendFeatherFraction() ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
-      !saved_camera_selection_.same_automation(stitchCameraSelection()) ||
+      !saved_camera_selection_.same_automation(stitchCameraSelection(), true) ||
       saved_camera_selection_ != stitchCameraSelection() || saved_projection_ != stitchProjection() ||
       saved_projection_parameters_ != projection_parameter_values_ || projection_framing_dirty;
   if (!dirty) {
@@ -19582,10 +19729,10 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   if (camera_vertical_fov_spin_) {
     const bool blocked = camera_vertical_fov_spin_->blockSignals(true);
     input_lens_widget_->setCameraDetails({});
+    updateInputCameraTabs({});
     SetSharedCameraFovVisible(camera_horizontal_fov_spin_, true);
     SetSharedCameraFovVisible(camera_vertical_fov_spin_, true);
     input_lens_widget_->setLens(default_camera_selection_.input_lens);
-    input_lens_widget_->setCameraDetails({});
     input_lens_widget_->setMetadataStatus("Defaults (not read from MP4)", default_camera_selection_.automatic_lens());
     const QSignalBlocker auto_blocker(camera_auto_fov_check_);
     camera_auto_fov_check_->setChecked(default_camera_selection_.automatic_fov());
@@ -20249,6 +20396,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     camera_configuration_combo_->setProperty(
         "autoInputLensFrozen", frozen_lens && frozen_lens.IsScalar() && frozen_lens.as<bool>());
     input_lens_widget_->setCameraDetails(auto_lens);
+    updateInputCameraTabs(auto_lens);
     SetSharedCameraFovVisible(camera_horizontal_fov_spin_, staged_camera_selection.input_cameras.empty());
     SetSharedCameraFovVisible(camera_vertical_fov_spin_, staged_camera_selection.input_cameras.empty());
     input_lens_widget_->setLens(staged_camera_selection.input_lens);
@@ -21420,8 +21568,7 @@ bool HStreamWindow::addVideoFile(const QString& path) {
   }
   config_transaction->reset();
   refreshVideoSets();
-  if (stitchCameraSelection().automatic_fov() || stitchCameraSelection().automatic_lens())
-    applyCameraConfigurationDefaults(false);
+  applyCameraConfigurationDefaults(false);
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
   return true;
 }
@@ -21506,8 +21653,7 @@ void HStreamWindow::removeSelectedVideoSet() {
   delete item;
   config_transaction->reset();
   refreshVideoSets();
-  if (stitchCameraSelection().automatic_fov() || stitchCameraSelection().automatic_lens())
-    applyCameraConfigurationDefaults(false);
+  applyCameraConfigurationDefaults(false);
 }
 
 void HStreamWindow::refreshVideoSets() {

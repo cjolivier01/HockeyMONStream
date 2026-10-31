@@ -200,7 +200,8 @@ The ordinary workflow quota, time limit, process containment and cancellation
 rules apply to the complete copy/capture/edit/solve operation.
 
 Experiment settings use the desktop's canonical camera map: `camera` contains
-`camera_config`, `camera_fov`, `input_lens`, and `camera_automation`.
+`camera_config`, `camera_fov`, `input_lens`, `camera_automation`, and the
+source-bound `input_cameras` map described in `auto-input-lens.md`.
 `control_point_filtering` contains `epipolar_ransac` and
 `homography_consistency`. Both accept partial overrides at creation. Omitted
 values inherit the selected source config over the bundled baseline; choosing a
@@ -673,7 +674,7 @@ calibration roots:
 - `stitching`: `control_point_limit`, `calibration_frame_count`, `stitch_frame_time`,
   `sync_method`, `control_point_matcher`, `control_point_resolution`,
   `control_point_filtering`, `control_point_execution_provider`, `mapping_backend`,
-  `camera_config`, `camera_fov`, `camera_automation`, `input_lens`,
+  `camera_config`, `camera_fov`, `camera_automation`, `input_lens`, `input_cameras`,
   `auto_input_lens_frozen`, `run_autooptimizer`, `projection`,
   `projection_parameters`, `projection_framing`, `max_output_width`,
   `post_stitch_rotate_degrees`, `rink_config`, `rink_mask_frame_time`, `rink_mask_frame_time_default`,
@@ -777,3 +778,10 @@ It resolves historical native frame-count aliases before applying edits, synchro
 the next-run count, and releases selected frames and affected manual matches when
 that count changes. A reference-time edit with an unchanged retained selection
 fails before cleanup; restore its time or explicitly select a different frame count.
+
+Camera optics reads return `source_metadata` keyed by the same first-chapter
+identities as `camera.input_cameras`, plus a `panorama` boolean. A fenced saved
+source can supply orientation independently of frozen optics. The private
+`saved_orientation` flag permits reading its saved playlist names; only exact
+admitted relative aliases may label a side. `saved_optics` separately authorizes
+frozen values, preserving source/policy validation and explicit refresh intent.

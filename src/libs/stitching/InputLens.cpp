@@ -98,6 +98,9 @@ absl::Status ValidateStitchCameraOptics(const StitchCameraOptics& camera) {
     for (int dimension : *camera.source_size)
       if (dimension <= 0 || dimension > 32768)
         return absl::InvalidArgumentError("Invalid input-camera source dimensions");
+  if (!camera.configuration.empty() &&
+      !std::regex_match(camera.configuration, std::regex("^[a-z0-9]+(?:-[a-z0-9]+)*$")))
+    return absl::InvalidArgumentError("Invalid input-camera profile identifier");
   return ValidateStitchInputLens(camera.input_lens);
 }
 
@@ -106,8 +109,8 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
   try {
     if (!node || node.IsNull())
       return result;
-    if (!node.IsMap() || (node.size() != 0 && node.size() != 2))
-      return absl::InvalidArgumentError("stitching.input_cameras must be empty or contain two source prescriptions");
+    if (!node.IsMap() || node.size() > 2)
+      return absl::InvalidArgumentError("stitching.input_cameras supports at most two source cameras");
     for (const auto& entry : node) {
       if (!entry.first.IsScalar() || !entry.second.IsMap())
         return absl::InvalidArgumentError("Input cameras require source paths and complete prescriptions");
@@ -116,10 +119,21 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
           source.find('\0') != std::string::npos || result.count(source))
         return absl::InvalidArgumentError("Invalid or repeated input-camera source path");
       const auto value = entry.second;
-      if (value.size() != (value["source_size"].IsDefined() ? 4 : 3) || !value["horizontal_fov"].IsScalar() ||
-          !value["vertical_fov"].IsScalar() || !value["input_lens"].IsMap() || value["input_lens"].size() != 4 ||
-          !value["input_lens"]["projection"].IsScalar() || !value["input_lens"]["optimization"].IsScalar() ||
-          !value["input_lens"]["distortion"].IsSequence() || !value["input_lens"]["center_offset"].IsSequence())
+      static const std::set<std::string> keys = {
+          "horizontal_fov",
+          "vertical_fov",
+          "input_lens",
+          "source_size",
+          "camera_config",
+          "camera_automation",
+          "auto_input_lens_frozen"};
+      for (const auto& item : value)
+        if (!item.first.IsScalar() || !keys.count(item.first.as<std::string>()))
+          return absl::InvalidArgumentError("Unknown input-camera setting");
+      if (!value["horizontal_fov"].IsScalar() || !value["vertical_fov"].IsScalar() || !value["input_lens"].IsMap() ||
+          value["input_lens"].size() != 4 || !value["input_lens"]["projection"].IsScalar() ||
+          !value["input_lens"]["optimization"].IsScalar() || !value["input_lens"]["distortion"].IsSequence() ||
+          !value["input_lens"]["center_offset"].IsSequence())
         return absl::InvalidArgumentError("Input-camera prescriptions must include both FOV axes and all lens values");
       auto lens = ReadStitchInputLens(value["input_lens"]);
       if (!lens.ok())
@@ -130,6 +144,24 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
           return absl::InvalidArgumentError("Input-camera source_size must be [width, height]");
         camera.source_size = std::array<int, 2>{size[0].as<int>(), size[1].as<int>()};
       }
+      if (const auto profile = value["camera_config"]; profile.IsDefined()) {
+        if (!profile.IsScalar() || profile.as<std::string>().empty())
+          return absl::InvalidArgumentError("Input-camera profile must be a nonempty identifier");
+        camera.configuration = profile.as<std::string>();
+      }
+      if (const auto policies = value["camera_automation"]; policies.IsDefined()) {
+        if (!policies.IsMap())
+          return absl::InvalidArgumentError("Input-camera automation must be a map");
+        for (const auto& policy : policies) {
+          if (!policy.first.IsScalar() ||
+              (policy.first.as<std::string>() != "fov" && policy.first.as<std::string>() != "lens"))
+            return absl::InvalidArgumentError("Unknown input-camera automation setting");
+          if (!policy.second.IsNull())
+            (policy.first.as<std::string>() == "fov" ? camera.auto_fov : camera.auto_lens) = policy.second.as<bool>();
+        }
+      }
+      if (const auto frozen = value["auto_input_lens_frozen"]; frozen.IsDefined())
+        camera.frozen = frozen.as<bool>();
       if (const auto status = ValidateStitchCameraOptics(camera); !status.ok())
         return status;
       result.emplace(source, std::move(camera));
@@ -140,7 +172,7 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
   }
 }
 
-YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras) {
+YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras, bool include_policies) {
   YAML::Node node(YAML::NodeType::Map);
   for (const auto& [source, camera] : cameras) {
     node[source]["horizontal_fov"] = camera.horizontal_fov;
@@ -149,6 +181,16 @@ YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras) {
     if (camera.source_size)
       for (int dimension : *camera.source_size)
         node[source]["source_size"].push_back(dimension);
+    if (include_policies) {
+      if (camera.frozen.has_value())
+        node[source]["auto_input_lens_frozen"] = *camera.frozen;
+      if (!camera.configuration.empty())
+        node[source]["camera_config"] = camera.configuration;
+      if (camera.auto_fov.has_value())
+        node[source]["camera_automation"]["fov"] = *camera.auto_fov;
+      if (camera.auto_lens.has_value())
+        node[source]["camera_automation"]["lens"] = *camera.auto_lens;
+    }
   }
   return node;
 }
@@ -156,7 +198,7 @@ YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras) {
 std::string SerializeStitchInputCameras(const StitchInputCameras& cameras) {
   YAML::Emitter output;
   output.SetDoublePrecision(17);
-  output << YAML::Flow << WriteStitchInputCameras(cameras);
+  output << YAML::Flow << WriteStitchInputCameras(cameras, false);
   return output.c_str();
 }
 

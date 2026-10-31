@@ -242,7 +242,7 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   if (choices.camera.input_lens != StitchInputLens{})
     solver["input_lens"] = WriteStitchInputLens(choices.camera.input_lens);
   if (!choices.camera.input_cameras.empty())
-    solver["input_cameras"] = WriteStitchInputCameras(choices.camera.input_cameras);
+    solver["input_cameras"] = WriteStitchInputCameras(choices.camera.input_cameras, false);
   solver["calibration_frame_selection_fingerprint"] = choices.calibration_frame_selection_fingerprint;
   if (!choices.manual_control_point_fingerprint.empty())
     solver["manual_control_points"] = choices.manual_control_point_fingerprint;
