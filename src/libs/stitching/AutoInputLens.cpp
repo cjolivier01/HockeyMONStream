@@ -236,6 +236,9 @@ AutoInputLensResult ReadAutoInputLensForGame(
         result.shared_choices["camera" + std::to_string(++index)] = std::move(shared);
       }
     }
+    if (!result.shared_choices.count("average"))
+      if (const auto average = AverageStitchInputCameras(result.camera.input_cameras))
+        result.shared_choices["average"] = *average;
     result.mismatch = true;
   }
   return result;

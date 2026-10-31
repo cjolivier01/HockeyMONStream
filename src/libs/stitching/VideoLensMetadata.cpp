@@ -1081,30 +1081,46 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
       fallback.input_cameras.count(
           game.empty() ? right.front().generic_string() : stitch_input_camera_key(game, right.front()));
   if ((complete(l) && complete(r)) || keep_manual) {
+    auto resolve_source = [&](const std::vector<std::filesystem::path>& paths) {
+      auto source_fallback = shared_fallback;
+      const auto key = game.empty() ? paths.front().generic_string() : stitch_input_camera_key(game, paths.front());
+      const auto retained = fallback.input_cameras.find(key);
+      if (retained != fallback.input_cameras.end()) {
+        if (!fallback.automatic_fov()) {
+          source_fallback.horizontal_fov = retained->second.horizontal_fov;
+          source_fallback.vertical_fov = retained->second.vertical_fov;
+        }
+        if (!fallback.automatic_lens())
+          source_fallback.input_lens = retained->second.input_lens;
+      }
+      // FOV conversion and fallback must use this camera's actual manual lens.
+      return ResolveAutoInputLens(paths, source_fallback, profiles);
+    };
+    const auto effective_left = resolve_source(left), effective_right = resolve_source(right);
     const std::array<std::pair<std::filesystem::path, StitchCameraSelection>, 2> sources{
-        std::make_pair(left.front(), l.camera), std::make_pair(right.front(), r.camera)};
+        std::make_pair(left.front(), effective_left.camera), std::make_pair(right.front(), effective_right.camera)};
     for (const auto& [path, detected] : sources) {
       const auto key = game.empty() ? path.generic_string() : stitch_input_camera_key(game, path);
       StitchCameraOptics value{detected.horizontal_fov, detected.vertical_fov, detected.input_lens};
-      const auto retained = fallback.input_cameras.find(key);
-      const StitchCameraOptics manual_values = retained == fallback.input_cameras.end()
-          ? StitchCameraOptics{fallback.horizontal_fov, fallback.vertical_fov, fallback.input_lens}
-          : retained->second;
-      if (!fallback.automatic_fov()) {
-        value.horizontal_fov = manual_values.horizontal_fov;
-        value.vertical_fov = manual_values.vertical_fov;
-      }
-      if (!fallback.automatic_lens())
-        value.input_lens = manual_values.input_lens;
+      const auto& metadata = path == left.front() ? lm : rm;
+      if (metadata.ok() && metadata->width > 0 && metadata->height > 0 && metadata->width <= 32768 &&
+          metadata->height <= 32768)
+        value.source_size = std::array<int, 2>{static_cast<int>(metadata->width), static_cast<int>(metadata->height)};
       result.camera.input_cameras.emplace(key, value);
     }
     if (result.camera.input_cameras.size() == 2) {
-      const bool complete_pair = complete(l) && complete(r);
+      const auto imported = [&](const AutoInputLensResult& source) {
+        return !source.mismatch &&
+            (!fallback.automatic_fov() || (source.horizontal_fov_from_mp4 && source.vertical_fov_from_mp4)) &&
+            (!fallback.automatic_lens() || source.lens_from_mp4);
+      };
+      const bool complete_pair = imported(effective_left) && imported(effective_right);
       result.detected = complete_pair;
       result.horizontal_fov_from_mp4 =
-          fallback.automatic_fov() && l.horizontal_fov_from_mp4 && r.horizontal_fov_from_mp4;
-      result.vertical_fov_from_mp4 = fallback.automatic_fov() && l.vertical_fov_from_mp4 && r.vertical_fov_from_mp4;
-      result.lens_from_mp4 = fallback.automatic_lens() && l.lens_from_mp4 && r.lens_from_mp4;
+          fallback.automatic_fov() && effective_left.horizontal_fov_from_mp4 && effective_right.horizontal_fov_from_mp4;
+      result.vertical_fov_from_mp4 =
+          fallback.automatic_fov() && effective_left.vertical_fov_from_mp4 && effective_right.vertical_fov_from_mp4;
+      result.lens_from_mp4 = fallback.automatic_lens() && effective_left.lens_from_mp4 && effective_right.lens_from_mp4;
       result.recording_metadata_found = true;
       result.recording_message = "The cameras have different optics; each camera keeps its own values.";
       result.fov_message =
@@ -1115,10 +1131,12 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
       if (!complete_pair) {
         result.recording_message =
             "Incomplete recording metadata. Retaining each camera's manual values and using profile fallbacks for unavailable automatic values.";
-        result.fov_message = fallback.automatic_fov() ? "Automatic FOV: " + l.fov_message + "; " + r.fov_message
-                                                      : "Retained independent camera FOV";
-        result.lens_message = fallback.automatic_lens() ? "Automatic lens: " + l.lens_message + "; " + r.lens_message
-                                                        : "Retained independent lens correction";
+        result.fov_message = fallback.automatic_fov()
+            ? "Automatic FOV: " + effective_left.fov_message + "; " + effective_right.fov_message
+            : "Retained independent camera FOV";
+        result.lens_message = fallback.automatic_lens()
+            ? "Automatic lens: " + effective_left.lens_message + "; " + effective_right.lens_message
+            : "Retained independent lens correction";
       }
       const auto choice_note = result.shared_choices_message.find("Choose a shared approximation");
       if (choice_note != std::string::npos)
@@ -1130,5 +1148,31 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
   }
   result.message += "\n" + result.shared_choices_message;
   return result;
+}
+std::optional<StitchCameraSelection> AverageStitchInputCameras(const StitchInputCameras& cameras) {
+  if (cameras.size() != 2)
+    return std::nullopt;
+  const auto& left = cameras.begin()->second;
+  const auto& right = cameras.rbegin()->second;
+  if (!left.source_size || left.source_size != right.source_size ||
+      left.input_lens.projection != right.input_lens.projection ||
+      left.input_lens.optimization != right.input_lens.optimization)
+    return std::nullopt;
+  StitchCameraSelection average{
+      "manual",
+      (left.horizontal_fov + right.horizontal_fov) / 2,
+      (left.vertical_fov + right.vertical_fov) / 2,
+      left.input_lens};
+  average.auto_fov = average.auto_lens = false;
+  for (size_t i = 0; i < average.input_lens.distortion.size(); ++i)
+    average.input_lens.distortion[i] = (left.input_lens.distortion[i] + right.input_lens.distortion[i]) / 2;
+  for (size_t i = 0; i < average.input_lens.center_offset.size(); ++i)
+    average.input_lens.center_offset[i] = (left.input_lens.center_offset[i] + right.input_lens.center_offset[i]) / 2;
+  try {
+    hugin_fov(average.horizontal_fov, (*left.source_size)[0], (*left.source_size)[1], average.input_lens, true);
+    return average;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
 }
 } // namespace hm::stitching

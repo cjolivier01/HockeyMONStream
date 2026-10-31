@@ -74,4 +74,7 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     bool roles_known = true,
     const std::filesystem::path& game = {});
 
+// Validates a shared approximation using retained dimensions, with no media reads.
+std::optional<StitchCameraSelection> AverageStitchInputCameras(const StitchInputCameras& cameras);
+
 } // namespace hm::stitching

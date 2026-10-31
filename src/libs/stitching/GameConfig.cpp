@@ -1016,7 +1016,8 @@ StitchCameraSelection merge_stitch_camera_snapshot(
     snapshot.input_lens = current.input_lens;
   if (snapshot.input_cameras.empty() && (!current.automatic_fov() || !current.automatic_lens()))
     for (const auto& [source, values] : current.input_cameras)
-      snapshot.input_cameras[source] = {snapshot.horizontal_fov, snapshot.vertical_fov, snapshot.input_lens};
+      snapshot.input_cameras[source] = {
+          snapshot.horizontal_fov, snapshot.vertical_fov, snapshot.input_lens, values.source_size};
   for (auto& [source, values] : snapshot.input_cameras) {
     const auto found = current.input_cameras.find(source);
     const StitchCameraOptics manual = found != current.input_cameras.end()

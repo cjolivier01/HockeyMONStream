@@ -114,12 +114,19 @@ int main() {
   ok &= expect(
       !resolve_stitch_input_camera_order("/game", config, camera).ok(),
       "A saved camera snapshot must reject different source recordings");
+  camera.input_cameras.begin()->second.source_size = std::array<int, 2>{7680, 4320};
+  camera.input_cameras.rbegin()->second.source_size = std::array<int, 2>{7680, 4320};
   const auto encoded = SerializeStitchInputCameras(camera.input_cameras);
   const auto decoded = ParseStitchInputCameras(encoded);
   ok &= expect(decoded.ok() && *decoded == camera.input_cameras, "Provenance serialization must retain both optics");
   auto invalid_cameras = WriteStitchInputCameras(camera.input_cameras);
   invalid_cameras["GX010103.MP4"]["input_lens"]["projection"] = YAML::Node();
   ok &= expect(!ReadStitchInputCameras(invalid_cameras).ok(), "Independent prescriptions cannot omit a lens component");
+  for (const auto* invalid_size : {"null", "[0, 4320]", "[7680]", "[7680, 32769]"}) {
+    auto invalid = WriteStitchInputCameras(camera.input_cameras);
+    invalid["GX010103.MP4"]["source_size"] = YAML::Load(invalid_size);
+    ok &= expect(!ReadStitchInputCameras(invalid).ok(), "Malformed original dimensions cannot enter saved optics");
+  }
   auto snapshot = camera;
   auto current = camera;
   current.auto_fov = true;

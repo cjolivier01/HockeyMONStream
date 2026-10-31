@@ -2,6 +2,7 @@
 
 #include <array>
 #include <map>
+#include <optional>
 #include <string>
 
 #include "absl/status/status.h"
@@ -34,9 +35,12 @@ struct StitchCameraOptics {
   double horizontal_fov{0};
   double vertical_fov{0};
   StitchInputLens input_lens;
+  // Optional original dimensions let frozen snapshots validate shared averages
+  // without opening source media. They do not change the solved intrinsics.
+  std::optional<std::array<int, 2>> source_size;
   bool operator==(const StitchCameraOptics& other) const {
     return horizontal_fov == other.horizontal_fov && vertical_fov == other.vertical_fov &&
-        input_lens == other.input_lens;
+        input_lens == other.input_lens && source_size == other.source_size;
   }
   bool operator!=(const StitchCameraOptics& other) const {
     return !(*this == other);

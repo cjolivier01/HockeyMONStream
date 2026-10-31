@@ -558,13 +558,15 @@ QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
   const auto optics = saved["stitching"];
   const auto input = input_lens_json(camera.input_lens);
   QJsonObject inputs;
-  for (const auto& [source, values] : camera.input_cameras)
-    inputs.insert(
-        text(source),
-        QJsonObject{
-            {"horizontal_fov", values.horizontal_fov},
-            {"vertical_fov", values.vertical_fov},
-            {"input_lens", input_lens_json(values.input_lens)}});
+  for (const auto& [source, values] : camera.input_cameras) {
+    QJsonObject prescription{
+        {"horizontal_fov", values.horizontal_fov},
+        {"vertical_fov", values.vertical_fov},
+        {"input_lens", input_lens_json(values.input_lens)}};
+    if (values.source_size)
+      prescription.insert("source_size", QJsonArray{(*values.source_size)[0], (*values.source_size)[1]});
+    inputs.insert(text(source), prescription);
+  }
   QJsonObject automation;
   for (const char* key : {"fov", "lens"}) {
     const auto value = optics["camera_automation"][key];

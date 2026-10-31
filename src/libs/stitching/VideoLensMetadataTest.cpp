@@ -321,6 +321,32 @@ int main(int argc, char** argv) {
     expect(
         !incomplete.shared_choices.count("left") && !incomplete.shared_choices.count("average"),
         "Incomplete camera metadata cannot supply a choice or average");
+    auto manual_lenses = pair.camera;
+    manual_lenses.auto_fov = true;
+    manual_lenses.auto_lens = false;
+    manual_lenses.input_cameras.at((dir / "left.mp4").string()).input_lens.distortion = {0, 0.02, 0};
+    manual_lenses.input_cameras.at((dir / "zoomed.mp4").string()).input_lens.distortion = {0, 0.03, 0};
+    const auto mixed_pair = ResolveAutoInputLensForCameras({dir / "left.mp4"}, {dir / "zoomed.mp4"}, manual_lenses);
+    for (const auto& [path, prescription] : manual_lenses.input_cameras) {
+      auto policy = manual_lenses;
+      policy.input_cameras.clear();
+      policy.input_lens = prescription.input_lens;
+      const auto expected = ResolveAutoInputLens({path}, policy);
+      const auto& actual = mixed_pair.camera.input_cameras.at(path);
+      expect(
+          std::abs(actual.horizontal_fov - expected.camera.horizontal_fov) < 1e-10 &&
+              actual.input_lens == expected.camera.input_lens && expected.horizontal_fov_from_mp4,
+          "Each automatic FOV must be converted for that camera's retained manual correction");
+    }
+    YAML::Node frozen_pair;
+    write_stitch_camera_selection(frozen_pair, pair.camera);
+    frozen_pair["stitching"]["auto_input_lens_frozen"] = true;
+    const auto frozen_selection = read_stitch_camera_selection(frozen_pair);
+    const auto frozen_result = ReadAutoInputLensForGame(dir / "no-media", frozen_pair, *frozen_selection);
+    expect(
+        frozen_result.camera == pair.camera && frozen_result.shared_choices.count("average") &&
+            frozen_result.shared_choices.at("average") == pair.shared_choices.at("average"),
+        "Frozen independent optics must retain the validated average without reopening original media");
     auto retained = pair.camera;
     retained.auto_lens = false;
     retained.input_cameras.at((dir / "zoomed.mp4").string()).input_lens.center_offset[0] = 0.04;

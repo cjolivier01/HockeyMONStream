@@ -94,6 +94,10 @@ absl::Status ValidateStitchCameraOptics(const StitchCameraOptics& camera) {
       !std::isfinite(camera.vertical_fov) || camera.vertical_fov <= 0 || camera.vertical_fov > 180)
     return absl::InvalidArgumentError(
         "Each input camera requires horizontal FOV in (0, 360) and vertical FOV in (0, 180]");
+  if (camera.source_size)
+    for (int dimension : *camera.source_size)
+      if (dimension <= 0 || dimension > 32768)
+        return absl::InvalidArgumentError("Invalid input-camera source dimensions");
   return ValidateStitchInputLens(camera.input_lens);
 }
 
@@ -112,8 +116,8 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
           source.find('\0') != std::string::npos || result.count(source))
         return absl::InvalidArgumentError("Invalid or repeated input-camera source path");
       const auto value = entry.second;
-      if (value.size() != 3 || !value["horizontal_fov"].IsScalar() || !value["vertical_fov"].IsScalar() ||
-          !value["input_lens"].IsMap() || value["input_lens"].size() != 4 ||
+      if (value.size() != (value["source_size"].IsDefined() ? 4 : 3) || !value["horizontal_fov"].IsScalar() ||
+          !value["vertical_fov"].IsScalar() || !value["input_lens"].IsMap() || value["input_lens"].size() != 4 ||
           !value["input_lens"]["projection"].IsScalar() || !value["input_lens"]["optimization"].IsScalar() ||
           !value["input_lens"]["distortion"].IsSequence() || !value["input_lens"]["center_offset"].IsSequence())
         return absl::InvalidArgumentError("Input-camera prescriptions must include both FOV axes and all lens values");
@@ -121,6 +125,11 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
       if (!lens.ok())
         return lens.status();
       StitchCameraOptics camera{value["horizontal_fov"].as<double>(), value["vertical_fov"].as<double>(), *lens};
+      if (const auto size = value["source_size"]; size.IsDefined()) {
+        if (!size.IsSequence() || size.size() != 2)
+          return absl::InvalidArgumentError("Input-camera source_size must be [width, height]");
+        camera.source_size = std::array<int, 2>{size[0].as<int>(), size[1].as<int>()};
+      }
       if (const auto status = ValidateStitchCameraOptics(camera); !status.ok())
         return status;
       result.emplace(source, std::move(camera));
@@ -137,6 +146,9 @@ YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras) {
     node[source]["horizontal_fov"] = camera.horizontal_fov;
     node[source]["vertical_fov"] = camera.vertical_fov;
     node[source]["input_lens"] = WriteStitchInputLens(camera.input_lens);
+    if (camera.source_size)
+      for (int dimension : *camera.source_size)
+        node[source]["source_size"].push_back(dimension);
   }
   return node;
 }

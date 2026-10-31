@@ -61,6 +61,8 @@ projection, and an invertible averaged radial model.
 
 `stitching.input_cameras` stores two complete prescriptions keyed by each
 camera's first selected chapter path, relative to the game when possible. The
+optional `source_size: [width, height]` records the original dimensions so
+frozen snapshots can validate the average without rereading video. The
 empty baseline map retains shared `camera_fov`/`input_lens` behavior. The pair
 replaces an inherited pair atomically; selecting a shared choice clears it.
 The solve binds prescriptions to resolved Left/Right playlists, so discovery
