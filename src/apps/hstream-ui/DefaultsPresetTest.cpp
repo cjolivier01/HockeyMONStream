@@ -272,23 +272,23 @@ int main(int argc, char** argv) {
     calibration_selector->setCurrentIndex(0);
     auto* crop = Find<QCheckBox>(calibration, "showCropDialogCheck");
     auto* leveling = Find<QCheckBox>(calibration, "showLevelingDialogCheck");
-    auto* reference = Find<QTimeEdit>(calibration, "stitchFrameTimeEdit");
+    auto* reference = Find<QLineEdit>(calibration, "stitchFrameTimeEdit");
     Require(
         crop->isEnabled() && leveling->isEnabled() && reference->isEnabled(),
         "Defaults must enable calibration prompt and reference controls");
     Require(
         crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&
-            reference->time() == QTime(0, 0, 2, 345),
+            reference->text() == "00:00:02.345",
         "Defaults ignored canonical calibration baseline values");
     crop->setChecked(!baseline_crop);
     leveling->setChecked(baseline_crop);
-    reference->setTime(QTime(0, 0, 6, 789));
+    reference->setText("-00:00:01.125");
     Require(HStreamWindowTestAccess::Save(calibration), "Cannot save calibration defaults");
     const auto saved_defaults = YAML::LoadFile(defaults_path.toStdString());
     Require(
         saved_defaults["hstream_ui"]["show_crop_dialog"].as<bool>() == !baseline_crop &&
             saved_defaults["hstream_ui"]["show_leveling_dialog"].as<bool>() == baseline_crop &&
-            saved_defaults["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:06.789",
+            saved_defaults["stitching"]["stitch_frame_time"].as<std::string>() == "-00:00:01.125",
         "Calibration defaults were not saved under canonical keys");
     {
       HStreamWindow calibration_reopened;
@@ -296,30 +296,30 @@ int main(int argc, char** argv) {
       Require(
           Find<QCheckBox>(calibration_reopened, "showCropDialogCheck")->isChecked() == !baseline_crop &&
               Find<QCheckBox>(calibration_reopened, "showLevelingDialogCheck")->isChecked() == baseline_crop &&
-              Find<QTimeEdit>(calibration_reopened, "stitchFrameTimeEdit")->time() == QTime(0, 0, 6, 789),
+              Find<QLineEdit>(calibration_reopened, "stitchFrameTimeEdit")->text() == "-00:00:01.125",
           "Restart lost calibration defaults");
     }
     calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
     Require(
         crop->isChecked() == !baseline_crop && leveling->isChecked() == baseline_crop &&
-            reference->time() == QTime(0, 0, 6, 789),
+            reference->text() == "-00:00:01.125",
         "Game did not inherit calibration defaults");
     crop->setChecked(false);
     leveling->setChecked(false);
-    reference->setTime(QTime(0, 0));
+    reference->setText("00:00:00");
     Require(HStreamWindowTestAccess::Save(calibration), "Cannot save explicit game calibration settings");
     const auto explicit_game = Read(games.filePath("inherit/config.yaml"));
     calibration_selector->setCurrentIndex(0);
     calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
     Require(
-        !crop->isChecked() && !leveling->isChecked() && reference->time() == QTime(0, 0),
+        !crop->isChecked() && !leveling->isChecked() && reference->text() == "00:00:00",
         "Explicit false and zero game settings lost precedence");
     calibration_selector->setCurrentIndex(0);
     const auto calibration_before_reset = Read(defaults_path);
     Find<QPushButton>(calibration, "resetDefaultsButton")->click();
     Require(
         crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&
-            reference->time() == QTime(0, 0, 2, 345),
+            reference->text() == "00:00:02.345",
         "Reset did not stage canonical calibration defaults");
     Require(Read(defaults_path) == calibration_before_reset, "Calibration reset saved before Save Preset");
     Require(HStreamWindowTestAccess::Save(calibration), "Cannot save reset calibration defaults");
@@ -330,7 +330,7 @@ int main(int argc, char** argv) {
     calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
     Require(
         crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&
-            reference->time() == QTime(0, 0, 2, 345),
+            reference->text() == "00:00:02.345",
         "Game retained cleared calibration defaults");
   }
   for (const char* key : {"show_crop_dialog", "show_leveling_dialog"}) {

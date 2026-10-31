@@ -103,11 +103,17 @@ int main() {
       hm::stitch_frame_time_to_nanoseconds("00:00:07") == 7'000'000'000ULL &&
           hm::stitch_frame_time_to_nanoseconds("00:10:07.500") == 607'500'000'000ULL,
       "Stitch-frame parsing must retain valid whole-second and fractional timestamps");
+  ok &= expect(
+      hm::stitch_frame_time_to_nanoseconds("-00:00:01.125") == -1'125'000'000LL &&
+          hm::pipeline_internal::stitch_frame_initial_position(7'000'000'000ULL, -1'000'000'000LL, true, false) == 0,
+      "End-relative reference must preserve its sign and use lazy seeked calibration inputs");
   for (const char* invalid : {
            "",
            "bogus",
            "00:00:07junk",
            "-1",
+           "-00:00:00",
+           "--00:00:01",
            "00:60:00",
            "00:00:60",
            "24:00:00",

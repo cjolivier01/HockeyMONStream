@@ -137,7 +137,7 @@ constexpr size_t kDefaultStitchingCalibrationFrameCount = 4;
 bool is_enabled(YAML::Node n);
 std::optional<std::string> local_video_path_from_uri(const std::string& uri);
 
-absl::StatusOr<uint64_t> private_stitch_frame_time(const YAML::Node& config) {
+absl::StatusOr<int64_t> private_stitch_frame_time(const YAML::Node& config) {
   const auto value = get_node(config, "stitching.stitch_frame_time");
   if (!value.has_value())
     return 0;
@@ -155,7 +155,7 @@ absl::Status apply_hmstitcher_calibration_sample_span(YAML::Node& pipeline, cons
   if (!get_node(pipeline, "hmstitcher")->IsDefined()) {
     return absl::OkStatus();
   }
-  uint64_t stitch_frame_time_ns = 0;
+  int64_t stitch_frame_time_ns = 0;
   HM_ASSIGN_OR_RETURN(stitch_frame_time_ns, private_stitch_frame_time(config));
   // hstream's one-pass path reaches calibration frames by normal forward decode,
   // not by video-stitcher's source-side keyframe seek/extract pass. A zero stitch
@@ -8017,15 +8017,15 @@ absl::Status Configurator::save_private_config_with_backend_claim_impl(
 
 absl::Status Configurator::persist_stitch_frame_time_override(const std::string& normalized_stitch_frame_time) {
   const std::string requested = normalized_stitch_frame_time.empty() ? "00:00:00" : normalized_stitch_frame_time;
-  uint64_t requested_time_ns = 0;
-  uint64_t lower_layer_time_ns = 0;
+  int64_t requested_time_ns = 0;
+  int64_t lower_layer_time_ns = 0;
   try {
     requested_time_ns = stitch_frame_time_to_nanoseconds(requested);
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Invalid stitch-frame override: " + std::string(error.what()));
   }
   HM_ASSIGN_OR_RETURN(lower_layer_time_ns, private_stitch_frame_time(lower_layer_config_));
-  uint64_t previous_time_ns = 0;
+  int64_t previous_time_ns = 0;
   HM_ASSIGN_OR_RETURN(previous_time_ns, private_stitch_frame_time(config_));
   std::string selected_fingerprint;
   HM_ASSIGN_OR_RETURN(selected_fingerprint, stitching::player_frame_selection_fingerprint(private_config_));
@@ -8799,7 +8799,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
     const std::string& normalized_stitch_frame_time,
     const std::string& expected_invalidation_id) {
   const std::string requested = normalized_stitch_frame_time.empty() ? "00:00:00" : normalized_stitch_frame_time;
-  uint64_t requested_time_ns = 0;
+  int64_t requested_time_ns = 0;
   try {
     requested_time_ns = stitch_frame_time_to_nanoseconds(requested);
   } catch (const std::exception& error) {
@@ -8834,10 +8834,10 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
     return absl::InvalidArgumentError("Failed to load private stitch-frame state: " + std::string(error.what()));
   }
 
-  uint64_t lower_layer_time_ns = 0;
+  int64_t lower_layer_time_ns = 0;
   HM_ASSIGN_OR_RETURN(lower_layer_time_ns, private_stitch_frame_time(lower_layer_config_));
   const bool private_value_present = get_node(latest, "stitching.stitch_frame_time").has_value();
-  uint64_t current_time_ns = lower_layer_time_ns;
+  int64_t current_time_ns = lower_layer_time_ns;
   if (private_value_present)
     HM_ASSIGN_OR_RETURN(current_time_ns, private_stitch_frame_time(latest));
   const bool changed = current_time_ns != requested_time_ns;

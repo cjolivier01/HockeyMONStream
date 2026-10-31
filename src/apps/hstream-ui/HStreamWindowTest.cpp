@@ -1099,6 +1099,13 @@ while True:
 namespace fs = std::filesystem;
 
 namespace {
+QTime calibration_time(const QLineEdit* edit) {
+  auto time = QTime::fromString(edit->text(), "HH:mm:ss.zzz");
+  return time.isValid() ? time : QTime::fromString(edit->text(), "HH:mm:ss");
+}
+void set_calibration_time(QLineEdit* edit, const QTime& time) {
+  edit->setText(time.toString(time.msec() ? "HH:mm:ss.zzz" : "HH:mm:ss"));
+}
 
 YAML::Node test_selected_frame_plan(size_t count);
 
@@ -4763,7 +4770,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* control_points = require_child<QSpinBox>(window, "controlPointsSpin");
   auto* calibration_frame_count = require_child<QSpinBox>(window, "calibrationFrameCountSpin");
-  auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+  auto* stitch_frame_time = require_child<QLineEdit>(window, "stitchFrameTimeEdit");
   auto* control_point_matcher = require_child<QComboBox>(window, "controlPointMatcherCombo");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* camera_configuration = require_child<QComboBox>(window, "stitchCameraConfigurationCombo");
@@ -5617,7 +5624,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   drivegpt_csv->setChecked(false);
   if (!expect(control_points->value() == 1500, "Stitching calibration CP default should be 1500") ||
       !expect(
-          stitch_frame_time->time() == QTime(0, 0, 0) && stitch_frame_time->isEnabled() &&
+          calibration_time(stitch_frame_time) == QTime(0, 0, 0) && stitch_frame_time->isEnabled() &&
               stitched_controls->isAncestorOf(stitch_frame_time),
           "Stitch-frame time should default to 00:00:00 inside the stitched calibration controls")) {
     return false;
@@ -5631,30 +5638,17 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   window->activateWindow();
   stitch_frame_time->setFocus(Qt::OtherFocusReason);
   QTest::qWait(10);
-  auto* stitch_frame_line_edit = stitch_frame_time->findChild<QLineEdit*>();
-  stitch_frame_time->setCurrentSection(QDateTimeEdit::MSecSection);
-  QTest::keyClick(stitch_frame_time, Qt::Key_Up);
+  stitch_frame_time->selectAll();
+  QTest::keyClicks(stitch_frame_time, "-00:00:01.125");
   QTest::keyClick(stitch_frame_time, Qt::Key_Tab);
-  QApplication::processEvents();
   if (!expect(
-          stitch_frame_time->displayedSections().testFlag(QDateTimeEdit::MSecSection) &&
-              stitch_frame_time->time() == QTime(0, 0, 0, 1),
-          QString("The default stitch-frame editor should accept millisecond keyboard input (format=%1, time=%2, "
-                  "section=%3, focus=%4, text=%5)")
-              .arg(stitch_frame_time->displayFormat())
-              .arg(stitch_frame_time->time().toString("HH:mm:ss.zzz"))
-              .arg(static_cast<int>(stitch_frame_time->currentSection()))
-              .arg(stitch_frame_time->hasFocus())
-              .arg(stitch_frame_line_edit ? stitch_frame_line_edit->text() : QString("missing"))
-              .toStdString())) {
+          stitch_frame_time->text() == "-00:00:01.125", "Calibration reference must accept signed millisecond input"))
     return false;
-  }
   mode->setFocus();
-  stitch_frame_time->setTime(QTime(0, 0, 0));
+  set_calibration_time(stitch_frame_time, QTime(0, 0, 0));
   QApplication::processEvents();
   if (!expect(
-          stitch_frame_time->displayFormat() == "HH:mm:ss",
-          "An unfocused zero stitch-frame value should display as 00:00:00")) {
+          stitch_frame_time->text() == "00:00:00", "An unfocused zero stitch-frame value should display as 00:00:00")) {
     return false;
   }
 
@@ -5679,7 +5673,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   auto* save_preset = require_child<QPushButton>(window, "savePresetButton");
   mode->setCurrentIndex(mode->findData("program"));
-  stitch_frame_time->setTime(QTime(0, 0, 7));
+  set_calibration_time(stitch_frame_time, QTime(0, 0, 7));
   QApplication::processEvents();
   if (!save_preset ||
       !expect(save_preset->isEnabled(), "Changing stitch-frame time should be unsaved before Play is pressed")) {
@@ -5731,7 +5725,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS");
   if (!zero_to_nonzero_play_ok || !nonzero_playback_restart_ok)
     return false;
-  stitch_frame_time->setTime(QTime(0, 0, 0));
+  set_calibration_time(stitch_frame_time, QTime(0, 0, 0));
   QApplication::processEvents();
 
   {
@@ -12376,7 +12370,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
   auto* clean_stitching = require_child<QPushButton>(window, "cleanStitchingButton");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
-  auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+  auto* stitch_frame_time = require_child<QLineEdit>(window, "stitchFrameTimeEdit");
   auto* clean_frame_count = require_child<QSpinBox>(window, "calibrationFrameCountSpin");
   auto* clean_control_points = require_child<QSpinBox>(window, "controlPointsSpin");
   if (!clean_stitching || !create || !game_id || !stitch_frame_time || !clean_frame_count || !clean_control_points)
@@ -12455,13 +12449,13 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS", "1");
   clean_frame_count->setValue(1);
   clean_control_points->setValue(500);
-  stitch_frame_time->setTime(QTime(0, 1, 24));
+  set_calibration_time(stitch_frame_time, QTime(0, 1, 24));
   activate(clean_stitching);
   qunsetenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS");
   const YAML::Node cleaned_stitching = YAML::LoadFile(config.string());
   if (!expect(
           clean_frame_count->value() == 1 && clean_control_points->value() == 500 &&
-              stitch_frame_time->time() == QTime(0, 1, 24) && stitch_frame_time->isEnabled(),
+              calibration_time(stitch_frame_time) == QTime(0, 1, 24) && stitch_frame_time->isEnabled(),
           "Clean Stitching must retain unsaved sampling choices for the next Play"))
     return false;
   if (!expect(
@@ -12585,7 +12579,7 @@ bool test_camera_controls(HStreamWindow* window) {
   auto* restart = require_child<QPushButton>(window, "restartStageButton");
   auto* pipeline_process = window->findChild<QProcess*>();
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  auto* stitch_frame_time = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+  auto* stitch_frame_time = require_child<QLineEdit>(window, "stitchFrameTimeEdit");
   auto* stitch_max_output_width = require_child<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
   auto* projection = require_child<QComboBox>(window, "stitchProjectionCombo");
@@ -13424,11 +13418,9 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          stitch_frame_time->time() == QTime(0, 10, 7, 500),
+          calibration_time(stitch_frame_time) == QTime(0, 10, 7, 500),
           "Camera controls should load a fractional stitching.stitch_frame_time value") ||
-      !expect(
-          stitch_frame_time->displayFormat() == "HH:mm:ss.zzz",
-          "A fractional stitch-frame time should display milliseconds") ||
+      !expect(stitch_frame_time->text().contains('.'), "A fractional stitch-frame time should display milliseconds") ||
       !expect(!save->isEnabled(), "A fractional stitch-frame time should participate in the clean preset snapshot")) {
     return false;
   }
@@ -13441,7 +13433,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   if (!expect(
-          stitch_frame_time->time() == QTime(0, 0, 0),
+          calibration_time(stitch_frame_time) == QTime(0, 0, 0),
           "A non-scalar stitch-frame time should fail closed to the default") ||
       !expect(save->isEnabled(), "A non-scalar stitch-frame time should leave the current controls unsaved")) {
     return false;
@@ -13595,7 +13587,7 @@ bool test_camera_controls(HStreamWindow* window) {
   bring_up_shadows->setValue(35);
   exposure->setValue(60);
   lift_shadow_black_point->setChecked(true);
-  stitch_frame_time->setTime(QTime(0, 0, 7));
+  set_calibration_time(stitch_frame_time, QTime(0, 0, 7));
   if (!expect(
           window->cameraControlValue("Stitch_Rotate_Degrees") == 72,
           "Stitch rotation slider should update controller state") ||
@@ -13619,7 +13611,7 @@ bool test_camera_controls(HStreamWindow* window) {
           window->cameraControlValue("Exposure_x100") == 60 && exposure->minimum() == 0 && exposure->maximum() == 130,
           "Exposure should expose the measured 0.00 through 1.30 range in hundredths") ||
       !expect(
-          stitch_frame_time->time() == QTime(0, 0, 7),
+          calibration_time(stitch_frame_time) == QTime(0, 0, 7),
           "Stitch-frame control should accept an HH:MM:SS calibration timestamp") ||
       !expect(save->isEnabled(), "Changing a preset-backed control should enable Save Preset")) {
     return false;
@@ -15013,7 +15005,7 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   activate(create);
   rotate->setValue(72);
-  stitch_frame_time->setTime(QTime(0, 0, 0));
+  set_calibration_time(stitch_frame_time, QTime(0, 0, 0));
   activate(save);
   const YAML::Node after_aged_active_save = YAML::LoadFile(config.string());
   YAML::Node active_sidecar_node;
@@ -15723,7 +15715,7 @@ bool test_preset_reload_with_missing_tracker() {
     auto* auto_fov = require_child<QCheckBox>(&window, "projectionAutoFovCheck");
     auto* fov = require_child<QDoubleSpinBox>(&window, "projectionHorizontalFovSpin");
     auto* camera = require_child<QComboBox>(&window, "stitchCameraConfigurationCombo");
-    auto* reference = require_child<QTimeEdit>(&window, "stitchFrameTimeEdit");
+    auto* reference = require_child<QLineEdit>(&window, "stitchFrameTimeEdit");
     auto* playback = require_child<QTimeEdit>(&window, "playbackStartTimeEdit");
     auto* frames = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
     auto* cp = require_child<QSpinBox>(&window, "controlPointsSpin");
@@ -15733,8 +15725,9 @@ bool test_preset_reload_with_missing_tracker() {
     selector->setCurrentIndex(selector->findText(game_name));
     if (!expect(
             auto_fov->isChecked() == (run != 1) && fov->value() == 160 &&
-                camera->currentData().toString() == "gopro-hero-11" && reference->time() == QTime(0, 0, 7, 125) &&
-                playback->time() == QTime(0, 12, 30, 250) && frames->value() == 4 && cp->value() == 1700,
+                camera->currentData().toString() == "gopro-hero-11" &&
+                calibration_time(reference) == QTime(0, 0, 7, 125) && playback->time() == QTime(0, 12, 30, 250) &&
+                frames->value() == 4 && cp->value() == 1700,
             "A missing tracker file must not discard saved stitching, camera, or playback settings on a fresh UI load")) {
       std::cerr << window.logText().toStdString() << '\n';
       return false;
@@ -16110,7 +16103,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   auto* crop = require_child<QCheckBox>(&window, "showCropDialogCheck");
   auto* posts = require_child<QCheckBox>(&window, "showLevelingDialogCheck");
   auto* playback = require_child<QTimeEdit>(&window, "playbackStartTimeEdit");
-  auto* reference = require_child<QTimeEdit>(&window, "stitchFrameTimeEdit");
+  auto* reference = require_child<QLineEdit>(&window, "stitchFrameTimeEdit");
   auto* frames = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
   auto* control_points = require_child<QSpinBox>(&window, "controlPointsSpin");
   auto* seek = require_child<QSlider>(&window, "playbackSeekSlider");
@@ -16126,7 +16119,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   activate(create);
   if (!expect(
           gyro->isChecked() && !crop->isChecked() && posts->isChecked() && playback->time() == QTime(0, 12, 30, 125) &&
-              reference->time() == QTime(0, 0, 7),
+              calibration_time(reference) == QTime(0, 0, 7),
           "Game YAML must independently initialize sync, automatic dialogs, playback and reference times"))
     return false;
   playback->setTime(QTime(0, 12, 31, 125));
@@ -16156,7 +16149,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
           "Saving a view edit after feature changes must preserve the earlier feature invalidation and selected plan"))
     return false;
   const std::string saved_config = YAML::Dump(config);
-  reference->setTime(QTime(0, 0, 8));
+  set_calibration_time(reference, QTime(0, 0, 8));
   activate(save);
   if (!expect(
           YAML::Dump(YAML::LoadFile(config_path.string())) == saved_config && save->isEnabled() &&
@@ -16177,7 +16170,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   if (!calibration_ok)
     return false;
   activate(calibration_ok);
-  reference->setTime(QTime(0, 0, 7));
+  set_calibration_time(reference, QTime(0, 0, 7));
   frames->setValue(3);
   if (!expect(
           playback->isEnabled() && reference->isEnabled(),
@@ -16202,12 +16195,13 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     return false;
   activate(create);
   if (!expect(
-          frames->value() == 3 && playback->time() == QTime(0, 13, 45, 250) && reference->time() == QTime(0, 0, 7) &&
-              reference->isEnabled(),
+          frames->value() == 3 && playback->time() == QTime(0, 13, 45, 250) &&
+              calibration_time(reference) == QTime(0, 0, 7) && reference->isEnabled(),
           "Reloading a multi-frame game must restore both timestamps independently"))
     return false;
   frames->setValue(1);
-  if (!expect(reference->time() == QTime(0, 0, 7), "Returning to one frame must retain the saved reference time"))
+  if (!expect(
+          calibration_time(reference) == QTime(0, 0, 7), "Returning to one frame must retain the saved reference time"))
     return false;
   playback->setTime(QTime(0, 12, 30, 125));
   posts->setChecked(false);
@@ -16281,7 +16275,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     crop->setChecked((selection & 1) != 0);
     posts->setChecked((selection & 2) != 0);
     // A changed reference also ensures enabled crop review waits for fresh calibration.
-    reference->setTime(QTime(0, 0, selection == 0 ? 0 : 8 + selection));
+    set_calibration_time(reference, QTime(0, 0, selection == 0 ? 0 : 8 + selection));
     // Play must persist fresh edits without Save Preset, including the
     // reference time while its control is disabled for multiple frames.
     playback->setTime(QTime(0, 15, selection + 1, 125));
@@ -16302,7 +16296,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
             launched_config["stitching"]["calibration_frame_count"].as<int>() == frames->value() &&
             !launched_config["stitching"]["calibration_frame_selection"].IsDefined() &&
             QString::fromStdString(launched_config["stitching"]["stitch_frame_time"].as<std::string>("00:00:00")) ==
-                reference->time().toString("HH:mm:ss") &&
+                calibration_time(reference).toString("HH:mm:ss") &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_PROJECTION_CROP_FLOW") ==
                 (crop->isChecked() ? "1" : "") &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_RINK_LEVELING_FLOW") ==
@@ -16604,7 +16598,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* start = require_child<QPushButton>(&user_default_window, "startPipelineButton");
     auto* stop = require_child<QPushButton>(&user_default_window, "stopPipelineButton");
     auto* mode = require_child<QComboBox>(&user_default_window, "runModeCombo");
-    auto* stitch_frame_time = require_child<QTimeEdit>(&user_default_window, "stitchFrameTimeEdit");
+    auto* stitch_frame_time = require_child<QLineEdit>(&user_default_window, "stitchFrameTimeEdit");
     auto* stitch_max_output_width = require_child<QSpinBox>(&user_default_window, "stitchMaxOutputWidthSpin");
     auto* control_point_matcher = require_child<QComboBox>(&user_default_window, "controlPointMatcherCombo");
     auto* mapping_backend = require_child<QComboBox>(&user_default_window, "mappingBackendCombo");
@@ -16628,7 +16622,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       game_id->setText("ui-user-stitch-default");
       activate(create);
       ok &= expect(
-          stitch_frame_time->time() == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
+          calibration_time(stitch_frame_time) == QTime(0, 0, 8) && stitch_rotation->value() == 90 &&
               stitch_max_output_width->value() == 0 &&
               control_point_matcher->currentData().toString() == "superpoint-lightglue" &&
               mapping_backend->currentData().toString() == "opencv-affine-ransac" && !run_autooptimizer->isChecked() &&
@@ -16645,7 +16639,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
                   "complete" &&
               fs::is_regular_file(copied_game / "seam_file.png") && !save->isEnabled(),
           "Normalizing an inactive OpenCV optimizer flag must preserve completed calibration artifacts");
-      stitch_frame_time->setTime(QTime(0, 0, 0));
+      set_calibration_time(stitch_frame_time, QTime(0, 0, 0));
       QApplication::processEvents();
       ok &= expect(save->isEnabled(), "Zero must remain an explicit edit against a nonzero user-level default");
       activate(save);
@@ -16770,7 +16764,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     auto* stop = require_child<QPushButton>(&selected_window, "stopPipelineButton");
     auto* frames = require_child<QSpinBox>(&selected_window, "calibrationFrameCountSpin");
     auto* points = require_child<QSpinBox>(&selected_window, "controlPointsSpin");
-    auto* reference = require_child<QTimeEdit>(&selected_window, "stitchFrameTimeEdit");
+    auto* reference = require_child<QLineEdit>(&selected_window, "stitchFrameTimeEdit");
     if (!game_id || !create || !save || !start || !stop || !frames || !points || !reference) {
       ok = false;
       break;
@@ -16778,7 +16772,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     game_id->setText("ui-user-stitch-default");
     activate(create);
     ok &= expect(
-        frames->value() == 2 && reference->time() == QTime(0, 0, 8),
+        frames->value() == 2 && calibration_time(reference) == QTime(0, 0, 8),
         "A plan without saved frame-count bookkeeping must load its own count and the effective inherited reference");
     const auto selected_state_preserved = [&](const YAML::Node& state) {
       const YAML::Node timestamp = state["stitching"]["stitch_frame_time"];
@@ -18150,7 +18144,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
   if (fresh_calibration) {
     auto* video_path = require_child<QLineEdit>(window, "videoPathEdit");
     auto* add = require_child<QPushButton>(window, "addVideoButton");
-    auto* reference = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+    auto* reference = require_child<QLineEdit>(window, "stitchFrameTimeEdit");
     auto* frames = require_child<QSpinBox>(window, "calibrationFrameCountSpin");
     if (!video_path || !add || !reference || !frames)
       return false;
@@ -18171,7 +18165,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
             reference_valid && reference_ms >= 0 && reference_ms < 86400000,
             "Fresh calibration requires an explicit recording reference in milliseconds"))
       return false;
-    reference->setTime(QTime::fromMSecsSinceStartOfDay(reference_ms));
+    set_calibration_time(reference, QTime::fromMSecsSinceStartOfDay(reference_ms));
     report += QString("fresh-imports=%1 frame-count=%2 reference-ms=%3\n")
                   .arg(window->videoSetCount())
                   .arg(frames->value())
@@ -18285,15 +18279,15 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
   }
   if (clean_calibration) {
     auto* count = require_child<QSpinBox>(window, "calibrationFrameCountSpin");
-    auto* reference = require_child<QTimeEdit>(window, "stitchFrameTimeEdit");
+    auto* reference = require_child<QLineEdit>(window, "stitchFrameTimeEdit");
     auto* clean = require_child<QPushButton>(window, "cleanStitchingButton");
     if (!count || !reference || !clean)
       return false;
     count->setValue(1);
-    reference->setTime(QTime(0, 1, 24));
+    set_calibration_time(reference, QTime(0, 1, 24));
     activate(clean);
     if (!expect(
-            count->value() == 1 && reference->time() == QTime(0, 1, 24),
+            count->value() == 1 && calibration_time(reference) == QTime(0, 1, 24),
             "Clean Stitching must retain the selected one-frame reference settings"))
       return false;
     const auto framing = initial_config["stitching"]["projection_framing"]["crop"].as<std::array<double, 4>>();
@@ -22307,6 +22301,42 @@ bool test_active_process_destruction() {
 
 int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
+  if (argc == 2 && QByteArray(argv[1]) == "--calibration-reference-preflight") {
+    QTemporaryDir games_root;
+    const auto game = std::filesystem::path(games_root.path().toStdString()) / "reference";
+    std::filesystem::create_directories(game);
+    std::ofstream(game / "config.yaml") << "{}\n";
+    qputenv("HM_GAME_DIR", games_root.path().toLocal8Bit());
+    QApplication app(argc, argv);
+    HStreamWindow window;
+    auto* games = require_child<QComboBox>(&window, "gameSelector");
+    games->setCurrentIndex(games->findText("reference"));
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    auto* reference = require_child<QLineEdit>(&window, "stitchFrameTimeEdit");
+    auto* count = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
+    reference->setText("-00:00:01.125");
+    count->setValue(3);
+    if (!HStreamWindowTestAccess::savePreset(&window))
+      return 1;
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    if (!expect(
+            reference->text() == "-00:00:01.125" && count->value() == 3,
+            "Signed calibration references and wrapped frame counts must survive Save/reload"))
+      return 1;
+    if (!expect(
+            HStreamWindowTestAccess::calibrationArguments(&window).contains("--stitch-frame-time=-00:00:01.125"),
+            "Calibration launch must retain the end-relative reference"))
+      return 1;
+    require_child<QTabWidget>(&window, "previewTabs")->setCurrentIndex(1);
+    window.resize(1400, 1000);
+    window.show();
+    QApplication::processEvents();
+    const auto capture = qEnvironmentVariable("HSTREAM_REFERENCE_SCREENSHOT");
+    if (!capture.isEmpty() && !window.grab().save(capture))
+      return 1;
+    std::cout << "Signed calibration reference controls passed\n";
+    return 0;
+  }
   if (argc == 2 && QByteArray(argv[1]) == "--camera-tabs-preflight") {
     QTemporaryDir games_root;
     const auto game = std::filesystem::path(games_root.path().toStdString()) / "tabs";

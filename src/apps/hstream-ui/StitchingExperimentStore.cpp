@@ -123,7 +123,7 @@ fs::path key_path(const StitchingExperimentStore& store, const std::string& key)
   return path;
 }
 
-uint64_t anchor(const StitchingExperimentSettings& settings) {
+int64_t anchor(const StitchingExperimentSettings& settings) {
   return hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
 }
 

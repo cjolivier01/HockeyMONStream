@@ -1382,3 +1382,5 @@ The AMD local preview still supports only Player boxes: Play/Rink settings
 fail explicitly. The fenced selectable-browser overlay protocol, mask and
 next-Play mini-map consumer belong to the NVIDIA WebPreviewSession; no AMD browser-target or
 EGL/HIP interoperability qualification is implied.
+
+Signed end-relative calibration references are accepted when validating saved Program calibration identities. Fresh automatic calibration, including circular frame extraction, retains the existing AMD calibration limitation; this does not add a new AMD calibration graph.
