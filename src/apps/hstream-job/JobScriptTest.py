@@ -890,6 +890,17 @@ class JobScriptTest(unittest.TestCase):
         (self.game / "_hockeymon/config.yaml").write_text("[invalid")
         self.assertNotEqual(self.generate().returncode, 0)
 
+    def test_private_job_export_is_inventoried_without_claiming_publication(self):
+        custom = self.game / "_hockeymon/job.sh"
+        result = self.generate("--output", str(custom))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.access(custom, os.X_OK))
+        inventory = json.loads((self.game / "_hockeymon/manifest.json").read_text())
+        entry = next(item for item in inventory["files"] if item["path"] == "_hockeymon/job.sh")
+        self.assertEqual(entry["kind"], "file")
+        self.assertEqual(entry["role"], "saved-state")
+        self.assertEqual(entry["size_bytes"], custom.stat().st_size)
+
     def test_export_fallback_requires_the_shared_baseline_archive_recipe(self):
         baseline = self.root / "baseline"
         baseline.mkdir()

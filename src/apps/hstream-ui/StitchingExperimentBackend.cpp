@@ -145,7 +145,11 @@ absl::StatusOr<fs::path> linked_workspace_source(
   return relative;
 }
 
-absl::Status link_input(const fs::path& canonical_source, const fs::path& destination) {
+absl::Status link_input(
+    const fs::path& canonical_source,
+    const fs::path& candidate_game_directory,
+    const fs::path& relative) {
+  const auto destination = candidate_game_directory / relative;
   std::error_code error;
   const auto resolved = fs::canonical(canonical_source, error);
   if (error || !fs::is_regular_file(resolved, error) || error)
@@ -156,7 +160,18 @@ absl::Status link_input(const fs::path& canonical_source, const fs::path& destin
   if (fs::exists(destination, error) || fs::is_symlink(destination, error))
     return absl::AlreadyExistsError("Duplicate experiment input destination: " + destination.string());
   fs::create_symlink(resolved, destination, error);
-  return error ? absl::InternalError("Unable to link experiment input: " + error.message()) : absl::OkStatus();
+  if (error)
+    return absl::InternalError("Unable to link experiment input: " + error.message());
+  // The candidate is a game in its own right. Its private-state scan cannot
+  // discover these root camera aliases or their directories. Register the local
+  // topology, never the original recordings or sidecars behind the links.
+  fs::path parent;
+  for (const auto& component : relative.parent_path()) {
+    parent /= component;
+    if (parent != "_hockeymon")
+      HM_RETURN_IF_ERROR(hm::game_storage::RegisterInput(candidate_game_directory, parent, "stitching-experiment"));
+  }
+  return hm::game_storage::RegisterInput(candidate_game_directory, relative, "stitching-experiment");
 }
 
 absl::Status link_configured_videos(
@@ -186,7 +201,7 @@ absl::Status link_configured_videos(
           return absl::InvalidArgumentError(
               "Configured experiment video is not a supported video file: " + relative.string());
         if (linked->insert(relative).second)
-          HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
+          HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory, relative));
         values[index] = relative.generic_string();
       }
     }
@@ -224,7 +239,7 @@ absl::Status link_auto_videos(
         return absl::InvalidArgumentError(
             "Auto-discovered experiment video resolves to a non-video file: " + entry.path().string());
       if (linked->insert(relative).second)
-        HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
+        HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory, relative));
     }
   }
   return absl::OkStatus();
@@ -257,7 +272,7 @@ absl::Status link_calibration_assets(
         return absl::InvalidArgumentError(
             "Experiment calibration asset resolves to a reserved file: " + entry.path().string());
       if (linked_assets.insert(relative).second)
-        HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory / relative));
+        HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory, relative));
     }
   }
   return absl::OkStatus();

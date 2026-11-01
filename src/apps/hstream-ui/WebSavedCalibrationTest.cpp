@@ -1264,6 +1264,49 @@ int main(int argc, char** argv) {
     provenance(game);
     write(game / "_hockeymon/config.yaml", YAML::Dump(config));
     {
+      QTemporaryDir absolute_temporary;
+      const fs::path absolute_root(absolute_temporary.path().toStdString()), absolute_game = absolute_root / "game";
+      fs::copy(game, absolute_game, fs::copy_options::recursive);
+      for (const char* project_name : {"hm_project.pto", "autooptimiser_out.pto"}) {
+        const auto path = absolute_game / "_hockeymon" / project_name;
+        auto project = QString::fromStdString(read(path));
+        for (const char* image : {"left.png", "right.png"}) {
+          const QString original = QString("n\"%1\"").arg(image);
+          expect(project.contains(original), "Absolute-image regression requires relative source images");
+          project.replace(
+              original,
+              QString("n\"%1\"").arg(QString::fromStdString((absolute_game / "_hockeymon" / image).string())));
+        }
+        write(path, project.toStdString());
+      }
+      const auto original_project = read(absolute_game / "_hockeymon/autooptimiser_out.pto");
+      invoke(argv[1], absolute_root, "calibration-view-read", {{"kind", "crop"}});
+      const auto absolute_view = invoke(argv[1], absolute_root, "calibration-view-read", {{"kind", "leveling"}});
+      QJsonArray cameras;
+      for (int camera = 0; camera < 2; ++camera) {
+        QJsonArray points;
+        for (int x : {128, 256, 384}) {
+          points.append(QJsonArray{x, 64});
+          points.append(QJsonArray{x, 192});
+        }
+        cameras.append(points);
+      }
+      const auto estimated = invoke(
+          argv[1],
+          absolute_root,
+          "calibration-view-estimate",
+          {{"kind", "leveling"},
+           {"snapshot", absolute_view.value("snapshot")},
+           {"angles", QJsonArray{0, 0, 0}},
+           {"method", "posts"},
+           {"points", cameras}});
+      const auto angles = estimated.value("angles").toArray();
+      expect(
+          angles.size() == 3 && std::abs(angles[1].toDouble()) < 1e-4 && std::abs(angles[2].toDouble()) < 1e-4 &&
+              read(absolute_game / "_hockeymon/autooptimiser_out.pto") == original_project,
+          "Saved editors must localize absolute private image paths without changing the saved project");
+    }
+    {
       QTemporaryDir start_temporary;
       const fs::path start_root(start_temporary.path().toStdString()), start_game = start_root / "game";
       fs::copy(game, start_game, fs::copy_options::recursive);

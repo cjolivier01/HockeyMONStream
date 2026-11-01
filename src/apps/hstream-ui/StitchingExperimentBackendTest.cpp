@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -74,6 +75,72 @@ bool write(const fs::path& path, const std::string& contents) {
   std::ofstream output(path);
   output << contents;
   return output.good();
+}
+
+bool input_inventory(const fs::path& game, const std::vector<fs::path>& aliases) {
+  const auto manifest = YAML::LoadFile((game / "_hockeymon/manifest.json").string());
+  std::set<std::string> expected;
+  for (const auto& alias : aliases) {
+    expected.insert(alias.generic_string());
+    for (auto parent = alias.parent_path(); !parent.empty(); parent = parent.parent_path())
+      if (parent != "_hockeymon")
+        expected.insert(parent.generic_string());
+  }
+  bool ok = true;
+  for (const auto& entry : manifest["files"]) {
+    if (entry["role"].as<std::string>() != "input-reference")
+      continue;
+    const fs::path path(entry["path"].as<std::string>());
+    const bool alias = std::find(aliases.begin(), aliases.end(), path) != aliases.end();
+    ok &= expect(expected.erase(path.generic_string()) == 1, "inventory must not adopt original input targets");
+    ok &= expect(
+        entry["kind"].as<std::string>() == (alias ? "symlink" : "directory") && !entry["size_bytes"],
+        "input inventory must describe the alias or parent directory without following its target");
+    ok &= expect(
+        entry["producer"].as<std::string>() == "stitching-experiment",
+        "candidate input inventory must identify the workspace producer");
+  }
+  return expect(expected.empty(), "candidate inventory must include every alias and its parent topology") && ok;
+}
+
+bool private_input_inventory(const fs::path& root) {
+  const auto game = root / "private-input-game";
+  const auto experiments = root / "private-input-experiments";
+  if (!write(game / "recordings/left.mp4", "left") || !write(game / "recordings/right.mp4", "right") ||
+      !write(game / "profiles/calibration.json", "{}") ||
+      !write(
+          game / "_hockeymon/config.yaml",
+          "game:\n  videos:\n"
+          "    left: [_hockeymon/inputs/left.mp4]\n    right: [_hockeymon/inputs/right.mp4]\n"
+          "hstream_ui:\n  video_roles:\n"
+          "    left: [_hockeymon/inputs/left.mp4]\n    right: [_hockeymon/inputs/right.mp4]\n"))
+    return false;
+  fs::create_directory(game / "_hockeymon/inputs");
+  fs::create_symlink(game / "recordings/left.mp4", game / "_hockeymon/inputs/left.mp4");
+  fs::create_symlink(game / "recordings/right.mp4", game / "_hockeymon/inputs/right.mp4");
+  fs::create_symlink(game / "profiles/calibration.json", game / "_hockeymon/inputs/left_calibration.json");
+  const auto workspace = CreateStitchingExperimentWorkspace(game, experiments, {100, 2, "00:00:00", std::nullopt}, 1);
+  if (!expect(workspace.ok(), "private media aliases shared by both role maps must create a candidate")) {
+    if (!workspace.ok())
+      std::cerr << workspace.status() << '\n';
+    return false;
+  }
+  const std::vector<fs::path> aliases{
+      "_hockeymon/inputs/left.mp4", "_hockeymon/inputs/right.mp4", "_hockeymon/inputs/left_calibration.json"};
+  bool ok = input_inventory(workspace->game_directory, aliases);
+  const auto clone = CreateStitchingExperimentEditableCopy(*workspace, experiments, 2);
+  if (!expect(clone.ok(), "a candidate can reuse private media aliases in an editable copy"))
+    return false;
+  ok &= input_inventory(clone->game_directory, aliases);
+  const auto subsequent = CreateStitchingExperimentEditableCopy(*clone, experiments, 3);
+  if (!expect(subsequent.ok(), "a clone of a private-input clone must remain usable"))
+    return false;
+  ok &= input_inventory(subsequent->game_directory, aliases);
+  for (const auto& alias : aliases)
+    ok &= expect(
+        fs::read_symlink(subsequent->game_directory / alias) == fs::canonical(game / alias),
+        "clone-of-clone aliases must still reference the original file directly");
+  return ok;
 }
 
 struct FsyncProbe {
@@ -181,6 +248,14 @@ bool durable_workspace_publication(const fs::path& root) {
   const auto catalog = LoadStitchingExperimentStore(*store);
   ok &=
       expect(catalog.ok() && catalog->experiments.size() == 1, "reopening must retain exactly the durable queued row");
+  ok &= input_inventory(candidate, {"cam1/chapters/left.mp4", "cam2/right.mp4", "cam1/chapters/left-calibration.yaml"});
+  const auto outer_manifest = YAML::LoadFile((game / "_hockeymon/manifest.json").string());
+  const auto nested_alias = (candidate / "cam1/chapters/left.mp4").lexically_relative(game).generic_string();
+  bool found_alias = false;
+  for (const auto& entry : outer_manifest["files"])
+    if (entry["path"].as<std::string>() == nested_alias)
+      found_alias = entry["kind"].as<std::string>() == "symlink" && !entry["size_bytes"];
+  ok &= expect(found_alias, "outer game inventory must retain the nested candidate alias without following it");
   const auto duplicate = CreateStitchingExperimentWorkspace(game, session, settings, 10);
   ok &= expect(
       !duplicate.ok() && absl::IsAlreadyExists(duplicate.status()), "initial workspace creation must remain exclusive");
@@ -210,6 +285,8 @@ bool in_game_input_aliases(const fs::path& root) {
   const StitchingExperimentSettings settings{100, 2, "00:00:08", std::nullopt};
   const auto ordinary = CreateStitchingExperimentWorkspace(game, experiments, settings, 1);
   if (!expect(ordinary.ok(), "in-game media and calibration aliases must be supported"))
+    return false;
+  if (!input_inventory(ordinary->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"}))
     return false;
   const auto original_lens = load_akaze_matching_calibration(game);
   const auto candidate_lens = load_akaze_matching_calibration(ordinary->game_directory);
@@ -297,6 +374,8 @@ bool in_game_input_aliases(const fs::path& root) {
   if (!expect(
           clone.ok() && fs::is_symlink(clone->game_directory / "left_calibration.json"),
           "editable copies must keep the localized sidecar alias"))
+    return false;
+  if (!input_inventory(clone->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"}))
     return false;
 
   fs::remove(game / "left_calibration.json");
@@ -952,6 +1031,7 @@ bool edited_match_workspace(const fs::path& root) {
   ok &= expect(
       !fs::exists(workspace->game_directory / "right-99.mp4"),
       "workspace clones only carry explicitly configured camera videos");
+  ok &= input_inventory(workspace->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"});
   if (saved.ok()) {
     auto again = *saved;
     again.frames[0].matches[0].right.y += 1;
@@ -959,6 +1039,7 @@ bool edited_match_workspace(const fs::path& root) {
         CreateEditedStitchingExperimentWorkspace(*workspace, root / "edited-session", saved->fingerprint, again, 5);
     ok &= expect(subsequent.ok(), "a manual replacement can be edited again");
     if (subsequent.ok()) {
+      ok &= input_inventory(subsequent->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"});
       const auto matches =
           LoadCalibrationMatches(subsequent->game_directory, *subsequent->settings.manual_control_points);
       ok &= expect(
@@ -1209,6 +1290,7 @@ int main() {
   }
 
   bool ok = true;
+  ok &= private_input_inventory(root);
   ok &= expect(experiment_generated_backend_choices(root), "experiment generated choices must restore saved intent");
   ok &= expect(experiment_resolutions(root), "experiment image sizes must persist and promote independently");
   ok &= expect(durable_workspace_publication(root), "queued workspaces must be durable before catalog publication");
@@ -1228,6 +1310,9 @@ int main() {
   ok &= expect(
       fs::is_symlink(workspace->game_directory / "cam2" / "right-calibration.yaml"),
       "camera-directory calibration must be linked");
+  ok &= input_inventory(
+      workspace->game_directory,
+      {"cam1/left.mp4", "cam2/right.mp4", "left_calibration.json", "cam2/right-calibration.yaml"});
 
   auto trimmed_settings = settings;
   trimmed_settings.camera = *hm::stitching::read_stitch_camera_selection(

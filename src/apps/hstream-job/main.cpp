@@ -273,7 +273,9 @@ int main(int argc, char** argv) {
     const auto register_script = [&](const fs::path& path) {
       const auto relative = fs::absolute(path).lexically_normal().lexically_relative(game);
       if (!relative.empty() && *relative.begin() != "..") {
-        const auto inventory = hm::game_storage::RegisterPublished(game, path, "job-export", "");
+        const auto inventory = *relative.begin() == "_hockeymon"
+            ? hm::game_storage::RefreshManifest(game, "job-export")
+            : hm::game_storage::RegisterPublished(game, path, "job-export", "");
         if (!inventory.ok())
           throw std::runtime_error(inventory.ToString());
       }

@@ -288,7 +288,9 @@ absl::Status Write(int state_fd, const Entries& entries, const std::string& prod
 
 absl::Status InspectRegistered(int game_fd, Entry* entry, bool published) {
   const fs::path path(entry->path);
-  if (!Relative(path) || *path.begin() == kDirectory)
+  if (!Relative(path))
+    return absl::InvalidArgumentError("Registered game artifact must be relative and confined");
+  if (published && *path.begin() == kDirectory)
     return absl::InvalidArgumentError("Published game artifact must be outside private state");
   Descriptor root(::dup(game_fd));
   int current = root.fd;

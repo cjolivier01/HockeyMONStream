@@ -68,6 +68,20 @@ void Run(const fs::path& root) {
       Find(inventory, "cam1/imported.mp4")["role"].as<std::string>() == "input-reference" &&
           Find(inventory, "cam1/imported.mp4")["kind"].as<std::string>() == "symlink",
       "import reference never adopts its target");
+  fs::create_directories(StatePath(game, "hstream-ui/left"));
+  fs::create_symlink(root / "outside/secret", StatePath(game, "hstream-ui/left/imported.mp4"));
+  Check(RegisterInput(game, "_hockeymon/hstream-ui/left", "source-import").ok(), "register private input topology");
+  Check(
+      RegisterInput(game, "_hockeymon/hstream-ui/left/imported.mp4", "source-import").ok(),
+      "register private input alias");
+  Check(RefreshManifest(game, "calibration").ok(), "preserve private input registration");
+  inventory = Inventory(game);
+  Check(
+      Find(inventory, "_hockeymon/hstream-ui/left")["role"].as<std::string>() == "input-reference" &&
+          Find(inventory, "_hockeymon/hstream-ui/left/imported.mp4")["role"].as<std::string>() == "input-reference" &&
+          Find(inventory, "_hockeymon/hstream-ui/left/imported.mp4")["kind"].as<std::string>() == "symlink",
+      "private imported references keep their role across refresh");
+  Check(!RegisterPublished(game, "_hockeymon/config.yaml", "bad").ok(), "private state cannot be a public output");
   Check(!Find(inventory, "_hockeymon/manifest.json"), "manifest cannot inventory its own changing size");
   const std::string unusual = "quote\"-control\x01-name";
   std::ofstream(StatePath(game, unusual)) << "valid filename";

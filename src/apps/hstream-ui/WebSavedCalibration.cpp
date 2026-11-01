@@ -578,7 +578,8 @@ QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, c
   QTemporaryDir temporary(text((request.root / "work" / "view-XXXXXX").string()));
   require(temporary.isValid(), "Cannot create private saved-view snapshot");
   const fs::path work(temporary.path().toStdString());
-  auto prepared = RinkEditor({{"pto", text(source.project)}, {"sourceDirectory", text(request.game.string())}});
+  const auto image_directory = text((request.game / "_hockeymon").string());
+  auto prepared = RinkEditor({{"pto", text(source.project)}, {"sourceDirectory", image_directory}});
   QJsonArray images;
   for (int camera = 0; camera < 2; ++camera) {
     const auto path = request.game / "_hockeymon" / (camera ? "right.png" : "left.png");
@@ -603,7 +604,7 @@ QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, c
     require(kind == "leveling", "Only leveling estimates original-image points");
     auto value = request.payload;
     value.insert("pto", text(source.project));
-    value.insert("sourceDirectory", text(request.game.string()));
+    value.insert("sourceDirectory", image_directory);
     value.insert("publishedAngles", values(source.published));
     prepared = RinkEditor(value);
     std::ofstream(work / "sphere.pto") << prepared.value("sphere").toString().toStdString();
