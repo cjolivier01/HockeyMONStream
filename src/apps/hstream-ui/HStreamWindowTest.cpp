@@ -282,8 +282,7 @@ while True:
     bool ok = window.preview_overlay_deferred_ && window.preview_overlay_generation_ == 0 &&
         window.pending_preview_overlay_generation_ == 0 && window.show_player_tracking_toggle_->isChecked() &&
         window.show_play_tracking_toggle_->isChecked() && window.show_rink_mask_toggle_->isChecked() &&
-        !window.logText().contains("apply=live") &&
-        !window.logText().contains("reason=acknowledgement-timeout");
+        !window.logText().contains("apply=live") && !window.logText().contains("reason=acknowledgement-timeout");
     window.handleGpuPreviewStatus("HSTREAM_PREVIEW_RUNTIME status=ready channel=program generation=1");
     ok &= !window.preview_overlay_deferred_ && window.preview_overlay_generation_ == 1 &&
         window.pending_preview_overlay_generation_ == 1;
@@ -301,7 +300,7 @@ while True:
     return ok;
   }
   static bool scoreboardControlChecks(HStreamWindow* window) {
-    const QString config_path = window->gameDirectoryText() + "/config.yaml";
+    const QString config_path = window->gameDirectoryText() + "/_hockeymon/config.yaml";
     QFile file(config_path);
     const bool existed = file.exists();
     if (existed && !file.open(QIODevice::ReadOnly))
@@ -632,7 +631,8 @@ while True:
     window->updateInputCameraTabs(result);
   }
   static absl::StatusOr<hm::stitching::StitchCameraSelection> cameraSelection(
-      HStreamWindow* window, const YAML::Node& config) {
+      HStreamWindow* window,
+      const YAML::Node& config) {
     return window->stitchCameraSelectionFromGameConfig(config);
   }
   static QStringList standaloneArguments(HStreamWindow* window) {
@@ -709,9 +709,7 @@ while True:
     window->active_calibration_control_points_ = control_points;
   }
 
-  static void setActiveCameraSelection(
-      HStreamWindow* window,
-      const hm::stitching::StitchCameraSelection& selection) {
+  static void setActiveCameraSelection(HStreamWindow* window, const hm::stitching::StitchCameraSelection& selection) {
     window->active_camera_selection_ = selection;
   }
 
@@ -1172,6 +1170,7 @@ SliderStyleGeometry slider_style_geometry(const QSlider* slider) {
 }
 
 bool write_tiff_fixture(const fs::path& path, uint32_t width = 1, uint32_t height = 1) {
+  fs::create_directories(path.parent_path());
   TIFF* tiff = TIFFOpen(path.c_str(), "w");
   if (tiff == nullptr)
     return false;
@@ -1196,7 +1195,7 @@ absl::StatusOr<std::string> write_live_hugin_generation_fixture(const fs::path& 
   if (!artifact_lock.ok())
     return artifact_lock.status();
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto", "seam_file.png"}) {
-    std::ofstream output(game_dir / name, std::ios::binary | std::ios::trunc);
+    std::ofstream output(game_dir / "_hockeymon" / name, std::ios::binary | std::ios::trunc);
     output << name << '\n';
     if (!output)
       return absl::InternalError("Could not write live-rotation Hugin fixture");
@@ -1209,11 +1208,11 @@ absl::StatusOr<std::string> write_live_hugin_generation_fixture(const fs::path& 
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
        }) {
-    if (!write_tiff_fixture(game_dir / name))
+    if (!write_tiff_fixture(game_dir / "_hockeymon" / name))
       return absl::InternalError("Could not write live-rotation Hugin fixture");
   }
   std::error_code ignored;
-  fs::remove(game_dir / hm::stitching::kStitchCanvasProvenanceArtifact, ignored);
+  fs::remove(game_dir / "_hockeymon" / hm::stitching::kStitchCanvasProvenanceArtifact, ignored);
   return hm::stitching::stitch_artifact_generation_id_locked(game_dir);
 }
 
@@ -1648,8 +1647,9 @@ bool test_matching_development_runtime_selection() {
                  QFileInfo(QString::fromStdString((output_apps.parent_path().parent_path()).string()))
                      .canonicalFilePath(),
              "A Bazel-built UI must retain its immutable output tree when the sibling CLI is missing") &&
-      expect(QFileInfo(hm::ui_internal::development_runtime_root_for_application(
-                           QString::fromStdString(application.string())))
+      expect(QFileInfo(
+                 hm::ui_internal::development_runtime_root_for_application(
+                     QString::fromStdString(application.string())))
                      .canonicalFilePath() ==
                  QFileInfo(QString::fromStdString(workspace_root.string())).canonicalFilePath(),
              "A Bazel-built UI must retain its source workspace when the sibling CLI is missing");
@@ -1801,21 +1801,23 @@ bool confirm_projection_crop(QAbstractButton* crop_button, Adjust adjust) {
       QTest::qWait(50);
     if (!crop_button->isEnabled())
       break;
-    with_projection_crop_dialog([&]() { activate(crop_button); }, [&](ProjectionCropDialog* dialog) {
-      auto* status = dialog->findChild<QLabel*>("projectionCropStatus");
-      auto* accept = dialog->findChild<QPushButton*>("acceptProjectionCropButton");
-      const auto preview_refused = [&]() {
-        return status && status->text().startsWith("Stitching calibration is being updated");
-      };
-      const auto ready = [&]() { return !dialog->sourceRevision().isEmpty() && accept->isEnabled(); };
-      for (int wait = 0; wait < 500 && !ready() && !preview_refused(); ++wait)
-        QTest::qWait(20);
-      if (!ready())
-        return;
-      adjust(dialog);
-      accept->click();
-      confirmed = !dialog->isVisible();
-    });
+    with_projection_crop_dialog(
+        [&]() { activate(crop_button); },
+        [&](ProjectionCropDialog* dialog) {
+          auto* status = dialog->findChild<QLabel*>("projectionCropStatus");
+          auto* accept = dialog->findChild<QPushButton*>("acceptProjectionCropButton");
+          const auto preview_refused = [&]() {
+            return status && status->text().startsWith("Stitching calibration is being updated");
+          };
+          const auto ready = [&]() { return !dialog->sourceRevision().isEmpty() && accept->isEnabled(); };
+          for (int wait = 0; wait < 500 && !ready() && !preview_refused(); ++wait)
+            QTest::qWait(20);
+          if (!ready())
+            return;
+          adjust(dialog);
+          accept->click();
+          confirmed = !dialog->isVisible();
+        });
     if (!confirmed)
       QTest::qWait(250);
   }
@@ -1945,7 +1947,7 @@ bool write_fake_runner(const QString& path) {
   file.write("if '--clean' in sys.argv[1:] or '--clean-from-control-points' in sys.argv[1:]:\n");
   file.write("    if os.environ.get('HSTREAM_UI_TEST_CLEAN_INVALIDATE_INPUT') == '1':\n");
   file.write("        game_id = sys.argv[sys.argv.index('-g') + 1]\n");
-  file.write("        config_path = os.path.join(os.environ['HM_GAME_DIR'], game_id, 'config.yaml')\n");
+  file.write("        config_path = os.path.join(os.environ['HM_GAME_DIR'], game_id, '_hockeymon', 'config.yaml')\n");
   file.write("        with open(config_path, 'r', encoding='utf-8') as source:\n");
   file.write("            config_text = source.read()\n");
   file.write("        config_text = config_text.replace('stale_from: features', 'stale_from: input')\n");
@@ -1959,7 +1961,7 @@ bool write_fake_runner(const QString& path) {
   file.write("    if os.environ.get('HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS') == '1':\n");
   file.write("        import glob\n");
   file.write("        game_id = sys.argv[sys.argv.index('-g') + 1]\n");
-  file.write("        game_dir = os.path.join(os.environ['HM_GAME_DIR'], game_id)\n");
+  file.write("        game_dir = os.path.join(os.environ['HM_GAME_DIR'], game_id, '_hockeymon')\n");
   file.write("        for pattern in ['hm_project.pto', 'autooptimiser_out.pto', '*.pto', 'mapping_*.tif',\n");
   file.write("                        'mapping_*.tiff', 'stitching_canvas_provenance', 'stitch_generation',\n");
   file.write("                        'panorama.tif', 'seam_file.png', 'matches.png', 'keypoints.png', 's.png',\n");
@@ -2705,8 +2707,7 @@ bool test_stall_watchdog_calibration_failure_analysis(HStreamWindow* window) {
   });
   if (!expect(
           reported_cause(analysis).contains("no-progress watchdog expired") &&
-              !reported_cause(analysis).contains("App run failed") &&
-              analysis.contains("A timeout ended this run") &&
+              !reported_cause(analysis).contains("App run failed") && analysis.contains("A timeout ended this run") &&
               analysis.contains("Calibration work and operator review suspend this watchdog") &&
               analysis.contains("HM_URI_PLAYLIST_BARRIER_STALL_SECONDS"),
           "A watchdog expiry must be reported as a timeout, not as a generic run failure; reported cause was \"" +
@@ -2789,11 +2790,11 @@ bool test_path_preferences() {
   const QString second = fixtures.filePath("second");
   const QString empty = fixtures.filePath("empty");
   const QString sources = fixtures.filePath("video sources");
-  for (const QString& directory : {first + "/shared", second + "/shared", empty, sources})
+  for (const QString& directory : {first + "/shared/_hockeymon", second + "/shared/_hockeymon", empty, sources})
     if (!QDir().mkpath(directory))
       return false;
   for (const auto& [root, points] : {std::make_pair(first, 350), std::make_pair(second, 450)}) {
-    QFile config(root + "/shared/config.yaml");
+    QFile config(root + "/shared/_hockeymon/config.yaml");
     if (!config.open(QIODevice::WriteOnly))
       return false;
     config.write(QString("hstream_ui:\n  stitching_calibration:\n    control_points: %1\n").arg(points).toUtf8());
@@ -2863,7 +2864,7 @@ bool test_path_preferences() {
             window.videoSetCount() == 2 && window.findChild<QLineEdit*>("videoPathEdit")->text().isEmpty(),
             "Add must import both selected videos and clear successful selections"))
       return false;
-    const YAML::Node saved = YAML::LoadFile((second + "/shared/config.yaml").toStdString());
+    const YAML::Node saved = YAML::LoadFile((second + "/shared/_hockeymon/config.yaml").toStdString());
     if (!expect(
             saved["hstream_ui"]["video_roles"]["left"].size() == 2,
             "All selected files must retain the selected camera role"))
@@ -2894,11 +2895,12 @@ bool test_path_preferences() {
     activate(window.findChild<QRadioButton*>("videoRole_right"));
     video_path->setText(typed);
     activate(add);
-    if (!expect(window.videoSetCount() == 3 && video_path->text().isEmpty(),
-                "Typing a path must replace the pending browser selection"))
+    if (!expect(
+            window.videoSetCount() == 3 && video_path->text().isEmpty(),
+            "Typing a path must replace the pending browser selection"))
       return false;
-    const QString old_marker = first + "/shared/matches.png";
-    const QString selected_marker = second + "/shared/matches.png";
+    const QString old_marker = first + "/shared/_hockeymon/matches.png";
+    const QString selected_marker = second + "/shared/_hockeymon/matches.png";
     if (!write_fake_video(old_marker) || !write_fake_video(selected_marker))
       return false;
     qputenv("HSTREAM_UI_TEST_SIMULATE_CLEAN_ARTIFACTS", "1");
@@ -3048,7 +3050,17 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     return false;
   }
 
-  fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
+  const auto inventory = YAML::LoadFile((config.parent_path() / "manifest.json").string());
+  std::set<std::string> imported_inputs;
+  for (const auto& item : inventory["files"])
+    if (item["role"].as<std::string>() == "input-reference")
+      imported_inputs.insert(item["path"].as<std::string>());
+  if (!expect(
+          imported_inputs.count("cam3") && imported_inputs.count("cam3/GX010001.MP4") &&
+              !fs::exists(config.parent_path().parent_path() / "config.yaml"),
+          "Native imports must inventory their root recording references and keep configuration under _hockeymon"))
+    return false;
   YAML::Node stale_auto = fs::exists(config) ? YAML::LoadFile(config.string()) : YAML::Node();
   stale_auto["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Sequence);
   stale_auto["game"]["videos"]["left"].push_back("stale-generated-left.mp4");
@@ -3089,12 +3101,14 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(center_video);
   activate(add_video);
   if (!expect(
-          select_list_item(list, "Center  hstream-ui/center/GX010003.MP4"),
+          select_list_item(list, "Center  _hockeymon/hstream-ui/center/GX010003.MP4"),
           "Explicit Center assignment should remain visible")) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "center" / "GX010003.MP4") &&
+          fs::exists(
+              fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/hstream-ui" / "center" /
+              "GX010003.MP4") &&
               !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010003.MP4"),
           "Center imports should stay outside runtime Auto discovery paths")) {
     return false;
@@ -3130,7 +3144,9 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "right" / "GX010002.MP4") &&
+          fs::exists(
+              fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/hstream-ui" / "right" /
+              "GX010002.MP4") &&
               !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010002.MP4"),
           "Explicit Right imports should stay outside runtime Auto discovery paths")) {
     return false;
@@ -3143,19 +3159,22 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   YAML::Node yaml = YAML::LoadFile(config.string());
   if (!expect(
           yaml["hstream_ui"]["video_roles"]["center"] &&
-              yaml["hstream_ui"]["video_roles"]["center"][0].as<std::string>() == "hstream-ui/center/GX010003.MP4" &&
+              yaml["hstream_ui"]["video_roles"]["center"][0].as<std::string>() ==
+                  "_hockeymon/hstream-ui/center/GX010003.MP4" &&
               !yaml["game"]["videos"]["center"] && text.find("left") != std::string::npos &&
               text.find("GX010005.MP4") != std::string::npos && text.find("right") != std::string::npos &&
               text.find("GX010002.MP4") != std::string::npos && yaml["game"]["videos"]["left"].size() == 1 &&
-              yaml["game"]["videos"]["left"][0].as<std::string>() == "hstream-ui/left/GX010005.MP4" &&
+              yaml["game"]["videos"]["left"][0].as<std::string>() == "_hockeymon/hstream-ui/left/GX010005.MP4" &&
               yaml["game"]["videos"]["right"].size() == 1 &&
-              yaml["game"]["videos"]["right"][0].as<std::string>() == "hstream-ui/right/GX010002.MP4" &&
+              yaml["game"]["videos"]["right"][0].as<std::string>() == "_hockeymon/hstream-ui/right/GX010002.MP4" &&
               !yaml["game"]["stitching"]["frame_offsets"] && !yaml["stitching"]["frame_offsets"],
           "Explicit roles should replace stale pipeline config, keep all chapters, and clear stale offsets")) {
     return false;
   }
   if (!expect(
-          fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "left" / "GX010005.MP4") &&
+          fs::exists(
+              fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/hstream-ui" / "left" /
+              "GX010005.MP4") &&
               !fs::exists(fs::path(window->gameDirectoryText().toStdString()) / "GX010005.MP4"),
           "Explicit Left imports should stay outside runtime Auto discovery paths")) {
     return false;
@@ -3167,7 +3186,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           uneven_explicit["game"]["videos"]["left"].size() == 2 &&
               uneven_explicit["game"]["videos"]["right"].size() == 1 &&
-              uneven_explicit["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/GX020005.MP4",
+              uneven_explicit["game"]["videos"]["left"][1].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/GX020005.MP4",
           "Explicit Left/Right playlists with different physical chapter counts should be persisted independently")) {
     return false;
   }
@@ -3178,8 +3198,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           matched_explicit["game"]["videos"]["left"].size() == 2 &&
               matched_explicit["game"]["videos"]["right"].size() == 2 &&
-              matched_explicit["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/GX020005.MP4" &&
-              matched_explicit["game"]["videos"]["right"][1].as<std::string>() == "hstream-ui/right/GX020002.MP4",
+              matched_explicit["game"]["videos"]["left"][1].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/GX020005.MP4" &&
+              matched_explicit["game"]["videos"]["right"][1].as<std::string>() ==
+                  "_hockeymon/hstream-ui/right/GX020002.MP4",
           "Matching explicit Left/Right chapter counts should write runtime video config")) {
     return false;
   }
@@ -3190,7 +3212,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           mismatched_chapters["game"]["videos"]["left"].size() == 3 &&
               mismatched_chapters["game"]["videos"]["right"].size() == 2 &&
-              mismatched_chapters["game"]["videos"]["left"][2].as<std::string>() == "hstream-ui/left/GX030005.MP4",
+              mismatched_chapters["game"]["videos"]["left"][2].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/GX030005.MP4",
           "Explicit Left/Right playlists with different chapter labels should remain independently ordered")) {
     return false;
   }
@@ -3200,20 +3223,22 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           restarted_explicit["game"]["videos"]["left"].size() == 4 &&
               restarted_explicit["game"]["videos"]["right"].size() == 2 &&
-              restarted_explicit["game"]["videos"]["left"][2].as<std::string>() == "hstream-ui/left/GX030005.MP4" &&
-              restarted_explicit["game"]["videos"]["left"][3].as<std::string>() == "hstream-ui/left/GX010006.MP4",
+              restarted_explicit["game"]["videos"]["left"][2].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/GX030005.MP4" &&
+              restarted_explicit["game"]["videos"]["left"][3].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/GX010006.MP4",
           "Explicit GoPro playlists should sort by recording ID before physical chapter number")) {
     return false;
   }
 
-  if (!select_list_item(list, "Right  hstream-ui/right/GX010002.MP4")) {
+  if (!select_list_item(list, "Right  _hockeymon/hstream-ui/right/GX010002.MP4")) {
     return false;
   }
   {
     YAML::Node before_failed_remove = YAML::LoadFile(config.string());
-    before_failed_remove["hstream_ui"]["copied_imports"].push_back("hstream-ui/right/GX010002.MP4");
+    before_failed_remove["hstream_ui"]["copied_imports"].push_back("_hockeymon/hstream-ui/right/GX010002.MP4");
     YAML::Node source_metadata(YAML::NodeType::Map);
-    source_metadata["path"] = "hstream-ui/right/GX010002.MP4";
+    source_metadata["path"] = "_hockeymon/hstream-ui/right/GX010002.MP4";
     source_metadata["family"] = "test-family";
     source_metadata["source_parent"] = source_dir.toStdString();
     before_failed_remove["hstream_ui"]["auto_import_sources"].push_back(source_metadata);
@@ -3223,16 +3248,16 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   std::atomic<bool> concurrent_remove_write_ok{false};
   std::thread concurrent_remove_writer([config, &concurrent_remove_write_ok] {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
     if (!lock.ok())
       return;
     YAML::Node latest = YAML::LoadFile(config.string());
     latest["concurrent"]["keep"] = true;
     concurrent_remove_write_ok =
-        hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n").ok();
+        hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(latest) + "\n").ok();
   });
   ::setenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS", "100", 1);
-  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "hstream-ui/right/GX010002.MP4", 1);
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "_hockeymon/hstream-ui/right/GX010002.MP4", 1);
   activate(remove_video);
   ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
   ::unsetenv("HM_TEST_VIDEO_REMOVE_PRE_TRANSACTION_DELAY_MS");
@@ -3241,7 +3266,8 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   if (!expect(
           concurrent_remove_write_ok &&
               fs::exists(
-                  fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui" / "right" / "GX010002.MP4") &&
+                  fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/hstream-ui" / "right" /
+                  "GX010002.MP4") &&
               after_failed_right_remove["hstream_ui"]["video_roles"]["right"] &&
               after_failed_right_remove["hstream_ui"]["copied_imports"].size() == 1 &&
               after_failed_right_remove["hstream_ui"]["auto_import_sources"].size() == 1 &&
@@ -3249,22 +3275,23 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           "Failed deletion must restore the transactional pre-removal state without losing an interleaved writer")) {
     return false;
   }
-  if (!select_list_item(list, "Right  hstream-ui/right/GX010002.MP4")) {
+  if (!select_list_item(list, "Right  _hockeymon/hstream-ui/right/GX010002.MP4")) {
     return false;
   }
   std::atomic<bool> post_remove_writer_ok{false};
   std::thread post_remove_writer([config, &post_remove_writer_ok] {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
     if (!lock.ok())
       return;
     YAML::Node latest = YAML::LoadFile(config.string());
-    latest["hstream_ui"]["video_roles"]["right"].push_back("hstream-ui/right/concurrent.mov");
+    latest["hstream_ui"]["video_roles"]["right"].push_back("_hockeymon/hstream-ui/right/concurrent.mov");
     latest["concurrent"]["post_remove_keep"] = true;
-    post_remove_writer_ok = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n").ok();
+    post_remove_writer_ok =
+        hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(latest) + "\n").ok();
   });
   ::setenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS", "100", 1);
-  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "hstream-ui/right/GX010002.MP4", 1);
+  ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "_hockeymon/hstream-ui/right/GX010002.MP4", 1);
   activate(remove_video);
   ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
   ::unsetenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS");
@@ -3273,11 +3300,11 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   const bool post_remove_state_ok = post_remove_writer_ok &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"].size() == 3 &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][0].as<std::string>() ==
-          "hstream-ui/right/GX010002.MP4" &&
+          "_hockeymon/hstream-ui/right/GX010002.MP4" &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][1].as<std::string>() ==
-          "hstream-ui/right/GX020002.MP4" &&
+          "_hockeymon/hstream-ui/right/GX020002.MP4" &&
       after_post_transaction_failure["hstream_ui"]["video_roles"]["right"][2].as<std::string>() ==
-          "hstream-ui/right/concurrent.mov" &&
+          "_hockeymon/hstream-ui/right/concurrent.mov" &&
       after_post_transaction_failure["concurrent"]["post_remove_keep"].as<bool>();
   if (!post_remove_state_ok)
     std::cerr << "post-remove config:\n" << YAML::Dump(after_post_transaction_failure) << '\n';
@@ -3286,7 +3313,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           "Failed deletion rollback must preserve the original role before a serialized same-role append")) {
     return false;
   }
-  if (!select_list_item(list, "Right  hstream-ui/right/GX010002.MP4")) {
+  if (!select_list_item(list, "Right  _hockeymon/hstream-ui/right/GX010002.MP4")) {
     return false;
   }
   std::atomic<bool> successful_remove_writer_checked{false};
@@ -3294,15 +3321,16 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   std::thread successful_remove_writer(
       [config, &successful_remove_writer_checked, &successful_remove_writer_saw_missing] {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+        auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
         if (!lock.ok())
           return;
-        successful_remove_writer_saw_missing = !fs::exists(config.parent_path() / "hstream-ui/right/GX010002.MP4");
+        successful_remove_writer_saw_missing =
+            !fs::exists(config.parent_path().parent_path() / "_hockeymon/hstream-ui/right/GX010002.MP4");
         if (!successful_remove_writer_saw_missing) {
           YAML::Node latest = YAML::LoadFile(config.string());
-          latest["hstream_ui"]["video_roles"]["right"].push_back("hstream-ui/right/GX010002.MP4");
+          latest["hstream_ui"]["video_roles"]["right"].push_back("_hockeymon/hstream-ui/right/GX010002.MP4");
           const auto unexpected_publish =
-              hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(latest) + "\n");
+              hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(latest) + "\n");
           (void)unexpected_publish;
         }
         successful_remove_writer_checked = true;
@@ -3319,8 +3347,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
               updated_text.find("GX010002.MP4") == std::string::npos &&
               after_right_remove["game"]["videos"]["left"].size() == 4 &&
               after_right_remove["game"]["videos"]["right"].size() == 2 &&
-              after_right_remove["game"]["videos"]["right"][0].as<std::string>() == "hstream-ui/right/GX020002.MP4" &&
-              after_right_remove["game"]["videos"]["right"][1].as<std::string>() == "hstream-ui/right/concurrent.mov",
+              after_right_remove["game"]["videos"]["right"][0].as<std::string>() ==
+                  "_hockeymon/hstream-ui/right/GX020002.MP4" &&
+              after_right_remove["game"]["videos"]["right"][1].as<std::string>() ==
+                  "_hockeymon/hstream-ui/right/concurrent.mov",
           "A successful deletion must complete before a same-path adopter can acquire the config transaction") ||
       !expect(!list_contains(list, "GX010002.MP4"), "Removed explicit imports should not reappear as Auto")) {
     return false;
@@ -3333,11 +3363,11 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   generated["game"]["videos"]["right"] = YAML::Node(YAML::NodeType::Sequence);
   generated["game"]["videos"]["right"].push_back("stale-generated-right.mp4");
   generated["hstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hstream_ui"]["video_roles"]["left"].push_back("hstream-ui/left/GX010005.MP4");
+  generated["hstream_ui"]["video_roles"]["left"].push_back("_hockeymon/hstream-ui/left/GX010005.MP4");
   generated["hstream_ui"]["video_roles"]["right"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hstream_ui"]["video_roles"]["right"].push_back("hstream-ui/right/GX020002.MP4");
+  generated["hstream_ui"]["video_roles"]["right"].push_back("_hockeymon/hstream-ui/right/GX020002.MP4");
   generated["hstream_ui"]["video_roles"]["center"] = YAML::Node(YAML::NodeType::Sequence);
-  generated["hstream_ui"]["video_roles"]["center"].push_back("hstream-ui/center/GX010003.MP4");
+  generated["hstream_ui"]["video_roles"]["center"].push_back("_hockeymon/hstream-ui/center/GX010003.MP4");
   generated["game"]["stitching"]["frame_offsets"]["left"] = "90";
   generated["stitching"]["frame_offsets"]["left"] = "91";
   {
@@ -3404,12 +3434,14 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(arbitrary_right);
   activate(add_video);
   YAML::Node arbitrary_config =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   if (!expect(
           arbitrary_config["game"]["videos"]["left"].size() == 1 &&
               arbitrary_config["game"]["videos"]["right"].size() == 1 &&
-              arbitrary_config["game"]["videos"]["left"][0].as<std::string>() == "hstream-ui/left/left-camera.mov" &&
-              arbitrary_config["game"]["videos"]["right"][0].as<std::string>() == "hstream-ui/right/right-camera.mov",
+              arbitrary_config["game"]["videos"]["left"][0].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/left-camera.mov" &&
+              arbitrary_config["game"]["videos"]["right"][0].as<std::string>() ==
+                  "_hockeymon/hstream-ui/right/right-camera.mov",
           "Single-file explicit Left/Right pairs with arbitrary filenames should run as chapter 1")) {
     return false;
   }
@@ -3417,12 +3449,12 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(arbitrary_left_2);
   activate(add_video);
   YAML::Node arbitrary_mismatched =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   if (!expect(
           arbitrary_mismatched["game"]["videos"]["left"].size() == 2 &&
               arbitrary_mismatched["game"]["videos"]["right"].size() == 1 &&
               arbitrary_mismatched["game"]["videos"]["left"][1].as<std::string>() ==
-                  "hstream-ui/left/left-camera-alt.mov",
+                  "_hockeymon/hstream-ui/left/left-camera-alt.mov",
           "Arbitrary explicit playlists with different counts should remain in independent insertion order")) {
     return false;
   }
@@ -3430,13 +3462,14 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(arbitrary_right_2);
   activate(add_video);
   YAML::Node arbitrary_multi =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   if (!expect(
           arbitrary_multi["game"]["videos"]["left"].size() == 2 &&
               arbitrary_multi["game"]["videos"]["right"].size() == 2 &&
-              arbitrary_multi["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/left-camera-alt.mov" &&
+              arbitrary_multi["game"]["videos"]["left"][1].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/left-camera-alt.mov" &&
               arbitrary_multi["game"]["videos"]["right"][1].as<std::string>() ==
-                  "hstream-ui/right/right-camera-alt.mov",
+                  "_hockeymon/hstream-ui/right/right-camera-alt.mov",
           "Equal-length arbitrary explicit lists should run in insertion order")) {
     return false;
   }
@@ -3458,12 +3491,13 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(part_right);
   activate(add_video);
   const YAML::Node numbered_parts =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   if (!expect(
           numbered_parts["game"]["videos"]["left"].size() == 2 &&
               numbered_parts["game"]["videos"]["right"].size() == 1 &&
-              numbered_parts["game"]["videos"]["left"][0].as<std::string>() == "hstream-ui/left/left-2.mkv" &&
-              numbered_parts["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/left-12.mkv",
+              numbered_parts["game"]["videos"]["left"][0].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/left-2.mkv" &&
+              numbered_parts["game"]["videos"]["left"][1].as<std::string>() == "_hockeymon/hstream-ui/left/left-12.mkv",
           "Explicit left/right part playlists should support MKV and sort multi-digit parts numerically")) {
     return false;
   }
@@ -3489,14 +3523,16 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(heterogeneous_right);
   activate(add_video);
   const YAML::Node heterogeneous_camera =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   if (!expect(
           heterogeneous_camera["game"]["videos"]["left"].size() == 3 &&
               heterogeneous_camera["game"]["videos"]["right"].size() == 1 &&
               heterogeneous_camera["game"]["videos"]["left"][0].as<std::string>() ==
-                  "hstream-ui/left/VID_20260815_101000_001.MP4" &&
-              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() == "hstream-ui/left/GX010007.MP4" &&
-              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() == "hstream-ui/left/left-camera.mov",
+                  "_hockeymon/hstream-ui/left/VID_20260815_101000_001.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][1].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/GX010007.MP4" &&
+              heterogeneous_camera["game"]["videos"]["left"][2].as<std::string>() ==
+                  "_hockeymon/hstream-ui/left/left-camera.mov",
           "A heterogeneous explicit camera playlist should preserve the user's total recording order")) {
     return false;
   }
@@ -3527,7 +3563,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   copied_entry["source_parent"] = duplicate_source_a.string();
   copied_metadata["hstream_ui"]["auto_import_sources"].push_back(copied_entry);
   {
-    std::ofstream out(copied_game / "config.yaml");
+    std::ofstream out(copied_game / "_hockeymon/config.yaml");
     out << copied_metadata << "\n";
   }
   activate(automatic);
@@ -3555,18 +3591,19 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   activate(create);
   fs::path cleanup_game = fs::path(window->gameDirectoryText().toStdString());
   fs::create_directories(cleanup_game / "cam1");
-  fs::create_directories(cleanup_game / ".hstream-ui" / "left");
+  fs::create_directories(cleanup_game / "_hockeymon/hstream-ui" / "left");
   if (!write_fake_video(QString::fromStdString((cleanup_game / "cam1" / "GX010001.MP4").string()))) {
     return false;
   }
-  if (!write_fake_video(QString::fromStdString((cleanup_game / ".hstream-ui" / "left" / "copied-left.mp4").string()))) {
+  if (!write_fake_video(
+          QString::fromStdString((cleanup_game / "_hockeymon/hstream-ui" / "left" / "copied-left.mp4").string()))) {
     return false;
   }
   YAML::Node cleanup_config;
-  cleanup_config["hstream_ui"]["video_roles"]["left"].push_back(".hstream-ui/left/copied-left.mp4");
-  cleanup_config["hstream_ui"]["copied_imports"].push_back(".hstream-ui/left/copied-left.mp4");
+  cleanup_config["hstream_ui"]["video_roles"]["left"].push_back("_hockeymon/hstream-ui/left/copied-left.mp4");
+  cleanup_config["hstream_ui"]["copied_imports"].push_back("_hockeymon/hstream-ui/left/copied-left.mp4");
   {
-    std::ofstream out(cleanup_game / "config.yaml");
+    std::ofstream out(cleanup_game / "_hockeymon/config.yaml");
     out << cleanup_config << "\n";
   }
   activate(create);
@@ -3574,10 +3611,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     return false;
   }
   activate(remove_video);
-  YAML::Node cleanup_after = YAML::LoadFile((cleanup_game / "config.yaml").string());
+  YAML::Node cleanup_after = YAML::LoadFile((cleanup_game / "_hockeymon/config.yaml").string());
   if (!expect(
           fs::exists(cleanup_game / "cam1" / "GX010001.MP4") &&
-              fs::exists(cleanup_game / ".hstream-ui" / "left" / "copied-left.mp4") &&
+              fs::exists(cleanup_game / "_hockeymon/hstream-ui" / "left" / "copied-left.mp4") &&
               cleanup_after["hstream_ui"]["video_roles"]["left"] &&
               cleanup_after["hstream_ui"]["copied_imports"].size() == 1,
           "Refused Auto deletion must preserve the complete prior file and config state")) {
@@ -3587,10 +3624,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   game_id->setText("ui-partial-auto-cleanup-game");
   activate(create);
   const fs::path partial_cleanup_game = fs::path(window->gameDirectoryText().toStdString());
-  fs::create_directories(partial_cleanup_game / ".hstream-ui" / "left");
-  fs::create_directories(partial_cleanup_game / ".hstream-ui" / "right");
-  const std::string removed_old_path = ".hstream-ui/left/aa-old-copy.mp4";
-  const std::string retained_old_path = ".hstream-ui/right/zz-old-copy.mp4";
+  fs::create_directories(partial_cleanup_game / "_hockeymon/hstream-ui" / "left");
+  fs::create_directories(partial_cleanup_game / "_hockeymon/hstream-ui" / "right");
+  const std::string removed_old_path = "_hockeymon/hstream-ui/left/aa-old-copy.mp4";
+  const std::string retained_old_path = "_hockeymon/hstream-ui/right/zz-old-copy.mp4";
   if (!write_fake_video(QString::fromStdString((partial_cleanup_game / removed_old_path).string())) ||
       !write_fake_video(QString::fromStdString((partial_cleanup_game / retained_old_path).string()))) {
     return false;
@@ -3601,7 +3638,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   partial_cleanup_config["hstream_ui"]["copied_imports"].push_back(removed_old_path);
   partial_cleanup_config["hstream_ui"]["copied_imports"].push_back(retained_old_path);
   {
-    std::ofstream out(partial_cleanup_game / "config.yaml");
+    std::ofstream out(partial_cleanup_game / "_hockeymon/config.yaml");
     out << partial_cleanup_config << "\n";
   }
   activate(create);
@@ -3610,7 +3647,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   video_path->setText(duplicate_a);
   activate(add_video);
   ::unsetenv("HM_TEST_VIDEO_REMOVE_FAIL");
-  const YAML::Node partial_cleanup_after = YAML::LoadFile((partial_cleanup_game / "config.yaml").string());
+  const YAML::Node partial_cleanup_after = YAML::LoadFile((partial_cleanup_game / "_hockeymon/config.yaml").string());
   if (!expect(
           !fs::exists(partial_cleanup_game / removed_old_path) &&
               fs::exists(partial_cleanup_game / retained_old_path) &&
@@ -3628,9 +3665,9 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   game_id->setText("ui-auto-copy-rollback-game");
   activate(create);
   const fs::path rollback_game = fs::path(window->gameDirectoryText().toStdString());
-  fs::create_directories(rollback_game / ".hstream-ui" / "left");
-  const std::string rollback_old_path = ".hstream-ui/left/old-copy.mp4";
-  const std::string rollback_concurrent_path = ".hstream-ui/left/concurrent-copy.mp4";
+  fs::create_directories(rollback_game / "_hockeymon/hstream-ui" / "left");
+  const std::string rollback_old_path = "_hockeymon/hstream-ui/left/old-copy.mp4";
+  const std::string rollback_concurrent_path = "_hockeymon/hstream-ui/left/concurrent-copy.mp4";
   if (!write_fake_video(QString::fromStdString((rollback_game / rollback_old_path).string())) ||
       !write_fake_video(QString::fromStdString((rollback_game / rollback_concurrent_path).string()))) {
     return false;
@@ -3639,7 +3676,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   rollback_config["hstream_ui"]["video_roles"]["left"].push_back(rollback_old_path);
   rollback_config["hstream_ui"]["copied_imports"].push_back(rollback_old_path);
   {
-    std::ofstream out(rollback_game / "config.yaml");
+    std::ofstream out(rollback_game / "_hockeymon/config.yaml");
     out << rollback_config << "\n";
   }
   activate(create);
@@ -3652,7 +3689,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     if (!lock.ok())
       return;
     auto_writer_saw_missing = !fs::exists(rollback_game / "cam1/GX020001.MP4");
-    YAML::Node latest = YAML::LoadFile((rollback_game / "config.yaml").string());
+    YAML::Node latest = YAML::LoadFile((rollback_game / "_hockeymon/config.yaml").string());
     latest["hstream_ui"]["video_roles"]["left"] = YAML::Node(YAML::NodeType::Sequence);
     latest["hstream_ui"]["video_roles"]["left"].push_back(rollback_concurrent_path);
     latest["hstream_ui"]["copied_imports"].push_back(rollback_concurrent_path);
@@ -3670,7 +3707,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   ::unsetenv("HM_TEST_VIDEO_ADD_PRE_CONFIG_SAVE_DELAY_MS");
   ::unsetenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY");
   auto_writer.join();
-  const YAML::Node rollback_after = YAML::LoadFile((rollback_game / "config.yaml").string());
+  const YAML::Node rollback_after = YAML::LoadFile((rollback_game / "_hockeymon/config.yaml").string());
   if (!expect(
           auto_writer_ok && auto_writer_saw_missing && !fs::exists(rollback_game / "cam1" / "GX020001.MP4") &&
               fs::exists(rollback_game / rollback_old_path) && fs::exists(rollback_game / rollback_concurrent_path) &&
@@ -3691,35 +3728,36 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   activate(left);
   ::setenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY", "1", 1);
   ::setenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL", "1", 1);
-  ::setenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL", "hstream-ui/left/GX020001.MP4", 1);
+  ::setenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL", "_hockeymon/hstream-ui/left/GX020001.MP4", 1);
   video_path->setText(duplicate_a);
   activate(add_video);
   ::unsetenv("HM_TEST_VIDEO_STAGED_REMOVE_FAIL");
   ::unsetenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL");
   ::unsetenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY");
   const fs::path rollback_delete_failure_game = fs::path(window->gameDirectoryText().toStdString());
-  const fs::path rollback_delete_failure_config = rollback_delete_failure_game / "config.yaml";
+  const fs::path rollback_delete_failure_config = rollback_delete_failure_game / "_hockeymon/config.yaml";
   YAML::Node rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
   bool rollback_staging_path_exists = false;
-  for (const auto& entry : fs::directory_iterator(rollback_delete_failure_game / "hstream-ui/left")) {
+  for (const auto& entry : fs::directory_iterator(rollback_delete_failure_game / "_hockeymon/hstream-ui/left")) {
     if (entry.path().filename().string().rfind(".hstream-rollback-", 0) == 0)
       rollback_staging_path_exists = true;
   }
   if (!expect(
-          fs::exists(rollback_delete_failure_game / "hstream-ui/left/GX020001.MP4") && !rollback_staging_path_exists &&
+          fs::exists(rollback_delete_failure_game / "_hockeymon/hstream-ui/left/GX020001.MP4") &&
+              !rollback_staging_path_exists &&
               rollback_delete_failure_after["hstream_ui"]["copied_imports"].size() == 1 &&
               !rollback_delete_failure_after["hstream_ui"]["video_roles"]["left"],
           "A staged copied-file rollback deletion failure must restore the path and ownership metadata")) {
     return false;
   }
   activate(create);
-  if (!select_list_item(list, "Left  hstream-ui/left/GX020001.MP4")) {
+  if (!select_list_item(list, "Left  _hockeymon/hstream-ui/left/GX020001.MP4")) {
     return false;
   }
   activate(remove_video);
   rollback_delete_failure_after = YAML::LoadFile(rollback_delete_failure_config.string());
   if (!expect(
-          !fs::exists(rollback_delete_failure_game / "hstream-ui/left/GX020001.MP4") &&
+          !fs::exists(rollback_delete_failure_game / "_hockeymon/hstream-ui/left/GX020001.MP4") &&
               rollback_delete_failure_after["hstream_ui"]["copied_imports"].size() == 0,
           "An owned orphan retained after rollback must remain visible and removable through the UI")) {
     return false;
@@ -3735,10 +3773,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   ::unsetenv("HM_TEST_PRIVATE_CONFIG_SAVE_FAIL");
   ::unsetenv("HM_TEST_VIDEO_IMPORT_FORCE_COPY");
   const fs::path save_failure_game = fs::path(window->gameDirectoryText().toStdString());
-  const YAML::Node save_failure_after = YAML::LoadFile((save_failure_game / "config.yaml").string());
+  const YAML::Node save_failure_after = YAML::LoadFile((save_failure_game / "_hockeymon/config.yaml").string());
   const YAML::Node save_failure_roles = save_failure_after["hstream_ui"]["video_roles"];
   if (!expect(
-          !fs::exists(save_failure_game / "hstream-ui" / "left" / "GX020001.MP4") &&
+          !fs::exists(save_failure_game / "_hockeymon/hstream-ui" / "left" / "GX020001.MP4") &&
               save_failure_after["hstream_ui"]["copied_imports"].size() == 0 &&
               (!save_failure_roles || !save_failure_roles["left"]),
           "Private-config save failure must remove the new copied file and its ownership metadata")) {
@@ -3776,9 +3814,10 @@ bool test_highlights_dialog_controls(HStreamWindow* window) {
     return false;
 #ifdef HSTREAM_USE_HIP
   activate(highlights);
-  return expect(!highlights->isEnabled() && highlights->toolTip().contains("not yet available on AMD") &&
-                    !window->findChild<QDialog*>("highlightsDialog"),
-                "AMD must explain unavailable Highlights without opening a native pipeline");
+  return expect(
+      !highlights->isEnabled() && highlights->toolTip().contains("not yet available on AMD") &&
+          !window->findChild<QDialog*>("highlightsDialog"),
+      "AMD must explain unavailable Highlights without opening a native pipeline");
 #endif
   mode->setCurrentIndex(mode->findData("program"));
   QApplication::processEvents();
@@ -3792,8 +3831,7 @@ bool test_highlights_dialog_controls(HStreamWindow* window) {
       QDir(window->gameDirectoryText()).filePath(window->gameIdText() + "-tracking_output-with-audio-1.mp4");
   {
     QFile file(staged_archive);
-    if (!expect(
-            file.open(QIODevice::WriteOnly) && file.write("archive") == 7, "Could not stage a published archive"))
+    if (!expect(file.open(QIODevice::WriteOnly) && file.write("archive") == 7, "Could not stage a published archive"))
       return false;
   }
   activate(refresh_games);
@@ -3822,7 +3860,7 @@ bool test_highlights_dialog_controls(HStreamWindow* window) {
 
 bool set_test_calibration_status(HStreamWindow* window, const std::string& status, int control_points = 1500) {
   const fs::path game_dir(window->gameDirectoryText().toStdString());
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = game_dir / "_hockeymon/config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   try {
     if (fs::is_regular_file(config_path))
@@ -3843,7 +3881,7 @@ bool set_test_calibration_status(HStreamWindow* window, const std::string& statu
 
 bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   const fs::path game_dir(window->gameDirectoryText().toStdString());
-  const fs::path staging_dir = game_dir / "hstream-stitch-Ab12Z9";
+  const fs::path staging_dir = game_dir / "_hockeymon/hstream-stitch-Ab12Z9";
   std::error_code error;
   fs::remove_all(staging_dir, error);
   error.clear();
@@ -4288,9 +4326,11 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const fs::path superseded_config_path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path superseded_config_path =
+      fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   {
-    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(superseded_config_path.parent_path());
+    auto config_lock =
+        hm::stitching::GameConfigTransactionLock::Acquire(superseded_config_path.parent_path().parent_path());
     if (!config_lock.ok()) {
       std::cerr << "Could not lock superseded calibration test config: " << config_lock.status() << '\n';
       return false;
@@ -4301,8 +4341,8 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
     calibration.remove("invalidation_id");
-    const auto published =
-        hm::stitching::publish_game_config(superseded_config_path.parent_path(), YAML::Dump(superseded) + "\n");
+    const auto published = hm::stitching::publish_game_config(
+        superseded_config_path.parent_path().parent_path(), YAML::Dump(superseded) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not publish superseded calibration test config: " << published << '\n';
       return false;
@@ -4334,7 +4374,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QTest::qWait(10);
   }
   const YAML::Node waiting_for_restart =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   const bool waits_for_restart =
       expect(
           dialog->isVisible() && headline->text().contains("Restarting playback") && progress->isVisible(),
@@ -4349,7 +4389,8 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  YAML::Node completed = YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+  YAML::Node completed =
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   YAML::Node completed_status;
   const bool has_completed_status =
       lookup_yaml_path(completed, {"hstream_ui", "stitching_calibration", "status"}, &completed_status);
@@ -4373,7 +4414,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   HStreamWindowTestAccess::calibrationOutput(window, "HSTREAM_CALIBRATION stage=rink-mask status=complete");
   HStreamWindowTestAccess::calibrationOutput(window, "HSTREAM_CALIBRATION stage=calibration status=complete");
   const YAML::Node after_duplicate_completion =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   const bool duplicate_completion_ok = expect(
       !dialog->isVisible() &&
           after_duplicate_completion["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete",
@@ -4423,7 +4464,7 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QTest::qWait(10);
   }
   const YAML::Node program_completed =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   const bool program_discovery_completed =
       expect(!dialog->isVisible(), "Successful Program calibration should close the progress popup automatically") &&
       expect(
@@ -4451,14 +4492,14 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     activate(start);
     for (int i = 0; i < 200 && window->pipelineStateText() != "PLAYING"; ++i)
       QTest::qWait(10);
-    const fs::path mask_config_path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const fs::path mask_config_path = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
     YAML::Node published_solve = YAML::LoadFile(mask_config_path.string());
     published_solve["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "pending";
     // Native artifact publication retains this cleanup-satisfied marker even
     // though the solve itself is complete.
     published_solve["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
-    const auto publish =
-        hm::stitching::publish_game_config(mask_config_path.parent_path(), YAML::Dump(published_solve) + "\n");
+    const auto publish = hm::stitching::publish_game_config(
+        mask_config_path.parent_path().parent_path(), YAML::Dump(published_solve) + "\n");
     if (!publish.ok()) {
       activate(stop);
       return expect(false, "Could not prepare the completed-solve rink-mask fixture");
@@ -4508,9 +4549,11 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
   qputenv("HSTREAM_UI_TEST_CALIBRATION_START_DELAY_MS", "150");
   activate(start);
-  const fs::path superseded_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path superseded_program_config =
+      fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   {
-    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(superseded_program_config.parent_path());
+    auto config_lock =
+        hm::stitching::GameConfigTransactionLock::Acquire(superseded_program_config.parent_path().parent_path());
     if (!config_lock.ok()) {
       std::cerr << "Could not lock Program discovery race config: " << config_lock.status() << '\n';
       return false;
@@ -4521,8 +4564,8 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
     calibration["invalidation_id"] = "newer-program-invalidation";
-    const auto published =
-        hm::stitching::publish_game_config(superseded_program_config.parent_path(), YAML::Dump(superseded) + "\n");
+    const auto published = hm::stitching::publish_game_config(
+        superseded_program_config.parent_path().parent_path(), YAML::Dump(superseded) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not publish Program discovery race config: " << published << '\n';
       return false;
@@ -5217,11 +5260,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   mapping_backend->setCurrentIndex(mapping_backend->findData(original_mapping_backend));
   QApplication::processEvents();
   if (!general_panini_framing_defaults || !general_panini_fixed_fov_limit || !auto_fov_disables_fixed_value ||
-      !rectilinear_fov_limit ||
-      !wide_projection_fov_limit || !general_panini_fov_restored || !general_panini_parameters_visible ||
-      !albers_parameters_visible || !biplane_parameters_visible || !triplane_parameters_visible ||
-      !fixed_panini_parameters_hidden || !parameters_hidden_for_native_backend || !all_projection_layouts_legible ||
-      !all_projection_artifacts_captured) {
+      !rectilinear_fov_limit || !wide_projection_fov_limit || !general_panini_fov_restored ||
+      !general_panini_parameters_visible || !albers_parameters_visible || !biplane_parameters_visible ||
+      !triplane_parameters_visible || !fixed_panini_parameters_hidden || !parameters_hidden_for_native_backend ||
+      !all_projection_layouts_legible || !all_projection_artifacts_captured) {
     std::cerr << "projection-control diagnostics: panini-defaults=" << general_panini_framing_defaults
               << " panini-fixed-limit=" << general_panini_fixed_fov_limit
               << " auto-disables-fixed=" << auto_fov_disables_fixed_value
@@ -5252,9 +5294,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               projection_page->isAncestorOf(stitch_max_output_width) &&
               alignment_page->isAncestorOf(run_autooptimizer) && program_control_tabs->count() == 8 &&
               program_control_tabs->tabText(5) == "Runtime" && program_control_tabs->tabText(6) == "Detection" &&
-              program_control_tabs->tabText(7) == "Players" &&
-              program_control_tabs->tabText(2) == "Rink framing" && stitched_control_tabs->count() == 5 &&
-              stitched_control_tabs->tabText(1) == "Color & Precision" &&
+              program_control_tabs->tabText(7) == "Players" && program_control_tabs->tabText(2) == "Rink framing" &&
+              stitched_control_tabs->count() == 5 && stitched_control_tabs->tabText(1) == "Color & Precision" &&
               stitched_control_tabs->tabText(2) == "Alignment" && stitched_control_tabs->tabText(3) == "Projection" &&
               stitched_control_tabs->tabText(4) == "Rink" &&
               program_controls_splitter->orientation() == Qt::Horizontal &&
@@ -5498,8 +5539,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   QApplication::processEvents();
   if (!long_paths_fit)
     return false;
-  const QString invalid_pair_config_path = QDir(window->gameDirectoryText()).filePath("config.yaml");
-  const QString invalid_pair_artifact_path = QDir(window->gameDirectoryText()).filePath("seam_file.png");
+  const QString invalid_pair_config_path = QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml");
+  const QString invalid_pair_artifact_path = QDir(window->gameDirectoryText()).filePath("_hockeymon/seam_file.png");
   QFile invalid_pair_config(invalid_pair_config_path);
   if (!invalid_pair_config.open(QIODevice::ReadOnly))
     return false;
@@ -5658,7 +5699,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
 
-  const fs::path stitch_time_transition_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path stitch_time_transition_config =
+      fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   {
     YAML::Node completed_at_zero = YAML::LoadFile(stitch_time_transition_config.string());
     YAML::Node calibration = completed_at_zero["hstream_ui"]["stitching_calibration"];
@@ -5671,7 +5713,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     if (stitching && stitching.IsMap())
       stitching.remove("stitch_frame_time");
     const auto published = hm::stitching::publish_game_config(
-        stitch_time_transition_config.parent_path(), YAML::Dump(completed_at_zero) + "\n");
+        stitch_time_transition_config.parent_path().parent_path(), YAML::Dump(completed_at_zero) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not prepare the zero-to-nonzero stitch-frame Play regression: " << published << '\n';
       return false;
@@ -5748,7 +5790,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       stitching.remove("max_output_width");
     }
     const auto published = hm::stitching::publish_game_config(
-        stitch_time_transition_config.parent_path(), YAML::Dump(legacy_completed) + "\n");
+        stitch_time_transition_config.parent_path().parent_path(), YAML::Dump(legacy_completed) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not prepare the legacy max-width Play regression: " << published << '\n';
       return false;
@@ -5817,7 +5859,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     calibration.remove("invalidation_id");
     malformed_width["stitching"]["max_output_width"] = "bad-width";
     const auto published = hm::stitching::publish_game_config(
-        stitch_time_transition_config.parent_path(), YAML::Dump(malformed_width) + "\n");
+        stitch_time_transition_config.parent_path().parent_path(), YAML::Dump(malformed_width) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not prepare malformed max-width Play regression: " << published << '\n';
       return false;
@@ -5857,7 +5899,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     conflicting_width["stitching"]["max_output_width"] = 4096;
     conflicting_width["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
     const auto published = hm::stitching::publish_game_config(
-        stitch_time_transition_config.parent_path(), YAML::Dump(conflicting_width) + "\n");
+        stitch_time_transition_config.parent_path().parent_path(), YAML::Dump(conflicting_width) + "\n");
     if (!published.ok()) {
       std::cerr << "Could not prepare conflicting max-width Play regression: " << published << '\n';
       return false;
@@ -5898,7 +5940,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     YAML::Node transport_config = YAML::LoadFile(stitch_time_transition_config.string());
     transport_config["stitching"].remove("max_output_width");
     const auto published = hm::stitching::publish_game_config(
-        stitch_time_transition_config.parent_path(), YAML::Dump(transport_config) + "\n");
+        stitch_time_transition_config.parent_path().parent_path(), YAML::Dump(transport_config) + "\n");
     if (!published.ok())
       return expect(false, "Could not prepare the completed transport fixture");
   }
@@ -6203,7 +6245,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "right endpoint must override the last motion and issue exactly one seek to the video end")) {
     return false;
   }
-  const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path fresh_program_config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   const YAML::Node fresh_program_saved = YAML::LoadFile(fresh_program_config.string());
   YAML::Node fresh_program_status;
   const bool has_fresh_program_status =
@@ -6935,9 +6977,10 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   const bool accepted_resumed_progress = HStreamWindowTestAccess::handlePlaybackProgressOutput(
       window,
-      QString("HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
-              "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
-              "generation=%1")
+      QString(
+          "HSTREAM_PROGRESS processed_ns=43000000000 total_ns=600000000000 remaining_ns=557000000000 "
+          "eta_ns=1114000000000 speed_x=0.500000 fraction=0.071667 stage=0 instance=aggregate instances=2 "
+          "generation=%1")
           .arg(progress_generation_before_resumed_seek));
   QApplication::processEvents();
   if (!expect(
@@ -7465,7 +7508,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   qputenv("HSTREAM_UI_TEST_CLEAN_RESULT", "failure");
   activate(start);
   qunsetenv("HSTREAM_UI_TEST_CLEAN_RESULT");
-  const fs::path failed_clean_config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path failed_clean_config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   const YAML::Node failed_clean_state = YAML::LoadFile(failed_clean_config.string());
   const YAML::Node failed_clean_calibration = failed_clean_state["hstream_ui"]["stitching_calibration"];
   if (!expect(
@@ -7571,7 +7614,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   {
-    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
     const YAML::Node saved = YAML::LoadFile(config.string());
     YAML::Node saved_control_points;
     const bool has_saved_control_points =
@@ -7657,7 +7700,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     return false;
   }
   {
-    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
     const YAML::Node saved = YAML::LoadFile(config.string());
     YAML::Node saved_status;
     const bool has_saved_status =
@@ -7670,13 +7713,13 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
   const int resume_clean_commands = window->logText().count("stitching calibration clean command");
   {
-    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
     const QString launched_game_id = game_id->text();
     const QString switched_game_id = "ui-switched-during-calibration";
     const fs::path switched_config =
-        fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "config.yaml";
-    const fs::path active_runtime_dir = config.parent_path() / "hstream-ui";
-    const fs::path switched_runtime_dir = switched_config.parent_path() / "hstream-ui";
+        fs::path(qgetenv("HM_GAME_DIR").toStdString()) / switched_game_id.toStdString() / "_hockeymon/config.yaml";
+    const fs::path active_runtime_dir = config.parent_path().parent_path() / "_hockeymon/hstream-ui";
+    const fs::path switched_runtime_dir = switched_config.parent_path().parent_path() / "_hockeymon/hstream-ui";
     auto runtime_snapshot_count = [](const fs::path& dir) {
       if (!fs::exists(dir))
         return size_t{0};
@@ -7768,13 +7811,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       activate(stop);
       return false;
     }
-    const auto hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
+    const auto hugin_generation = write_live_hugin_generation_fixture(config.parent_path().parent_path());
     if (!hugin_generation.ok()) {
       std::cerr << "Could not write live-rotation Hugin fixture: " << hugin_generation.status() << '\n';
       return false;
     }
     {
-      auto generation_fixture_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      auto generation_fixture_lock =
+          hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
       if (!generation_fixture_lock.ok()) {
         std::cerr << "Could not lock live-rotation generation fixture: " << generation_fixture_lock.status() << '\n';
         return false;
@@ -7784,7 +7828,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin_generation->size()) + "\n" +
           *hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
       const auto published =
-          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(generation_fixture) + "\n");
+          hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(generation_fixture) + "\n");
       if (!published.ok()) {
         std::cerr << "Could not publish live-rotation generation fixture: " << published << '\n';
         return false;
@@ -7793,7 +7837,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     std::atomic<bool> config_lock_acquired{false};
     std::atomic<bool> config_lock_failed{false};
     std::thread config_locker([&]() {
-      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
       if (!config_lock.ok()) {
         config_lock_failed = true;
         return;
@@ -7875,7 +7919,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
     std::atomic<bool> commit_lock_acquired{false};
     std::thread commit_locker([&]() {
-      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
       if (!config_lock.ok())
         return;
       commit_lock_acquired = true;
@@ -7937,7 +7981,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
 
     {
-      auto fixture_cleanup_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      auto fixture_cleanup_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
       if (!fixture_cleanup_lock.ok()) {
         std::cerr << "Could not lock live-rotation generation fixture cleanup: " << fixture_cleanup_lock.status()
                   << '\n';
@@ -7954,7 +7998,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       fixture_cleanup["rink"].remove("stitched_output_pending_previous_owner_process");
       fixture_cleanup["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
       const auto published =
-          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(fixture_cleanup) + "\n");
+          hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(fixture_cleanup) + "\n");
       if (!published.ok()) {
         std::cerr << "Could not clean live-rotation generation fixture: " << published << '\n';
         return false;
@@ -7962,7 +8006,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
     }
 
     {
-      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
       if (!config_lock.ok()) {
         std::cerr << "Could not lock interrupted input-stage calibration state: " << config_lock.status() << '\n';
         return false;
@@ -7974,7 +8018,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
       calibration["stale_from"] = "input";
       calibration["artifacts_invalidated"] = true;
       calibration["invalidation_id"] = "interrupted-input-run";
-      const auto published = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(interrupted) + "\n");
+      const auto published =
+          hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(interrupted) + "\n");
       if (!published.ok()) {
         std::cerr << "Could not publish interrupted input-stage calibration state: " << published << '\n';
         return false;
@@ -8036,14 +8081,14 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
     const int clean_commands_before = window->logText().count("stitching calibration clean command");
     const std::vector<std::vector<int>> rejection_scoreboard_polygon = {{1, 2}, {3, 4}, {5, 6}, {7, 8}};
-    const auto rejection_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
+    const auto rejection_hugin_generation = write_live_hugin_generation_fixture(config.parent_path().parent_path());
     if (!rejection_hugin_generation.ok()) {
       std::cerr << "Could not write live-rotation rejection Hugin fixture: " << rejection_hugin_generation.status()
                 << '\n';
       return false;
     }
     {
-      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+      auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
       if (!config_lock.ok()) {
         std::cerr << "Could not lock live-rotation rejection fixture: " << config_lock.status() << '\n';
         return false;
@@ -8054,7 +8099,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           *rejection_hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
       rejection_fixture["rink"]["scoreboard"]["perspective_polygon"] = rejection_scoreboard_polygon;
       const auto published =
-          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(rejection_fixture) + "\n");
+          hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(rejection_fixture) + "\n");
       if (!published.ok()) {
         std::cerr << "Could not publish live-rotation rejection fixture: " << published << '\n';
         return false;
@@ -8101,7 +8146,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
 
     qputenv("HSTREAM_UI_TEST_RUNTIME_REJECTION_DELAY_MS", "300");
     const auto rejection_predecessor = hm::stitching::authorize_live_stitched_output_rotation(
-        config.parent_path().string(), 4.0, "ui-rejection-predecessor");
+        config.parent_path().parent_path().string(), 4.0, "ui-rejection-predecessor");
     activate(start);
     for (int i = 0; i < 50 && window->pipelineStateText() != "PLAYING"; ++i) {
       QApplication::processEvents();
@@ -8117,7 +8162,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           pending["rink"]["stitched_output_pending_authorization_id"].IsDefined() &&
           pending["rink"]["stitched_output_pending_authorization_id"].as<std::string>() != "ui-rejection-predecessor";
     }
-    auto rejection_exit_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    auto rejection_exit_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
     const bool exit_requested_during_rejection = rejection_exit_lock.ok() &&
         HStreamWindowTestAccess::requestPipelineProcessExit(window) == QByteArray("@test-exit\n").size();
     for (int i = 0; i < 150 && window->pipelineStateText() != "STOPPED"; ++i) {
@@ -8226,7 +8271,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   {
-    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
     YAML::Node completed = YAML::LoadFile(config.string());
     completed["hstream_ui"]["stitching_calibration"]["control_points"] = 750;
     completed["hstream_ui"]["stitching_calibration"]["status"] = "complete";
@@ -8277,7 +8322,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   }
 
   {
-    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+    const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
     YAML::Node invalidated = YAML::LoadFile(config.string());
     invalidated["hstream_ui"]["stitching_calibration"]["status"] = "pending";
     {
@@ -8358,8 +8403,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           "nv3dsink run must not promise an embedded preview") ||
       !expect(
 #ifdef HSTREAM_USE_HIP
-          !window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
-          "AMD runner must not add DeepStream mux settings") ||
+          !window->logText().contains("USE_NEW_NVSTREAMMUX=yes"), "AMD runner must not add DeepStream mux settings") ||
 #else
           window->logText().contains("USE_NEW_NVSTREAMMUX=yes"),
           "UI runner should default to the DeepStream 9.1 new stream mux") ||
@@ -8773,7 +8817,7 @@ bool test_job_export() {
   QTemporaryDir outputs;
   for (int selection = 0; selection < 17; ++selection) {
     const bool map_changes_during_dialog = selection == 16;
-    const QString map_path = QDir(window.gameDirectoryText()).filePath("rink-map.yaml");
+    const QString map_path = QDir(window.gameDirectoryText()).filePath("_hockeymon/rink-map.yaml");
     if (map_changes_during_dialog) {
       QFile map(map_path);
       if (!map.open(QIODevice::WriteOnly) || map.write("ready") < 0)
@@ -8804,7 +8848,7 @@ bool test_job_export() {
     program_4k->setChecked(program_4k_selected);
     telemetry->setChecked((selection & 7) != 7);
     rink_framing->setChecked((selection & 1) != 0 || map_changes_during_dialog);
-    QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
+    QFile preset(QDir(window.gameDirectoryText()).filePath("_hockeymon/config.yaml"));
     QByteArray original_preset;
     if (invalid) {
       if (!expect(preset.open(QIODevice::ReadOnly), "Earlier valid exports must have saved the game config"))
@@ -8876,7 +8920,8 @@ bool test_job_export() {
       expected << "ENCODE_PROGRAM_4K_FILE";
     if (stitched_selected)
       expected << "ENCODE_STITCHED_FILE";
-    const YAML::Node config = YAML::LoadFile(QDir(window.gameDirectoryText()).filePath("config.yaml").toStdString());
+    const YAML::Node config =
+        YAML::LoadFile(QDir(window.gameDirectoryText()).filePath("_hockeymon/config.yaml").toStdString());
     if (!expect(
             error_message.isEmpty() && text.contains("'--enable-sinks=" + expected.join(',') + "'") &&
                 text.count("--enable-sinks=") == 1 && text.contains("--encode-job") &&
@@ -8910,7 +8955,7 @@ bool test_job_export() {
   if (!frame_count)
     return false;
   frame_count->setValue(frame_count->value() + 1);
-  QFile preset(QDir(window.gameDirectoryText()).filePath("config.yaml"));
+  QFile preset(QDir(window.gameDirectoryText()).filePath("_hockeymon/config.yaml"));
   if (!preset.open(QIODevice::ReadOnly))
     return false;
   const auto before = preset.readAll();
@@ -9199,7 +9244,7 @@ bool test_output_controls(HStreamWindow* window) {
     const QStringList provisional_logs_running =
         provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString active_provisional_guard;
-    struct stat active_provisional_guard_stat {};
+    struct stat active_provisional_guard_stat{};
     bool active_provisional_guard_pinned = false;
     for (const QString& provisional_log : provisional_logs_running) {
       if (provisional_logs_before.contains(provisional_log))
@@ -9251,7 +9296,7 @@ bool test_output_controls(HStreamWindow* window) {
     QFile guard_file(resolved_guard);
     const bool guard_opened = guard_file.open(QIODevice::ReadOnly);
     const QByteArray guard_text = guard_opened ? guard_file.readAll() : QByteArray();
-    struct stat resolved_guard_stat {};
+    struct stat resolved_guard_stat{};
     const bool trusted_resolved_guard_retained = active_provisional_guard_pinned &&
         ::lstat(QFile::encodeName(resolved_guard).constData(), &resolved_guard_stat) == 0 &&
         resolved_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
@@ -9264,7 +9309,7 @@ bool test_output_controls(HStreamWindow* window) {
                                                      {"hstream-cleanup-v2-*", ".hstream-cleanup-v2-*"},
                                                      QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
                                                  .isEmpty();
-    struct stat retained_provisional_guard_stat {};
+    struct stat retained_provisional_guard_stat{};
     const bool trusted_source_retained = active_provisional_guard_pinned &&
         ::lstat(QFile::encodeName(active_provisional_guard).constData(), &retained_provisional_guard_stat) == 0 &&
         retained_provisional_guard_stat.st_dev == active_provisional_guard_stat.st_dev &&
@@ -9344,8 +9389,8 @@ bool test_output_controls(HStreamWindow* window) {
   bool cross_filesystem_log_persisted = true;
 #ifdef Q_OS_UNIX
   QTemporaryDir cross_filesystem_root("/dev/shm/hstream-ui-cross-filesystem-XXXXXX");
-  struct stat output_root_stat {};
-  struct stat cross_root_stat {};
+  struct stat output_root_stat{};
+  struct stat cross_root_stat{};
   const QByteArray encoded_output_root = QFile::encodeName(output_root.path());
   const QByteArray encoded_cross_root = QFile::encodeName(cross_filesystem_root.path());
   const bool distinct_cross_filesystem = cross_filesystem_root.isValid() &&
@@ -9485,1450 +9530,90 @@ bool test_output_controls(HStreamWindow* window) {
   }
 #endif
 
+  // Old runners can emit output-path messages without implementing managed
+  // publication. That is no longer enough to publish a game-root asset.
   const QString completed_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("completed-source.mkv");
-  const QString completed_job_log = completed_source + ".log";
-  const QString concurrent_completed_target =
-      QDir(window->gameDirectoryText())
-          .filePath(QString("%1-tracking_output-with-audio.mp4").arg(window->gameIdText()));
-  const QString completed_target =
-      QDir(window->gameDirectoryText())
-          .filePath(QString("%1-tracking_output-with-audio-4.mp4").arg(window->gameIdText()));
-  const QString replaced_completed_target =
-      QDir(window->gameDirectoryText())
-          .filePath(QString("%1-tracking_output-with-audio-5.mp4").arg(window->gameIdText()));
-  const QString dangling_completed_target =
-      QDir(window->gameDirectoryText())
-          .filePath(QString("%1-tracking_output-with-audio-1.mp4").arg(window->gameIdText()));
-  const QString missing_completed_target = QDir(window->gameDirectoryText()).filePath("missing-completed-target");
-  const QString existing_telemetry_tracking = QDir(window->gameDirectoryText()).filePath("tracking-3.csv");
-  const QString telemetry_working = QDir(output_root.path()).filePath("telemetry-working");
-  const std::array<QString, 6> telemetry_stems = {
-      "tracking", "detections", "camera", "camera_fast", "hstream_frame_index", "hstream_config_events"};
-  const QString telemetry_manifest = QDir(telemetry_working).filePath("hstream_telemetry-7.json");
-  bool telemetry_fixture_created = QDir().mkpath(telemetry_working);
-  for (const QString& stem : telemetry_stems) {
-    QFile artifact(QDir(telemetry_working).filePath(stem + "-7.csv"));
-    telemetry_fixture_created &= artifact.open(QIODevice::WriteOnly | QIODevice::NewOnly) &&
-        artifact.write((stem + " async contents\n").toUtf8()) > 0;
-  }
-  QFile telemetry_manifest_file(telemetry_manifest);
-  telemetry_fixture_created &=
-      telemetry_manifest_file.open(QIODevice::WriteOnly | QIODevice::NewOnly) && telemetry_manifest_file.write(R"json({
-  "publication_state": "committed",
-  "completed": true,
-  "hm_compatibility": {
-    "tracking_csv": {"file": "tracking-7.csv"},
-    "detections_csv": {"file": "detections-7.csv"},
-    "camera_csv": {"file": "camera-7.csv"},
-    "camera_fast_csv": {"file": "camera_fast-7.csv"}
-  },
-  "sidecars": {
-    "frame_index": "hstream_frame_index-7.csv",
-    "config_events": "hstream_config_events-7.csv"
-  }
-})json") > 0;
-  telemetry_manifest_file.close();
-  if (!expect(telemetry_fixture_created, "asynchronous telemetry publication fixture must be created"))
-    return false;
-  const QString ffmpeg_arguments = QDir(output_root.path()).filePath("ffmpeg-arguments.txt");
-  QFile::remove(completed_source);
-  QFile::remove(completed_job_log);
-  QFile::remove(concurrent_completed_target);
-  QFile::remove(completed_target);
-  QFile::remove(replaced_completed_target);
-  QFile::remove(dangling_completed_target);
-  QFile::remove(missing_completed_target);
-  QFile::remove(existing_telemetry_tracking);
-  const bool dangling_completed_target_created = QFile::link(missing_completed_target, dangling_completed_target);
-  QFile existing_telemetry_tracking_file(existing_telemetry_tracking);
-  const bool existing_telemetry_tracking_created =
-      existing_telemetry_tracking_file.open(QIODevice::WriteOnly | QIODevice::NewOnly) &&
-      existing_telemetry_tracking_file.write("existing HM generation\n") > 0;
-  existing_telemetry_tracking_file.close();
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("unsupported-runner.mkv");
   qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", completed_source.toLocal8Bit());
   qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
   qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
-  qputenv("HSTREAM_UI_TEST_FFMPEG_ARGS", ffmpeg_arguments.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.25");
-  qputenv("HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT", "1");
-  qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "250");
-  drivegpt_csv->setChecked(true);
-  // The archive itself starts at zero no matter where the run was seeked to, so
-  // the run's own offset is the only record of what game time its first frame
-  // holds. Highlights needs it to read game-time intervals against the file.
-  auto* archive_playback_start = require_child<QTimeEdit>(window, "playbackStartTimeEdit");
-  if (!archive_playback_start)
-    return false;
-  archive_playback_start->setTime(QTime(0, 9, 56, 500));
-  QApplication::processEvents();
+  const auto before = window->logText().size();
   activate(start);
-  QDialog* finalize_dialog = nullptr;
-  QProgressBar* finalize_progress = nullptr;
-  QLabel* finalize_headline = nullptr;
-  for (int i = 0; i < 300 && window->outputStateText("archive-file") != "FINALIZING"; ++i) {
+  for (int i = 0; i < 500 && !window->logText().mid(before).contains("managed completion receipt"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
-  const QString finalizer_owner_lock_path = completed_source + ".hstream-owner-lock";
-  bool finalizer_owner_lock_held = false;
-#ifdef Q_OS_UNIX
-  const QByteArray encoded_owner_lock_path = QFile::encodeName(finalizer_owner_lock_path);
-  const int owner_lock_probe = ::open(encoded_owner_lock_path.constData(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
-  if (owner_lock_probe >= 0) {
-    finalizer_owner_lock_held =
-        ::flock(owner_lock_probe, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
-    ::close(owner_lock_probe);
-  }
-#endif
-  QFile concurrent_completed_archive(concurrent_completed_target);
-  const bool concurrent_completed_archive_created =
-      concurrent_completed_archive.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
-      concurrent_completed_archive.write("another run published this target") > 0;
-  concurrent_completed_archive.close();
-  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-  finalize_progress = window->findChild<QProgressBar*>("archiveFinalizeProgress");
-  finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
-  for (int i = 0; i < 100 && finalize_progress && finalize_progress->value() <= 0; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  const bool finalization_visible = expect(
-      finalize_dialog && finalize_progress && finalize_dialog->isVisible() &&
-          finalize_dialog->windowModality() == Qt::WindowModal && finalize_progress->value() > 0,
-      "A successful pipeline archive must show app-modal lossless finalization progress");
-  for (int i = 0; i < 300 && finalize_headline && finalize_headline->text() != "Saving completed video safely…"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  bool ui_timer_fired_during_sync = false;
-  QTimer::singleShot(0, window, [&ui_timer_fired_during_sync]() { ui_timer_fired_during_sync = true; });
-  QApplication::processEvents();
-  const bool durability_sync_responsive = expect(
-      finalize_headline && finalize_headline->text() == "Saving completed video safely…" && finalize_progress &&
-          finalize_progress->maximum() == 0 && ui_timer_fired_during_sync,
-      "Durability sync must keep an indeterminate finalization popup active without blocking the Qt event loop");
-  for (int i = 0; i < 300 && finalize_headline && finalize_headline->text() != "Copying DriveGPT database…"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  bool ui_timer_fired_during_telemetry_copy = false;
-  QTimer::singleShot(
-      0, window, [&ui_timer_fired_during_telemetry_copy]() { ui_timer_fired_during_telemetry_copy = true; });
-  QApplication::processEvents();
-  const bool telemetry_copy_responsive = expect(
-      finalize_headline && finalize_headline->text() == "Copying DriveGPT database…" && finalize_progress &&
-          finalize_progress->maximum() == 0 && ui_timer_fired_during_telemetry_copy &&
-          window->outputStateText("archive-file") == "FINALIZING",
-      "DriveGPT database publication must remain asynchronous and keep the Qt event loop responsive");
-  for (int i = 0; i < 300 && window->outputStateText("archive-file") != "SAVED"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  qunsetenv("HSTREAM_UI_TEST_FFMPEG_SOURCE_REPLACEMENT");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_TARGET_REPLACEMENT_DURING_SYNC");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OWNER_LOCK_REPLACEMENT");
-  qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
-  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
-  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
-  drivegpt_csv->setChecked(false);
-  QFile argument_file(ffmpeg_arguments);
-  const bool opened_arguments = argument_file.open(QIODevice::ReadOnly);
-  const QString argument_text = opened_arguments ? QString::fromUtf8(argument_file.readAll()) : QString();
-  QFile completed_log_file(completed_job_log);
-  const bool completed_log_opened = completed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
-  const QString completed_log_text = completed_log_opened ? QString::fromUtf8(completed_log_file.readAll()) : QString();
-  QFile completed_video_file(replaced_completed_target);
-  const bool completed_video_opened = completed_video_file.open(QIODevice::ReadOnly);
-  const QByteArray completed_video_text = completed_video_opened ? completed_video_file.readAll() : QByteArray();
-  QFile foreign_source_file(completed_source);
-  const bool foreign_source_opened = foreign_source_file.open(QIODevice::ReadOnly);
-  const QByteArray foreign_source_text = foreign_source_opened ? foreign_source_file.readAll() : QByteArray();
-  QFile replaced_target_file(completed_target);
-  const bool replaced_target_opened = replaced_target_file.open(QIODevice::ReadOnly);
-  const QByteArray replaced_target_text = replaced_target_opened ? replaced_target_file.readAll() : QByteArray();
-  QFile replaced_owner_lock_file(finalizer_owner_lock_path);
-  const bool replaced_owner_lock_opened = replaced_owner_lock_file.open(QIODevice::ReadOnly);
-  const QByteArray replaced_owner_lock_text =
-      replaced_owner_lock_opened ? replaced_owner_lock_file.readAll() : QByteArray();
-  const bool completed_log_persisted = expect(
-      completed_log_opened && !QFileInfo::exists(completed_job_log + ".hstream-pin") &&
-          completed_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(completed_source)) &&
-          completed_log_text.contains(QString("completed archive published: %1").arg(replaced_completed_target)),
-      "A completed job log must remain beside the work artifacts and include asynchronous MP4 finalization output");
-  const bool archive_deployed = expect(
-      finalizer_owner_lock_held && concurrent_completed_archive_created && dangling_completed_target_created &&
-          existing_telemetry_tracking_created && QFileInfo(dangling_completed_target).isSymLink() &&
-          window->outputStateText("archive-file") == "SAVED" && completed_video_text == "completed lossless archive" &&
-          !QFileInfo::exists(replaced_completed_target + ".hstream-pin") &&
-          replaced_target_text == "injected foreign completed target" &&
-          foreign_source_text == "injected foreign source before ffmpeg input" &&
-          replaced_owner_lock_text == "injected foreign owner lock" &&
-          QFileInfo(concurrent_completed_target).size() > 0 && argument_text.contains("-n\n") &&
-          !argument_text.contains("-y\n") &&
-          argument_text.contains(QRegularExpression(R"(-i\n/proc/self/fd/[0-9]+\n)")) &&
-          !argument_text.contains("/proc/self/fd/197") && !argument_text.contains("/proc/self/fd/198") &&
-          argument_text.contains(
-              QString("/%1-hstream-finalize-").arg(QFileInfo(completed_target).completeBaseName())) &&
-          argument_text.contains("-c\ncopy") && argument_text.contains("-movflags\n+faststart") &&
-          argument_text.contains("-tag:v\nhvc1") &&
-          window->logText().contains(QString("completed archive published: %1").arg(replaced_completed_target)),
-      "Finalization must remux the pinned source FD, skip dangling names, republish a target replaced during sync, "
-      "and leave replacement source, target, and ownership-lock paths untouched");
-  hm::ui::ArchiveEntry published_sidecar;
-  const bool sidecar_loaded = hm::ui::LoadArchiveSidecar(replaced_completed_target, &published_sidecar);
-  const bool archive_origin_recorded = expect(
-      sidecar_loaded && QFileInfo::exists(hm::ui::ArchiveSidecarPath(replaced_completed_target)) &&
-          published_sidecar.game_id == window->gameIdText() && published_sidecar.kind == "program" &&
-          published_sidecar.start_time_known && published_sidecar.start_time_ms == 596500,
-      "A published archive must record the game time its first frame holds");
-  bool telemetry_deployed = true;
-  for (const QString& stem : telemetry_stems) {
-    QFile published_file(QDir(window->gameDirectoryText()).filePath(stem + "-5.csv"));
-    telemetry_deployed &=
-        published_file.open(QIODevice::ReadOnly) && published_file.readAll() == (stem + " async contents\n").toUtf8();
-  }
-  QFile preserved_tracking(existing_telemetry_tracking);
-  telemetry_deployed &=
-      preserved_tracking.open(QIODevice::ReadOnly) && preserved_tracking.readAll() == "existing HM generation\n";
-  telemetry_deployed = expect(
-      telemetry_deployed,
-      "archive suffix selection must skip existing HM CSVs and copy all six DriveGPT database with the video suffix");
-
-  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-
-  bool ui_cleanup_restart_setup = true;
-  const QString interrupted_ui_target = QDir(window->gameDirectoryText()).filePath("interrupted-ui-target.mp4");
-  const QString interrupted_ui_target_fallback = interrupted_ui_target + ".hstream-cleanup-pin";
-  const QString interrupted_ui_target_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-11111111-2222-4333-8444-555555555555");
-  const QString interrupted_ui_guard_target =
-      QDir(window->gameDirectoryText()).filePath("interrupted-ui-guard-target.mp4");
-  const QString interrupted_ui_guard = interrupted_ui_guard_target + ".hstream-pin";
-  const QString interrupted_ui_guard_fallback = interrupted_ui_guard + ".hstream-cleanup-pin";
-  const QString interrupted_ui_guard_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-66666666-7777-4888-8999-aaaaaaaaaaaa");
-  const QString committed_ui_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-00000000-0000-4000-8000-000000000000");
-  const QString live_ui_target = QDir(window->gameDirectoryText()).filePath("live-ui-cleanup-target.mp4");
-  const QString live_ui_fallback = live_ui_target + ".hstream-cleanup-pin";
-  const QString live_ui_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-00000000-0000-4000-8000-000000000001");
-  const QString unrelated_ui_cleanup_file = QDir(window->gameDirectoryText()).filePath("notes.hstream-cleanup-pin");
-  const QString unrelated_ui_cleanup_directory =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb");
-  const QString unrelated_ui_cleanup_sibling_owner = unrelated_ui_cleanup_directory + ".hstream-owner";
-  const QString reconciliation_race_target =
-      QDir(window->gameDirectoryText()).filePath("interrupted-ui-reconciliation-race.mp4");
-  const QString reconciliation_race_fallback = reconciliation_race_target + ".hstream-cleanup-pin";
-  const QString reconciliation_race_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-01234567-89ab-4cde-8fab-0123456789ab");
-#ifdef Q_OS_UNIX
-  int live_ui_cleanup_fd = -1;
-  const auto write_cleanup_test_file = [](const QString& path, const QByteArray& content) {
-    QFile file(path);
-    return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(content) == content.size();
-  };
-  const auto create_hard_link = [](const QString& source, const QString& destination) {
-    const QByteArray encoded_source = QFile::encodeName(source);
-    const QByteArray encoded_destination = QFile::encodeName(destination);
-    return ::link(encoded_source.constData(), encoded_destination.constData()) == 0;
-  };
-  const auto write_cleanup_owner = [&](const QString& cleanup_path, const QString& target_path) {
-    const QByteArray target_name = QFile::encodeName(QFileInfo(target_path).fileName());
-    return write_cleanup_test_file(
-        QDir(cleanup_path).filePath("owner"), QByteArray("hstream-cleanup-v2\n") + target_name.toBase64());
-  };
-  const auto write_cleanup_commit = [&](const QString& cleanup_path, const QString& identity_path) {
-    struct stat identity_stat {};
-    if (::lstat(QFile::encodeName(identity_path).constData(), &identity_stat) != 0)
-      return false;
-    return write_cleanup_test_file(
-        QDir(cleanup_path).filePath("committed"),
-        QByteArray("hstream-cleanup-committed-v1\n") +
-            QByteArray::number(static_cast<qulonglong>(identity_stat.st_dev)) + "\n" +
-            QByteArray::number(static_cast<qulonglong>(identity_stat.st_ino)) + "\n");
-  };
-  ui_cleanup_restart_setup = write_cleanup_test_file(interrupted_ui_target, "trusted interrupted UI target") &&
-      create_hard_link(interrupted_ui_target, interrupted_ui_target_fallback) &&
-      QDir().mkpath(interrupted_ui_target_cleanup) &&
-      write_cleanup_owner(interrupted_ui_target_cleanup, interrupted_ui_target) &&
-      QFile::rename(interrupted_ui_target, QDir(interrupted_ui_target_cleanup).filePath("entry")) &&
-      write_cleanup_test_file(interrupted_ui_guard_target, "trusted interrupted UI target guard") &&
-      create_hard_link(interrupted_ui_guard_target, interrupted_ui_guard) &&
-      create_hard_link(interrupted_ui_guard_target, interrupted_ui_guard_fallback) &&
-      QDir().mkpath(interrupted_ui_guard_cleanup) &&
-      write_cleanup_owner(interrupted_ui_guard_cleanup, interrupted_ui_guard) &&
-      QFile::rename(interrupted_ui_guard, QDir(interrupted_ui_guard_cleanup).filePath("entry")) &&
-      QDir().mkpath(committed_ui_cleanup) &&
-      write_cleanup_owner(committed_ui_cleanup, QDir(window->gameDirectoryText()).filePath("committed-deleted.mp4")) &&
-      write_cleanup_test_file(QDir(committed_ui_cleanup).filePath("guard"), "committed UI cleanup inode") &&
-      create_hard_link(QDir(committed_ui_cleanup).filePath("guard"), QDir(committed_ui_cleanup).filePath("fallback")) &&
-      write_cleanup_commit(committed_ui_cleanup, QDir(committed_ui_cleanup).filePath("guard")) &&
-      write_cleanup_test_file(live_ui_target, "trusted live UI cleanup target") &&
-      create_hard_link(live_ui_target, live_ui_fallback) && QDir().mkpath(live_ui_cleanup) &&
-      write_cleanup_owner(live_ui_cleanup, live_ui_target) &&
-      QFile::rename(live_ui_target, QDir(live_ui_cleanup).filePath("entry")) &&
-      write_cleanup_test_file(unrelated_ui_cleanup_file, "unrelated UI cleanup-looking notes") &&
-      QDir().mkpath(unrelated_ui_cleanup_directory) &&
-      write_cleanup_test_file(QDir(unrelated_ui_cleanup_directory).filePath("guard"),
-                              "unrelated exact cleanup guard") &&
-      create_hard_link(QDir(unrelated_ui_cleanup_directory).filePath("guard"),
-                       QDir(unrelated_ui_cleanup_directory).filePath("fallback")) &&
-      write_cleanup_test_file(unrelated_ui_cleanup_sibling_owner, "hstream-cleanup-v2\ndW5yZWxhdGVkLm1rdg==") &&
-      write_cleanup_test_file(reconciliation_race_target, "trusted UI reconciliation-race target") &&
-      create_hard_link(reconciliation_race_target, reconciliation_race_fallback) &&
-      QDir().mkpath(reconciliation_race_cleanup) &&
-      write_cleanup_owner(reconciliation_race_cleanup, reconciliation_race_target) &&
-      QFile::rename(reconciliation_race_target, QDir(reconciliation_race_cleanup).filePath("entry"));
-  if (ui_cleanup_restart_setup) {
-    live_ui_cleanup_fd =
-        ::open(QFile::encodeName(live_ui_cleanup).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    ui_cleanup_restart_setup = live_ui_cleanup_fd >= 0 && ::flock(live_ui_cleanup_fd, LOCK_EX | LOCK_NB) == 0;
-  }
-#endif
-
-  const QString reconciliation_trigger_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("reconciliation-trigger.mkv");
-  QFile::remove(reconciliation_trigger_source);
-  QFile::remove(reconciliation_trigger_source + ".log");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", reconciliation_trigger_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION", reconciliation_race_target.toLocal8Bit());
-  activate(start);
-  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  qunsetenv("HSTREAM_UI_TEST_REPLACE_PUBLIC_DURING_CLEANUP_RECONCILIATION");
-  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-  auto* reconciliation_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  QString reconciliation_rescue_path;
-  QByteArray reconciliation_rescue_content;
-  const QString reconciliation_guard_prefix = ".hstream-reconcile-";
-  const QDir reconciliation_game_dir(window->gameDirectoryText());
-  for (const QString& name : reconciliation_game_dir.entryList(QDir::Files | QDir::Hidden | QDir::System, QDir::Name)) {
-    if (!name.startsWith(reconciliation_guard_prefix) || name.endsWith(".hstream-cleanup-pin"))
-      continue;
-    reconciliation_rescue_path = reconciliation_game_dir.filePath(name);
-    QFile rescue_file(reconciliation_rescue_path);
-    if (rescue_file.open(QIODevice::ReadOnly))
-      reconciliation_rescue_content = rescue_file.readAll();
-  }
-  QFile reconciliation_foreign_file(reconciliation_race_target);
-  const bool reconciliation_foreign_opened = reconciliation_foreign_file.open(QIODevice::ReadOnly);
-  const QByteArray reconciliation_foreign_content =
-      reconciliation_foreign_opened ? reconciliation_foreign_file.readAll() : QByteArray();
-  QFile unrelated_ui_cleanup_file_handle(unrelated_ui_cleanup_file);
-  const bool unrelated_ui_cleanup_file_opened = unrelated_ui_cleanup_file_handle.open(QIODevice::ReadOnly);
-  const QByteArray unrelated_ui_cleanup_content =
-      unrelated_ui_cleanup_file_opened ? unrelated_ui_cleanup_file_handle.readAll() : QByteArray();
-  const bool ui_cleanup_reconciliation_race_safe = expect(
-      window->outputStateText("archive-file") == "ERROR" &&
-          reconciliation_rescue_content == "trusted UI reconciliation-race target" &&
-          reconciliation_foreign_content == "foreign public cleanup identity" &&
-          QFileInfo::exists(reconciliation_race_cleanup) &&
-          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("entry")) &&
-          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("guard")) &&
-          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("fallback")) &&
-          !QFileInfo::exists(committed_ui_cleanup) &&
-          !QFileInfo::exists(QDir(committed_ui_cleanup).filePath("owner")) &&
-          QFileInfo::exists(QDir(live_ui_cleanup).filePath("entry")) && QFileInfo::exists(live_ui_fallback) &&
-          unrelated_ui_cleanup_content == "unrelated UI cleanup-looking notes" &&
-          QFileInfo::exists(unrelated_ui_cleanup_directory) &&
-          QFileInfo::exists(QDir(unrelated_ui_cleanup_directory).filePath("guard")) &&
-          QFileInfo::exists(QDir(unrelated_ui_cleanup_directory).filePath("fallback")) &&
-          QFileInfo::exists(unrelated_ui_cleanup_sibling_owner) &&
-          !QFileInfo::exists(QDir(window->gameDirectoryText()).filePath("notes")),
-      "UI cleanup reconciliation must keep its dedicated guard through private-link retirement and leave unrelated entries untouched");
-  if (reconciliation_failure_ok)
-    activate(reconciliation_failure_ok);
-#ifdef Q_OS_UNIX
-  if (live_ui_cleanup_fd >= 0)
-    ::close(live_ui_cleanup_fd);
-#endif
-  reconciliation_foreign_file.close();
-  QFile::remove(reconciliation_race_target);
-  qputenv(
-      "HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE",
-      (reconciliation_rescue_path + ".hstream-cleanup-pin").toLocal8Bit());
-  QString reconciliation_guard_retirement_error;
-  const bool reconciliation_guard_retirement_interrupted = hm::ui_internal::reconcile_cleanup_directory_for_test(
-      window->gameDirectoryText(), &reconciliation_guard_retirement_error);
-  qunsetenv("HSTREAM_UI_TEST_INTERRUPT_AFTER_FALLBACK_QUARANTINE");
-  const bool reconciliation_outer_owner_only = QFileInfo::exists(reconciliation_race_cleanup) &&
-      QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("owner")) &&
-      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("entry")) &&
-      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("guard")) &&
-      !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("fallback"));
-  const bool reconciliation_guard_public_fallback =
-      QFileInfo::exists(reconciliation_rescue_path + ".hstream-cleanup-pin");
-  QString reconciliation_stable_pass_error;
-  const bool reconciliation_stable_pass = hm::ui_internal::reconcile_cleanup_directory_for_test(
-      window->gameDirectoryText(), &reconciliation_stable_pass_error);
-  QFile reconciliation_restored_target(reconciliation_race_target);
-  const bool reconciliation_rescue_restored = !reconciliation_guard_retirement_interrupted &&
-      reconciliation_outer_owner_only && !reconciliation_guard_public_fallback && reconciliation_stable_pass &&
-      reconciliation_restored_target.open(QIODevice::ReadOnly) &&
-      reconciliation_restored_target.readAll() == "trusted UI reconciliation-race target" &&
-      !QFileInfo::exists(reconciliation_race_cleanup) && !QFileInfo::exists(reconciliation_rescue_path) &&
-      !QFileInfo::exists(reconciliation_rescue_path + ".hstream-cleanup-pin");
-  QFile::remove(reconciliation_trigger_source);
-  QFile::remove(reconciliation_trigger_source + ".log");
-  archive->setChecked(false);
-  archive->setChecked(true);
-
-  const QString target_cleanup_race_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("target-cleanup-race.mkv");
-  const QString target_cleanup_race_recovery = QDir(QFileInfo(target_cleanup_race_source).absolutePath())
-                                                   .filePath("target-cleanup-race-finalization-failed-1.mkv");
-  QFile::remove(target_cleanup_race_source);
-  QFile::remove(target_cleanup_race_source + ".log");
-  QFile::remove(target_cleanup_race_recovery);
-  const QStringList finalized_before_target_cleanup_race =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", target_cleanup_race_source.toLocal8Bit());
-  qputenv(
-      "HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", (target_cleanup_race_source + ".hstream-pin").toLocal8Bit());
-  activate(start);
-  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  qunsetenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
-  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-  finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
-  auto* target_cleanup_race_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-  auto* target_cleanup_race_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  QFile target_cleanup_race_recovery_file(target_cleanup_race_recovery);
-  const bool target_cleanup_race_recovery_opened = target_cleanup_race_recovery_file.open(QIODevice::ReadOnly);
-  const QByteArray target_cleanup_race_recovery_text =
-      target_cleanup_race_recovery_opened ? target_cleanup_race_recovery_file.readAll() : QByteArray();
-  const QStringList finalized_after_target_cleanup_race =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  bool foreign_target_retained =
-      finalized_after_target_cleanup_race.size() == finalized_before_target_cleanup_race.size() + 1;
-  for (const QString& target_name : finalized_after_target_cleanup_race) {
-    if (finalized_before_target_cleanup_race.contains(target_name))
-      continue;
-    QFile target_file(QDir(window->gameDirectoryText()).filePath(target_name));
-    foreign_target_retained = foreign_target_retained && target_file.open(QIODevice::ReadOnly) &&
-        target_file.readAll() == "injected foreign publication after quarantine";
-  }
-  const bool target_cleanup_race_recovered = expect(
-      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
-          finalize_headline && finalize_headline->text() == "Video finalization failed" && target_cleanup_race_detail &&
-          target_cleanup_race_detail->text().contains(target_cleanup_race_recovery) &&
-          target_cleanup_race_recovery_text == "completed lossless archive" && foreign_target_retained,
-      "A target replaced during source-guard retirement must fail into trusted MKV recovery and leave the foreign MP4 untouched");
-  QFile interrupted_ui_target_file(interrupted_ui_target);
-  const bool interrupted_ui_target_opened = interrupted_ui_target_file.open(QIODevice::ReadOnly);
-  const QByteArray interrupted_ui_target_content =
-      interrupted_ui_target_opened ? interrupted_ui_target_file.readAll() : QByteArray();
-  QFile live_ui_target_file(live_ui_target);
-  const bool live_ui_target_opened = live_ui_target_file.open(QIODevice::ReadOnly);
-  const QByteArray live_ui_target_content = live_ui_target_opened ? live_ui_target_file.readAll() : QByteArray();
-  bool ui_cleanup_restart_reconciled = true;
-  ui_cleanup_restart_reconciled &= expect(ui_cleanup_restart_setup, "UI cleanup restart fixture must be created");
-  ui_cleanup_restart_reconciled &=
-      expect(reconciliation_rescue_restored, "The reconciliation race rescue must be restored for later tests");
-  ui_cleanup_restart_reconciled &= expect(
-      interrupted_ui_target_content == "trusted interrupted UI target",
-      "A subsequent archive start must restore an interrupted UI target");
-  ui_cleanup_restart_reconciled &= expect(
-      !QFileInfo::exists(interrupted_ui_guard),
-      "A subsequent archive start must finish retiring an interrupted UI target guard");
-  ui_cleanup_restart_reconciled &= expect(
-      !QFileInfo::exists(interrupted_ui_target_fallback) && !QFileInfo::exists(interrupted_ui_guard_fallback) &&
-          !QFileInfo::exists(interrupted_ui_target_cleanup) && !QFileInfo::exists(interrupted_ui_guard_cleanup) &&
-          !QFileInfo::exists(reconciliation_race_cleanup) &&
-          !QFileInfo::exists(QDir(interrupted_ui_target_cleanup).filePath("owner")) &&
-          !QFileInfo::exists(QDir(interrupted_ui_guard_cleanup).filePath("owner")) &&
-          !QFileInfo::exists(QDir(reconciliation_race_cleanup).filePath("owner")) &&
-          !QFileInfo::exists(reconciliation_rescue_path),
-      "A subsequent archive start must retire interrupted UI cleanup artifacts");
-  ui_cleanup_restart_reconciled &= expect(
-      live_ui_target_content == "trusted live UI cleanup target" && !QFileInfo::exists(live_ui_cleanup) &&
-          !QFileInfo::exists(QDir(live_ui_cleanup).filePath("owner")) && !QFileInfo::exists(live_ui_fallback),
-      "UI cleanup reconciliation must skip a live locked transaction and resume it after ownership is released");
-  if (target_cleanup_race_ok)
-    activate(target_cleanup_race_ok);
-  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-
-  const QString guard_sync_failure_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("guard-sync-failure.mkv");
-  QFile::remove(guard_sync_failure_source);
-  QFile::remove(guard_sync_failure_source + ".log");
-  const QStringList finalized_before_guard_sync_failure =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", guard_sync_failure_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE", "mp4-guard");
-  activate(start);
-  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_CLEANUP_PARENT_SYNC_FAILURE");
-  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-  auto* guard_sync_failure_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-  auto* guard_sync_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  const QStringList finalized_after_guard_sync_failure =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  QString guard_sync_failure_target;
-  for (const QString& target_name : finalized_after_guard_sync_failure) {
-    if (!finalized_before_guard_sync_failure.contains(target_name)) {
-      guard_sync_failure_target = QDir(window->gameDirectoryText()).filePath(target_name);
-      break;
-    }
-  }
-  QFile guard_sync_failure_target_file(guard_sync_failure_target);
-  const bool guard_sync_failure_target_opened = guard_sync_failure_target_file.open(QIODevice::ReadOnly);
-  const QByteArray guard_sync_failure_target_text =
-      guard_sync_failure_target_opened ? guard_sync_failure_target_file.readAll() : QByteArray();
-  const bool cleanup_directory_sync_failure_safe = expect(
-      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
-          guard_sync_failure_detail &&
-          guard_sync_failure_detail->text().contains("identity guard could not be retired safely") &&
-          guard_sync_failure_target_text == "completed lossless archive" &&
-          QFileInfo::exists(guard_sync_failure_target + ".hstream-pin"),
-      "A cleanup-directory sync failure must retain the trusted MP4 and report its restored identity guard");
-  if (guard_sync_failure_ok)
-    activate(guard_sync_failure_ok);
-  const QString guard_sync_failure_manual = guard_sync_failure_target + ".manually-retained";
-  QFile::remove(guard_sync_failure_manual);
-  const bool guard_sync_failure_moved =
-      !guard_sync_failure_target.isEmpty() && QFile::rename(guard_sync_failure_target, guard_sync_failure_manual);
-  archive->setChecked(false);
-  archive->setChecked(true);
-
-  const QString source_sync_failure =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("source-sync-failure.mkv");
-  const QString source_sync_failure_recovery =
-      QDir(QFileInfo(source_sync_failure).absolutePath()).filePath("source-sync-failure-finalization-failed-1.mkv");
-  QFile::remove(source_sync_failure);
-  QFile::remove(source_sync_failure + ".log");
-  QFile::remove(source_sync_failure_recovery);
-  const QStringList finalized_before_source_sync_failure =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", source_sync_failure.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_PARENT_SYNC_FAILURE", "1");
-  qputenv("HSTREAM_UI_TEST_RECOVERY_PIN_REOPEN_FAILURE", source_sync_failure_recovery.toLocal8Bit());
-  activate(start);
-  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-  finalize_headline = window->findChild<QLabel*>("archiveFinalizeHeadline");
-  auto* source_sync_failure_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-  auto* source_sync_failure_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  qunsetenv("HSTREAM_UI_TEST_RECOVERY_PIN_REOPEN_FAILURE");
-  QFile source_sync_failure_recovery_file(source_sync_failure_recovery);
-  const bool source_sync_failure_recovery_opened = source_sync_failure_recovery_file.open(QIODevice::ReadOnly);
-  const QByteArray source_sync_failure_recovery_text =
-      source_sync_failure_recovery_opened ? source_sync_failure_recovery_file.readAll() : QByteArray();
-  const QStringList finalized_after_source_sync_failure =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  const bool source_cleanup_sync_failure_recovered = expect(
-      window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
-          finalize_headline && finalize_headline->text() == "Video finalization failed" && source_sync_failure_detail &&
-          source_sync_failure_detail->text().contains(source_sync_failure_recovery) &&
-          source_sync_failure_detail->text().contains("recovery source pin could not move") &&
-          source_sync_failure_detail->text().contains("recovery log pin could not move") &&
-          QFileInfo::exists(source_sync_failure + ".hstream-pin") &&
-          QFileInfo::exists(source_sync_failure + ".log.hstream-pin") &&
-          source_sync_failure_recovery_text == "completed lossless archive" &&
-          finalized_after_source_sync_failure == finalized_before_source_sync_failure,
-      "A source-parent sync failure must withdraw the MP4 and recover the MKV even when pin handoff fails, retaining old guards");
-  if (source_sync_failure_ok)
-    activate(source_sync_failure_ok);
-  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  const QString failed_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText()))
-          .filePath(
-              "tracking_output-with-audio.hstream-run-v3-99999999-88888888-00112233-4455-6677-8899-"
-              "aabbccddeeff.mkv");
-  const QString metadata_warning_source =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("source-metadata-warning.mkv");
-  const QStringList finalized_before_metadata_warning =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", metadata_warning_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_CALLER_CLEANUP_TOMBSTONE", (metadata_warning_source + ".hstream-pin").toLocal8Bit());
-  activate(start);
-  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "SAVED"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  qunsetenv("HSTREAM_UI_TEST_CALLER_CLEANUP_TOMBSTONE");
-  auto* metadata_warning_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-  auto* metadata_warning_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  const QStringList finalized_after_metadata_warning =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  QByteArray metadata_warning_video;
-  for (const QString& name : finalized_after_metadata_warning) {
-    if (!finalized_before_metadata_warning.contains(name)) {
-      QFile completed_file(QDir(window->gameDirectoryText()).filePath(name));
-      if (completed_file.open(QIODevice::ReadOnly))
-        metadata_warning_video = completed_file.readAll();
-    }
-  }
-  QString metadata_warning_transaction;
-  const QDir metadata_warning_parent(QFileInfo(metadata_warning_source).absolutePath());
-  for (const QString& name :
-       metadata_warning_parent.entryList({"hstream-cleanup-v2-*"}, QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
-    const QString transaction = metadata_warning_parent.filePath(name);
-    QFile owner(QDir(transaction).filePath("owner"));
-    if (owner.open(QIODevice::ReadOnly) &&
-        owner.readAll() ==
-            QByteArray("hstream-cleanup-v2\n") +
-                QFile::encodeName(QFileInfo(metadata_warning_source + ".hstream-pin").fileName()).toBase64()) {
-      metadata_warning_transaction = transaction;
-      break;
-    }
-  }
-  const bool committed_metadata_warning_safe = expect(
-      window->outputStateText("archive-file") == "SAVED" && metadata_warning_video == "completed lossless archive" &&
-          !QFileInfo::exists(metadata_warning_source) && metadata_warning_detail &&
-          metadata_warning_detail->text().contains("Completed MP4 retained") && metadata_warning_ok &&
-          metadata_warning_ok->isVisible() && !metadata_warning_transaction.isEmpty() &&
-          QFileInfo::exists(QDir(metadata_warning_transaction).filePath("committed")),
-      "A committed source cleanup must retain the MP4 and display a persistent metadata warning without raw-source rollback");
-  if (metadata_warning_ok)
-    activate(metadata_warning_ok);
-  const bool metadata_warning_tombstone_cleared = !metadata_warning_transaction.isEmpty() &&
-      QFile::remove(QDir(metadata_warning_transaction).filePath(".nfs00000000deadbeef"));
-  QString metadata_warning_reconciliation_error;
-  const bool metadata_warning_reconciled = expect(
-      metadata_warning_tombstone_cleared &&
-          hm::ui_internal::reconcile_cleanup_directory_for_test(
-              metadata_warning_parent.absolutePath(), &metadata_warning_reconciliation_error) &&
-          !QFileInfo::exists(metadata_warning_transaction),
-      "Committed source metadata must remain recoverable after its caller tombstone disappears");
-  const QString dangling_log_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-1.mkv");
-  const QString dangling_log_path = dangling_log_video + ".log";
-  const QString injected_collision_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-2.mkv");
-  const QString injected_collision_log = injected_collision_video + ".log";
-  const QString replaced_log_video =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-3.mkv");
-  const QString replaced_log_path = replaced_log_video + ".log";
-  const QString failed_recovery =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("tracking_output-with-audio-finalization-failed-4.mkv");
-  const QString failed_source_log = failed_source + ".log";
-  const QString failed_recovery_log = failed_recovery + ".log";
-  const QString failed_recovery_rescue = failed_recovery + ".hstream-rescue-1";
-  const QString failed_recovery_log_rescue = failed_recovery_log + ".hstream-rescue-1";
-  const QStringList finalized_before_failure =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  QFile::remove(failed_source);
-  QFile::remove(dangling_log_video);
-  QFile::remove(dangling_log_path);
-  QFile::remove(injected_collision_video);
-  QFile::remove(injected_collision_log);
-  QFile::remove(replaced_log_video);
-  QFile::remove(replaced_log_path);
-  QFile::remove(failed_recovery);
-  QFile::remove(failed_source_log);
-  QFile::remove(failed_recovery_log);
-  QFile::remove(failed_recovery_rescue);
-  QFile::remove(failed_recovery_log_rescue);
-  const QString dangling_resolved_log_target =
-      QDir(QFileInfo(failed_source).absolutePath()).filePath("missing-resolved-log-target");
-  QFile::remove(dangling_resolved_log_target);
-  const bool dangling_resolved_log_created = QFile::link(dangling_resolved_log_target, failed_source_log);
-  const bool dangling_log_created =
-      QFile::link(QDir(QFileInfo(failed_source).absolutePath()).filePath("missing-log-target"), dangling_log_path);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_REPLACEMENT", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_GUARD_REPLACEMENT_DURING_SYNC", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_GUARD_REPLACEMENT_DURING_SYNC", "1");
-  qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.1");
-  activate(start);
-  for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  auto* finalize_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-  auto* finalize_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  const QStringList finalized_after_failure =
-      QDir(window->gameDirectoryText())
-          .entryList(
-              {QString("%1-tracking_output-with-audio*.mp4").arg(window->gameIdText())}, QDir::Files, QDir::Name);
-  QFile failed_log_file(failed_recovery_log_rescue);
-  const bool failed_log_opened = failed_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
-  const QString failed_log_text = failed_log_opened ? QString::fromUtf8(failed_log_file.readAll()) : QString();
-  QFile replaced_log_file(replaced_log_path);
-  const bool replaced_log_opened = replaced_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
-  const QString replaced_log_text = replaced_log_opened ? QString::fromUtf8(replaced_log_file.readAll()) : QString();
-  QFile replaced_source_file(failed_source);
-  const bool replaced_source_opened = replaced_source_file.open(QIODevice::ReadOnly);
-  const QByteArray replaced_source_text = replaced_source_opened ? replaced_source_file.readAll() : QByteArray();
-  QFile replaced_recovery_file(failed_recovery);
-  const bool replaced_recovery_opened = replaced_recovery_file.open(QIODevice::ReadOnly);
-  const QByteArray replaced_recovery_text = replaced_recovery_opened ? replaced_recovery_file.readAll() : QByteArray();
-  QFile trusted_recovery_guard_file(failed_recovery + ".hstream-pin");
-  const bool trusted_recovery_guard_opened = trusted_recovery_guard_file.open(QIODevice::ReadOnly);
-  const QByteArray trusted_recovery_guard_text =
-      trusted_recovery_guard_opened ? trusted_recovery_guard_file.readAll() : QByteArray();
-  QFile replaced_recovery_log_file(failed_recovery_log);
-  const bool replaced_recovery_log_opened = replaced_recovery_log_file.open(QIODevice::ReadOnly);
-  const QByteArray replaced_recovery_log_text =
-      replaced_recovery_log_opened ? replaced_recovery_log_file.readAll() : QByteArray();
-  QFile replaced_recovery_log_guard_file(failed_recovery_log + ".hstream-pin");
-  const bool replaced_recovery_log_guard_opened = replaced_recovery_log_guard_file.open(QIODevice::ReadOnly);
-  const QByteArray replaced_recovery_log_guard_text =
-      replaced_recovery_log_guard_opened ? replaced_recovery_log_guard_file.readAll() : QByteArray();
-  QFile trusted_recovery_file(failed_recovery_rescue);
-  const bool trusted_recovery_opened = trusted_recovery_file.open(QIODevice::ReadOnly);
-  const QByteArray trusted_recovery_text = trusted_recovery_opened ? trusted_recovery_file.readAll() : QByteArray();
-  QString replaced_open_log_text;
-  const QStringList provisional_logs =
-      QDir(QFileInfo(failed_source).absolutePath())
-          .entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
-  for (const QString& provisional_log : provisional_logs) {
-    QFile provisional_log_file(QDir(QFileInfo(failed_source).absolutePath()).filePath(provisional_log));
-    if (provisional_log_file.open(QIODevice::ReadOnly)) {
-      const QString contents = QString::fromUtf8(provisional_log_file.readAll());
-      if (contents == "injected foreign open log pathname")
-        replaced_open_log_text = contents;
-    }
-  }
-  const bool failed_archive_retained = expect(
-      dangling_resolved_log_created && QFileInfo(failed_source_log).isSymLink() &&
-          !QFileInfo::exists(dangling_resolved_log_target) && dangling_log_created &&
-          QFileInfo(dangling_log_path).isSymLink() && QFileInfo(injected_collision_video).size() > 0 &&
-          !QFileInfo::exists(injected_collision_log) && !QFileInfo::exists(replaced_log_video) &&
-          replaced_log_text == "injected recovery log replacement" &&
-          window->outputStateText("archive-file") == "ERROR" && finalize_dialog && finalize_dialog->isVisible() &&
-          finalize_headline && finalize_headline->text() == "Video finalization failed" &&
-          finalize_headline->property("finalizationState").toString() == "failed" && finalize_detail &&
-          finalize_detail->text().contains(failed_recovery_rescue) && finalize_ok && finalize_ok->isVisible() &&
-          finalize_ok->toolTip().contains("Close the finalization result") &&
-          finalize_ok->statusTip() == finalize_ok->toolTip() && replaced_source_opened &&
-          replaced_source_text == "injected foreign archive source" &&
-          replaced_open_log_text == "injected foreign open log pathname" &&
-          replaced_recovery_text == "injected foreign recovery during sync" && trusted_recovery_guard_opened &&
-          trusted_recovery_guard_text == "injected foreign recovery guard during sync" &&
-          replaced_recovery_log_text == "injected foreign recovery log during sync" &&
-          replaced_recovery_log_guard_text == "injected foreign recovery log guard during sync" &&
-          trusted_recovery_opened && trusted_recovery_text == "completed lossless archive" &&
-          !QFileInfo::exists(failed_source_log) && failed_log_opened &&
-          failed_log_text.contains("archive finalization failed") && !failed_recovery.contains(".hstream-run-") &&
-          finalized_after_failure == finalized_before_failure,
-      "A failed remux must durably rescue the trusted recovery pair if both visible names and guards are replaced");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_VIDEO_COLLISION");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_LOG_REOPEN_FAIL");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_SOURCE_REPLACEMENT");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_OPEN_LOG_REPLACEMENT");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_FORCE_LOG_CLOSE_AND_REPLACE");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_GUARD_REPLACEMENT_DURING_SYNC");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_GUARD_REPLACEMENT_DURING_SYNC");
-  qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
-  if (finalize_ok)
-    activate(finalize_ok);
-
-  const QString no_log_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText()))
-          .filePath("no-log.hstream-run-v3-99999998-77777777-00112233-4455-6677-8899-aabbccddeeff.mkv");
-  const QString no_log_replaced_marker =
-      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed-1.mkv.log");
-  const QString no_log_recovery =
-      QDir(QFileInfo(no_log_source).absolutePath()).filePath("no-log-finalization-failed-2.mkv");
-  QFile::remove(no_log_source);
-  QFile::remove(no_log_source + ".log");
-  QFile::remove(no_log_replaced_marker);
-  QFile::remove(no_log_recovery);
-  QFile::remove(no_log_recovery + ".log");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", no_log_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_DROP_LOG_BEFORE_RECOVERY", "1");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT", "1");
-  // The recovery path is shown before its asynchronous durability sync completes.
-  // Keep that interval observable so the next scenario cannot accidentally rely on a fast sync helper.
-  qputenv("HSTREAM_UI_TEST_SYNC_DELAY", "0.25");
-  activate(start);
-  const auto no_log_finalization_complete = [&] {
-    return window->outputStateText("archive-file") == "ERROR" && finalize_detail &&
-        finalize_detail->text().contains(no_log_recovery) && finalize_ok && finalize_ok->isVisible() &&
-        start->isEnabled();
-  };
-  for (int i = 0; i < 300 && !no_log_finalization_complete(); ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  QFile replaced_marker_file(no_log_replaced_marker);
-  const bool replaced_marker_opened = replaced_marker_file.open(QIODevice::ReadOnly);
-  const QByteArray replaced_marker_text = replaced_marker_opened ? replaced_marker_file.readAll() : QByteArray();
-  const bool no_log_recovery_reserved = expect(
-      replaced_marker_text == "injected recovery marker replacement" && QFileInfo(no_log_recovery).size() > 0 &&
-          !QFileInfo::exists(no_log_recovery + ".log") && !QFileInfo::exists(no_log_source) &&
-          no_log_finalization_complete(),
-      "Recovery without a UI log must atomically reserve the sidecar name, roll back a replaced reservation, and retry a clean basename");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_DROP_LOG_BEFORE_RECOVERY");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_MARKER_REPLACEMENT");
-  qunsetenv("HSTREAM_UI_TEST_SYNC_DELAY");
-  if (finalize_ok)
-    activate(finalize_ok);
-
-  const QString cleanup_race_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText()))
-          .filePath("cleanup-race.hstream-run-v3-99999997-66666666-00112233-4455-6677-8899-aabbccddeeff.mkv");
-  const QString cleanup_race_replaced =
-      QDir(QFileInfo(cleanup_race_source).absolutePath()).filePath("cleanup-race-finalization-failed-1.mkv");
-  const QString cleanup_race_recovery =
-      QDir(QFileInfo(cleanup_race_source).absolutePath()).filePath("cleanup-race-finalization-failed-2.mkv");
-  QFile::remove(cleanup_race_source);
-  QFile::remove(cleanup_race_source + ".log");
-  QFile::remove(cleanup_race_replaced);
-  QFile::remove(cleanup_race_replaced + ".log");
-  QFile::remove(cleanup_race_recovery);
-  QFile::remove(cleanup_race_recovery + ".log");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cleanup_race_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE", cleanup_race_source.toLocal8Bit());
-  activate(start);
-  for (int i = 0; i < 300 &&
-       (window->outputStateText("archive-file") != "ERROR" || !finalize_detail ||
-        !finalize_detail->text().contains(cleanup_race_recovery));
-       ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  QFile cleanup_race_replaced_file(cleanup_race_replaced);
-  const bool cleanup_race_replaced_opened = cleanup_race_replaced_file.open(QIODevice::ReadOnly);
-  const QByteArray cleanup_race_replaced_text =
-      cleanup_race_replaced_opened ? cleanup_race_replaced_file.readAll() : QByteArray();
-  QFile cleanup_race_log_file(cleanup_race_recovery + ".log");
-  const bool cleanup_race_log_opened = cleanup_race_log_file.open(QIODevice::ReadOnly);
-  const QString cleanup_race_log_text =
-      cleanup_race_log_opened ? QString::fromUtf8(cleanup_race_log_file.readAll()) : QString();
-  const bool post_quarantine_recovery_safe = expect(
-      cleanup_race_replaced_text == "injected foreign publication after quarantine" &&
-          !QFileInfo::exists(cleanup_race_replaced + ".log") && QFileInfo(cleanup_race_recovery).size() > 0 &&
-          cleanup_race_log_text.contains("archive finalization failed") && !QFileInfo::exists(cleanup_race_source) &&
-          finalize_detail && finalize_detail->text().contains(cleanup_race_recovery),
-      "UI protected cleanup must restore its pinned source and retry the pair if publication is replaced after quarantine unlink");
-  qunsetenv("HSTREAM_UI_TEST_REPLACE_ARCHIVE_AFTER_QUARANTINE");
-  if (finalize_ok)
-    activate(finalize_ok);
-
-  const QString publication_sync_failure_source =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("recovery-publication-sync-failure.mkv");
-  const QString publication_sync_failure_log = publication_sync_failure_source + ".log";
-  const QString publication_sync_failure_recovery =
-      QDir(QFileInfo(publication_sync_failure_source).absolutePath())
-          .filePath("recovery-publication-sync-failure-finalization-failed-1.mkv");
-  const QString publication_sync_failure_manual = publication_sync_failure_source + ".manually-retained";
-  QFile::remove(publication_sync_failure_source);
-  QFile::remove(publication_sync_failure_log);
-  QFile::remove(publication_sync_failure_source + ".hstream-pin");
-  QFile::remove(publication_sync_failure_log + ".hstream-pin");
-  QFile::remove(publication_sync_failure_recovery);
-  QFile::remove(publication_sync_failure_recovery + ".log");
-  QFile::remove(publication_sync_failure_manual);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", publication_sync_failure_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE", "1");
-  activate(start);
-  for (int i = 0; i < 300 &&
-       (window->outputStateText("archive-file") != "ERROR" || !finalize_detail ||
-        !finalize_detail->text().contains("could not make the recovery pair durable"));
-       ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  QFile publication_sync_failure_log_file(publication_sync_failure_log);
-  const bool publication_sync_failure_log_opened =
-      publication_sync_failure_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
-  const QString publication_sync_failure_log_text =
-      publication_sync_failure_log_opened ? QString::fromUtf8(publication_sync_failure_log_file.readAll()) : QString();
-  const bool recovery_publication_sync_failure_safe = expect(
-      QFileInfo(publication_sync_failure_source).size() > 0 && publication_sync_failure_log_opened &&
-          publication_sync_failure_log_text.contains("archive finalization failed") &&
-          QFileInfo::exists(publication_sync_failure_source + ".hstream-pin") &&
-          !QFileInfo::exists(publication_sync_failure_recovery) &&
-          !QFileInfo::exists(publication_sync_failure_recovery + ".log") && finalize_detail &&
-          finalize_detail->text().contains(publication_sync_failure_source) &&
-          finalize_detail->text().contains("could not make the recovery pair durable"),
-      "A recovery-publication sync failure must retain the original video and log before source cleanup");
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_PUBLICATION_SYNC_FAILURE");
-  if (finalize_ok)
-    activate(finalize_ok);
-  const bool publication_sync_failure_moved =
-      QFile::rename(publication_sync_failure_source, publication_sync_failure_manual);
-  archive->setChecked(false);
-  archive->setChecked(true);
-
-  const QString blocked_directory =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("blocked-recovery");
-  const QString blocked_source = QDir(blocked_directory).filePath("blocked-source.mkv");
-  const QString manually_recovered = QDir(blocked_directory).filePath("blocked-source-manually-recovered.mkv");
-  QDir().mkpath(blocked_directory);
-  QFile::remove(blocked_source);
-  QFile::remove(manually_recovered);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", blocked_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY", "1");
-  activate(start);
-  for (int i = 0; i < 300 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  const bool unsafe_retry_blocked = expect(
-      QFileInfo::exists(blocked_source) && start && !start->isEnabled() && finalize_detail &&
-          finalize_detail->text().contains("Do not start another archive run"),
-      "If recovery rename fails, archive Play must stay disabled while the sole retained MKV occupies its work path");
-  QFile::setPermissions(blocked_directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
-  const bool manually_moved = QFile::rename(blocked_source, manually_recovered);
-  qunsetenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY");
-  if (finalize_ok)
-    activate(finalize_ok);
-  archive->setChecked(false);
-  archive->setChecked(true);
-  const bool retry_unblocked_after_recovery = expect(
-      manually_moved && start->isEnabled(),
-      "Moving the retained MKV to safety must re-enable archive Play on the next route refresh");
-  bool ui_cleanup_owner_scoped = true;
-#ifdef Q_OS_UNIX
-  const QString scoped_ui_target = QDir(window->gameDirectoryText()).filePath("scoped-ui-cleanup-target.mp4");
-  const QString scoped_ui_unrelated = QDir(window->gameDirectoryText()).filePath("scoped-ui-unrelated-hardlink.mp4");
-  const QString scoped_ui_cleanup =
-      QDir(window->gameDirectoryText()).filePath(".hstream-cleanup-v2-bbbbbbbb-cccc-4ddd-8eee-ffffffffffff");
-  const QString scoped_ui_entry = QDir(scoped_ui_cleanup).filePath("entry");
-  const QString scoped_ui_owner = QDir(scoped_ui_cleanup).filePath("owner");
-  QFile::remove(scoped_ui_target);
-  QFile::remove(scoped_ui_target + ".hstream-cleanup-pin");
-  QFile::remove(scoped_ui_unrelated);
-  QDir().mkpath(scoped_ui_cleanup);
-  const bool scoped_ui_setup = write_cleanup_test_file(scoped_ui_entry, "trusted scoped UI cleanup inode") &&
-      create_hard_link(scoped_ui_entry, scoped_ui_unrelated) &&
-      write_cleanup_owner(scoped_ui_cleanup, scoped_ui_target);
-  activate(start);
-  for (int i = 0; i < 400 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  QFile scoped_ui_unrelated_file(scoped_ui_unrelated);
-  const bool scoped_ui_unrelated_opened = scoped_ui_unrelated_file.open(QIODevice::ReadOnly);
-  const QByteArray scoped_ui_unrelated_content =
-      scoped_ui_unrelated_opened ? scoped_ui_unrelated_file.readAll() : QByteArray();
-  ui_cleanup_owner_scoped = expect(
-      scoped_ui_setup && window->outputStateText("archive-file") == "ERROR" && !QFileInfo::exists(scoped_ui_target) &&
-          !QFileInfo::exists(scoped_ui_target + ".hstream-cleanup-pin") && QFileInfo::exists(scoped_ui_entry) &&
-          QFileInfo::exists(scoped_ui_owner) && scoped_ui_unrelated_content == "trusted scoped UI cleanup inode",
-      "UI cleanup reconciliation must retain private evidence instead of claiming a hardlink outside its owner target");
-  auto* scoped_ui_ok = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  if (scoped_ui_ok)
-    activate(scoped_ui_ok);
-  scoped_ui_unrelated_file.close();
-  QFile::remove(scoped_ui_unrelated);
-  QFile::remove(scoped_ui_entry);
-  QFile::remove(scoped_ui_owner);
-  QDir().rmdir(scoped_ui_cleanup);
-#endif
-  qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL");
+  const bool unsupported_runner_retained = expect(
+      window->outputStateText("archive-file") == "ERROR" && QFileInfo::exists(completed_source) &&
+          window->logText().mid(before).contains("managed completion receipt"),
+      "An unsupported runner must retain working output and report missing managed completion");
+  if (auto* dismiss = window->findChild<QPushButton*>("archiveFinalizeOkButton"))
+    activate(dismiss);
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
   qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
-  qunsetenv("HSTREAM_UI_TEST_FFMPEG_ARGS");
-  archive->setChecked(false);
   qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH");
-  if (original_output_root.isEmpty()) {
-    qunsetenv("HM_OUTPUT_WORK_DIR");
-  } else {
-    qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
-  }
-  return relative_override_resolved && calibration_archive_routed && dual_archive_routed && path_refreshes_with_game &&
-      path_visible_before_start && path_prepared && nonlocal_seek_blocked && interrupted_archive_preserved &&
-      missing_new_output_reported && job_log_persisted && incomplete_exit_log_guarded && same_filesystem_log_rollback &&
-      cross_filesystem_log_persisted && finalization_visible && completed_log_persisted && archive_deployed &&
-      archive_origin_recorded && durability_sync_responsive && telemetry_copy_responsive && telemetry_deployed &&
-      target_cleanup_race_recovered && ui_cleanup_restart_reconciled && ui_cleanup_reconciliation_race_safe &&
-      source_cleanup_sync_failure_recovered && committed_metadata_warning_safe && metadata_warning_reconciled &&
-      cleanup_directory_sync_failure_safe && guard_sync_failure_moved && failed_archive_retained &&
-      no_log_recovery_reserved && post_quarantine_recovery_safe && recovery_publication_sync_failure_safe &&
-      publication_sync_failure_moved && unsafe_retry_blocked && retry_unblocked_after_recovery &&
-      ui_cleanup_owner_scoped;
-}
-
-bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false) {
-  const char* secondary_toggle = with_4k ? "outputToggle_archive-program-4k" : "outputToggle_archive-stitched";
-  const char* secondary_label = with_4k ? "program4kOutputPath" : "stitchedArchiveOutputPath";
-  const char* secondary_env =
-      with_4k ? "HSTREAM_UI_TEST_PROGRAM_4K_RESOLVED_PATH" : "HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH";
-  const QString secondary_id = with_4k ? "archive-program-4k" : "archive-stitched";
-  const QString secondary_stem = with_4k ? "program_4k" : "stitched";
-  auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
-  auto* stitched_archive = require_child<QCheckBox>(window, secondary_toggle);
-  auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
-  auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
-  auto* stitched_archive_path = require_child<QLabel>(window, secondary_label);
-  auto* start = require_child<QPushButton>(window, "startPipelineButton");
-  auto* mode = require_child<QComboBox>(window, "runModeCombo");
-  if (!archive || !stitched_archive || !drivegpt_csv || !archive_path || !stitched_archive_path || !start || !mode)
-    return false;
-
-  QTemporaryDir output_root;
-  if (!output_root.isValid())
-    return false;
-  const QByteArray original_output_root = qgetenv("HM_OUTPUT_WORK_DIR");
-  const QString program_source = QDir(output_root.path()).filePath("dual-program.mkv");
-  const QString stitched_source = QDir(output_root.path()).filePath("dual-stitched.mkv");
-  const QString combined_job_log = program_source + ".log";
-  const QString telemetry_working = QDir(output_root.path()).filePath("dual-telemetry-working");
-  const std::array<QString, 6> telemetry_stems = {
-      "tracking", "detections", "camera", "camera_fast", "hstream_frame_index", "hstream_config_events"};
-  const QString telemetry_manifest = QDir(telemetry_working).filePath("hstream_telemetry-11.json");
-  bool telemetry_fixture_created = QDir().mkpath(telemetry_working);
-  for (const QString& stem : telemetry_stems) {
-    QFile artifact(QDir(telemetry_working).filePath(stem + "-11.csv"));
-    telemetry_fixture_created &= artifact.open(QIODevice::WriteOnly | QIODevice::NewOnly) &&
-        artifact.write((stem + " dual archive contents\n").toUtf8()) > 0;
-  }
-  QFile telemetry_manifest_file(telemetry_manifest);
-  telemetry_fixture_created &=
-      telemetry_manifest_file.open(QIODevice::WriteOnly | QIODevice::NewOnly) && telemetry_manifest_file.write(R"json({
-  "publication_state": "committed",
-  "completed": true,
-  "hm_compatibility": {
-    "tracking_csv": {"file": "tracking-11.csv"},
-    "detections_csv": {"file": "detections-11.csv"},
-    "camera_csv": {"file": "camera-11.csv"},
-    "camera_fast_csv": {"file": "camera_fast-11.csv"}
-  },
-  "sidecars": {
-    "frame_index": "hstream_frame_index-11.csv",
-    "config_events": "hstream_config_events-11.csv"
-  }
-})json") > 0;
-  telemetry_manifest_file.close();
-  if (!expect(telemetry_fixture_created, "dual archive telemetry fixture must be created"))
-    return false;
-  qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", program_source.toLocal8Bit());
-  qputenv(secondary_env, stitched_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
-  qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
-  qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "100");
-  const QString sync_pin_probe = QDir(output_root.path()).filePath("dual-sync-pins.txt");
-  qputenv("HSTREAM_UI_TEST_SYNC_PIN_PROBE", sync_pin_probe.toLocal8Bit());
-  mode->setCurrentIndex(mode->findData("program"));
-  archive->setChecked(true);
-  stitched_archive->setChecked(true);
-  drivegpt_csv->setChecked(true);
-  activate(start);
-  for (int i = 0; i < 600 &&
-       (window->outputStateText("archive-file") != "SAVED" || window->outputStateText(secondary_id) != "SAVED");
-       ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-
-  const QString program_completed = archive_path->text().section("Completed archive: ", 1).trimmed();
-  const QString stitched_completed = stitched_archive_path->text().section("Completed archive: ", 1).trimmed();
-  QFile program_file(program_completed);
-  QFile stitched_file(stitched_completed);
-  QFile combined_log_file(combined_job_log);
-  const bool program_opened = program_file.open(QIODevice::ReadOnly);
-  const bool stitched_opened = stitched_file.open(QIODevice::ReadOnly);
-  const bool combined_log_opened = combined_log_file.open(QIODevice::ReadOnly | QIODevice::Text);
-  const QString combined_log_text = combined_log_opened ? QString::fromUtf8(combined_log_file.readAll()) : QString();
-  const QString program_finalize_log = QString("finalizing archive without re-encoding: %1").arg(program_source);
-  const QString stitched_finalize_log = QString("finalizing archive without re-encoding: %1").arg(stitched_source);
-  const int program_finalize_index = window->logText().lastIndexOf(program_finalize_log);
-  const int telemetry_finalize_index = window->logText().lastIndexOf("DriveGPT database copied to the game directory");
-  const int stitched_finalize_index = window->logText().lastIndexOf(stitched_finalize_log);
-  const QString completed_base = QFileInfo(program_completed).completeBaseName();
-  const QString unsuffixed_base = QString("%1-tracking_output-with-audio").arg(window->gameIdText());
-  const QString telemetry_suffix =
-      completed_base.startsWith(unsuffixed_base) ? completed_base.mid(unsuffixed_base.size()) : QString("invalid");
-  bool dual_telemetry_deployed = QRegularExpression(R"(^-[1-9][0-9]*$)").match(telemetry_suffix).hasMatch() &&
-      QFileInfo(stitched_completed).completeBaseName() ==
-          QString("%1-%2_output-with-audio%3").arg(window->gameIdText(), secondary_stem, telemetry_suffix);
-  for (const QString& stem : telemetry_stems) {
-    QFile published(QDir(window->gameDirectoryText()).filePath(stem + telemetry_suffix + ".csv"));
-    dual_telemetry_deployed &=
-        published.open(QIODevice::ReadOnly) && published.readAll() == (stem + " dual archive contents\n").toUtf8();
-  }
-  qunsetenv("HSTREAM_UI_TEST_SYNC_PIN_PROBE");
-  QFile sync_pin_probe_file(sync_pin_probe);
-  const bool sync_pin_probe_opened = sync_pin_probe_file.open(QIODevice::ReadOnly | QIODevice::Text);
-  const QStringList synced_pins = sync_pin_probe_opened
-      ? QString::fromUtf8(sync_pin_probe_file.readAll()).split('\n', Qt::SkipEmptyParts)
-      : QStringList();
-  // Compare file names so a symlinked temporary root cannot make the helper's
-  // resolved path diverge from the pathname the window reports.
-  const auto synced_pin_named = [&synced_pins](const QString& published) {
-    const QString name = "/" + QFileInfo(published).fileName();
-    return std::any_of(
-        synced_pins.cbegin(), synced_pins.cend(), [&name](const QString& pin) { return pin.endsWith(name); });
-  };
-  bool pins_follow_published_names = sync_pin_probe_opened && !program_completed.isEmpty() &&
-      !stitched_completed.isEmpty() && synced_pin_named(program_completed) && synced_pin_named(stitched_completed);
-  for (const QString& pin : synced_pins)
-    pins_follow_published_names &= !pin.contains("-hstream-finalize-") && !pin.endsWith(" (deleted)");
-  // Scope the scratch filter to this run's two outputs so an unrelated leftover
-  // cannot be reported against these pins.
-  const QStringList finalize_scratch_filters = {
-      QFileInfo(program_completed).completeBaseName() + "-hstream-finalize-*",
-      QFileInfo(stitched_completed).completeBaseName() + "-hstream-finalize-*"};
-  const bool finalize_scratch_removed =
-      QDir(window->gameDirectoryText())
-          .entryList(finalize_scratch_filters, QDir::Dirs | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot)
-          .isEmpty();
-  const bool finalization_scratch_released = expect(
-      pins_follow_published_names && finalize_scratch_removed,
-      "Durability sync must hold each completed MP4 through its published name, not the finalization scratch name "
-      "it was built under, and both scratch directories must be gone");
-  if (!finalization_scratch_released) {
-    std::cerr << "sync pins=" << synced_pins.join(", ").toStdString()
-              << " program=" << program_completed.toStdString()
-              << " stitched=" << stitched_completed.toStdString()
-              << " scratch-removed=" << finalize_scratch_removed << '\n';
-  }
-
-  const bool ok = expect(
-      window->outputStateText("archive-file") == "SAVED" && window->outputStateText(secondary_id) == "SAVED" &&
-          program_opened && stitched_opened && program_file.readAll() == "completed lossless archive" &&
-          stitched_file.readAll() == (with_4k ? "completed 4k archive" : "completed stitched archive") &&
-          QFileInfo(program_completed).completeBaseName().contains("-tracking_output-with-audio") &&
-          QFileInfo(stitched_completed).completeBaseName().contains("-" + secondary_stem + "_output-with-audio") &&
-          !QFileInfo::exists(program_source) && !QFileInfo::exists(stitched_source) && program_finalize_index >= 0 &&
-          telemetry_finalize_index > program_finalize_index && stitched_finalize_index > telemetry_finalize_index &&
-          dual_telemetry_deployed && combined_log_opened && combined_log_text.contains(program_finalize_log) &&
-          combined_log_text.contains(stitched_finalize_log) &&
-          combined_log_text.contains("DriveGPT database copied to the game directory") &&
-          combined_log_text.contains(QString("completed archive published: %1").arg(program_completed)) &&
-          combined_log_text.contains(QString("completed archive published: %1").arg(stitched_completed)),
-      "A successful Program run with both archives must publish Program telemetry, finalize both work files "
-      "sequentially with distinct names, and retain one complete run log");
-
-  auto* finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-  for (int i = 0; i < 100 && finalize_dialog && finalize_dialog->isVisible(); ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  program_file.close();
-  stitched_file.close();
-  combined_log_file.close();
-  QFile::remove(program_completed);
-  QFile::remove(stitched_completed);
-  QFile::remove(combined_job_log);
-  for (const QString& stem : telemetry_stems)
-    QFile::remove(QDir(window->gameDirectoryText()).filePath(stem + telemetry_suffix + ".csv"));
-  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
-  qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
-  drivegpt_csv->setChecked(false);
-
-  const bool telemetry_source_removed = QFile::remove(QDir(telemetry_working).filePath("camera_fast-11.csv"));
-  const auto run_telemetry_publication_failure = [&](const QString& label, bool with_stitched_archive) {
-    const QString failed_telemetry_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
-    const QString failed_telemetry_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
-    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_telemetry_program_source.toLocal8Bit());
-    if (with_stitched_archive) {
-      qputenv(secondary_env, failed_telemetry_stitched_source.toLocal8Bit());
-    } else {
-      qunsetenv(secondary_env);
-    }
-    qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
-    qputenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS", "100");
-    stitched_archive->setChecked(with_stitched_archive);
-    drivegpt_csv->setChecked(true);
-    activate(start);
-    for (int i = 0; i < 600 &&
-         (window->outputStateText("archive-file") != "SAVED" ||
-          (with_stitched_archive && window->outputStateText(secondary_id) != "SAVED"));
-         ++i) {
-      QApplication::processEvents();
-      QTest::qWait(10);
-    }
-    qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
-    qunsetenv("HSTREAM_UI_TEST_TELEMETRY_PUBLICATION_DELAY_MS");
-    drivegpt_csv->setChecked(false);
-    const QString failed_telemetry_program_completed = archive_path->text().section("Completed archive: ", 1).trimmed();
-    const QString failed_telemetry_stitched_completed =
-        with_stitched_archive ? stitched_archive_path->text().section("Completed archive: ", 1).trimmed() : QString();
-    auto* failed_telemetry_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-    auto* failed_telemetry_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-    auto* failed_telemetry_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-    const QString telemetry_warning = "DriveGPT database publication failed:";
-    const int telemetry_warning_index = window->logText().lastIndexOf("WARNING: completed DriveGPT database");
-    const int stitched_after_warning_index = window->logText().lastIndexOf(
-        QString("finalizing archive without re-encoding: %1").arg(failed_telemetry_stitched_source));
-    const bool result = expect(
-        window->outputStateText("archive-file") == "SAVED" &&
-            (!with_stitched_archive || window->outputStateText(secondary_id) == "SAVED") && failed_telemetry_dialog &&
-            failed_telemetry_dialog->isVisible() && failed_telemetry_ok_button &&
-            failed_telemetry_ok_button->isVisible() && failed_telemetry_detail &&
-            failed_telemetry_detail->text().contains(telemetry_warning) &&
-            failed_telemetry_detail->text().contains(telemetry_working) && telemetry_warning_index >= 0 &&
-            (!with_stitched_archive || stitched_after_warning_index > telemetry_warning_index),
-        QString(
-            "A %1 telemetry publication failure must preserve its working-storage warning for acknowledgement "
-            "without blocking saved video outputs")
-            .arg(with_stitched_archive ? "dual-archive" : "Program-only")
-            .toStdString());
-    QFile::remove(failed_telemetry_program_completed);
-    QFile::remove(failed_telemetry_stitched_completed);
-    QFile::remove(failed_telemetry_program_source + ".log");
-    if (failed_telemetry_ok_button && failed_telemetry_ok_button->isVisible())
-      activate(failed_telemetry_ok_button);
-    return result;
-  };
-  const bool program_telemetry_failure_visible =
-      telemetry_source_removed && run_telemetry_publication_failure("program-telemetry-failure", false);
-  const bool dual_telemetry_failure_visible = run_telemetry_publication_failure("dual-telemetry-failure", true);
-
-  const auto run_route_failure = [&](const QString& label, const QByteArray& fail_route, bool fail_program) {
-    const QString failed_program_source = QDir(output_root.path()).filePath(label + "-program.mkv");
-    const QString failed_stitched_source = QDir(output_root.path()).filePath(label + "-stitched.mkv");
-    qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", failed_program_source.toLocal8Bit());
-    qputenv(secondary_env, failed_stitched_source.toLocal8Bit());
-    qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE", fail_route);
-    if (with_4k && fail_program) {
-      QFile restored(QDir(telemetry_working).filePath("camera_fast-11.csv"));
-      if (!restored.open(QIODevice::WriteOnly) || restored.write("valid telemetry\n") <= 0)
-        return false;
-      restored.close();
-      qputenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST", telemetry_manifest.toLocal8Bit());
-      drivegpt_csv->setChecked(true);
-    }
-    activate(start);
-    const QString failed_output = fail_program ? QString("archive-file") : QString(secondary_id);
-    const QString saved_output = fail_program ? QString(secondary_id) : QString("archive-file");
-    for (int i = 0; i < 600 &&
-         (window->outputStateText(failed_output) != "ERROR" || window->outputStateText(saved_output) != "SAVED");
-         ++i) {
-      QApplication::processEvents();
-      QTest::qWait(10);
-    }
-    qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE");
-    const QString failed_source = fail_program ? failed_program_source : failed_stitched_source;
-    const QString saved_source = fail_program ? failed_stitched_source : failed_program_source;
-    const QString failed_recovery =
-        QFileInfo(failed_source)
-            .dir()
-            .filePath(QFileInfo(failed_source).completeBaseName() + "-finalization-failed-1.mkv");
-    const QString failed_log = failed_recovery + ".log";
-    QLabel* failed_path_label = fail_program ? archive_path : stitched_archive_path;
-    auto* finalize_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-    auto* ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-    auto* finalize_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-    QFile run_log(failed_log);
-    const bool run_log_opened = run_log.open(QIODevice::ReadOnly | QIODevice::Text);
-    const QString run_log_text = run_log_opened ? QString::fromUtf8(run_log.readAll()) : QString();
-    const bool telemetry_ignored_copy = !with_4k || !fail_program ||
-        (run_log_text.contains("no finalized Program archive exists to provide a matching game-directory suffix") &&
-         !run_log_text.contains("DriveGPT database copied to the game directory"));
-    qunsetenv("HSTREAM_UI_TEST_TELEMETRY_MANIFEST");
-    drivegpt_csv->setChecked(false);
-    const bool route_result = expect(
-        telemetry_ignored_copy && window->outputStateText(failed_output) == "ERROR" &&
-            window->outputStateText(saved_output) == "SAVED" && QFileInfo::exists(failed_recovery) &&
-            !QFileInfo::exists(failed_source) && !QFileInfo::exists(saved_source) && run_log_opened &&
-            failed_path_label->text() == QString("Recovery archive: %1").arg(failed_recovery) && finalize_dialog &&
-            finalize_dialog->isVisible() && ok_button && ok_button->isVisible() && finalize_detail &&
-            finalize_detail->text().contains(failed_recovery) &&
-            run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_program_source)) &&
-            run_log_text.contains(QString("finalizing archive without re-encoding: %1").arg(failed_stitched_source)) &&
-            run_log_text.contains("archive finalization failed") &&
-            run_log_text.contains("completed archive published"),
-        QString(
-            "A %1-route failure must retain its recovery pair while the other archive still finalizes and the "
-            "combined log records both outcomes")
-            .arg(fail_program ? "first" : "second")
-            .toStdString());
-    run_log.close();
-    QFile::remove(failed_recovery + ".hstream-pin");
-    QFile::remove(failed_log + ".hstream-pin");
-    QFile::remove(failed_recovery);
-    QFile::remove(failed_log);
-    if (ok_button && ok_button->isVisible())
-      activate(ok_button);
-    return route_result;
-  };
-
-  const bool first_failure_safe = run_route_failure("dual-first-failure", "tracking_output", true);
-  const bool second_failure_safe =
-      run_route_failure("dual-second-failure", (with_4k ? "program_4k_output" : "stitched_output"), false);
-
-  const QString both_failed_program_source = QDir(output_root.path()).filePath("dual-both-fail-program.mkv");
-  const QString both_failed_stitched_source = QDir(output_root.path()).filePath("dual-both-fail-stitched.mkv");
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", both_failed_program_source.toLocal8Bit());
-  qputenv(secondary_env, both_failed_stitched_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL", "1");
-  activate(start);
-  for (int i = 0; i < 600 &&
-       (window->outputStateText("archive-file") != "ERROR" || window->outputStateText(secondary_id) != "ERROR");
-       ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL");
-  const QString both_failed_program_recovery =
-      QDir(output_root.path()).filePath("dual-both-fail-program-finalization-failed-1.mkv");
-  const QString both_failed_stitched_recovery =
-      QDir(output_root.path()).filePath("dual-both-fail-stitched-finalization-failed-1.mkv");
-  QFile both_failed_program_log(both_failed_program_recovery + ".log");
-  QFile both_failed_stitched_log(both_failed_stitched_recovery + ".log");
-  const bool both_failed_program_log_opened = both_failed_program_log.open(QIODevice::ReadOnly | QIODevice::Text);
-  const bool both_failed_stitched_log_opened = both_failed_stitched_log.open(QIODevice::ReadOnly | QIODevice::Text);
-  const QString both_failed_program_log_text =
-      both_failed_program_log_opened ? QString::fromUtf8(both_failed_program_log.readAll()) : QString();
-  const QString both_failed_stitched_log_text =
-      both_failed_stitched_log_opened ? QString::fromUtf8(both_failed_stitched_log.readAll()) : QString();
-  auto* both_failed_detail = window->findChild<QLabel*>("archiveFinalizeDetail");
-  auto* both_failed_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  auto* both_failed_dialog = window->findChild<QDialog*>("archiveFinalizeDialog");
-  const bool both_failures_safe = expect(
-      window->outputStateText("archive-file") == "ERROR" && window->outputStateText(secondary_id) == "ERROR" &&
-          QFileInfo::exists(both_failed_program_recovery) && QFileInfo::exists(both_failed_stitched_recovery) &&
-          both_failed_program_log_opened && both_failed_stitched_log_opened &&
-          archive_path->text() == QString("Recovery archive: %1").arg(both_failed_program_recovery) &&
-          stitched_archive_path->text() == QString("Recovery archive: %1").arg(both_failed_stitched_recovery) &&
-          both_failed_dialog && both_failed_dialog->isVisible() && both_failed_ok_button &&
-          both_failed_ok_button->isVisible() && both_failed_detail &&
-          both_failed_detail->text().contains(both_failed_program_recovery) &&
-          both_failed_detail->text().contains(both_failed_stitched_recovery) &&
-          both_failed_program_log_text.contains(
-              QString("finalizing archive without re-encoding: %1").arg(both_failed_program_source)) &&
-          both_failed_program_log_text.contains(
-              QString("finalizing archive without re-encoding: %1").arg(both_failed_stitched_source)) &&
-          both_failed_stitched_log_text.contains(
-              QString("finalizing archive without re-encoding: %1").arg(both_failed_program_source)) &&
-          both_failed_stitched_log_text.contains(
-              QString("finalizing archive without re-encoding: %1").arg(both_failed_stitched_source)),
-      "When both archive routes fail, each retained recovery video must keep a durable link to the combined job log");
-  both_failed_program_log.close();
-  both_failed_stitched_log.close();
-  for (const QString& recovery : {both_failed_program_recovery, both_failed_stitched_recovery}) {
-    QFile::remove(recovery + ".hstream-pin");
-    QFile::remove(recovery + ".log.hstream-pin");
-    QFile::remove(recovery);
-    QFile::remove(recovery + ".log");
-  }
-  if (both_failed_ok_button && both_failed_ok_button->isVisible())
-    activate(both_failed_ok_button);
-
-  const QString blocked_directory = QDir(output_root.path()).filePath("dual-blocked");
-  const QString blocked_program_source = QDir(blocked_directory).filePath("program.mkv");
-  const QString blocked_program_manual = QDir(blocked_directory).filePath("program-manually-retained.mkv");
-  const QString resumed_stitched_source = QDir(output_root.path()).filePath("dual-blocked-stitched.mkv");
-  QDir().mkpath(blocked_directory);
-  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", blocked_program_source.toLocal8Bit());
-  qputenv(secondary_env, resumed_stitched_source.toLocal8Bit());
-  qputenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE", "tracking_output");
-  qputenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY", "1");
-  activate(start);
-  for (int i = 0; i < 600 && window->outputStateText("archive-file") != "ERROR"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  const QString blocked_owner_lock = blocked_program_source + ".hstream-owner-lock";
-  bool blocked_owner_lock_held = false;
-#ifdef Q_OS_UNIX
-  const int blocked_lock_probe =
-      ::open(QFile::encodeName(blocked_owner_lock).constData(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
-  if (blocked_lock_probe >= 0) {
-    blocked_owner_lock_held =
-        ::flock(blocked_lock_probe, LOCK_EX | LOCK_NB) != 0 && (errno == EWOULDBLOCK || errno == EAGAIN);
-    ::close(blocked_lock_probe);
-  }
-#endif
-  const QString stitched_finalize_after_block =
-      QString("finalizing archive without re-encoding: %1").arg(resumed_stitched_source);
-  const bool queue_stayed_blocked = window->outputStateText("archive-file") == "ERROR" &&
-      window->outputStateText(secondary_id) == "FINALIZING" && QFileInfo::exists(blocked_program_source) &&
-      !window->logText().contains(stitched_finalize_after_block) && blocked_owner_lock_held;
-  window->close();
-  QApplication::processEvents();
-  const bool blocked_close_deferred = window->isVisible() &&
-      window->logText().contains("window close deferred while a retained archive blocks pending finalization");
-  QFile::setPermissions(blocked_directory, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
-  const bool blocked_source_moved = QFile::rename(blocked_program_source, blocked_program_manual);
-  qunsetenv("HSTREAM_UI_TEST_FFMPEG_FAIL_ROUTE");
-  qunsetenv("HSTREAM_UI_TEST_FFMPEG_BLOCK_RECOVERY");
-  HStreamWindowTestAccess::refreshRunControls(window);
-  for (int i = 0; i < 600 && window->outputStateText(secondary_id) != "SAVED"; ++i) {
-    QApplication::processEvents();
-    QTest::qWait(10);
-  }
-  const QString resumed_stitched_completed = stitched_archive_path->text().section("Completed archive: ", 1).trimmed();
-  const bool blocked_recovery_resumed = expect(
-      queue_stayed_blocked && blocked_close_deferred && blocked_source_moved &&
-          window->outputStateText("archive-file") == "ERROR" && window->outputStateText(secondary_id) == "SAVED" &&
-          window->logText().contains(stitched_finalize_after_block) && QFileInfo::exists(blocked_program_manual) &&
-          !QFileInfo::exists(resumed_stitched_source),
-      QString(
-          "A blocked first finalization must keep its ownership lock and halt the second archive until the retained "
-          "file is moved to safety, then resume the queue (queue_blocked=%1 close_deferred=%2 moved=%3 program=%4 "
-          "stitched=%5 manual=%6 source=%7 log=%8)")
-          .arg(queue_stayed_blocked)
-          .arg(blocked_close_deferred)
-          .arg(blocked_source_moved)
-          .arg(window->outputStateText("archive-file"), window->outputStateText(secondary_id))
-          .arg(QFileInfo::exists(blocked_program_manual))
-          .arg(QFileInfo::exists(resumed_stitched_source))
-          .arg(window->logText().contains(stitched_finalize_after_block))
-          .toStdString());
-  QFile::remove(resumed_stitched_completed);
-  QFile::remove(blocked_program_source + ".hstream-pin");
-  QFile::remove(blocked_program_source + ".log.hstream-pin");
-  QFile::remove(blocked_program_source + ".log");
-  QFile::remove(blocked_program_manual);
-  QFile::remove(blocked_owner_lock);
-  auto* blocked_ok_button = window->findChild<QPushButton*>("archiveFinalizeOkButton");
-  if (blocked_ok_button && blocked_ok_button->isVisible())
-    activate(blocked_ok_button);
   archive->setChecked(false);
-  stitched_archive->setChecked(false);
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH");
-  qunsetenv(secondary_env);
-  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
-  qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
   if (original_output_root.isEmpty())
     qunsetenv("HM_OUTPUT_WORK_DIR");
   else
     qputenv("HM_OUTPUT_WORK_DIR", original_output_root);
-  return ok && finalization_scratch_released && program_telemetry_failure_visible && dual_telemetry_failure_visible &&
-      first_failure_safe && second_failure_safe && both_failures_safe && blocked_recovery_resumed;
+  // Current publication, simultaneous outputs, retries and cleanup ownership are
+  // exercised by ManagedPublicationTest and PublicationTest with real receipts.
+  return relative_override_resolved && calibration_archive_routed && dual_archive_routed && path_refreshes_with_game &&
+      path_visible_before_start && path_prepared && nonlocal_seek_blocked && interrupted_archive_preserved &&
+      missing_new_output_reported && job_log_persisted && incomplete_exit_log_guarded && same_filesystem_log_rollback &&
+      cross_filesystem_log_persisted && unsupported_runner_retained;
+}
+
+bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false) {
+  auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
+  auto* secondary =
+      require_child<QCheckBox>(window, with_4k ? "outputToggle_archive-program-4k" : "outputToggle_archive-stitched");
+  auto* telemetry = require_child<QCheckBox>(window, "drivegptCsvCheck");
+  auto* start = require_child<QPushButton>(window, "startPipelineButton");
+  auto* mode = require_child<QComboBox>(window, "runModeCombo");
+  if (!archive || !secondary || !telemetry || !start || !mode)
+    return false;
+  QTemporaryDir output;
+  const QByteArray previous = qgetenv("HM_OUTPUT_WORK_DIR");
+  const QString primary_path = output.filePath("program.mkv");
+  const QString secondary_path = output.filePath("secondary.mkv");
+  const char* secondary_env =
+      with_4k ? "HSTREAM_UI_TEST_PROGRAM_4K_RESOLVED_PATH" : "HSTREAM_UI_TEST_STITCHED_ARCHIVE_RESOLVED_PATH";
+  qputenv("HM_OUTPUT_WORK_DIR", output.path().toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", primary_path.toLocal8Bit());
+  qputenv(secondary_env, secondary_path.toLocal8Bit());
+  qputenv("HSTREAM_UI_TEST_ARCHIVE_WRITE", "1");
+  qputenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS", "0");
+  mode->setCurrentIndex(mode->findData("program"));
+  archive->setChecked(true);
+  secondary->setChecked(true);
+  telemetry->setChecked(false);
+  const auto before = window->logText().size();
+  activate(start);
+  for (int i = 0; i < 500 && !window->logText().mid(before).contains("managed completion receipt"); ++i) {
+    QApplication::processEvents();
+    QTest::qWait(10);
+  }
+  const bool retained = expect(
+      window->outputStateText("archive-file") == "ERROR" &&
+          window->outputStateText(with_4k ? "archive-program-4k" : "archive-stitched") == "ERROR" &&
+          QFileInfo::exists(primary_path) && QFileInfo::exists(secondary_path) &&
+          window->logText().mid(before).contains("managed completion receipt"),
+      "All unregistered outputs remain retained when an older runner omits the shared completion receipt");
+  if (auto* dismiss = window->findChild<QPushButton*>("archiveFinalizeOkButton"))
+    activate(dismiss);
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_WRITE");
+  qunsetenv("HSTREAM_UI_TEST_EXIT_AFTER_PROGRESS");
+  qunsetenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH");
+  qunsetenv(secondary_env);
+  if (previous.isEmpty())
+    qunsetenv("HM_OUTPUT_WORK_DIR");
+  else
+    qputenv("HM_OUTPUT_WORK_DIR", previous);
+  archive->setChecked(false);
+  secondary->setChecked(false);
+  return retained;
 }
 
 bool test_leveled_crop_rotation(HStreamWindow* window) {
@@ -10948,7 +9633,7 @@ bool test_leveled_crop_rotation(HStreamWindow* window) {
   const QString original_game = game->text();
   game->setText("ui-leveled-crop-rotation");
   activate(create);
-  const fs::path path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path path = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   auto load = [&](const char* rotation, const char* angles, const char* mapping = "nona") {
     YAML::Node config = YAML::Load("stitching: {rink_config: vallco, run_autooptimizer: true}");
     config["stitching"]["mapping_backend"] = mapping;
@@ -11089,14 +9774,16 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     empty["stitching"]["input_lens"] = YAML::Load(inherited);
     empty["stitching"]["camera_fov"] = YAML::Load("{horizontal_fov: null}");
     const auto selection = HStreamWindowTestAccess::cameraSelection(window, empty);
-    if (!expect(selection.ok() && selection->configuration == "auto",
-                "Inherit-only game optics must retain Auto in the main controls"))
+    if (!expect(
+            selection.ok() && selection->configuration == "auto",
+            "Inherit-only game optics must retain Auto in the main controls"))
       return false;
   }
   const auto legacy_camera = HStreamWindowTestAccess::cameraSelection(
       window, YAML::Load("stitching: {camera_config: null, camera_fov: {horizontal_fov: 123}}"));
-  if (!expect(legacy_camera.ok() && legacy_camera->configuration == "manual" && legacy_camera->horizontal_fov == 123,
-              "A null camera selector must preserve explicit legacy optics in main controls"))
+  if (!expect(
+          legacy_camera.ok() && legacy_camera->configuration == "manual" && legacy_camera->horizontal_fov == 123,
+          "A null camera selector must preserve explicit legacy optics in main controls"))
     return false;
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
   QApplication::processEvents();
@@ -11123,7 +9810,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(save->isEnabled(), "Editing General Panini parameters must dirty the game preset"))
     return false;
   activate(save);
-  const fs::path config_path = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   const YAML::Node config = YAML::LoadFile(config_path.string());
   const YAML::Node parameters = config["stitching"]["projection_parameters"]["general-panini"];
   const YAML::Node camera_fov = config["stitching"]["camera_fov"];
@@ -11182,26 +9869,28 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return input_lens_saved && input_lens_reloaded && camera_override_reloaded;
 
   camera_configuration->setCurrentIndex(camera_configuration->findData("gopro-hero-11"));
-  if (!expect(input_projection->currentData() == "rectilinear" && input_optimization->currentData() == "auto" &&
-                  input_b->value() == 0 && input_center_y->value() == 0,
-              "Selecting a camera must replace previous game optics with the profile defaults"))
+  if (!expect(
+          input_projection->currentData() == "rectilinear" && input_optimization->currentData() == "auto" &&
+              input_b->value() == 0 && input_center_y->value() == 0,
+          "Selecting a camera must replace previous game optics with the profile defaults"))
     return false;
 
   camera_configuration->setCurrentIndex(camera_configuration->findData("auto"));
   auto* metadata_status = require_child<QLabel>(window, "inputLensMetadataStatus");
-  if (!expect(metadata_status && !metadata_status->text().isEmpty() && input_b->isReadOnly() &&
-                  camera_horizontal_fov->isReadOnly() && !input_projection->isEnabled(),
-              "Auto must show its metadata result and protect imported optics"))
+  if (!expect(
+          metadata_status && !metadata_status->text().isEmpty() && input_b->isReadOnly() &&
+              camera_horizontal_fov->isReadOnly() && !input_projection->isEnabled(),
+          "Auto must show its metadata result and protect imported optics"))
     return false;
   YAML::Node auto_defaults = YAML::Clone(config);
   auto_defaults["stitching"]["camera_configs"]["auto"]["horizontal_fov"] = 117.25;
   std::ofstream(config_path) << YAML::Dump(auto_defaults) << '\n';
   camera_configuration->setProperty("autoInputLensFrozen", true);
   activate(reset);
-  if (!expect(camera_configuration->currentData() == "auto" && camera_horizontal_fov->value() == 117.25 &&
-                  !camera_configuration->property("autoInputLensFrozen").toBool() &&
-                  !metadata_status->text().isEmpty(),
-              "Reset must resolve Auto again and clear a promoted snapshot instead of writing static defaults"))
+  if (!expect(
+          camera_configuration->currentData() == "auto" && camera_horizontal_fov->value() == 117.25 &&
+              !camera_configuration->property("autoInputLensFrozen").toBool() && !metadata_status->text().isEmpty(),
+          "Reset must resolve Auto again and clear a promoted snapshot instead of writing static defaults"))
     return false;
   if (!HStreamWindowTestAccess::savePreset(window))
     return false;
@@ -11222,14 +9911,16 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     if (!expect(save->isEnabled(), "Unfreezing identical Auto optics must enable Save Preset"))
       return false;
     const bool published = action == 1 ? HStreamWindowTestAccess::prepareStitchingRun(window)
-                                : HStreamWindowTestAccess::savePreset(window);
+                                       : HStreamWindowTestAccess::savePreset(window);
     const auto released = YAML::LoadFile(config_path.string());
-    if (!expect(published && !released["stitching"]["auto_input_lens_frozen"].as<bool>(),
-                "Save and Play must both persist the released Auto policy"))
+    if (!expect(
+            published && !released["stitching"]["auto_input_lens_frozen"].as<bool>(),
+            "Save and Play must both persist the released Auto policy"))
       return false;
     HStreamWindowTestAccess::reloadSavedControls(window);
-    if (!expect(!camera_configuration->property("autoInputLensFrozen").toBool(),
-                "Reopening must retain Auto metadata refresh after releasing a snapshot"))
+    if (!expect(
+            !camera_configuration->property("autoInputLensFrozen").toBool(),
+            "Reopening must retain Auto metadata refresh after releasing a snapshot"))
       return false;
   }
   camera_configuration->setCurrentIndex(camera_configuration->findData("manual"));
@@ -11373,7 +10064,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   if (!expect(rink_pitch->value() == -23.8 && rink_roll->value() == 4.3, "Changing rink preserves game override"))
     return false;
   activate(rink_default);
-  if (!expect(rink_pitch->value() == -15 && rink_roll->value() == 0, "Reset to rink defaults removes the game override"))
+  if (!expect(
+          rink_pitch->value() == -15 && rink_roll->value() == 0, "Reset to rink defaults removes the game override"))
     return false;
   activate(save);
   rink_saved = YAML::LoadFile(config_path.string());
@@ -11435,13 +10127,15 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       });
   if (!expect(crop_dialog_seen && !save->isEnabled(), "Cancel in the crop editor must preserve the loaded preset"))
     return false;
-  with_projection_crop_dialog([&]() { activate(crop_button); }, [](ProjectionCropDialog* dialog) {
-    dialog->findChild<QComboBox*>("projectionCropMode")->setCurrentIndex(2);
-    dialog->findChild<QCheckBox*>("projectionCropKeepWidth")->setChecked(true);
-    dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(30);
-    dialog->findChild<QDoubleSpinBox*>("projectionCropBottom")->setValue(10);
-    dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
-  });
+  with_projection_crop_dialog(
+      [&]() { activate(crop_button); },
+      [](ProjectionCropDialog* dialog) {
+        dialog->findChild<QComboBox*>("projectionCropMode")->setCurrentIndex(2);
+        dialog->findChild<QCheckBox*>("projectionCropKeepWidth")->setChecked(true);
+        dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(30);
+        dialog->findChild<QDoubleSpinBox*>("projectionCropBottom")->setValue(10);
+        dialog->findChild<QPushButton*>("acceptProjectionCropButton")->click();
+      });
   if (!expect(save->isEnabled(), "A manual crop selection marks the preset dirty"))
     return false;
   activate(save);
@@ -11523,11 +10217,12 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       "\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\ninput-lens=" + crop_default_lens +
       "\ncontrol-point-filtering=1,1\n";
   if (!expect(
-          crop_tools.isValid() && crop_image.save(crop_game.filePath("left.png")) &&
-              crop_image.save(crop_game.filePath("right.png")) &&
-              write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance) &&
+          crop_tools.isValid() && QDir().mkpath(crop_game.filePath("_hockeymon")) &&
+              crop_image.save(crop_game.filePath("_hockeymon/left.png")) &&
+              crop_image.save(crop_game.filePath("_hockeymon/right.png")) &&
+              write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), crop_provenance) &&
               write_crop_fixture(
-                  crop_game.filePath("autooptimiser_out.pto"),
+                  crop_game.filePath("_hockeymon/autooptimiser_out.pto"),
                   "p f1 w800 h400 v180 S0,800,120,360 n\"PNG\"\n"
                   "i w800 h400 f0 v90 y-30 p0 r0 n\"left.png\"\n"
                   "i w800 h400 f0 v90 y30 p0 r0 n\"right.png\"\n") &&
@@ -11539,9 +10234,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               write_crop_fixture(crop_tools.filePath("nona"), "#!/bin/sh\ncp left.png full.png\n", true),
           "Crop preview fixture must be available"))
     return false;
-  if (!QFile::copy(crop_game.filePath("autooptimiser_out.pto"), crop_game.filePath("hm_project.pto")) ||
-      !crop_image.save(crop_game.filePath("seam_file.png")) ||
-      !write_tiff_fixture(fs::path(crop_game.path().toStdString()) / "panorama.tif", 800, 240))
+  if (!QFile::copy(
+          crop_game.filePath("_hockeymon/autooptimiser_out.pto"), crop_game.filePath("_hockeymon/hm_project.pto")) ||
+      !crop_image.save(crop_game.filePath("_hockeymon/seam_file.png")) ||
+      !write_tiff_fixture(fs::path(crop_game.path().toStdString()) / "_hockeymon/panorama.tif", 800, 240))
     return expect(false, "Completed crop source must contain its original project, seam and panorama");
   for (const char* name :
        {"mapping_0000.tif",
@@ -11550,7 +10246,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
         "mapping_0001.tif",
         "mapping_0001_x.tif",
         "mapping_0001_y.tif"})
-    if (!write_tiff_fixture(fs::path(crop_game.path().toStdString()) / name, 800, 240))
+    if (!write_tiff_fixture(fs::path(crop_game.path().toStdString()) / "_hockeymon" / name, 800, 240))
       return expect(false, "Completed crop source must contain its published mapping TIFFs");
   const QByteArray crop_original_path = qgetenv("PATH");
   qputenv("PATH", crop_tools.path().toUtf8() + ":/usr/bin:/bin");
@@ -11595,7 +10291,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
        {QByteArray(crop_provenance).replace(crop_default_lens, "{projection: full-frame-fisheye, optimization: fixed}"),
         QByteArray(crop_provenance).replace("projection=cylindrical", "projection=general-panini"),
         QByteArray(crop_provenance).replace("camera-horizontal-fov=126.5", "camera-horizontal-fov=108")}) {
-    if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), stale_provenance))
+    if (!write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), stale_provenance))
       return false;
     bool deferred_review = false;
     const bool stale_dialog_opened = with_projection_crop_dialog(
@@ -11608,7 +10304,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       return false;
     }
   }
-  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
+  if (!write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), crop_provenance))
     return false;
   // Version 7 predates explicit rotation/crop fields, but the runner can reuse
   // its default zero-rotation/full-crop view. It still needs startup review.
@@ -11622,7 +10318,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   legacy_config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
   legacy_config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0, 1, 0, 1]");
   std::ofstream(config_path) << YAML::Dump(legacy_config) << '\n';
-  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), legacy_provenance))
+  if (!write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), legacy_provenance))
     return false;
   activate(create);
   bool legacy_ready = true;
@@ -11645,13 +10341,13 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   }
   std::ofstream(config_path) << YAML::Dump(crop_preview_config) << '\n';
-  if (!write_crop_fixture(crop_game.filePath("stitching_canvas_provenance"), crop_provenance))
+  if (!write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), crop_provenance))
     return false;
   activate(create);
   auto* play = require_child<QPushButton>(window, "startPipelineButton");
   auto* progress = require_child<QProgressBar>(window, "playbackProgress");
-  const bool cancelled_play = play && progress && with_projection_crop_dialog(
-      [&]() { activate(play); }, [](ProjectionCropDialog*) {});
+  const bool cancelled_play =
+      play && progress && with_projection_crop_dialog([&]() { activate(play); }, [](ProjectionCropDialog*) {});
   if (!expect(
           cancelled_play && progress->property("playbackState").toString() == "stopped" && progress->maximum() > 0,
           "Cancelling crop review from Play must stop startup without displaying a playback error")) {
@@ -11661,8 +10357,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   projection->setCurrentIndex(projection->findData("general-panini"));
   compression->setValue(inactive_compression);
   projection->setCurrentIndex(projection->findData("cylindrical"));
-  const bool crop_confirmed =
-      confirm_projection_crop(crop_button, [](ProjectionCropDialog*) {});
+  const bool crop_confirmed = confirm_projection_crop(crop_button, [](ProjectionCropDialog*) {});
   if (!expect(
           crop_confirmed && save->isEnabled() && HStreamWindowTestAccess::hasPendingCalibrationView(window),
           "Confirming an unchanged crop for the first time must remember that the geometry was reviewed")) {
@@ -11687,10 +10382,9 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     return false;
   }
   for (double top_trim : {35.0, 30.0}) {
-    const bool trim_confirmed =
-        confirm_projection_crop(crop_button, [top_trim](ProjectionCropDialog* dialog) {
-          dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(top_trim);
-        });
+    const bool trim_confirmed = confirm_projection_crop(crop_button, [top_trim](ProjectionCropDialog* dialog) {
+      dialog->findChild<QDoubleSpinBox*>("projectionCropTop")->setValue(top_trim);
+    });
     const bool changed_crop = top_trim == 35.0;
     if (!expect(
             trim_confirmed && save->isEnabled() == changed_crop &&
@@ -11751,10 +10445,11 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   for (int i = 0; i < 200 && window->pipelineStateText() != "STOPPED"; ++i)
     QTest::qWait(10);
   const auto cancelled_reframe = YAML::LoadFile(config_path.string());
-  auto preserved_artifacts = hm::stitching::lock_canvas_constraint_artifacts(config_path.parent_path());
+  auto preserved_artifacts = hm::stitching::lock_canvas_constraint_artifacts(config_path.parent_path().parent_path());
   if (!preserved_artifacts.ok())
     return expect(false, "Could not inspect the cancelled reframe source generation");
-  const auto preserved_generation = hm::stitching::stitch_artifact_generation_id_locked(config_path.parent_path());
+  const auto preserved_generation =
+      hm::stitching::stitch_artifact_generation_id_locked(config_path.parent_path().parent_path());
   preserved_artifacts->reset();
   if (!reframe_launched ||
       !expect(
@@ -11789,9 +10484,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
                     cancelled_reframe["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() &&
                 !invalidated["stitching"]["calibration_frame_selection"] &&
                 !invalidated["stitching"]["calibration_frame_inputs_fingerprint"] &&
-                !invalidated["stitching"]["manual_control_points"] &&
-                !invalidated["rink"]["mask_frame"]["input_id"] &&
-                fs::exists(config_path.parent_path() / "rink-mask-input" / "historical" / "manifest.yaml"),
+                !invalidated["stitching"]["manual_control_points"] && !invalidated["rink"]["mask_frame"]["input_id"] &&
+                fs::exists(
+                    config_path.parent_path().parent_path() / "_hockeymon/rink-mask-input" / "historical" /
+                    "manifest.yaml"),
             "Changing a video role must atomically clear the pending view and invalidate its input generation"))
       return false;
     automatic_crop_dialog->setChecked(!automatic_crop_dialog->isChecked());
@@ -11819,21 +10515,23 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   };
   {
     auto stale_inputs = YAML::LoadFile(config_path.string());
-    const auto selection = test_selected_frame_plan(
-        stale_inputs["hstream_ui"]["stitching_calibration"]["frame_count"].as<size_t>());
+    const auto selection =
+        test_selected_frame_plan(stale_inputs["hstream_ui"]["stitching_calibration"]["frame_count"].as<size_t>());
     stale_inputs["stitching"]["calibration_frame_selection"] = selection;
     stale_inputs["stitching"]["calibration_frame_inputs_fingerprint"] = selection["fingerprint"].as<std::string>();
     stale_inputs["stitching"]["manual_control_points"] = std::string(64, 'a');
     stale_inputs["rink"]["mask_frame"]["input_id"] = std::string(64, 'b');
     std::ofstream(config_path) << YAML::Dump(stale_inputs) << '\n';
-    fs::create_directories(config_path.parent_path() / "rink-mask-input" / "historical");
-    std::ofstream(config_path.parent_path() / "rink-mask-input" / "historical" / "manifest.yaml") << "immutable evidence\n";
+    fs::create_directories(config_path.parent_path().parent_path() / "_hockeymon/rink-mask-input" / "historical");
+    std::ofstream(
+        config_path.parent_path().parent_path() / "_hockeymon/rink-mask-input" / "historical" / "manifest.yaml")
+        << "immutable evidence\n";
   }
   activate(left_role);
   video_path->setText(reframe_video);
   activate(add_video);
   if (!expect(
-          list_contains(video_list, "Left  hstream-ui/left/GX010007.MP4"),
+          list_contains(video_list, "Left  _hockeymon/hstream-ui/left/GX010007.MP4"),
           "Adding a Left video must exercise the source-role transaction") ||
       !verify_input_recalibration())
     return false;
@@ -11910,12 +10608,12 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     QTest::qWait(10);
   if (!duplicate_rebound ||
       !expect(
-          select_list_item(video_list, "Left  hstream-ui/left/GX010007.MP4"),
+          select_list_item(video_list, "Left  _hockeymon/hstream-ui/left/GX010007.MP4"),
           "The removal fixture must retain its imported Left role"))
     return false;
   activate(remove_video);
   if (!expect(
-          !list_contains(video_list, "Left  hstream-ui/left/GX010007.MP4"),
+          !list_contains(video_list, "Left  _hockeymon/hstream-ui/left/GX010007.MP4"),
           "Removing the Left video must exercise the source-role transaction") ||
       !verify_input_recalibration())
     return false;
@@ -11924,17 +10622,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   // clean stale runtime playlists and offsets; that mutation also ends reframe.
   auto orphan_import = YAML::Clone(duplicate_play);
   orphan_import["hstream_ui"]["video_roles"].remove("right");
-  orphan_import["hstream_ui"]["copied_imports"].push_back("hstream-ui/right/GX010008.MP4");
+  orphan_import["hstream_ui"]["copied_imports"].push_back("_hockeymon/hstream-ui/right/GX010008.MP4");
   std::ofstream(config_path) << YAML::Dump(orphan_import) << '\n';
   activate(create);
   if (!expect(
-          select_list_item(video_list, "Right  hstream-ui/right/GX010008.MP4"),
+          select_list_item(video_list, "Right  _hockeymon/hstream-ui/right/GX010008.MP4"),
           "An orphan copied import must remain available for source cleanup"))
     return false;
   activate(remove_video);
   const auto orphan_removed = YAML::LoadFile(config_path.string());
   if (!expect(
-          !fs::exists(config_path.parent_path() / "hstream-ui/right/GX010008.MP4") &&
+          !fs::exists(config_path.parent_path().parent_path() / "_hockeymon/hstream-ui/right/GX010008.MP4") &&
               !orphan_removed["game"]["videos"]["left"] && !orphan_removed["game"]["videos"]["right"] &&
               !orphan_removed["game"]["stitching"]["frame_offsets"] && !orphan_removed["stitching"]["frame_offsets"],
           "Removing an orphan copied import must retain runtime-playlist and synchronization cleanup") ||
@@ -12332,16 +11030,16 @@ bool test_rink_leveling_save_retry(HStreamWindow* window) {
   pitch->setValue(-30);
   activate(save);
   const fs::path game_dir(window->gameDirectoryText().toStdString());
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = game_dir / "_hockeymon/config.yaml";
   // Geometry is covered by the dialog integration test. These snapshot files
   // exercise the same content revision that an accepted dialog passes to Save.
-  std::ofstream(game_dir / "autooptimiser_out.pto") << "p f2 w3600 h1800 v360\n";
-  std::ofstream(game_dir / "stitching_canvas_provenance") << "{}\n";
+  std::ofstream(game_dir / "_hockeymon/autooptimiser_out.pto") << "p f2 w3600 h1800 v360\n";
+  std::ofstream(game_dir / "_hockeymon/stitching_canvas_provenance") << "{}\n";
   QImage image(32, 32, QImage::Format_RGB32);
   image.fill(Qt::white);
   if (!expect(
-          image.save(QString::fromStdString((game_dir / "left.png").string())) &&
-              image.save(QString::fromStdString((game_dir / "right.png").string())),
+          image.save(QString::fromStdString((game_dir / "_hockeymon/left.png").string())) &&
+              image.save(QString::fromStdString((game_dir / "_hockeymon/right.png").string())),
           "Leveling retry fixture must contain both camera snapshots"))
     return false;
   const QByteArray selected_revision = RinkLevelingDialog::sourceRevision(window->gameDirectoryText());
@@ -12384,8 +11082,8 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
   const QString original_game_id = game_id->text();
   game_id->setText("ui-clean-stitching-game");
   activate(create);
-  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
-  const fs::path game_dir = config.parent_path();
+  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
+  const fs::path game_dir = config.parent_path().parent_path();
   {
     YAML::Node clean_fixture(YAML::NodeType::Map);
     clean_fixture["stitching"]["post_stitch_rotate_degrees"] = 18.0;
@@ -12444,7 +11142,7 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
         "left.png",
         "right.png",
         "rink_mask_0.png"}) {
-    std::ofstream artifact(game_dir / name);
+    std::ofstream artifact(game_dir / "_hockeymon" / name);
     artifact << "manual clean fixture\n";
   }
   fs::create_directories(game_dir / "cam1");
@@ -12465,9 +11163,9 @@ bool test_clean_stitching_calibration(HStreamWindow* window) {
           "Clean Stitching must retain unsaved sampling choices for the next Play"))
     return false;
   if (!expect(
-          !fs::exists(game_dir / "hm_project.pto") && !fs::exists(game_dir / "panorama.tif") &&
-              !fs::exists(game_dir / "seam_file.png") && !fs::exists(game_dir / "left.png") &&
-              !fs::exists(game_dir / "right.png") && !fs::exists(game_dir / "rink_mask_0.png"),
+          !fs::exists(game_dir / "_hockeymon/hm_project.pto") && !fs::exists(game_dir / "_hockeymon/panorama.tif") &&
+              !fs::exists(game_dir / "_hockeymon/seam_file.png") && !fs::exists(game_dir / "_hockeymon/left.png") &&
+              !fs::exists(game_dir / "_hockeymon/right.png") && !fs::exists(game_dir / "_hockeymon/rink_mask_0.png"),
           "Clean Stitching should remove full stitching calibration artifacts") ||
       !expect(
           !lookup_yaml_path(cleaned_stitching, {"stitching", "frame_offsets"}, nullptr) &&
@@ -12831,7 +11529,8 @@ bool test_camera_controls(HStreamWindow* window) {
           "Feature changes should update whole dependent rows without discarding their values"))
     return false;
   activate(save);
-  const YAML::Node job_config = YAML::LoadFile(QDir(window->gameDirectoryText()).filePath("config.yaml").toStdString());
+  const YAML::Node job_config =
+      YAML::LoadFile(QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml").toStdString());
   const YAML::Node job_arguments = job_config["hstream_ui"]["job"]["arguments"];
   if (!expect(job_arguments && job_arguments.IsSequence(), "Save Preset must persist the standalone job recipe"))
     return false;
@@ -12928,7 +11627,7 @@ bool test_camera_controls(HStreamWindow* window) {
           "The default launch should defer source-depth and tone-stage selection to the CLI")) {
     return false;
   }
-  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "config.yaml";
+  const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   {
     YAML::Node capped(YAML::NodeType::Map);
     capped["stitching"]["max_output_width"] = 4096;
@@ -12949,13 +11648,15 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(save->isEnabled(), "Changing an unrelated stitching control should enable Save Preset")) {
     return false;
   }
-  auto active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+  auto active_calibration_lock =
+      hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path().parent_path());
   // Loading the game also starts background map validation. Let that reader
   // finish before this test deliberately holds the artifact lock across Save.
   const bool lock_ready = QTest::qWaitFor(
       [&] {
         if (active_calibration_lock.ok() && !*active_calibration_lock)
-          active_calibration_lock = hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path());
+          active_calibration_lock =
+              hm::stitching::try_lock_canvas_constraint_artifacts(config.parent_path().parent_path());
         return !active_calibration_lock.ok() || bool(*active_calibration_lock);
       },
       2000);
@@ -13498,8 +12199,9 @@ bool test_camera_controls(HStreamWindow* window) {
   activate(create);
 
   {
-    const fs::path rotation_only_rink_mask = fs::path(window->gameDirectoryText().toStdString()) / "rink_mask_0.png";
-    const fs::path rotation_only_snapshot = fs::path(window->gameDirectoryText().toStdString()) / "s.png";
+    const fs::path rotation_only_rink_mask =
+        fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/rink_mask_0.png";
+    const fs::path rotation_only_snapshot = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/s.png";
     YAML::Node rotation_only = YAML::LoadFile(config.string());
     rotation_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
     rotation_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
@@ -13641,7 +12343,7 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
 
-  const fs::path rink_mask = fs::path(window->gameDirectoryText().toStdString()) / "rink_mask_0.png";
+  const fs::path rink_mask = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/rink_mask_0.png";
   {
     YAML::Node seeded(YAML::NodeType::Map);
     YAML::Node polygon(YAML::NodeType::Sequence);
@@ -13659,7 +12361,7 @@ bool test_camera_controls(HStreamWindow* window) {
     out << "stale-mask";
   }
 
-  const fs::path runtime_dir_collision = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
+  const fs::path runtime_dir_collision = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/hstream-ui";
   {
     std::ofstream out(runtime_dir_collision);
     out << "directory-collision";
@@ -13695,7 +12397,7 @@ bool test_camera_controls(HStreamWindow* window) {
           "A saved tracker preset should reference its immutable sidecar")) {
     return false;
   }
-  const fs::path committed_sidecar = config.parent_path() / committed_sidecar_node.as<std::string>();
+  const fs::path committed_sidecar = config.parent_path().parent_path() / committed_sidecar_node.as<std::string>();
   std::ifstream committed_config_input(config, std::ios::binary);
   const std::string committed_config(
       (std::istreambuf_iterator<char>(committed_config_input)), std::istreambuf_iterator<char>());
@@ -13718,7 +12420,8 @@ bool test_camera_controls(HStreamWindow* window) {
               {"pipeline", "ds-playtracker", "config-file"},
               &after_failed_retirement_sidecar) &&
               after_failed_retirement_sidecar.IsScalar() &&
-              config.parent_path() / after_failed_retirement_sidecar.as<std::string>() == committed_sidecar,
+              config.parent_path().parent_path() / after_failed_retirement_sidecar.as<std::string>() ==
+                  committed_sidecar,
           "A failed retirement marker should leave the old sidecar active") ||
       !expect(
           sidecars_after_failed_retirement.size() == 1,
@@ -13756,7 +12459,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool has_visible_sidecar = lookup_yaml_path(
       visible_after_post_commit_error, {"pipeline", "ds-playtracker", "config-file"}, &visible_sidecar_node);
   const fs::path visible_sidecar = has_visible_sidecar && visible_sidecar_node.IsScalar()
-      ? config.parent_path() / visible_sidecar_node.as<std::string>()
+      ? config.parent_path().parent_path() / visible_sidecar_node.as<std::string>()
       : fs::path();
   if (!expect(save->isEnabled(), "A post-commit durability error should keep Save Preset enabled") ||
       !expect(
@@ -13926,7 +12629,7 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool has_saved_playtracker_config_path =
       lookup_yaml_path(saved, {"pipeline", "ds-playtracker", "config-file"}, &saved_playtracker_config_path);
   const fs::path playtracker_config_path = has_saved_playtracker_config_path
-      ? config.parent_path() / saved_playtracker_config_path.as<std::string>()
+      ? config.parent_path().parent_path() / saved_playtracker_config_path.as<std::string>()
       : fs::path();
   YAML::Node playtracker_config = has_saved_playtracker_config_path && fs::exists(playtracker_config_path)
       ? YAML::LoadFile(playtracker_config_path.string())
@@ -14045,10 +12748,11 @@ bool test_camera_controls(HStreamWindow* window) {
         "{auto_fov: false, horizontal_fov: 90, auto_canvas: true, auto_crop: false, "
         "crop: [0, 1, 0, 1], rotation_degrees: [0, 0, 0]}");
     YAML::Node polygon(YAML::NodeType::Sequence);
-    for (const std::array<int, 2>& point : {std::array<int, 2>{100, 100},
-                                             std::array<int, 2>{300, 100},
-                                             std::array<int, 2>{300, 200},
-                                             std::array<int, 2>{100, 200}}) {
+    for (const std::array<int, 2>& point :
+         {std::array<int, 2>{100, 100},
+          std::array<int, 2>{300, 100},
+          std::array<int, 2>{300, 200},
+          std::array<int, 2>{100, 200}}) {
       YAML::Node pair(YAML::NodeType::Sequence);
       pair.push_back(point[0]);
       pair.push_back(point[1]);
@@ -14074,7 +12778,8 @@ bool test_camera_controls(HStreamWindow* window) {
     const YAML::Node saved_scoreboard_polygon = after_crop_save["rink"]["scoreboard"]["perspective_polygon"];
     if (!expect(
             saved_scoreboard_polygon && saved_scoreboard_polygon.IsNull() &&
-                !lookup_yaml_path(after_crop_save, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}, nullptr) &&
+                !lookup_yaml_path(
+                    after_crop_save, {"rink", "stitched_output_pending_completed_scoreboard_polygon"}, nullptr) &&
                 !lookup_yaml_path(
                     after_crop_save, {"pipeline", "hmplaycropper", "scoreboard-perspective-polygon"}, nullptr),
             "Saving a changed projection crop should shadow and invalidate scoreboard perspective")) {
@@ -14220,16 +12925,17 @@ bool test_camera_controls(HStreamWindow* window) {
   }
 
   YAML::Node relative_runtime_config = YAML::LoadFile(config.string());
-  const fs::path legacy_runtime_dir = config.parent_path() / ".hstream-ui";
+  const fs::path legacy_runtime_dir = config.parent_path().parent_path() / "_hockeymon/hstream-ui";
   fs::create_directories(legacy_runtime_dir);
   const fs::path configured_runtime_config(
       relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"].as<std::string>());
   fs::copy_file(
       configured_runtime_config.is_absolute() ? configured_runtime_config
-                                              : config.parent_path() / configured_runtime_config,
+                                              : config.parent_path().parent_path() / configured_runtime_config,
       legacy_runtime_dir / "play_tracker_config.yaml",
       fs::copy_options::overwrite_existing);
-  relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"] = ".hstream-ui/play_tracker_config.yaml";
+  relative_runtime_config["pipeline"]["ds-playtracker"]["config-file"] =
+      "_hockeymon/hstream-ui/play_tracker_config.yaml";
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 35;
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift-black-point"] = false;
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["exposure"] = 0.6;
@@ -14527,7 +13233,7 @@ bool test_camera_controls(HStreamWindow* window) {
     QTest::qWait(10);
   }
   auto newest_live_playtracker_config = [&]() {
-    const fs::path dir = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
+    const fs::path dir = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/hstream-ui";
     fs::path newest;
     std::uint64_t newest_generation = 0;
     for (const auto& entry : fs::directory_iterator(dir)) {
@@ -14806,7 +13512,7 @@ bool test_camera_controls(HStreamWindow* window) {
                 "camera control Max_Speed_X_x10=490 apply=failed reason=acknowledgement-timeout");
       },
       2000);
-  const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / "hstream-ui";
+  const fs::path runtime_dir = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/hstream-ui";
   auto runtime_snapshot_count = [&]() {
     return static_cast<int>(std::count_if(
         fs::directory_iterator(runtime_dir), fs::directory_iterator(), [](const fs::directory_entry& entry) {
@@ -14820,14 +13526,14 @@ bool test_camera_controls(HStreamWindow* window) {
       expect(
           both_controls_timed_out,
           "A stalled live-control backend should time out both the in-flight and coalesced latest values");
-  const auto timeout_hugin_generation = write_live_hugin_generation_fixture(config.parent_path());
+  const auto timeout_hugin_generation = write_live_hugin_generation_fixture(config.parent_path().parent_path());
   if (!timeout_hugin_generation.ok()) {
     qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
     qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
     return false;
   }
   {
-    auto timeout_fixture_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    auto timeout_fixture_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
     if (!timeout_fixture_lock.ok()) {
       qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
       qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
@@ -14837,7 +13543,8 @@ bool test_camera_controls(HStreamWindow* window) {
     timeout_fixture["rink"]["stitched_output_generation"] =
         "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(timeout_hugin_generation->size()) + "\n" +
         *timeout_hugin_generation + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
-    const auto published = hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(timeout_fixture) + "\n");
+    const auto published =
+        hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(timeout_fixture) + "\n");
     if (!published.ok()) {
       qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
       qunsetenv("HSTREAM_UI_TEST_STALL_RUNTIME_CONTROL");
@@ -14877,7 +13584,8 @@ bool test_camera_controls(HStreamWindow* window) {
           "frame epoch state");
   bool timeout_fixture_cleaned = false;
   {
-    auto timeout_fixture_cleanup_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path());
+    auto timeout_fixture_cleanup_lock =
+        hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
     if (timeout_fixture_cleanup_lock.ok()) {
       YAML::Node timeout_fixture_cleanup = YAML::LoadFile(config.string());
       timeout_fixture_cleanup["rink"].remove("stitched_output_generation");
@@ -14889,8 +13597,9 @@ bool test_camera_controls(HStreamWindow* window) {
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_previous_authorization_id");
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_previous_owner_process");
       timeout_fixture_cleanup["rink"].remove("stitched_output_pending_completed_scoreboard_polygon");
-      timeout_fixture_cleaned =
-          hm::stitching::publish_game_config(config.parent_path(), YAML::Dump(timeout_fixture_cleanup) + "\n").ok();
+      timeout_fixture_cleaned = hm::stitching::publish_game_config(
+                                    config.parent_path().parent_path(), YAML::Dump(timeout_fixture_cleanup) + "\n")
+                                    .ok();
     }
   }
   qunsetenv("HSTREAM_UI_TEST_RUNTIME_CONTROL_TIMEOUT_MS");
@@ -14907,9 +13616,9 @@ bool test_camera_controls(HStreamWindow* window) {
   YAML::Node same_prefix_tracker_path;
   const bool has_same_prefix_tracker_path =
       lookup_yaml_path(same_prefix, {"pipeline", "ds-playtracker", "config-file"}, &same_prefix_tracker_path);
-  YAML::Node same_prefix_tracker =
-      has_same_prefix_tracker_path && fs::exists(config.parent_path() / same_prefix_tracker_path.as<std::string>())
-      ? YAML::LoadFile((config.parent_path() / same_prefix_tracker_path.as<std::string>()).string())
+  YAML::Node same_prefix_tracker = has_same_prefix_tracker_path &&
+          fs::exists(config.parent_path().parent_path() / same_prefix_tracker_path.as<std::string>())
+      ? YAML::LoadFile((config.parent_path().parent_path() / same_prefix_tracker_path.as<std::string>()).string())
       : YAML::Node();
   YAML::Node preserved_custom_tracker_value;
   const bool preserved_custom_tracker_config =
@@ -14984,8 +13693,8 @@ bool test_camera_controls(HStreamWindow* window) {
   max_speed_x->setValue(333);
   activate(save);
   const YAML::Node saved_one_box_game = YAML::LoadFile(config.string());
-  const fs::path saved_one_box_path =
-      config.parent_path() / saved_one_box_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
+  const fs::path saved_one_box_path = config.parent_path().parent_path() /
+      saved_one_box_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
   const YAML::Node saved_one_box = YAML::LoadFile(saved_one_box_path.string());
   const YAML::Node saved_one_box_sequence = saved_one_box["play-tracker"]["live-boxes"];
   if (!expect(
@@ -15028,8 +13737,7 @@ bool test_camera_controls(HStreamWindow* window) {
 
 bool test_gpu_memory_profile() {
 #ifdef HSTREAM_USE_HIP
-  const YAML::Node amd_gpu = YAML::Load(
-      "runtime: {amd: {gpu_id: 2}}\npipeline: {application: {global-gpu-id: 3}}");
+  const YAML::Node amd_gpu = YAML::Load("runtime: {amd: {gpu_id: 2}}\npipeline: {application: {global-gpu-id: 3}}");
   if (!expect(
           hm::ui_internal::configured_pipeline_gpu(amd_gpu) == 2 &&
               !hm::ui_internal::configured_pipeline_gpu(YAML::Node(YAML::NodeType::Map)) &&
@@ -15053,18 +13761,15 @@ bool test_gpu_memory_profile() {
 
   const YAML::Node baseline_profile = YAML::Load("runtime: {gpu_memory_profile: standard}");
   const YAML::Node user_profile = YAML::Load("runtime: {gpu-memory-profile: low}");
-  const YAML::Node same_layer_aliases =
-      YAML::Load("runtime: {gpu-memory-profile: normal, gpu_memory_profile: low}");
+  const YAML::Node same_layer_aliases = YAML::Load("runtime: {gpu-memory-profile: normal, gpu_memory_profile: low}");
   const YAML::Node malformed_user_alias = YAML::Load("runtime: {gpu_memory_profile: null}");
   const YAML::Node invalid_user_alias = YAML::Load("runtime: {gpu-memory-profile: invalid}");
   const YAML::Node replaced_runtime = YAML::Load("runtime: null");
   const QString resolved_user_low = hm::ui_internal::configured_gpu_memory_profile(baseline_profile, user_profile);
-  const QString resolved_same_layer = hm::ui_internal::configured_gpu_memory_profile(
-      baseline_profile, same_layer_aliases);
-  const QString resolved_malformed =
-      hm::ui_internal::configured_gpu_memory_profile(user_profile, malformed_user_alias);
-  const QString resolved_invalid = hm::ui_internal::configured_gpu_memory_profile(
-      baseline_profile, invalid_user_alias);
+  const QString resolved_same_layer =
+      hm::ui_internal::configured_gpu_memory_profile(baseline_profile, same_layer_aliases);
+  const QString resolved_malformed = hm::ui_internal::configured_gpu_memory_profile(user_profile, malformed_user_alias);
+  const QString resolved_invalid = hm::ui_internal::configured_gpu_memory_profile(baseline_profile, invalid_user_alias);
   const QString resolved_replaced_runtime =
       hm::ui_internal::configured_gpu_memory_profile(baseline_profile, replaced_runtime);
   if (!expect(
@@ -15073,8 +13778,7 @@ bool test_gpu_memory_profile() {
           "GPU memory mode must resolve machine-local aliases with the runner's fallback behavior")) {
     std::cerr << "resolved profiles: user-low=" << resolved_user_low.toStdString()
               << " same-layer=" << resolved_same_layer.toStdString()
-              << " malformed=" << resolved_malformed.toStdString()
-              << " invalid=" << resolved_invalid.toStdString()
+              << " malformed=" << resolved_malformed.toStdString() << " invalid=" << resolved_invalid.toStdString()
               << " replaced-runtime=" << resolved_replaced_runtime.toStdString() << '\n';
     return false;
   }
@@ -15091,7 +13795,7 @@ bool test_gpu_memory_profile() {
   qputenv("HM_GAME_DIR", profile_games.path().toLocal8Bit());
   const QString game_name = "gpu-memory-profile";
   const QString game_directory = QDir(profile_games.path()).filePath(game_name);
-  if (!QDir().mkpath(game_directory))
+  if (!QDir().mkpath(QDir(game_directory).filePath("_hockeymon")))
     return false;
 
   const auto total_memory_bytes = hm::inference::GpuTotalMemoryBytes(0);
@@ -15099,7 +13803,7 @@ bool test_gpu_memory_profile() {
       total_memory_bytes.ok() && hm::inference::UseLowMemoryProfile(*total_memory_bytes) ? "low" : "standard";
   YAML::Node stale_game_profile(YAML::NodeType::Map);
   stale_game_profile["runtime"]["gpu_memory_profile"] = expected_default == "low" ? "standard" : "low";
-  std::ofstream(QDir(game_directory).filePath("config.yaml").toStdString()) << stale_game_profile << '\n';
+  std::ofstream(QDir(game_directory).filePath("_hockeymon/config.yaml").toStdString()) << stale_game_profile << '\n';
 
   HStreamWindow window;
   auto* games = require_child<QComboBox>(&window, "gameSelector");
@@ -15140,7 +13844,7 @@ bool test_gpu_memory_profile() {
 
   if (!HStreamWindowTestAccess::savePreset(&window))
     return false;
-  const YAML::Node saved = YAML::LoadFile(QDir(game_directory).filePath("config.yaml").toStdString());
+  const YAML::Node saved = YAML::LoadFile(QDir(game_directory).filePath("_hockeymon/config.yaml").toStdString());
   bool saved_profile_argument = false;
   const YAML::Node saved_job_arguments = saved["hstream_ui"]["job"]["arguments"];
   if (saved_job_arguments && saved_job_arguments.IsSequence()) {
@@ -15168,10 +13872,10 @@ bool test_blend_mode() {
   const QString root = blend_games.path();
   const QString game = "blend-mode-game";
   const QString other_game = "blend-mode-other";
-  QDir().mkpath(QDir(root).filePath(game));
-  QDir().mkpath(QDir(root).filePath(other_game));
-  const auto config_path = QDir(root).filePath(game + "/config.yaml").toStdString();
-  const auto other_config_path = QDir(root).filePath(other_game + "/config.yaml").toStdString();
+  QDir().mkpath(QDir(root).filePath(game + "/_hockeymon"));
+  QDir().mkpath(QDir(root).filePath(other_game + "/_hockeymon"));
+  const auto config_path = QDir(root).filePath(game + "/_hockeymon/config.yaml").toStdString();
+  const auto other_config_path = QDir(root).filePath(other_game + "/_hockeymon/config.yaml").toStdString();
   // A mode the combo cannot show. HockeyMON's offline stitcher accepts it; the live path does not.
   std::ofstream(other_config_path) << "stitching:\n  blend_mode: multiblend\n";
 
@@ -15422,9 +14126,9 @@ bool test_detector_precision() {
   const QString root = precision_games.path();
   const QString custom_game = "precision-custom";
   const QString plain_game = "precision-default";
-  QDir().mkpath(QDir(root).filePath(custom_game));
-  QDir().mkpath(QDir(root).filePath(plain_game));
-  const auto custom_path = QDir(root).filePath(custom_game + "/config.yaml").toStdString();
+  QDir().mkpath(QDir(root).filePath(custom_game + "/_hockeymon"));
+  QDir().mkpath(QDir(root).filePath(plain_game + "/_hockeymon"));
+  const auto custom_path = QDir(root).filePath(custom_game + "/_hockeymon/config.yaml").toStdString();
   std::ofstream(custom_path) << "pipeline:\n  primary-gie:\n    config-file: custom-detector.yaml\n"
                                 "    model-engine-file: custom.engine\n";
   HStreamWindow window;
@@ -15523,7 +14227,8 @@ bool test_detector_precision() {
   precision->setCurrentIndex(precision->findData("fp16"));
   if (!HStreamWindowTestAccess::savePreset(&window))
     return false;
-  const auto inherited_override = YAML::LoadFile(QDir(root).filePath(plain_game + "/config.yaml").toStdString());
+  const auto inherited_override =
+      YAML::LoadFile(QDir(root).filePath(plain_game + "/_hockeymon/config.yaml").toStdString());
   return expect(
       QString::fromStdString(inherited_override["pipeline"]["primary-gie"]["model-engine-file"].as<std::string>())
           .endsWith("_fp16.engine"),
@@ -15543,8 +14248,8 @@ bool test_detector_model() {
   qputenv("HM_GAME_DIR", model_games.path().toLocal8Bit());
   const QString root = model_games.path();
   const QString game = "model-selection";
-  QDir().mkpath(QDir(root).filePath(game));
-  const auto config_path = QDir(root).filePath(game + "/config.yaml").toStdString();
+  QDir().mkpath(QDir(root).filePath(game + "/_hockeymon"));
+  const auto config_path = QDir(root).filePath(game + "/_hockeymon/config.yaml").toStdString();
   std::ofstream(config_path) << "pipeline:\n  primary-gie:\n    config-file: custom-detector.yaml\n"
                                 "    model-engine-file: custom.engine\n";
 
@@ -15585,8 +14290,8 @@ bool test_detector_model() {
 
   for (const QString mode : {"fp32", "fp16", "bf16", "int8"}) {
     precision->setCurrentIndex(precision->findData(mode));
-    const QString name = mode == "fp32" ? "config_infer_yolov8s_hockey.yaml"
-                                        : QString("config_infer_yolov8s_hockey_%1.yaml").arg(mode);
+    const QString name =
+        mode == "fp32" ? "config_infer_yolov8s_hockey.yaml" : QString("config_infer_yolov8s_hockey_%1.yaml").arg(mode);
     if (!expect(
             HStreamWindowTestAccess::standaloneArguments(&window).contains(
                 "--options=pipeline.primary-gie.config-file=" + name),
@@ -15660,9 +14365,9 @@ bool test_detector_model() {
 bool test_control_point_limit_precedence() {
   const QString game_name = "control-point-limit-precedence";
   const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
-  if (!QDir().mkpath(game_directory))
+  if (!QDir().mkpath(QDir(game_directory).filePath("_hockeymon")))
     return false;
-  const auto config_path = QDir(game_directory).filePath("config.yaml").toStdString();
+  const auto config_path = QDir(game_directory).filePath("_hockeymon/config.yaml").toStdString();
   std::ofstream(config_path) << "stitching: {control_point_limit: 250}\n";
   HStreamWindow window;
   auto* selector = require_child<QComboBox>(&window, "gameSelector");
@@ -15685,9 +14390,9 @@ bool test_control_point_limit_precedence() {
 bool test_preset_reload_with_missing_tracker() {
   const QString game_name = "saved-preset-missing-tracker";
   const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
-  if (!QDir().mkpath(game_directory))
+  if (!QDir().mkpath(QDir(game_directory).filePath("_hockeymon")))
     return false;
-  const auto config_path = QDir(game_directory).filePath("config.yaml").toStdString();
+  const auto config_path = QDir(game_directory).filePath("_hockeymon/config.yaml").toStdString();
   const std::string missing_tracker =
       QDir(game_directory).filePath("removed-worktree/configs/play_tracker_config.yaml").toStdString();
   YAML::Node config = YAML::Load(
@@ -15707,7 +14412,7 @@ bool test_preset_reload_with_missing_tracker() {
   config["pipeline"]["ds-playtracker"]["config-file"] = missing_tracker;
   config["hstream_ui"]["generated_runtime_keys"] = YAML::Load("[pipeline.ds-playtracker.config-file]");
   config["hstream_ui"]["generated_runtime_values"]["pipeline.ds-playtracker.config-file"] =
-      "hstream-ui/previous-tracker.yaml";
+      "_hockeymon/hstream-ui/previous-tracker.yaml";
   config["hstream_ui"]["playtracker_config_base"] = YAML::Node(YAML::NodeType::Null);
   std::ofstream(config_path) << YAML::Dump(config) << '\n';
   for (int run = 0; run < 4; ++run) {
@@ -15771,7 +14476,7 @@ bool test_preset_reload_with_missing_tracker() {
                   recovered["hstream_ui"]["playtracker_config_base"].as<std::string>() == missing_tracker,
               "Restoring a missing custom tracker must keep that explicit base on the next save"))
         return false;
-      const auto native = YAML::LoadFile((fs::path(config_path).parent_path() /
+      const auto native = YAML::LoadFile((fs::path(config_path).parent_path().parent_path() /
                                           recovered["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
                                              .string());
       if (!expect(
@@ -15790,7 +14495,7 @@ bool test_rink_mask_time(const QString& source_game_directory) {
   fs::copy(source, fixture, fs::copy_options::recursive, error);
   if (error)
     return expect(false, "Could not copy rink mask fixture");
-  const fs::path config_path = fixture / "config.yaml";
+  const fs::path config_path = fixture / "_hockeymon/config.yaml";
   YAML::Node config =
       fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node(YAML::NodeType::Map);
   config["stitching"]["rink_config"] = "tv-dublin";
@@ -15798,7 +14503,7 @@ bool test_rink_mask_time(const QString& source_game_directory) {
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   config["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
   std::ofstream(config_path) << YAML::Dump(config) << '\n';
-  std::ofstream(fixture / "mapping_0000_x.tif") << "alignment-must-survive";
+  std::ofstream(fixture / "_hockeymon/mapping_0000_x.tif") << "alignment-must-survive";
   for (int run = 0; run < 4; ++run) {
     HStreamWindow window;
     window.show();
@@ -15849,8 +14554,8 @@ bool test_rink_mask_time(const QString& source_game_directory) {
     }
     if (run == 3)
       break;
-    std::ofstream(fixture / "rink_mask_0.png") << "old-mask";
-    std::ofstream(fixture / "s.png") << "old-mask-frame";
+    std::ofstream(fixture / "_hockeymon/rink_mask_0.png") << "old-mask";
+    std::ofstream(fixture / "_hockeymon/s.png") << "old-mask-frame";
     if (run == 0) {
       mode->setCurrentIndex(mode->findData("custom"));
       // Negative zero names the recording end, where no frame exists.
@@ -15858,7 +14563,7 @@ bool test_rink_mask_time(const QString& source_game_directory) {
       activate(save);
       if (!expect(
               YAML::LoadFile(config_path.string())["stitching"]["rink_mask_frame_time"].IsNull() &&
-                  fs::exists(fixture / "rink_mask_0.png"),
+                  fs::exists(fixture / "_hockeymon/rink_mask_0.png"),
               "A rejected ice mask frame must not be saved or invalidate the mask"))
         return false;
       // Shorthand seconds reach the same frame as -00:00:02.500.
@@ -15877,8 +14582,8 @@ bool test_rink_mask_time(const QString& source_game_directory) {
             run == 2 ? value.IsNull() : value.as<std::string>() == (run == 0 ? "-00:00:02.500" : "auto"),
             "Mask time must persist independently of the reference frame") ||
         !expect(
-            !fs::exists(fixture / "rink_mask_0.png") && !fs::exists(fixture / "s.png") &&
-                fs::exists(fixture / "mapping_0000_x.tif"),
+            !fs::exists(fixture / "_hockeymon/rink_mask_0.png") && !fs::exists(fixture / "_hockeymon/s.png") &&
+                fs::exists(fixture / "_hockeymon/mapping_0000_x.tif"),
             "Changing mask time must remove only dependent mask artifacts") ||
         !expect(
             config["hstream_ui"]["stitching_calibration"]["rink_mask_status"].as<std::string>() == "pending",
@@ -15895,7 +14600,7 @@ bool test_control_point_filtering(const QString& source_game_directory) {
   fs::copy(source, fixture, fs::copy_options::recursive, error);
   if (error)
     return expect(false, "Could not copy geometric filtering fixture: " + error.message());
-  const auto path = fixture / "config.yaml";
+  const auto path = fixture / "_hockeymon/config.yaml";
   YAML::Node config = fs::is_regular_file(path) ? YAML::LoadFile(path.string()) : YAML::Node(YAML::NodeType::Map);
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"].remove("control_point_filtering");
@@ -15963,7 +14668,7 @@ bool test_control_point_resolution(const QString& source_game_directory) {
   fs::copy(source, fixture, fs::copy_options::recursive, error);
   if (error)
     return expect(false, "Could not copy the resolution fixture: " + error.message());
-  const fs::path config_path = fixture / "config.yaml";
+  const fs::path config_path = fixture / "_hockeymon/config.yaml";
   YAML::Node config =
       fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node(YAML::NodeType::Map);
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
@@ -16080,7 +14785,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   fs::copy(source, fixture, fs::copy_options::recursive, error);
   if (error)
     return expect(false, "Could not copy the iteration fixture: " + error.message());
-  const fs::path config_path = fixture / "config.yaml";
+  const fs::path config_path = fixture / "_hockeymon/config.yaml";
   YAML::Node config =
       fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node(YAML::NodeType::Map);
   config["stitching"]["sync_method"] = "imu";
@@ -16363,7 +15068,8 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     bad["stitching"]["calibration_frame_count"] = 5;
     bad["stitching"]["calibration_frame_inputs_fingerprint"] = retained_fingerprint;
     bad["hstream_ui"]["stitching_calibration"]["frame_count"] = 5;
-    const fs::path retained_image = fixture / "player-frame-inputs" / retained_fingerprint / "left.png";
+    const fs::path retained_image =
+        fixture / "_hockeymon/player-frame-inputs" / retained_fingerprint / "_hockeymon/left.png";
     fs::create_directories(retained_image.parent_path());
     std::ofstream(retained_image) << "retained selected image\n";
     for (const auto& group : invalid)
@@ -16466,7 +15172,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   malformed_reframe["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "malformed-reframe-owner";
   malformed_reframe["hstream_ui"]["stitching_calibration"]["reframe"]["version"] = 999;
   std::ofstream(config_path) << YAML::Dump(malformed_reframe) << '\n';
-  const fs::path protected_source = fixture / "autooptimiser_out.pto";
+  const fs::path protected_source = fixture / "_hockeymon/autooptimiser_out.pto";
   std::ofstream(protected_source) << "preserved alignment\n";
   activate(create);
   playback->setTime(QTime(0, 0, 2));
@@ -16561,7 +15267,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   }
   if (copy_error)
     return expect(false, "Could not prepare the nonzero user stitch-frame fixture: " + copy_error.message());
-  const fs::path copied_config = copied_game / "config.yaml";
+  const fs::path copied_config = copied_game / "_hockeymon/config.yaml";
   YAML::Node copied_config_node =
       fs::is_regular_file(copied_config) ? YAML::LoadFile(copied_config.string()) : YAML::Node(YAML::NodeType::Map);
   if (copied_config_node["stitching"] && copied_config_node["stitching"].IsMap())
@@ -16587,7 +15293,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     copied_config_node["rink"]["camera"].remove("fixed_edge_rotation_angle");
   }
   std::ofstream(copied_config) << YAML::Dump(copied_config_node) << '\n';
-  std::ofstream(copied_game / "seam_file.png") << "preserved optimizer-normalization artifact\n";
+  std::ofstream(copied_game / "_hockeymon/seam_file.png") << "preserved optimizer-normalization artifact\n";
 
   qputenv("HOME", user_home.path().toLocal8Bit());
   qputenv("HM_CONFIG_ROOT", baseline_root.path().toLocal8Bit());
@@ -16643,7 +15349,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
               !normalized_inactive_optimizer["stitching"]["run_autooptimizer"].as<bool>() &&
               normalized_inactive_optimizer["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() ==
                   "complete" &&
-              fs::is_regular_file(copied_game / "seam_file.png") && !save->isEnabled(),
+              fs::is_regular_file(copied_game / "_hockeymon/seam_file.png") && !save->isEnabled(),
           "Normalizing an inactive OpenCV optimizer flag must preserve completed calibration artifacts");
       set_calibration_time(stitch_frame_time, QTime(0, 0, 0));
       QApplication::processEvents();
@@ -16755,7 +15461,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       copied_config_node["stitching"]["stitch_frame_time"] = "00:00:08.000";
     const auto selected_plan = test_selected_frame_plan(2);
     copied_config_node["stitching"]["calibration_frame_selection"] = YAML::Clone(selected_plan);
-    copied_config_node["stitching"]["calibration_frame_inputs_fingerprint"] = selected_plan["fingerprint"].as<std::string>();
+    copied_config_node["stitching"]["calibration_frame_inputs_fingerprint"] =
+        selected_plan["fingerprint"].as<std::string>();
     copied_config_node["game"]["stitching"]["frame_offsets"]["left"] = 3.0;
     copied_config_node["stitching"].remove("calibration_frame_count");
     copied_config_node["hstream_ui"]["stitching_calibration"].remove("frame_count");
@@ -16784,7 +15491,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       const YAML::Node timestamp = state["stitching"]["stitch_frame_time"];
       return YAML::Dump(state["stitching"]["calibration_frame_selection"]) == YAML::Dump(selected_plan) &&
           state["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>("") ==
-              selected_plan["fingerprint"].as<std::string>() &&
+          selected_plan["fingerprint"].as<std::string>() &&
           state["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) == 3.0 &&
           (explicit_reference ? timestamp && timestamp.as<std::string>() == "00:00:08.000" : !timestamp);
     };
@@ -17019,7 +15726,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       activate(save);
       const YAML::Node saved_native_game = YAML::LoadFile(copied_config.string());
       const YAML::Node sidecar =
-          YAML::LoadFile((copied_config.parent_path() /
+          YAML::LoadFile((copied_config.parent_path().parent_path() /
                           saved_native_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
                              .string());
       ok &= expect(
@@ -17079,9 +15786,10 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
       count->setValue(2);
       activate(save);
       const YAML::Node saved_game = YAML::LoadFile(copied_config.string());
-      const YAML::Node sidecar = YAML::LoadFile(
-          (copied_config.parent_path() / saved_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
-              .string());
+      const YAML::Node sidecar =
+          YAML::LoadFile((copied_config.parent_path().parent_path() /
+                          saved_game["pipeline"]["ds-playtracker"]["config-file"].as<std::string>())
+                             .string());
       ok &= expect(
           sidecar["play-tracker"]["min-tracked-players"].as<int>() == 7 &&
               !sidecar["play-tracker"]["ignore-oversized-bboxes"].as<bool>() &&
@@ -17234,8 +15942,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     HStreamWindow missing_playback_baseline;
     ok &= expect(false, "A baseline without playback_start_time must fail instead of choosing a literal default");
   } catch (const std::exception& error) {
-    ok &= expect(std::string(error.what()).find("hstream_ui.playback_start_time") != std::string::npos,
-                 "Missing playback baseline must identify its required key");
+    ok &= expect(
+        std::string(error.what()).find("hstream_ui.playback_start_time") != std::string::npos,
+        "Missing playback baseline must identify its required key");
   }
   if (original_home.isEmpty())
     qunsetenv("HOME");
@@ -17376,8 +16085,8 @@ bool prepare_real_e2e_game(const QString& game_id) {
     return true;
   }
   const fs::path game_dir = fs::path(qgetenv("HM_GAME_DIR").toStdString()) / game_id.toStdString();
-  const fs::path config_path = game_dir / "config.yaml";
-  const fs::path panorama_path = game_dir / "panorama.tif";
+  const fs::path config_path = game_dir / "_hockeymon/config.yaml";
+  const fs::path panorama_path = game_dir / "_hockeymon/panorama.tif";
   if (!fs::is_regular_file(config_path) || !fs::is_regular_file(panorama_path)) {
     std::cerr << "E2E sandbox requires config.yaml and panorama.tif in " << game_dir << '\n';
     return false;
@@ -17438,8 +16147,8 @@ bool exercise_scoreboard_controls(HStreamWindow* window, const QString& artifact
   }
   const auto read_polygon = [&] {
     return YAML::Dump(
-        YAML::LoadFile(
-            (window->gameDirectoryText() + "/config.yaml").toStdString())["rink"]["scoreboard"]["perspective_polygon"]);
+        YAML::LoadFile((window->gameDirectoryText() + "/_hockeymon/config.yaml")
+                           .toStdString())["rink"]["scoreboard"]["perspective_polygon"]);
   };
   const auto original = read_polygon();
   for (const char* action : {"scoreboardCancelButton", "scoreboardSaveButton"}) {
@@ -17505,6 +16214,7 @@ bool submit_no_scoreboard(HStreamWindow* window, QString* error) {
 }
 
 bool write_e2e_text(const QString& path, const QString& contents) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   const QByteArray bytes = contents.toUtf8();
   QFile file(path);
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
@@ -17571,8 +16281,8 @@ bool test_scoreboard_proposal_wait() {
   QTemporaryDir root;
   QImage image(100, 80, QImage::Format_RGB32);
   image.fill(Qt::darkGray);
-  const QString image_path = root.filePath("s.png");
-  if (!root.isValid() || !image.save(image_path))
+  const QString image_path = root.filePath("_hockeymon/s.png");
+  if (!root.isValid() || !QDir().mkpath(root.filePath("_hockeymon")) || !image.save(image_path))
     return false;
   const QVector<QPoint> suggested{{10, 10}, {90, 10}, {90, 70}, {10, 70}};
   const QByteArray proposal =
@@ -17909,7 +16619,7 @@ bool test_telemetry_only_admission() {
   mode->setCurrentIndex(mode->findData("stitch-calibration"));
   if (!HStreamWindowTestAccess::savePreset(&window))
     return false;
-  const QString config_path = QDir(window.gameDirectoryText()).filePath("config.yaml");
+  const QString config_path = QDir(window.gameDirectoryText()).filePath("_hockeymon/config.yaml");
   if (!expect(
           !YAML::LoadFile(config_path.toStdString())["hstream_ui"]["job"]["capture_telemetry"].as<bool>(),
           "Saving Calibration must retain an exported-job telemetry opt-out"))
@@ -18206,7 +16916,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     }
   }
   const YAML::Node initial_config =
-      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+      YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
   const bool clean_calibration = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CLEAN_CALIBRATION");
   if (!expect(
           fresh_calibration || clean_calibration ||
@@ -18249,7 +16959,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       return false;
     activate(save);
     artifacts_saved = QFile::copy(
-                          QDir(window->gameDirectoryText()).filePath("config.yaml"),
+                          QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml"),
                           QDir(artifact_dir).filePath("calibration-config-before.yaml")) &&
         artifacts_saved;
     screenshot(window, "01-fresh-inputs.png");
@@ -18333,7 +17043,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
         completed_at = timer.elapsed();
       if (timer.elapsed() - completed_at > 10000) {
         const YAML::Node config =
-            YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "config.yaml").string());
+            YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
         const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
         const std::string mask_status = calibration["rink_mask_status"].as<std::string>("");
         bool mask_state_matches = mask_status == (stitching_only ? "omitted" : "complete");
@@ -18345,7 +17055,8 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
           const bool owned = !owner.empty() &&
               calibration["backend_generation"]["invalidation_id"].as<std::string>("") == owner &&
               !calibration["stale_from"];
-          const bool mask_omitted = !QFileInfo::exists(QDir(window->gameDirectoryText()).filePath("rink_mask_0.png")) &&
+          const bool mask_omitted =
+              !QFileInfo::exists(QDir(window->gameDirectoryText()).filePath("_hockeymon/rink_mask_0.png")) &&
               !log.contains("HSTREAM_CALIBRATION stage=rink-mask status=started");
           mask_state_matches = (mask_status == "pending" || mask_status == "omitted") && owned && mask_omitted;
           report += QString("calibration-status=%1 rink-mask-status=%2 generation-owned=%3 no-mask-work=%4\n")
@@ -18397,7 +17108,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
         HStreamWindowTestAccess::pipelineRetired(window) &&
         window->completeLogText().contains("pipeline finished exit=0 status=normal");
     artifacts_saved = QFile::copy(
-                          QDir(window->gameDirectoryText()).filePath("config.yaml"),
+                          QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml"),
                           QDir(artifact_dir).filePath("calibration-config-after.yaml")) &&
         artifacts_saved;
     screenshot(window, "05-stopped.png");
@@ -18459,7 +17170,7 @@ bool run_saved_leveling_e2e(HStreamWindow* window, const QString& game_id) {
     return false;
   game->setText(game_id);
   activate(create);
-  const QString config_path = QDir(window->gameDirectoryText()).filePath("config.yaml");
+  const QString config_path = QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml");
   auto config = YAML::LoadFile(config_path.toStdString());
   if (!expect(
           config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete" &&
@@ -18841,7 +17552,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
   activate(create);
   mode->setCurrentIndex(mode->findData(calibration_seeks ? "stitch-calibration" : "program"));
   if (genuine_preview) {
-    const QString config_path = QDir(window->gameDirectoryText()).filePath("config.yaml");
+    const QString config_path = QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml");
     try {
       const YAML::Node config = YAML::LoadFile(config_path.toStdString());
       const auto calibration = config["hstream_ui"]["stitching_calibration"];
@@ -19951,7 +18662,7 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
   bool artifacts_saved = timing_saved;
   if (genuine_preview) {
     artifacts_saved = QFile::copy(
-                          QDir(window->gameDirectoryText()).filePath("config.yaml"),
+                          QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml"),
                           QDir(artifact_dir).filePath("calibration-config-after.yaml")) &&
         artifacts_saved;
     artifacts_saved = window->grab().save(QDir(artifact_dir)
@@ -20334,8 +19045,8 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     if (!calibration_only) {
       preview_tabs->setCurrentIndex(0);
       program_target_acknowledged = wait_for_renderer(program_surface);
-      program_preview = capture_channel(
-          "program", "program-preview-surface.png", telemetry_only ? &program_preview_pts : nullptr);
+      program_preview =
+          capture_channel("program", "program-preview-surface.png", telemetry_only ? &program_preview_pts : nullptr);
     }
 
     if (timer.elapsed() >= deadline_ms)
@@ -20500,7 +19211,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     for (int i = 0; i < controls->count(); ++i)
       if (controls->tabText(i) == "Rink framing")
         controls->setCurrentIndex(i);
-    window->findChild<QWidget*>("rinkFramingControls")->grab().save(QDir(artifact_dir).filePath("rink-framing-controls.png"));
+    window->findChild<QWidget*>("rinkFramingControls")
+        ->grab()
+        .save(QDir(artifact_dir).filePath("rink-framing-controls.png"));
   }
   const QString log = window->completeLogText();
   const bool observed_native_asset_setup = log.contains("pretrained assets will be verified by hstream-cli");
@@ -20565,7 +19278,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     const QString after_cancel = scoreboard_cancel_log_offset >= 0 ? final_log.mid(scoreboard_cancel_log_offset) : "";
     write_e2e_text(
         QDir(artifact_dir).filePath("scoreboard-cancel-progress.txt"), scoreboard_positions_after_cancel.join('\n'));
-    const YAML::Node config = YAML::LoadFile((window->gameDirectoryText() + "/config.yaml").toStdString());
+    const YAML::Node config = YAML::LoadFile((window->gameDirectoryText() + "/_hockeymon/config.yaml").toStdString());
     const YAML::Node polygon = config["rink"]["scoreboard"]["perspective_polygon"];
     QProcess* process = HStreamWindowTestAccess::ownedProcess(window, false);
     if (!expect(
@@ -20589,7 +19302,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
     if (label && label->text().startsWith("Completed archive: "))
       output_path = label->text().mid(QString("Completed archive: ").size());
   }
-  const QString panorama_path = QDir(window->gameDirectoryText()).filePath("panorama.tif");
+  const QString panorama_path = QDir(window->gameDirectoryText()).filePath("_hockeymon/panorama.tif");
   bool visual_match = false;
   QString visual_verifier_output;
   const QString visual_verifier = qEnvironmentVariable("HSTREAM_UI_E2E_VISUAL_VERIFIER");
@@ -20736,7 +19449,7 @@ bool test_cleanup_transaction_protocol() {
         QDir(root.path()).filePath(QString("unsupported-rename-flags-%1").arg(QString::fromLatin1(unsupported_errno)));
     QDir().mkpath(unsupported_rename_dir);
     const QString unsupported_rename_target = QDir(unsupported_rename_dir).filePath("completed.mp4");
-    struct stat unsupported_rename_stat {};
+    struct stat unsupported_rename_stat{};
     QString unsupported_rename_error;
     const bool unsupported_rename_setup = write_file(unsupported_rename_target, "trusted NFS cleanup") &&
         file_identity(unsupported_rename_target, &unsupported_rename_stat);
@@ -20762,7 +19475,7 @@ bool test_cleanup_transaction_protocol() {
   const QString unsupported_race_dir = QDir(root.path()).filePath("unsupported-rename-source-race");
   QDir().mkpath(unsupported_race_dir);
   const QString unsupported_race_target = QDir(unsupported_race_dir).filePath("completed.mp4");
-  struct stat unsupported_race_stat {};
+  struct stat unsupported_race_stat{};
   QString unsupported_race_error;
   const bool unsupported_race_setup = write_file(unsupported_race_target, "trusted cleanup race source") &&
       file_identity(unsupported_race_target, &unsupported_race_stat);
@@ -20789,7 +19502,7 @@ bool test_cleanup_transaction_protocol() {
   const QString preclose_sync_dir = QDir(root.path()).filePath("nfs-preclose-sync-failure");
   QDir().mkpath(preclose_sync_dir);
   const QString preclose_sync_target = QDir(preclose_sync_dir).filePath("completed.mp4");
-  struct stat preclose_sync_stat {};
+  struct stat preclose_sync_stat{};
   QString preclose_sync_error;
   const bool preclose_sync_setup = write_file(preclose_sync_target, "trusted NFS preclose recovery") &&
       file_identity(preclose_sync_target, &preclose_sync_stat);
@@ -20823,33 +19536,32 @@ bool test_cleanup_transaction_protocol() {
   const QString tombstone_dir = QDir(root.path()).filePath("nfs-persistent-tombstone");
   QDir().mkpath(tombstone_dir);
   const QString tombstone_target = QDir(tombstone_dir).filePath("completed.mp4");
-  struct stat tombstone_stat {};
+  struct stat tombstone_stat{};
   QString tombstone_error;
   const bool tombstone_setup =
       write_file(tombstone_target, "trusted tombstone cleanup") && file_identity(tombstone_target, &tombstone_stat);
   qputenv("HSTREAM_UI_TEST_PERSISTENT_CLEANUP_TOMBSTONE", tombstone_target.toLocal8Bit());
   const bool tombstone_removed = tombstone_setup &&
       hm::ui_internal::remove_owned_path_for_test(
-                                      tombstone_target,
-                                      static_cast<quint64>(tombstone_stat.st_dev),
-                                      static_cast<quint64>(tombstone_stat.st_ino),
-                                      &tombstone_error);
+                                     tombstone_target,
+                                     static_cast<quint64>(tombstone_stat.st_dev),
+                                     static_cast<quint64>(tombstone_stat.st_ino),
+                                     &tombstone_error);
   qunsetenv("HSTREAM_UI_TEST_PERSISTENT_CLEANUP_TOMBSTONE");
   const QString tombstone_transaction = cleanup_transaction(tombstone_dir);
   const bool tombstone_records_retained = !tombstone_transaction.isEmpty() &&
       QFileInfo::exists(QDir(tombstone_transaction).filePath("owner")) &&
       QFileInfo::exists(QDir(tombstone_transaction).filePath("committed"));
-  const bool tombstone_cleared = !tombstone_transaction.isEmpty() &&
-      QFile::remove(QDir(tombstone_transaction).filePath(".nfs00000000deadbeef"));
+  const bool tombstone_cleared =
+      !tombstone_transaction.isEmpty() && QFile::remove(QDir(tombstone_transaction).filePath(".nfs00000000deadbeef"));
   QString tombstone_reconciliation_error;
   const bool tombstone_reconciled = tombstone_cleared &&
       hm::ui_internal::reconcile_cleanup_directory_for_test(tombstone_dir, &tombstone_reconciliation_error);
   const bool persistent_tombstone_recovery = expect(
       tombstone_setup && !tombstone_removed &&
           tombstone_error.contains(QString::fromLocal8Bit(std::strerror(ENOTEMPTY))) && tombstone_records_retained &&
-          tombstone_reconciled &&
-          cleanup_transaction(tombstone_dir).isEmpty() && !QFileInfo::exists(tombstone_target) &&
-          !QFileInfo::exists(tombstone_target + ".hstream-cleanup-pin"),
+          tombstone_reconciled && cleanup_transaction(tombstone_dir).isEmpty() &&
+          !QFileInfo::exists(tombstone_target) && !QFileInfo::exists(tombstone_target + ".hstream-cleanup-pin"),
       "A cleanup transaction blocked by a tombstone outliving its own pin must keep the owner and commit records "
       "so reconciliation can retire it once the tombstone disappears");
   if (!persistent_tombstone_recovery) {
@@ -20863,7 +19575,7 @@ bool test_cleanup_transaction_protocol() {
   const QString committed_dir = QDir(root.path()).filePath("committed-interruption");
   QDir().mkpath(committed_dir);
   const QString committed_target = QDir(committed_dir).filePath("committed.mp4");
-  struct stat committed_stat {};
+  struct stat committed_stat{};
   QString committed_error;
   const bool committed_setup =
       write_file(committed_target, "trusted committed UI cleanup") && file_identity(committed_target, &committed_stat);
@@ -20895,7 +19607,7 @@ bool test_cleanup_transaction_protocol() {
   const QString pending_commit_dir = QDir(root.path()).filePath("pending-commit-publication");
   QDir().mkpath(pending_commit_dir);
   const QString pending_commit_target = QDir(pending_commit_dir).filePath("pending-commit.mp4");
-  struct stat pending_commit_stat {};
+  struct stat pending_commit_stat{};
   QString pending_commit_error;
   const bool pending_commit_setup = write_file(pending_commit_target, "trusted pending-commit UI cleanup") &&
       file_identity(pending_commit_target, &pending_commit_stat);
@@ -20930,7 +19642,7 @@ bool test_cleanup_transaction_protocol() {
   const QString missing_fallback_dir = QDir(root.path()).filePath("missing-fallback-before-commit");
   QDir().mkpath(missing_fallback_dir);
   const QString missing_fallback_target = QDir(missing_fallback_dir).filePath("missing-fallback.mp4");
-  struct stat missing_fallback_stat {};
+  struct stat missing_fallback_stat{};
   QString missing_fallback_error;
   const bool missing_fallback_setup = write_file(missing_fallback_target, "trusted missing-fallback UI cleanup") &&
       file_identity(missing_fallback_target, &missing_fallback_stat);
@@ -20990,7 +19702,7 @@ bool test_cleanup_transaction_protocol() {
   const QString failed_unlink_dir = QDir(root.path()).filePath("failed-private-unlink");
   QDir().mkpath(failed_unlink_dir);
   const QString failed_unlink_target = QDir(failed_unlink_dir).filePath("failed-private-unlink.mp4");
-  struct stat failed_unlink_stat {};
+  struct stat failed_unlink_stat{};
   QString failed_unlink_error;
   const bool failed_unlink_setup = write_file(failed_unlink_target, "trusted failed-private-unlink UI cleanup") &&
       file_identity(failed_unlink_target, &failed_unlink_stat);
@@ -21086,7 +19798,7 @@ bool test_cleanup_transaction_protocol() {
   const QString concurrent_dir = QDir(root.path()).filePath("concurrent-removers");
   QDir().mkpath(concurrent_dir);
   const QString concurrent_target = QDir(concurrent_dir).filePath("concurrent.mp4");
-  struct stat concurrent_stat {};
+  struct stat concurrent_stat{};
   const bool concurrent_setup = write_file(concurrent_target, "trusted concurrent UI cleanup") &&
       file_identity(concurrent_target, &concurrent_stat);
   std::atomic<bool> concurrent_start{false};
@@ -21124,7 +19836,7 @@ bool test_cleanup_transaction_protocol() {
   const QString interrupted_concurrent_dir = QDir(root.path()).filePath("interrupted-concurrent-removers");
   QDir().mkpath(interrupted_concurrent_dir);
   const QString interrupted_concurrent_target = QDir(interrupted_concurrent_dir).filePath("interrupted-concurrent.mp4");
-  struct stat interrupted_concurrent_stat {};
+  struct stat interrupted_concurrent_stat{};
   const bool interrupted_concurrent_setup =
       write_file(interrupted_concurrent_target, "trusted interrupted concurrent UI cleanup") &&
       file_identity(interrupted_concurrent_target, &interrupted_concurrent_stat);
@@ -21380,8 +20092,8 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
       missing_hugin_analysis.contains("Hugin/NONA command-line toolchain is incomplete") &&
       missing_hugin_analysis.contains("pto_gen") &&
       !missing_hugin_analysis.contains("did not produce enough geometrically consistent overlap");
-  const QString invalid_pto_gen_analysis =
-      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "NOT_FOUND: HM_PTO_GEN is not executable: /bad/pto_gen");
+  const QString invalid_pto_gen_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
+      window, "NOT_FOUND: HM_PTO_GEN is not executable: /bad/pto_gen");
   const bool invalid_pto_gen_is_toolchain_failure =
       invalid_pto_gen_analysis.contains("Hugin/NONA command-line toolchain is incomplete") &&
       invalid_pto_gen_analysis.contains("HM_PTO_GEN is not executable") &&
@@ -21447,9 +20159,8 @@ bool test_wheel_routing_log_follow_and_calibration_analysis(HStreamWindow* windo
   HStreamWindowTestAccess::setActiveCameraSelection(window, {"gopro-hero-11", 108.0, 90.0});
   const QString settings_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
       window, "No stitching calibration frame pair produced a usable solution after 4 candidate attempts");
-  const bool settings_failure_is_not_physical_overlap =
-      settings_analysis.contains("selected calibration settings") && settings_analysis.contains("CP limit is 250") &&
-      settings_analysis.contains("gopro-hero-11") &&
+  const bool settings_failure_is_not_physical_overlap = settings_analysis.contains("selected calibration settings") &&
+      settings_analysis.contains("CP limit is 250") && settings_analysis.contains("gopro-hero-11") &&
       !settings_analysis.contains("did not produce enough geometrically consistent overlap");
   const QString unsafe_final_analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(
       window,
@@ -21494,9 +20205,10 @@ bool test_camera_experiment_initial_controls(HStreamWindow* window) {
     return false;
 #ifdef HSTREAM_USE_HIP
   activate(launch);
-  return expect(!launch->isEnabled() && launch->toolTip().contains("not yet available on AMD") &&
-                    !window->findChild<QDialog*>("cameraExperimentDialog"),
-                "AMD must explain unavailable Camera Experiments without opening a native pipeline");
+  return expect(
+      !launch->isEnabled() && launch->toolTip().contains("not yet available on AMD") &&
+          !window->findChild<QDialog*>("cameraExperimentDialog"),
+      "AMD must explain unavailable Camera Experiments without opening a native pipeline");
 #endif
   const int saved = count->value();
   count->setValue(1);
@@ -21511,14 +20223,15 @@ bool test_camera_experiment_initial_controls(HStreamWindow* window) {
   if (dialog)
     dialog->reject();
   count->setValue(saved);
-  return expect(copied && independent,
-                "Camera experiments must start with the current main controls and keep their edits independent");
+  return expect(
+      copied && independent,
+      "Camera experiments must start with the current main controls and keep their edits independent");
 }
 
 bool test_stitching_still() {
   const QString game = "still-preview";
   const QDir directory(QDir(QString::fromLocal8Bit(qgetenv("HM_GAME_DIR"))).filePath(game));
-  QDir().mkpath(directory.path());
+  QDir().mkpath(directory.filePath("_hockeymon"));
   YAML::Node config;
   hm::stitching::StitchingBackendChoices choices;
   choices.control_point_matcher = "superpoint-lightglue";
@@ -21536,11 +20249,11 @@ bool test_stitching_still() {
   if (!hm::stitching::reserve_stitching_backend_generation_in_config(config, "still-preview-a", choices).ok())
     return false;
   const std::string original_config = YAML::Dump(config);
-  std::ofstream(directory.filePath("config.yaml").toStdString()) << original_config;
+  std::ofstream(directory.filePath("_hockeymon/config.yaml").toStdString()) << original_config;
 
   QImage image(800, 240, QImage::Format_RGB32);
   image.fill(Qt::green);
-  if (!image.save(directory.filePath("s.png")))
+  if (!image.save(directory.filePath("_hockeymon/s.png")))
     return false;
   HStreamWindow window;
   window.show();
@@ -21571,7 +20284,7 @@ bool test_stitching_still() {
   if (!expect(wait_visible(), "Reverting an unsaved edit must restore the calibration still"))
     return false;
   config["stitching"]["projection"] = "equirectangular";
-  std::ofstream(directory.filePath("config.yaml").toStdString()) << config;
+  std::ofstream(directory.filePath("_hockeymon/config.yaml").toStdString()) << config;
   HStreamWindowTestAccess::reloadSavedControls(&window);
   QElapsedTimer pause;
   pause.start();
@@ -21581,7 +20294,7 @@ bool test_stitching_still() {
   }
   if (!expect(still->isHidden(), "Reloading edited settings must not validate the old calibration image"))
     return false;
-  std::ofstream(directory.filePath("config.yaml").toStdString()) << original_config;
+  std::ofstream(directory.filePath("_hockeymon/config.yaml").toStdString()) << original_config;
   HStreamWindowTestAccess::reloadSavedControls(&window);
   if (!expect(wait_visible(), "Reloading matching settings must restore the still"))
     return false;
@@ -21590,7 +20303,7 @@ bool test_stitching_still() {
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "still-preview-b";
   if (!hm::stitching::reserve_stitching_backend_generation_in_config(config, "still-preview-b", choices).ok())
     return false;
-  std::ofstream(directory.filePath("config.yaml").toStdString()) << config;
+  std::ofstream(directory.filePath("_hockeymon/config.yaml").toStdString()) << config;
   pause.restart();
   while (pause.elapsed() < 1500) {
     QApplication::processEvents();
@@ -21622,9 +20335,9 @@ bool test_stitch_rotation_launch_draft() {
   qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
   const QString game = "rotation-launch-draft";
   const QString directory = QDir(games.path()).filePath(game);
-  if (!QDir().mkpath(directory))
+  if (!QDir().mkpath(QDir(directory).filePath("_hockeymon")))
     return false;
-  const fs::path config = fs::path(directory.toStdString()) / "config.yaml";
+  const fs::path config = fs::path(directory.toStdString()) / "_hockeymon/config.yaml";
   const QString prefix = "--options=stitching.post_stitch_rotate_degrees=";
   HStreamWindow window;
   window.show();
@@ -21778,8 +20491,8 @@ bool test_stitch_rotation_export_inheritance() {
                              "hstream_ui: {show_crop_dialog: false, show_leveling_dialog: false}\n";
   const QString game = "rotation-export-inheritance";
   const fs::path directory = fs::path(games.path().toStdString()) / game.toStdString();
-  fs::create_directories(directory);
-  const fs::path config = directory / "config.yaml";
+  fs::create_directories(directory / "_hockeymon");
+  const fs::path config = directory / "_hockeymon/config.yaml";
   std::ofstream(config) << "stitching: {post_stitch_rotate_degrees: 15}\n";
   HStreamWindow window;
   window.show();
@@ -22197,14 +20910,14 @@ bool test_scoreboard_prompt_defaults() {
             "The canonical baseline must enable automatic scoreboard selection"))
       return false;
     const fs::path game = fs::path(qgetenv("HM_GAME_DIR").constData()) / "ui-scoreboard-policy";
-    fs::create_directories(game);
+    fs::create_directories(game / "_hockeymon");
     auto* game_id = require_child<QLineEdit>(&window, "gameIdEdit");
     if (!game_id)
       return false;
     for (const bool enabled : {false, true}) {
       YAML::Node config;
       config["hstream_ui"]["show_scoreboard_dialog"] = enabled;
-      std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+      std::ofstream(game / "_hockeymon/config.yaml") << YAML::Dump(config) << '\n';
       game_id->setText("ui-scoreboard-policy");
       HStreamWindowTestAccess::reloadSavedControls(&window);
       if (!expect(
@@ -22219,7 +20932,7 @@ bool test_scoreboard_prompt_defaults() {
           return false;
       }
     }
-    std::ofstream(game / "config.yaml") << "hstream_ui: {show_scoreboard_dialog: invalid}\n";
+    std::ofstream(game / "_hockeymon/config.yaml") << "hstream_ui: {show_scoreboard_dialog: invalid}\n";
     HStreamWindowTestAccess::reloadSavedControls(&window);
     if (!expect(
             !HStreamWindowTestAccess::savedControlConfigLoaded(&window),
@@ -22272,9 +20985,8 @@ bool test_scoreboard_prompt_defaults() {
 bool test_active_process_destruction() {
   for (const QString& role : QStringList{"pipeline", "finalizer", "export"}) {
     auto window = std::make_unique<HStreamWindow>();
-    QProcess* process = role == "export"
-        ? new QProcess(window.get())
-        : HStreamWindowTestAccess::ownedProcess(window.get(), role == "finalizer");
+    QProcess* process = role == "export" ? new QProcess(window.get())
+                                         : HStreamWindowTestAccess::ownedProcess(window.get(), role == "finalizer");
     bool window_notified = false;
     QObject::connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), window.get(), [&] {
       window_notified = true;
@@ -22311,7 +21023,7 @@ int main(int argc, char** argv) {
   if (argc == 3 && QByteArray(argv[1]) == "--leveling-save-preflight") {
     const QFileInfo game(QString::fromLocal8Bit(argv[2]));
     const auto directory = fs::path(game.absoluteFilePath().toStdString());
-    const auto before = YAML::LoadFile((directory / "config.yaml").string());
+    const auto before = YAML::LoadFile((directory / "_hockeymon/config.yaml").string());
     if (!expect(
             before["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete",
             "Leveling save requires a completed calibration copy"))
@@ -22327,7 +21039,7 @@ int main(int argc, char** argv) {
     HStreamWindowTestAccess::stageTestLeveling(&window, revision);
     const bool saved = HStreamWindowTestAccess::savePreset(&window);
     std::cout << window.logText().toStdString() << '\n';
-    const auto after = YAML::LoadFile((directory / "config.yaml").string());
+    const auto after = YAML::LoadFile((directory / "_hockeymon/config.yaml").string());
     const auto state = after["hstream_ui"]["stitching_calibration"];
     return expect(
                saved && state["reframe"].IsMap() && state["status"].as<std::string>() == "pending" &&
@@ -22342,8 +21054,8 @@ int main(int argc, char** argv) {
   if (argc == 2 && QByteArray(argv[1]) == "--calibration-reference-preflight") {
     QTemporaryDir games_root;
     const auto game = std::filesystem::path(games_root.path().toStdString()) / "reference";
-    std::filesystem::create_directories(game);
-    std::ofstream(game / "config.yaml") << "{}\n";
+    std::filesystem::create_directories(game / "_hockeymon");
+    std::ofstream(game / "_hockeymon/config.yaml") << "{}\n";
     qputenv("HM_GAME_DIR", games_root.path().toLocal8Bit());
     QApplication app(argc, argv);
     HStreamWindow window;
@@ -22386,8 +21098,8 @@ int main(int argc, char** argv) {
   if (argc == 2 && QByteArray(argv[1]) == "--camera-tabs-preflight") {
     QTemporaryDir games_root;
     const auto game = std::filesystem::path(games_root.path().toStdString()) / "tabs";
-    std::filesystem::create_directories(game);
-    auto write = [&](const YAML::Node& config) { std::ofstream(game / "config.yaml") << config; };
+    std::filesystem::create_directories(game / "_hockeymon");
+    auto write = [&](const YAML::Node& config) { std::ofstream(game / "_hockeymon/config.yaml") << config; };
     YAML::Node config;
     config["stitching"]["camera_config"] = "manual";
     write(config);
@@ -22479,7 +21191,7 @@ int main(int argc, char** argv) {
   // Exercise the full saved-game loading path against original MP4 metadata.
   if (argc == 3 && QByteArray(argv[1]) == "--optics-preflight") {
     const QFileInfo game(QString::fromLocal8Bit(argv[2]));
-    QFile config(QDir(game.absoluteFilePath()).filePath("config.yaml"));
+    QFile config(QDir(game.absoluteFilePath()).filePath("_hockeymon/config.yaml"));
     if (!game.isDir() || !config.open(QIODevice::ReadOnly))
       return 1;
     const QByteArray original_config = config.readAll();
@@ -22521,7 +21233,7 @@ int main(int argc, char** argv) {
   // already satisfied. Load the real window's effective profile defaults.
   if (argc == 3 && QByteArray(argv[1]) == "--crop-preflight") {
     const QFileInfo game(QString::fromLocal8Bit(argv[2]));
-    const QString config_path = QDir(game.absoluteFilePath()).filePath("config.yaml");
+    const QString config_path = QDir(game.absoluteFilePath()).filePath("_hockeymon/config.yaml");
     QFile config(config_path);
     if (!game.isDir() || !config.open(QIODevice::ReadOnly))
       return 1;

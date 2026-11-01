@@ -305,6 +305,10 @@ class HuginProject {
   // lock wrapper (for example CanvasConstraintArtifactLock). Does not lock.
   static absl::StatusOr<std::optional<CanvasProvenance>> ReadCanvasProvenanceLocked(
       const std::filesystem::path& game_dir);
+
+  // Reads an already pinned flat staging/snapshot bundle. Does not add _hockeymon.
+  static absl::StatusOr<std::optional<CanvasProvenance>> ReadCanvasProvenanceAtDirectory(
+      const std::filesystem::path& directory);
 };
 
 } // namespace hm::stitching

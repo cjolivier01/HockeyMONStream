@@ -539,6 +539,62 @@ absl::Status remove_pinned_directory(
   auto status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
   if (!status.ok())
     return status;
+  const fs::path marker_path(ownership_marker_name);
+  if (marker_path.has_parent_path()) {
+    // Candidate games keep their ownership config in private state. Preserve
+    // the entire pinned marker directory until its siblings have been retired,
+    // then use the ordinary leaf-marker protocol for that directory itself.
+    if (marker_path.parent_path() != "_hockeymon" || marker_path.filename() != "config.yaml")
+      return absl::InvalidArgumentError("Unsupported nested transaction ownership marker");
+    const std::string child_name = marker_path.parent_path().string();
+    auto child = directory.OpenChild(child_name, "candidate game state");
+    if (!child.ok())
+      return child.status();
+    if (!*child)
+      return absl::FailedPreconditionError("Candidate game has no state directory");
+    auto contents = read_bounded_regular_file_no_follow(
+        (**child).path() / marker_path.filename(), kMaximumOwnershipMarkerBytes, "candidate ownership config");
+    if (!contents.ok())
+      return contents.status();
+    status = remove_directory_contents_no_follow(directory.descriptor(), child_name);
+    if (!status.ok())
+      return status;
+    status = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
+    if (!status.ok())
+      return status;
+    status = remove_pinned_directory(directory, child_name, **child, marker_path.filename().string());
+    if (!status.ok())
+      return status;
+    status = remove_empty_pinned_directory(parent.descriptor(), name, directory.descriptor());
+    if (!status.ok()) {
+      // A late entry or transient filesystem error must not orphan the
+      // candidate after its last ownership record has been removed.
+      auto restored = verify_directory_binding(parent.descriptor(), name, directory.descriptor());
+      if (restored.ok() && ::mkdirat(directory.descriptor(), child_name.c_str(), 0700) != 0)
+        restored =
+            absl::InternalError("Unable to restore candidate state directory: " + std::string(std::strerror(errno)));
+      if (restored.ok()) {
+        auto replacement = directory.OpenChild(child_name, "restored candidate state");
+        if (!replacement.ok())
+          restored = replacement.status();
+        else if (!*replacement)
+          restored = absl::AbortedError("Restored candidate state disappeared");
+        else {
+          restored = write_owned_directory_marker((**replacement).path(), marker_path.filename().string(), *contents);
+          if (restored.ok())
+            restored = fsync_directory((**replacement).path());
+        }
+      }
+      if (restored.ok())
+        restored = fsync_directory(directory.path());
+      if (!restored.ok())
+        return absl::InternalError(
+            std::string(status.message()) +
+            "; unable to restore candidate ownership: " + std::string(restored.message()));
+      return status;
+    }
+    return fsync_directory(parent.path());
+  }
   std::string marker_contents;
   if (!ownership_marker_name.empty()) {
     auto contents = read_bounded_regular_file_no_follow(

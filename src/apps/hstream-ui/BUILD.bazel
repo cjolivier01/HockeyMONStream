@@ -268,7 +268,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = ["@qt//:qt_core", "//src/libs/recording", "//src/libs/publication"],
+    deps = ["//src/libs/common:game_storage", "@qt//:qt_core", "//src/libs/recording", "//src/libs/publication"],
 )
 
 cc_library(
@@ -316,7 +316,7 @@ cc_library(
     hdrs = ["RinkMapBackend.h", "RinkMapDialog.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [
+    deps = ["//src/libs/common:game_storage",
         ":value_control_wheel",
         ":action_icons",
         ":calibration_image",
@@ -482,6 +482,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:game_storage",
         "//src/libs/tracking:camera_control_specs",
         "//src/libs/common:baseline_config",
         ":value_control_wheel",
@@ -508,7 +509,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = ["//src/libs/common:game_storage",
         "//src/libs/common:baseline_config",
         "//src/libs/common:config_layers",
         "//src/libs/common:status_macros",
@@ -534,7 +535,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = ["//src/libs/common:game_storage",
         ":stitching_experiment_backend",
         "//src/libs/common:status_macros",
         "//src/libs/common:utils_base",
@@ -752,7 +753,7 @@ cc_library(
     hdrs = ["HighlightScene.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_plan", "@qt//:qt_gui"],
+    deps = ["//src/libs/common:game_storage", ":highlight_plan", "@qt//:qt_gui"],
 )
 
 cc_library(
@@ -813,7 +814,7 @@ cc_library(
     hdrs = ["HighlightsDialog.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [
+    deps = ["//src/libs/common:game_storage",
         ":native_preview_surface",
         ":action_icons",
         ":archive_catalog",
@@ -912,7 +913,7 @@ cc_library(
     linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = ["//src/libs/common:game_storage",
         ":detector_options",
         ":runtime_options",
         "//src/libs/tracking:playtracker_runtime_controls",
@@ -1466,7 +1467,7 @@ cc_binary(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = ["//src/libs/common:game_storage",
         ":web_scoreboard_preview",
         ":detector_options",
         ":runtime_options",

@@ -15,6 +15,14 @@
 namespace fs = std::filesystem;
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 
 bool expect(bool condition, const char* message) {
   if (!condition)
@@ -94,7 +102,7 @@ int main() {
         "");
     ok &= expect(linked_save.ok(), "linked experiment orientation must save");
     if (linked_save.ok()) {
-      const auto linked = YAML::LoadFile((experiment_root / "config.yaml").string());
+      const auto linked = YAML::LoadFile((saved_state(experiment_root) / "config.yaml").string());
       ok &= expect(
           linked["game"]["videos"]["left"][0].as<std::string>() == "GX010082.MP4" &&
               linked["game"]["videos"]["left"][1].as<std::string>() == "GX020082.MP4" &&
@@ -120,7 +128,7 @@ int main() {
     const hm::stitching::orientation_internal::VideoChapterMap right{{1, right_path.string()}};
     const auto completed_save =
         hm::stitching::orientation_internal::save_orientation_config(completed_root, left, right, "program-owner");
-    const YAML::Node after_completed = YAML::LoadFile((completed_root / "config.yaml").string());
+    const YAML::Node after_completed = YAML::LoadFile((saved_state(completed_root) / "config.yaml").string());
     ok &= expect(
         completed_save.ok() && after_completed["game"]["videos"]["left"][0].as<std::string>() == "cam1/left.mp4" &&
             after_completed["game"]["videos"]["right"][0].as<std::string>() == "cam2/right.mp4",
@@ -137,7 +145,7 @@ int main() {
         {1, right_path.string()}, {4, right_path_2.string()}, {9, right_path_3.string()}};
     const auto uneven_save = hm::stitching::orientation_internal::save_orientation_config(
         completed_root, uneven_left, uneven_right, "program-owner");
-    const YAML::Node after_uneven = YAML::LoadFile((completed_root / "config.yaml").string());
+    const YAML::Node after_uneven = YAML::LoadFile((saved_state(completed_root) / "config.yaml").string());
     ok &= expect(
         uneven_save.ok() && after_uneven["game"]["videos"]["left"].size() == 2 &&
             after_uneven["game"]["videos"]["right"].size() == 3 &&
@@ -151,7 +159,7 @@ int main() {
         "newer orientation owner fixture must publish");
     const auto superseded_save =
         hm::stitching::orientation_internal::save_orientation_config(completed_root, left, right, "program-owner");
-    YAML::Node after_superseded = YAML::LoadFile((completed_root / "config.yaml").string());
+    YAML::Node after_superseded = YAML::LoadFile((saved_state(completed_root) / "config.yaml").string());
     const bool stale_orientation_absent = !after_superseded["game"] || !after_superseded["game"]["videos"];
     ok &= expect(
         superseded_save.code() == absl::StatusCode::kAborted &&

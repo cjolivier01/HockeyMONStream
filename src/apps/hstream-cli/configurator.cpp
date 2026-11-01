@@ -1,5 +1,6 @@
 #include "configurator.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
@@ -5318,7 +5319,8 @@ absl::Status Configurator::setup_stitcher_and_masks(
           if (!generation.ok())
             return generation.status();
           stitching::StitchArtifactContentIdentity identity;
-          HM_ASSIGN_OR_RETURN(identity, stitching::stitch_artifact_content_identity_locked(game_dir));
+          HM_ASSIGN_OR_RETURN(
+              identity, stitching::stitch_artifact_content_identity_locked(hm::game_storage::StateDirectory(game_dir)));
           auto retained = stitching::LoadRinkMaskInputForConfig(game_dir, config_, *generation, identity.fingerprint);
           if (retained.ok())
             retained_rink_mask_input_format_ = retained->description.format;
@@ -5363,7 +5365,7 @@ absl::Status Configurator::setup_stitcher_and_masks(
     pipeline["hmstitcher"]["config-file"] = std::string(game_dir);
   }
   if (pipeline["ds-fieldmask"].IsDefined()) {
-    pipeline["ds-fieldmask"]["detection-mask"] = std::string(game_dir / kRinkMaskFilename);
+    pipeline["ds-fieldmask"]["detection-mask"] = std::string(hm::game_storage::StatePath(game_dir, kRinkMaskFilename));
   }
   return absl::OkStatus();
 }
@@ -6170,7 +6172,7 @@ fs::path playtracker_runtime_directory(const fs::path& game_dir) {
   if (const auto managed_work = hm::publication::EnvironmentWorkingDirectory(); !managed_work.empty())
     return managed_work / "playtracker-runtime";
   if (!game_dir.empty())
-    return game_dir / "hstream-runtime";
+    return hm::game_storage::StatePath(game_dir, "hstream-runtime");
   if (const char* runtime_root = std::getenv("XDG_RUNTIME_DIR"); runtime_root && *runtime_root) {
     const fs::path configured(runtime_root);
     if (configured.is_absolute())
@@ -6341,6 +6343,8 @@ absl::Status Configurator::materialize_playtracker_config(
   std::ostringstream filename;
   filename << "play_tracker_config-" << std::hex << hash << ".yaml";
   const fs::path runtime_dir = playtracker_runtime_directory(game_dir);
+  if (!game_dir.empty() && runtime_dir == hm::game_storage::StatePath(game_dir, "hstream-runtime"))
+    HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_dir));
   std::error_code directory_error;
   fs::create_directories(runtime_dir, directory_error);
   if (directory_error) {
@@ -6374,6 +6378,8 @@ absl::Status Configurator::materialize_playtracker_config(
   if (!prune_status.ok())
     std::cerr << "Warning: " << prune_status << '\n';
   section["config-file"] = effective_path.string();
+  if (!game_dir.empty() && runtime_dir == hm::game_storage::StatePath(game_dir, "hstream-runtime"))
+    HM_RETURN_IF_ERROR(hm::game_storage::RefreshManifest(game_dir, "playtracker-runtime"));
   return absl::OkStatus();
 }
 
@@ -6583,7 +6589,7 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
 }
 
 absl::Status Configurator::import_stitching_orientation(const fs::path& game_dir) {
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = hm::game_storage::StatePath(game_dir, "config.yaml");
   auto saved = stitching::load_game_config_file(config_path);
   if (!saved.ok())
     return saved.status();
@@ -7465,6 +7471,10 @@ absl::Status Configurator::configure_job_telemetry(YAML::Node& pipeline, bool st
       const auto managed_work = hm::publication::EnvironmentWorkingDirectory();
       telemetry_directory = managed_work.empty() ? (*root / game_id_).string() : managed_work.string();
     }
+    fs::path confined_telemetry;
+    HM_ASSIGN_OR_RETURN(
+        confined_telemetry, hm::game_storage::ConfineWorkDirectory(resolved_game_dir(), telemetry_directory));
+    telemetry_directory = confined_telemetry.string();
     properties["telemetry-game-id"] = game_id_;
   } else {
     telemetry_directory.clear();
@@ -7494,6 +7504,15 @@ absl::Status Configurator::configure_encode_file_outputs(
     const std::vector<std::string>& source_video_paths) const {
   if (game_id_.empty()) {
     return absl::OkStatus();
+  }
+
+  fs::path game_directory;
+  if (resolved_game_dir_.has_value()) {
+    game_directory = *resolved_game_dir_;
+  } else {
+    fs::path game_root;
+    HM_ASSIGN_OR_RETURN(game_root, hm::user_config::game_root(config_));
+    game_directory = game_root / game_id_;
   }
 
   const auto has_audio_for_sink = [&](int sink_id) {
@@ -7589,6 +7608,10 @@ absl::Status Configurator::configure_encode_file_outputs(
       output_path = fs::absolute(output_path);
     }
 
+    fs::path confined_output_parent;
+    HM_ASSIGN_OR_RETURN(
+        confined_output_parent, hm::game_storage::ConfineWorkDirectory(game_directory, output_path.parent_path()));
+    output_path = confined_output_parent / output_path.filename();
     HM_RETURN_IF_ERROR(configurator_internal::claim_unique_archive_output_path(claimed_output_paths, output_path, key));
     const int canonical_bitrate_rank = explicit_value_rank("video_out.bit_rate");
     const int native_bitrate_rank = explicit_value_rank("pipeline." + key + ".bitrate");
@@ -7919,13 +7942,13 @@ std::filesystem::path Configurator::get_game_dir(const std::string& game_id) {
 }
 
 std::filesystem::path Configurator::get_private_config_file_name(const std::string& game_id) {
-  return get_game_dir(game_id) / "config.yaml";
+  return hm::game_storage::StatePath(get_game_dir(game_id), "config.yaml");
 }
 
 absl::StatusOr<std::optional<YAML::Node>> Configurator::load_private_config() {
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
   const fs::path game_dir = resolved_game_dir();
-  const fs::path private_config_file = game_dir / "config.yaml";
+  const fs::path private_config_file = hm::game_storage::StatePath(game_dir, "config.yaml");
   if (private_config_file.parent_path().empty() || !fs::is_directory(private_config_file.parent_path())) {
     return std::nullopt;
   }
@@ -7985,7 +8008,7 @@ absl::Status Configurator::save_private_config_with_backend_claim_impl(
   auto config_lock = stitching::GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
-  const fs::path private_config_file = game_dir / "config.yaml";
+  const fs::path private_config_file = hm::game_storage::StatePath(game_dir, "config.yaml");
   YAML::Node latest;
   try {
     if (fs::is_regular_file(private_config_file))
@@ -8495,16 +8518,24 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const bool effective_values_are_generated_private = inherit_backend_choices && generated_private_values &&
       *private_matcher_value == matcher && *private_backend_value == backend && private_projection_value.has_value() &&
       projection == *private_projection_value && run_autooptimizer == *private_autooptimizer_value;
+  YAML::Node effective_backend_config = config_;
   if (effective_values_are_generated_private) {
-    HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(lower_layer_config_));
-    HM_ASSIGN_OR_RETURN(backend_name, canonical_backend(lower_layer_config_));
-    HM_ASSIGN_OR_RETURN(run_autooptimizer, canonical_autooptimizer(lower_layer_config_));
-    HM_ASSIGN_OR_RETURN(projection_name, canonical_projection(lower_layer_config_));
+    // Repeating a worker save must recover the original private intent as well
+    // as inherited defaults, just as a fresh Configurator load would. Dropping
+    // the whole private tuple here changes a previously reserved generation.
+    YAML::Node restored_private = YAML::Clone(private_config_);
+    if (!stitching::restore_generated_stitching_backend_choices(restored_private))
+      return absl::FailedPreconditionError("Cannot restore generated stitching backend choices before saving");
+    effective_backend_config.reset(merge_nodes(YAML::Clone(lower_layer_config_), restored_private, false));
+    HM_ASSIGN_OR_RETURN(matcher_name, canonical_matcher(effective_backend_config));
+    HM_ASSIGN_OR_RETURN(backend_name, canonical_backend(effective_backend_config));
+    HM_ASSIGN_OR_RETURN(run_autooptimizer, canonical_autooptimizer(effective_backend_config));
+    HM_ASSIGN_OR_RETURN(projection_name, canonical_projection(effective_backend_config));
     HM_ASSIGN_OR_RETURN(matcher, stitching::ParseControlPointMatcher(matcher_name));
     HM_ASSIGN_OR_RETURN(backend, stitching::ParseMappingBackend(backend_name));
     HM_ASSIGN_OR_RETURN(projection, stitching::ParseStitchProjection(projection_name));
     if (backend != stitching::MappingBackend::kNona &&
-        !get_node(lower_layer_config_, "stitching.projection").has_value()) {
+        !get_node(effective_backend_config, "stitching.projection").has_value()) {
       projection = stitching::StitchProjection::kRectilinear;
       projection_name = stitching::StitchProjectionName(projection);
     }
@@ -8516,14 +8547,9 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
 
   std::vector<double> projection_parameters;
   HM_ASSIGN_OR_RETURN(
-      projection_parameters,
-      stitching::read_stitch_projection_parameters(
-          effective_values_are_generated_private ? lower_layer_config_ : config_, projection));
+      projection_parameters, stitching::read_stitch_projection_parameters(effective_backend_config, projection));
   stitching::StitchProjectionFraming projection_framing;
-  HM_ASSIGN_OR_RETURN(
-      projection_framing,
-      stitching::read_stitch_projection_framing(
-          effective_values_are_generated_private ? lower_layer_config_ : config_));
+  HM_ASSIGN_OR_RETURN(projection_framing, stitching::read_stitch_projection_framing(effective_backend_config));
   if (backend == stitching::MappingBackend::kNona) {
     HM_RETURN_IF_ERROR(
         stitching::ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
@@ -8584,6 +8610,12 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       merge_nodes(YAML::Clone(lower_layer_config_), YAML::Clone(private_config_), false);
   stitching::StitchProjectionFraming private_projection_framing;
   HM_ASSIGN_OR_RETURN(private_projection_framing, stitching::read_stitch_projection_framing(private_framing_config));
+  stitching::StitchProjectionFraming private_worker_framing;
+  HM_ASSIGN_OR_RETURN(private_worker_framing, stitching::read_stitch_projection_framing(private_config_));
+  const bool materializes_inherited_framing =
+      private_projection_framing == projection_framing && private_worker_framing != projection_framing;
+  const bool needs_worker_framing = !expected_invalidation_id.empty() && backend == stitching::MappingBackend::kNona &&
+      private_worker_framing != projection_framing;
   YAML::Node private_camera_config = YAML::Clone(lower_layer_config_);
   const YAML::Node private_stitching = private_config_["stitching"];
   if (private_stitching && private_stitching.IsMap()) {
@@ -8625,15 +8657,19 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   const auto private_frozen = get_node(private_config_, "stitching.auto_input_lens_frozen");
   const bool freeze_changed =
       frozen.has_value() && (!private_frozen.has_value() || YAML::Dump(*frozen) != YAML::Dump(*private_frozen));
-  const bool private_matches = !freeze_changed && !provider_changed && !filtering_changed && !resolution_changed &&
-      !rink_context_changed && !mask_time_changed && private_matcher_value.has_value() &&
-      *private_matcher_value == matcher && private_backend_value.has_value() && *private_backend_value == backend &&
-      private_projection_value.has_value() && *private_projection_value == projection &&
-      private_autooptimizer_value.has_value() && *private_autooptimizer_value == run_autooptimizer &&
-      private_projection_parameters == projection_parameters && private_projection_framing == projection_framing &&
-      private_camera == camera && private_camera.same_automation(camera);
-  if (private_matches) {
-    if (loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
+  const bool private_matches = private_matcher_value.has_value() && *private_matcher_value == matcher &&
+      private_backend_value.has_value() && *private_backend_value == backend && private_projection_value.has_value() &&
+      *private_projection_value == projection && private_autooptimizer_value.has_value() &&
+      *private_autooptimizer_value == run_autooptimizer && private_projection_parameters == projection_parameters &&
+      private_projection_framing == projection_framing && private_camera == camera &&
+      private_camera.same_automation(camera);
+  if (private_matches && !needs_worker_framing) {
+    // Materializing independent runtime choices must not expand an unchanged
+    // partial framing map or discard retained backend restoration metadata.
+    if (freeze_changed)
+      private_config_["stitching"]["auto_input_lens_frozen"] = YAML::Clone(*frozen);
+    if (freeze_changed || provider_changed || filtering_changed || resolution_changed || rink_context_changed ||
+        mask_time_changed || loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
       HM_RETURN_IF_ERROR(
           save_private_config_with_backend_claim(private_config_, expected_invalidation_id, backend_choices));
       loaded_generated_stitching_backend_choices_ = false;
@@ -8650,7 +8686,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   stitching::write_stitch_camera_selection(private_config_, camera);
   if (frozen.has_value())
     private_config_["stitching"]["auto_input_lens_frozen"] = YAML::Clone(*frozen);
-  if (private_values_present && !generated_private_values && inherit_backend_choices) {
+  if (private_values_present && !generated_private_values && inherit_backend_choices &&
+      !materializes_inherited_framing) {
     remove_yaml_key_path(private_config_, {"hstream_ui", "generated_stitching_backend_choices"});
   } else {
     private_config_["hstream_ui"]["generated_stitching_backend_choices"]["control_point_matcher"] = matcher_name;
@@ -8821,7 +8858,7 @@ absl::StatusOr<bool> Configurator::reconcile_stitch_frame_time_override(
   if (!config_transaction.ok())
     return config_transaction.status();
 
-  const fs::path private_config_file = game_dir / "config.yaml";
+  const fs::path private_config_file = hm::game_storage::StatePath(game_dir, "config.yaml");
   YAML::Node latest(YAML::NodeType::Map);
   try {
     if (fs::is_regular_file(private_config_file))
@@ -8997,7 +9034,7 @@ absl::Status Configurator::reconcile_selected_frame_count_override(
     return transaction.status();
   YAML::Node latest;
   try {
-    latest = YAML::LoadFile((game_dir / "config.yaml").string());
+    latest = YAML::LoadFile((hm::game_storage::StatePath(game_dir, "config.yaml")).string());
   } catch (const YAML::Exception& error) {
     return absl::AbortedError(
         "Cannot read selected-frame configuration before changing the frame count: " + std::string(error.what()));
@@ -9314,7 +9351,7 @@ absl::Status Configurator::complete_configuration(
     if (!transaction.ok())
       return transaction.status();
     try {
-      YAML::Node latest = YAML::LoadFile((game_dir / "config.yaml").string());
+      YAML::Node latest = YAML::LoadFile((hm::game_storage::StatePath(game_dir, "config.yaml")).string());
       if (YAML::Dump(latest["hstream_ui"]["stitching_calibration"]) !=
           YAML::Dump(private_config_["hstream_ui"]["stitching_calibration"]))
         return absl::AbortedError("Calibration changed before explicit recalibration");
@@ -9344,7 +9381,7 @@ absl::Status Configurator::complete_configuration(
     if (!transaction.ok())
       return transaction.status();
     try {
-      YAML::Node latest = YAML::LoadFile((game_dir / "config.yaml").string());
+      YAML::Node latest = YAML::LoadFile((hm::game_storage::StatePath(game_dir, "config.yaml")).string());
       const std::string previous = YAML::Dump(latest);
       const bool had_intent = stitching::HasStitchingReframeIntent(latest);
       YAML::Node before = merge_nodes(YAML::Clone(lower_layer_config_), YAML::Clone(latest), false);
@@ -9496,7 +9533,7 @@ absl::Status Configurator::complete_configuration(
     auto config_transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
     if (!config_transaction.ok())
       return config_transaction.status();
-    const fs::path private_config_file = game_dir / "config.yaml";
+    const fs::path private_config_file = hm::game_storage::StatePath(game_dir, "config.yaml");
     HM_RETURN_IF_ERROR(
         stitching::validate_stitching_generation_owner_file_locked(private_config_file, effective_invalidation_id));
     try {
@@ -9690,7 +9727,7 @@ absl::Status Configurator::complete_configuration(
       auto config_transaction = stitching::GameConfigTransactionLock::Acquire(game_dir);
       if (!config_transaction.ok())
         return config_transaction.status();
-      const fs::path private_config_file = game_dir / "config.yaml";
+      const fs::path private_config_file = hm::game_storage::StatePath(game_dir, "config.yaml");
       try {
         YAML::Node current = YAML::LoadFile(private_config_file.string());
         const std::string current_status =

@@ -31,6 +31,7 @@ bool expect(bool condition, const std::string& message) {
 }
 
 void write_file(const fs::path& path, const std::string& text) {
+  fs::create_directories(path.parent_path());
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   output << text;
   output.close();
@@ -77,7 +78,7 @@ StoredStitchingExperiment make_record(
   calibration["control_points"] = record.workspace.settings.control_points;
   calibration["frame_count"] = count;
   calibration["status"] = "pending";
-  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   return record;
 }
 
@@ -128,7 +129,7 @@ PlayerFrameSelectionPlan make_plan(const fs::path& root, int count, uint64_t anc
 }
 
 void install_plan(StoredStitchingExperiment& record, const PlayerFrameSelectionPlan& plan) {
-  const auto path = record.workspace.game_directory / "config.yaml";
+  const auto path = record.workspace.game_directory / "_hockeymon/config.yaml";
   auto config = YAML::Load(read_file(path));
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   write_file(path, YAML::Dump(config));
@@ -168,12 +169,12 @@ bool failed_attempt_removal(const fs::path& root) {
     owner.state = frozen ? "frozen" : "failed";
     ok &= expect(SaveStitchingExperiment(store, owner, frozen).ok(), "save stopped failed attempt");
     const auto key = owner.workspace.game_directory.lexically_relative(store.directory).generic_string();
-    write_file(store.game_directory / "config.yaml", "main sentinel");
+    write_file(store.game_directory / "_hockeymon/config.yaml", "main sentinel");
     fs::create_directory_symlink(store.game_directory, owner.workspace.game_directory / "linked-main");
     write_file(owner.workspace.game_directory / "runner.log", "failed runner");
     ok &= expect(
         RemoveStitchingExperiments(store, {key}).ok() && !fs::exists(owner.workspace.game_directory) &&
-            read_file(store.game_directory / "config.yaml") == "main sentinel",
+            read_file(store.game_directory / "_hockeymon/config.yaml") == "main sentinel",
         "failed removal deletes private files without following media links into main");
     const auto loaded = LoadStitchingExperimentStore(store);
     ok &= expect(
@@ -247,17 +248,18 @@ bool completed_result_removal(const fs::path& root) {
   child.process_session_id = 0;
   child.process_token.clear();
   ok &= expect(SaveStitchingExperiment(store, child).ok(), "release preview ownership");
-  write_file(store.game_directory / "config.yaml", "main calibration sentinel");
-  fs::create_directories(store.game_directory / "player-frame-inputs");
-  write_file(store.game_directory / "player-frame-inputs" / "promoted.png", "promoted input sentinel");
+  write_file(store.game_directory / "_hockeymon/config.yaml", "main calibration sentinel");
+  fs::create_directories(store.game_directory / "_hockeymon/player-frame-inputs");
+  write_file(store.game_directory / "_hockeymon/player-frame-inputs" / "promoted.png", "promoted input sentinel");
   fs::create_directory_symlink(store.game_directory, owner.workspace.game_directory / "linked-main");
   write_file(owner.workspace.game_directory / "runner.log", "completed runner");
   ok &= expect(
       RemoveStitchingExperiments(store, {key(owner), key(child)}, true).ok() &&
           !fs::exists(owner.workspace.game_directory) && !fs::exists(child.workspace.game_directory) &&
           fs::exists(unrelated.workspace.game_directory) &&
-          read_file(store.game_directory / "config.yaml") == "main calibration sentinel" &&
-          read_file(store.game_directory / "player-frame-inputs" / "promoted.png") == "promoted input sentinel",
+          read_file(store.game_directory / "_hockeymon/config.yaml") == "main calibration sentinel" &&
+          read_file(store.game_directory / "_hockeymon/player-frame-inputs" / "promoted.png") ==
+              "promoted input sentinel",
       "completed cascade removes only owned results and preserves main's promoted inputs");
   const auto loaded = LoadStitchingExperimentStore(store);
   ok &= expect(
@@ -288,7 +290,7 @@ bool deletion_recovery(const fs::path& root) {
         queued_store, {removed.workspace.game_directory.lexically_relative(queued_store.directory).generic_string()});
   }
   ok &= expect(
-      !removed_status.ok() && fs::exists(removed.workspace.game_directory / "config.yaml"),
+      !removed_status.ok() && fs::exists(removed.workspace.game_directory / "_hockeymon/config.yaml"),
       "failed queued cleanup retains ownership of the remaining private files");
   auto remaining = LoadStitchingExperimentStore(queued_store);
   ok &= expect(
@@ -305,7 +307,7 @@ bool deletion_recovery(const fs::path& root) {
   auto full_store = open_store(root / "full-deletion-recovery");
   auto candidate = make_record(full_store, "session", 1);
   ok &= expect(SaveStitchingExperiment(full_store, candidate).ok(), "prepare interrupted whole-cache discard");
-  const fs::path main_input = full_store.game_directory / "left.png";
+  const fs::path main_input = full_store.game_directory / "_hockeymon/left.png";
   write_file(main_input, "main calibration must survive discard");
   absl::Status discard_status;
   {
@@ -347,7 +349,7 @@ bool stopped_process_with_corrupt_config(const fs::path& root) {
   const auto reservation =
       ReserveStitchingExperimentFrameCount(store, 2, 10 * kPlayerFrameSecond, owner.workspace, owner.reservation_token);
   ok &= expect(reservation.ok() && !reservation->has_value(), "retain the interrupted selection reservation");
-  write_file(owner.workspace.game_directory / "config.yaml", "stitching: [invalid yaml");
+  write_file(owner.workspace.game_directory / "_hockeymon/config.yaml", "stitching: [invalid yaml");
   ok &= expect(!DiscardStitchingExperimentStore(store).ok(), "unreconciled process intent prevents discard");
   auto wrong_process = owner;
   wrong_process.process_token = "different-process";
@@ -396,7 +398,7 @@ bool retained_main_counts(const fs::path& root) {
     ok &= expect(SaveStitchingExperiment(store, first).ok(), "queue a frozen main-derived row before any solve");
     YAML::Node main;
     main["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(make_plan(store.game_directory, 3));
-    write_file(store.game_directory / "config.yaml", YAML::Dump(main));
+    write_file(store.game_directory / "_hockeymon/config.yaml", YAML::Dump(main));
     const auto first_key = first.workspace.game_directory.lexically_relative(store.directory).generic_string();
     auto restored = LoadStitchingExperimentStore(store);
     ok &= expect(
@@ -476,21 +478,21 @@ bool resolution_settings(const fs::path& root) {
   for (const std::string size : {"native", "1k", "2k"}) {
     auto record = make_record(store, "resolution", ++sequence);
     record.workspace.settings.control_point_resolution = size;
-    YAML::Node config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+    YAML::Node config = YAML::LoadFile((record.workspace.game_directory / "_hockeymon/config.yaml").string());
     config["stitching"]["control_point_resolution"] = size;
-    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+    write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
     ok &= expect(SaveStitchingExperiment(store, record).ok(), "each explicit image size persists independently");
     auto changed = record;
     changed.workspace.settings.control_point_resolution = size == "native" ? "1k" : "native";
     config["stitching"]["control_point_resolution"] = *changed.workspace.settings.control_point_resolution;
-    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+    write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
     ok &= expect(
         !SaveStitchingExperiment(store, changed).ok(),
         "updating an existing candidate cannot change its frozen image size even when config agrees");
     ok &= expect(
         !SaveStitchingExperiment(store, record).ok(), "a changed workspace size cannot retain the old catalog setting");
     config["stitching"]["control_point_resolution"] = size;
-    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+    write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   }
   const auto restored = LoadStitchingExperimentStore(store);
   if (!expect(restored.ok() && restored->experiments.size() == 4, "image size variants survive history reload"))
@@ -513,9 +515,9 @@ bool matcher_settings(const fs::path& root) {
   bool ok = expect(SaveStitchingExperiment(store, legacy).ok(), "legacy matcher inheritance remains readable");
   auto record = make_record(store, "matcher", 2);
   record.workspace.settings.control_point_matcher = "loftr";
-  auto config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+  auto config = YAML::LoadFile((record.workspace.game_directory / "_hockeymon/config.yaml").string());
   config["stitching"]["control_point_matcher"] = "loftr";
-  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   ok &= expect(SaveStitchingExperiment(store, record).ok(), "explicit matcher persists");
   const auto restored = LoadStitchingExperimentStore(store);
   ok &= expect(
@@ -524,7 +526,7 @@ bool matcher_settings(const fs::path& root) {
           restored->experiments[1].workspace.settings.control_point_matcher == "loftr",
       "history distinguishes a frozen matcher from legacy inheritance");
   config["stitching"]["control_point_matcher"] = "akaze-hamming";
-  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   ok &= expect(!SaveStitchingExperiment(store, record).ok(), "workspace matcher changes invalidate saved settings");
   record.workspace.settings.control_point_matcher = "akaze-hamming";
   ok &= expect(!SaveStitchingExperiment(store, record).ok(), "a catalog matcher cannot change even if config agrees");
@@ -543,9 +545,9 @@ bool lens_settings(const fs::path& root) {
   record.workspace.settings.camera->input_cameras = {
       {"cam1/source.mp4", {125.12, 70.36, record.workspace.settings.camera->input_lens}},
       {"cam2/source.mp4", {97.07, 54.59, record.workspace.settings.camera->input_lens}}};
-  auto config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+  auto config = YAML::LoadFile((record.workspace.game_directory / "_hockeymon/config.yaml").string());
   write_stitch_camera_selection(config, *record.workspace.settings.camera);
-  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   bool ok = expect(SaveStitchingExperiment(store, record).ok(), "input optics must persist");
   const auto restored = LoadStitchingExperimentStore(store);
   ok &= expect(
@@ -565,13 +567,13 @@ bool lens_settings(const fs::path& root) {
     else
       camera.frozen = true;
     write_stitch_camera_selection(config, *changed.workspace.settings.camera);
-    write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+    write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
     ok &= expect(!SaveStitchingExperiment(store, original).ok(), "workspace camera policies must match the snapshot");
     ok &= expect(!SaveStitchingExperiment(store, changed).ok(), "persisted per-camera policies are immutable");
   }
   write_stitch_camera_selection(config, *original.workspace.settings.camera);
   config["stitching"]["input_lens"]["optimization"] = "refine";
-  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   ok &= expect(!SaveStitchingExperiment(store, record).ok(), "a workspace cannot silently change its input optics");
   record.workspace.settings.camera->input_lens.optimization = "refine";
   ok &= expect(!SaveStitchingExperiment(store, record).ok(), "persisted candidate optics are immutable");
@@ -582,9 +584,9 @@ bool manual_match_settings(const fs::path& root) {
   auto store = open_store(root);
   auto record = make_record(store, "manual", 1);
   record.workspace.settings.manual_control_points = std::string(64, 'a');
-  YAML::Node config = YAML::LoadFile((record.workspace.game_directory / "config.yaml").string());
+  YAML::Node config = YAML::LoadFile((record.workspace.game_directory / "_hockeymon/config.yaml").string());
   config["stitching"]["manual_control_points"] = *record.workspace.settings.manual_control_points;
-  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   bool ok = expect(SaveStitchingExperiment(store, record).ok(), "manual match identity must persist");
   const auto restored = LoadStitchingExperimentStore(store);
   ok &= expect(
@@ -595,7 +597,7 @@ bool manual_match_settings(const fs::path& root) {
   auto changed = record;
   changed.workspace.settings.manual_control_points = std::string(64, 'b');
   config["stitching"]["manual_control_points"] = *changed.workspace.settings.manual_control_points;
-  write_file(record.workspace.game_directory / "config.yaml", YAML::Dump(config));
+  write_file(record.workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(config));
   ok &= expect(
       !SaveStitchingExperiment(store, changed).ok(), "an existing candidate cannot replace its manual match identity");
   ok &= expect(!SaveStitchingExperiment(store, record).ok(), "catalog rejects a mismatched workspace manual identity");
@@ -628,8 +630,8 @@ bool run(const fs::path& root) {
     players.selection_owner_sequence = players.sequence;
     players.selection_owner_workspace_key =
         players.workspace.game_directory.lexically_relative(interrupted.directory).generic_string();
-    const auto baseline_config = read_file(baseline.workspace.game_directory / "config.yaml");
-    write_file(baseline.workspace.game_directory / "config.yaml", "{}\n");
+    const auto baseline_config = read_file(baseline.workspace.game_directory / "_hockeymon/config.yaml");
+    write_file(baseline.workspace.game_directory / "_hockeymon/config.yaml", "{}\n");
     ok &= expect(!SaveStitchingExperiment(interrupted, baseline).ok(), "inject a baseline preparation save failure");
     ok &= expect(
         !SaveStitchingExperiment(interrupted, players).ok(),
@@ -643,7 +645,7 @@ bool run(const fs::path& root) {
     ok &= expect(
         reopened.ok() && reopened->experiments.empty(),
         "reopening partial preparation cannot restore an orphan Players row");
-    write_file(baseline.workspace.game_directory / "config.yaml", baseline_config);
+    write_file(baseline.workspace.game_directory / "_hockeymon/config.yaml", baseline_config);
     ok &= expect(
         SaveStitchingExperiment(interrupted, baseline).ok() && SaveStitchingExperiment(interrupted, players).ok(),
         "durably saved baseline and self-owned Players dependencies remain supported");
@@ -658,7 +660,7 @@ bool run(const fs::path& root) {
   auto store = open_store(root / "games-a" / "same-name");
   auto other_game = open_store(root / "games-b" / "same-name");
   ok &= expect(
-      store.directory == fs::canonical(store.game_directory) / "stitching-experiments",
+      store.directory == fs::canonical(store.game_directory) / "_hockeymon/stitching-experiments",
       "all experiment data lives inside its canonical game");
   ok &= expect(store.directory != other_game.directory, "same-named games never share history");
   fs::create_directory_symlink(store.game_directory, root / "game-alias");
@@ -790,7 +792,7 @@ bool run(const fs::path& root) {
       "failed selection updates preserve exact catalog bytes");
   YAML::Node main;
   main["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(replacement_plan);
-  write_file(store.game_directory / "config.yaml", YAML::Dump(main));
+  write_file(store.game_directory / "_hockeymon/config.yaml", YAML::Dump(main));
   ok &= expect(
       !SaveStitchingExperiment(store, replacement, true, plan.fingerprint).ok(),
       "main authority must match the current main plan");
@@ -818,7 +820,7 @@ bool run(const fs::path& root) {
               }),
       "late completion preserves both immutable histories and the newer count authority");
   main["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(make_plan(store.game_directory, 3));
-  write_file(store.game_directory / "config.yaml", YAML::Dump(main));
+  write_file(store.game_directory / "_hockeymon/config.yaml", YAML::Dump(main));
   ok &= expect(
       SaveStitchingExperiment(store, owner, true, plan.fingerprint).ok(),
       "a main frame-count change also permits completion of the retained solve");
@@ -947,11 +949,11 @@ bool run(const fs::path& root) {
            .ok(),
       "queued count reservations must be released before their workspaces can be removed");
 
-  const fs::path promoted = store.game_directory / "player-frame-inputs" / plan.fingerprint;
+  const fs::path promoted = store.game_directory / "_hockeymon/player-frame-inputs" / plan.fingerprint;
   fs::create_directories(promoted);
   write_file(promoted / "main-input.png", "promoted input sentinel");
-  const auto main_config = read_file(store.game_directory / "config.yaml");
-  const fs::path stable_lock = store.game_directory / ".stitching-experiments.lock";
+  const auto main_config = read_file(store.game_directory / "_hockeymon/config.yaml");
+  const fs::path stable_lock = store.game_directory / "_hockeymon/.stitching-experiments.lock";
   // Both Open and Discard must serialize on an inode outside the directory
   // being removed. Locking an old, subsequently unlinked cache lock is unsafe.
   for (bool discard : {false, true}) {
@@ -1002,7 +1004,7 @@ bool run(const fs::path& root) {
       "explicit discard removes cache data while preserving the stable lock inode");
   ok &= expect(
       read_file(promoted / "main-input.png") == "promoted input sentinel" &&
-          read_file(store.game_directory / "config.yaml") == main_config,
+          read_file(store.game_directory / "_hockeymon/config.yaml") == main_config,
       "discard preserves promoted main inputs and selected main configuration");
   auto reopened = OpenStitchingExperimentStore(store.game_directory);
   if (!expect(reopened.ok(), "opening after explicit discard creates a fresh store"))

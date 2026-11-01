@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -2097,10 +2098,10 @@ absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransaction
   auto config = GameConfigLock::Acquire(game_dir);
   if (!config.ok())
     return config.status();
-  auto rink = lock_rink_transactions(game_dir, /*wait=*/true);
+  auto rink = lock_rink_transactions(hm::game_storage::StateDirectory(game_dir), /*wait=*/true);
   if (!rink.ok())
     return rink.status();
-  auto recovery = recover_rink_transactions_locked(game_dir);
+  auto recovery = recover_rink_transactions_locked(hm::game_storage::StateDirectory(game_dir));
   if (!recovery.ok())
     return recovery;
   auto state = std::make_unique<State>();
@@ -2114,10 +2115,10 @@ absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransaction
   auto config = GameConfigLock::TryAcquire(game_dir);
   if (!config.ok())
     return config.status();
-  auto rink = lock_rink_transactions(game_dir, /*wait=*/false);
+  auto rink = lock_rink_transactions(hm::game_storage::StateDirectory(game_dir), /*wait=*/false);
   if (!rink.ok())
     return rink.status();
-  auto recovery = recover_rink_transactions_locked(game_dir);
+  auto recovery = recover_rink_transactions_locked(hm::game_storage::StateDirectory(game_dir));
   if (!recovery.ok())
     return recovery;
   auto state = std::make_unique<State>();
@@ -2131,10 +2132,11 @@ absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransaction
   auto config = GameConfigLock::TryAcquire(game_dir);
   if (!config.ok())
     return config.status();
-  auto rink = lock_rink_transactions(game_dir, /*wait=*/false);
+  auto rink = lock_rink_transactions(hm::game_storage::StateDirectory(game_dir), /*wait=*/false);
   if (!rink.ok())
     return rink.status();
-  auto readable = transaction_snapshot_readable(game_dir, TransactionJournalKind::kRink);
+  auto readable =
+      transaction_snapshot_readable(hm::game_storage::StateDirectory(game_dir), TransactionJournalKind::kRink);
   if (!readable.ok())
     return readable.status();
   if (!*readable)
@@ -2149,7 +2151,8 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Cannot lock config outside an existing game directory: " + game_dir.string());
-  const fs::path path = game_dir / ".hstream-config.lock";
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_dir));
+  const fs::path path = hm::game_storage::StateDirectory(game_dir) / ".hstream-config.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open game config lock: " + std::string(std::strerror(errno)));
@@ -2165,7 +2168,8 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::TryAcquire(const
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Cannot lock config outside an existing game directory: " + game_dir.string());
-  const fs::path path = game_dir / ".hstream-config.lock";
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_dir));
+  const fs::path path = hm::game_storage::StateDirectory(game_dir) / ".hstream-config.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open game config lock: " + std::string(std::strerror(errno)));
@@ -2181,7 +2185,9 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::TryAcquire(const
 }
 
 absl::Status publish_game_config(const fs::path& game_dir, const std::string& contents) {
-  return publish_named_file(game_dir / "config.yaml", contents);
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_dir));
+  HM_RETURN_IF_ERROR(publish_named_file(hm::game_storage::StateDirectory(game_dir) / "config.yaml", contents));
+  return hm::game_storage::RefreshManifest(game_dir, "game-config");
 }
 
 absl::Status publish_named_file(const fs::path& path, const std::string& contents) {
@@ -2239,7 +2245,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
     bool remove_stitched_snapshot) {
   std::error_code error;
   std::vector<fs::path> invalidated_artifacts;
-  auto game_entries = directory_entries(game_dir, "rink masks");
+  auto game_entries = directory_entries(hm::game_storage::StateDirectory(game_dir), "rink masks");
   if (!game_entries.ok())
     return game_entries.status();
   for (const auto& entry : *game_entries) {
@@ -2260,7 +2266,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
     return absl::ResourceExhaustedError("Rink invalidation contains too many transaction artifacts");
 
   std::vector<fs::path> old_files = invalidated_artifacts;
-  const fs::path current_config = game_dir / "config.yaml";
+  const fs::path current_config = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   if (fs::exists(current_config, error)) {
     if (error || !fs::is_regular_file(current_config, error) || error)
       return absl::FailedPreconditionError("Game config is not a regular file: " + current_config.string());
@@ -2268,7 +2274,7 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   } else if (error) {
     return absl::InternalError("Unable to inspect game config: " + error.message());
   }
-  auto opened_root = PinnedDirectory::Open(game_dir, "rink invalidation root");
+  auto opened_root = PinnedDirectory::Open(hm::game_storage::StateDirectory(game_dir), "rink invalidation root");
   if (!opened_root.ok())
     return opened_root.status();
   std::vector<std::string> old_names;
@@ -2279,10 +2285,11 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   if (!pinned_old_files.ok())
     return pinned_old_files.status();
 
-  auto pending_status = mark_transaction_recovery_pending(game_dir, TransactionJournalKind::kRink);
+  auto pending_status =
+      mark_transaction_recovery_pending(hm::game_storage::StateDirectory(game_dir), TransactionJournalKind::kRink);
   if (!pending_status.ok())
     return pending_status;
-  std::string pattern = (game_dir / "hstream-rink-XXXXXX").string();
+  std::string pattern = (hm::game_storage::StateDirectory(game_dir) / "hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -2351,20 +2358,20 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   status = publish_transaction_state(staging, "PREPARED\n");
   if (!status.ok())
     return status;
-  status = fsync_path(game_dir, true);
+  status = fsync_path(hm::game_storage::StateDirectory(game_dir), true);
   if (!status.ok())
     return status;
   cleanup.prepared = true;
 
   auto rollback_error = [&](const std::string& message) -> absl::StatusOr<size_t> {
-    const auto rollback = recover_rink_transactions_locked(game_dir);
+    const auto rollback = recover_rink_transactions_locked(hm::game_storage::StateDirectory(game_dir));
     if (!rollback.ok())
       return absl::InternalError(message + "; rollback also failed: " + std::string(rollback.message()));
     return absl::InternalError(message);
   };
   size_t removed = 0;
   for (const std::string& name : published_names) {
-    fs::remove(game_dir / name, error);
+    fs::remove(hm::game_storage::StateDirectory(game_dir) / name, error);
     if (error)
       return rollback_error("Unable to remove old rink artifact: " + error.message());
     if (name != "config.yaml")
@@ -2374,13 +2381,13 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
       return rollback_error("Injected rink invalidation failure");
     }
   }
-  fs::rename(staging / "config.yaml", game_dir / "config.yaml", error);
+  fs::rename(staging / "config.yaml", hm::game_storage::StateDirectory(game_dir) / "config.yaml", error);
   if (error)
     return rollback_error("Unable to publish invalidated rink config: " + error.message());
-  status = fsync_path(game_dir / "config.yaml");
+  status = fsync_path(hm::game_storage::StateDirectory(game_dir) / "config.yaml");
   if (!status.ok())
     return rollback_error(std::string(status.message()));
-  status = fsync_path(game_dir, true);
+  status = fsync_path(hm::game_storage::StateDirectory(game_dir), true);
   if (!status.ok())
     return rollback_error(std::string(status.message()));
   if (const char* interrupt = std::getenv("HM_TEST_RINK_INVALIDATION_INTERRUPT_AFTER_CONFIG_SYNC");
@@ -2399,17 +2406,20 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   status = remove_owned_directory(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
   if (!status.ok())
     return status;
-  status = fsync_path(game_dir, true);
+  status = fsync_path(hm::game_storage::StateDirectory(game_dir), true);
   if (!status.ok())
     return status;
-  status = complete_transaction_recovery(game_dir, TransactionJournalKind::kRink);
+  status = complete_transaction_recovery(hm::game_storage::StateDirectory(game_dir), TransactionJournalKind::kRink);
   if (!status.ok())
     return status;
+  HM_RETURN_IF_ERROR(hm::game_storage::RefreshManifest(game_dir, "rink-invalidation"));
   return removed;
 }
 
 absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& config_path) {
-  auto lock = GameConfigTransactionLock::Acquire(config_path.parent_path());
+  if (config_path.filename() != "config.yaml" || config_path.parent_path().filename() != "_hockeymon")
+    return absl::InvalidArgumentError("Game config must be _hockeymon/config.yaml");
+  auto lock = GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
   if (!lock.ok())
     return lock.status();
   std::error_code error;
@@ -2431,10 +2441,11 @@ absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& 
           parsed.status().message().find("plan fingerprint does not match its contents") != std::string::npos) {
         std::optional<YAML::Node> recovered;
         HM_ASSIGN_OR_RETURN(
-            recovered, RecoverPlayerFrameSelectionFromRetainedInputs(config_path.parent_path(), selection));
+            recovered,
+            RecoverPlayerFrameSelectionFromRetainedInputs(config_path.parent_path().parent_path(), selection));
         if (recovered) {
           config["stitching"]["calibration_frame_selection"] = *recovered;
-          HM_RETURN_IF_ERROR(publish_game_config(config_path.parent_path(), YAML::Dump(config) + "\n"));
+          HM_RETURN_IF_ERROR(publish_game_config(config_path.parent_path().parent_path(), YAML::Dump(config) + "\n"));
         }
       }
     }
@@ -2858,7 +2869,7 @@ absl::Status reserve_stitching_backend_generation(
   auto transaction = GameConfigTransactionLock::Acquire(game_dir);
   if (!transaction.ok())
     return transaction.status();
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   YAML::Node config;
   try {
     config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
@@ -3031,7 +3042,7 @@ absl::StatusOr<StitchingBackendChoices> apply_stitching_leveling_rotation(
   auto transaction = GameConfigTransactionLock::Acquire(game_dir);
   if (!transaction.ok())
     return transaction.status();
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   try {
     YAML::Node config = fs::is_regular_file(config_path) ? YAML::LoadFile(config_path.string()) : YAML::Node();
     HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, expected_choices));
@@ -3110,7 +3121,7 @@ absl::StatusOr<StitchingBackendChoices> apply_stitching_crop_selection(
   if (!transaction.ok())
     return transaction.status();
   try {
-    YAML::Node config = YAML::LoadFile((game_dir / "config.yaml").string());
+    YAML::Node config = YAML::LoadFile((hm::game_storage::StateDirectory(game_dir) / "config.yaml").string());
     HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, expected_invalidation_id, expected_choices));
     write_stitch_projection_framing(config, updated.projection_framing);
     write_projection_framing_node(

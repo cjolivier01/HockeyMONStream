@@ -508,7 +508,7 @@ absl::StatusOr<std::string> recover_selection_fingerprint(
     *directory = std::move(**child);
   }
   auto text = hm::stitching::read_bounded_regular_file_no_follow(
-      directory->path() / "config.yaml", 4 * 1024 * 1024, "saved experiment config");
+      directory->path() / "_hockeymon/config.yaml", 4 * 1024 * 1024, "saved experiment config");
   if (!text.ok())
     return text.status();
   try {
@@ -906,7 +906,7 @@ struct StitchingExperimentDialog::Impl {
       return false;
     return candidate.has_selected_frames ||
         QFileInfo::exists(
-               QString::fromStdString((candidate.workspace->game_directory / "calibration-frame-inspection" /
+               QString::fromStdString((candidate.workspace->game_directory / "_hockeymon/calibration-frame-inspection" /
                                        candidate.workspace->invalidation_id / "frames.yaml")
                                           .string()));
   }
@@ -997,7 +997,7 @@ struct StitchingExperimentDialog::Impl {
               if (!lock.ok())
                 return lock.status();
               auto snapshot = hm::stitching::read_bounded_regular_file_no_follow(
-                  std::filesystem::path(source_game) / "config.yaml", 4 * 1024 * 1024, "source game config");
+                  std::filesystem::path(source_game) / "_hockeymon/config.yaml", 4 * 1024 * 1024, "source game config");
               if (!snapshot.ok())
                 return snapshot.status();
               candidate.source_config_revision =
@@ -1191,7 +1191,8 @@ struct StitchingExperimentDialog::Impl {
       if (!lock.ok())
         return;
       const auto generation = hm::stitching::HuginProject::GenerationId(candidate.workspace->game_directory, **lock);
-      const auto config = hm::stitching::load_game_config_file(candidate.workspace->game_directory / "config.yaml");
+      const auto config =
+          hm::stitching::load_game_config_file(candidate.workspace->game_directory / "_hockeymon/config.yaml");
       if (!generation.ok() || *generation != saved.artifact_generation_id || !config.ok() || !config->has_value() ||
           !(**config).IsMap())
         return;
@@ -2060,7 +2061,8 @@ struct StitchingExperimentDialog::Impl {
     }
     YAML::Node effective = YAML::Clone(feature_defaults);
     if (candidate.workspace) {
-      const auto config = hm::stitching::load_game_config_file(candidate.workspace->game_directory / "config.yaml");
+      const auto config =
+          hm::stitching::load_game_config_file(candidate.workspace->game_directory / "_hockeymon/config.yaml");
       if (!config.ok() || !config->has_value())
         throw std::runtime_error("Candidate configuration is unavailable");
       overlay_feature_settings(effective, **config);
@@ -2189,7 +2191,7 @@ struct StitchingExperimentDialog::Impl {
       show_status(error, true);
       return;
     }
-    QFile source_config(QDir(game_directory).filePath("config.yaml"));
+    QFile source_config(QDir(game_directory).filePath("_hockeymon/config.yaml"));
     constexpr qint64 kMaximumConfigBytes = 4 * 1024 * 1024;
     if (!source_config.open(QIODevice::ReadOnly)) {
       show_status("Could not read the source game configuration: " + source_config.errorString(), true);
@@ -2960,7 +2962,7 @@ struct StitchingExperimentDialog::Impl {
     const auto workspace = *candidates[row].workspace;
     auto result = std::make_shared<Result>();
     QThread* worker = QThread::create([workspace, result]() {
-      auto config = hm::stitching::load_game_config_file(workspace.game_directory / "config.yaml");
+      auto config = hm::stitching::load_game_config_file(workspace.game_directory / "_hockeymon/config.yaml");
       if (!config.ok()) {
         result->status = config.status();
         return;
@@ -3206,7 +3208,8 @@ struct StitchingExperimentDialog::Impl {
     QObject::connect(show_matches, &QCheckBox::toggled, &viewer, show_match_view);
     QObject::connect(points_only, &QCheckBox::toggled, &viewer, show_match_view);
     bool editable = false;
-    const auto config = hm::stitching::load_game_config_file(candidates[row].workspace->game_directory / "config.yaml");
+    const auto config =
+        hm::stitching::load_game_config_file(candidates[row].workspace->game_directory / "_hockeymon/config.yaml");
     if (config.ok() && config->has_value()) {
       const YAML::Node saved = (**config)["hstream_ui"]["stitching_calibration"]["match_snapshot"];
       editable = saved && saved.IsScalar();
@@ -3471,8 +3474,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     overlay_feature_settings(s.feature_defaults, baseline->values);
     overlay_feature_settings(s.feature_defaults, *user);
     YAML::Node effective = YAML::Clone(s.feature_defaults);
-    const auto saved =
-        hm::stitching::load_game_config_file(std::filesystem::path(game_directory.toStdString()) / "config.yaml");
+    const auto saved = hm::stitching::load_game_config_file(
+        std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml");
     if (!saved.ok())
       throw std::runtime_error(saved.status().ToString());
     if (saved->has_value()) {
@@ -3605,8 +3608,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       s.camera_settings.horizontal_fov = number(s.camera_horizontal_fov);
       s.camera_settings.vertical_fov = number(s.camera_vertical_fov);
     }
-    auto source_config =
-        hm::stitching::load_game_config_file(std::filesystem::path(s.game_directory.toStdString()) / "config.yaml");
+    auto source_config = hm::stitching::load_game_config_file(
+        std::filesystem::path(s.game_directory.toStdString()) / "_hockeymon/config.yaml");
     YAML::Node effective = YAML::Clone(s.feature_defaults);
     if (source_config.ok() && source_config->has_value()) {
       overlay_feature_settings(effective, **source_config);
@@ -3727,8 +3730,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
         for (auto& [key, camera] : selection.input_cameras)
           if (key != source)
             camera.frozen = true;
-        const auto saved =
-            hm::stitching::load_game_config_file(std::filesystem::path(s.game_directory.toStdString()) / "config.yaml");
+        const auto saved = hm::stitching::load_game_config_file(
+            std::filesystem::path(s.game_directory.toStdString()) / "_hockeymon/config.yaml");
         if (!saved.ok()) {
           editor->setCamera(s.camera_settings.for_source(source), s.camera_result.source_metadata[source]);
           s.show_status(QString::fromStdString(saved.status().ToString()), true);
@@ -3923,8 +3926,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     const auto user = hm::user_config::load_or_create();
     if (!user.ok())
       throw std::runtime_error(user.status().ToString());
-    const auto game =
-        hm::stitching::load_game_config_file(std::filesystem::path(game_directory.toStdString()) / "config.yaml");
+    const auto game = hm::stitching::load_game_config_file(
+        std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml");
     if (!game.ok())
       throw std::runtime_error(game.status().ToString());
     const auto blend =

@@ -12,7 +12,7 @@ An explicit choice in the UI applies immediately to that window and its runner.
 The **Existing** dropdown also contains **Defaults**. Selecting it loads the
 bundled `configs/baseline.yaml` overlaid by `~/.config/hstream-ui/defaults.yaml`,
 without a game's settings or recording metadata. **Save Preset** writes that
-user defaults file; selecting a game keeps saving to its `config.yaml`.
+user defaults file; selecting a game keeps saving to its `_hockeymon/config.yaml`.
 The application never writes the bundled baseline. The defaults path is fixed
 under `HOME`, independently of the `XDG_CONFIG_HOME` UI preference location.
 
@@ -365,7 +365,7 @@ python3 scripts/test_hstream_tone_controls_gpu.py \
   --artifacts /tmp/tone-standard --precision standard
 ```
 
-The wrapper requires a recorded game with saved calibration (`panorama.tif`),
+The wrapper requires a recorded game with saved calibration (`_hockeymon/panorama.tif`),
 copies configuration/calibration into the new artifact directory, and symlinks
 untouched video inputs. It disables optional calibration dialogs
 and telemetry in that copy and isolates Qt preferences. Model caches remain

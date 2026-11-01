@@ -355,8 +355,8 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
     const std::string& contents,
     bool remove_stitched_snapshot = false);
 
-// Loads one config generation while holding the config/rink transaction lock.
-// A missing file is represented by an empty optional node.
+// Loads game/_hockeymon/config.yaml while holding the config/rink transaction
+// lock. Other locations are rejected; a missing file is an empty optional node.
 absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const std::filesystem::path& config_path);
 
 // Requires the supplied document to contain the expected pending stitching

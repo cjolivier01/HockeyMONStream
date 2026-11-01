@@ -21,6 +21,14 @@
 #include <unistd.h>
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 
 bool expect(bool condition, const char* message) {
   if (!condition)
@@ -62,10 +70,10 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
 
 absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path& root) {
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
-    std::ofstream(root / name) << name << '\n';
+    std::ofstream(saved_state(root) / name) << name << '\n';
   }
-  if (!write_mapping_tiff(root / "mapping_0000.tif", 64, 32, 0.0f) ||
-      !write_mapping_tiff(root / "mapping_0001.tif", 64, 32, 32.0f)) {
+  if (!write_mapping_tiff(saved_state(root) / "mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(saved_state(root) / "mapping_0001.tif", 64, 32, 32.0f)) {
     return absl::InternalError("Unable to write mapping TIFF fixtures");
   }
   const cv::Mat remap(32, 64, CV_16U, cv::Scalar(0));
@@ -75,12 +83,12 @@ absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path&
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
        }) {
-    if (!cv::imwrite((root / name).string(), remap))
+    if (!cv::imwrite((saved_state(root) / name).string(), remap))
       return absl::InternalError("Unable to write remap TIFF fixtures");
   }
   cv::Mat seam(32, 96, CV_8U, cv::Scalar(0));
   seam.colRange(48, seam.cols).setTo(255);
-  if (!cv::imwrite((root / "seam_file.png").string(), seam))
+  if (!cv::imwrite((saved_state(root) / "seam_file.png").string(), seam))
     return absl::InternalError("Unable to write seam fixture");
   auto lock = hm::stitching::lock_canvas_constraint_artifacts(root);
   if (!lock.ok())
@@ -101,9 +109,9 @@ int main() {
     return 1;
   const std::string generation = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin->size()) + "\n" +
       *hugin + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
-  const auto reset = [&]() { write_config(root / "config.yaml", generation); };
+  const auto reset = [&]() { write_config(saved_state(root) / "config.yaml", generation); };
   const auto pending = [&]() {
-    auto config = YAML::LoadFile((root / "config.yaml").string());
+    auto config = YAML::LoadFile((saved_state(root) / "config.yaml").string());
     const auto value = config["rink"]["stitched_output_pending_authorization_id"];
     return value && value.IsScalar() ? value.as<std::string>() : std::string();
   };

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include "hstream/src/libs/stitching/GameConfig.h"
 
@@ -277,7 +278,8 @@ absl::StatusOr<CalibrationMatchSet> load_matches(
   if (!fingerprint_valid(fingerprint))
     return absl::InvalidArgumentError("Invalid calibration match fingerprint");
   try {
-    const auto root = game / "calibration-matches";
+    HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game));
+    const auto root = hm::game_storage::StateDirectory(game) / "calibration-matches";
     HM_RETURN_IF_ERROR(require_directory(root, false));
     HM_RETURN_IF_ERROR(require_directory(root / "sets", false));
     std::string text;
@@ -370,7 +372,8 @@ absl::StatusOr<CalibrationMatchSet> LoadCalibrationMatches(
 absl::StatusOr<std::string> PublishCalibrationMatches(const fs::path& game, const CalibrationMatchSet& set) {
   HM_RETURN_IF_ERROR(validate(set));
   try {
-    const auto root = game / "calibration-matches";
+    HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game));
+    const auto root = hm::game_storage::StateDirectory(game) / "calibration-matches";
     HM_RETURN_IF_ERROR(require_directory(root, true));
     HM_RETURN_IF_ERROR(require_directory(root / "inputs", true));
     HM_RETURN_IF_ERROR(require_directory(root / "sets", true));
@@ -485,7 +488,8 @@ absl::StatusOr<std::string> PublishCalibrationMatches(const fs::path& game, cons
       HM_RETURN_IF_ERROR(publish_stitch_file_atomically(path, contents));
     }
     HM_RETURN_IF_ERROR(fsync_stitch_path(root, true));
-    HM_RETURN_IF_ERROR(fsync_stitch_path(game, true));
+    HM_RETURN_IF_ERROR(fsync_stitch_path(hm::game_storage::StateDirectory(game), true));
+    HM_RETURN_IF_ERROR(hm::game_storage::RefreshManifest(game, "calibration-matches"));
     return fingerprint;
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Cannot save calibration matches: " + std::string(error.what()));

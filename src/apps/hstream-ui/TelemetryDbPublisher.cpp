@@ -10,6 +10,7 @@
 #include <QtCore/QTemporaryFile>
 #include <cerrno>
 #include <stdexcept>
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
@@ -17,11 +18,14 @@ namespace {
 class PublicationLock {
  public:
   explicit PublicationLock(const QString& directory) {
-    const QByteArray path = QFile::encodeName(QDir(directory).filePath(".hm-output-publication.lock"));
+    const auto state = hm::game_storage::EnsureStateDirectory(directory.toStdString());
+    if (!state.ok())
+      throw std::runtime_error(state.ToString());
+    const QByteArray path = QFile::encodeName(QDir(directory).filePath("_hockeymon/.hm-output-publication.lock"));
     fd_ = open(path.constData(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd_ < 0)
       throw std::runtime_error("Cannot open telemetry publication lock");
-    struct stat info {};
+    struct stat info{};
     if (fstat(fd_, &info) != 0 || !S_ISREG(info.st_mode) || flock(fd_, LOCK_EX) != 0) {
       close(fd_);
       throw std::runtime_error("Cannot acquire telemetry publication lock");
@@ -79,46 +83,54 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     hm::recording::TelemetryDatabaseStem(game_id);
     if (suffix && !telemetry_csv_destination_paths_available(publication_directory, *suffix))
       throw std::runtime_error("Telemetry generation already exists or cannot be checked");
-    QTemporaryFile stage(QDir(publication_directory).filePath(".hstream-database-XXXXXX"));
-    if (!stage.open())
-      throw std::runtime_error(stage.errorString().toStdString());
-    const QString staged_path = stage.fileName();
-    stage.close();
-    hm::publication::CopyTelemetrySnapshot(source.toStdString(), staged_path.toStdString(), game_id);
-    const int file = open(QFile::encodeName(staged_path).constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (file < 0)
-      throw std::runtime_error("Cannot synchronize database copy");
-    const int synced = fsync(file);
-    close(file);
-    if (synced)
-      throw std::runtime_error("Cannot synchronize database copy");
-    const int dir =
-        open(QFile::encodeName(publication_directory).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (dir < 0)
-      throw std::runtime_error("Cannot open database publication directory");
     QString destination;
-    const qint64 first = suffix ? 1 : next_archive_generation(publication_directory);
-    if (first < 1) {
-      close(dir);
-      throw std::runtime_error("Cannot determine next database generation");
-    }
-    for (uint64_t generation = first;; ++generation) {
-      const uint64_t number = fixed_generation.value_or(generation);
-      const QString filename = suffix
-          ? QString::fromStdString(hm::recording::TelemetryDatabaseStem(game_id)) + *suffix + ".db"
-          : QString::fromStdString(hm::recording::TelemetryDatabaseFilename(game_id, number));
-      destination = QDir(publication_directory).filePath(filename);
-      if (link(QFile::encodeName(staged_path).constData(), QFile::encodeName(destination).constData()) == 0)
-        break;
-      if (errno != EEXIST || suffix || generation == UINT64_MAX) {
+    {
+      QTemporaryFile stage(QDir(publication_directory).filePath("_hockeymon/.hstream-database-XXXXXX"));
+      if (!stage.open())
+        throw std::runtime_error(stage.errorString().toStdString());
+      const QString staged_path = stage.fileName();
+      stage.close();
+      hm::publication::CopyTelemetrySnapshot(source.toStdString(), staged_path.toStdString(), game_id);
+      const int file = open(QFile::encodeName(staged_path).constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+      if (file < 0)
+        throw std::runtime_error("Cannot synchronize database copy");
+      const int synced = fsync(file);
+      close(file);
+      if (synced)
+        throw std::runtime_error("Cannot synchronize database copy");
+      const int dir =
+          open(QFile::encodeName(publication_directory).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      if (dir < 0)
+        throw std::runtime_error("Cannot open database publication directory");
+      const qint64 first = suffix ? 1 : next_archive_generation(publication_directory);
+      if (first < 1) {
         close(dir);
-        throw std::runtime_error("Database destination exists or cannot be published");
+        throw std::runtime_error("Cannot determine next database generation");
       }
+      for (uint64_t generation = first;; ++generation) {
+        const uint64_t number = fixed_generation.value_or(generation);
+        const QString filename = suffix
+            ? QString::fromStdString(hm::recording::TelemetryDatabaseStem(game_id)) + *suffix + ".db"
+            : QString::fromStdString(hm::recording::TelemetryDatabaseFilename(game_id, number));
+        destination = QDir(publication_directory).filePath(filename);
+        if (link(QFile::encodeName(staged_path).constData(), QFile::encodeName(destination).constData()) == 0)
+          break;
+        if (errno != EEXIST || suffix || generation == UINT64_MAX) {
+          close(dir);
+          throw std::runtime_error("Database destination exists or cannot be published");
+        }
+      }
+      const int committed = fsync(dir);
+      close(dir);
+      if (committed)
+        throw std::runtime_error("Database copied but publication directory synchronization failed");
     }
-    const int committed = fsync(dir);
-    close(dir);
-    if (committed)
-      throw std::runtime_error("Database copied but publication directory synchronization failed");
+    // Reconcile only after the private staging name has retired. The durable
+    // published hard link remains independent of the temporary file's lifetime.
+    const auto inventory = hm::game_storage::RegisterPublished(
+        publication_directory.toStdString(), destination.toStdString(), "telemetry", "");
+    if (!inventory.ok())
+      throw std::runtime_error(inventory.ToString());
     result.ok = true;
     result.published_paths.append(destination);
   } catch (const std::exception& e) {

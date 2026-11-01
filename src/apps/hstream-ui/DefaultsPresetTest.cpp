@@ -2,6 +2,7 @@
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QTemporaryDir>
 #include <QtWidgets/QApplication>
 
@@ -54,6 +55,7 @@ QByteArray Read(const QString& path) {
   return file.readAll();
 }
 void Write(const QString& path, const QByteArray& bytes) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   Require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Cannot write fixture");
 }
@@ -80,10 +82,10 @@ int main(int argc, char** argv) {
   QDir().mkpath(games.filePath("inherit"));
   QDir().mkpath(games.filePath("override"));
   QDir().mkpath(games.filePath("Defaults"));
-  Write(games.filePath("inherit/config.yaml"), "{}\n");
-  Write(games.filePath("override/config.yaml"), "stitching: {max_output_width: 6200}\n");
-  Write(games.filePath("Defaults/config.yaml"), "stitching: {max_output_width: 6400}\n");
-  auto original_game = Read(games.filePath("override/config.yaml"));
+  Write(games.filePath("inherit/_hockeymon/config.yaml"), "{}\n");
+  Write(games.filePath("override/_hockeymon/config.yaml"), "stitching: {max_output_width: 6200}\n");
+  Write(games.filePath("Defaults/_hockeymon/config.yaml"), "stitching: {max_output_width: 6400}\n");
+  auto original_game = Read(games.filePath("override/_hockeymon/config.yaml"));
   QDir().mkpath(home.filePath(".hstream"));
   Write(
       home.filePath(".hstream/hstream.yaml"),
@@ -135,9 +137,10 @@ int main(int argc, char** argv) {
   output_map->setChecked(false);
   Require(save->isEnabled() && HStreamWindowTestAccess::Save(window), "Cannot save game map override");
   Require(
-      !YAML::LoadFile(games.filePath("override/config.yaml").toStdString())["output"]["rink-map"]["enable"].as<bool>(),
+      !YAML::LoadFile(games.filePath("override/_hockeymon/config.yaml").toStdString())["output"]["rink-map"]["enable"]
+           .as<bool>(),
       "Game cannot disable inherited output map");
-  original_game = Read(games.filePath("override/config.yaml"));
+  original_game = Read(games.filePath("override/_hockeymon/config.yaml"));
   // A real game called Defaults is distinct from the tagged entry.
   for (int i = 1; i < selector->count(); ++i) {
     if (selector->itemText(i) == "Defaults") {
@@ -162,21 +165,21 @@ int main(int argc, char** argv) {
   Find<QSpinBox>(window, "calibrationFrameCountSpin")->setValue(4);
   HStreamWindowTestAccess::HighBit(window, "auto");
   Require(HStreamWindowTestAccess::Save(window), "Cannot override default frame count/precision in a game");
-  auto saved_game = YAML::LoadFile(games.filePath("inherit/config.yaml").toStdString());
+  auto saved_game = YAML::LoadFile(games.filePath("inherit/_hockeymon/config.yaml").toStdString());
   Require(
       saved_game["stitching"]["calibration_frame_count"].as<int>() == 4 &&
           saved_game["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"].as<std::string>() == "auto",
       "Game overrides were removed because they equal the shipped baseline");
   saved_game["pipeline"]["hmplaycropper"]["properties"]["exposure"] = 0.9;
   saved_game["hstream_ui"].remove("camera_controls");
-  Write(games.filePath("inherit/config.yaml"), QByteArray::fromStdString(YAML::Dump(saved_game)));
+  Write(games.filePath("inherit/_hockeymon/config.yaml"), QByteArray::fromStdString(YAML::Dump(saved_game)));
   selector->setCurrentIndex(0);
   selector->setCurrentIndex(selector->findText("inherit"));
   Require(
       Find<QSpinBox>(window, "calibrationFrameCountSpin")->value() == 4 &&
           HStreamWindowTestAccess::HighBitMode(window) == "auto" && window.cameraControlValue("Exposure_x100") == 90,
       "Inherited values overrode explicit game frame count, Auto precision or other-owner tone");
-  Write(games.filePath("inherit/config.yaml"), "{}\n");
+  Write(games.filePath("inherit/_hockeymon/config.yaml"), "{}\n");
   selector->setCurrentIndex(0);
   const auto before_reset = Read(defaults_path);
   reset->click();
@@ -207,7 +210,7 @@ int main(int argc, char** argv) {
       QString::fromStdString(tracker).startsWith(home.filePath(".config/hstream-ui/")),
       "Default tracker file escaped the user config directory");
   Require(QFile::exists(QString::fromStdString(tracker)), "Default tracker reference is missing");
-  Require(Read(games.filePath("override/config.yaml")) == original_game, "Defaults edits modified a game");
+  Require(Read(games.filePath("override/_hockeymon/config.yaml")) == original_game, "Defaults edits modified a game");
   Require(Read(baseline_path) == original_baseline, "Defaults/reset modified baseline.yaml");
   // A fresh window must load the same settings.
   HStreamWindow reopened;
@@ -233,7 +236,7 @@ int main(int argc, char** argv) {
     custom["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = std::string(mode);
     Write(custom_baseline.filePath("baseline.yaml"), QByteArray::fromStdString(YAML::Dump(custom)));
     Write(defaults_path, "{}\n");
-    Write(games.filePath("inherit/config.yaml"), "{}\n");
+    Write(games.filePath("inherit/_hockeymon/config.yaml"), "{}\n");
     HStreamWindow forced;
     auto* forced_selector = Find<QComboBox>(forced, "gameSelector");
     forced_selector->setCurrentIndex(0);
@@ -266,7 +269,7 @@ int main(int argc, char** argv) {
     custom["stitching"]["stitch_frame_time"] = "00:00:02.345";
     Write(custom_baseline.filePath("baseline.yaml"), QByteArray::fromStdString(YAML::Dump(custom)));
     Write(defaults_path, "{}\n");
-    Write(games.filePath("inherit/config.yaml"), "{}\n");
+    Write(games.filePath("inherit/_hockeymon/config.yaml"), "{}\n");
     HStreamWindow calibration;
     auto* calibration_selector = Find<QComboBox>(calibration, "gameSelector");
     calibration_selector->setCurrentIndex(0);
@@ -315,10 +318,10 @@ int main(int argc, char** argv) {
     leveling->setChecked(false);
     reference->setText("00:00:00");
     Require(HStreamWindowTestAccess::Save(calibration), "Cannot save explicit game calibration settings");
-    const auto initial_game = YAML::Load(Read(games.filePath("inherit/config.yaml")).toStdString());
+    const auto initial_game = YAML::Load(Read(games.filePath("inherit/_hockeymon/config.yaml")).toStdString());
     reference->setText("00:00:00.000");
     Require(HStreamWindowTestAccess::Save(calibration), "Equivalent reference spelling should save");
-    const auto explicit_game = Read(games.filePath("inherit/config.yaml"));
+    const auto explicit_game = Read(games.filePath("inherit/_hockeymon/config.yaml"));
     const auto equivalent_game = YAML::Load(explicit_game.toStdString());
     Require(
         equivalent_game["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:00" &&
@@ -327,7 +330,9 @@ int main(int argc, char** argv) {
         "Equivalent reference changed calibration identity");
     reference->setText("-00:00:00");
     Require(!HStreamWindowTestAccess::Save(calibration), "Invalid reference must not save a game");
-    Require(Read(games.filePath("inherit/config.yaml")) == explicit_game, "Invalid reference changed the saved game");
+    Require(
+        Read(games.filePath("inherit/_hockeymon/config.yaml")) == explicit_game,
+        "Invalid reference changed the saved game");
     calibration_selector->setCurrentIndex(0);
     calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
     Require(
@@ -344,8 +349,10 @@ int main(int argc, char** argv) {
     Require(HStreamWindowTestAccess::Save(calibration), "Cannot save reset calibration defaults");
     const auto reset_calibration = YAML::LoadFile(defaults_path.toStdString());
     Require(reset_calibration.IsMap() && reset_calibration.size() == 0, "Calibration reset left an override");
-    Require(Read(games.filePath("inherit/config.yaml")) == explicit_game, "Calibration defaults modified a game");
-    Write(games.filePath("inherit/config.yaml"), "{}\n");
+    Require(
+        Read(games.filePath("inherit/_hockeymon/config.yaml")) == explicit_game,
+        "Calibration defaults modified a game");
+    Write(games.filePath("inherit/_hockeymon/config.yaml"), "{}\n");
     calibration_selector->setCurrentIndex(calibration_selector->findText("inherit"));
     Require(
         crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&

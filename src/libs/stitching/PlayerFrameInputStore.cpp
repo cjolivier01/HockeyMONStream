@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <fcntl.h>
 #include <openssl/evp.h>
@@ -159,8 +160,9 @@ absl::StatusOr<std::optional<PlayerFrameInputSet>> LoadPlayerFrameInputs(
     const PlayerFrameSelectionPlan& plan,
     PlayerFrameInputValidation validation) {
   HM_RETURN_IF_ERROR(ValidatePlayerFrameSelectionPlan(plan));
-  const fs::path root = game_directory / "player-frame-inputs";
-  auto game = PinnedDirectory::Open(game_directory, "saved frame game");
+  const fs::path root = hm::game_storage::StateDirectory(game_directory) / "player-frame-inputs";
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_directory));
+  auto game = PinnedDirectory::Open(hm::game_storage::StateDirectory(game_directory), "saved frame game");
   if (!game.ok())
     return game.status();
   auto store = game->OpenChild("player-frame-inputs", "saved frame store");
@@ -230,7 +232,8 @@ absl::StatusOr<std::optional<YAML::Node>> RecoverPlayerFrameSelectionFromRetaine
           return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
         }))
       return std::nullopt;
-    auto game = PinnedDirectory::Open(game_directory, "saved frame game");
+    HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_directory));
+    auto game = PinnedDirectory::Open(hm::game_storage::StateDirectory(game_directory), "saved frame game");
     if (!game.ok())
       return game.status();
     auto store = game->OpenChild("player-frame-inputs", "saved frame store");
@@ -301,7 +304,8 @@ static absl::Status publish_player_frame_inputs(
   if (images.size() != plan.selected.size())
     return absl::InvalidArgumentError("Cannot persist an incomplete selected frame set");
   std::error_code error;
-  auto game = PinnedDirectory::Open(game_directory, "saved frame game");
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_directory));
+  auto game = PinnedDirectory::Open(hm::game_storage::StateDirectory(game_directory), "saved frame game");
   if (!game.ok())
     return game.status();
   if (::mkdirat(game->descriptor(), "player-frame-inputs", 0700) != 0 && errno != EEXIST)
@@ -402,7 +406,8 @@ static absl::Status publish_player_frame_inputs(
     if (error)
       return absl::InternalError("Cannot publish saved frame bundle: " + error.message());
     HM_RETURN_IF_ERROR(fsync_bundle_path(pinned->path(), true));
-    return fsync_bundle_path(game_directory, true);
+    HM_RETURN_IF_ERROR(fsync_bundle_path(hm::game_storage::StateDirectory(game_directory), true));
+    return hm::game_storage::RefreshManifest(game_directory, "player-frame-inputs");
   } catch (const cv::Exception& exception) {
     return absl::InternalError("Cannot encode saved calibration frames: " + std::string(exception.what()));
   } catch (const YAML::Exception& exception) {

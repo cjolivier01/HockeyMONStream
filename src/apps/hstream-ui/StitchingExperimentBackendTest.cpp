@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -70,9 +71,76 @@ bool expect(bool condition, const char* message) {
 
 bool write(const fs::path& path, const std::string& contents) {
   fs::create_directories(path.parent_path());
+  fs::create_directories(path.parent_path());
   std::ofstream output(path);
   output << contents;
   return output.good();
+}
+
+bool input_inventory(const fs::path& game, const std::vector<fs::path>& aliases) {
+  const auto manifest = YAML::LoadFile((game / "_hockeymon/manifest.json").string());
+  std::set<std::string> expected;
+  for (const auto& alias : aliases) {
+    expected.insert(alias.generic_string());
+    for (auto parent = alias.parent_path(); !parent.empty(); parent = parent.parent_path())
+      if (parent != "_hockeymon")
+        expected.insert(parent.generic_string());
+  }
+  bool ok = true;
+  for (const auto& entry : manifest["files"]) {
+    if (entry["role"].as<std::string>() != "input-reference")
+      continue;
+    const fs::path path(entry["path"].as<std::string>());
+    const bool alias = std::find(aliases.begin(), aliases.end(), path) != aliases.end();
+    ok &= expect(expected.erase(path.generic_string()) == 1, "inventory must not adopt original input targets");
+    ok &= expect(
+        entry["kind"].as<std::string>() == (alias ? "symlink" : "directory") && !entry["size_bytes"],
+        "input inventory must describe the alias or parent directory without following its target");
+    ok &= expect(
+        entry["producer"].as<std::string>() == "stitching-experiment",
+        "candidate input inventory must identify the workspace producer");
+  }
+  return expect(expected.empty(), "candidate inventory must include every alias and its parent topology") && ok;
+}
+
+bool private_input_inventory(const fs::path& root) {
+  const auto game = root / "private-input-game";
+  const auto experiments = root / "private-input-experiments";
+  if (!write(game / "recordings/left.mp4", "left") || !write(game / "recordings/right.mp4", "right") ||
+      !write(game / "profiles/calibration.json", "{}") ||
+      !write(
+          game / "_hockeymon/config.yaml",
+          "game:\n  videos:\n"
+          "    left: [_hockeymon/inputs/left.mp4]\n    right: [_hockeymon/inputs/right.mp4]\n"
+          "hstream_ui:\n  video_roles:\n"
+          "    left: [_hockeymon/inputs/left.mp4]\n    right: [_hockeymon/inputs/right.mp4]\n"))
+    return false;
+  fs::create_directory(game / "_hockeymon/inputs");
+  fs::create_symlink(game / "recordings/left.mp4", game / "_hockeymon/inputs/left.mp4");
+  fs::create_symlink(game / "recordings/right.mp4", game / "_hockeymon/inputs/right.mp4");
+  fs::create_symlink(game / "profiles/calibration.json", game / "_hockeymon/inputs/left_calibration.json");
+  const auto workspace = CreateStitchingExperimentWorkspace(game, experiments, {100, 2, "00:00:00", std::nullopt}, 1);
+  if (!expect(workspace.ok(), "private media aliases shared by both role maps must create a candidate")) {
+    if (!workspace.ok())
+      std::cerr << workspace.status() << '\n';
+    return false;
+  }
+  const std::vector<fs::path> aliases{
+      "_hockeymon/inputs/left.mp4", "_hockeymon/inputs/right.mp4", "_hockeymon/inputs/left_calibration.json"};
+  bool ok = input_inventory(workspace->game_directory, aliases);
+  const auto clone = CreateStitchingExperimentEditableCopy(*workspace, experiments, 2);
+  if (!expect(clone.ok(), "a candidate can reuse private media aliases in an editable copy"))
+    return false;
+  ok &= input_inventory(clone->game_directory, aliases);
+  const auto subsequent = CreateStitchingExperimentEditableCopy(*clone, experiments, 3);
+  if (!expect(subsequent.ok(), "a clone of a private-input clone must remain usable"))
+    return false;
+  ok &= input_inventory(subsequent->game_directory, aliases);
+  for (const auto& alias : aliases)
+    ok &= expect(
+        fs::read_symlink(subsequent->game_directory / alias) == fs::canonical(game / alias),
+        "clone-of-clone aliases must still reference the original file directly");
+  return ok;
 }
 
 struct FsyncProbe {
@@ -96,7 +164,8 @@ bool durable_workspace_publication(const fs::path& root) {
   const fs::path sidecar = game / "cam1" / "chapters" / "left-calibration.yaml";
   if (!write(left, "left recording") || !write(right, "right recording") || !write(sidecar, "camera: left") ||
       !write(
-          game / "config.yaml", "game:\n  videos:\n    left: [cam1/chapters/left.mp4]\n    right: [cam2/right.mp4]\n"))
+          game / "_hockeymon/config.yaml",
+          "game:\n  videos:\n    left: [cam1/chapters/left.mp4]\n    right: [cam2/right.mp4]\n"))
     return false;
   auto store = OpenStitchingExperimentStore(game);
   if (!expect(store.ok(), "durable workspace fixture store must open"))
@@ -117,7 +186,7 @@ bool durable_workspace_publication(const fs::path& root) {
     const fs::path session = store->directory / "sessions" / ("failed-session-" + std::to_string(stage));
     const fs::path candidate = session / ("durable-game-stitch-exp-" + std::to_string(stage + 1));
     const std::vector<fs::path> barriers{
-        candidate / "config.yaml",
+        candidate / "_hockeymon/config.yaml",
         candidate / "cam1" / "chapters",
         candidate,
         session,
@@ -150,7 +219,7 @@ bool durable_workspace_publication(const fs::path& root) {
     FsyncProbe probe;
     ok &= expect(create_queued(session, 10).ok(), "a completely synced workspace must become a queued row");
     const std::vector<fs::path> required{
-        candidate / "config.yaml",
+        candidate / "_hockeymon/config.yaml",
         candidate / "cam1" / "chapters",
         candidate / "cam1",
         candidate,
@@ -179,6 +248,14 @@ bool durable_workspace_publication(const fs::path& root) {
   const auto catalog = LoadStitchingExperimentStore(*store);
   ok &=
       expect(catalog.ok() && catalog->experiments.size() == 1, "reopening must retain exactly the durable queued row");
+  ok &= input_inventory(candidate, {"cam1/chapters/left.mp4", "cam2/right.mp4", "cam1/chapters/left-calibration.yaml"});
+  const auto outer_manifest = YAML::LoadFile((game / "_hockeymon/manifest.json").string());
+  const auto nested_alias = (candidate / "cam1/chapters/left.mp4").lexically_relative(game).generic_string();
+  bool found_alias = false;
+  for (const auto& entry : outer_manifest["files"])
+    if (entry["path"].as<std::string>() == nested_alias)
+      found_alias = entry["kind"].as<std::string>() == "symlink" && !entry["size_bytes"];
+  ok &= expect(found_alias, "outer game inventory must retain the nested candidate alias without following it");
   const auto duplicate = CreateStitchingExperimentWorkspace(game, session, settings, 10);
   ok &= expect(
       !duplicate.ok() && absl::IsAlreadyExists(duplicate.status()), "initial workspace creation must remain exclusive");
@@ -197,7 +274,7 @@ bool in_game_input_aliases(const fs::path& root) {
           game / "profiles" / "calibration.json",
           std::string("{\"left_uniforms\":") + kCamera + ",\"right_uniforms\":" + kCamera + "}") ||
       !write(
-          game / "config.yaml",
+          game / "_hockeymon/config.yaml",
           "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n"
           "  stitching:\n    frame_offsets: {left: 0, right: 0}\n"
           "stitching:\n  stitch_frame_time: '00:00:08'\n"))
@@ -208,6 +285,8 @@ bool in_game_input_aliases(const fs::path& root) {
   const StitchingExperimentSettings settings{100, 2, "00:00:08", std::nullopt};
   const auto ordinary = CreateStitchingExperimentWorkspace(game, experiments, settings, 1);
   if (!expect(ordinary.ok(), "in-game media and calibration aliases must be supported"))
+    return false;
+  if (!input_inventory(ordinary->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"}))
     return false;
   const auto original_lens = load_akaze_matching_calibration(game);
   const auto candidate_lens = load_akaze_matching_calibration(ordinary->game_directory);
@@ -221,20 +300,20 @@ bool in_game_input_aliases(const fs::path& root) {
           "a private media link must preserve its alias name and point directly at the original file"))
     return false;
 
-  YAML::Node config = YAML::LoadFile((game / "config.yaml").string());
+  YAML::Node config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
   YAML::Node absolute_config = YAML::Clone(config);
   absolute_config["game"]["videos"]["left"][0] = (game / "left.mp4").string();
   absolute_config["game"]["videos"]["right"][0] = (game / "right.mp4").string();
   const fs::path game_alias = root / "alias-game-directory";
   fs::create_directory_symlink(game, game_alias);
-  if (!write(game / "config.yaml", YAML::Dump(absolute_config)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(absolute_config)))
     return false;
   const auto directory_alias = CreateStitchingExperimentWorkspace(game_alias, experiments, settings, 1);
   if (!expect(
           directory_alias.ok() && fs::is_symlink(directory_alias->game_directory / "left.mp4"),
           "physical absolute input names must remain usable when the selected game directory is an alias"))
     return false;
-  if (!write(game / "config.yaml", YAML::Dump(config)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(config)))
     return false;
   const auto context = player_frame_source_context(config, 8 * kPlayerFrameSecond);
   if (!context.ok())
@@ -278,14 +357,14 @@ bool in_game_input_aliases(const fs::path& root) {
     return false;
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
-  if (!write(game / "config.yaml", YAML::Dump(config)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(config)))
     return false;
   const auto selected = CreateStitchingExperimentWorkspace(game, experiments, settings, 2);
   if (!expect(selected.ok(), "workspace localization must not change a frozen alias playlist"))
     return false;
   const auto copied_inputs = LoadPlayerFrameInputs(selected->game_directory, plan);
-  const auto promoted =
-      BuildStitchingExperimentSelectionConfig(selected->game_directory / "config.yaml", game / "config.yaml");
+  const auto promoted = BuildStitchingExperimentSelectionConfig(
+      selected->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
   if (!expect(
           copied_inputs.ok() && copied_inputs->has_value() && promoted.ok() &&
               validate_player_frame_selection_sources(YAML::Load(*promoted)).ok(),
@@ -296,9 +375,11 @@ bool in_game_input_aliases(const fs::path& root) {
           clone.ok() && fs::is_symlink(clone->game_directory / "left_calibration.json"),
           "editable copies must keep the localized sidecar alias"))
     return false;
+  if (!input_inventory(clone->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"}))
+    return false;
 
   fs::remove(game / "left_calibration.json");
-  fs::create_symlink("config.yaml", game / "left_calibration.json");
+  fs::create_symlink("_hockeymon/config.yaml", game / "left_calibration.json");
   const auto reserved_sidecar = CreateStitchingExperimentWorkspace(game, experiments, settings, 4);
   if (!expect(
           !reserved_sidecar.ok() && absl::IsInvalidArgument(reserved_sidecar.status()),
@@ -307,7 +388,7 @@ bool in_game_input_aliases(const fs::path& root) {
   fs::remove(game / "left_calibration.json");
   fs::create_symlink("profiles/calibration.json", game / "left_calibration.json");
   fs::remove(game / "left.mp4");
-  fs::create_symlink("config.yaml", game / "left.mp4");
+  fs::create_symlink("_hockeymon/config.yaml", game / "left.mp4");
   const auto nonvideo = CreateStitchingExperimentWorkspace(game, experiments, settings, 5);
   if (!expect(
           !nonvideo.ok() && absl::IsInvalidArgument(nonvideo.status()),
@@ -316,7 +397,7 @@ bool in_game_input_aliases(const fs::path& root) {
   fs::remove(game / "left.mp4");
   fs::create_symlink("recordings/left-source.mp4", game / "left.mp4");
   config["game"]["videos"]["left"][0] = "recordings/../left.mp4";
-  if (!write(game / "config.yaml", YAML::Dump(config)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(config)))
     return false;
   const auto traversal = CreateStitchingExperimentWorkspace(game, experiments, settings, 6);
   return expect(
@@ -325,10 +406,10 @@ bool in_game_input_aliases(const fs::path& root) {
 }
 
 bool ordinary_frame_inspection(const StitchingExperimentWorkspace& workspace) {
-  const fs::path config_path = workspace.game_directory / "config.yaml";
+  const fs::path config_path = workspace.game_directory / "_hockeymon/config.yaml";
   const YAML::Node original = YAML::LoadFile(config_path.string());
   const fs::path manifest_path =
-      workspace.game_directory / "calibration-frame-inspection" / workspace.invalidation_id / "frames.yaml";
+      workspace.game_directory / "_hockeymon/calibration-frame-inspection" / workspace.invalidation_id / "frames.yaml";
   YAML::Node manifest;
   manifest["version"] = 1;
   manifest["invalidation_id"] = workspace.invalidation_id;
@@ -390,7 +471,7 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
     original[section.first][section.second]["right"].push_back((game / "cam2" / "right.mp4").string());
   }
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
-      !write(game / "config.yaml", YAML::Dump(original)))
+      !write(game / "_hockeymon/config.yaml", YAML::Dump(original)))
     return false;
   const StitchingExperimentSettings settings{900, 2, "00:00:08", std::nullopt, "2k"};
   const auto baseline = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", settings, 1);
@@ -403,18 +484,18 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
     return false;
   const fs::path directory = baseline->game_directory;
   if (saved_offsets) {
-    if (!write(directory / "seam_file.png", "stale solve") ||
+    if (!write(directory / "_hockeymon/seam_file.png", "stale solve") ||
         !clean_stitching_artifacts_from_control_points(directory.string(), baseline->invalidation_id).ok())
       return false;
-    const auto cleaned = YAML::LoadFile((directory / "config.yaml").string());
+    const auto cleaned = YAML::LoadFile((directory / "_hockeymon/config.yaml").string());
     if (!expect(
-            !fs::exists(directory / "seam_file.png") &&
+            !fs::exists(directory / "_hockeymon/seam_file.png") &&
                 cleaned["game"]["stitching"]["frame_offsets"]["right"].as<double>() == 70.330809,
             "feature cleanup must remove stale solve artifacts while preserving synchronization"))
       return false;
   }
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
-    if (!write(directory / name, "fixture"))
+    if (!write(directory / "_hockeymon" / name, "fixture"))
       return false;
   for (const char* name :
        {"mapping_0000.tif",
@@ -423,10 +504,10 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
         "mapping_0001.tif",
         "mapping_0001_x.tif",
         "mapping_0001_y.tif"})
-    if (!cv::imwrite((directory / name).string(), cv::Mat(8, 8, CV_16UC1, cv::Scalar(1))))
+    if (!cv::imwrite((directory / "_hockeymon" / name).string(), cv::Mat(8, 8, CV_16UC1, cv::Scalar(1))))
       return false;
   for (const char* name : {"mapping_0000.tif", "mapping_0001.tif"}) {
-    TIFF* tiff = TIFFOpen((directory / name).c_str(), "r+");
+    TIFF* tiff = TIFFOpen((directory / "_hockeymon" / name).c_str(), "r+");
     if (!tiff)
       return false;
     TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
@@ -439,8 +520,8 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
       return false;
   }
   const cv::Mat mask(8, 8, CV_8UC1, cv::Scalar(255));
-  if (!cv::imwrite((directory / "seam_file.png").string(), mask) ||
-      !cv::imwrite((directory / "rink_mask_0.png").string(), mask))
+  if (!cv::imwrite((directory / "_hockeymon/seam_file.png").string(), mask) ||
+      !cv::imwrite((directory / "_hockeymon/rink_mask_0.png").string(), mask))
     return false;
   std::string generation;
   {
@@ -456,7 +537,7 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   const auto mask_fingerprint = PlayerFrameMaskFingerprint(mask);
   if (!output_generation.ok() || !mask_fingerprint.ok())
     return false;
-  YAML::Node resolved = YAML::LoadFile((directory / "config.yaml").string());
+  YAML::Node resolved = YAML::LoadFile((directory / "_hockeymon/config.yaml").string());
   // Mimic the baseline runner materializing a user-level camera/FOV override;
   // the sibling candidate still has only the original game's explicit values.
   StitchCameraSelection camera{"custom-user-camera", 112.5, 88.0};
@@ -474,7 +555,7 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   // baseline is an automatic one rather than the configured ice-mask frame.
   resolved["stitching"]["rink_mask_frame_time"] = "auto";
   resolved["rink"]["stitched_output_generation"] = *output_generation;
-  if (!write(directory / "config.yaml", YAML::Dump(resolved)))
+  if (!write(directory / "_hockeymon/config.yaml", YAML::Dump(resolved)))
     return false;
   const auto context = player_frame_source_context(resolved, 8 * kPlayerFrameSecond);
   if (!context.ok())
@@ -524,7 +605,7 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
     std::cerr << prepared.status() << '\n';
     return false;
   }
-  const YAML::Node frozen = YAML::LoadFile((candidate->game_directory / "config.yaml").string());
+  const YAML::Node frozen = YAML::LoadFile((candidate->game_directory / "_hockeymon/config.yaml").string());
   const auto frozen_camera = read_stitch_camera_selection(frozen);
   if (!prepared->available || !frozen_camera.ok() || *frozen_camera != camera ||
       frozen["stitching"]["stitch_frame_time"].IsDefined() ||
@@ -542,7 +623,7 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
           ReuseStitchingExperimentPlayerSelection(*candidate, *reused).ok(),
           "a frozen selection must be reusable before its owner's solve completes"))
     return false;
-  const YAML::Node reused_config = YAML::LoadFile((reused->game_directory / "config.yaml").string());
+  const YAML::Node reused_config = YAML::LoadFile((reused->game_directory / "_hockeymon/config.yaml").string());
   if (!expect(
           reused_config["stitching"]["calibration_frame_selection"]["fingerprint"].as<std::string>() ==
                   plan.fingerprint &&
@@ -554,23 +635,24 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
     return false;
   YAML::Node conflicting = YAML::Clone(reused_config);
   conflicting["game"]["stitching"]["frame_offsets"]["left"] = 3;
-  if (!write(reused->game_directory / "config.yaml", YAML::Dump(conflicting)) ||
+  if (!write(reused->game_directory / "_hockeymon/config.yaml", YAML::Dump(conflicting)) ||
       !expect(
           !ReuseStitchingExperimentPlayerSelection(*candidate, *reused).ok(),
           "reuse must reject changed synchronization instead of replacing it"))
     return false;
   conflicting = YAML::Clone(reused_config);
   conflicting["game"]["videos"]["left"][0] = "cam2/right.mp4";
-  if (!write(reused->game_directory / "config.yaml", YAML::Dump(conflicting)) ||
+  if (!write(reused->game_directory / "_hockeymon/config.yaml", YAML::Dump(conflicting)) ||
       !expect(
           !ReuseStitchingExperimentPlayerSelection(*candidate, *reused).ok(),
           "reuse must reject changed source roles instead of replacing them"))
     return false;
-  if (!write(reused->game_directory / "config.yaml", YAML::Dump(reused_config)))
+  if (!write(reused->game_directory / "_hockeymon/config.yaml", YAML::Dump(reused_config)))
     return false;
 
   const auto promote = [&] {
-    return BuildStitchingExperimentSelectionConfig(candidate->game_directory / "config.yaml", game / "config.yaml");
+    return BuildStitchingExperimentSelectionConfig(
+        candidate->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
   };
   const auto validates_after_promotion = [&](const absl::StatusOr<std::string>& promoted) {
     if (!promoted.ok()) {
@@ -589,15 +671,15 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   if (!expect(validates_after_promotion(promote()), "absolute roles must replay the same frozen plan after promotion"))
     return false;
   const auto promoted = promote();
-  if (!promoted.ok() || !write(game / "config.yaml", *promoted))
+  if (!promoted.ok() || !write(game / "_hockeymon/config.yaml", *promoted))
     return false;
-  YAML::Node old_baseline = YAML::LoadFile((candidate->game_directory / "config.yaml").string());
+  YAML::Node old_baseline = YAML::LoadFile((candidate->game_directory / "_hockeymon/config.yaml").string());
   old_baseline["stitching"].remove("calibration_frame_selection");
   old_baseline["stitching"].remove("calibration_frame_inputs_fingerprint");
   if (!write(candidate->game_directory / "old-baseline.yaml", YAML::Dump(old_baseline)))
     return false;
-  const auto replaced_selection =
-      BuildStitchingExperimentSelectionConfig(candidate->game_directory / "old-baseline.yaml", game / "config.yaml");
+  const auto replaced_selection = BuildStitchingExperimentSelectionConfig(
+      candidate->game_directory / "old-baseline.yaml", game / "_hockeymon/config.yaml");
   if (!expect(
           !replaced_selection.ok() && absl::IsFailedPrecondition(replaced_selection.status()),
           "a same-count ordinary historical baseline must not silently replace Main's selected player frames"))
@@ -606,13 +688,14 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   old_baseline["hstream_ui"]["stitching_calibration"]["frame_count"] = plan.selected.size() + 1;
   if (!write(candidate->game_directory / "old-baseline.yaml", YAML::Dump(old_baseline)) ||
       !expect(
-          BuildStitchingExperimentSelectionConfig(candidate->game_directory / "old-baseline.yaml", game / "config.yaml")
+          BuildStitchingExperimentSelectionConfig(
+              candidate->game_directory / "old-baseline.yaml", game / "_hockeymon/config.yaml")
               .ok(),
           "selecting an explicitly different frame count may replace the old selection"))
     return false;
   YAML::Node pending_view = YAML::Load(*promoted);
   pending_view["hstream_ui"]["stitching_calibration"]["reframe"]["source_generation"] = "old-source";
-  if (!write(game / "config.yaml", YAML::Dump(pending_view)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(pending_view)))
     return false;
   const auto over_pending_view = promote();
   if (!expect(
@@ -623,12 +706,12 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   const auto fresh_candidate = CreateStitchingExperimentWorkspace(game, root / "pending-view-candidate", varied, 1);
   if (!expect(
           fresh_candidate.ok() &&
-              !YAML::LoadFile((fresh_candidate->game_directory / "config.yaml")
+              !YAML::LoadFile((fresh_candidate->game_directory / "_hockeymon/config.yaml")
                                   .string())["hstream_ui"]["stitching_calibration"]["reframe"]
                    .IsDefined(),
           "new candidates must not inherit a reframe request bound to Main"))
     return false;
-  if (!write(game / "config.yaml", *promoted))
+  if (!write(game / "_hockeymon/config.yaml", *promoted))
     return false;
   const auto retained = CreateStitchingExperimentWorkspace(game, root / "inherited-camera", varied, 4);
   if (!expect(retained.ok(), "a promoted plan must be retained by later experiment candidates"))
@@ -655,7 +738,7 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
           replacement_fingerprint.ok() && replacement_fingerprint->empty(),
           "only an explicit different count clears the inherited plan"))
     return false;
-  if (!write(game / "config.yaml", YAML::Dump(original)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(original)))
     return false;
 
   std::error_code error;
@@ -665,13 +748,13 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   YAML::Node alias = YAML::Clone(original);
   alias["game"]["videos"]["left"][0] = "left-alias.mp4";
   alias["hstream_ui"]["video_roles"]["left"][0] = (game / "left-alias.mp4").string();
-  if (!write(game / "config.yaml", YAML::Dump(alias)) ||
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(alias)) ||
       !expect(validates_after_promotion(promote()), "equivalent camera aliases must preserve the frozen plan"))
     return false;
 
   YAML::Node changed = YAML::Clone(original);
   changed["hstream_ui"]["video_roles"]["left"][0] = (game / "cam2" / "right.mp4").string();
-  if (!write(game / "config.yaml", YAML::Dump(changed)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(changed)))
     return false;
   const auto rejected = promote();
   if (!expect(
@@ -682,8 +765,8 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   ordinary["stitching"].remove("calibration_frame_selection");
   if (!write(candidate->game_directory / "ordinary.yaml", YAML::Dump(ordinary)))
     return false;
-  const auto ordinary_promotion =
-      BuildStitchingExperimentSelectionConfig(candidate->game_directory / "ordinary.yaml", game / "config.yaml");
+  const auto ordinary_promotion = BuildStitchingExperimentSelectionConfig(
+      candidate->game_directory / "ordinary.yaml", game / "_hockeymon/config.yaml");
   if (!expect(
           ordinary_promotion.ok() &&
               YAML::Dump(YAML::Load(*ordinary_promotion)["hstream_ui"]["video_roles"]) ==
@@ -691,13 +774,15 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
           "ordinary promotion must preserve the destination's camera roles"))
     return false;
 
-  if (!write(game / "config.yaml", YAML::Dump(original)) || !fs::remove(game / "cam1" / "left.mp4") ||
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(original)) || !fs::remove(game / "cam1" / "left.mp4") ||
       !fs::remove(game / "cam2" / "right.mp4"))
     return false;
   if (!expect(promote().ok(), "identical destination paths must not require available media for artifact promotion"))
     return false;
   return expect(
-      BuildStitchingExperimentSelectionConfig(candidate->game_directory / "ordinary.yaml", game / "config.yaml").ok(),
+      BuildStitchingExperimentSelectionConfig(
+          candidate->game_directory / "ordinary.yaml", game / "_hockeymon/config.yaml")
+          .ok(),
       "ordinary artifact promotion must not require available media");
 }
 
@@ -721,14 +806,14 @@ hstream_ui:
     previous_run_autooptimizer: true
 )");
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
-      !write(game / "config.yaml", YAML::Dump(source)))
+      !write(game / "_hockeymon/config.yaml", YAML::Dump(source)))
     return false;
   StitchingExperimentSettings settings{100, 1, "00:00:00", std::nullopt};
   settings.control_point_matcher = "dedode-lightglue";
   const auto workspace = CreateStitchingExperimentWorkspace(game, root / "generated-session", settings, 1);
   if (!expect(workspace.ok(), "candidate must restore generated backend choices before applying its matcher"))
     return false;
-  const YAML::Node config = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
+  const YAML::Node config = YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string());
   bool ok = expect(
       config["stitching"]["control_point_matcher"].as<std::string>() == "dedode-lightglue" &&
           config["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
@@ -736,8 +821,8 @@ hstream_ui:
           config["stitching"]["run_autooptimizer"].as<bool>() &&
           !config["hstream_ui"]["generated_stitching_backend_choices"].IsDefined(),
       "choosing a matcher must not freeze transient backend, projection or optimizer overrides");
-  const auto promoted =
-      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  const auto promoted = BuildStitchingExperimentSelectionConfig(
+      workspace->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
   if (!expect(promoted.ok(), "restored backend and chosen matcher must be promotable"))
     return false;
   const YAML::Node selected = YAML::Load(*promoted);
@@ -771,7 +856,7 @@ bool experiment_resolutions(const fs::path& root) {
   calibration["backend_generation"]["control_point_resolution"] = "native";
   calibration["backend_generation"]["control_point_matcher"] = "loftr";
   if (!write(game / "cam1" / "left.mp4", "left") || !write(game / "cam2" / "right.mp4", "right") ||
-      !write(game / "config.yaml", YAML::Dump(source)))
+      !write(game / "_hockeymon/config.yaml", YAML::Dump(source)))
     return false;
   StitchingExperimentSettings settings{100, 2, "00:00:00", std::nullopt, "2k"};
   settings.control_point_matcher = "akaze-hamming";
@@ -786,14 +871,14 @@ bool experiment_resolutions(const fs::path& root) {
     const auto workspace = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
     if (!expect(workspace.ok(), "explicit resolution candidate must be created"))
       return false;
-    const YAML::Node config = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
+    const YAML::Node config = YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string());
     ok &= expect(
         workspace->settings.control_point_resolution == size &&
             config["stitching"]["control_point_resolution"].as<std::string>() == size &&
             !config["hstream_ui"]["generated_control_point_resolution"].IsDefined(),
         "candidate size must override copied generated values and remain in its settings");
-    const auto promoted =
-        BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+    const auto promoted = BuildStitchingExperimentSelectionConfig(
+        workspace->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
     if (!expect(promoted.ok(), "candidate size must be promotable"))
       return false;
     YAML::Node selected = YAML::Load(*promoted);
@@ -807,8 +892,8 @@ bool experiment_resolutions(const fs::path& root) {
     const auto workspace = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
     if (!expect(workspace.ok(), "explicit matcher candidate must be created"))
       return false;
-    const auto promoted =
-        BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+    const auto promoted = BuildStitchingExperimentSelectionConfig(
+        workspace->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
     if (!expect(promoted.ok(), "candidate matcher must be promotable"))
       return false;
     const YAML::Node selected = YAML::Load(*promoted);
@@ -824,8 +909,8 @@ bool experiment_resolutions(const fs::path& root) {
     const auto workspace = CreateStitchingExperimentWorkspace(game, root / "filtering-session", settings, ++sequence);
     if (!expect(workspace.ok(), "Explicit geometric filtering candidate must be created"))
       return false;
-    const auto promoted =
-        BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+    const auto promoted = BuildStitchingExperimentSelectionConfig(
+        workspace->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
     if (!expect(promoted.ok(), "Filtering candidate must be promotable"))
       return false;
     YAML::Node selected = YAML::Load(*promoted);
@@ -847,7 +932,7 @@ bool experiment_resolutions(const fs::path& root) {
       inherited.ok() && inherited->settings.control_point_resolution == "1k",
       "an inherited size already materialized in the source config is frozen when queued");
   calibration.remove("backend_generation");
-  if (!write(game / "config.yaml", YAML::Dump(source)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(source)))
     return false;
   main = MainStitchingExperimentWorkspace(game, settings);
   ok &= expect(
@@ -855,7 +940,7 @@ bool experiment_resolutions(const fs::path& root) {
       "Main without a generation claim reports its saved canonical size");
   source["stitching"].remove("control_point_resolution");
   source["hstream_ui"].remove("generated_control_point_resolution");
-  if (!write(game / "config.yaml", YAML::Dump(source)))
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(source)))
     return false;
   const auto legacy = CreateStitchingExperimentWorkspace(game, root / "resolution-session", settings, ++sequence);
   ok &= expect(
@@ -883,14 +968,14 @@ bool edited_match_workspace(const fs::path& root) {
       "game: {videos: {left: [left.mp4], right: [right.mp4]}}\n"
       "stitching: {control_point_matcher: superpoint-lightglue, calibration_frame_count: 1}\n"
       "hstream_ui: {stitching_calibration: {invalidation_id: source-owner, status: complete, control_points: 100, frame_count: 1}}\n");
-  if (!write(original_game / "config.yaml", YAML::Dump(config)))
+  if (!write(original_game / "_hockeymon/config.yaml", YAML::Dump(config)))
     return false;
   const auto candidate =
       CreateStitchingExperimentWorkspace(original_game, root / "source-session", {100, 1, "00:00:00", std::nullopt}, 1);
   if (!expect(candidate.ok(), "editable fixture starts with a real linked-media workspace"))
     return false;
   const fs::path game = candidate->game_directory;
-  config = YAML::LoadFile((game / "config.yaml").string());
+  config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
   fs::create_symlink(original_game / "right.mp4", game / "right-99.mp4");
   CalibrationMatchSet automatic;
   const auto context = CalibrationMatchSourceContext(config, game);
@@ -901,7 +986,7 @@ bool edited_match_workspace(const fs::path& root) {
   automatic.source_context = *context;
   CalibrationMatchFrame frame;
   for (size_t camera = 0; camera < 2; ++camera) {
-    frame.images[camera] = game / (camera ? "right.png" : "left.png");
+    frame.images[camera] = game / "_hockeymon" / (camera ? "right.png" : "left.png");
     frame.sizes[camera] = {80, 60};
     frame.source_paths[camera] = (game / (camera ? "right.mp4" : "left.mp4")).string();
     if (!cv::imwrite(frame.images[camera].string(), cv::Mat(60, 80, CV_8UC3, cv::Scalar(20, 40, 60))))
@@ -915,7 +1000,7 @@ bool edited_match_workspace(const fs::path& root) {
     return false;
   config["hstream_ui"]["stitching_calibration"]["match_snapshot"] = *published;
   const std::string original_config = YAML::Dump(config);
-  if (!write(game / "config.yaml", original_config))
+  if (!write(game / "_hockeymon/config.yaml", original_config))
     return false;
   auto source_matches = LoadCalibrationMatches(game, *published);
   if (!source_matches.ok()) {
@@ -946,6 +1031,7 @@ bool edited_match_workspace(const fs::path& root) {
   ok &= expect(
       !fs::exists(workspace->game_directory / "right-99.mp4"),
       "workspace clones only carry explicitly configured camera videos");
+  ok &= input_inventory(workspace->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"});
   if (saved.ok()) {
     auto again = *saved;
     again.frames[0].matches[0].right.y += 1;
@@ -953,6 +1039,7 @@ bool edited_match_workspace(const fs::path& root) {
         CreateEditedStitchingExperimentWorkspace(*workspace, root / "edited-session", saved->fingerprint, again, 5);
     ok &= expect(subsequent.ok(), "a manual replacement can be edited again");
     if (subsequent.ok()) {
+      ok &= input_inventory(subsequent->game_directory, {"left.mp4", "right.mp4", "left_calibration.json"});
       const auto matches =
           LoadCalibrationMatches(subsequent->game_directory, *subsequent->settings.manual_control_points);
       ok &= expect(
@@ -960,14 +1047,14 @@ bool edited_match_workspace(const fs::path& root) {
           "successive edits retain the original automatic match set");
     }
   }
-  const auto selected =
-      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  const auto selected = BuildStitchingExperimentSelectionConfig(
+      workspace->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
   ok &= expect(
       selected.ok() &&
           YAML::Load(*selected)["stitching"]["manual_control_points"].as<std::string>() ==
               *workspace->settings.manual_control_points,
       "promotion configuration retains the selected manual replacement identity");
-  std::ifstream original(game / "config.yaml");
+  std::ifstream original(game / "_hockeymon/config.yaml");
   const std::string after((std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
   ok &= expect(after == original_config, "editing preserves the original candidate configuration");
   ok &= expect(
@@ -983,7 +1070,7 @@ bool edited_match_workspace(const fs::path& root) {
   const auto plain = CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 4);
   if (!expect(plain.ok(), "a fresh automatic candidate can be derived from an edited candidate"))
     return false;
-  const YAML::Node plain_config = YAML::LoadFile((plain->game_directory / "config.yaml").string());
+  const YAML::Node plain_config = YAML::LoadFile((plain->game_directory / "_hockeymon/config.yaml").string());
   ok &= expect(
       !plain_config["stitching"]["manual_control_points"] &&
           !plain_config["hstream_ui"]["stitching_calibration"]["match_snapshot"],
@@ -993,22 +1080,22 @@ bool edited_match_workspace(const fs::path& root) {
   ok &= expect(
       !CreateStitchingExperimentEditableCopy(stale, root / "edited-session", 7).ok(),
       "automatic copies must reject a stale source generation");
-  YAML::Node invalid = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
+  YAML::Node invalid = YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string());
   invalid["game"]["videos"]["left"][0] = (original_game / "left.mp4").string();
-  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(invalid)))
+  if (!write(workspace->game_directory / "_hockeymon/config.yaml", YAML::Dump(invalid)))
     return false;
   ok &= expect(
       !CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 8).ok(),
       "clones must reject configured media names outside their workspace");
   invalid["game"]["videos"]["left"][0] = "nested/../left.mp4";
-  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(invalid)))
+  if (!write(workspace->game_directory / "_hockeymon/config.yaml", YAML::Dump(invalid)))
     return false;
   ok &= expect(
       !CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 9).ok(),
       "clones must reject parent traversal even when it resolves to an owned media link");
   fs::create_directory_symlink(original_game, workspace->game_directory / "linked-directory");
   invalid["game"]["videos"]["left"][0] = "linked-directory/left.mp4";
-  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(invalid)))
+  if (!write(workspace->game_directory / "_hockeymon/config.yaml", YAML::Dump(invalid)))
     return false;
   ok &= expect(
       !CreateStitchingExperimentEditableCopy(*workspace, root / "edited-session", 10).ok(),
@@ -1082,7 +1169,7 @@ bool selected_seam_blend(const fs::path& root) {
       "  videos:\n"
       "    left: [cam1/left.mp4]\n";
   const fs::path experiment_config = root / "selected-blend" / "candidate.yaml";
-  const fs::path game_config = root / "selected-blend" / "config.yaml";
+  const fs::path game_config = root / "selected-blend" / "_hockeymon/config.yaml";
   if (!write(experiment_config, selection) || !write(game_config, selection))
     return false;
 
@@ -1161,7 +1248,7 @@ int main() {
       !write(game / "program-output.mp4", "not a camera input") || !write(game / "left_calibration.json", "{}") ||
       !write(game / "cam2" / "right-calibration.yaml", "camera: right") ||
       !write(
-          game / "config.yaml",
+          game / "_hockeymon/config.yaml",
           "game:\n"
           "  videos:\n"
           "    left: [cam1/left.mp4]\n"
@@ -1203,6 +1290,7 @@ int main() {
   }
 
   bool ok = true;
+  ok &= private_input_inventory(root);
   ok &= expect(experiment_generated_backend_choices(root), "experiment generated choices must restore saved intent");
   ok &= expect(experiment_resolutions(root), "experiment image sizes must persist and promote independently");
   ok &= expect(durable_workspace_publication(root), "queued workspaces must be durable before catalog publication");
@@ -1222,15 +1310,18 @@ int main() {
   ok &= expect(
       fs::is_symlink(workspace->game_directory / "cam2" / "right-calibration.yaml"),
       "camera-directory calibration must be linked");
+  ok &= input_inventory(
+      workspace->game_directory,
+      {"cam1/left.mp4", "cam2/right.mp4", "left_calibration.json", "cam2/right-calibration.yaml"});
 
   auto trimmed_settings = settings;
   trimmed_settings.camera = *hm::stitching::read_stitch_camera_selection(
-      YAML::LoadFile((workspace->game_directory / "config.yaml").string()));
+      YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string()));
   trimmed_settings.camera->input_start_times = {{"cam1/left.mp4", 5}, {"cam2/right.mp4", 108}};
   const auto trimmed = CreateStitchingExperimentWorkspace(game, experiments, trimmed_settings, 51);
   ok &= expect(trimmed.ok(), "A candidate must accept independent camera starts");
   if (trimmed.ok()) {
-    const auto trimmed_config = YAML::LoadFile((trimmed->game_directory / "config.yaml").string());
+    const auto trimmed_config = YAML::LoadFile((trimmed->game_directory / "_hockeymon/config.yaml").string());
     ok &= expect(
         trimmed_config["stitching"]["input_start_times"]["cam2/right.mp4"].as<double>() == 108 &&
             trimmed_config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input" &&
@@ -1251,7 +1342,7 @@ int main() {
       !escaped_workspace.ok() && absl::IsInvalidArgument(escaped_workspace.status()),
       "auto-discovered video symlinks must not escape the selected game");
 
-  const YAML::Node config = YAML::LoadFile((workspace->game_directory / "config.yaml").string());
+  const YAML::Node config = YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string());
   const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   const YAML::Node rotation = config["stitching"]["projection_framing"]["rotation_degrees"];
   ok &= expect(calibration["control_points"].as<int>() == 900, "candidate control-point count must be saved");
@@ -1276,10 +1367,10 @@ int main() {
     selected_pto += "c n0 N1 x123.456789 y234.567891 X345.678912 Y456.789123 t0\n";
   ok &= expect(selected_pto.size() > 1024 * 1024, "multi-frame promotion fixture must exceed the old PTO read cap");
   ok &= expect(
-      write(workspace->game_directory / "autooptimiser_out.pto", selected_pto),
+      write(workspace->game_directory / "_hockeymon/autooptimiser_out.pto", selected_pto),
       "selected candidate geometry fixture must publish");
-  const auto selected_config =
-      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  const auto selected_config = BuildStitchingExperimentSelectionConfig(
+      workspace->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
   ok &= expect(selected_config.ok(), "selected candidate config must be mergeable");
   if (selected_config.ok()) {
     const YAML::Node selected = YAML::Load(*selected_config);
@@ -1318,7 +1409,7 @@ int main() {
   const auto unknown_report = PreparePlayerSelectedStitchingExperiment(*workspace, *workspace, report);
   ok &= expect(!unknown_report.ok(), "unknown player report versions must not become ordinary fallback candidates");
   ok &= expect(
-      YAML::Dump(YAML::LoadFile((workspace->game_directory / "config.yaml").string())) == YAML::Dump(config),
+      YAML::Dump(YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string())) == YAML::Dump(config),
       "invalid reports must leave the pending candidate unchanged");
   hm::stitching::PlayerFrameSelectionReport empty_scan;
   empty_scan.observation_count = 4;
@@ -1330,7 +1421,7 @@ int main() {
       unavailable.ok() && !unavailable->available && unavailable->diagnostic == empty_scan.unavailable_reason,
       "clean insufficient coverage must retain its diagnostic as a quality outcome");
   ok &= expect(
-      YAML::Dump(YAML::LoadFile((workspace->game_directory / "config.yaml").string())) == YAML::Dump(config),
+      YAML::Dump(YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string())) == YAML::Dump(config),
       "insufficient coverage must not freeze a plan or change pending calibration");
 
   YAML::Node selected_with_plan = YAML::Clone(config);
@@ -1368,10 +1459,10 @@ int main() {
     return 9;
   plan.fingerprint = *fingerprint;
   selected_with_plan["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
-  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(selected_with_plan)))
+  if (!write(workspace->game_directory / "_hockeymon/config.yaml", YAML::Dump(selected_with_plan)))
     return 7;
-  const auto selected_plan_config =
-      BuildStitchingExperimentSelectionConfig(workspace->game_directory / "config.yaml", game / "config.yaml");
+  const auto selected_plan_config = BuildStitchingExperimentSelectionConfig(
+      workspace->game_directory / "_hockeymon/config.yaml", game / "_hockeymon/config.yaml");
   ok &= expect(selected_plan_config.ok(), "selection provenance must be included in the promotion merge");
   if (selected_plan_config.ok())
     ok &= expect(
@@ -1389,9 +1480,9 @@ int main() {
         "inspection must preserve exact raw identities and scoring coverage");
     ok &= expect(
         inspected->frames[1].thumbnails[0] ==
-                workspace->game_directory / "player-frame-inspection" / plan.fingerprint / "left_1.jpg" &&
+                workspace->game_directory / "_hockeymon/player-frame-inspection" / plan.fingerprint / "left_1.jpg" &&
             inspected->frames[1].match_images[0] ==
-                workspace->game_directory / "calibration-frame-inspection" / workspace->invalidation_id /
+                workspace->game_directory / "_hockeymon/calibration-frame-inspection" / workspace->invalidation_id /
                     "points_1.jpg",
         "inspection thumbnail paths must belong to the selected fingerprint");
   }
@@ -1402,12 +1493,12 @@ int main() {
       changed_source.ok() && changed_source->source_validation.find("Source validation:") == 0,
       "inspection must expose changed sources while retaining the recorded choices");
   selected_with_plan["hstream_ui"]["stitching_calibration"]["status"] = "failed";
-  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(selected_with_plan)))
+  if (!write(workspace->game_directory / "_hockeymon/config.yaml", YAML::Dump(selected_with_plan)))
     return 11;
   ok &=
       expect(InspectStitchingExperimentFrames(*workspace).ok(), "failed solves must retain inspectable frozen choices");
   selected_with_plan["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "superseding-generation";
-  if (!write(workspace->game_directory / "config.yaml", YAML::Dump(selected_with_plan)))
+  if (!write(workspace->game_directory / "_hockeymon/config.yaml", YAML::Dump(selected_with_plan)))
     return 12;
   const auto superseded = InspectStitchingExperimentFrames(*workspace);
   ok &= expect(

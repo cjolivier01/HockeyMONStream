@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/ScoreboardSelector.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -518,7 +519,7 @@ async function post(path,body='{}'){const r=await fetch(path+'?token='+encodeURI
 
 std::optional<ScoreboardSelector::Polygon> load_existing(const fs::path& game_dir) {
   try {
-    auto loaded_config = load_game_config_file(game_dir / "config.yaml");
+    auto loaded_config = load_game_config_file(hm::game_storage::StateDirectory(game_dir) / "config.yaml");
     if (!loaded_config.ok()) {
       std::cerr << "Unable to read saved scoreboard selection: " << loaded_config.status() << '\n';
       return std::nullopt;
@@ -652,8 +653,8 @@ absl::StatusOr<ScoreboardSelector::Polygon> ScoreboardSelector::ValidateAndOrder
 
 absl::StatusOr<bool> ScoreboardSelector::SameSingleSource(const fs::path& game_dir, const fs::path& reference_dir) {
   try {
-    const auto game = YAML::LoadFile((game_dir / "config.yaml").string());
-    const auto reference = YAML::LoadFile((reference_dir / "config.yaml").string());
+    const auto game = YAML::LoadFile((hm::game_storage::StateDirectory(game_dir) / "config.yaml").string());
+    const auto reference = YAML::LoadFile((hm::game_storage::StateDirectory(reference_dir) / "config.yaml").string());
     std::vector<fs::path> game_sources, reference_sources;
     HM_ASSIGN_OR_RETURN(game_sources, single_source_paths(game, game_dir));
     HM_ASSIGN_OR_RETURN(reference_sources, single_source_paths(reference, reference_dir));
@@ -703,7 +704,7 @@ absl::Status ScoreboardSelector::Save(
       return absl::AbortedError("Saved game sources changed; reopen the scoreboard selector");
     reference_lock = std::move(*lock);
   }
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   try {
     if (fs::is_regular_file(config_path))
@@ -732,8 +733,9 @@ absl::Status ScoreboardSelector::Save(
       if (expected_generation->hugin_generation.empty() &&
           (!expected_generation->stitched_output_generation.empty() || !has_single_source(config)))
         return absl::AbortedError("Unstitched scoreboard canvas requires exactly one source playlist");
-      auto current_snapshot_identity =
-          snapshot_file_identity((single_source_reference.empty() ? game_dir : single_source_reference) / "s.png");
+      auto current_snapshot_identity = snapshot_file_identity(
+          hm::game_storage::StateDirectory(single_source_reference.empty() ? game_dir : single_source_reference) /
+          "s.png");
       if (!current_snapshot_identity.ok())
         return current_snapshot_identity.status();
       if (!expected_generation->snapshot_identity.empty() &&
@@ -791,7 +793,7 @@ absl::StatusOr<ScoreboardSelector::CanvasSnapshot> ScoreboardSelector::OpenCanva
     return config_lock.status();
   YAML::Node config(YAML::NodeType::Map);
   try {
-    const fs::path config_path = game_dir / "config.yaml";
+    const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
     if (fs::is_regular_file(config_path))
       config = YAML::LoadFile(config_path.string());
   } catch (const YAML::Exception& exception) {
@@ -818,7 +820,7 @@ absl::StatusOr<ScoreboardSelector::CanvasSnapshot> ScoreboardSelector::OpenCanva
     hugin_generation_value = *hugin_generation;
     output_generation_value = *output_generation;
   }
-  const fs::path image_path = game_dir / "s.png";
+  const fs::path image_path = hm::game_storage::StateDirectory(game_dir) / "s.png";
   OpenedSnapshotFile snapshot;
   HM_ASSIGN_OR_RETURN(snapshot, open_snapshot_file(image_path));
   const CanvasGeneration canvas_generation{

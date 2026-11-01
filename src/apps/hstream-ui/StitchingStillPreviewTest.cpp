@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
+#include <QtCore/QFileInfo>
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
@@ -56,10 +57,12 @@ bool wait_for(const std::function<bool()>& ready) {
   return false;
 }
 void write(const QString& path, const QByteArray& bytes) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Cannot write fixture");
 }
 void tiff_fixture(const QString& path) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   TIFF* file = TIFFOpen(QFile::encodeName(path).constData(), "w");
   require(file, "Cannot write TIFF fixture");
   TIFFSetField(file, TIFFTAG_IMAGEWIDTH, 4096);
@@ -89,11 +92,12 @@ SavedStitchingStill read_still(
 
 void exercise_synchronous_reader() {
   QTemporaryDir game;
+  QDir(game.path()).mkpath("_hockeymon");
   const QByteArray complete = "hstream_ui: {stitching_calibration: {status: complete}}\n";
-  write(game.filePath("config.yaml"), complete);
+  write(game.filePath("_hockeymon/config.yaml"), complete);
   QImage png(4096, 64, QImage::Format_RGB32);
   png.fill(Qt::red);
-  require(png.save(game.filePath("s.png")), "Cannot save synchronous PNG fixture");
+  require(png.save(game.filePath("_hockeymon/s.png")), "Cannot save synchronous PNG fixture");
   const auto original = read_still(game.path());
   require(
       original.name == "s.png" && original.image.size() == QSize(2048, 32) &&
@@ -104,11 +108,11 @@ void exercise_synchronous_reader() {
   const auto replaced = read_still(game.path(), {}, {}, [&] {
     auto writer = hm::stitching::try_lock_canvas_constraint_artifacts(game.path().toStdString());
     decoded_without_locks = writer.ok() && bool(*writer);
-    write(game.filePath("config.yaml"), complete + "changed: true\n");
+    write(game.filePath("_hockeymon/config.yaml"), complete + "changed: true\n");
   });
   require(decoded_without_locks, "Synchronous decoding must release publication locks");
   require(replaced.image.isNull() && replaced.retry, "A revision replaced during decoding must never be returned");
-  write(game.filePath("config.yaml"), complete);
+  write(game.filePath("_hockeymon/config.yaml"), complete);
   bool cancelled = true;
   int decodes = 0;
   const auto before = read_still(game.path(), {}, [&] { return cancelled; }, [&] { ++decodes; });
@@ -124,10 +128,11 @@ void exercise_synchronous_reader() {
 
 void exercise_metadata_cancellation() {
   QTemporaryDir game;
-  write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+  QDir(game.path()).mkpath("_hockeymon");
+  write(game.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
   QImage image(32, 16, QImage::Format_RGB32);
   image.fill(Qt::red);
-  require(image.save(game.filePath("s.png")), "Cannot save cancellation fixture");
+  require(image.save(game.filePath("_hockeymon/s.png")), "Cannot save cancellation fixture");
   QWidget host;
   host.resize(80, 40);
   host.show();
@@ -232,15 +237,16 @@ void exercise_pending_recovery() {
        {hm::stitching::TransactionJournalKind::kStitch, hm::stitching::TransactionJournalKind::kRink}) {
     for (const bool legacy : {false, true}) {
       QTemporaryDir game;
+      QDir(game.path()).mkpath("_hockeymon");
       const QByteArray config = "hstream_ui: {stitching_calibration: {status: complete}}\n";
-      write(game.filePath("config.yaml"), config);
+      write(game.filePath("_hockeymon/config.yaml"), config);
       QImage image(32, 16, QImage::Format_RGB32);
       image.fill(Qt::red);
-      require(image.save(game.filePath("s.png")), "Cannot save pending-recovery fixture");
+      require(image.save(game.filePath("_hockeymon/s.png")), "Cannot save pending-recovery fixture");
       const QString prefix = kind == hm::stitching::TransactionJournalKind::kStitch ? "stitch" : "rink";
       const QString transaction = (legacy ? ".hstream-" : "hstream-") + prefix + "-Ab12CD";
-      require(QDir(game.path()).mkdir(transaction), "Cannot create transaction fixture");
-      const auto journal = QDir(game.filePath(transaction));
+      require(QDir(game.filePath("_hockeymon")).mkdir(transaction), "Cannot create transaction fixture");
+      const auto journal = QDir(game.filePath("_hockeymon/" + transaction));
       write(journal.filePath("journal_version"), "2\n");
       write(journal.filePath("state"), "PREPARED\n");
       write(journal.filePath("rollback-payload"), "must remain unopened and unchanged\n");
@@ -264,7 +270,7 @@ void exercise_pending_recovery() {
       preview.setSource({});
       require(
           metadata_reads == 0 && decodes == 0 && preview.isHidden(), "Pending recovery must not enter metadata/decode");
-      QFile saved_config(game.filePath("config.yaml")), saved_state(journal.filePath("state"));
+      QFile saved_config(game.filePath("_hockeymon/config.yaml")), saved_state(journal.filePath("state"));
       require(
           saved_config.open(QIODevice::ReadOnly) && saved_config.readAll() == config,
           "Optional still must not recover or alter the calibration config");
@@ -278,10 +284,11 @@ void exercise_pending_recovery() {
 
 void exercise_advisory_generation() {
   QTemporaryDir game;
+  QDir(game.path()).mkpath("_hockeymon");
   const auto path = game.path().toStdString();
-  write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+  write(game.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
-    write(game.filePath(name), "metadata fixture\n");
+    write(game.filePath("_hockeymon/" + QString(name)), "metadata fixture\n");
   for (const char* name :
        {"mapping_0000.tif",
         "mapping_0000_x.tif",
@@ -289,27 +296,27 @@ void exercise_advisory_generation() {
         "mapping_0001.tif",
         "mapping_0001_x.tif",
         "mapping_0001_y.tif"})
-    tiff_fixture(game.filePath(name));
+    tiff_fixture(game.filePath("_hockeymon/" + QString(name)));
   QImage image(32, 16, QImage::Format_RGB32);
   image.fill(Qt::red);
   require(
-      image.save(game.filePath("seam_file.png")) && image.save(game.filePath("s.png")),
+      image.save(game.filePath("_hockeymon/seam_file.png")) && image.save(game.filePath("_hockeymon/s.png")),
       "Cannot save advisory identity fixture");
   auto artifact_lock = hm::stitching::try_lock_canvas_constraint_snapshot(path);
   require(artifact_lock.ok() && *artifact_lock, "Cannot hold advisory identity fixture");
   const auto legacy = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
   require(
-      legacy.ok() && !QFile::exists(game.filePath("stitching_generation_id")),
+      legacy.ok() && !QFile::exists(game.filePath("_hockeymon/stitching_generation_id")),
       "Legacy stat identity must remain read-only");
   const auto published = hm::stitching::stitch_artifact_generation_id_locked(path);
   require(published.ok(), "Cannot publish current identity fixture");
   const auto current = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
   require(current.ok() && *current == *published, "Advisory identity must accept current metadata-bound generations");
-  QFile identity_file(game.filePath("stitching_generation_id"));
+  QFile identity_file(game.filePath("_hockeymon/stitching_generation_id"));
   require(identity_file.open(QIODevice::ReadOnly), "Cannot read current identity fixture");
   const QByteArray identity = identity_file.readAll();
   identity_file.close();
-  write(game.filePath("autooptimiser_out.pto"), "changed metadata fixture\n");
+  write(game.filePath("_hockeymon/autooptimiser_out.pto"), "changed metadata fixture\n");
   const auto changed = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
   require(
       !changed.ok() && identity_file.open(QIODevice::ReadOnly) && identity_file.readAll() == identity,
@@ -320,7 +327,7 @@ void exercise_advisory_generation() {
   const QByteArray version2 = "version=2\nlogical-size=" + QByteArray::number(published->size()) +
       "\nbindings-size=" + QByteArray::number(bindings->size()) + '\n' + QByteArray::fromStdString(*published) +
       QByteArray::fromStdString(*bindings);
-  write(game.filePath("stitching_generation_id"), version2);
+  write(game.filePath("_hockeymon/stitching_generation_id"), version2);
   const auto older = hm::stitching::stitch_artifact_snapshot_generation_id_locked(path);
   require(!older.ok(), "Advisory reader must leave older identity upgrades to explicit validation");
   artifact_lock->reset();
@@ -343,17 +350,18 @@ void exercise_advisory_generation() {
 
 void exercise() {
   QTemporaryDir game;
+  QDir(game.path()).mkpath("_hockeymon");
   const QByteArray complete = "hstream_ui:\n  stitching_calibration:\n    status: complete\n";
-  write(game.filePath("config.yaml"), complete);
+  write(game.filePath("_hockeymon/config.yaml"), complete);
   QImage png(4096, 64, QImage::Format_RGB32);
   png.fill(Qt::red);
-  require(png.save(game.filePath("s.png")), "Cannot save PNG");
-  tiff_fixture(game.filePath("panorama.tif"));
-  const auto proxy = readCalibrationTiff(game.filePath("panorama.tif"), 2048);
+  require(png.save(game.filePath("_hockeymon/s.png")), "Cannot save PNG");
+  tiff_fixture(game.filePath("_hockeymon/panorama.tif"));
+  const auto proxy = readCalibrationTiff(game.filePath("_hockeymon/panorama.tif"), 2048);
   require(
       proxy.size() == QSize(2048, 32) && proxy.pixelColor(0, 0) == QColor(Qt::blue),
       "16-bit TIFF must become a bounded color-correct preview");
-  const auto png_proxy = readCalibrationPng(game.filePath("s.png"), QSize(2048, 32));
+  const auto png_proxy = readCalibrationPng(game.filePath("_hockeymon/s.png"), QSize(2048, 32));
   require(
       png_proxy.size() == QSize(2048, 32) && png_proxy.pixelColor(0, 0) == QColor(Qt::red),
       "PNG must become a bounded color-correct preview");
@@ -367,15 +375,15 @@ void exercise() {
   host.resize(900, 500);
   QApplication::processEvents();
   require(preview.size() == host.size(), "Still must follow preview area resizing");
-  write(game.filePath("config.yaml"), complete + "    stale_from: canvas\n");
+  write(game.filePath("_hockeymon/config.yaml"), complete + "    stale_from: canvas\n");
   require(wait_for([&] { return preview.isHidden(); }), "Invalidated calibration must clear the still");
-  write(game.filePath("config.yaml"), complete);
+  write(game.filePath("_hockeymon/config.yaml"), complete);
   require(wait_for([&] { return preview.isVisible(); }), "New complete calibration must restore the still");
-  QFile::remove(game.filePath("s.png"));
+  QFile::remove(game.filePath("_hockeymon/s.png"));
   require(
       wait_for([&] { return preview.property("calibrationImage").toString() == "panorama.tif"; }),
       "Missing PNG must fall back to TIFF");
-  write(game.filePath("s.png"), "broken image");
+  write(game.filePath("_hockeymon/s.png"), "broken image");
   require(
       wait_for([&] { return preview.property("calibrationImage").toString() == "panorama.tif"; }),
       "Corrupt PNG must fall back to TIFF");
@@ -400,7 +408,7 @@ void exercise() {
   require(preview.isHidden(), "Changed candidate generation must not display a still");
   preview.setSource(game.path());
   require(wait_for([&] { return preview.isVisible(); }), "Stop must restore the selected still");
-  write(game.filePath("config.yaml"), "invalid: [yaml");
+  write(game.filePath("_hockeymon/config.yaml"), "invalid: [yaml");
   require(wait_for([&] { return preview.isHidden(); }), "Malformed settings must fail closed");
   auto config = YAML::Load(complete.toStdString());
   hm::stitching::StitchingBackendChoices choices;
@@ -419,7 +427,7 @@ void exercise() {
       hm::stitching::reserve_stitching_backend_generation_in_config(config, "preview-generation", choices).ok(),
       "Cannot prepare generation claim");
   const auto claimed = QByteArray::fromStdString(YAML::Dump(config));
-  write(game.filePath("config.yaml"), claimed);
+  write(game.filePath("_hockeymon/config.yaml"), claimed);
   const auto isolated_home = qgetenv("HOME");
   qunsetenv("HOME");
   require(
@@ -427,9 +435,9 @@ void exercise() {
   qputenv("HOME", isolated_home);
   require(wait_for([&] { return preview.isVisible(); }), "Matching generation claim must allow the still");
   config["stitching"]["projection"] = "rectilinear";
-  write(game.filePath("config.yaml"), QByteArray::fromStdString(YAML::Dump(config)));
+  write(game.filePath("_hockeymon/config.yaml"), QByteArray::fromStdString(YAML::Dump(config)));
   require(wait_for([&] { return preview.isHidden(); }), "Editing settings must invalidate an old generation claim");
-  write(game.filePath("config.yaml"), claimed);
+  write(game.filePath("_hockeymon/config.yaml"), claimed);
   preview.setSource({});
   require(
       read_still(game.path(), "stitching: {projection: rectilinear}").image.isNull(),
@@ -450,8 +458,8 @@ void exercise() {
   // A completed canvas is usable before the downstream PNG/mask has been rebuilt.
   config = YAML::Load(claimed.toStdString());
   config["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"] = true;
-  require(png.save(game.filePath("s.png")), "Cannot restore PNG fixture");
-  write(game.filePath("config.yaml"), QByteArray::fromStdString(YAML::Dump(config)));
+  require(png.save(game.filePath("_hockeymon/s.png")), "Cannot restore PNG fixture");
+  write(game.filePath("_hockeymon/config.yaml"), QByteArray::fromStdString(YAML::Dump(config)));
   require(
       wait_for([&] { return preview.property("calibrationImage").toString() == "panorama.tif"; }),
       "A completed solve must skip its invalidated PNG and use the new panorama");

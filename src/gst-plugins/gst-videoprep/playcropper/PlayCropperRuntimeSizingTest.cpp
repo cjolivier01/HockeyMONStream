@@ -102,7 +102,8 @@ bool expect_size(
 }
 
 bool write_game_config(const std::filesystem::path& game_dir, const char* contents) {
-  std::ofstream config(game_dir / "config.yaml", std::ios::binary | std::ios::trunc);
+  std::filesystem::create_directories(game_dir / "_hockeymon");
+  std::ofstream config(game_dir / "_hockeymon/config.yaml", std::ios::binary | std::ios::trunc);
   config << contents;
   config.close();
   return config.good();

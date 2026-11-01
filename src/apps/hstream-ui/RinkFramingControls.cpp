@@ -77,7 +77,7 @@ RinkFramingControls::RinkFramingControls(QWidget* parent, MapCheck check) : QWid
       // transaction when there is no map to inspect. Publication changes the
       // watched directory and schedules a new check; native startup still owns
       // authoritative loading and transaction recovery.
-      if (!QFileInfo::exists(QDir(path).filePath("rink-map.yaml")))
+      if (!QFileInfo::exists(QDir(path).filePath("_hockeymon/rink-map.yaml")))
         return absl::FailedPreconditionError(
             "Save a reviewed rink map before using rink-aware framing or the mini-map");
       return hm::stitching::LoadPlaybackRinkMap(path.toStdString(), cancelled).status();
@@ -207,7 +207,7 @@ QByteArray RinkFramingControls::mapSignature() const {
   QByteArray result = directory_.toUtf8();
   for (const auto* name : map_files) {
     struct stat info{};
-    const auto path = QDir(directory_).filePath(name).toLocal8Bit();
+    const auto path = QDir(directory_).filePath("_hockeymon/" + QString(name)).toLocal8Bit();
     result += '\n';
     if (!directory_.isEmpty() && ::stat(path.constData(), &info) == 0) {
       for (auto value :
@@ -247,8 +247,10 @@ void RinkFramingControls::checkMap(bool force) {
     watcher_.removePaths(watcher_.directories());
   if (!directory_.isEmpty() && QDir(directory_).exists()) {
     watcher_.addPath(directory_);
+    if (QDir(directory_ + "/_hockeymon").exists())
+      watcher_.addPath(directory_ + "/_hockeymon");
     for (const auto* name : map_files) {
-      const auto path = QDir(directory_).filePath(name);
+      const auto path = QDir(directory_).filePath("_hockeymon/" + QString(name));
       if (QFileInfo::exists(path))
         watcher_.addPath(path);
     }

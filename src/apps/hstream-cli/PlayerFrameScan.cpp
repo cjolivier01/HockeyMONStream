@@ -47,7 +47,7 @@ absl::StatusOr<std::string> detector_identity(const NvDsGieConfig& config) {
 }
 
 absl::StatusOr<YAML::Node> game_config(const fs::path& directory) {
-  auto config = stitching::load_game_config_file(directory / "config.yaml");
+  auto config = stitching::load_game_config_file(directory / "_hockeymon/config.yaml");
   if (!config.ok())
     return config.status();
   if (!config->has_value())

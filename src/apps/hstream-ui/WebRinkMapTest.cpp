@@ -16,6 +16,7 @@ void require(bool value, const char* message) {
     throw std::runtime_error(message);
 }
 void placement(const fs::path& path, float left) {
+  fs::create_directories(path.parent_path());
   TIFF* file = TIFFOpen(path.c_str(), "w");
   require(file, "Cannot create TIFF fixture");
   TIFFSetField(file, TIFFTAG_IMAGEWIDTH, 900);
@@ -66,37 +67,39 @@ int main(int argc, char** argv) {
     require(argc == 2, "Pass native adapter binary");
     QTemporaryDir temporary;
     const fs::path root(temporary.path().toStdString()), game = root / "game";
-    fs::create_directories(game);
+    fs::create_directories(game / "_hockeymon");
     QImage image(3600, 1800, QImage::Format_RGB32);
     image.fill(Qt::gray);
     for (const char* name : {"left.png", "right.png"})
-      require(image.save(QString::fromStdString((game / name).string())), "Cannot save image");
+      require(image.save(QString::fromStdString((game / "_hockeymon" / name).string())), "Cannot save image");
     const std::string pto =
         "p f2 w3600 h1800 v360 n\"PNG\"\n"
         "i w3600 h1800 f4 v360 y0 p0 r0 n\"left.png\"\n"
         "i w3600 h1800 f4 v360 y0 p0 r0 n\"right.png\"\n";
     for (const char* name : {"autooptimiser_out.pto", "hm_project.pto"})
-      std::ofstream(game / name) << pto;
+      std::ofstream(game / "_hockeymon" / name) << pto;
     for (const char* name : {"mapping_0000.tif", "mapping_0000_x.tif", "mapping_0000_y.tif"})
-      placement(game / name, 900);
+      placement(game / "_hockeymon" / name, 900);
     for (const char* name : {"mapping_0001.tif", "mapping_0001_x.tif", "mapping_0001_y.tif"})
-      placement(game / name, 1800);
-    std::ofstream(game / "seam_file.png") << "fixture";
-    std::ofstream(game / "config.yaml") << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
-                                           "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
-    std::ofstream(game / "stitching_canvas_provenance")
+      placement(game / "_hockeymon" / name, 1800);
+    std::ofstream(game / "_hockeymon/seam_file.png") << "fixture";
+    std::ofstream(game / "_hockeymon/config.yaml")
+        << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+           "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
+    std::ofstream(game / "_hockeymon/stitching_canvas_provenance")
         << "version=3\nmax-output-width=1800\nmax-canvas-dimension=0\nsource-canvas-width=7200\nsource-canvas-height=3600\n"
            "canvas-width=1800\ncanvas-height=1200\nmax-output-width-applied=1\nmax-canvas-dimension-applied=0\n"
            "mapping-backend=nona\nprojection=equirectangular\n";
-    std::ofstream(game / "config.yaml") << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
-                                           "stitching:\n  projection_framing:\n    auto_crop: false\n";
+    std::ofstream(game / "_hockeymon/config.yaml") << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+                                                      "stitching:\n  projection_framing:\n    auto_crop: false\n";
     const auto unlevelled = CheckRinkMapSetup(QString::fromStdString(game.string()));
     require(
         unlevelled.code() == absl::StatusCode::kFailedPrecondition &&
             std::string(unlevelled.message()).find("Level the rink first") != std::string::npos,
         "Missing saved rotation must explain the leveling prerequisite, not throw a YAML error");
-    std::ofstream(game / "config.yaml") << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
-                                           "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
+    std::ofstream(game / "_hockeymon/config.yaml")
+        << "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
+           "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
     const auto missing = invoke(argv[1], root, "rink-map-check", {});
     require(!missing.value("ready").toBool(true), "Missing map must not be ready");
     const auto receipt = hm::web::ReadObject(root / "operation-result.json");
@@ -139,10 +142,10 @@ int main(int argc, char** argv) {
     require(
         fitted.value("fit").toObject().value("state") == "ready",
         "Four exact corners must fit through actual pano_trafo");
-    require(!fs::exists(game / "rink-map.yaml"), "Updating must not save a draft");
+    require(!fs::exists(game / "_hockeymon/rink-map.yaml"), "Updating must not save a draft");
     const auto saved = invoke(argv[1], root, "rink-map-save", draft);
     require(
-        saved.value("saved").toBool() && fs::exists(game / "rink-map.yaml"),
+        saved.value("saved").toBool() && fs::exists(game / "_hockeymon/rink-map.yaml"),
         "Save must publish reviewed native observations");
     invoke(argv[1], root, "rink-map-save", draft, false);
     const auto check = invoke(argv[1], root, "rink-map-check", {});
@@ -154,7 +157,7 @@ int main(int argc, char** argv) {
     auto wrong = reopened.value("document").toObject();
     wrong.insert("rays", QJsonArray{});
     invoke(argv[1], root, "rink-map-update", {{"snapshot", reopened.value("snapshot")}, {"document", wrong}}, false);
-    std::ofstream(game / "autooptimiser_out.pto", std::ios::app) << "# changed\n";
+    std::ofstream(game / "_hockeymon/autooptimiser_out.pto", std::ios::app) << "# changed\n";
     invoke(
         argv[1],
         root,

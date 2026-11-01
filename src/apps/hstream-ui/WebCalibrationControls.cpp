@@ -321,8 +321,9 @@ void validate_fresh_inputs(
     if (entry->is_directory())
       continue;
     require(
-        entry->is_regular_file() && path.parent_path() == request.game &&
-            (path.filename() == "config.yaml" || path.filename() == ".hstream-stitch.lock" ||
+        entry->is_regular_file() && path.parent_path() == request.game / "_hockeymon" &&
+            (path.filename() == "config.yaml" || path.filename() == "manifest.json" ||
+             path.filename() == ".manifest.lock" || path.filename() == ".hstream-stitch.lock" ||
              path.filename() == ".hstream-config.lock" ||
              (locked &&
               (path.filename() == ".hstream-rink-journal-v1" || path.filename() == ".hstream-stitch-journal-v1" ||
@@ -470,8 +471,9 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   stop();
   const auto allowed = authorized_media(request);
   if (fresh_source) {
-    const auto bytes =
-        take(st::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "fresh config"));
+    const auto bytes = take(
+        st::read_bounded_regular_file_no_follow(
+            request.game / "_hockeymon/config.yaml", 4 * 1024 * 1024, "fresh config"));
     require(hash(bytes) == source_hash, "Fresh calibration config changed before staging");
     validate_fresh_inputs(request, YAML::Load(bytes), allowed, false);
   }
@@ -491,7 +493,8 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
     auto transaction = take(st::GameConfigTransactionLock::Acquire(request.game));
     stop();
     const auto bytes = take(
-        st::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "calibration config"));
+        st::read_bounded_regular_file_no_follow(
+            request.game / "_hockeymon/config.yaml", 4 * 1024 * 1024, "calibration config"));
     require(hash(bytes) == source_hash, "Calibration source config changed before staging");
     auto original = YAML::Load(bytes);
     const auto output_generation = at(original, {"rink", "stitched_output_generation"});
@@ -532,7 +535,9 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
             "hm_project.pto",
             "panorama.tif",
             "seam_file.png"})
-        require(!fs::exists(request.game / name), "Cleaned calibration still contains retired solve artifacts");
+        require(
+            !fs::exists(request.game / "_hockeymon" / name),
+            "Cleaned calibration still contains retired solve artifacts");
       auto pruned = YAML::Clone(original);
       st::RemoveManualStitchingCleanConfigKeys(pruned);
       require(YAML::Dump(pruned) == YAML::Dump(original), "Cleaned calibration still contains retired solve state");
@@ -728,7 +733,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
   stop();
   const auto bytes = take(
       st::read_bounded_regular_file_no_follow(
-          request.game / "config.yaml", 4 * 1024 * 1024, "staged calibration config"));
+          request.game / "_hockeymon/config.yaml", 4 * 1024 * 1024, "staged calibration config"));
   return {
       {"calibration_controls_stage_version", 1},
       {"staged", true},

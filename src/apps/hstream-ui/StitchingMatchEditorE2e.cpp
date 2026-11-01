@@ -731,7 +731,7 @@ int main(int argc, char** argv) {
             retained.state == "complete" && retained.process_session_id == 0 && retained.process_token.empty() &&
                 retained.artifact_generation_id == prior_report["artifact_generation"].as<std::string>(),
             "Retained manual candidate generation or ownership differs");
-        const auto config = YAML::LoadFile((manual_workspace / "config.yaml").string());
+        const auto config = YAML::LoadFile((manual_workspace / "_hockeymon/config.yaml").string());
         const auto fingerprint = hm::stitching::manual_control_point_fingerprint(config);
         require(
             fingerprint.ok() && *fingerprint == prior_report["manual_fingerprint"].as<std::string>(),
@@ -773,7 +773,9 @@ int main(int argc, char** argv) {
             manual_row >= 0 && table->item(manual_row, 5)->text() == "Ready", "Retained candidate row is not ready");
         source_workspace = prior_report["source_workspace"].as<std::string>();
         source_config_sha = QString::fromStdString(prior_report["source_config_sha256"].as<std::string>());
-        require(image_sha256(source_workspace / "config.yaml") == source_config_sha, "Prior source config changed");
+        require(
+            image_sha256(source_workspace / "_hockeymon/config.yaml") == source_config_sha,
+            "Prior source config changed");
         report["retained_from_report"] = retained_preview_report;
         report["retained_report_sha256"] = image_sha256(retained_preview_report).toStdString();
         report["source_workspace"] = source_workspace.string();
@@ -797,7 +799,7 @@ int main(int argc, char** argv) {
         require(automatic_row >= 0, "No retained Main row; failed Main without player selection is currently omitted");
         require(table->item(automatic_row, 5)->text() == "Ready", "This mode requires a genuine completed Main");
         source_state = table->item(automatic_row, 5)->text();
-        source_config_sha = image_sha256(game / "config.yaml");
+        source_config_sha = image_sha256(game / "_hockeymon/config.yaml");
         table->selectRow(automatic_row);
         click(dialog, "inspectStitchExperimentFramesButton");
         step = 3;
@@ -824,7 +826,7 @@ int main(int argc, char** argv) {
             "Native source record does not certify the expected terminal outcome");
         require(source.process_session_id == 0 && source.process_token.empty(), "Source solve still owns its process");
         source_workspace = source.workspace.game_directory;
-        source_config_sha = image_sha256(source_workspace / "config.yaml");
+        source_config_sha = image_sha256(source_workspace / "_hockeymon/config.yaml");
         report["source_workspace"] = source_workspace.string();
         report["source_state"] = source.state;
         report["source_config_sha256"] = source_config_sha.toStdString();
@@ -890,7 +892,7 @@ int main(int argc, char** argv) {
         require(
             log->toPlainText().contains("automatic matching is bypassed"), "Real runner did not reuse manual input");
         require(
-            image_sha256(source_workspace / "config.yaml") == source_config_sha,
+            image_sha256(source_workspace / "_hockeymon/config.yaml") == source_config_sha,
             "Manual solve mutated its source config");
         const auto manual = added_record(game, before_manual, *table, manual_row);
         require(
@@ -898,7 +900,7 @@ int main(int argc, char** argv) {
                 manual.process_token.empty(),
             "Manual candidate lacks completed, retired native identity");
         manual_workspace = manual.workspace.game_directory;
-        const auto manual_config = YAML::LoadFile((manual_workspace / "config.yaml").string());
+        const auto manual_config = YAML::LoadFile((manual_workspace / "_hockeymon/config.yaml").string());
         const auto fingerprint = hm::stitching::manual_control_point_fingerprint(manual_config);
         require(fingerprint.ok() && !fingerprint->empty(), "Manual solve has no saved manual fingerprint");
         const auto saved = hm::stitching::LoadCalibrationMatches(manual_workspace, *fingerprint);
@@ -1119,7 +1121,8 @@ int main(int argc, char** argv) {
             stopped.process_session_id == 0 && stopped.process_token.empty() && stopped.state == "complete",
             "Ordinary Stop did not retire native preview ownership");
         require(
-            image_sha256(source_workspace / "config.yaml") == source_config_sha, "Preview changed its original source");
+            image_sha256(source_workspace / "_hockeymon/config.yaml") == source_config_sha,
+            "Preview changed its original source");
         report["ordinary_stop_retired"] = true;
         if (!retained_preview_report.empty()) {
           finish(
@@ -1136,7 +1139,7 @@ int main(int argc, char** argv) {
         click(dialog, "applyStitchExperimentButton");
         ++step;
       } else if (step == 8 && applied) {
-        const auto config = YAML::LoadFile((game / "config.yaml").string());
+        const auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
         const auto fingerprint = hm::stitching::manual_control_point_fingerprint(config);
         require(fingerprint.ok() && !fingerprint->empty(), "Promotion lost manual identity");
         auto saved = hm::stitching::LoadCalibrationMatches(game, *fingerprint);
@@ -1155,7 +1158,7 @@ int main(int argc, char** argv) {
                 "Edited coordinates changed");
           }
         }
-        std::ifstream project(game / "hm_project.pto");
+        std::ifstream project(game / "_hockeymon/hm_project.pto");
         size_t project_control_points = 0;
         std::string line;
         while (std::getline(project, line))
@@ -1168,7 +1171,7 @@ int main(int argc, char** argv) {
         require(QString::fromStdString(*fingerprint) == manual_fingerprint, "Promotion changed manual fingerprint");
         if (source_workspace != game) {
           require(
-              image_sha256(source_workspace / "config.yaml") == source_config_sha,
+              image_sha256(source_workspace / "_hockeymon/config.yaml") == source_config_sha,
               "Promotion changed the original candidate");
           require(
               current_record(game, source_workspace).state == report["source_state"].as<std::string>(),
@@ -1210,7 +1213,7 @@ int main(int argc, char** argv) {
           return;
         const auto draft = editor->editedSet();
         same_matches(draft, expected);
-        const auto reopened_config = YAML::LoadFile((game / "config.yaml").string());
+        const auto reopened_config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
         const auto reopened_snapshot =
             reopened_config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>();
         require(
@@ -1237,7 +1240,7 @@ int main(int argc, char** argv) {
       } else if (step == 13) {
         if (reopened_dialog->findChild<QDialog*>("matchEditorDialog"))
           return;
-        const auto config = YAML::LoadFile((game / "config.yaml").string());
+        const auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
         const auto framing = hm::stitching::read_stitch_projection_framing(config);
         const auto camera = hm::stitching::read_stitch_camera_selection(config);
         require(framing.ok(), framing.status().ToString());

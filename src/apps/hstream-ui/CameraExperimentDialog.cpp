@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
@@ -66,6 +67,25 @@
 
 namespace {
 namespace replay = hm::playtracker_replay;
+
+absl::Status inventory_export(const QString& game, const QString& path) {
+  if (game.isEmpty())
+    return absl::OkStatus();
+  namespace fs = std::filesystem;
+  std::error_code error;
+  const auto game_path = fs::canonical(game.toStdString(), error);
+  if (error)
+    return absl::UnavailableError("Cannot resolve the game directory for export inventory: " + error.message());
+  const auto output_path = fs::canonical(path.toStdString(), error);
+  if (error)
+    return absl::UnavailableError("Cannot resolve the saved export for game inventory: " + error.message());
+  const auto relative = output_path.lexically_relative(game_path);
+  if (relative.empty() || *relative.begin() == "..")
+    return absl::OkStatus();
+  if (*relative.begin() == "_hockeymon")
+    return hm::game_storage::RefreshManifest(game_path, "camera-experiment");
+  return hm::game_storage::RegisterPublished(game_path, relative, "camera-experiment");
+}
 
 class ExperimentTimeEdit : public QDoubleSpinBox {
  protected:
@@ -628,7 +648,8 @@ struct CameraExperimentDialog::Impl {
     if (!prepared_stitching && hm::ui::LoadArchiveSidecar(prepared_media, &archive) && archive.start_time_known)
       media_ms -= archive.start_time_ms;
     return {
-        prepared_stitching ? QDir(prepared_media).filePath("config.yaml").toStdString() : prepared_media.toStdString(),
+        prepared_stitching ? QDir(prepared_media).filePath("_hockeymon/config.yaml").toStdString()
+                           : prepared_media.toStdString(),
         selected->front().pts_ns,
         media_ms < 0 ? std::numeric_limits<uint64_t>::max() : static_cast<std::uint64_t>(media_ms) * 1000000,
         media_size.first,
@@ -1669,7 +1690,7 @@ CameraExperimentDialog::CameraExperimentDialog(
   });
   // A configured game defaults to direct replay; empty standalone dialogs
   // retain the metadata-only / optional panorama workflow.
-  s.source_mode->setCurrentIndex(QFileInfo(QDir(game_directory).filePath("config.yaml")).isFile() ? 0 : 1);
+  s.source_mode->setCurrentIndex(QFileInfo(QDir(game_directory).filePath("_hockeymon/config.yaml")).isFile() ? 0 : 1);
   update_source_mode();
   connect(s.in, &QDoubleSpinBox::valueChanged, s.video_origin, &QDoubleSpinBox::setValue);
   connect(s.manifest, &QLineEdit::textChanged, this, [this]() {
@@ -1763,9 +1784,12 @@ CameraExperimentDialog::CameraExperimentDialog(
     state.saving = true;
     state.busy(true);
     state.show_status("Saving trial…");
-    state.work = std::async(std::launch::async, [prepared, trial = state.trials[index], media, path, token]() {
+    const QString game = state.game_path->text();
+    state.work = std::async(std::launch::async, [prepared, trial = state.trials[index], media, path, token, game]() {
       Impl::WorkResult result;
-      const auto status = prepared->SaveTrial(path.toStdString(), trial, media, token.get());
+      auto status = prepared->SaveTrial(path.toStdString(), trial, media, token.get());
+      if (status.ok())
+        status = inventory_export(game, path);
       if (status.ok())
         result.saved_message =
             media.path.empty() ? "Trial saved without a video binding." : "Trial and its source/video binding saved.";
@@ -1862,6 +1886,12 @@ bool CameraExperimentDialog::captureScreenshot(const QString& path, QString* err
   if (!screenshot.save(path)) {
     if (error)
       *error = "Could not save the experiment screenshot.";
+    return false;
+  }
+  const auto inventory = inventory_export(impl_->game_path->text(), path);
+  if (!inventory.ok()) {
+    if (error)
+      *error = "Screenshot saved, but game inventory failed: " + QString::fromStdString(inventory.ToString());
     return false;
   }
   return true;

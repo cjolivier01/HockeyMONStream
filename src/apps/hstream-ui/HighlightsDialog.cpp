@@ -1,9 +1,10 @@
-#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/HighlightsDialog.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/HighlightItemEditor.h"
 #include "src/apps/hstream-ui/HighlightReelPipeline.h"
+#include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
 
 #include <QtCore/QDir>
@@ -120,7 +121,7 @@ HighlightsDialog::HighlightsDialog(
       game_dir_(std::move(game_dir)),
       env_(std::move(env)),
       archives_(std::move(archives)),
-      plan_path_(QDir(game_dir_).filePath("highlights.json")) {
+      plan_path_(QDir(game_dir_).filePath("_hockeymon/highlights.json")) {
   setObjectName("highlightsDialog");
   setWindowTitle("Highlights — " + game_id_);
   configure_preview_dialog_window(this);
@@ -807,7 +808,17 @@ bool HighlightsDialog::savePlan() {
     return false;
   }
   QString error;
+  const auto state = hm::game_storage::EnsureStateDirectory(game_dir_.toStdString());
+  if (!state.ok()) {
+    status_->setText(QString::fromStdString(state.ToString()));
+    return false;
+  }
   if (SaveHighlightPlan(plan_path_, plan_, &error)) {
+    const auto inventory = hm::game_storage::RefreshManifest(game_dir_.toStdString(), "highlights");
+    if (!inventory.ok()) {
+      status_->setText(QString::fromStdString(inventory.ToString()));
+      return false;
+    }
     status_->setText("Intervals saved to " + plan_path_);
     return true;
   }
@@ -1100,7 +1111,7 @@ void HighlightsDialog::beginExport(bool selected) {
   }
   // The published video is hard-linked out of this directory, so it has to sit
   // on the same filesystem as the game directory.
-  QTemporaryDir work(QDir(game_dir_).filePath(".highlights-export-XXXXXX"));
+  QTemporaryDir work(QDir(game_dir_).filePath("_hockeymon/.highlights-export-XXXXXX"));
   if (!work.isValid()) {
     status_->setText("Could not create a highlights work directory in " + game_dir_);
     return;
@@ -1308,6 +1319,12 @@ void HighlightsDialog::publishEncode() {
     return;
   }
 #endif
+  const auto inventory =
+      hm::game_storage::RegisterPublished(game_dir_.toStdString(), destination.toStdString(), "highlights", "");
+  if (!inventory.ok()) {
+    finishJob(false, "Highlights published, but inventory failed: " + QString::fromStdString(inventory.ToString()));
+    return;
+  }
   published_path_ = destination;
   appendLog("Saved " + destination);
   finishJob(true, "Highlights saved: " + destination);
@@ -1345,6 +1362,9 @@ void HighlightsDialog::finishJob(bool success, const QString& message) {
     if (!keep_work_files)
       QDir(work_dir_).removeRecursively();
     work_dir_.clear();
+    const auto inventory = hm::game_storage::RefreshManifest(game_dir_.toStdString(), "highlights");
+    if (!inventory.ok())
+      appendLog(QString::fromStdString(inventory.ToString()));
   }
   updateControls();
   if (close_when_stopped_) {

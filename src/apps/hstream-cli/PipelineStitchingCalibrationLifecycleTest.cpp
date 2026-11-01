@@ -830,24 +830,30 @@ int main(int argc, char** argv) {
 
   if (std::getenv("HM_TEST_CALIBRATION_WATCHDOG_ONLY")) {
     ok &= expect(
-        write_game_config(game / "config.yaml", 128, "watchdog", false, 1, "akaze-hamming"),
+        write_game_config(game / "_hockeymon/config.yaml", 128, "watchdog", false, 1, "akaze-hamming"),
         "watchdog fixture must be written");
-    YAML::Node config = YAML::LoadFile((game / "config.yaml").string());
+    YAML::Node config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     // These are synthetic rectilinear crops, not footage from the named lens
     // profile used by the older lifecycle fixtures.
     config["stitching"]["camera_config"] = "manual";
     config["stitching"]["camera_automation"]["fov"] = false;
     config["stitching"]["camera_automation"]["lens"] = false;
-    config["stitching"]["input_lens"] = YAML::Load(
-        "{projection: rectilinear, optimization: auto, distortion: [0, 0, 0], center_offset: [0, 0]}");
+    config["stitching"]["input_lens"] =
+        YAML::Load("{projection: rectilinear, optimization: auto, distortion: [0, 0, 0], center_offset: [0, 0]}");
     config["stitching"]["mapping_backend"] = "opencv-magsac";
     config["stitching"]["projection"] = "rectilinear";
-    std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+    std::ofstream(game / "_hockeymon/config.yaml") << YAML::Dump(config) << '\n';
     ::setenv("HM_URI_PLAYLIST_BARRIER_STALL_SECONDS", "2", 1);
     PipelineProcess calibration;
     ok &= expect(
         calibration.Start(
-            argv[1], pipeline_config, game_root, plugin_directory, "watchdog", 128, false,
+            argv[1],
+            pipeline_config,
+            game_root,
+            plugin_directory,
+            "watchdog",
+            128,
+            false,
             /*stitch_frame_time=*/"00:00:00",
             /*time_limit_seconds=*/1,
             /*stitch_rotate_degrees=*/{},
@@ -887,13 +893,19 @@ int main(int argc, char** argv) {
       return 1;
     }
     ok &= expect(
-        write_rink_mask_invalidation(game / "config.yaml", "preroll-watchdog"),
+        write_rink_mask_invalidation(game / "_hockeymon/config.yaml", "preroll-watchdog"),
         "preroll watchdog must invalidate the rink mask");
     ::setenv("HM_TEST_MODEL_INITIALIZATION_TIMEOUT_MS", "2000", 1);
     PipelineProcess preroll;
     ok &= expect(
         preroll.Start(
-            argv[1], pipeline_config, game_root, plugin_directory, "preroll-watchdog", 128, false,
+            argv[1],
+            pipeline_config,
+            game_root,
+            plugin_directory,
+            "preroll-watchdog",
+            128,
+            false,
             /*stitch_frame_time=*/"00:00:00",
             /*time_limit_seconds=*/1,
             /*stitch_rotate_degrees=*/{},
@@ -923,22 +935,23 @@ int main(int argc, char** argv) {
 
   if (std::getenv("HM_TEST_RINK_MASK_TIME_ONLY")) {
     ok &= expect(
-        write_game_config(game / "config.yaml", 128, "timed-mask", false, 1, "akaze-hamming"),
+        write_game_config(game / "_hockeymon/config.yaml", 128, "timed-mask", false, 1, "akaze-hamming"),
         "Timed mask fixture must be written");
-    YAML::Node config = YAML::LoadFile((game / "config.yaml").string());
+    YAML::Node config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     config["stitching"]["mapping_backend"] = "opencv-magsac";
     config["stitching"]["projection"] = "rectilinear";
     config["stitching"]["rink_mask_frame_time"] = "-00:00:01";
     config["stitching"]["stitch_frame_time"] = "00:00:59.900";
-    std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+    std::ofstream(game / "_hockeymon/config.yaml") << YAML::Dump(config) << '\n';
     std::string first_generation;
     int pass = 0;
     for (const std::string selection : {"-00:00:01", "00:00:05", "00:00:05"}) {
-      config = YAML::LoadFile((game / "config.yaml").string());
+      config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       config["stitching"]["rink_mask_frame_time"] = selection;
-      std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
-      const auto mask_before =
-          fs::exists(game / "rink_mask_0.png") ? fs::last_write_time(game / "rink_mask_0.png") : fs::file_time_type{};
+      std::ofstream(game / "_hockeymon/config.yaml") << YAML::Dump(config) << '\n';
+      const auto mask_before = fs::exists(game / "_hockeymon/rink_mask_0.png")
+          ? fs::last_write_time(game / "_hockeymon/rink_mask_0.png")
+          : fs::file_time_type{};
       PipelineProcess timed;
       int exit_code = -1;
       ok &= expect(
@@ -953,7 +966,7 @@ int main(int argc, char** argv) {
         std::cerr << "fixture retained at " << root << '\n';
         return 1;
       }
-      config = YAML::LoadFile((game / "config.yaml").string());
+      config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       const YAML::Node frame = config["rink"]["mask_frame"];
       ok &= expect(
           frame["selection"].as<std::string>() == selection &&
@@ -978,7 +991,8 @@ int main(int argc, char** argv) {
       }
       if (pass == 2)
         ok &= expect(
-            fs::last_write_time(game / "rink_mask_0.png") == mask_before, "A repeated time must reuse the saved mask");
+            fs::last_write_time(game / "_hockeymon/rink_mask_0.png") == mask_before,
+            "A repeated time must reuse the saved mask");
       for (const auto& source : frame["sources"])
         ok &= expect(
             std::abs(source["seconds"].as<double>() - (pass == 0 ? 59.0 : 5.0)) < 0.1,
@@ -993,9 +1007,9 @@ int main(int argc, char** argv) {
         return 1;
       }
     }
-    config = YAML::LoadFile((game / "config.yaml").string());
+    config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     config["stitching"]["rink_mask_frame_time"] = "00:00:07";
-    std::ofstream(game / "config.yaml") << YAML::Dump(config) << '\n';
+    std::ofstream(game / "_hockeymon/config.yaml") << YAML::Dump(config) << '\n';
     PipelineProcess cancelled;
     int cancelled_exit = -1;
     ok &= expect(
@@ -1022,7 +1036,7 @@ int main(int argc, char** argv) {
     ok &= expect(
         cancelled.output().find("stage=playback-restart status=complete") == std::string::npos,
         "Cancelled mask preparation must not acknowledge normal playback");
-    config = YAML::LoadFile((game / "config.yaml").string());
+    config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     ok &= expect(
         config["rink"]["mask_frame"]["selection"].as<std::string>() == "00:00:05" &&
             config["rink"]["stitched_output_generation"].as<std::string>() == first_generation,
@@ -1044,7 +1058,7 @@ int main(int argc, char** argv) {
             argv[1], pipeline_config, game_root, plugin_directory, "timed-mask", 128, false, "00:00:59.900", 1) &&
             legacy_stage.WaitForExit(&legacy_exit, kCalibrationTimeout) && legacy_exit == 0,
         "Legacy calibration stage must prepare the selected mask before finishing");
-    config = YAML::LoadFile((game / "config.yaml").string());
+    config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     ok &= expect(
         config["rink"]["mask_frame"]["recording_time_ns"].as<uint64_t>() == 7000000000ULL &&
             config["rink"]["stitched_output_generation"].as<std::string>() == first_generation,
@@ -1062,7 +1076,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "ordinary-uri", false, 0, "akaze-hamming"),
+              write_game_config(game / "_hockeymon/config.yaml", 128, "ordinary-uri", false, 0, "akaze-hamming"),
               "ordinary URI calibration config must be written") ||
           !expect(
               ordinary_uri.Start(
@@ -1103,7 +1117,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "periodic-recreation", false, 1),
+              write_game_config(game / "_hockeymon/config.yaml", 128, "periodic-recreation", false, 1),
               "periodic recreation calibration config must be written") ||
           !expect(
               periodic_recreation.Start(
@@ -1143,7 +1157,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "partial-eos", false),
+              write_game_config(game / "_hockeymon/config.yaml", 128, "partial-eos", false),
               "partial-EOS config must be written") ||
           !expect(
               partial_eos.Start(
@@ -1174,7 +1188,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "initial", false, 1),
+              write_game_config(game / "_hockeymon/config.yaml", 128, "initial", false, 1),
               "initial game config must be written") ||
           !expect(
               initial.Start(
@@ -1243,7 +1257,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              replace_seam_with_uniform_image(game / "seam_file.png"),
+              replace_seam_with_uniform_image(game / "_hockeymon/seam_file.png"),
               "configured seam must be replaceable with a same-size uniform image") ||
           !expect(
               configure_only_invalid_seam.Start(
@@ -1269,7 +1283,7 @@ int main(int argc, char** argv) {
       return expect(
                  configure_only_invalid_seam.Terminate(),
                  "configure-only regression process must terminate after reaching calibration") &&
-          expect(restore_configure_only_seam(game / "seam_file.png"),
+          expect(restore_configure_only_seam(game / "_hockeymon/seam_file.png"),
                  "configure-only regression must restore the valid seam fixture");
     }();
   }
@@ -1278,7 +1292,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              replace_seam_with_uniform_image(game / "seam_file.png"),
+              replace_seam_with_uniform_image(game / "_hockeymon/seam_file.png"),
               "one-pass seam must be replaceable with a same-size uniform image") ||
           !expect(
               one_pass_invalid_seam.Start(
@@ -1315,7 +1329,7 @@ int main(int argc, char** argv) {
       }
       const size_t recreation_mark = one_pass_invalid_seam.Mark();
       std::error_code remove_error;
-      fs::remove(game / "seam_file.png", remove_error);
+      fs::remove(game / "_hockeymon/seam_file.png", remove_error);
       int recreation_exit_code = 0;
       bool recreation_exited_normally = false;
       const bool replay_rejected = !remove_error &&
@@ -1330,7 +1344,7 @@ int main(int argc, char** argv) {
       return expect(
                  replay_rejected,
                  "post-calibration recreation must reject artifact loss without replaying calibration authority") &&
-          expect(restore_configure_only_seam(game / "seam_file.png"),
+          expect(restore_configure_only_seam(game / "_hockeymon/seam_file.png"),
                  "one-pass invalid-seam regression must restore the valid seam fixture");
     }();
   }
@@ -1341,7 +1355,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_rink_mask_invalidation(game / "config.yaml", "missing-completion"),
+              write_rink_mask_invalidation(game / "_hockeymon/config.yaml", "missing-completion"),
               "missing-completion rink invalidation must be written") ||
           !expect(
               missing_completion.Start(
@@ -1383,7 +1397,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "zero-missing-completion", false, 1),
+              write_game_config(game / "_hockeymon/config.yaml", 128, "zero-missing-completion", false, 1),
               "zero-time missing-completion config must be written") ||
           !expect(
               zero_missing_completion.Start(
@@ -1436,7 +1450,7 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_game_config(game / "config.yaml", 128, "zero-eos-completion", false, 1),
+              write_game_config(game / "_hockeymon/config.yaml", 128, "zero-eos-completion", false, 1),
               "zero-time EOS completion config must be written") ||
           !expect(
               zero_eos_completion.Start(
@@ -1496,7 +1510,8 @@ int main(int argc, char** argv) {
   if (ok) {
     ok = [&] {
       if (!expect(
-              write_saved_stitch_time_invalidation(game / "config.yaml", "00:00:00.500", "saved-config-time"),
+              write_saved_stitch_time_invalidation(
+                  game / "_hockeymon/config.yaml", "00:00:00.500", "saved-config-time"),
               "saved stitch-time invalidation must be written over existing artifacts") ||
           !expect(
               saved_config.Start(
@@ -1884,7 +1899,7 @@ int main(int argc, char** argv) {
               "same-stage zero-time replacements must reach PLAYING before restart completes")) {
         return false;
       }
-      auto persisted = hm::stitching::load_game_config_file(game / "config.yaml");
+      auto persisted = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
       if (persisted.ok() && persisted->has_value()) {
         zero_time_invalidation_id =
             (**persisted)["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("");
@@ -1933,12 +1948,16 @@ int main(int argc, char** argv) {
   }
 
   if (ok) {
-    ok = expect(write_game_config(game / "config.yaml", 96, "cp-change", false), "CP-change config must be written") &&
+    ok = expect(
+             write_game_config(game / "_hockeymon/config.yaml", 96, "cp-change", false),
+             "CP-change config must be written") &&
         expect(
              clean_from_control_points(argv[1], pipeline_config, game_root, "cp-change"),
              "CP-change cleanup must invalidate only dependent artifacts") &&
-        expect(fs::exists(game / "left.png") && fs::exists(game / "right.png"), "CP cleanup must preserve inputs") &&
-        expect(!fs::exists(game / "hm_project.pto"), "CP cleanup must remove Hugin artifacts");
+        expect(
+             fs::exists(game / "_hockeymon/left.png") && fs::exists(game / "_hockeymon/right.png"),
+             "CP cleanup must preserve inputs") &&
+        expect(!fs::exists(game / "_hockeymon/hm_project.pto"), "CP cleanup must remove Hugin artifacts");
   }
 
   PipelineProcess resumed;
@@ -1999,12 +2018,12 @@ int main(int argc, char** argv) {
   }
 
   if (ok) {
-    ok =
+    ok = expect(
+             write_game_config(game / "_hockeymon/config.yaml", 80, "interrupted", false),
+             "interruption config must be written") &&
         expect(
-            write_game_config(game / "config.yaml", 80, "interrupted", false), "interruption config must be written") &&
-        expect(
-            clean_from_control_points(argv[1], pipeline_config, game_root, "interrupted"),
-            "interruption cleanup must invalidate only dependent artifacts");
+             clean_from_control_points(argv[1], pipeline_config, game_root, "interrupted"),
+             "interruption cleanup must invalidate only dependent artifacts");
   }
   PipelineProcess interrupted;
   if (ok) {
@@ -2040,7 +2059,7 @@ int main(int argc, char** argv) {
   PipelineProcess interrupted_rink;
   if (ok) {
     ok = expect(
-             write_rink_mask_invalidation(game / "config.yaml", "interrupted-rink"),
+             write_rink_mask_invalidation(game / "_hockeymon/config.yaml", "interrupted-rink"),
              "rink interruption config must preserve stitch maps while invalidating the rink mask") &&
         expect(
              interrupted_rink.Start(

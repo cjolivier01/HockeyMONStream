@@ -155,8 +155,22 @@ bool samplePixel(const QString& path, const QString& at, int* red, int* blue) {
   QByteArray pixel;
   if (!run(
           "ffmpeg",
-          {"-hide_banner", "-loglevel", "error", "-ss", at, "-i", path, "-frames:v", "1", "-vf", "scale=1:1",
-           "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"},
+          {"-hide_banner",
+           "-loglevel",
+           "error",
+           "-ss",
+           at,
+           "-i",
+           path,
+           "-frames:v",
+           "1",
+           "-vf",
+           "scale=1:1",
+           "-pix_fmt",
+           "rgb24",
+           "-f",
+           "rawvideo",
+           "pipe:1"},
           &pixel) ||
       pixel.size() != 3)
     return false;
@@ -182,8 +196,7 @@ int main(int argc, char** argv) {
     return 1;
   const QString program_archive = QDir(game_dir).filePath("test-game-tracking_output-with-audio-1.mp4");
   const QString reduced_archive = QDir(game_dir).filePath("test-game-program_4k_output-with-audio-1.mp4");
-  if (!publishArchive(program_archive, "red", "blue", 320) ||
-      !publishArchive(reduced_archive, "green", "white", 160) ||
+  if (!publishArchive(program_archive, "red", "blue", 320) || !publishArchive(reduced_archive, "green", "white", 160) ||
       !writeSidecar(program_archive, "test-game", "program", 600000) ||
       !writeSidecar(reduced_archive, "test-game", "program_4k", 1200000))
     return 1;
@@ -217,7 +230,7 @@ int main(int argc, char** argv) {
     emit playback_start->editingFinished();
     hm::ui::HighlightPlan offset_plan;
     QString error;
-    if (!hm::ui::LoadHighlightPlan(QDir(offset_dir).filePath("highlights.json"), &offset_plan, &error) ||
+    if (!hm::ui::LoadHighlightPlan(QDir(offset_dir).filePath("_hockeymon/highlights.json"), &offset_plan, &error) ||
         offset_plan.playback_start_ms != 600125 || offset_plan.intervals[0].start_ms != 600625 ||
         offsets.findChild<QLineEdit*>("highlightFirstTimeEdit")->text() != "00:00:00.500") {
       std::cerr << "Changing Playback start did not retain the entered offset\n";
@@ -388,7 +401,9 @@ int main(int argc, char** argv) {
   }
   // The work directory lives inside the game directory so publication can hard
   // link out of it; a successful export must not leave it behind.
-  if (!QDir(game_dir).entryList({".highlights-export-*"}, QDir::Dirs | QDir::Hidden).isEmpty()) {
+  if (!QDir(QDir(game_dir).filePath("_hockeymon"))
+           .entryList({".highlights-export-*"}, QDir::Dirs | QDir::Hidden)
+           .isEmpty()) {
     std::cerr << "A successful export left its work directory behind" << std::endl;
     return 1;
   }
@@ -518,9 +533,9 @@ int main(int argc, char** argv) {
   // An unreadable plan blocks every edit, and inspection still reports the
   // archive without overwriting the explanation.
   const QString incompatible_dir = temporary.filePath("incompatible-game");
-  if (!QDir().mkpath(incompatible_dir))
+  if (!QDir().mkpath(QDir(incompatible_dir).filePath("_hockeymon")))
     return 1;
-  const QString incompatible_plan_path = QDir(incompatible_dir).filePath("highlights.json");
+  const QString incompatible_plan_path = QDir(incompatible_dir).filePath("_hockeymon/highlights.json");
   const QByteArray incompatible_plan = R"({"schema":3,"base_name":"future","intervals":[]})";
   QFile incompatible_file(incompatible_plan_path);
   if (!incompatible_file.open(QIODevice::WriteOnly) ||
@@ -532,17 +547,14 @@ int main(int argc, char** argv) {
   if (!QFile::copy(program_archive, incompatible_archive))
     return 1;
   hm::ui::HighlightsDialog incompatible_dialog(
-      "incompatible-game",
-      incompatible_dir,
-      env,
-      hm::ui::DiscoverArchives(incompatible_dir, "incompatible-game"));
+      "incompatible-game", incompatible_dir, env, hm::ui::DiscoverArchives(incompatible_dir, "incompatible-game"));
   if (!settle(&incompatible_dialog, 30000))
     return 1;
   if (incompatible_dialog.findChild<QPushButton*>("highlightAddButton")->isEnabled() ||
       incompatible_dialog.findChild<QLineEdit*>("highlightBaseNameEdit")->isEnabled() ||
       !statusOf(&incompatible_dialog).contains("Unsupported highlights schema")) {
-    std::cerr << "An unreadable highlight plan must block edits: "
-              << statusOf(&incompatible_dialog).toStdString() << std::endl;
+    std::cerr << "An unreadable highlight plan must block edits: " << statusOf(&incompatible_dialog).toStdString()
+              << std::endl;
     return 1;
   }
   incompatible_dialog.findChild<QPushButton*>("highlightAddButton")->click();
@@ -574,12 +586,13 @@ int main(int argc, char** argv) {
   if (!settle(&broken_dialog, 30000))
     return 1;
   if (!statusOf(&broken_dialog).contains("Clip is outside its selected archive")) {
-    std::cerr << "The missing archive was not rejected: " << statusOf(&broken_dialog).toStdString()
-              << std::endl;
+    std::cerr << "The missing archive was not rejected: " << statusOf(&broken_dialog).toStdString() << std::endl;
     return 1;
   }
   if (statusOf(&broken_dialog).contains("Work files retained") ||
-      !QDir(broken_dir).entryList({".highlights-export-*"}, QDir::Dirs | QDir::Hidden).isEmpty()) {
+      !QDir(QDir(broken_dir).filePath("_hockeymon"))
+           .entryList({".highlights-export-*"}, QDir::Dirs | QDir::Hidden)
+           .isEmpty()) {
     std::cerr << "A failed export with nothing written left a work directory behind: "
               << statusOf(&broken_dialog).toStdString() << std::endl;
     return 1;

@@ -283,7 +283,7 @@ bool RinkLevelingDialog::eventFilter(QObject* watched, QEvent* event) {
 }
 
 QByteArray RinkLevelingDialog::sourceRevision(const QString& directory) {
-  return sourceRevisionForFiles(directory, kSnapshotFiles);
+  return sourceRevisionForFiles(directory + "/_hockeymon", kSnapshotFiles);
 }
 
 QByteArray RinkLevelingDialog::inProgressSourceRevision(const QString& directory) {
@@ -291,15 +291,18 @@ QByteArray RinkLevelingDialog::inProgressSourceRevision(const QString& directory
 }
 
 void RinkLevelingDialog::loadSnapshot() {
+  QDir(temporary_.path()).mkpath("_hockeymon");
   auto copy_snapshot = [&](const QStringList& files, const QByteArray& revision) {
     source_revision_ = revision;
     if (!temporary_.isValid() || source_revision_.isEmpty())
       return false;
     for (const QString& name : files) {
-      if (!QFile::copy(QDir(game_directory_).filePath(name), temporary_.filePath(name)))
+      if (!QFile::copy(
+              QDir(in_progress_calibration_ ? game_directory_ : game_directory_ + "/_hockeymon").filePath(name),
+              QDir(temporary_.path() + "/_hockeymon").filePath("" + QString(name))))
         return false;
     }
-    return (in_progress_calibration_ ? inProgressSourceRevision(temporary_.path())
+    return (in_progress_calibration_ ? inProgressSourceRevision(temporary_.path() + "/_hockeymon")
                                      : sourceRevision(temporary_.path())) == source_revision_;
   };
 
@@ -329,7 +332,8 @@ void RinkLevelingDialog::loadSnapshot() {
       return;
     }
     try {
-      const YAML::Node config = YAML::Load(readFile(temporary_.filePath("config.yaml")).toStdString());
+      const YAML::Node config =
+          YAML::Load(readFile(QDir(temporary_.path() + "/_hockeymon").filePath("config.yaml")).toStdString());
       const auto ui = config["hstream_ui"];
       const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
       const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
@@ -348,7 +352,8 @@ void RinkLevelingDialog::loadSnapshot() {
       : QStringList{"autooptimiser_out.pto"};
   for (const auto& name : preview_projects) {
     const auto localized = hm::stitching::LocalizeCalibrationPreviewImages(
-        readProject(temporary_.filePath(name)), game_directory_.toStdString());
+        readProject(QDir(temporary_.path() + "/_hockeymon").filePath("" + QString(name))),
+        (in_progress_calibration_ ? game_directory_ : game_directory_ + "/_hockeymon").toStdString());
     if (!localized.ok()) {
       load_error_ =
           "The saved project does not reference the expected left and right camera images. Recalibrate first.";
@@ -360,13 +365,15 @@ void RinkLevelingDialog::loadSnapshot() {
           QString::fromStdString(std::string(lens_status.message()));
       return;
     }
-    if (!writeFile(temporary_.filePath(name), QByteArray::fromStdString(*localized))) {
+    if (!writeFile(
+            QDir(temporary_.path() + "/_hockeymon").filePath("" + QString(name)),
+            QByteArray::fromStdString(*localized))) {
       load_error_ = "Could not prepare the temporary calibration preview project.";
       return;
     }
   }
-  const auto prepared =
-      hm::stitching::PrepareRinkLevelingProject(readProject(temporary_.filePath("autooptimiser_out.pto")));
+  const auto prepared = hm::stitching::PrepareRinkLevelingProject(
+      readProject(QDir(temporary_.path() + "/_hockeymon").filePath("autooptimiser_out.pto")));
   if (!prepared.ok() || prepared->image_sizes.size() != 2) {
     load_error_ = prepared.ok() ? "This selector requires two calibrated cameras."
                                 : QString::fromStdString(prepared.status().ToString());
@@ -375,7 +382,8 @@ void RinkLevelingDialog::loadSnapshot() {
   project_ = *prepared;
   if (!in_progress_calibration_) {
     QMap<QString, QString> fields;
-    for (const QByteArray& line : readFile(temporary_.filePath("stitching_canvas_provenance")).split('\n')) {
+    for (const QByteArray& line :
+         readFile(QDir(temporary_.path() + "/_hockeymon").filePath("stitching_canvas_provenance")).split('\n')) {
       const int separator = line.indexOf('=');
       if (separator < 0)
         continue;
@@ -436,12 +444,14 @@ void RinkLevelingDialog::loadSnapshot() {
       }
     }
   }
-  if (!writeFile(temporary_.filePath("sphere.pto"), QByteArray::fromStdString(project_.pto))) {
+  if (!writeFile(
+          QDir(temporary_.path() + "/_hockeymon").filePath("sphere.pto"), QByteArray::fromStdString(project_.pto))) {
     load_error_ = "Could not prepare the calibration project.";
     return;
   }
   for (size_t camera = 0; camera < canvases_.size(); ++camera) {
-    if (!canvases_[camera]->setImage(temporary_.filePath(camera == 0 ? "left.png" : "right.png")) ||
+    if (!canvases_[camera]->setImage(
+            QDir(temporary_.path() + "/_hockeymon").filePath(camera == 0 ? "left.png" : "right.png")) ||
         canvases_[camera]->imageSize() != QSize(project_.image_sizes[camera][0], project_.image_sizes[camera][1])) {
       load_error_ = "Saved camera image dimensions do not match the calibration. Run stitching calibration again.";
       return;
@@ -625,7 +635,7 @@ void RinkLevelingDialog::startTool(
   process_stdout_.clear();
   process_stderr_.clear();
   process_progress_partial_.clear();
-  process->setWorkingDirectory(temporary_.path());
+  process->setWorkingDirectory(temporary_.path() + "/_hockeymon");
   if (renderer)
     process->setProcessChannelMode(QProcess::MergedChannels);
   QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
@@ -834,7 +844,8 @@ void RinkLevelingDialog::preview() {
   invalidatePreview();
   status_->setText("Rendering a temporary still preview…");
   auto render_preview = [this](const QString& framed_project) {
-    const auto canvas = hm::stitching::HuginProject::ParseCanvasSize(readProject(temporary_.filePath(framed_project)));
+    const auto canvas = hm::stitching::HuginProject::ParseCanvasSize(
+        readProject(QDir(temporary_.path() + "/_hockeymon").filePath(framed_project)));
     if (!canvas.ok() || canvas->first == 0 || canvas->second == 0 || canvas->second > canvas->first * 4ULL) {
       fail(
           canvas.ok() ? "Saved preview canvas dimensions are invalid."
@@ -849,14 +860,14 @@ void RinkLevelingDialog::preview() {
         {QString("--canvas=%1x%2").arg(preview_width).arg(preview_height), "--output=preview.pto", framed_project},
         {},
         [this](const QByteArray&) {
-          QFile::remove(temporary_.filePath("preview.png"));
+          QFile::remove(QDir(temporary_.path() + "/_hockeymon").filePath("preview.png"));
           const QString seam = blend_preview_check_->isChecked() ? "--seam=blend" : "--seam=hard";
           startTool(
               "nona",
               {"-v", "-m", "PNG", "--ignore-exposure", seam, "-o", "preview.png", "preview.pto"},
               {},
               [this](const QByteArray&) {
-                if (!preview_canvas_->setImage(temporary_.filePath("preview.png"))) {
+                if (!preview_canvas_->setImage(QDir(temporary_.path() + "/_hockeymon").filePath("preview.png"))) {
                   fail("Hugin did not produce a readable preview.");
                   return;
                 }

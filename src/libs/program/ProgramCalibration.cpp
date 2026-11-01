@@ -1,4 +1,5 @@
 #include "hstream/src/libs/program/ProgramCalibration.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <charconv>
 #include <exception>
@@ -94,7 +95,7 @@ absl::Status ValidateLockedProgramCalibration(
     const stitching::HuginProject::ArtifactLock&) {
   if (!request.reference_time && !request.invalidation_id)
     return absl::OkStatus();
-  auto saved = stitching::load_game_config_file(game / "config.yaml");
+  auto saved = stitching::load_game_config_file(hm::game_storage::StateDirectory(game) / "config.yaml");
   if (!saved.ok())
     return saved.status();
   if (!*saved)

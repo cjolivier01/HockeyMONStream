@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/GameStorage.h"
 // Thin headless owners of the same native libraries used by the desktop dialogs.
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
@@ -410,7 +411,7 @@ QJsonObject highlights(const Request& request, QJsonArray& artifacts) {
 hm::stitching::CalibrationMatchSet matches(const Request& request, bool edit) {
   auto payload = request.payload;
   if (!edit && payload.value("fingerprint").toString().isEmpty()) {
-    const auto config = YAML::LoadFile((request.game / "config.yaml").string());
+    const auto config = YAML::LoadFile((request.game / "_hockeymon/config.yaml").string());
     const auto snapshot = config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>("");
     require(
         !snapshot.empty(),
@@ -612,12 +613,12 @@ QJsonObject read_camera_optics(const Request& request) {
   YAML::Node saved_orientation;
   if (request.runtime.value("saved_orientation").toBool() || request.runtime.value("saved_optics").toBool()) {
     snapshot = take(hm::stitching::GameConfigTransactionLock::TryAcquireSnapshot(request.game));
-    const auto path = Contained(request.game, "config.yaml");
+    const auto path = Contained(request.game, "_hockeymon/config.yaml");
     require(fs::file_size(path) <= 4 * 1024 * 1024, "Saved optics config exceeds its input limit");
     saved_orientation = YAML::LoadFile(path.string())["game"]["videos"];
   }
   if (request.runtime.value("saved_optics").toBool()) {
-    const auto path = Contained(request.game, "config.yaml");
+    const auto path = Contained(request.game, "_hockeymon/config.yaml");
     require(fs::file_size(path) <= 4 * 1024 * 1024, "Saved optics config exceeds its input limit");
     const auto saved = YAML::LoadFile(path.string())["stitching"];
     require(saved && saved.IsMap() && saved["auto_input_lens_frozen"].as<bool>(false), "Saved optics are not frozen");
@@ -816,7 +817,7 @@ QJsonObject settings_json(const StitchingExperimentSettings& value) {
 }
 StitchingExperimentWorkspace workspace(const Request& request) {
   if (!request.payload.contains("workspace")) {
-    const auto config = YAML::LoadFile((request.game / "config.yaml").string());
+    const auto config = YAML::LoadFile((request.game / "_hockeymon/config.yaml").string());
     const auto saved = take(MainStitchingExperimentWorkspace(request.game, settings({}, config)));
     require(
         saved.has_value(), "The selected run has no saved calibration workspace; recover its original frames first");
@@ -830,8 +831,8 @@ StitchingExperimentWorkspace workspace(const Request& request) {
   result.game_id = RequiredString(object, "game_id", 255).toStdString();
   result.invalidation_id = RequiredString(object, "invalidation_id", 128).toStdString();
   require(result.game_directory.filename() == result.game_id, "Workspace game identity mismatch");
-  result.settings =
-      settings(object.value("settings").toObject(), YAML::LoadFile((result.game_directory / "config.yaml").string()));
+  result.settings = settings(
+      object.value("settings").toObject(), YAML::LoadFile((result.game_directory / "_hockeymon/config.yaml").string()));
   const auto manual = object.value("settings").toObject().value("manual_control_points").toString();
   if (!manual.isEmpty())
     result.settings.manual_control_points = manual.toStdString();
@@ -892,7 +893,7 @@ void run_experiment(const Request& request, const StitchingExperimentWorkspace& 
   const bool require_mask = request.payload.value("require_ice_mask").toBool(false);
   {
     const auto lock = take(hm::stitching::GameConfigTransactionLock::Acquire(saved.game_directory));
-    auto config = YAML::LoadFile((saved.game_directory / "config.yaml").string());
+    auto config = YAML::LoadFile((saved.game_directory / "_hockeymon/config.yaml").string());
     check(hm::stitching::validate_pending_stitching_invalidation(config, saved.invalidation_id));
     YAML::Node arguments(YAML::NodeType::Sequence);
     for (const auto& argument : std::vector<std::string>{
@@ -968,7 +969,8 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           source_game,
           request.root / "experiments",
           settings(
-              request.payload.value("settings").toObject(), YAML::LoadFile((source_game / "config.yaml").string())),
+              request.payload.value("settings").toObject(),
+              YAML::LoadFile((source_game / "_hockeymon/config.yaml").string())),
           sequence,
           authorized_media,
           !request.payload.value("settings").toObject().value("camera").toObject().isEmpty()));
@@ -1078,7 +1080,7 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
     inspection.source_validation = std::string(inspected.status().message());
   }
   QString editable_snapshot;
-  const auto config = YAML::LoadFile((saved.game_directory / "config.yaml").string());
+  const auto config = YAML::LoadFile((saved.game_directory / "_hockeymon/config.yaml").string());
   const auto snapshot = config["hstream_ui"]["stitching_calibration"]["match_snapshot"].as<std::string>("");
   if (!snapshot.empty()) {
     const auto editable = hm::stitching::LoadCalibrationMatches(saved.game_directory, snapshot);
@@ -1353,7 +1355,8 @@ void retain_calibration_artifacts(const Request& request, QJsonArray& artifacts)
         continue;
       }
       if (!iterator->is_regular_file() || iterator->file_size() == 0 || path.extension() == ".mp4" ||
-          path.extension() == ".MP4" || name == ".lock" || name.back() == '~')
+          path.extension() == ".MP4" || name == ".lock" || name == "manifest.json" || name == ".manifest.lock" ||
+          name.back() == '~')
         continue;
       require(++count <= 10000, "Calibration output exceeds its file count bound");
       const auto extension = path.extension().string();
@@ -1394,7 +1397,7 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
     require(backend == "native" || backend == "hockeymon", "Unsupported detector backend");
     const auto bytes = take(
         hm::stitching::read_bounded_regular_file_no_follow(
-            request.game / "config.yaml", 4 * 1024 * 1024, "detector config"));
+            request.game / "_hockeymon/config.yaml", 4 * 1024 * 1024, "detector config"));
     const auto config = YAML::Load(bytes);
     require(config.IsMap(), "Detector configuration must be a map");
     return detector_state(config, backend == "hockeymon");
@@ -1441,7 +1444,7 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   if (request.operation == "matches-read") {
     auto result = editable_matches_result(request, source, artifacts);
     result.insert("workspace", workspace_json(request, workspace(source)));
-    const auto config = YAML::LoadFile((source.game / "config.yaml").string());
+    const auto config = YAML::LoadFile((source.game / "_hockeymon/config.yaml").string());
     result.insert(
         "calibration_complete",
         config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete");
@@ -1572,6 +1575,10 @@ int main(int argc, char** argv) {
     }
     QJsonArray artifacts;
     const auto result = execute(*request, artifacts);
+    if (fs::is_directory(request->game / "_hockeymon")) {
+      const auto inventory = hm::game_storage::RefreshManifest(request->game, request->operation);
+      require(inventory.ok(), inventory.ToString());
+    }
     retain_calibration_artifacts(*request, artifacts);
     require(!interrupted, "cancelled");
     const auto data = request->root / "operation-data.json";

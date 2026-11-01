@@ -24,7 +24,7 @@ T take(absl::StatusOr<T> value) {
   return std::move(*value);
 }
 void config(const fs::path& game, const YAML::Node& node) {
-  std::ofstream(game / "config.yaml") << YAML::Dump(node);
+  std::ofstream(game / "_hockeymon/config.yaml") << YAML::Dump(node);
 }
 QJsonObject invoke(
     const QString& binary,
@@ -56,7 +56,7 @@ QJsonObject invoke(
 }
 
 void seed_empty_matches(const fs::path& game) {
-  auto document = YAML::LoadFile((game / "config.yaml").string());
+  auto document = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
   hm::stitching::CalibrationMatchSet empty;
   empty.matcher = hm::stitching::ControlPointMatcher::kAkazeHamming;
   empty.source_context = take(hm::stitching::CalibrationMatchSourceContext(document, game));
@@ -201,7 +201,7 @@ int main(int argc, char** argv) {
     // automatic solve, exactly the recoverable insufficient-matches boundary.
     // This is a process/receipt test and performs no GPU work.
     const auto recovery = root / "recovery";
-    fs::create_directories(recovery / "game");
+    fs::create_directories(recovery / "game/_hockeymon");
     fs::copy_file(game / "left.mp4", recovery / "game/left.mp4");
     fs::copy_file(game / "right.mp4", recovery / "game/right.mp4");
     owner.remove("match_snapshot");
@@ -218,7 +218,7 @@ int main(int argc, char** argv) {
         {"root", QString::fromStdString(recovery.string())},
         {"exporter", QString::fromStdString(exporter.string())},
         {"cli", QString::fromStdString(exporter.string())},
-        {"config", QString::fromStdString((recovery / "game/config.yaml").string())}};
+        {"config", QString::fromStdString((recovery / "game/_hockeymon/config.yaml").string())}};
     result =
         invoke(binary, recovery, "experiment-recover", {{"settings", QJsonObject{}}, {"sequence", 1}}, true, runtime)
             .value("result")
@@ -236,8 +236,9 @@ int main(int argc, char** argv) {
         receipt.value("state").toString() == "failed" && receipt.value("artifacts").toArray().isEmpty(),
         "Unsolved recovery was promoted");
     require(
-        YAML::LoadFile((recovery / workspace.value("game_directory").toString().toStdString() / "config.yaml")
-                           .string())["hstream_ui"]["stitching_calibration"]["status"]
+        YAML::LoadFile(
+            (recovery / workspace.value("game_directory").toString().toStdString() / "_hockeymon/config.yaml")
+                .string())["hstream_ui"]["stitching_calibration"]["status"]
                 .as<std::string>() == "pending",
         "Recovery changed the pending calibration into success");
     return 0;

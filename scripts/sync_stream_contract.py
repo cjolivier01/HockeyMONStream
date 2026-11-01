@@ -1097,6 +1097,8 @@ def generate(root, *, native_revision=None, include_revision=True):
             field["enabled_when"] = dependencies[field["qt_control_id"]]
     sources = [
         "configs/baseline.yaml",
+        "src/libs/common/GameStorage.h",
+        "src/libs/common/GameStorage.cpp",
         "src/apps/hstream-ui/CameraControlSpecs.h",
         "src/apps/hstream-ui/RinkFramingControls.cpp",
         "src/libs/tracking/CameraControlSpecs.h",

@@ -237,6 +237,33 @@ int main() {
       : pinned_owned.status();
   ok &= expect(resumed_cleanup.ok() && !fs::exists(owned), "owned visible work-directory cleanup must be resumable");
 
+  const fs::path candidate = root / "candidate-game";
+  fs::create_directories(candidate / "_hockeymon");
+  std::ofstream(candidate / "_hockeymon/config.yaml") << "owner: candidate\n";
+  std::ofstream(candidate / "_hockeymon/panorama.tif") << "private calibration\n";
+  std::ofstream(candidate / "input.mp4") << "private input alias\n";
+  auto candidate_pin = pinned_root->OpenChild(candidate.filename().string(), "candidate cleanup test");
+  ::setenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY", "1", 1);
+  const auto candidate_interrupted = hm::stitching::remove_pinned_directory(
+      *pinned_root, candidate.filename().string(), **candidate_pin, "_hockeymon/config.yaml");
+  ::unsetenv("HM_TEST_TRANSACTION_CLEANUP_INTERRUPT_AFTER_ENTRY");
+  ok &= expect(
+      !candidate_interrupted.ok() && fs::is_regular_file(candidate / "_hockeymon/config.yaml"),
+      "interrupted candidate deletion must retain nested ownership");
+  const auto candidate_resumed = hm::stitching::remove_pinned_directory(
+      *pinned_root, candidate.filename().string(), **candidate_pin, "_hockeymon/config.yaml");
+  ok &= expect(candidate_resumed.ok() && !fs::exists(candidate), "nested candidate deletion must resume");
+
+  fs::create_directory(candidate);
+  fs::create_directory_symlink(root, candidate / "_hockeymon");
+  candidate_pin = pinned_root->OpenChild(candidate.filename().string(), "linked candidate cleanup test");
+  const auto linked_candidate = hm::stitching::remove_pinned_directory(
+      *pinned_root, candidate.filename().string(), **candidate_pin, "_hockeymon/config.yaml");
+  ok &= expect(
+      !linked_candidate.ok() && fs::is_symlink(candidate / "_hockeymon"),
+      "candidate cleanup must reject linked ownership directories without traversing them");
+  fs::remove_all(candidate);
+
   ok &= exercise_directory_removal_retry(root, "transient");
   ok &= exercise_directory_removal_retry(root, "disappearing");
   ok &= exercise_directory_removal_retry(root, "nonempty");

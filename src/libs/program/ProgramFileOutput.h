@@ -21,7 +21,11 @@ class ProgramFileOutput {
   // Cancellation is checked before and after flushing the file. The successful
   // link is the commit boundary: cancellation after that point does not retract
   // a completed file. The callback may be empty when cancellation is not needed.
-  absl::Status Commit(const std::function<bool()>& cancelled);
+  // Standalone launches supply their game to inventory completed in-game files.
+  // External exports are unchanged. Managed launches leave game empty because
+  // their publication finalizer owns the inventory. An inventory failure does
+  // not retract an already durable output.
+  absl::Status Commit(const std::function<bool()>& cancelled, const std::filesystem::path& game = {});
 
  private:
   struct Impl;

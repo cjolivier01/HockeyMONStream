@@ -31,6 +31,14 @@
 namespace fs = std::filesystem;
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 
 bool expect_additive_calibration_matches() {
   using hm::stitching::FeatureMatch;
@@ -136,7 +144,7 @@ bool expect_ordinary_frame_inspection_is_bounded_and_owned(const fs::path& tmpdi
   YAML::Node config;
   config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "ordinary-row-1";
-  if (!write_text_file(game / "config.yaml", YAML::Dump(config)))
+  if (!write_text_file(saved_state(game) / "config.yaml", YAML::Dump(config)))
     return false;
   const cv::Mat left(1000, 2000, CV_16UC3, cv::Scalar(32768, 32768, 32768));
   const cv::Mat right(480, 640, CV_8UC3, cv::Scalar(64, 64, 64));
@@ -147,7 +155,7 @@ bool expect_ordinary_frame_inspection_is_bounded_and_owned(const fs::path& tmpdi
     std::cerr << "Cannot retain ordinary frame inspection: " << first << '\n';
     return false;
   }
-  const fs::path directory = game / "calibration-frame-inspection" / "ordinary-row-1";
+  const fs::path directory = saved_state(game) / "calibration-frame-inspection" / "ordinary-row-1";
   const fs::path manifest_path = directory / "frames.yaml";
   YAML::Node manifest = YAML::LoadFile(manifest_path.string());
   const cv::Mat thumb = cv::imread((directory / "left_0.jpg").string());
@@ -179,14 +187,14 @@ bool expect_ordinary_frame_inspection_is_bounded_and_owned(const fs::path& tmpdi
           write_stitching_calibration_frame_inspection(game.string(), "ordinary-row-1", 1, 2, {left, right}, sources)))
     return false;
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "new-owner";
-  if (!write_text_file(game / "config.yaml", YAML::Dump(config)) ||
+  if (!write_text_file(saved_state(game) / "config.yaml", YAML::Dump(config)) ||
       !absl::IsAborted(write_stitching_calibration_frame_inspection(
           game.string(), "ordinary-row-1", 0, 2, {left, right}, sources)) ||
       YAML::Dump(YAML::LoadFile(manifest_path.string())) != complete)
     return false;
 
   // Parent directories cannot redirect thumbnail writes outside the private row.
-  fs::create_directory_symlink(tmpdir, game / "calibration-frame-inspection" / "new-owner");
+  fs::create_directory_symlink(tmpdir, saved_state(game) / "calibration-frame-inspection" / "new-owner");
   if (!absl::IsFailedPrecondition(
           write_stitching_calibration_frame_inspection(game.string(), "new-owner", 0, 1, {left, right}, sources)))
     return false;
@@ -194,7 +202,7 @@ bool expect_ordinary_frame_inspection_is_bounded_and_owned(const fs::path& tmpdi
   // If restarting an existing owner fails after replacing the left image, its
   // previous complete manifest must not expose mixed old and new thumbnails.
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "ordinary-row-1";
-  if (!write_text_file(game / "config.yaml", YAML::Dump(config)))
+  if (!write_text_file(saved_state(game) / "config.yaml", YAML::Dump(config)))
     return false;
   fs::remove(directory / "right_0.jpg");
   fs::create_directory(directory / "right_0.jpg");
@@ -238,7 +246,7 @@ bool write_canvas_provenance(
     view += "input-lens=" + hm::stitching::SerializeStitchInputLens({}) + "\ncontrol-point-filtering=1,1\n";
   }
   return write_text_file(
-      dir / "stitching_canvas_provenance",
+      saved_state(dir) / "stitching_canvas_provenance",
       std::string(algorithm_aware ? "version=14\n" : "version=2\n") + "max-output-width=" +
           std::to_string(max_output_width) + "\nmax-canvas-dimension=" + std::to_string(max_canvas_dimension) +
           "\nsource-canvas-width=" + std::to_string(source_width) +
@@ -262,14 +270,14 @@ bool write_canvas_provenance(
 bool write_player_frame_canvas_provenance(const fs::path& directory, const std::string& fingerprint) {
   if (!write_canvas_provenance(directory, 0, 160, 32, 0, 0, 0, false, false, "nona", "equirectangular", "none"))
     return false;
-  std::ifstream input(directory / "stitching_canvas_provenance");
+  std::ifstream input(saved_state(directory) / "stitching_canvas_provenance");
   std::string provenance((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   const auto selection = provenance.find("calibration-frame-selection=none");
   provenance.replace(
       selection,
       std::string("calibration-frame-selection=none").size(),
       "calibration-frame-selection=" + (fingerprint.empty() ? "none" : fingerprint));
-  return write_text_file(directory / "stitching_canvas_provenance", provenance);
+  return write_text_file(saved_state(directory) / "stitching_canvas_provenance", provenance);
 }
 
 bool write_mapping_tiff(const fs::path& path, uint32_t width, uint32_t height, float x_px, float y_px) {
@@ -451,34 +459,38 @@ bool wait_for_test_marker(const fs::path& marker) {
 
 bool write_valid_stitching_artifacts(const fs::path& dir) {
   fs::create_directories(dir);
-  if (!write_text_file(dir / "left.png", "left") || !write_text_file(dir / "right.png", "right") ||
-      !write_text_file(dir / "hm_project.pto", "p f1 w160 h32\n") ||
-      !write_text_file(dir / "autooptimiser_out.pto", "p f1 w160 h32\n")) {
+  if (!write_text_file(saved_state(dir) / "left.png", "left") ||
+      !write_text_file(saved_state(dir) / "right.png", "right") ||
+      !write_text_file(saved_state(dir) / "hm_project.pto", "p f1 w160 h32\n") ||
+      !write_text_file(saved_state(dir) / "autooptimiser_out.pto", "p f1 w160 h32\n")) {
     return false;
   }
 
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 96.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 64, 32, 96.0f, 0.0f)) {
     return false;
   }
 
-  if (!write_remap_tiff(dir / "mapping_0000_x.tif", 64, 32) || !write_remap_tiff(dir / "mapping_0000_y.tif", 64, 32) ||
-      !write_remap_tiff(dir / "mapping_0001_x.tif", 64, 32) || !write_remap_tiff(dir / "mapping_0001_y.tif", 64, 32)) {
+  if (!write_remap_tiff(saved_state(dir) / "mapping_0000_x.tif", 64, 32) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0000_y.tif", 64, 32) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0001_x.tif", 64, 32) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0001_y.tif", 64, 32)) {
     return false;
   }
   cv::Mat seam(32, 160, CV_8U, cv::Scalar(0));
   seam.colRange(80, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam) ||
+      !add_png_pixel_offset(saved_state(dir) / "seam_file.png", 0, 0)) {
     return false;
   }
   if (!write_canvas_provenance(dir, /*max_output_width=*/0, /*width=*/160, /*height=*/32)) {
     return false;
   }
 
-  set_write_time(dir / "left.png", 0);
-  set_write_time(dir / "right.png", 0);
-  set_write_time(dir / "hm_project.pto", 1);
-  set_write_time(dir / "autooptimiser_out.pto", 2);
+  set_write_time(saved_state(dir) / "left.png", 0);
+  set_write_time(saved_state(dir) / "right.png", 0);
+  set_write_time(saved_state(dir) / "hm_project.pto", 1);
+  set_write_time(saved_state(dir) / "autooptimiser_out.pto", 2);
   for (const char* filename :
        {"mapping_0000.tif",
         "mapping_0000_x.tif",
@@ -486,7 +498,7 @@ bool write_valid_stitching_artifacts(const fs::path& dir) {
         "mapping_0001.tif",
         "mapping_0001_x.tif",
         "mapping_0001_y.tif"}) {
-    set_write_time(dir / filename, 3);
+    set_write_time(saved_state(dir) / filename, 3);
   }
 
   return true;
@@ -511,7 +523,7 @@ bool expect_cleared_player_plan_invalidates_geometry(const fs::path& tmpdir) {
     const fs::path directory = tmpdir / (selected ? "cleared-player-plan" : "ordinary-player-provenance");
     if (!write_valid_stitching_artifacts(directory) ||
         !write_player_frame_canvas_provenance(directory, selected ? std::string(64, 'a') : "") ||
-        !write_text_file(directory / "config.yaml", "stitching: {}\n"))
+        !write_text_file(saved_state(directory) / "config.yaml", "stitching: {}\n"))
       return false;
     if (!expect_configured(
             directory,
@@ -528,11 +540,11 @@ bool expect_manual_match_provenance(const fs::path& tmpdir) {
     if (!write_valid_stitching_artifacts(directory) || !write_player_frame_canvas_provenance(directory, ""))
       return false;
     if (scenario != 0) {
-      std::ifstream input(directory / "stitching_canvas_provenance");
+      std::ifstream input(saved_state(directory) / "stitching_canvas_provenance");
       std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
       text.replace(0, std::string("version=14").size(), "version=15");
       text.insert(text.find("control-point-filtering="), "manual-control-points=" + std::string(64, 'a') + "\n");
-      if (!write_text_file(directory / "stitching_canvas_provenance", text))
+      if (!write_text_file(saved_state(directory) / "stitching_canvas_provenance", text))
         return false;
     }
     YAML::Node config;
@@ -548,7 +560,7 @@ bool expect_manual_match_provenance(const fs::path& tmpdir) {
       if (scenario != 3)
         config["stitching"]["manual_control_points"] = std::string(64, scenario == 1 ? 'a' : 'b');
     }
-    if (!write_text_file(directory / "config.yaml", YAML::Dump(config)))
+    if (!write_text_file(saved_state(directory) / "config.yaml", YAML::Dump(config)))
       return false;
     if (!expect_configured(
             directory, scenario == 1, "only the exact manual match identity may reuse the saved stitched geometry"))
@@ -601,7 +613,7 @@ bool expect_manual_solver_uses_exact_union(const fs::path& tmpdir) {
   if (!manual.ok())
     return false;
   config["stitching"]["manual_control_points"] = *published;
-  if (!write_text_file(game / "config.yaml", YAML::Dump(config)))
+  if (!write_text_file(saved_state(game) / "config.yaml", YAML::Dump(config)))
     return false;
   const fs::path generator = game / "pto-gen";
   const fs::path optimizer = game / "optimizer";
@@ -703,7 +715,7 @@ bool expect_capture_plan_changes_abort_before_extraction(const fs::path& tmpdir)
       config["stitching"].remove("calibration_frame_selection");
     else
       config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
-    if (!write_text_file(directory / "config.yaml", YAML::Dump(config) + "\n"))
+    if (!write_text_file(saved_state(directory) / "config.yaml", YAML::Dump(config) + "\n"))
       return false;
     const auto status = change == 1
         ? configure_stitching(
@@ -735,7 +747,7 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   // Pin the matcher these synthetic provenance fixtures record, so this case
   // keeps exercising mapping changes rather than the shipped baseline default.
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n"))
     return false;
   if (!expect_configured(dir, false, "legacy provenance must not mask a selected projection"))
     return false;
@@ -765,11 +777,11 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   first->artifact_lock.reset();
 
   config["stitching"]["control_point_resolution"] = "2k";
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "selecting 2K must invalidate artifacts without recorded resolution"))
     return false;
   config["stitching"]["control_point_resolution"] = "native";
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, true, "native selection must retain compatible legacy calibration"))
     return false;
 
@@ -780,26 +792,26 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   fov_only_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   fov_only_config["stitching"]["control_point_resolution"] = "native";
   fov_only_config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(fov_only_config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(fov_only_config) + "\n") ||
       !expect_configured(dir, false, "a game-private source FOV-only override must invalidate existing maps")) {
     return false;
   }
 
   config["stitching"]["camera_config"] = "gopro-hero-11";
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "a direct camera preset change must invalidate existing maps")) {
     return false;
   }
   config["stitching"]["camera_config"] = "gopro-mission-1";
   config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "a direct source horizontal FOV override must invalidate existing maps")) {
     return false;
   }
   config["stitching"].remove("camera_fov");
 
   config["stitching"]["projection"] = "general-panini";
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n"))
     return false;
   auto projection_changed = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, previous);
   if (!projection_changed.ok() || projection_changed->artifact_lock ||
@@ -810,7 +822,7 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   config["stitching"]["projection_parameters"]["general-panini"].push_back(100);
   config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
   config["stitching"]["projection_parameters"]["general-panini"].push_back(0);
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !write_canvas_provenance(
           dir,
           /*max_output_width=*/0,
@@ -831,32 +843,32 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
     return false;
   parameter_baseline->artifact_lock.reset();
   config["stitching"]["projection_framing"]["auto_crop"] = true;
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "a direct projection framing change must invalidate existing maps")) {
     return false;
   }
   config["stitching"]["projection_framing"]["auto_crop"] = false;
   config["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, -35, 3]");
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "camera-space leveling must invalidate maps with legacy default orientation")) {
     return false;
   }
   config["stitching"]["projection_framing"].remove("rotation_degrees");
   config["stitching"]["projection_framing"]["crop"] = YAML::Load("[0.02, 0.98, 0.54, 1]");
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "an explicit rink crop must invalidate maps with legacy full framing")) {
     return false;
   }
   config["stitching"]["projection_framing"].remove("crop");
   config["stitching"]["projection_parameters"]["general-panini"][0] = 120;
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, false, "a direct General Panini parameter change must invalidate existing maps")) {
     return false;
   }
 
   config["stitching"]["mapping_backend"] = "opencv-magsac";
   config["stitching"]["projection"] = "rectilinear";
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config) + "\n"))
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n"))
     return false;
   return expect_configured(dir, false, "a direct YAML mapping backend change must invalidate existing maps");
 }
@@ -895,7 +907,8 @@ bool expect_akaze_profile_changes_require_regeneration(const fs::path& tmpdir) {
   };
 
   const fs::path added = tmpdir / "akaze-profile-added";
-  if (!write_valid_stitching_artifacts(added) || !write_text_file(added / "config.yaml", YAML::Dump(config) + "\n") ||
+  if (!write_valid_stitching_artifacts(added) ||
+      !write_text_file(saved_state(added) / "config.yaml", YAML::Dump(config) + "\n") ||
       !write_akaze_provenance(added, "absent") ||
       !expect_configured(added, true, "AKAZE artifacts without an optional profile must remain usable") ||
       !write_text_file(added / "left_calibration.json", kProfileA) ||
@@ -905,7 +918,7 @@ bool expect_akaze_profile_changes_require_regeneration(const fs::path& tmpdir) {
 
   const fs::path changed = tmpdir / "akaze-profile-changed";
   if (!write_valid_stitching_artifacts(changed) ||
-      !write_text_file(changed / "config.yaml", YAML::Dump(config) + "\n") ||
+      !write_text_file(saved_state(changed) / "config.yaml", YAML::Dump(config) + "\n") ||
       !write_text_file(changed / "left_calibration.json", kProfileA)) {
     return false;
   }
@@ -920,7 +933,7 @@ bool expect_akaze_profile_changes_require_regeneration(const fs::path& tmpdir) {
 
   const fs::path removed = tmpdir / "akaze-profile-removed";
   if (!write_valid_stitching_artifacts(removed) ||
-      !write_text_file(removed / "config.yaml", YAML::Dump(config) + "\n") ||
+      !write_text_file(saved_state(removed) / "config.yaml", YAML::Dump(config) + "\n") ||
       !write_text_file(removed / "left_calibration.json", kProfileA)) {
     return false;
   }
@@ -1001,7 +1014,7 @@ bool run_scoreboard_selector_env_child(const fs::path& tmpdir) {
     return false;
   }
   const YAML::Node polygon =
-      YAML::LoadFile((game_dir / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];
+      YAML::LoadFile((saved_state(game_dir) / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];
   for (size_t index = 0; index < 4; ++index) {
     if (!polygon[index].IsSequence() || polygon[index][0].as<int>() != 0 || polygon[index][1].as<int>() != 0) {
       std::cerr << "native disabled scoreboard sentinel is invalid" << std::endl;
@@ -1018,7 +1031,7 @@ bool expect_dependency_invalidation_report(const fs::path& tmpdir) {
     std::cerr << "dependency invalidation report: failed to write test artifacts" << std::endl;
     return false;
   }
-  set_write_time(dir / "hm_project.pto", -10);
+  set_write_time(saved_state(dir) / "hm_project.pto", -10);
 
   std::ostringstream captured;
   std::streambuf* old_cout = std::cout.rdbuf(captured.rdbuf());
@@ -1067,7 +1080,8 @@ bool expect_clean_preserves_selected_inputs(const fs::path& tmpdir) {
   PlayerFrameObservation anchor;
   for (size_t camera = 0; camera < 2; ++camera) {
     const fs::path source = dir / (camera ? "right.mp4" : "left.mp4");
-    if (!write_text_file(source, "source") || !write_text_file(dir / (camera ? "right.png" : "left.png"), "input"))
+    if (!write_text_file(source, "source") ||
+        !write_text_file(saved_state(dir) / (camera ? "right.png" : "left.png"), "input"))
       return false;
     const auto bound = BindPlayerFrameSource(source);
     if (!bound.ok())
@@ -1098,15 +1112,16 @@ bool expect_clean_preserves_selected_inputs(const fs::path& tmpdir) {
   plan.fingerprint = *fingerprint;
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
-  const fs::path saved_inputs = dir / "player-frame-inputs" / plan.fingerprint;
+  const fs::path saved_inputs = saved_state(dir) / "player-frame-inputs" / plan.fingerprint;
   fs::create_directories(saved_inputs);
-  if (!write_text_file(saved_inputs / "retained-input", "bundle") || !write_text_file(dir / "seam_file.png", "stale") ||
-      !write_text_file(dir / "config.yaml", YAML::Dump(config)))
+  if (!write_text_file(saved_inputs / "retained-input", "bundle") ||
+      !write_text_file(saved_state(dir) / "seam_file.png", "stale") ||
+      !write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config)))
     return false;
   const auto cleaned = clean_stitching_artifacts(dir.string());
-  const YAML::Node saved = YAML::LoadFile((dir / "config.yaml").string());
-  if (!cleaned.ok() || fs::exists(dir / "seam_file.png") || !fs::exists(dir / "left.png") ||
-      !fs::exists(dir / "right.png") || !fs::exists(saved_inputs / "retained-input") ||
+  const YAML::Node saved = YAML::LoadFile((saved_state(dir) / "config.yaml").string());
+  if (!cleaned.ok() || fs::exists(saved_state(dir) / "seam_file.png") || !fs::exists(saved_state(dir) / "left.png") ||
+      !fs::exists(saved_state(dir) / "right.png") || !fs::exists(saved_inputs / "retained-input") ||
       saved["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) != 3.0 ||
       saved["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>("") != plan.fingerprint ||
       !validate_player_frame_selection_sources(saved).ok()) {
@@ -1122,7 +1137,7 @@ bool expect_clean_preserves_unrelated_config(const fs::path& tmpdir) {
   fs::remove_all(dir);
   fs::create_directories(dir);
   if (!write_text_file(
-          dir / "config.yaml",
+          saved_state(dir) / "config.yaml",
           R"(keep:
   nested: preserved
 game:
@@ -1145,7 +1160,7 @@ rink:
     return false;
   }
 
-  const YAML::Node config = YAML::LoadFile((dir / "config.yaml").string());
+  const YAML::Node config = YAML::LoadFile((saved_state(dir) / "config.yaml").string());
   if (!config["keep"] || config["keep"]["nested"].as<std::string>("") != "preserved" || !config["game"] ||
       config["game"]["name"].as<std::string>("") != "preservation-test") {
     std::cerr << "config preservation: unrelated keys were changed:\n" << config << std::endl;
@@ -1164,10 +1179,11 @@ rink:
 bool expect_control_point_clean_preserves_upstream_dependencies(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "control_point_clean_dependencies";
   fs::remove_all(dir);
-  if (!write_valid_stitching_artifacts(dir) || !write_text_file(dir / "s.png", "stitched") ||
-      !write_text_file(dir / "rink_mask_0.png", "mask") || !write_text_file(dir / "matches.png", "matches") ||
+  if (!write_valid_stitching_artifacts(dir) || !write_text_file(saved_state(dir) / "s.png", "stitched") ||
+      !write_text_file(saved_state(dir) / "rink_mask_0.png", "mask") ||
+      !write_text_file(saved_state(dir) / "matches.png", "matches") ||
       !write_text_file(
-          dir / "config.yaml",
+          saved_state(dir) / "config.yaml",
           R"(game:
   videos:
     left: [cam1/GX010001.MP4]
@@ -1195,8 +1211,8 @@ hstream_ui:
 
   const auto superseded =
       hm::stitching::clean_stitching_artifacts_from_control_points(dir.string(), "delayed-stale-clean");
-  if (superseded.code() != absl::StatusCode::kAborted || !fs::exists(dir / "hm_project.pto") ||
-      !fs::exists(dir / "mapping_0000.tif")) {
+  if (superseded.code() != absl::StatusCode::kAborted || !fs::exists(saved_state(dir) / "hm_project.pto") ||
+      !fs::exists(saved_state(dir) / "mapping_0000.tif")) {
     std::cerr << "superseded cleanup deleted a newer artifact generation: " << superseded << std::endl;
     return false;
   }
@@ -1212,16 +1228,17 @@ hstream_ui:
     std::cerr << "control-point dependency clean failed: " << status << std::endl;
     return false;
   }
-  const YAML::Node config = YAML::LoadFile((dir / "config.yaml").string());
-  const bool upstream_preserved = fs::exists(dir / "left.png") && fs::exists(dir / "right.png") &&
-      config["game"]["videos"]["left"] && config["game"]["videos"]["right"] &&
-      config["game"]["stitching"]["frame_offsets"];
+  const YAML::Node config = YAML::LoadFile((saved_state(dir) / "config.yaml").string());
+  const bool upstream_preserved = fs::exists(saved_state(dir) / "left.png") &&
+      fs::exists(saved_state(dir) / "right.png") && config["game"]["videos"]["left"] &&
+      config["game"]["videos"]["right"] && config["game"]["stitching"]["frame_offsets"];
   const bool retained_scoreboard_clear = config["rink"].IsMap() && config["rink"].size() == 1 &&
       config["rink"]["scoreboard"].IsMap() && config["rink"]["scoreboard"].size() == 1 &&
       config["rink"]["scoreboard"]["perspective_polygon"].IsNull();
-  const bool downstream_removed = !fs::exists(dir / "hm_project.pto") && !fs::exists(dir / "autooptimiser_out.pto") &&
-      !fs::exists(dir / "mapping_0000.tif") && !fs::exists(dir / "mapping_0001.tif") &&
-      !fs::exists(dir / "matches.png") && !fs::exists(dir / "s.png") && !fs::exists(dir / "rink_mask_0.png") &&
+  const bool downstream_removed = !fs::exists(saved_state(dir) / "hm_project.pto") &&
+      !fs::exists(saved_state(dir) / "autooptimiser_out.pto") && !fs::exists(saved_state(dir) / "mapping_0000.tif") &&
+      !fs::exists(saved_state(dir) / "mapping_0001.tif") && !fs::exists(saved_state(dir) / "matches.png") &&
+      !fs::exists(saved_state(dir) / "s.png") && !fs::exists(saved_state(dir) / "rink_mask_0.png") &&
       !config["stitching"] && (!config["rink"] || retained_scoreboard_clear);
   const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   if (!upstream_preserved || !downstream_removed || !calibration || calibration["control_points"].as<int>(0) != 750 ||
@@ -1245,7 +1262,7 @@ bool expect_clean_waits_for_transaction_locks(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "clean_locking";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  std::ofstream(dir / "config.yaml") << "unrelated: true\n";
+  std::ofstream(saved_state(dir) / "config.yaml") << "unrelated: true\n";
 
   auto expect_wait = [&](auto held_lock, const char* message) {
     if (!held_lock.ok())
@@ -1277,8 +1294,8 @@ bool expect_canvas_size_waits_for_hugin_lock(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "canvas_size_locking";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
     return false;
   }
 
@@ -1315,8 +1332,8 @@ bool expect_doubled_canvas_limits(const fs::path& tmpdir) {
   fs::create_directories(dir);
   // Placement-only checks exercise pixel limits without allocating a full panorama.
   const auto check = [&](int width, int height, bool allowed) {
-    if (!write_mapping_tiff(dir / "mapping_0000.tif", 1, 1, 0.0f, 0.0f) ||
-        !write_mapping_tiff(dir / "mapping_0001.tif", 1, 1, width - 1, height - 1))
+    if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 1, 1, 0.0f, 0.0f) ||
+        !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 1, 1, width - 1, height - 1))
       return false;
     const auto canvas = hm::stitching::stitching_canvas_size(dir.string());
     if (allowed)
@@ -1336,17 +1353,18 @@ bool expect_wide_control_masks_reload(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "wide_control_masks";
   fs::create_directories(dir);
   for (const std::string index : {"0000", "0001"}) {
-    if (!write_mapping_tiff(dir / ("mapping_" + index + ".tif"), 40000, 2, index == "0000" ? 0 : 25536, 0) ||
-        !write_remap_tiff(dir / ("mapping_" + index + "_x.tif"), 40000, 2) ||
-        !write_remap_tiff(dir / ("mapping_" + index + "_y.tif"), 40000, 2))
+    if (!write_mapping_tiff(
+            saved_state(dir) / ("mapping_" + index + ".tif"), 40000, 2, index == "0000" ? 0 : 25536, 0) ||
+        !write_remap_tiff(saved_state(dir) / ("mapping_" + index + "_x.tif"), 40000, 2) ||
+        !write_remap_tiff(saved_state(dir) / ("mapping_" + index + "_y.tif"), 40000, 2))
       return false;
   }
   cv::Mat seam(2, 65536, CV_8UC1, cv::Scalar(0));
   seam.colRange(32768, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam) ||
-      !hm::stitching::HuginProject::ValidateAndNormalizeSeam(dir / "seam_file.png", 65536, 2).ok())
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam) ||
+      !hm::stitching::HuginProject::ValidateAndNormalizeSeam(saved_state(dir) / "seam_file.png", 65536, 2).ok())
     return false;
-  hm::pano::ControlMasks masks(dir.string());
+  hm::pano::ControlMasks masks(saved_state(dir).string());
   if (!masks.is_valid() || masks.canvas_width() != 65536 || masks.canvas_height() != 2) {
     std::cerr << "hm-cupano must load remaps and seams at the doubled dimension limit" << std::endl;
     return false;
@@ -1358,14 +1376,14 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
   const fs::path dir = tmpdir / "oversized_legacy_tiff";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 65537, 1, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 1, 1, 0.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 65537, 1, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 1, 1, 0.0f, 0.0f)) {
     return false;
   }
   setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
   const auto status = hm::stitching::maybe_create_default_seam_file(dir.string());
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
-  if (!absl::IsResourceExhausted(status) || fs::exists(dir / "seam_file.png")) {
+  if (!absl::IsResourceExhausted(status) || fs::exists(saved_state(dir) / "seam_file.png")) {
     std::cerr << "oversized legacy TIFF must fail before seam allocation: " << status << std::endl;
     return false;
   }
@@ -1373,15 +1391,17 @@ bool expect_legacy_seam_generation_rejects_oversized_tiff(const fs::path& tmpdir
   const fs::path oversized_file_dir = tmpdir / "oversized_legacy_tiff_file";
   fs::remove_all(oversized_file_dir);
   fs::create_directories(oversized_file_dir);
-  if (!write_mapping_tiff(oversized_file_dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
-      !write_mapping_tiff(oversized_file_dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f) ||
-      ::truncate((oversized_file_dir / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0) {
+  if (!write_mapping_tiff(saved_state(oversized_file_dir) / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(oversized_file_dir) / "mapping_0001.tif", 64, 32, 32.0f, 0.0f) ||
+      ::truncate((saved_state(oversized_file_dir) / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) !=
+          0) {
     return false;
   }
   setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
   const auto oversized_file_status = hm::stitching::maybe_create_default_seam_file(oversized_file_dir.string());
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
-  if (!absl::IsResourceExhausted(oversized_file_status) || fs::exists(oversized_file_dir / "seam_file.png")) {
+  if (!absl::IsResourceExhausted(oversized_file_status) ||
+      fs::exists(saved_state(oversized_file_dir) / "seam_file.png")) {
     std::cerr << "oversized legacy TIFF file must fail bounded preflight before parser access: "
               << oversized_file_status << std::endl;
     return false;
@@ -1406,7 +1426,7 @@ bool expect_canvas_constraint_checks_reject_oversized_artifacts(const fs::path& 
   const fs::path oversized_tiff = tmpdir / "oversized_canvas_check_tiff";
   fs::remove_all(oversized_tiff);
   if (!write_valid_stitching_artifacts(oversized_tiff) ||
-      ::truncate((oversized_tiff / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0 ||
+      ::truncate((saved_state(oversized_tiff) / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0 ||
       !rejects(oversized_tiff)) {
     std::cerr << "canvas compatibility checks must reject oversized TIFFs before parser access" << std::endl;
     return false;
@@ -1415,7 +1435,7 @@ bool expect_canvas_constraint_checks_reject_oversized_artifacts(const fs::path& 
   const fs::path oversized_seam = tmpdir / "oversized_canvas_check_seam";
   fs::remove_all(oversized_seam);
   if (!write_valid_stitching_artifacts(oversized_seam) ||
-      ::truncate((oversized_seam / "seam_file.png").c_str(), 512LL * 1024LL * 1024LL + 1) != 0 ||
+      ::truncate((saved_state(oversized_seam) / "seam_file.png").c_str(), 512LL * 1024LL * 1024LL + 1) != 0 ||
       !rejects(oversized_seam)) {
     std::cerr << "canvas compatibility checks must reject oversized seams before parser access" << std::endl;
     return false;
@@ -1427,8 +1447,8 @@ bool expect_hard_seam_generation_requires_opt_in(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "hard_seam_opt_in";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
     return false;
   }
 
@@ -1436,7 +1456,7 @@ bool expect_hard_seam_generation_requires_opt_in(const fs::path& tmpdir) {
   const auto disabled = hm::stitching::maybe_create_default_seam_file(dir.string());
   if (!absl::IsFailedPrecondition(disabled) ||
       std::string(disabled.message()).find("HM_ALLOW_HARD_SEAM_FALLBACK=1") == std::string::npos ||
-      fs::exists(dir / "seam_file.png")) {
+      fs::exists(saved_state(dir) / "seam_file.png")) {
     std::cerr << "hard seam must fail closed without explicit opt-in: " << disabled << std::endl;
     return false;
   }
@@ -1444,7 +1464,7 @@ bool expect_hard_seam_generation_requires_opt_in(const fs::path& tmpdir) {
   setenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1", /*overwrite=*/1);
   const auto enabled = hm::stitching::maybe_create_default_seam_file(dir.string());
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
-  if (!enabled.ok() || !fs::is_regular_file(dir / "seam_file.png")) {
+  if (!enabled.ok() || !fs::is_regular_file(saved_state(dir) / "seam_file.png")) {
     std::cerr << "hard seam opt-in must permit fallback generation: " << enabled << std::endl;
     return false;
   }
@@ -1455,19 +1475,20 @@ bool expect_cropped_enblend_seam_is_normalized(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "cropped_enblend_seam";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
     return false;
   }
   cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
   seam.colRange(45, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam) ||
+      !add_png_pixel_offset(saved_state(dir) / "seam_file.png", 0, 0)) {
     return false;
   }
 
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
   const auto status = hm::stitching::maybe_create_default_seam_file(dir.string());
-  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  const cv::Mat preserved = cv::imread((saved_state(dir) / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   cv::Mat expected;
   cv::copyMakeBorder(seam, expected, 0, 2, 0, 6, cv::BORDER_REPLICATE);
   if (!status.ok() || preserved.size() != cv::Size(96, 32) || cv::norm(preserved, expected, cv::NORM_INF) != 0) {
@@ -1481,19 +1502,20 @@ bool expect_origin_zero_cropped_enblend_seam_is_scaled_for_cap(const fs::path& t
   const fs::path dir = tmpdir / "origin_zero_cropped_enblend_seam_cap";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
     return false;
   }
   cv::Mat seam(30, 90, CV_8U, cv::Scalar(0));
   seam.colRange(45, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam) ||
+      !add_png_pixel_offset(saved_state(dir) / "seam_file.png", 0, 0)) {
     return false;
   }
 
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
   const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/48);
-  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  const cv::Mat preserved = cv::imread((saved_state(dir) / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   cv::Mat scaled;
   cv::resize(seam, scaled, cv::Size(45, 15), 0.0, 0.0, cv::INTER_NEAREST);
   cv::Mat expected;
@@ -1512,12 +1534,14 @@ bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdi
   if (!write_valid_stitching_artifacts(dir)) {
     return false;
   }
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 40, 16, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 40, 16, 40.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 40, 16, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 40, 16, 40.0f, 0.0f)) {
     return false;
   }
-  if (!write_remap_tiff(dir / "mapping_0000_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0000_y.tif", 40, 16) ||
-      !write_remap_tiff(dir / "mapping_0001_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0001_y.tif", 40, 16)) {
+  if (!write_remap_tiff(saved_state(dir) / "mapping_0000_x.tif", 40, 16) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0000_y.tif", 40, 16) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0001_x.tif", 40, 16) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0001_y.tif", 40, 16)) {
     return false;
   }
   if (!write_canvas_provenance(
@@ -1533,14 +1557,15 @@ bool expect_effective_size_offset_seam_is_not_scaled_again(const fs::path& tmpdi
   }
   cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
   seam.colRange(40, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam) ||
+      !add_png_pixel_offset(saved_state(dir) / "seam_file.png", 0, 0)) {
     return false;
   }
 
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), /*max_output_width=*/80);
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
   const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/80);
-  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  const cv::Mat preserved = cv::imread((saved_state(dir) / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   if (!configured.ok() || !*configured || !status.ok() || preserved.size() != seam.size() ||
       cv::norm(preserved, seam, cv::NORM_INF) != 0) {
     std::cerr << "effective-size capped seam with oFFs origin must not be scaled a second time: configured="
@@ -1558,12 +1583,13 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   }
   cv::Mat seam(30, 150, CV_8U, cv::Scalar(0));
   seam.colRange(75, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 5, 1)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam) ||
+      !add_png_pixel_offset(saved_state(dir) / "seam_file.png", 5, 1)) {
     return false;
   }
 
   auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
-  const cv::Mat after_preflight = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  const cv::Mat after_preflight = cv::imread((saved_state(dir) / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   if (!preflight.ok() || !preflight->artifact_lock || after_preflight.size() != seam.size()) {
     std::cerr << "artifact preflight must validate cropped seam layout without normalizing its payload: "
               << preflight.status() << std::endl;
@@ -1572,7 +1598,7 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   preflight->artifact_lock.reset();
 
   auto artifacts = hm::stitching::lock_validated_stitching_artifacts(dir.string());
-  const cv::Mat normalized = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  const cv::Mat normalized = cv::imread((saved_state(dir) / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   if (!artifacts.ok() || !artifacts->artifact_lock || artifacts->canvas_size.width != 160 ||
       artifacts->canvas_size.height != 32 || artifacts->load_snapshot || normalized.size() != cv::Size(160, 32)) {
     std::cerr << "runtime artifact validation must normalize a valid cropped seam: " << artifacts.status() << std::endl;
@@ -1580,19 +1606,19 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
   }
   artifacts->artifact_lock.reset();
 
-  const fs::path stale_snapshot = dir / ".hstream-control-mask-snapshot-stale";
+  const fs::path stale_snapshot = saved_state(dir) / ".hstream-control-mask-snapshot-stale";
   fs::create_directory(stale_snapshot);
   std::ofstream(stale_snapshot / "mapping_0000.tif", std::ios::binary) << "stale";
   std::ofstream(stale_snapshot / "left.png", std::ios::binary) << "stale validation input";
-  const fs::path visible_user_directory = dir / "hstream-control-mask-snapshot-ABC123";
+  const fs::path visible_user_directory = saved_state(dir) / "hstream-control-mask-snapshot-ABC123";
   fs::create_directory(visible_user_directory);
   std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
   const fs::path fake_marker_target = dir / "operator-marker-target";
   std::ofstream(fake_marker_target) << "2\n";
   fs::create_symlink(fake_marker_target, visible_user_directory / "journal_version");
-  const fs::path visible_user_file = dir / "hstream-control-mask-snapshot-DEF456";
+  const fs::path visible_user_file = saved_state(dir) / "hstream-control-mask-snapshot-DEF456";
   std::ofstream(visible_user_file) << "operator-owned\n";
-  const fs::path visible_user_symlink = dir / "hstream-control-mask-snapshot-GHI789";
+  const fs::path visible_user_symlink = saved_state(dir) / "hstream-control-mask-snapshot-GHI789";
   fs::create_symlink(visible_user_file, visible_user_symlink);
   auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
   if (!load.ok() || !load->artifact_lock || !load->load_snapshot || fs::exists(stale_snapshot) ||
@@ -1621,7 +1647,7 @@ bool expect_runtime_validation_normalizes_cropped_seam(const fs::path& tmpdir) {
     return false;
   }
   load = std::move(resumed_load);
-  const fs::path pinned_mapping = dir / "mapping_0000_x.tif";
+  const fs::path pinned_mapping = saved_state(dir) / "mapping_0000_x.tif";
   const fs::path replacement_mapping = dir / "replacement-mapping-after-pin.tif";
   std::error_code replacement_error;
   fs::copy_file(pinned_mapping, replacement_mapping, fs::copy_options::overwrite_existing, replacement_error);
@@ -1682,17 +1708,17 @@ bool expect_preflight_snapshot_is_reused_only_for_same_generation(const fs::path
   if (unreliable.ok())
     unreliable->artifact_lock.reset();
 
-  set_write_time(dir / "left.png", 4);
+  set_write_time(saved_state(dir) / "left.png", 4);
   auto stale_inputs = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
   const bool stale_inputs_rejected = stale_inputs.ok() && !stale_inputs->artifact_lock;
-  set_write_time(dir / "left.png", 0);
+  set_write_time(saved_state(dir) / "left.png", 0);
 
   cv::Mat seam(32, 160, CV_8U, cv::Scalar(255));
   const fs::path replacement = dir / "replacement_seam.png";
   if (!cv::imwrite(replacement.string(), seam)) {
     return false;
   }
-  fs::rename(replacement, dir / "seam_file.png");
+  fs::rename(replacement, saved_state(dir) / "seam_file.png");
   auto replaced = hm::stitching::lock_preflight_stitching_artifacts(dir.string(), 0, snapshot);
   const bool replacement_revalidated = replaced.ok() && replaced->artifact_lock &&
       replaced->generation_id != snapshot.generation_id && replaced->artifact_revision != snapshot.artifact_revision &&
@@ -1711,10 +1737,13 @@ bool expect_preflight_snapshot_is_reused_only_for_same_generation(const fs::path
 bool expect_canvas_provenance_invalidates_cap_changes(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "canvas_provenance_cap_changes";
   fs::remove_all(dir);
-  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff(dir / "mapping_0000.tif", 40, 16, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 40, 16, 40.0f, 0.0f) ||
-      !write_remap_tiff(dir / "mapping_0000_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0000_y.tif", 40, 16) ||
-      !write_remap_tiff(dir / "mapping_0001_x.tif", 40, 16) || !write_remap_tiff(dir / "mapping_0001_y.tif", 40, 16) ||
+  if (!write_valid_stitching_artifacts(dir) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 40, 16, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 40, 16, 40.0f, 0.0f) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0000_x.tif", 40, 16) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0000_y.tif", 40, 16) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0001_x.tif", 40, 16) ||
+      !write_remap_tiff(saved_state(dir) / "mapping_0001_y.tif", 40, 16) ||
       !write_canvas_provenance(
           dir,
           /*max_output_width=*/80,
@@ -1728,7 +1757,7 @@ bool expect_canvas_provenance_invalidates_cap_changes(const fs::path& tmpdir) {
   }
   cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
   seam.colRange(40, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam)) {
     return false;
   }
 
@@ -1775,7 +1804,7 @@ bool expect_missing_provenance_requires_migration(const fs::path& tmpdir) {
   if (!write_valid_stitching_artifacts(dir)) {
     return false;
   }
-  fs::remove(dir / "stitching_canvas_provenance");
+  fs::remove(saved_state(dir) / "stitching_canvas_provenance");
   const auto configured = hm::stitching::is_stitching_configured(dir.string(), 0);
   const auto regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 0);
   if (!configured.ok() || *configured || !regeneration.ok() || !*regeneration) {
@@ -1852,8 +1881,8 @@ bool expect_superseded_constraints_reuse_artifacts(const fs::path& tmpdir) {
       !reusable_check->requires_regeneration && reusable_check->artifact_lock;
   if (reusable_check.ok())
     reusable_check->artifact_lock.reset();
-  const fs::path committed_transaction = dir / ".hstream-stitch-committed";
-  const fs::path unprepared_transaction = dir / ".hstream-stitch-unprepared";
+  const fs::path committed_transaction = saved_state(dir) / ".hstream-stitch-committed";
+  const fs::path unprepared_transaction = saved_state(dir) / ".hstream-stitch-unprepared";
   std::error_code transaction_error;
   fs::create_directory(committed_transaction, transaction_error);
   const bool wrote_committed_transaction =
@@ -1898,7 +1927,7 @@ bool expect_stale_mapping_dependencies_invalidate_canvas_cache(const fs::path& t
   if (!write_valid_stitching_artifacts(dir)) {
     return false;
   }
-  set_write_time(dir / "left.png", 4);
+  set_write_time(saved_state(dir) / "left.png", 4);
   const auto regeneration = hm::stitching::stitching_artifacts_require_canvas_regeneration(dir.string(), 0);
   if (!regeneration.ok() || !*regeneration) {
     std::cerr << "stale existing mapping dependencies must invalidate canvas-relative rink caches" << std::endl;
@@ -1959,7 +1988,8 @@ bool expect_native_over_cap_mappings_are_not_configured(const fs::path& tmpdir) 
   }
   cv::Mat seam(16, 80, CV_8U, cv::Scalar(0));
   seam.colRange(40, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam) || !add_png_pixel_offset(dir / "seam_file.png", 0, 0)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam) ||
+      !add_png_pixel_offset(saved_state(dir) / "seam_file.png", 0, 0)) {
     return false;
   }
 
@@ -1976,19 +2006,19 @@ bool expect_mismatched_capped_seam_is_rejected(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "mismatched_capped_seam";
   fs::remove_all(dir);
   fs::create_directories(dir);
-  if (!write_mapping_tiff(dir / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
-      !write_mapping_tiff(dir / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0000.tif", 64, 32, 0.0f, 0.0f) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 64, 32, 32.0f, 0.0f)) {
     return false;
   }
   cv::Mat seam(20, 60, CV_8U, cv::Scalar(0));
   seam.colRange(30, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam)) {
     return false;
   }
 
   unsetenv("HM_ALLOW_HARD_SEAM_FALLBACK");
   const auto status = hm::stitching::maybe_create_default_seam_file(dir.string(), /*max_output_width=*/48);
-  const cv::Mat preserved = cv::imread((dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  const cv::Mat preserved = cv::imread((saved_state(dir) / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   if (!absl::IsFailedPrecondition(status) || preserved.size() != seam.size() ||
       cv::norm(preserved, seam, cv::NORM_INF) != 0) {
     std::cerr << "mismatched capped seam must be rejected without being scaled again: " << status << std::endl;
@@ -2005,7 +2035,7 @@ bool expect_mismatched_capped_seam_is_not_configured(const fs::path& tmpdir) {
   }
   cv::Mat seam(20, 60, CV_8U, cv::Scalar(0));
   seam.colRange(30, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam)) {
     return false;
   }
 
@@ -2026,7 +2056,7 @@ bool expect_stale_capped_seam_is_not_configured_when_uncapped(const fs::path& tm
   }
   cv::Mat seam(20, 80, CV_8U, cv::Scalar(0));
   seam.colRange(40, seam.cols).setTo(255);
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam)) {
     return false;
   }
 
@@ -2046,7 +2076,7 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
     return false;
   }
   cv::Mat seam(32, 160, CV_8U, cv::Scalar(255));
-  if (!cv::imwrite((dir / "seam_file.png").string(), seam)) {
+  if (!cv::imwrite((saved_state(dir) / "seam_file.png").string(), seam)) {
     return false;
   }
 
@@ -2085,7 +2115,7 @@ bool expect_uniform_seam_is_not_configured(const fs::path& tmpdir) {
 bool expect_corrupt_idat_is_rejected_without_crashing(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "corrupt_idat_canvas_check";
   fs::remove_all(dir);
-  if (!write_valid_stitching_artifacts(dir) || !corrupt_png_idat_with_valid_crc(dir / "seam_file.png"))
+  if (!write_valid_stitching_artifacts(dir) || !corrupt_png_idat_with_valid_crc(saved_state(dir) / "seam_file.png"))
     return false;
 
   auto preflight = hm::stitching::lock_preflight_stitching_artifacts(dir.string());
@@ -2113,7 +2143,8 @@ bool expect_corrupt_idat_is_rejected_without_crashing(const fs::path& tmpdir) {
 bool expect_missing_placement_tiff_is_not_configured(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "missing_placement_configured";
   fs::remove_all(dir);
-  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff_without_position(dir / "mapping_0001.tif", 64, 32)) {
+  if (!write_valid_stitching_artifacts(dir) ||
+      !write_mapping_tiff_without_position(saved_state(dir) / "mapping_0001.tif", 64, 32)) {
     return false;
   }
 
@@ -2132,7 +2163,7 @@ bool expect_mismatched_remap_headers_are_not_configured(const fs::path& tmpdir) 
   if (!write_valid_stitching_artifacts(dir)) {
     return false;
   }
-  if (!write_mapping_tiff(dir / "mapping_0001_y.tif", 640, 320, 0.0f, 0.0f)) {
+  if (!write_mapping_tiff(saved_state(dir) / "mapping_0001_y.tif", 640, 320, 0.0f, 0.0f)) {
     return false;
   }
 
@@ -2153,7 +2184,8 @@ bool expect_mismatched_remap_headers_are_not_configured(const fs::path& tmpdir) 
 bool expect_placement_remap_size_mismatch_is_not_configured(const fs::path& tmpdir) {
   const fs::path dir = tmpdir / "placement_remap_size_mismatch_configured";
   fs::remove_all(dir);
-  if (!write_valid_stitching_artifacts(dir) || !write_mapping_tiff(dir / "mapping_0001.tif", 32, 16, 96.0f, 0.0f)) {
+  if (!write_valid_stitching_artifacts(dir) ||
+      !write_mapping_tiff(saved_state(dir) / "mapping_0001.tif", 32, 16, 96.0f, 0.0f)) {
     return false;
   }
 
@@ -2183,7 +2215,7 @@ bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
     return false;
   YAML::Node first_config(YAML::NodeType::Map);
   first_config["rink"]["stitched_output_generation"] = *first_output_generation;
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(first_config) + "\n"))
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(first_config) + "\n"))
     return false;
   hugin_lock->reset();
 
@@ -2213,7 +2245,7 @@ bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
   {
-    std::ofstream changed(dir / "autooptimiser_out.pto", std::ios::app);
+    std::ofstream changed(saved_state(dir) / "autooptimiser_out.pto", std::ios::app);
     changed << "# replacement generation\n";
   }
   auto second_hugin_generation = hm::stitching::HuginProject::GenerationId(dir, **hugin_lock);
@@ -2251,12 +2283,12 @@ bool expect_stale_snapshot_publisher_is_rejected(const fs::path& tmpdir) {
     stale_publisher.join();
     return false;
   }
-  fs::rename(current_temporary, dir / "s.png", rename_error);
+  fs::rename(current_temporary, saved_state(dir) / "s.png", rename_error);
   config_lock->reset();
   hugin_lock->reset();
   stale_publisher.join();
 
-  const cv::Mat published = cv::imread((dir / "s.png").string(), cv::IMREAD_COLOR);
+  const cv::Mat published = cv::imread((saved_state(dir) / "s.png").string(), cv::IMREAD_COLOR);
   if (!absl::IsAborted(publisher_status) || rename_error || published.empty() ||
       published.at<cv::Vec3b>(0, 0) != cv::Vec3b(0, 255, 0)) {
     std::cerr << "a stale frame publisher must not overwrite the current stitched-output generation: "
@@ -2286,7 +2318,7 @@ bool expect_snapshot_color_channels(const fs::path& tmpdir) {
     return false;
   YAML::Node config;
   config["rink"]["stitched_output_generation"] = *output;
-  if (!write_text_file(dir / "config.yaml", YAML::Dump(config)))
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config)))
     return false;
   lock->reset();
 
@@ -2316,7 +2348,7 @@ bool expect_snapshot_color_channels(const fs::path& tmpdir) {
           ? hm::stitching::save_stitched_image(dir.string(), hm::surface::Surface(&params), *output)
           : absl::InternalError("Cannot upload snapshot fixture");
       cudaFree(device);
-      const cv::Mat decoded = cv::imread((dir / "s.png").string(), cv::IMREAD_UNCHANGED);
+      const cv::Mat decoded = cv::imread((saved_state(dir) / "s.png").string(), cv::IMREAD_UNCHANGED);
       if (!saved.ok() || decoded.size() != cv::Size(160, 32) || decoded.type() != (rgba8 ? CV_8UC4 : CV_16UC3)) {
         std::cerr << "Cannot save/read GPU snapshot: " << saved << '\n';
         return false;
@@ -2346,7 +2378,7 @@ bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmp
   fs::remove_all(dir);
   if (!write_valid_stitching_artifacts(dir))
     return false;
-  const fs::path mapping = dir / "mapping_0000_x.tif";
+  const fs::path mapping = saved_state(dir) / "mapping_0000_x.tif";
   const fs::path replacement = dir / "replacement-mapping.tif";
   std::error_code error;
   fs::copy_file(mapping, replacement, fs::copy_options::overwrite_existing, error);
@@ -2373,7 +2405,7 @@ bool expect_validated_load_snapshot_rejects_path_replacement(const fs::path& tmp
   ::unsetenv("HM_TEST_STITCH_LOAD_SNAPSHOT_DELAY_MS");
 
   bool snapshot_left_behind = false;
-  for (const auto& entry : fs::directory_iterator(dir)) {
+  for (const auto& entry : fs::directory_iterator(saved_state(dir))) {
     if (entry.is_directory() && entry.path().filename().string().rfind("hstream-control-mask-snapshot-", 0) == 0)
       snapshot_left_behind = true;
   }
@@ -2391,7 +2423,7 @@ bool expect_validation_rejects_pre_generation_replacement(const fs::path& tmpdir
   fs::remove_all(dir);
   if (!write_valid_stitching_artifacts(dir))
     return false;
-  const fs::path mapping = dir / "mapping_0000_x.tif";
+  const fs::path mapping = saved_state(dir) / "mapping_0000_x.tif";
   const fs::path replacement = dir / "replacement-mapping.tif";
   if (!write_remap_tiff(replacement, 8, 8))
     return false;
@@ -2460,7 +2492,7 @@ bool expect_unreliable_load_preserves_player_plan_validation(const fs::path& tmp
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   const std::string selected_config = YAML::Dump(config) + "\n";
   if (!write_player_frame_canvas_provenance(directory, plan.fingerprint) ||
-      !write_text_file(directory / "config.yaml", selected_config))
+      !write_text_file(saved_state(directory) / "config.yaml", selected_config))
     return false;
 
   ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
@@ -2472,8 +2504,21 @@ bool expect_unreliable_load_preserves_player_plan_validation(const fs::path& tmp
               << '\n';
     return false;
   }
+  // Saving while a load owns its scratch snapshot inventories that directory.
+  // Releasing the snapshot must retire its inventory entries as well.
+  if (!publish_game_config(directory, selected_config).ok())
+    return false;
+  const auto snapshot_name = load->load_snapshot->directory().filename().string();
+  const auto held_inventory = YAML::LoadFile((saved_state(directory) / "manifest.json").string());
+  if (YAML::Dump(held_inventory).find(snapshot_name) == std::string::npos)
+    return false;
   load->artifact_lock.reset();
   load->load_snapshot.reset();
+  const auto retired_inventory = YAML::LoadFile((saved_state(directory) / "manifest.json").string());
+  if (YAML::Dump(retired_inventory).find(snapshot_name) != std::string::npos) {
+    std::cerr << "Load snapshot cleanup must remove its retired inventory entries\n";
+    return false;
+  }
 
   plan.context["detector_identity"] = "replacement-plan";
   const auto replacement_fingerprint = PlayerFrameSelectionFingerprint(plan);
@@ -2486,7 +2531,7 @@ bool expect_unreliable_load_preserves_player_plan_validation(const fs::path& tmp
   const std::string cleared_config = YAML::Dump(config) + "\n";
 
   for (const auto& changed_config : {replacement_config, cleared_config}) {
-    if (!write_text_file(directory / "config.yaml", selected_config))
+    if (!write_text_file(saved_state(directory) / "config.yaml", selected_config))
       return false;
     const fs::path marker = directory / ".stable-validation-ready";
     const fs::path release = directory / ".stable-validation-release";
@@ -2498,7 +2543,7 @@ bool expect_unreliable_load_preserves_player_plan_validation(const fs::path& tmp
     ::setenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE", release.c_str(), 1);
     std::thread loader([&] { load = lock_stitching_artifacts_for_load(directory.string()); });
     const bool reached_snapshot = wait_for_test_marker(marker);
-    const bool changed = reached_snapshot && write_text_file(directory / "config.yaml", changed_config);
+    const bool changed = reached_snapshot && write_text_file(saved_state(directory) / "config.yaml", changed_config);
     std::ofstream(release) << "continue\n";
     loader.join();
     ::unsetenv("HM_TEST_STITCH_STABLE_VALIDATION_RELEASE");
@@ -2523,14 +2568,14 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
   if (!adopted.ok() || !adopted->artifact_lock)
     return false;
   adopted->artifact_lock.reset();
-  std::ifstream expected_identity_input(dir / hm::stitching::kStitchGenerationArtifact, std::ios::binary);
+  std::ifstream expected_identity_input(saved_state(dir) / hm::stitching::kStitchGenerationArtifact, std::ios::binary);
   const std::string expected_identity{
       std::istreambuf_iterator<char>(expected_identity_input), std::istreambuf_iterator<char>()};
   if (expected_identity.empty())
     return false;
-  const fs::path mapping = dir / "mapping_0001.tif";
-  const fs::path original = dir / "mapping_0001-original.tif";
-  const fs::path replacement = dir / "mapping_0001-replacement.tif";
+  const fs::path mapping = saved_state(dir) / "mapping_0001.tif";
+  const fs::path original = saved_state(dir) / "mapping_0001-original.tif";
+  const fs::path replacement = saved_state(dir) / "mapping_0001-replacement.tif";
   if (!write_mapping_tiff(replacement, 64, 32, 200.0f, 0.0f))
     return false;
 
@@ -2568,7 +2613,7 @@ bool expect_unreliable_validation_uses_pinned_generation(const fs::path& tmpdir)
   const std::string snapshot_identity{
       std::istreambuf_iterator<char>(snapshot_identity_input), std::istreambuf_iterator<char>()};
   const bool transient_verified = result.ok() && result->load_snapshot && result->load_snapshot->verify().ok();
-  const fs::path persistently_changed = dir / "mapping_0001_x.tif";
+  const fs::path persistently_changed = saved_state(dir) / "mapping_0001_x.tif";
   const auto preserved_write_time = fs::last_write_time(persistently_changed);
   std::fstream changed(persistently_changed, std::ios::binary | std::ios::in | std::ios::out);
   changed.seekg(0, std::ios::end);
@@ -2633,7 +2678,8 @@ bool expect_unreliable_load_refreshes_legacy_identity_revision(const fs::path& t
   if (!bindings.ok())
     return false;
   const std::string logical_id = "legacy-v2-logical-generation";
-  std::ofstream identity(dir / hm::stitching::kStitchGenerationArtifact, std::ios::binary | std::ios::trunc);
+  std::ofstream identity(
+      saved_state(dir) / hm::stitching::kStitchGenerationArtifact, std::ios::binary | std::ios::trunc);
   identity << "version=2\nlogical-size=" << logical_id.size() << "\nbindings-size=" << bindings->size() << '\n'
            << logical_id << *bindings;
   identity.close();

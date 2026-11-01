@@ -4,6 +4,7 @@ cc_binary(
     linkopts = ["-lcrypto"],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:game_storage",
         "//src/libs/common:baseline_config",
         "//src/libs/common:user_config",
         "//src/libs/stitching:canvas_constraint_check",

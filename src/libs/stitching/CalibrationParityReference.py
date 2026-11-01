@@ -88,8 +88,8 @@ def main() -> None:
     except Exception as exc:
         skip(f"pinned LightGlue-ONNX v3 Python source cannot be imported: {exc}")
 
-    left = cv2.imread(str(args.game_dir / "left.png"), cv2.IMREAD_COLOR)
-    right = cv2.imread(str(args.game_dir / "right.png"), cv2.IMREAD_COLOR)
+    left = cv2.imread(str(args.game_dir / "_hockeymon" / "left.png"), cv2.IMREAD_COLOR)
+    right = cv2.imread(str(args.game_dir / "_hockeymon" / "right.png"), cv2.IMREAD_COLOR)
     if left is None or right is None:
         skip("left.png and right.png parity fixtures are required")
 
@@ -200,7 +200,7 @@ def main() -> None:
     # HockeyMOM rink parity is independent of feature matching. Keep its
     # heavier MMDetection import optional for ordinary developer runs; the
     # checked-in mandatory qualification entrypoint requires this section.
-    stitched_path = args.game_dir / "s.png"
+    stitched_path = args.game_dir / "_hockeymon" / "s.png"
     stitched = cv2.imread(str(stitched_path), cv2.IMREAD_COLOR) if stitched_path.is_file() else None
     try:
         if stitched is None:

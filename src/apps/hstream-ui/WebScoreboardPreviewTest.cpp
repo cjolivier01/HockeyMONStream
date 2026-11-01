@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/WebScoreboardPreview.h"
+#include <QtCore/QFileInfo>
 #include "src/apps/hstream-ui/CalibrationImage.h"
 
 #include <png.h>
@@ -43,11 +44,13 @@ void require_identity(const QJsonObject& expected, const QString& path, const ch
 }
 
 void write(const QString& path, const QByteArray& bytes) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "Cannot write fixture");
 }
 
 void fixture(const QString& path, int width = 640, int height = 360, bool interlaced = false) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   // Row-only generation also exercises a 194.9 MP panorama without a source bitmap.
   FILE* file = std::fopen(QFile::encodeName(path).constData(), "wb");
   require(file, "Cannot open PNG fixture");
@@ -89,8 +92,8 @@ QJsonObject request(const QTemporaryDir& root, const QString& token = QString(32
       {"schema", "hstream-scoreboard-preview-request-v1"},
       {"token", token},
       {"root", root.path()},
-      {"source", "game/s.png"},
-      {"source_identity", identity(root.filePath("game/s.png"))}};
+      {"source", "game/_hockeymon/s.png"},
+      {"source_identity", identity(root.filePath("game/_hockeymon/s.png"))}};
 }
 
 void rejected(const QJsonObject& input, const std::function<void()>& change = {}) {
@@ -110,7 +113,7 @@ void rejected(const QJsonObject& input, const std::function<void()>& change = {}
 void test_failures() {
   QTemporaryDir root;
   require(QDir(root.path()).mkdir("game"), "Cannot create game");
-  const auto source = root.filePath("game/s.png");
+  const auto source = root.filePath("game/_hockeymon/s.png");
   fixture(source);
   const auto original = request(root);
   for (const auto& token : {QString("../bad"), QString(31, 'a'), QString(32, 'z')}) {
@@ -118,7 +121,8 @@ void test_failures() {
     input["token"] = token;
     rejected(input);
   }
-  for (const auto& path : {"../s.png", "/game/s.png", "game/../game/s.png", "game//s.png", "game/panorama.tif"}) {
+  for (const auto& path :
+       {"../s.png", "/game/s.png", "game/../game/s.png", "game//s.png", "game/_hockeymon/panorama.tif"}) {
     auto input = original;
     input["source"] = path;
     rejected(input);
@@ -151,7 +155,7 @@ void test_publication_conflicts() {
   for (const auto& extension : {".png", ".json"}) {
     QTemporaryDir root;
     require(QDir(root.path()).mkdir("game"), "Cannot create game");
-    fixture(root.filePath("game/s.png"));
+    fixture(root.filePath("game/_hockeymon/s.png"));
     const auto input = request(root);
     const auto conflict_name = "scoreboard-preview-" + input["token"].toString() + extension;
     const auto conflict_path = root.filePath(conflict_name);
@@ -175,7 +179,7 @@ void test_publication_conflicts() {
   }
   QTemporaryDir root;
   require(QDir(root.path()).mkdir("game"), "Cannot create game");
-  fixture(root.filePath("game/s.png"));
+  fixture(root.filePath("game/_hockeymon/s.png"));
   rejected(request(root), [&] {
     const auto images = QDir(root.path()).entryList({".scoreboard-preview-*-image-*"}, QDir::Files | QDir::Hidden);
     require(images.size() == 1, "Expected one pending proxy");
@@ -189,7 +193,7 @@ void test_publication_conflicts() {
 void test_success(int width, int height, bool interlaced = false) {
   QTemporaryDir root;
   require(QDir(root.path()).mkdir("game"), "Cannot create game");
-  fixture(root.filePath("game/s.png"), width, height, interlaced);
+  fixture(root.filePath("game/_hockeymon/s.png"), width, height, interlaced);
   const auto input = request(root);
   const auto result = hm::web::ScoreboardPreview(input);
   const auto expected = scoreboardPreviewSize({width, height});
@@ -234,8 +238,8 @@ void test_success(int width, int height, bool interlaced = false) {
 
 void test_source_bounds() {
   QTemporaryDir root;
-  QDir(root.path()).mkdir("game");
-  const auto path = root.filePath("game/s.png");
+  QDir(root.path()).mkpath("game/_hockeymon");
+  const auto path = root.filePath("game/_hockeymon/s.png");
   // Valid header/chunk CRC, rejected before row allocation by native source bounds.
   for (const auto& dimensions : {QSize(65536, 1), QSize(20000, 20000)}) {
     FILE* file = std::fopen(QFile::encodeName(path).constData(), "wb");

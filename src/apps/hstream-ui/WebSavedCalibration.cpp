@@ -121,7 +121,8 @@ struct Snapshot {
 Snapshot configuration_snapshot_locked(const Request& request) {
   Snapshot result;
   result.config = YAML::Load(take(
-      rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "calibration config")));
+      rink::read_bounded_regular_file_no_follow(
+          request.game / "_hockeymon/config.yaml", 4 * 1024 * 1024, "calibration config")));
   const auto calibration = result.config["hstream_ui"]["stitching_calibration"];
   require(
       calibration.IsMap() && calibration["status"].as<std::string>("") == "complete" &&
@@ -146,7 +147,7 @@ Snapshot snapshot_locked(const Request& request) {
   const auto provenance = take(rink::HuginProject::ReadCanvasProvenanceLocked(request.game));
   require(provenance && provenance->projection_framing, "Saved view has no published rotation");
   result.published = provenance->projection_framing->rotation_degrees;
-  result.project = take(rink::HuginProject::ReadProject(request.game / "autooptimiser_out.pto"));
+  result.project = take(rink::HuginProject::ReadProject(request.game / "_hockeymon/autooptimiser_out.pto"));
   const auto generation = take(rink::stitch_artifact_preflight_generation_id_locked(request.game));
   result.identity = {
       {"generation",
@@ -281,8 +282,9 @@ QJsonObject reset_view(const Request& request, const std::function<bool()>& canc
     else
       check(rink::publish_game_config(request.game, YAML::Dump(desired)));
   }
-  const auto bytes =
-      take(rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "reset config"));
+  const auto bytes = take(
+      rink::read_bounded_regular_file_no_follow(
+          request.game / "_hockeymon/config.yaml", 4 * 1024 * 1024, "reset config"));
   return {
       {"calibration_reset_version", 1},
       {"staged", true},
@@ -309,10 +311,10 @@ QJsonObject render(
     bool blend,
     QJsonArray& artifacts,
     const std::function<bool()>& cancelled) {
-  const auto localized = take(rink::LocalizeCalibrationPreviewImages(source.project, request.game));
+  const auto localized = take(rink::LocalizeCalibrationPreviewImages(source.project, request.game / "_hockeymon"));
   std::ofstream(work / "source.pto") << localized;
   for (const char* name : {"left.png", "right.png"})
-    fs::copy_file(request.game / name, work / name);
+    fs::copy_file(request.game / "_hockeymon" / name, work / name);
   QStringList framing;
   if (kind == "leveling") {
     const auto delta = take(rink::RinkLevelingRotationDelta(source.published, selected.rotation_degrees));
@@ -451,11 +453,11 @@ QString ExportSavedCalibrationPreview(
   const auto still = read_still(request, {}, {}, cancelled);
   require(!still.image.isNull(), "Saved calibration image is unavailable or changing");
   require(
-      !fs::is_symlink(fs::symlink_status(request.game / "setup-preview.png")),
+      !fs::is_symlink(fs::symlink_status(request.game / "_hockeymon/setup-preview.png")),
       "Saved preview must not be a symbolic link");
   const auto path = Contained(
       request.root,
-      text((request.game / "setup-preview.png").lexically_relative(request.root).generic_string()),
+      text((request.game / "_hockeymon/setup-preview.png").lexically_relative(request.root).generic_string()),
       false);
   require(
       publish_still(request, still, path, artifacts, cancelled),
@@ -475,7 +477,8 @@ QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, c
     require(QRegularExpression("^[0-9a-f]{64}$").match(expected).hasMatch(), "Invalid Clean Stitching config identity");
     const auto read_config = [&] {
       return take(
-          rink::read_bounded_regular_file_no_follow(request.game / "config.yaml", 4 * 1024 * 1024, "clean config"));
+          rink::read_bounded_regular_file_no_follow(
+              request.game / "_hockeymon/config.yaml", 4 * 1024 * 1024, "clean config"));
     };
     const auto digest = [](const std::string& bytes) {
       return QString::fromLatin1(
@@ -575,10 +578,11 @@ QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, c
   QTemporaryDir temporary(text((request.root / "work" / "view-XXXXXX").string()));
   require(temporary.isValid(), "Cannot create private saved-view snapshot");
   const fs::path work(temporary.path().toStdString());
-  auto prepared = RinkEditor({{"pto", text(source.project)}, {"sourceDirectory", text(request.game.string())}});
+  const auto image_directory = text((request.game / "_hockeymon").string());
+  auto prepared = RinkEditor({{"pto", text(source.project)}, {"sourceDirectory", image_directory}});
   QJsonArray images;
   for (int camera = 0; camera < 2; ++camera) {
-    const auto path = request.game / (camera ? "right.png" : "left.png");
+    const auto path = request.game / "_hockeymon" / (camera ? "right.png" : "left.png");
     QImageReader reader(text(path.string()), "png");
     const auto size = prepared.value("imageSizes").toArray()[camera].toArray();
     require(
@@ -595,12 +599,12 @@ QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, c
       {"angles", values(selected.rotation_degrees)},
       {"crop", values(selected.crop)},
       {"automatic", selected.auto_crop},
-      {"saved_landmarks_available", fs::is_regular_file(request.game / "rink-map.yaml")}};
+      {"saved_landmarks_available", fs::is_regular_file(request.game / "_hockeymon/rink-map.yaml")}};
   if (request.operation == "calibration-view-estimate") {
     require(kind == "leveling", "Only leveling estimates original-image points");
     auto value = request.payload;
     value.insert("pto", text(source.project));
-    value.insert("sourceDirectory", text(request.game.string()));
+    value.insert("sourceDirectory", image_directory);
     value.insert("publishedAngles", values(source.published));
     prepared = RinkEditor(value);
     std::ofstream(work / "sphere.pto") << prepared.value("sphere").toString().toStdString();
@@ -689,7 +693,7 @@ QJsonObject RunSavedCalibration(const Request& request, QJsonArray& artifacts, c
   require(snapshot(request).identity == source.identity, "Saved calibration changed during editing");
   // Reframing republishes even unchanged original stills; capture their final file identities.
   for (const char* name : {"left.png", "right.png"})
-    artifacts.append(Artifact(request, request.game / name, "image"));
+    artifacts.append(Artifact(request, request.game / "_hockeymon" / name, "image"));
   return result;
 }
 } // namespace hm::web

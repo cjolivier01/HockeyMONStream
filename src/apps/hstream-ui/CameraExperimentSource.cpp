@@ -188,7 +188,7 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
   try {
     hm::playtracker_replay::StitchingMedia media;
     media.directory = fs::absolute(directory).string();
-    QFile file(QString::fromStdString((fs::path(media.directory) / "config.yaml").string()));
+    QFile file(QString::fromStdString((fs::path(media.directory) / "_hockeymon/config.yaml").string()));
     if (!file.open(QIODevice::ReadOnly) || file.size() > 16 * 1024 * 1024)
       return absl::InvalidArgumentError("Select the game directory containing the recorded camera configuration");
     media.config_contents = file.readAll().toStdString();
@@ -296,7 +296,7 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
     g_free(digest);
     // Preserve the inputs if Save trial is pointed at a calibration file
     // (including a hard-link alias outside the game directory).
-    for (const auto& entry : fs::directory_iterator(media.directory)) {
+    for (const auto& entry : fs::directory_iterator(fs::path(media.directory) / "_hockeymon")) {
       const auto extension = entry.path().extension();
       const auto name = entry.path().filename();
       if (entry.is_regular_file() &&
@@ -304,7 +304,7 @@ absl::StatusOr<hm::playtracker_replay::StitchingMedia> PrepareExperimentSources(
            name == "stitching_generation_id"))
         media.artifact_paths.push_back(entry.path().string());
     }
-    media.artifact_paths.push_back((fs::path(media.directory) / "rink-map.yaml").string());
+    media.artifact_paths.push_back((fs::path(media.directory) / "_hockeymon/rink-map.yaml").string());
     return media;
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(std::string("Could not prepare original camera inputs: ") + error.what());

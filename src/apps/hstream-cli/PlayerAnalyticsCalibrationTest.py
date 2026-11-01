@@ -13,7 +13,7 @@ def main():
         root = Path(directory)
         game = root / "games" / "test"
         game.mkdir(parents=True)
-        saved = game / "config.yaml"
+        saved = game / "_hockeymon/config.yaml"
         saved.write_text("team: {enabled: true}\n")
         environment = dict(os.environ)
         environment.update(

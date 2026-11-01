@@ -27,6 +27,7 @@ T value(absl::StatusOr<T> result) {
   return std::move(*result);
 }
 void write(const fs::path& path, const std::string& bytes) {
+  fs::create_directories(path.parent_path());
   std::ofstream(path) << bytes;
 }
 StitchingBackendChoices choices(const YAML::Node& config) {
@@ -72,7 +73,7 @@ YAML::Node fixture(const fs::path& root) {
   require(reserve_stitching_backend_generation_in_config(config, "completed-solve", choices(config)));
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
     write(
-        root / name,
+        root / "_hockeymon" / name,
         "p f19 w64 h32 v180\ni w512 h256 f0 v109 r0 p0 y0 n\"left.png\"\ni w512 h256 f0 v109 r0 p0 y45 n\"right.png\"\nc n0 N1 x1 y2 X3 Y4 t0\n");
   for (const char* name :
        {"mapping_0000.tif",
@@ -81,10 +82,10 @@ YAML::Node fixture(const fs::path& root) {
         "mapping_0001.tif",
         "mapping_0001_x.tif",
         "mapping_0001_y.tif"})
-    if (!cv::imwrite((root / name).string(), cv::Mat(32, 64, CV_16UC1, cv::Scalar(1))))
+    if (!cv::imwrite((root / "_hockeymon" / name).string(), cv::Mat(32, 64, CV_16UC1, cv::Scalar(1))))
       throw std::runtime_error("Cannot create TIFF fixture");
   for (const char* name : {"left.png", "right.png", "seam_file.png"})
-    if (!cv::imwrite((root / name).string(), cv::Mat(256, 512, CV_8UC3, cv::Scalar(1, 2, 3))))
+    if (!cv::imwrite((root / "_hockeymon" / name).string(), cv::Mat(256, 512, CV_8UC3, cv::Scalar(1, 2, 3))))
       throw std::runtime_error("Cannot create PNG fixture");
   return config;
 }
@@ -97,7 +98,7 @@ void provenance(
     double horizontal_fov = 180) {
   const auto parameters = FormatStitchProjectionParameters(DefaultStitchProjectionParameters(projection));
   write(
-      root / "stitching_canvas_provenance",
+      root / "_hockeymon/stitching_canvas_provenance",
       "version=10\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=64\nsource-canvas-height=32\n"
       "canvas-width=64\ncanvas-height=32\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
       "mapping-backend=nona\nprojection=" +
@@ -178,15 +179,16 @@ QJsonObject controls_payload(const fs::path& game, const QJsonObject& before, co
   }();
   const std::string generation = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin.size()) + "\n" +
       hugin + "post-stitch-rotate-degrees:0\noutput-size:64x32\n";
-  auto config = YAML::LoadFile((game / "config.yaml").string());
+  auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
   config["rink"]["stitched_output_generation"] = generation;
   config["rink"]["stitched_output_persisted_rotation_degrees"] = 0;
-  write(game / "config.yaml", YAML::Dump(config));
+  write(game / "_hockeymon/config.yaml", YAML::Dump(config));
   return {
       {"version", 1},
       {"source",
        QJsonObject{
-           {"generation", QString::fromStdString(generation)}, {"config_sha256", digest(read(game / "config.yaml"))}}},
+           {"generation", QString::fromStdString(generation)},
+           {"config_sha256", digest(read(game / "_hockeymon/config.yaml"))}}},
       {"before_controls", before},
       {"desired_controls", desired},
       {"defaults", QJsonObject{}},
@@ -223,7 +225,7 @@ YAML::Node selected_frames() {
 }
 
 void restart_controls_staging(const QString& binary, const fs::path& source) {
-  const auto original = read(source / "config.yaml");
+  const auto original = read(source / "_hockeymon/config.yaml");
   expect(
       hm::web::Capabilities().value("features").toArray().contains("calibration-controls-restart-v1"),
       "Explicit Restart must advertise its deployment capability");
@@ -234,7 +236,7 @@ void restart_controls_staging(const QString& binary, const fs::path& source) {
       QTemporaryDir temporary;
       const fs::path root(temporary.path().toStdString()), game = root / "game";
       fs::copy(source, game, fs::copy_options::recursive);
-      auto config = YAML::LoadFile((game / "config.yaml").string());
+      auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       const bool selected = evidence == "selected-manual", manual = evidence != "none";
       if (selected) {
         config["stitching"]["calibration_frame_selection"] = selected_frames();
@@ -247,7 +249,7 @@ void restart_controls_staging(const QString& binary, const fs::path& source) {
       }
       config["hstream_ui"]["stitching_calibration"].remove("backend_generation");
       require(reserve_stitching_backend_generation_in_config(config, "completed-solve", choices(config)));
-      write(game / "config.yaml", YAML::Dump(config));
+      write(game / "_hockeymon/config.yaml", YAML::Dump(config));
       auto payload = controls_payload(game, {}, {});
       if (action == "false" || action == "restart")
         payload["force_reconfigure"] = action == "restart";
@@ -261,17 +263,17 @@ void restart_controls_staging(const QString& binary, const fs::path& source) {
         payload["force_reconfigure"] = QJsonArray{true};
       else if (action == "object")
         payload["force_reconfigure"] = QJsonObject{{"value", true}};
-      const auto initial = read(game / "config.yaml");
+      const auto initial = read(game / "_hockeymon/config.yaml");
       const bool restart = action == "restart", success = restart || action == "play" || action == "false";
       const auto result = invoke(binary, root, "calibration-controls-stage", payload, success);
       if (!success) {
         expect(
-            read(game / "config.yaml") == initial && fs::exists(game / "mapping_0000.tif") &&
-                fs::exists(game / "left.png"),
+            read(game / "_hockeymon/config.yaml") == initial && fs::exists(game / "_hockeymon/mapping_0000.tif") &&
+                fs::exists(game / "_hockeymon/left.png"),
             "A nonboolean Restart flag must fail before changing config or calibration artifacts");
         continue;
       }
-      const auto stored = YAML::LoadFile((game / "config.yaml").string());
+      const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       const auto state = stored["hstream_ui"]["stitching_calibration"];
       expect(
           result.value("pending").toBool() == restart && !result.value("alignment_reused").toBool() &&
@@ -287,23 +289,25 @@ void restart_controls_staging(const QString& binary, const fs::path& source) {
               value(player_frame_selection_fingerprint(stored)) == value(player_frame_selection_fingerprint(config)) &&
               bool(stored["stitching"]["manual_control_points"]) == (manual && !restart) &&
               bool(state["match_snapshot"]) == (manual && !restart) &&
-              fs::exists(game / "mapping_0000.tif") != restart &&
-              fs::exists(game / "left.png") == (!restart || selected),
+              fs::exists(game / "_hockeymon/mapping_0000.tif") != restart &&
+              fs::exists(game / "_hockeymon/left.png") == (!restart || selected),
           "Restart must use native selected-frame retention and manual-match release/cleanup policy");
       expect(
           stored["stitching"]["calibration_frame_count"].as<int>() == 2 && state["frame_count"].as<int>() == 2 &&
               state["control_points"].as<int>() == 1500 &&
               YAML::Dump(stored["stitching"]["projection_framing"]) ==
                   YAML::Dump(config["stitching"]["projection_framing"]) &&
-              result.value("config_sha256").toString() == digest(read(game / "config.yaml")),
+              result.value("config_sha256").toString() == digest(read(game / "_hockeymon/config.yaml")),
           "Restart must preserve sampling/framing and bind the final staged config");
     }
   }
-  expect(read(source / "config.yaml") == original, "Restart staging changed the immutable selected calibration");
+  expect(
+      read(source / "_hockeymon/config.yaml") == original,
+      "Restart staging changed the immutable selected calibration");
 }
 
 void restart_pending_reset(const QString& binary, const fs::path& source, const QJsonObject& reset) {
-  const auto original = read(source / "config.yaml");
+  const auto original = read(source / "_hockeymon/config.yaml");
   expect(
       reset.value("config_sha256").toString() == digest(original), "Restart fixture must use the exact Reset receipt");
   const auto saved = YAML::Load(original);
@@ -327,8 +331,8 @@ void restart_pending_reset(const QString& binary, const fs::path& source, const 
       config["rink"]["stitched_output_pending_authorization_id"] = "live-transaction";
     if (failure == "reframe")
       state["reframe"]["desired_owner"] = "unrelated-reframe-owner";
-    write(game / "config.yaml", YAML::Dump(config));
-    const auto initial = read(game / "config.yaml");
+    write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "_hockeymon/config.yaml");
     QJsonObject identity{
         {"generation", QJsonValue::Null}, {"config_sha256", failure == "hash" ? QString(64, '0') : digest(initial)}};
     if (failure != "missing-marker")
@@ -347,22 +351,23 @@ void restart_pending_reset(const QString& binary, const fs::path& source, const 
     const auto result = invoke(binary, root, "calibration-controls-stage", payload, failure.empty());
     if (!failure.empty()) {
       expect(
-          read(game / "config.yaml") == initial &&
-              read(game / "mapping_0000.tif") == read(source / "mapping_0000.tif") &&
-              read(game / "left.png") == read(source / "left.png"),
+          read(game / "_hockeymon/config.yaml") == initial &&
+              read(game / "_hockeymon/mapping_0000.tif") == read(source / "_hockeymon/mapping_0000.tif") &&
+              read(game / "_hockeymon/left.png") == read(source / "_hockeymon/left.png"),
           "An unverified pending Reset Restart must preserve the exact config and artifacts");
       continue;
     }
-    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     const auto pending = stored["hstream_ui"]["stitching_calibration"];
     expect(
         result.value("source").toObject() == identity && result.value("pending").toBool() &&
             result.value("start_stage").toString() == "input" && !result.value("alignment_reused").toBool() &&
             result.value("cleanup").toString() == "all" && result.value("cleanup_completed").toBool() &&
             pending["status"].as<std::string>() == "pending" && pending["artifacts_invalidated"].as<bool>() &&
-            !pending["reframe"] && !fs::exists(game / "mapping_0000.tif") && !fs::exists(game / "left.png") &&
+            !pending["reframe"] && !fs::exists(game / "_hockeymon/mapping_0000.tif") &&
+            !fs::exists(game / "_hockeymon/left.png") &&
             result.value("invalidation_id") != reset.value("invalidation_id") &&
-            result.value("config_sha256").toString() == digest(read(game / "config.yaml")),
+            result.value("config_sha256").toString() == digest(read(game / "_hockeymon/config.yaml")),
         "A verified pending Reset Restart must retire its exact owner/reframe and stage a new input solve");
     expect(
         YAML::Dump(stored["stitching"]["projection_framing"]) == YAML::Dump(saved["stitching"]["projection_framing"]) &&
@@ -370,29 +375,29 @@ void restart_pending_reset(const QString& binary, const fs::path& source, const 
                 saved["stitching"]["calibration_frame_count"].as<int>(),
         "Restarting a pending Reset must preserve its accepted framing and sampling choices");
   }
-  expect(read(source / "config.yaml") == original, "Restart changed the selected pending Reset source");
+  expect(read(source / "_hockeymon/config.yaml") == original, "Restart changed the selected pending Reset source");
 }
 
 void clean_stitching(const QString& binary, const fs::path& source) {
-  const auto original = read(source / "config.yaml");
+  const auto original = read(source / "_hockeymon/config.yaml");
   for (const char* kind : {"clean", "hash", "directory-alias", "artifact-alias", "unclaimed-clean", "retired-state"}) {
     QTemporaryDir temporary;
     const fs::path root(temporary.path().toStdString()), game = root / "game";
     fs::copy(source, game, fs::copy_options::recursive);
-    auto config = YAML::LoadFile((game / "config.yaml").string());
+    auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     config["stitching"]["auto_input_lens_frozen"] = true;
     config["hstream_ui"]["show_crop_dialog"] = true;
     config["hstream_ui"]["show_leveling_dialog"] = true;
-    write(game / "config.yaml", YAML::Dump(config));
+    write(game / "_hockeymon/config.yaml", YAML::Dump(config));
     const std::string name(kind);
     const bool rejected = name == "hash" || name == "directory-alias" || name == "artifact-alias";
     if (name == "directory-alias")
       fs::create_directory_symlink(source, game / "cam1");
     if (name == "artifact-alias") {
-      fs::remove(game / "left.png");
-      fs::create_symlink(source / "left.png", game / "left.png");
+      fs::remove(game / "_hockeymon/left.png");
+      fs::create_symlink(source / "_hockeymon/left.png", game / "_hockeymon/left.png");
     }
-    const auto initial = read(game / "config.yaml");
+    const auto initial = read(game / "_hockeymon/config.yaml");
     const auto cleaned = invoke(
         binary,
         root,
@@ -401,16 +406,17 @@ void clean_stitching(const QString& binary, const fs::path& source) {
         !rejected);
     if (rejected) {
       expect(
-          read(game / "config.yaml") == initial && fs::exists(game / "hm_project.pto"),
+          read(game / "_hockeymon/config.yaml") == initial && fs::exists(game / "_hockeymon/hm_project.pto"),
           "Rejected Clean must leave private config and calibration untouched");
       continue;
     }
-    auto stored = YAML::LoadFile((game / "config.yaml").string());
+    auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     expect(
         cleaned.value("cleaned").toBool() &&
-            cleaned.value("config_sha256").toString() == digest(read(game / "config.yaml")) &&
-            !fs::exists(game / "hm_project.pto") && !fs::exists(game / "mapping_0000.tif") &&
-            !fs::exists(game / "stitching_generation_id") && !stored["hstream_ui"]["stitching_calibration"]["status"] &&
+            cleaned.value("config_sha256").toString() == digest(read(game / "_hockeymon/config.yaml")) &&
+            !fs::exists(game / "_hockeymon/hm_project.pto") && !fs::exists(game / "_hockeymon/mapping_0000.tif") &&
+            !fs::exists(game / "_hockeymon/stitching_generation_id") &&
+            !stored["hstream_ui"]["stitching_calibration"]["status"] &&
             stored["stitching"]["auto_input_lens_frozen"].as<bool>() &&
             stored["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 1500 &&
             stored["hstream_ui"]["show_crop_dialog"].as<bool>() &&
@@ -418,9 +424,10 @@ void clean_stitching(const QString& binary, const fs::path& source) {
         "Clean retires the solve while preserving sampling, iteration and frozen optics");
     if (name == "retired-state") {
       stored["rink"]["stitched_output_pending_generation"] = "old-generation";
-      write(game / "config.yaml", YAML::Dump(stored));
+      write(game / "_hockeymon/config.yaml", YAML::Dump(stored));
     }
-    QJsonObject identity{{"generation", QJsonValue::Null}, {"config_sha256", digest(read(game / "config.yaml"))}};
+    QJsonObject identity{
+        {"generation", QJsonValue::Null}, {"config_sha256", digest(read(game / "_hockeymon/config.yaml"))}};
     if (name != "unclaimed-clean")
       identity["cleaned"] = true;
     const auto staged = invoke(
@@ -441,7 +448,7 @@ void clean_stitching(const QString& binary, const fs::path& source) {
           "The next Play after Clean must own a fresh input solve, never reuse old alignment");
   }
   expect(
-      read(source / "config.yaml") == original && fs::exists(source / "hm_project.pto"),
+      read(source / "_hockeymon/config.yaml") == original && fs::exists(source / "_hockeymon/hm_project.pto"),
       "Cleaning private descendants must never change the historical source");
 }
 
@@ -498,21 +505,21 @@ void fresh_controls_staging(const QString& binary) {
     }
     if (failure == "state")
       config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
-    write(game / "config.yaml", YAML::Dump(config));
-    const auto initial = read(game / "config.yaml");
+    write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "_hockeymon/config.yaml");
     QJsonObject source{{"fresh", true}, {"generation", QJsonValue::Null}, {"config_sha256", digest(initial)}};
     if (failure == "hash")
       source["config_sha256"] = QString(64, '0');
     if (failure == "generation")
       source["generation"] = "claimed-old-generation";
     if (failure == "artifact")
-      write(game / "s.png", "prior saved still");
+      write(game / "_hockeymon/s.png", "prior saved still");
     if (failure == "journal")
       write(game / ".hstream-stitch-journal-v1", "prior transaction");
     if (failure == "directory-alias")
       fs::create_directory_symlink(root, game / "previous");
     if (failure == "artifact-alias")
-      fs::create_symlink(root / "left.mp4", game / "s.png");
+      fs::create_symlink(root / "left.mp4", game / "_hockeymon/s.png");
     if (failure == "unauthorized")
       authorized.removeLast();
     if (failure == "source-role") {
@@ -538,10 +545,11 @@ void fresh_controls_staging(const QString& binary) {
         {"sources", rows}};
     const auto staged = invoke(binary, root, "calibration-controls-stage", payload, success, authorized);
     if (!success) {
-      expect(read(game / "config.yaml") == initial, "Rejected fresh staging must not change admitted config");
+      expect(
+          read(game / "_hockeymon/config.yaml") == initial, "Rejected fresh staging must not change admitted config");
       continue;
     }
-    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     expect(
         staged.value("pending").toBool() && staged.value("start_stage").toString() == "input" &&
             !staged.value("alignment_reused").toBool() && staged.value("cleanup_completed").toBool(),
@@ -575,7 +583,7 @@ void fresh_controls_staging(const QString& binary) {
 }
 
 void controls_staging(const QString& binary, const fs::path& source) {
-  const auto original = read(source / "config.yaml");
+  const auto original = read(source / "_hockeymon/config.yaml");
   for (const char* kind :
        {"unchanged",
         "width-alias",
@@ -623,20 +631,20 @@ void controls_staging(const QString& binary, const fs::path& source) {
       stitching["calibration_frame_count"] = 3;
     desired["stitching"] = stitching;
     if (name == "width-alias") {
-      auto config = YAML::LoadFile((game / "config.yaml").string());
+      auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       config["stitching"].remove("max_output_width");
       config["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 1280;
-      write(game / "config.yaml", YAML::Dump(config));
-      auto canvas_provenance = read(game / "stitching_canvas_provenance");
+      write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+      auto canvas_provenance = read(game / "_hockeymon/stitching_canvas_provenance");
       const std::string saved_limit = "max-output-width=0\n";
       const auto limit = canvas_provenance.find(saved_limit);
       expect(limit != std::string::npos, "Width-alias fixture needs published canvas provenance");
       canvas_provenance.replace(limit, saved_limit.size(), "max-output-width=1280\n");
-      write(game / "stitching_canvas_provenance", canvas_provenance);
+      write(game / "_hockeymon/stitching_canvas_provenance", canvas_provenance);
     }
     QJsonArray authorized;
     if (name == "roles") {
-      auto config = YAML::LoadFile((game / "config.yaml").string());
+      auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       for (const char* role : {"left", "right"}) {
         const auto media = root / (std::string(role) + ".mp4");
         write(media, "immutable media fixture");
@@ -650,9 +658,9 @@ void controls_staging(const QString& binary, const fs::path& source) {
       config["stitching"]["camera_automation"]["fov"] = false;
       config["stitching"]["camera_automation"]["lens"] = false;
       config["rink"]["mask_frame"]["input_id"] = std::string(64, 'a');
-      write(game / "config.yaml", YAML::Dump(config));
-      fs::create_directories(game / "rink-mask-input" / "historical");
-      write(game / "rink-mask-input" / "historical" / "manifest.yaml", "historical source provenance");
+      write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+      fs::create_directories(game / "_hockeymon/rink-mask-input" / "historical");
+      write(game / "_hockeymon/rink-mask-input" / "historical" / "manifest.yaml", "historical source provenance");
     }
     auto payload = controls_payload(game, before, desired);
     if (name == "roles") {
@@ -669,7 +677,7 @@ void controls_staging(const QString& binary, const fs::path& source) {
       }
       payload["sources"] = roles;
     }
-    const auto initial = read(game / "config.yaml");
+    const auto initial = read(game / "_hockeymon/config.yaml");
     if (name == "hash") {
       auto identity = payload.value("source").toObject();
       identity["config_sha256"] = QString(64, '0');
@@ -688,7 +696,8 @@ void controls_staging(const QString& binary, const fs::path& source) {
           cancelled = std::string(error.what()).find("cancelled") != std::string::npos;
         }
         expect(
-            cancelled && read(game / "config.yaml") == initial && fs::exists(game / "mapping_0000.tif"),
+            cancelled && read(game / "_hockeymon/config.yaml") == initial &&
+                fs::exists(game / "_hockeymon/mapping_0000.tif"),
             "Cancellation before native commit must preserve the exact private source");
       }
       continue;
@@ -703,11 +712,12 @@ void controls_staging(const QString& binary, const fs::path& source) {
       } catch (const std::exception& error) {
         cancelled = std::string(error.what()).find("cancelled") != std::string::npos;
       }
-      const auto state = YAML::LoadFile((game / "config.yaml").string())["hstream_ui"]["stitching_calibration"];
+      const auto state =
+          YAML::LoadFile((game / "_hockeymon/config.yaml").string())["hstream_ui"]["stitching_calibration"];
       expect(
           cancelled && state["status"].as<std::string>() == "pending" &&
               state["stale_from"].as<std::string>() == "features" && !state["artifacts_invalidated"].as<bool>() &&
-              fs::exists(game / "mapping_0000.tif") != cleaned && fs::exists(game / "left.png"),
+              fs::exists(game / "_hockeymon/mapping_0000.tif") != cleaned && fs::exists(game / "_hockeymon/left.png"),
           "Postcommit cancellation must leave an incomplete private workspace without a completion receipt");
       continue;
     }
@@ -715,15 +725,15 @@ void controls_staging(const QString& binary, const fs::path& source) {
     const auto result = invoke(binary, root, "calibration-controls-stage", payload, success, authorized);
     if (!success) {
       expect(
-          read(game / "config.yaml") == initial && fs::exists(game / "mapping_0000.tif"),
+          read(game / "_hockeymon/config.yaml") == initial && fs::exists(game / "_hockeymon/mapping_0000.tif"),
           "Rejected staging must preserve config and calibration artifacts");
       continue;
     }
-    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     expect(
         result.value("staged").toBool() && result.value("cleanup_completed").toBool() &&
             result.value("source") == payload.value("source") &&
-            result.value("config_sha256").toString() == digest(read(game / "config.yaml")) &&
+            result.value("config_sha256").toString() == digest(read(game / "_hockeymon/config.yaml")) &&
             result.value("invalidation_id").toString().toStdString() ==
                 stored["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>(),
         "Native controls receipt must bind original source, new owner and exact final config bytes");
@@ -741,19 +751,20 @@ void controls_staging(const QString& binary, const fs::path& source) {
     expect(
         result.value("start_stage").toString() == stage, "Native controls adapter chose a different dependency stage");
     expect(
-        fs::exists(game / "mapping_0000.tif") == (unchanged || reframe),
+        fs::exists(game / "_hockeymon/mapping_0000.tif") == (unchanged || reframe),
         "Native cleanup retained the wrong mapping generation");
     expect(
-        fs::exists(game / "left.png") == (unchanged || reframe || name == "budget"),
+        fs::exists(game / "_hockeymon/left.png") == (unchanged || reframe || name == "budget"),
         "Native cleanup lost or retained the wrong original frames");
     if (reframe) {
       auto launch = YAML::Clone(stored);
       launch["hstream_ui"]["stitching_calibration"]["reframe"]["desired_view"]["projection_framing"]["crop"] =
           YAML::Load("[0.1, 0.9, 0.1, 0.9]");
-      write(game / "config.yaml", YAML::Dump(launch));
+      write(game / "_hockeymon/config.yaml", YAML::Dump(launch));
       auto artifact_lock = value(lock_canvas_constraint_artifacts(game));
       auto config_lock = value(GameConfigTransactionLock::Acquire(game));
-      const auto playback = ValidateStitchingReframeIntentLocked(game, YAML::LoadFile((game / "config.yaml").string()));
+      const auto playback =
+          ValidateStitchingReframeIntentLocked(game, YAML::LoadFile((game / "_hockeymon/config.yaml").string()));
       expect(
           playback.ok(), "Native playback must consume staged intent after outer launch YAML shortens numeric scalars");
     }
@@ -761,10 +772,12 @@ void controls_staging(const QString& binary, const fs::path& source) {
       expect(
           stored["game"]["videos"]["left"][0].as<std::string>() == "media/right.mp4" &&
               (!stored["rink"]["mask_frame"] || !stored["rink"]["mask_frame"]["input_id"]) &&
-              read(game / "rink-mask-input" / "historical" / "manifest.yaml") == "historical source provenance",
+              read(game / "_hockeymon/rink-mask-input" / "historical" / "manifest.yaml") ==
+                  "historical source provenance",
           "Role staging must rebind private playlists without rewriting historical source provenance");
   }
-  expect(read(source / "config.yaml") == original, "Draft staging changed the immutable selected calibration");
+  expect(
+      read(source / "_hockeymon/config.yaml") == original, "Draft staging changed the immutable selected calibration");
 }
 
 void frozen_optics_staging(const QString& binary, const fs::path& source) {
@@ -773,7 +786,7 @@ void frozen_optics_staging(const QString& binary, const fs::path& source) {
       QTemporaryDir temporary;
       const fs::path root(temporary.path().toStdString()), game = root / "game";
       fs::copy(source, game, fs::copy_options::recursive);
-      auto config = YAML::LoadFile((game / "config.yaml").string());
+      auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       auto camera = value(read_stitch_camera_selection(config));
       camera.auto_fov = false;
       camera.auto_lens = true;
@@ -791,7 +804,7 @@ void frozen_optics_staging(const QString& binary, const fs::path& source) {
       }
       config["hstream_ui"]["stitching_calibration"].remove("backend_generation");
       require(reserve_stitching_backend_generation_in_config(config, "completed-solve", choices(config)));
-      write(game / "config.yaml", YAML::Dump(config));
+      write(game / "_hockeymon/config.yaml", YAML::Dump(config));
       QJsonObject before{
           {"stitching",
            QJsonObject{
@@ -810,13 +823,15 @@ void frozen_optics_staging(const QString& binary, const fs::path& source) {
             binary,
             root,
             "calibration-clean",
-            {{"config_sha256", digest(read(game / "config.yaml"))},
+            {{"config_sha256", digest(read(game / "_hockeymon/config.yaml"))},
              {"before_controls", before},
              {"desired_controls", desired}},
             true,
             authorized);
         payload["source"] = QJsonObject{
-            {"generation", QJsonValue::Null}, {"cleaned", true}, {"config_sha256", digest(read(game / "config.yaml"))}};
+            {"generation", QJsonValue::Null},
+            {"cleaned", true},
+            {"config_sha256", digest(read(game / "_hockeymon/config.yaml"))}};
         payload["before_controls"] = desired;
       }
       const auto staged = invoke(binary, root, "calibration-controls-stage", payload, true, authorized);
@@ -824,7 +839,7 @@ void frozen_optics_staging(const QString& binary, const fs::path& source) {
         expect(
             staged.value("start_stage").toString() == "input" && !staged.value("alignment_reused").toBool(),
             "Cleaned optics staging must restart at input after retiring its saved alignment");
-      const auto stored = YAML::LoadFile((game / "config.yaml").string());
+      const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
       const auto result = value(read_stitch_camera_selection(stored));
       expect(
           stored["stitching"]["auto_input_lens_frozen"].as<bool>() != release,
@@ -856,7 +871,7 @@ void controls_staging_regressions(const QString& binary, const fs::path& source)
     QTemporaryDir temporary;
     const fs::path root(temporary.path().toStdString()), game = root / "game";
     fs::copy(source, game, fs::copy_options::recursive);
-    auto config = YAML::LoadFile((game / "config.yaml").string());
+    auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     QJsonObject before, desired;
     if (name == "legacy-count") {
       config["stitching"].remove("calibration_frame_count");
@@ -910,22 +925,22 @@ void controls_staging_regressions(const QString& binary, const fs::path& source)
       desired["stitching"] = QJsonObject{
           {"sync_method", "imu"}, {"projection_framing", QJsonObject{{"crop", QJsonArray{0.1, 0.9, 0.1, 0.9}}}}};
     }
-    write(game / "config.yaml", YAML::Dump(config));
-    write(game / "rink_mask_0.png", "old mask artifact");
+    write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    write(game / "_hockeymon/rink_mask_0.png", "old mask artifact");
     auto payload = controls_payload(game, before, desired);
     if (name == "angles-null-default")
       payload["defaults"] =
           QJsonObject{{"rink", QJsonObject{{"camera", QJsonObject{{"fixed_edge_rotation_angle", QJsonValue::Null}}}}}};
-    const auto original = read(game / "config.yaml");
+    const auto original = read(game / "_hockeymon/config.yaml");
     const bool rejected = name == "split-angles" || name == "unsupported-mask-time";
     const auto result = invoke(binary, root, "calibration-controls-stage", payload, !rejected);
     if (rejected) {
       expect(
-          read(game / "config.yaml") == original && fs::exists(game / "rink_mask_0.png"),
+          read(game / "_hockeymon/config.yaml") == original && fs::exists(game / "_hockeymon/rink_mask_0.png"),
           "Unsupported calibration spellings must fail before changing private config or artifacts");
       continue;
     }
-    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     expect(
         result.value("pending").toBool() == (name == "sync-view") && !result.value("alignment_reused").toBool(),
         "Only synchronization plus view edits in this matrix should restart calibration");
@@ -933,12 +948,12 @@ void controls_staging_regressions(const QString& binary, const fs::path& source)
       expect(
           stored["stitching"]["calibration_frame_count"].as<int>() == 2 &&
               stored["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 2 &&
-              fs::exists(game / "left.png") && fs::exists(game / "mapping_0000.tif"),
+              fs::exists(game / "_hockeymon/left.png") && fs::exists(game / "_hockeymon/mapping_0000.tif"),
           "Unchanged legacy completed count must retain its actual two inputs and maps");
     if (name == "mask-time" || name == "generated-mask-time")
       expect(
           value(read_rink_mask_frame_time(stored)) == "00:01:00" && result.value("output_changed").toBool() &&
-              fs::exists(game / "mapping_0000.tif") && !fs::exists(game / "rink_mask_0.png"),
+              fs::exists(game / "_hockeymon/mapping_0000.tif") && !fs::exists(game / "_hockeymon/rink_mask_0.png"),
           "Canonical mask time and inherited rink edits must select the new time and retire only output artifacts");
     if (name == "angles")
       expect(
@@ -965,18 +980,18 @@ void controls_staging_regressions(const QString& binary, const fs::path& source)
               YAML::Dump(stored["stitching"]["projection_framing"]) ==
                   YAML::Dump(config["stitching"]["projection_framing"]) &&
               stored["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 2 &&
-              fs::exists(game / "mapping_0000.tif") && fs::exists(game / "left.png"),
+              fs::exists(game / "_hockeymon/mapping_0000.tif") && fs::exists(game / "_hockeymon/left.png"),
           "Sparse control group additions and removals must preserve unmentioned saved geometry and inputs");
     }
     if (name == "sync-view")
       expect(
           result.value("start_stage").toString() == "input" && result.value("cleanup").toString() == "all" &&
-              !fs::exists(game / "mapping_0000.tif") && !fs::exists(game / "left.png"),
+              !fs::exists(game / "_hockeymon/mapping_0000.tif") && !fs::exists(game / "_hockeymon/left.png"),
           "Changed synchronization cannot reuse the saved alignment for a simultaneous crop edit");
   }
 }
 void saved_view_controls_staging(const QString& binary, const fs::path& source) {
-  const auto original = read(source / "config.yaml");
+  const auto original = read(source / "_hockeymon/config.yaml");
   const auto saved = YAML::Load(original);
   expect(
       saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
@@ -1017,7 +1032,7 @@ void saved_view_controls_staging(const QString& binary, const fs::path& source) 
         {"sources", QJsonArray{}}};
     if (name == "present" || name == "null-for-present") {
       payload = controls_payload(game, {}, {});
-      config = YAML::LoadFile((game / "config.yaml").string());
+      config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     }
     auto identity = payload.value("source").toObject();
     if (name == "null-for-present")
@@ -1058,31 +1073,32 @@ void saved_view_controls_staging(const QString& binary, const fs::path& source) 
       identity["generation"] = QString::fromStdString(stale);
     }
     if (name == "missing-map")
-      fs::remove(game / "mapping_0000.tif");
+      fs::remove(game / "_hockeymon/mapping_0000.tif");
     if (name == "malformed-hugin")
-      write(game / "stitching_generation_id", "not-a-generation");
-    write(game / "config.yaml", YAML::Dump(config));
-    const auto initial = read(game / "config.yaml");
+      write(game / "_hockeymon/stitching_generation_id", "not-a-generation");
+    write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "_hockeymon/config.yaml");
     identity["config_sha256"] = name == "hash" ? QString(64, '0') : digest(initial);
     payload["source"] = identity;
     const bool success = name == "absent" || name == "null" || name == "legacy-no-claim" || name == "present";
     const auto result = invoke(binary, root, "calibration-controls-stage", payload, success);
     if (!success) {
       expect(
-          read(game / "config.yaml") == initial, "Rejected saved-view staging must preserve the exact source config");
+          read(game / "_hockeymon/config.yaml") == initial,
+          "Rejected saved-view staging must preserve the exact source config");
       continue;
     }
-    const auto staged = YAML::LoadFile((game / "config.yaml").string());
+    const auto staged = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     expect(
         result.value("source").toObject() == identity && !result.value("pending").toBool() &&
             result.value("cleanup").toString() == "none" && result.value("cleanup_completed").toBool() &&
-            result.value("config_sha256").toString() == digest(read(game / "config.yaml")) &&
+            result.value("config_sha256").toString() == digest(read(game / "_hockeymon/config.yaml")) &&
             !result.value("invalidation_id").toString().isEmpty() &&
             result.value("invalidation_id").toString().toStdString() !=
                 config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() &&
             result.value("invalidation_id").toString().toStdString() ==
                 staged["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() &&
-            read(game / "mapping_0000.tif") == read(source / "mapping_0000.tif"),
+            read(game / "_hockeymon/mapping_0000.tif") == read(source / "_hockeymon/mapping_0000.tif"),
         "Saved-view no-op staging must bind exact nullable identity and a fresh owner without discarding alignment");
     expect(
         YAML::Dump(staged["stitching"]["projection_framing"]) == YAML::Dump(config["stitching"]["projection_framing"]),
@@ -1092,10 +1108,10 @@ void saved_view_controls_staging(const QString& binary, const fs::path& source) 
           !staged["rink"]["stitched_output_generation"] || staged["rink"]["stitched_output_generation"].IsNull(),
           "Staging cannot fabricate a rendered-output identity for a saved view");
   }
-  expect(read(source / "config.yaml") == original, "Staging checks changed the saved-crop source");
+  expect(read(source / "_hockeymon/config.yaml") == original, "Staging checks changed the saved-crop source");
 }
 void sparse_controls_changed_defaults(const QString& binary, const fs::path& source) {
-  const auto original = read(source / "config.yaml");
+  const auto original = read(source / "_hockeymon/config.yaml");
   const auto source_config = YAML::Load(original);
   expect(
       !source_config["stitching"]["camera_fov"] && !source_config["stitching"]["input_lens"] &&
@@ -1127,8 +1143,8 @@ void sparse_controls_changed_defaults(const QString& binary, const fs::path& sou
       config["stitching"]["camera_fov"]["horizontal_fov"] = 112;
     if (name == "wrong-owner")
       state["backend_generation"]["invalidation_id"] = "unrelated-owner";
-    write(game / "config.yaml", YAML::Dump(config));
-    const auto initial = read(game / "config.yaml");
+    write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    const auto initial = read(game / "_hockeymon/config.yaml");
     const QJsonObject payload{
         {"version", 1},
         {"source", QJsonObject{{"generation", QJsonValue::Null}, {"config_sha256", digest(initial)}}},
@@ -1139,10 +1155,12 @@ void sparse_controls_changed_defaults(const QString& binary, const fs::path& sou
     const bool success = name == "changed-defaults";
     const auto result = invoke(binary, root, "calibration-controls-stage", payload, success);
     if (!success) {
-      expect(read(game / "config.yaml") == initial, "Conflicting old optics or claims must fail before staging");
+      expect(
+          read(game / "_hockeymon/config.yaml") == initial,
+          "Conflicting old optics or claims must fail before staging");
       continue;
     }
-    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     const auto camera = value(read_stitch_camera_selection(stored));
     expect(
         result.value("source") == payload.value("source") && result.value("pending").toBool() &&
@@ -1153,7 +1171,7 @@ void sparse_controls_changed_defaults(const QString& binary, const fs::path& sou
                 YAML::Dump(config["stitching"]["projection_framing"]),
         "New Defaults must change desired optics without corrupting the source claim or replacing saved framing");
   }
-  expect(read(source / "config.yaml") == original, "Defaults staging changed the completed sparse source");
+  expect(read(source / "_hockeymon/config.yaml") == original, "Defaults staging changed the completed sparse source");
 }
 void sparse_still_defaults(const QString& binary) {
   QTemporaryDir temporary;
@@ -1173,9 +1191,9 @@ void sparse_still_defaults(const QString& binary) {
   sparse["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "sparse-still";
   sparse["hstream_ui"]["stitching_calibration"].remove("stale_from");
   require(reserve_stitching_backend_generation_in_config(sparse, "sparse-still", choices(effective)));
-  write(game / "config.yaml", YAML::Dump(sparse));
+  write(game / "_hockeymon/config.yaml", YAML::Dump(sparse));
   expect(
-      cv::imwrite((game / "s.png").string(), cv::Mat(32, 64, CV_8UC3, cv::Scalar(3, 2, 1))),
+      cv::imwrite((game / "_hockeymon/s.png").string(), cv::Mat(32, 64, CV_8UC3, cv::Scalar(3, 2, 1))),
       "Cannot write sparse still");
   // With no embedded catalog or optics this resolves 108/90 and the fixed
   // fisheye profile, rather than the historical 127.2/95/no-lens fallbacks.
@@ -1183,7 +1201,7 @@ void sparse_still_defaults(const QString& binary) {
     return invoke(binary, root, "calibration-complete", {{"invalidation_id", "sparse-still"}});
   };
   expect(
-      complete().value("preview").toString() == "game/setup-preview.png",
+      complete().value("preview").toString() == "game/_hockeymon/setup-preview.png",
       "Sparse modern completion must inherit baseline camera optics");
   expect(fs::is_empty(home), "Read-only completion must not create user preferences");
   sparse_controls_changed_defaults(binary, game);
@@ -1198,13 +1216,13 @@ void sparse_still_defaults(const QString& binary) {
   write_stitch_camera_selection(sparse, value(read_stitch_camera_selection(effective)));
   sparse["hstream_ui"]["stitching_calibration"].remove("backend_generation");
   require(reserve_stitching_backend_generation_in_config(sparse, "sparse-still", choices(effective)));
-  write(game / "config.yaml", YAML::Dump(sparse));
+  write(game / "_hockeymon/config.yaml", YAML::Dump(sparse));
   const auto defaults = home / ".config/hstream-ui/defaults.yaml";
   fs::create_directories(defaults.parent_path());
   write(defaults, YAML::Dump(user));
   const auto before = read(defaults);
   expect(
-      complete().value("preview").toString() == "game/setup-preview.png",
+      complete().value("preview").toString() == "game/_hockeymon/setup-preview.png",
       "Completion must honor frozen private user camera defaults");
   expect(
       read(defaults) == before && !fs::exists(home / ".hstream"),
@@ -1213,10 +1231,10 @@ void sparse_still_defaults(const QString& binary) {
   user["stitching"]["input_lens"]["optimization"] = "refine";
   write(defaults, YAML::Dump(user));
   expect(
-      complete().value("preview").toString() == "game/setup-preview.png",
+      complete().value("preview").toString() == "game/_hockeymon/setup-preview.png",
       "Later Defaults changes must not override explicit frozen game optics");
   sparse["stitching"]["camera_fov"]["horizontal_fov"] = 114;
-  write(game / "config.yaml", YAML::Dump(sparse));
+  write(game / "_hockeymon/config.yaml", YAML::Dump(sparse));
   invoke(binary, root, "calibration-complete", {{"invalidation_id", "sparse-still"}}, false);
   qputenv("HOME", original_home);
 }
@@ -1234,13 +1252,60 @@ int main(int argc, char** argv) {
     const fs::path root(temporary.path().toStdString()), game = root / "game";
     auto config = fixture(game);
     QProcess normalize;
-    normalize.setWorkingDirectory(QString::fromStdString(game.string()));
+    normalize.setWorkingDirectory(QString::fromStdString((game / "_hockeymon").string()));
     normalize.start("pano_modify", {"--rotate=0,-15,3", "--output=canonical.pto", "autooptimiser_out.pto"});
     expect(normalize.waitForFinished(30000) && normalize.exitCode() == 0, "Cannot prepare canonical real-Hugin source");
-    fs::copy_file(game / "canonical.pto", game / "autooptimiser_out.pto", fs::copy_options::overwrite_existing);
-    fs::copy_file(game / "canonical.pto", game / "hm_project.pto", fs::copy_options::overwrite_existing);
+    fs::copy_file(
+        game / "_hockeymon/canonical.pto",
+        game / "_hockeymon/autooptimiser_out.pto",
+        fs::copy_options::overwrite_existing);
+    fs::copy_file(
+        game / "_hockeymon/canonical.pto", game / "_hockeymon/hm_project.pto", fs::copy_options::overwrite_existing);
     provenance(game);
-    write(game / "config.yaml", YAML::Dump(config));
+    write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    {
+      QTemporaryDir absolute_temporary;
+      const fs::path absolute_root(absolute_temporary.path().toStdString()), absolute_game = absolute_root / "game";
+      fs::copy(game, absolute_game, fs::copy_options::recursive);
+      for (const char* project_name : {"hm_project.pto", "autooptimiser_out.pto"}) {
+        const auto path = absolute_game / "_hockeymon" / project_name;
+        auto project = QString::fromStdString(read(path));
+        for (const char* image : {"left.png", "right.png"}) {
+          const QString original = QString("n\"%1\"").arg(image);
+          expect(project.contains(original), "Absolute-image regression requires relative source images");
+          project.replace(
+              original,
+              QString("n\"%1\"").arg(QString::fromStdString((absolute_game / "_hockeymon" / image).string())));
+        }
+        write(path, project.toStdString());
+      }
+      const auto original_project = read(absolute_game / "_hockeymon/autooptimiser_out.pto");
+      invoke(argv[1], absolute_root, "calibration-view-read", {{"kind", "crop"}});
+      const auto absolute_view = invoke(argv[1], absolute_root, "calibration-view-read", {{"kind", "leveling"}});
+      QJsonArray cameras;
+      for (int camera = 0; camera < 2; ++camera) {
+        QJsonArray points;
+        for (int x : {128, 256, 384}) {
+          points.append(QJsonArray{x, 64});
+          points.append(QJsonArray{x, 192});
+        }
+        cameras.append(points);
+      }
+      const auto estimated = invoke(
+          argv[1],
+          absolute_root,
+          "calibration-view-estimate",
+          {{"kind", "leveling"},
+           {"snapshot", absolute_view.value("snapshot")},
+           {"angles", QJsonArray{0, 0, 0}},
+           {"method", "posts"},
+           {"points", cameras}});
+      const auto angles = estimated.value("angles").toArray();
+      expect(
+          angles.size() == 3 && std::abs(angles[1].toDouble()) < 1e-4 && std::abs(angles[2].toDouble()) < 1e-4 &&
+              read(absolute_game / "_hockeymon/autooptimiser_out.pto") == original_project,
+          "Saved editors must localize absolute private image paths without changing the saved project");
+    }
     {
       QTemporaryDir start_temporary;
       const fs::path start_root(start_temporary.path().toStdString()), start_game = start_root / "game";
@@ -1249,14 +1314,14 @@ int main(int argc, char** argv) {
       with_start["stitching"]["input_start_times"]["right.mp4"] = 102;
       with_start["hstream_ui"]["stitching_calibration"].remove("backend_generation");
       require(reserve_stitching_backend_generation_in_config(with_start, "completed-solve", choices(with_start)));
-      write(start_game / "config.yaml", YAML::Dump(with_start));
+      write(start_game / "_hockeymon/config.yaml", YAML::Dump(with_start));
       const auto opened_start = invoke(argv[1], start_root, "calibration-view-read", {{"kind", "leveling"}});
       QJsonObject selected_start{
           {"kind", "leveling"}, {"snapshot", opened_start.value("snapshot")}, {"angles", QJsonArray{0, -20, 4}}};
       invoke(argv[1], start_root, "calibration-view-preview", selected_start);
       selected_start.insert("preview_verified", true);
       const auto saved_start = invoke(argv[1], start_root, "calibration-view-save", selected_start);
-      const auto stored_start = YAML::LoadFile((start_game / "config.yaml").string());
+      const auto stored_start = YAML::LoadFile((start_game / "_hockeymon/config.yaml").string());
       expect(
           saved_start.value("alignment_reused").toBool() && saved_start.value("calibration_complete").toBool() &&
               value(read_stitch_camera_selection(stored_start)).input_start_times.at("right.mp4") == 102 &&
@@ -1274,7 +1339,7 @@ int main(int argc, char** argv) {
     // Reset only stages configuration. The selected source and its optimized
     // camera alignment remain unchanged until Save Preset and the next run.
     const auto source_bytes = [&] {
-      std::ifstream input(game / "config.yaml");
+      std::ifstream input(game / "_hockeymon/config.yaml");
       return std::string(std::istreambuf_iterator<char>(input), {});
     }();
     const QJsonObject optics{
@@ -1297,11 +1362,11 @@ int main(int argc, char** argv) {
       opencv["stitching"]["run_autooptimizer"] = false;
       opencv["hstream_ui"]["stitching_calibration"].remove("backend_generation");
       require(reserve_stitching_backend_generation_in_config(opencv, "completed-solve", choices(opencv)));
-      write(reset_game / "config.yaml", YAML::Dump(opencv));
+      write(reset_game / "_hockeymon/config.yaml", YAML::Dump(opencv));
       // OpenCV's completed maps do not provide a NONA optimized project or
       // Hugin canvas provenance. Its saved image editors must still reject it.
       for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
-        fs::remove(reset_game / name);
+        fs::remove(reset_game / "_hockeymon" / name);
       for (const char* kind : {"leveling", "crop"})
         invoke(argv[1], reset_root, "calibration-view-read", {{"kind", kind}}, false);
       auto controls = optics;
@@ -1315,7 +1380,7 @@ int main(int argc, char** argv) {
           {"settings_changed", true},
           {"output_changed", false}};
       const auto reset = invoke(argv[1], reset_root, "calibration-view-reset", payload);
-      const auto stored = YAML::LoadFile((reset_game / "config.yaml").string());
+      const auto stored = YAML::LoadFile((reset_game / "_hockeymon/config.yaml").string());
       const auto state = stored["hstream_ui"]["stitching_calibration"];
       expect(
           reset.value("changed").toBool() && reset.value("pending").toBool() &&
@@ -1332,7 +1397,7 @@ int main(int argc, char** argv) {
       const auto pending_bytes = YAML::Dump(stored);
       invoke(argv[1], reset_root, "calibration-view-reset", payload, false);
       expect(
-          YAML::Dump(YAML::LoadFile((reset_game / "config.yaml").string())) == pending_bytes,
+          YAML::Dump(YAML::LoadFile((reset_game / "_hockeymon/config.yaml").string())) == pending_bytes,
           "Config-only Reset inspection must still reject an unfinished calibration without changing it");
     }
     for (bool solver_changed : {false, true}) {
@@ -1365,7 +1430,7 @@ int main(int argc, char** argv) {
           reset.value("rink_config").toString() == "sharks-ice" &&
               reset.value("rink_profiles").toObject().value("sharks-ice").toBool(),
           "Reset carries native rink ownership for dormant browser fixed-edge controls");
-      const auto reset_config = YAML::LoadFile((reset_root / "game/config.yaml").string());
+      const auto reset_config = YAML::LoadFile((reset_root / "game/_hockeymon/config.yaml").string());
       const auto state = reset_config["hstream_ui"]["stitching_calibration"];
       expect(
           reset_config["stitching"]["projection_framing"]["rotation_degrees"].IsNull(),
@@ -1407,7 +1472,7 @@ int main(int argc, char** argv) {
           "Identical default framing does not invalidate or adopt a new calibration");
     }
     const auto unchanged_bytes = [&] {
-      std::ifstream input(game / "config.yaml");
+      std::ifstream input(game / "_hockeymon/config.yaml");
       return std::string(std::istreambuf_iterator<char>(input), {});
     }();
     expect(source_bytes == unchanged_bytes, "Staging or cancelling Reset must preserve the selected source bytes");
@@ -1453,7 +1518,7 @@ int main(int argc, char** argv) {
         saved.value("saved").toBool() && saved.value("calibration_complete").toBool() &&
             saved.value("alignment_reused").toBool(),
         "Save must reuse and publish the saved alignment");
-    const auto stored = YAML::LoadFile((game / "config.yaml").string());
+    const auto stored = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     expect(
         value(read_stitch_projection_framing(stored)).rotation_degrees == std::array<double, 3>{0, -20, 4},
         "Selected rotation must be published");
@@ -1475,10 +1540,10 @@ int main(int argc, char** argv) {
     }();
     const std::string output = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin.size()) + "\n" +
         hugin + "post-stitch-rotate-degrees:0\noutput-size:64x32\n";
-    auto output_config = YAML::LoadFile((game / "config.yaml").string());
+    auto output_config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     output_config["rink"]["stitched_output_generation"] = output;
     output_config["rink"]["stitched_output_persisted_rotation_degrees"] = 0.0;
-    write(game / "config.yaml", YAML::Dump(output_config));
+    write(game / "_hockeymon/config.yaml", YAML::Dump(output_config));
     const auto rotation = invoke(
         argv[1],
         root,
@@ -1486,8 +1551,8 @@ int main(int argc, char** argv) {
         {{"source_generation", QString::fromStdString(output)}, {"post_stitch_rotate_degrees", 7.0}});
     expect(
         rotation.value("changed").toBool() && rotation.value("hugin_generation").toString().toStdString() == hugin &&
-            YAML::LoadFile((game / "config.yaml").string())["stitching"]["post_stitch_rotate_degrees"].as<double>() ==
-                7.0,
+            YAML::LoadFile((game / "_hockeymon/config.yaml").string())["stitching"]["post_stitch_rotate_degrees"]
+                    .as<double>() == 7.0,
         "Private rotation staging must preserve exact Hugin input and publish checked artifact receipts");
     invoke(
         argv[1],

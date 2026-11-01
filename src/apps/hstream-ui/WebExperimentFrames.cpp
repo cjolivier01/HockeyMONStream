@@ -6,8 +6,8 @@
 
 #include <yaml-cpp/yaml.h>
 
-#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 
 namespace hm::web {
 namespace {
@@ -51,7 +51,7 @@ StitchingExperimentPlayerSelection ScanExperimentFrames(
     const auto lock = hm::stitching::GameConfigTransactionLock::Acquire(baseline.game_directory);
     if (!lock.ok())
       throw std::runtime_error(lock.status().ToString());
-    auto document = YAML::LoadFile((baseline.game_directory / "config.yaml").string());
+    auto document = YAML::LoadFile((baseline.game_directory / "_hockeymon/config.yaml").string());
     YAML::Node arguments(YAML::NodeType::Sequence);
     for (const auto& argument : std::vector<std::string>{
              "--enable-sinks=FAKE",

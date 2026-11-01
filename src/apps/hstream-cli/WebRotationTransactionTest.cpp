@@ -65,8 +65,8 @@ absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path&
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
     std::ofstream(root / name) << name << '\n';
   }
-  if (!write_mapping_tiff(root / "mapping_0000.tif", 64, 32, 0.0f) ||
-      !write_mapping_tiff(root / "mapping_0001.tif", 64, 32, 32.0f)) {
+  if (!write_mapping_tiff(root / "_hockeymon/mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(root / "_hockeymon/mapping_0001.tif", 64, 32, 32.0f)) {
     return absl::InternalError("Unable to write mapping TIFF fixtures");
   }
   const cv::Mat remap(32, 64, CV_16U, cv::Scalar(0));
@@ -81,7 +81,7 @@ absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path&
   }
   cv::Mat seam(32, 96, CV_8U, cv::Scalar(0));
   seam.colRange(48, seam.cols).setTo(255);
-  if (!cv::imwrite((root / "seam_file.png").string(), seam))
+  if (!cv::imwrite((root / "_hockeymon/seam_file.png").string(), seam))
     return absl::InternalError("Unable to write seam fixture");
   auto lock = hm::stitching::lock_canvas_constraint_artifacts(root);
   if (!lock.ok())
@@ -102,9 +102,9 @@ int main() {
     return 1;
   const std::string generation = "hstream-stitched-output-v1\nhugin-bytes:" + std::to_string(hugin->size()) + "\n" +
       *hugin + "post-stitch-rotate-degrees:0\noutput-size:320x180\n";
-  const auto reset = [&]() { write_config(root / "config.yaml", generation); };
+  const auto reset = [&]() { write_config(root / "_hockeymon/config.yaml", generation); };
   const auto pending = [&]() {
-    const auto config = YAML::LoadFile((root / "config.yaml").string());
+    const auto config = YAML::LoadFile((root / "_hockeymon/config.yaml").string());
     const auto value = config["rink"]["stitched_output_pending_authorization_id"];
     return value && value.IsScalar() ? value.as<std::string>() : std::string();
   };
@@ -136,9 +136,9 @@ int main() {
         if (fail_apply)
           return absl::AbortedError("injected ambiguous apply failure");
         if (conflict_commit) {
-          auto config = YAML::LoadFile((root / "config.yaml").string());
+          auto config = YAML::LoadFile((root / "_hockeymon/config.yaml").string());
           config["rink"]["stitched_output_pending_authorization_id"] = "newer-owner";
-          std::ofstream(root / "config.yaml") << config << '\n';
+          std::ofstream(root / "_hockeymon/config.yaml") << config << '\n';
         }
         return ++operation;
       },

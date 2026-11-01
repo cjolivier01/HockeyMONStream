@@ -39,6 +39,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
+    "//src/libs/common:game_storage",
     ":rink_map", ":rink_leveling", ":stitching_core", ":hugin_project",
     ":canvas_constraint_check", ":game_config", ":transaction_state",
     "//src/libs/assets:asset_manager", "//src/libs/common:process",
@@ -116,6 +117,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:game_storage",
     ":player_frame_input_store",
     ":player_frame_selection",
     ":rink_mask_frame_time",
@@ -138,6 +140,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:game_storage",
     ":live_output_epoch",
     ":canvas_constraint_check",
     ":game_config",
@@ -232,7 +235,7 @@ cc_library(
   ],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
-  implementation_deps = [":orientation_internal"],
+  implementation_deps = ["//src/libs/common:game_storage", ":orientation_internal"],
   deps = [
     ":scoreboard_proposal",
     ":stitching_reframe",
@@ -290,6 +293,7 @@ cc_library(
   ],
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:game_storage",
     ":game_config",
     ":transaction_state",
     "@yaml-cpp",
@@ -429,6 +433,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
+    "//src/libs/common:game_storage",
     ":canvas_constraint_check",
     ":feature_matcher",
     ":game_config",
@@ -495,6 +500,7 @@ cc_library(
   linkopts = ["-ltiff"],
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:game_storage",
     ":canvas_constraint_check",
     ":player_frame_input_store",
     ":feature_matcher",
@@ -515,6 +521,7 @@ cc_binary(
   name = "stitching-replay",
   srcs = ["StitchingReplayMain.cpp"],
   deps = [
+    "//src/libs/common:game_storage",
     ":game_config",":hugin_project"],
 )
 
@@ -842,6 +849,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
+    "//src/libs/common:game_storage",
     ":player_frame_selection",
     ":transaction_state",
     "//src/libs/common:status_macros",
@@ -887,6 +895,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
+    "//src/libs/common:game_storage",
     ":video_discovery",
     ":hugin_project",
     ":game_config",
@@ -910,6 +919,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:game_storage",
     ":game_config", ":stitching_reframe", ":player_frame_selection", ":rink_mask_frame_time", ":transaction_state",
     "//src/libs/common:status_macros", "@yaml-cpp", "@com_google_absl//absl/status:statusor",
   ],
@@ -1006,6 +1016,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto", "-ltiff"],
   deps = [
+    "//src/libs/common:game_storage",
     ":calibration_frame_exif",
     ":game_config",
     ":transaction_state",

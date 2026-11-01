@@ -6,6 +6,9 @@
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QTemporaryDir>
 #include <chrono>
 #include <future>
@@ -18,6 +21,22 @@ using namespace hm::ui_internal;
 void check(bool condition, const std::string& message) {
   if (!condition)
     throw std::runtime_error(message);
+}
+void check_inventory(const QString& game, const QStringList& outputs) {
+  QFile manifest(QDir(game).filePath("_hockeymon/manifest.json"));
+  check(manifest.open(QIODevice::ReadOnly), "publication inventory is readable");
+  const auto document = QJsonDocument::fromJson(manifest.readAll());
+  check(document.isObject() && document.object().value("files").isArray(), "publication inventory is valid JSON");
+  QStringList published;
+  for (const auto& value : document.object().value("files").toArray()) {
+    const auto entry = value.toObject();
+    const auto path = entry.value("path").toString();
+    check(QFileInfo::exists(QDir(game).filePath(path)), "inventory cannot retain deleted staging files");
+    if (entry.value("role").toString() == "published")
+      published.append(path);
+  }
+  for (const auto& output : outputs)
+    check(published.contains(QFileInfo(output).fileName()), "inventory must retain the completed database");
 }
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
@@ -40,6 +59,7 @@ int main(int argc, char** argv) {
     writer.Stop();
     const auto first = publish_telemetry_database(source, game, QString("-2"));
     check(first.ok, first.error.toStdString());
+    check_inventory(game, first.published_paths);
     check(
         QDir(game).entryList(QDir::Files) == QStringList{"game-one_telemetry-2.db"},
         "one database copied with recorded game ID and exact suffix");
@@ -56,23 +76,25 @@ int main(int argc, char** argv) {
     check(
         padded.ok && padded.published_paths.front().endsWith("game-one_telemetry-007.db"),
         "preserve positive suffix spelling");
+    check_inventory(fresh_game, initial.published_paths + padded.published_paths);
     const QString concurrent_game = root.filePath("concurrent-game");
     check(QDir().mkpath(concurrent_game), "concurrent publication directory");
-    const QByteArray lock_path = QFile::encodeName(QDir(concurrent_game).filePath(".hm-output-publication.lock"));
+    check(QDir(concurrent_game).mkpath("_hockeymon"), "publication state directory");
+    const QByteArray lock_path =
+        QFile::encodeName(QDir(concurrent_game).filePath("_hockeymon/.hm-output-publication.lock"));
     const int lock_fd = open(lock_path.constData(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     check(lock_fd >= 0 && flock(lock_fd, LOCK_EX) == 0, "hold shared publication lock");
-    auto plain_job = std::async(std::launch::async, [&] {
-      return publish_telemetry_database(source, concurrent_game, QString("-1"));
-    });
-    auto padded_job = std::async(std::launch::async, [&] {
-      return publish_telemetry_database(source, concurrent_game, QString("-001"));
-    });
+    auto plain_job = std::async(
+        std::launch::async, [&] { return publish_telemetry_database(source, concurrent_game, QString("-1")); });
+    auto padded_job = std::async(
+        std::launch::async, [&] { return publish_telemetry_database(source, concurrent_game, QString("-001")); });
     const bool plain_waiting = plain_job.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
     const bool padded_waiting = padded_job.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
     close(lock_fd);
     const auto plain_result = plain_job.get(), padded_result = padded_job.get();
     check(plain_waiting && padded_waiting, "database publishers honor the shared publication lock");
     check(plain_result.ok != padded_result.ok, "concurrent spellings cannot publish the same numeric version");
+    check_inventory(concurrent_game, plain_result.ok ? plain_result.published_paths : padded_result.published_paths);
     check(QDir(concurrent_game).entryList({"*.db"}, QDir::Files).size() == 1, "one numeric version is visible");
     const QString symlink_target_game = root.filePath("symlink-target-game");
     const QString symlink_game = root.filePath("symlink-game");
@@ -83,6 +105,7 @@ int main(int argc, char** argv) {
     check(telemetry_csv_destination_paths_available(symlink_game, "-5"), "symlinked game directory suffix preflight");
     const auto through_symlink = publish_telemetry_database(source, symlink_game, QString("-5"));
     check(through_symlink.ok, through_symlink.error.toStdString());
+    check_inventory(symlink_game, through_symlink.published_paths);
     check(
         QFileInfo::exists(QDir(symlink_target_game).filePath("game-one_telemetry-5.db")),
         "database published through symlinked game directory");

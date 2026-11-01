@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include <QtCore/QFileInfo>
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
@@ -42,6 +43,7 @@ bool waitUntil(const std::function<bool()>& ready, int timeout = 10000) {
   return ready();
 }
 bool write(const QString& path, const QByteArray& data) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(data) == data.size();
 }
@@ -171,30 +173,31 @@ int main(int argc, char** argv) {
     return dialog.result() == QDialog::Accepted ? 0 : 1;
   }
   QTemporaryDir game, bin;
+  QDir(game.path()).mkpath("_hockeymon");
   bool ok = game.isValid() && bin.isValid();
   QImage source(100, 100, QImage::Format_RGB32);
   source.fill(Qt::gray);
-  ok &= source.save(game.filePath("left.png")) && source.save(game.filePath("right.png"));
+  ok &= source.save(game.filePath("_hockeymon/left.png")) && source.save(game.filePath("_hockeymon/right.png"));
   const QByteArray pto =
       "p f2 w400 h200 v180 n\"PNG\"\ni w100 h100 f0 v90 y-30 p0 r0 n\"left.png\"\n"
       "i w100 h100 f0 v90 y30 p0 r0 n\"right.png\"\n";
-  ok &= write(game.filePath("autooptimiser_out.pto"), pto);
+  ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto);
   const QByteArray provenance =
       "version=8\nmapping-backend=nona\nprojection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
       "camera-configuration=test-camera\ncamera-horizontal-fov=90\ncamera-vertical-fov=90\n";
-  ok &= write(game.filePath("stitching_canvas_provenance"), provenance);
+  ok &= write(game.filePath("_hockeymon/stitching_canvas_provenance"), provenance);
   const QByteArray config =
       "stitching:\n  rink_config: vallco\n  projection_framing:\n    rotation_degrees: [0, -33, 2]\n";
-  ok &= write(game.filePath("config.yaml"), config);
+  ok &= write(game.filePath("_hockeymon/config.yaml"), config);
   {
     const QByteArray collapsed_pto = QByteArray(pto).replace("v90 y-30", "v90 e19950752.8660212 y-30");
-    ok &= write(game.filePath("autooptimiser_out.pto"), collapsed_pto);
+    ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), collapsed_pto);
     RinkLevelingDialog dialog(game.path(), {0, 0, 0});
     ok &= expect(
         dialog.loadError().contains("camera calibration") && dialog.loadError().contains("lens center") &&
             !dialog.findChild<QPushButton*>("acceptRinkLevelingButton")->isEnabled(),
         "A collapsed saved calibration must report its lens center before asking the user to select corners");
-    ok &= write(game.filePath("autooptimiser_out.pto"), pto);
+    ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto);
     QTemporaryDir staging;
     ok &= writeInProgressSnapshot(staging, source, collapsed_pto);
     RinkLevelingDialog pending(
@@ -290,7 +293,7 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < 16 * 2000; ++i)
       large_pto += "c n0 N1 x12.3456789 y23.4567891 X34.5678912 Y45.6789123 t0\n";
     ok &= expect(large_pto.size() > 1024 * 1024, "multi-frame leveling fixture must exceed the old PTO read cap");
-    ok &= write(game.filePath("autooptimiser_out.pto"), large_pto);
+    ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), large_pto);
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
     advanceToPreview(dialog);
@@ -299,7 +302,7 @@ int main(int argc, char** argv) {
         waitUntil([&]() { return accept->isEnabled(); }, 5000),
         "multi-frame projects larger than 1 MiB must load and render a leveling preview");
     dialog.close();
-    ok &= write(game.filePath("autooptimiser_out.pto"), pto);
+    ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto);
   }
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
   {
@@ -641,7 +644,7 @@ int main(int argc, char** argv) {
   {
     ScoreboardSelectionCanvas canvas;
     canvas.setLineSelectionMode();
-    canvas.setImage(game.filePath("left.png"));
+    canvas.setImage(game.filePath("_hockeymon/left.png"));
     canvas.resize(600, 600);
     canvas.show();
     QApplication::processEvents();
@@ -674,7 +677,7 @@ int main(int argc, char** argv) {
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "preview required before acceptance");
     dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
     ok &= expect(
-        dialog.result() == QDialog::Rejected && read(game.filePath("config.yaml")) == config &&
+        dialog.result() == QDialog::Rejected && read(game.filePath("_hockeymon/config.yaml")) == config &&
             RinkLevelingDialog::sourceRevision(game.path()) == revision,
         "cancel after estimate and preview changes nothing");
   }
@@ -684,10 +687,10 @@ int main(int argc, char** argv) {
     advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "manual preview completes");
-    write(game.filePath("autooptimiser_out.pto"), pto + "# changed generation\n");
+    write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto + "# changed generation\n");
     accept->click();
     ok &= expect(dialog.result() != QDialog::Accepted && !accept->isEnabled(), "reject stale selection");
-    write(game.filePath("autooptimiser_out.pto"), pto);
+    write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto);
   }
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
@@ -708,7 +711,8 @@ int main(int argc, char** argv) {
         dialog.result() == QDialog::Accepted && dialog.rotationDegrees() == std::array<double, 3>{0, -33, 2},
         "accept preserves displayed absolute values");
     ok &= expect(
-        read(game.filePath("config.yaml")) == config, "dialog acceptance stages values without publishing config");
+        read(game.filePath("_hockeymon/config.yaml")) == config,
+        "dialog acceptance stages values without publishing config");
   }
   {
     ok &= script(
@@ -730,7 +734,8 @@ int main(int argc, char** argv) {
     dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Cancel)->click();
     ok &= expect(
         elapsed.elapsed() < 4000 && dialog.result() == QDialog::Rejected &&
-            read(game.filePath("config.yaml")) == config && RinkLevelingDialog::sourceRevision(game.path()) == revision,
+            read(game.filePath("_hockeymon/config.yaml")) == config &&
+            RinkLevelingDialog::sourceRevision(game.path()) == revision,
         "cancel stops an active renderer promptly without changing game artifacts");
     ok &= script(bin.filePath("nona"), nona_script);
   }
@@ -739,12 +744,14 @@ int main(int argc, char** argv) {
     advanceToPreview(dialog);
     auto* accept = dialog.findChild<QPushButton*>("acceptRinkLevelingButton");
     ok &= expect(waitUntil([&]() { return accept->isEnabled(); }), "preview before config change completes");
-    write(game.filePath("config.yaml"), config + "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
+    write(
+        game.filePath("_hockeymon/config.yaml"),
+        config + "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
     accept->click();
     ok &= expect(dialog.result() != QDialog::Accepted, "changed calibration settings invalidate an open estimate");
     RinkLevelingDialog pending(game.path(), {0, -33, 2});
     ok &= expect(!pending.loadError().isEmpty(), "saved but stale calibration cannot be used for selecting posts");
-    write(game.filePath("config.yaml"), config);
+    write(game.filePath("_hockeymon/config.yaml"), config);
     hm::stitching::StitchCameraSelection changed_camera;
     changed_camera.configuration = "test-camera";
     changed_camera.horizontal_fov = 90;
@@ -780,7 +787,7 @@ int main(int argc, char** argv) {
       }
       if (version >= 14)
         current_provenance += "control-point-filtering=1,1\n";
-      write(game.filePath("stitching_canvas_provenance"), current_provenance);
+      write(game.filePath("_hockeymon/stitching_canvas_provenance"), current_provenance);
       RinkLevelingDialog selected(game.path(), {0, -33, 2}, nullptr, selected_camera);
       auto* left = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera0"));
       auto* right = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera1"));
@@ -801,26 +808,26 @@ int main(int argc, char** argv) {
         auto malformed = current_provenance;
         const int begin = malformed.indexOf("input-cameras=");
         malformed.replace(begin, malformed.indexOf('\n', begin) - begin, "input-cameras={}");
-        write(game.filePath("stitching_canvas_provenance"), malformed);
+        write(game.filePath("_hockeymon/stitching_canvas_provenance"), malformed);
         RinkLevelingDialog invalid(game.path(), {0, -33, 2});
         ok &= expect(!invalid.loadError().isEmpty(), "Per-camera metadata must remain valid without an expected model");
       }
     }
     QByteArray future_provenance = selected_provenance;
     future_provenance.replace("version=10", "version=18");
-    write(game.filePath("stitching_canvas_provenance"), future_provenance);
+    write(game.filePath("_hockeymon/stitching_canvas_provenance"), future_provenance);
     RinkLevelingDialog unsupported(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!unsupported.loadError().isEmpty(), "unknown future metadata must still be rejected");
-    write(game.filePath("stitching_canvas_provenance"), provenance);
+    write(game.filePath("_hockeymon/stitching_canvas_provenance"), provenance);
     changed_camera.configuration = "different-camera";
     RinkLevelingDialog mismatched(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!mismatched.loadError().isEmpty(), "published camera metadata must match the selected camera model");
     QByteArray legacy = provenance;
     legacy.replace("version=8", "version=6");
-    write(game.filePath("stitching_canvas_provenance"), legacy);
+    write(game.filePath("_hockeymon/stitching_canvas_provenance"), legacy);
     RinkLevelingDialog unverifiable(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!unverifiable.loadError().isEmpty(), "desktop selection requires verifiable camera metadata");
-    write(game.filePath("stitching_canvas_provenance"), provenance);
+    write(game.filePath("_hockeymon/stitching_canvas_provenance"), provenance);
   }
   {
     QTemporaryDir staging;
@@ -958,7 +965,7 @@ int main(int argc, char** argv) {
   {
     QImage mismatch(20, 20, QImage::Format_RGB32);
     mismatch.fill(Qt::black);
-    mismatch.save(game.filePath("right.png"));
+    mismatch.save(game.filePath("_hockeymon/right.png"));
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     ok &= expect(
         !dialog.loadError().isEmpty() && !dialog.findChild<QPushButton*>("nextRinkLevelingButton")->isEnabled(),

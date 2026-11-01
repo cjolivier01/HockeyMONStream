@@ -16,9 +16,10 @@ mkdir -p "${sandbox_game}"
 python3 - "${source_game}" "${sandbox_game}" <<'PY'
 import os, pathlib, shutil, subprocess, sys
 source, destination = map(lambda p: pathlib.Path(p).resolve(), sys.argv[1:])
-if not (source / 'config.yaml').is_file():
+if not (source / '_hockeymon/config.yaml').is_file():
     raise SystemExit('Source game requires config.yaml')
-shutil.copyfile(source / 'config.yaml', destination / 'config.yaml')
+(destination / '_hockeymon').mkdir()
+shutil.copyfile(source / '_hockeymon/config.yaml', destination / '_hockeymon/config.yaml')
 # Video inputs are read-only. Hard links keep a valid in-game regular-file
 # identity without duplicating recordings; the artifact directory must be on
 # the same filesystem. All mutable config/sidecars and image bundles are copies.
@@ -35,9 +36,9 @@ for entry in source.iterdir():
                     os.link(child.resolve(), destination / entry.name / child.name)
                 else:
                     shutil.copyfile(child.resolve(), destination / entry.name / child.name)
-inputs = source / 'player-frame-inputs'
+inputs = source / '_hockeymon/player-frame-inputs'
 if inputs.is_dir():
-    subprocess.run(['cp', '-aL', '--reflink=auto', str(inputs), str(destination / inputs.name)], check=True)
+    subprocess.run(['cp', '-aL', '--reflink=auto', str(inputs), str(destination / "_hockeymon" / inputs.name)], check=True)
 (destination / '.match-editor-e2e-sandbox').touch()
 PY
 cd "${repo_root}"

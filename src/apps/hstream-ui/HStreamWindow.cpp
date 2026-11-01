@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
@@ -54,6 +55,7 @@
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QSaveFile>
+#include <QtCore/QScopeGuard>
 #include <QtCore/QScopedValueRollback>
 #include <QtCore/QSet>
 #include <QtCore/QSettings>
@@ -252,8 +254,7 @@ constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
 constexpr qsizetype kMaxCapturedLogCharacters = 16 * 1024 * 1024;
-constexpr char kUiDirectoryName[] = "hstream-ui";
-constexpr char kLegacyUiDirectoryName[] = ".hstream-ui";
+constexpr char kUiDirectoryName[] = "_hockeymon/hstream-ui";
 constexpr char kStitchedPreviewPipelineOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
@@ -504,7 +505,7 @@ absl::Status publish_yaml_config(const fs::path& config_path, const YAML::Node& 
   std::string contents;
   if (config.IsDefined() && !config.IsNull())
     contents = YAML::Dump(config) + "\n";
-  return hm::stitching::publish_game_config(config_path.parent_path(), contents);
+  return hm::stitching::publish_game_config(config_path.parent_path().parent_path(), contents);
 }
 
 // How a runtime log entry is presented. Runner output is classified from its
@@ -1347,13 +1348,14 @@ QString configure_pipeline_runtime_environment(
     const QString output_configuration = bazel_output_configuration(selected_bazel_bin);
     env.insert(
         "GST_REGISTRY",
-        registry_dir.filePath(QString("registry.hstream."
+        registry_dir.filePath(QString(
+                                  "registry.hstream."
 #ifdef HSTREAM_USE_HIP
-                                      "amd-va-v1."
+                                  "amd-va-v1."
 #else
-                                      "native-onnx-v1."
+                                  "native-onnx-v1."
 #endif
-                                      "%1.%2.bin")
+                                  "%1.%2.bin")
                                   .arg(arch, output_configuration)));
   }
 
@@ -1404,6 +1406,10 @@ QString archive_output_path(
                      : (stitching_calibration ? "stitched_output-with-audio.mkv" : "tracking_output-with-audio.mkv"));
 }
 
+QString final_archive_guard_path(const QString& game, const QString& archive) {
+  return QDir(game).filePath("_hockeymon/" + QFileInfo(archive).fileName() + ".hstream-pin");
+}
+
 QString available_final_archive_path(
     const QString& game_dir,
     const QString& game_id,
@@ -1426,10 +1432,10 @@ QString available_final_archive_path(
     const QString filename = QString("%1-%2.mp4").arg(base).arg(suffix);
     const QString candidate = QDir(game_dir).filePath(filename);
 #ifdef Q_OS_UNIX
-    struct stat candidate_stat {};
-    struct stat guard_stat {};
+    struct stat candidate_stat{};
+    struct stat guard_stat{};
     const QByteArray encoded_candidate = QFile::encodeName(candidate);
-    const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
+    const QByteArray encoded_guard = QFile::encodeName(final_archive_guard_path(game_dir, candidate));
     if (::lstat(encoded_candidate.constData(), &candidate_stat) != 0 && errno == ENOENT &&
         ::lstat(encoded_guard.constData(), &guard_stat) != 0 && errno == ENOENT &&
         (!require_telemetry_paths ||
@@ -1512,7 +1518,7 @@ bool same_file_identity(const struct stat& left, const struct stat& right) {
 }
 
 bool path_has_file_identity(const QString& path, const struct stat& expected_stat) {
-  struct stat current_stat {};
+  struct stat current_stat{};
   const QByteArray encoded_path = QFile::encodeName(path);
   return ::lstat(encoded_path.constData(), &current_stat) == 0 && same_file_identity(current_stat, expected_stat);
 }
@@ -1549,7 +1555,7 @@ bool durably_publish_cleanup_fallback(
     if (!published) {
       saved_errno = errno;
       if (saved_errno == EEXIST) {
-        struct stat existing_stat {};
+        struct stat existing_stat{};
         published = ::fstatat(parent_fd, candidate.constData(), &existing_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
             same_file_identity(existing_stat, expected_stat);
       }
@@ -1562,7 +1568,7 @@ bool durably_publish_cleanup_fallback(
             QString("could not make retained pathname durable: %1").arg(QString::fromLocal8Bit(std::strerror(errno)));
       return false;
     }
-    struct stat published_stat {};
+    struct stat published_stat{};
     if (::fstatat(parent_fd, candidate.constData(), &published_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
         !same_file_identity(published_stat, expected_stat)) {
       if (error)
@@ -1664,7 +1670,7 @@ bool retire_durable_ui_removal_fallback(
       *error = "cleanup interruption requested after fallback quarantine";
     return false;
   }
-  struct stat quarantined_stat {};
+  struct stat quarantined_stat{};
   if (::fstatat(cleanup_fd, "fallback", &quarantined_stat, AT_SYMLINK_NOFOLLOW) != 0) {
     const int inspect_errno = errno;
     int restore_errno = 0;
@@ -1711,8 +1717,22 @@ bool retire_durable_ui_removal_fallback(
   return true;
 }
 
-bool create_open_file_guard(int source_fd, const QString& protected_path, QString* guard_path, QString* error) {
-  const QString candidate = protected_path + ".hstream-pin";
+bool create_open_file_guard(
+    int source_fd,
+    const QString& protected_path,
+    QString* guard_path,
+    QString* error,
+    const QString& publication_game = {}) {
+  if (!publication_game.isEmpty()) {
+    const auto state = hm::game_storage::EnsureStateDirectory(publication_game.toStdString());
+    if (!state.ok()) {
+      if (error)
+        *error = QString::fromStdString(state.ToString());
+      return false;
+    }
+  }
+  const QString candidate = publication_game.isEmpty() ? protected_path + ".hstream-pin"
+                                                       : final_archive_guard_path(publication_game, protected_path);
   int saved_errno = 0;
   if (link_open_file_no_replace(source_fd, candidate, &saved_errno)) {
     if (guard_path)
@@ -1739,7 +1759,7 @@ int reopen_pin_on_published_path(const QString& published_path, const struct sta
   const int published_fd = ::open(encoded_published.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (published_fd < 0)
     return -1;
-  struct stat published_stat {};
+  struct stat published_stat{};
   if (::fstat(published_fd, &published_stat) != 0 || !S_ISREG(published_stat.st_mode) ||
       !same_file_identity(published_stat, expected_stat)) {
     ::close(published_fd);
@@ -1774,7 +1794,7 @@ QString rescue_open_file_no_replace(
     const QString& preferred_path,
     QString* error,
     struct stat* rescued_stat = nullptr) {
-  struct stat pinned_source_stat {};
+  struct stat pinned_source_stat{};
   if (source_fd < 0 || ::fstat(source_fd, &pinned_source_stat) != 0 || !S_ISREG(pinned_source_stat.st_mode) ||
       !same_file_identity(pinned_source_stat, expected_stat)) {
     if (error)
@@ -1845,7 +1865,7 @@ bool copy_open_file_no_replace(
     return false;
   }
 
-  struct stat created_stat {};
+  struct stat created_stat{};
   if (::fstat(output_fd, &created_stat) != 0 || !S_ISREG(created_stat.st_mode)) {
     const int created_stat_errno = errno;
     if (rollback_error) {
@@ -1901,7 +1921,7 @@ bool copy_open_file_no_replace(
     offset += bytes_read;
   }
 
-  struct stat copied_stat {};
+  struct stat copied_stat{};
   if (!copied || ::fsync(output_fd) != 0 || ::fstat(output_fd, &copied_stat) != 0 || !S_ISREG(copied_stat.st_mode)) {
     const int copy_errno = errno;
     QString cleanup_error;
@@ -1952,7 +1972,7 @@ bool rename_entry_no_replace(
     return false;
   }
   if (fallback == UnsupportedRenameFallback::kAtomicRenameIntoPrivateDirectory) {
-    struct stat destination_stat {};
+    struct stat destination_stat{};
     if (::fstatat(destination_directory_fd, destination_name, &destination_stat, AT_SYMLINK_NOFOLLOW) == 0) {
       if (saved_errno)
         *saved_errno = EEXIST;
@@ -2017,7 +2037,7 @@ bool ui_cleanup_identity_matches(const UiCleanupCommittedIdentity& committed_ide
 }
 
 bool create_ui_cleanup_committed(int cleanup_fd, const struct stat& expected_stat, QString* error) {
-  struct stat guard_stat {};
+  struct stat guard_stat{};
   if (::fstatat(cleanup_fd, "guard", &guard_stat, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(guard_stat.st_mode) ||
       !same_file_identity(guard_stat, expected_stat)) {
     if (error)
@@ -2089,7 +2109,7 @@ bool create_ui_cleanup_committed(int cleanup_fd, const struct stat& expected_sta
 }
 
 bool discard_ui_cleanup_committed_staging(int cleanup_fd, QString* error) {
-  struct stat staging_stat {};
+  struct stat staging_stat{};
   if (::fstatat(cleanup_fd, kUiCleanupCommittedStagingName, &staging_stat, AT_SYMLINK_NOFOLLOW) != 0) {
     if (errno == ENOENT)
       return true;
@@ -2126,7 +2146,7 @@ bool read_ui_cleanup_committed(
       *error = QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
-  struct stat committed_stat {};
+  struct stat committed_stat{};
   QByteArray record;
   int saved_errno = 0;
   if (::fstat(committed_fd, &committed_stat) != 0) {
@@ -2212,7 +2232,7 @@ bool read_ui_cleanup_owner(int cleanup_fd, QByteArray* target_name, QString* err
       *error = QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
-  struct stat owner_stat {};
+  struct stat owner_stat{};
   QByteArray record;
   int saved_errno = 0;
   if (::fstat(owner_fd, &owner_stat) != 0) {
@@ -2261,7 +2281,7 @@ bool ui_cleanup_target_has_pending_transaction(
     const struct stat& expected_stat,
     QString* error) {
   const QByteArray fallback_name = target_name + ".hstream-cleanup-pin";
-  struct stat fallback_stat {};
+  struct stat fallback_stat{};
   if (::fstatat(parent_fd, fallback_name.constData(), &fallback_stat, AT_SYMLINK_NOFOLLOW) == 0) {
     if (same_file_identity(fallback_stat, expected_stat))
       return true;
@@ -2315,7 +2335,7 @@ bool ui_cleanup_target_has_pending_transaction(
     QString owner_error;
     pending = read_ui_cleanup_owner(cleanup_fd, &owned_target_name, &owner_error) && owned_target_name == target_name;
     for (const char* private_name : {"entry", "guard", "fallback"}) {
-      struct stat private_stat {};
+      struct stat private_stat{};
       if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) == 0) {
         pending |= same_file_identity(private_stat, expected_stat);
       } else if (errno != ENOENT) {
@@ -2338,8 +2358,8 @@ bool ui_cleanup_target_has_pending_transaction(
 }
 
 bool ui_cleanup_name_matches_fd(int cleanup_fd, int parent_fd, const QByteArray& cleanup_name) {
-  struct stat cleanup_stat {};
-  struct stat named_stat {};
+  struct stat cleanup_stat{};
+  struct stat named_stat{};
   return ::fstat(cleanup_fd, &cleanup_stat) == 0 && S_ISDIR(cleanup_stat.st_mode) &&
       ::fstatat(parent_fd, cleanup_name.constData(), &named_stat, AT_SYMLINK_NOFOLLOW) == 0 &&
       S_ISDIR(named_stat.st_mode) && same_file_identity(cleanup_stat, named_stat);
@@ -2558,7 +2578,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
     QString public_path;
     QString guard_path;
     QString required_path;
-    struct stat identity {};
+    struct stat identity{};
   };
   const auto prepare_reconciled_entry = [error](ReconciledEntry* reconciled_entry) {
     ReconciledEntry& entry = *reconciled_entry;
@@ -2575,7 +2595,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
           required_path = guarded_path;
       }
       if (!retire_interrupted_guard) {
-        struct stat original_stat {};
+        struct stat original_stat{};
         const QByteArray encoded_original = QFile::encodeName(original_path);
         if (::lstat(encoded_original.constData(), &original_stat) != 0) {
           if (errno != ENOENT) {
@@ -2609,7 +2629,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         }
         required_path = original_path;
       }
-      struct stat fallback_stat {};
+      struct stat fallback_stat{};
       const QByteArray encoded_fallback = QFile::encodeName(entry.public_path);
       if (::lstat(encoded_fallback.constData(), &fallback_stat) == 0) {
         if (!same_file_identity(fallback_stat, entry.identity)) {
@@ -2778,11 +2798,11 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
     std::vector<ReconciledEntry> reconciled;
     struct PrivateEntry {
       const char* name;
-      struct stat identity {};
+      struct stat identity{};
     };
     std::vector<PrivateEntry> private_entries;
     for (const char* private_name : {"entry", "guard", "fallback"}) {
-      struct stat private_stat {};
+      struct stat private_stat{};
       if (::fstatat(cleanup_fd, private_name, &private_stat, AT_SYMLINK_NOFOLLOW) == 0) {
         private_entries.push_back({private_name, private_stat});
       } else if (errno != ENOENT) {
@@ -2823,7 +2843,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         }
       }
       for (const PrivateEntry& private_entry : private_entries) {
-        struct stat current_stat {};
+        struct stat current_stat{};
         if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
             !same_file_identity(current_stat, private_entry.identity) ||
             ::unlinkat(cleanup_fd, private_entry.name, 0) != 0) {
@@ -2864,7 +2884,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
         if (guarded_public_path.isEmpty())
           continue;
         const QString candidate_path = QDir(directory_path).filePath(candidate_name);
-        struct stat candidate_stat {};
+        struct stat candidate_stat{};
         if (::lstat(QFile::encodeName(candidate_path).constData(), &candidate_stat) != 0) {
           if (errno == ENOENT)
             continue;
@@ -2884,10 +2904,10 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       }
       const QString original_path = QDir(directory_path).filePath(QFile::decodeName(owned_target_name));
       const QString fallback_path = original_path + ".hstream-cleanup-pin";
-      struct stat fallback_stat {};
+      struct stat fallback_stat{};
       const QByteArray encoded_fallback = QFile::encodeName(fallback_path);
       if (::lstat(encoded_fallback.constData(), &fallback_stat) == 0) {
-        struct stat original_stat {};
+        struct stat original_stat{};
         const QByteArray encoded_original = QFile::encodeName(original_path);
         if (::lstat(encoded_original.constData(), &original_stat) == 0) {
           if (!same_file_identity(original_stat, fallback_stat)) {
@@ -2899,7 +2919,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
           }
         } else if (errno == ENOENT) {
           const int fallback_fd = ::open(encoded_fallback.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-          struct stat pinned_fallback_stat {};
+          struct stat pinned_fallback_stat{};
           int publish_errno = 0;
           const bool fallback_pinned = fallback_fd >= 0 && ::fstat(fallback_fd, &pinned_fallback_stat) == 0 &&
               same_file_identity(pinned_fallback_stat, fallback_stat);
@@ -3003,7 +3023,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       }
       if (!guard_is_public) {
         const int guard_fd = ::openat(cleanup_fd, "guard", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        struct stat pinned_guard_stat {};
+        struct stat pinned_guard_stat{};
         const bool guard_pinned = guard_fd >= 0 && ::fstat(guard_fd, &pinned_guard_stat) == 0 &&
             same_file_identity(pinned_guard_stat, guard_entry->identity);
         const int publish_result =
@@ -3032,7 +3052,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       QString guard_path;
       if (!public_path.isEmpty()) {
         const int private_fd = ::openat(cleanup_fd, private_entry.name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        struct stat pinned_stat {};
+        struct stat pinned_stat{};
         if (private_fd < 0 || ::fstat(private_fd, &pinned_stat) != 0 ||
             !same_file_identity(pinned_stat, private_entry.identity)) {
           const int saved_errno = private_fd < 0 ? errno : ESTALE;
@@ -3063,7 +3083,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
                        .arg(QDir(directory_path).filePath(cleanup_name), private_entry.name);
         return false;
       }
-      struct stat current_stat {};
+      struct stat current_stat{};
       if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
           !same_file_identity(current_stat, private_entry.identity)) {
         const int saved_errno = errno;
@@ -3091,7 +3111,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       if (guarded_public_path.isEmpty())
         continue;
       const QString candidate_path = QDir(directory_path).filePath(candidate_name);
-      struct stat candidate_stat {};
+      struct stat candidate_stat{};
       const QByteArray encoded_candidate = QFile::encodeName(candidate_path);
       if (::lstat(encoded_candidate.constData(), &candidate_stat) != 0) {
         if (errno == ENOENT)
@@ -3124,7 +3144,7 @@ bool reconcile_scoped_ui_cleanup_directory_pass(
       }
     }
     for (const PrivateEntry& private_entry : private_entries) {
-      struct stat current_stat {};
+      struct stat current_stat{};
       if (::fstatat(cleanup_fd, private_entry.name, &current_stat, AT_SYMLINK_NOFOLLOW) != 0 ||
           !same_file_identity(current_stat, private_entry.identity) ||
           ::unlinkat(cleanup_fd, private_entry.name, 0) != 0) {
@@ -3240,7 +3260,7 @@ bool remove_path_if_same_identity(
   const QFileInfo path_info(path);
   const QByteArray encoded_parent = QFile::encodeName(path_info.absolutePath());
   const QByteArray encoded_filename = QFile::encodeName(path_info.fileName());
-  struct stat current_stat {};
+  struct stat current_stat{};
   if (::lstat(encoded_path.constData(), &current_stat) != 0) {
     if (errno == ENOENT) {
       const int parent_fd = ::open(encoded_parent.constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -3253,7 +3273,7 @@ bool remove_path_if_same_identity(
         return false;
       }
       const bool pending = ui_cleanup_target_has_pending_transaction(parent_fd, encoded_filename, expected_stat, error);
-      struct stat rechecked_stat {};
+      struct stat rechecked_stat{};
       const bool reappeared =
           ::fstatat(parent_fd, encoded_filename.constData(), &rechecked_stat, AT_SYMLINK_NOFOLLOW) == 0;
       const int recheck_errno = reappeared ? 0 : errno;
@@ -3299,13 +3319,13 @@ bool remove_path_if_same_identity(
       *error = QString::fromLocal8Bit(std::strerror(saved_errno));
     return false;
   }
-  struct stat locked_path_stat {};
+  struct stat locked_path_stat{};
   if (::fstatat(parent_fd, encoded_filename.constData(), &locked_path_stat, AT_SYMLINK_NOFOLLOW) != 0) {
     const int saved_errno = errno;
     bool pending = false;
     if (saved_errno == ENOENT)
       pending = ui_cleanup_target_has_pending_transaction(parent_fd, encoded_filename, expected_stat, error);
-    struct stat rechecked_stat {};
+    struct stat rechecked_stat{};
     const bool reappeared = saved_errno == ENOENT &&
         ::fstatat(parent_fd, encoded_filename.constData(), &rechecked_stat, AT_SYMLINK_NOFOLLOW) == 0;
     const int recheck_errno = reappeared ? 0 : errno;
@@ -3327,7 +3347,7 @@ bool remove_path_if_same_identity(
     return false;
   }
   int pinned_fd = ::openat(parent_fd, encoded_filename.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  struct stat pinned_stat {};
+  struct stat pinned_stat{};
   if (pinned_fd < 0 || ::fstat(pinned_fd, &pinned_stat) != 0 || !S_ISREG(pinned_stat.st_mode) ||
       !same_file_identity(pinned_stat, locked_path_stat)) {
     const int saved_errno = pinned_fd < 0 ? errno : ESTALE;
@@ -3425,7 +3445,7 @@ bool remove_path_if_same_identity(
     return false;
   }
 
-  struct stat quarantined_stat {};
+  struct stat quarantined_stat{};
   const bool quarantined_was_inspected = ::fstatat(cleanup_fd, "entry", &quarantined_stat, AT_SYMLINK_NOFOLLOW) == 0;
   const bool quarantined_is_ours = quarantined_was_inspected && same_file_identity(quarantined_stat, expected_stat);
   bool required_identity_is_ours = true;
@@ -3649,8 +3669,8 @@ bool remove_path_if_same_identity(
     errno = EIO;
   const int guard_unlink_result = fallback_retired && !fail_guard_unlink ? ::unlinkat(cleanup_fd, "guard", 0) : -1;
   const int guard_unlink_errno = errno;
-  const int cleanup_result = fallback_retired && guard_unlink_result == 0 &&
-          retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name)
+  const int cleanup_result =
+      fallback_retired && guard_unlink_result == 0 && retire_ui_cleanup_directory(cleanup_fd, parent_fd, cleanup_name)
       ? 0
       : -1;
   const int cleanup_errno = errno;
@@ -3684,8 +3704,9 @@ bool remove_path_if_same_identity(
   if (error && directory_sync_result == 0) {
     *error = !fallback_retired
         ? fallback_retirement_error
-        : QString::fromLocal8Bit(std::strerror(
-              unlink_result != 0 ? unlink_errno : (guard_unlink_result != 0 ? guard_unlink_errno : cleanup_errno)));
+        : QString::fromLocal8Bit(
+              std::strerror(
+                  unlink_result != 0 ? unlink_errno : (guard_unlink_result != 0 ? guard_unlink_errno : cleanup_errno)));
   } else if (error && directory_sync_result != 0) {
     *error = QString("deletion is durable, but cleanup transaction retirement could not be synced: %1")
                  .arg(QString::fromLocal8Bit(std::strerror(directory_sync_errno)));
@@ -3805,7 +3826,7 @@ QString existing_auto_cam_dir_for_source(const QDir& game_dir, const QFileInfo& 
   }
 
   std::map<QString, std::pair<QString, QString>> copied_auto_sources;
-  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "_hockeymon/config.yaml";
   if (fs::is_regular_file(config_path)) {
     try {
       YAML::Node config = YAML::LoadFile(config_path.string());
@@ -3868,7 +3889,7 @@ bool copied_auto_import_matches(
     const QString& relative_path,
     const QString& family,
     const QString& source_parent) {
-  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "_hockeymon/config.yaml";
   if (!fs::is_regular_file(config_path)) {
     return false;
   }
@@ -4722,11 +4743,10 @@ bool same_file_path(const QString& lhs, const QString& rhs) {
 bool is_ui_persistent_playtracker_config(const QString& path, const QString& game_dir) {
   const QFileInfo info(path);
   const QString runtime_dir = QFileInfo(QDir(game_dir).filePath(kUiDirectoryName)).absoluteFilePath();
-  const QString legacy_runtime_dir = QFileInfo(QDir(game_dir).filePath(kLegacyUiDirectoryName)).absoluteFilePath();
   const QString filename = info.fileName();
   const bool owned_name = filename == "play_tracker_config.yaml" ||
       (filename.startsWith("play_tracker_config_") && filename.endsWith(".yaml"));
-  return owned_name && (info.absolutePath() == runtime_dir || info.absolutePath() == legacy_runtime_dir);
+  return owned_name && info.absolutePath() == runtime_dir;
 }
 
 QString resolve_ui_persistent_playtracker_config(
@@ -4772,7 +4792,7 @@ bool hm::ui_internal::remove_owned_path_for_test(
     quint64 expected_inode,
     QString* error) {
 #ifdef Q_OS_UNIX
-  struct stat expected_stat {};
+  struct stat expected_stat{};
   expected_stat.st_dev = static_cast<dev_t>(expected_device);
   expected_stat.st_ino = static_cast<ino_t>(expected_inode);
   return remove_path_if_same_identity(path, expected_stat, error);
@@ -4998,8 +5018,9 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
       releaseArchiveFinalizeSource(false);
       showArchiveFinalizationFailure(
           archive_finalize_pending_failure_detail_ +
-          QString("\n\nThe recovery file was renamed, but the durability helper could not start: %1 Do not start "
-                  "another archive run until this file has been copied to safety.")
+          QString(
+              "\n\nThe recovery file was renamed, but the durability helper could not start: %1 Do not start "
+              "another archive run until this file has been copied to safety.")
               .arg(process_error));
     } else if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncCompleted) {
       failArchiveFinalization(QString("Could not start the archive durability helper: %1").arg(process_error));
@@ -5025,7 +5046,7 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
 void HStreamWindow::openGame(const QString& game_id, bool play, bool calibration_only) {
   if (!game_id.isEmpty()) {
     if (sanitized_game_id(game_id) != game_id ||
-        !QFileInfo::exists(QDir(gameDirectory(game_id)).filePath("config.yaml")))
+        !QFileInfo::exists(QDir(gameDirectory(game_id)).filePath("_hockeymon/config.yaml")))
       throw std::runtime_error("The requested game must name an existing game under the selected game root");
     selectGame(game_id);
   }
@@ -6160,10 +6181,9 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   rink_map_preview_check_ = new QCheckBox("Show rink mini-map during playback");
   rink_map_preview_check_->setObjectName("showRinkMiniMapCheck");
   const auto rink_map_preview_defaults = baseline_config_["hstream_ui"]["preview_rink_map"];
-  rink_map_preview_check_->setChecked(
-      QSettings(ui_settings_path(), QSettings::IniFormat)
-          .value("preview/rink-map", rink_map_preview_defaults["enable"].as<bool>())
-          .toBool());
+  rink_map_preview_check_->setChecked(QSettings(ui_settings_path(), QSettings::IniFormat)
+                                          .value("preview/rink-map", rink_map_preview_defaults["enable"].as<bool>())
+                                          .toBool());
   rink_map_preview_check_->setToolTip(
       "Applies on the next playback. Requires a saved, reviewed rink map and tracked players. "
       "Shows player dots in their detection-box colours and recognized jersey numbers in the Program and Stitched previews. "
@@ -6422,7 +6442,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     }
     const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
     const QString game_directory = gameDirectory(game_id);
-    if (game_id.isEmpty() || !QFileInfo::exists(QDir(game_directory).filePath("config.yaml"))) {
+    if (game_id.isEmpty() || !QFileInfo::exists(QDir(game_directory).filePath("_hockeymon/config.yaml"))) {
       QMessageBox::information(
           this, "Stitching Experiments", "Select a saved game with two camera videos before experimenting.");
       return;
@@ -6517,9 +6537,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         playback_start_time_edit_->time().msecsSinceStartOfDay());
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
-    connect(dialog, &QObject::destroyed, this, [this] {
-      QTimer::singleShot(0, this, [this] { updateRunControls(); });
-    });
+    connect(
+        dialog, &QObject::destroyed, this, [this] { QTimer::singleShot(0, this, [this] { updateRunControls(); }); });
     dialog->show();
     updateRunControls();
   });
@@ -8226,7 +8245,8 @@ bool HStreamWindow::handleBackendPublication(const QString& line) {
     return true;
   }
   if (receipt.value("status").toString() == "cancelled" && receipt.value("stage").toString() == "preparing" &&
-      pipeline_stop_requested_ && receipt.value("artifacts").isArray() && receipt.value("artifacts").toArray().isEmpty()) {
+      pipeline_stop_requested_ && receipt.value("artifacts").isArray() &&
+      receipt.value("artifacts").toArray().isEmpty()) {
     for (const QString& kind : active_backend_output_kinds_)
       output_states_.at(kind)->setText("NO FILE");
     backend_publication_complete_ = true;
@@ -8370,8 +8390,7 @@ bool HStreamWindow::isCalibrationRun() const {
 
 void HStreamWindow::refreshArchiveAvailability() {
   const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
-  have_published_archives_ =
-      !game_id.isEmpty() && !hm::ui::DiscoverArchives(gameDirectory(game_id), game_id).isEmpty();
+  have_published_archives_ = !game_id.isEmpty() && !hm::ui::DiscoverArchives(gameDirectory(game_id), game_id).isEmpty();
 }
 
 void HStreamWindow::synchronizeStitchedColorControls() {
@@ -8687,7 +8706,7 @@ void HStreamWindow::changeInputCameraOptics(size_t index, bool refresh) {
     if (key != source)
       camera.frozen = true;
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
-  auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
+  auto saved = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
   if (!saved.ok()) {
     camera_configuration_combo_->setProperty("autoInputLensFrozen", was_frozen);
     updateInputCameraTabs(camera_optics_result_);
@@ -8732,7 +8751,7 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
   YAML::Node effective = YAML::Clone(baseline_config_);
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
   auto saved = editing_defaults_ ? absl::StatusOr<std::optional<YAML::Node>>(std::optional<YAML::Node>{})
-                                 : hm::stitching::load_game_config_file(game / "config.yaml");
+                                 : hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
   if (saved.ok() && saved->has_value())
     effective = merge_yaml_maps(effective, **saved);
   effective["stitching"].remove("auto_input_lens_frozen");
@@ -9214,8 +9233,8 @@ void HStreamWindow::selectProjectionCrop() {
   // changes. A first confirmation of an unchanged crop still needs to be saved.
   pending_crop_geometry_ = dialog.sourceRevision().isEmpty() ? std::string() : dialog.geometry();
   try {
-    const auto config =
-        YAML::LoadFile(QDir(gameDirectory(game_id_edit_->text().trimmed())).filePath("config.yaml").toStdString());
+    const auto config = YAML::LoadFile(
+        QDir(gameDirectory(game_id_edit_->text().trimmed())).filePath("_hockeymon/config.yaml").toStdString());
     if (hm::stitching::projection_crop_reviewed(config, pending_crop_geometry_))
       pending_crop_geometry_.clear();
   } catch (const std::exception&) {
@@ -9254,7 +9273,7 @@ bool HStreamWindow::ensureProjectionCropReviewed(bool* cancelled) {
     if (!config_lock.ok())
       return true;
     try {
-      const auto config = YAML::LoadFile(QDir(directory).filePath("config.yaml").toStdString());
+      const auto config = YAML::LoadFile(QDir(directory).filePath("_hockeymon/config.yaml").toStdString());
       if (hm::stitching::HasStitchingReframeIntent(config))
         return true; // The requested view was already accepted; startup validates its source.
       YAML::Node status;
@@ -9274,8 +9293,8 @@ bool HStreamWindow::ensureProjectionCropReviewed(bool* cancelled) {
         appendLog("Crop review deferred until calibration: " + preview_error);
         return true;
       }
-      const auto project =
-          hm::stitching::HuginProject::ReadProject(QDir(directory).filePath("autooptimiser_out.pto").toStdString());
+      const auto project = hm::stitching::HuginProject::ReadProject(
+          QDir(directory).filePath("_hockeymon/autooptimiser_out.pto").toStdString());
       if (!project.ok())
         return true;
       geometry = hm::stitching::projection_crop_geometry(*project, stitchProjectionFraming());
@@ -9611,8 +9630,8 @@ bool HStreamWindow::saveStitchingCalibrationState(
     bool* applied) {
   if (applied)
     *applied = false;
-  const fs::path config_path = fs::path(gameDirectory(game_id).toStdString()) / "config.yaml";
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  const fs::path config_path = fs::path(gameDirectory(game_id).toStdString()) / "_hockeymon/config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
   if (!config_lock.ok()) {
     appendLog(
         QString("could not lock stitching calibration settings: %1").arg(config_lock.status().ToString().c_str()));
@@ -9879,7 +9898,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
   const int control_points = active_calibration_control_points_;
   const int frame_count = active_calibration_frame_count_;
-  const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "_hockeymon/config.yaml";
   bool saved_found = false;
   int saved_control_points = 0;
   int saved_frame_count = kDefaultStitchCalibrationFrameCount;
@@ -9910,7 +9929,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   if (!width_constraint_check.has_value())
     return false;
   {
-    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+    auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
     if (!config_lock.ok()) {
       appendLog(
           QString("could not lock stitching calibration settings: %1").arg(config_lock.status().ToString().c_str()));
@@ -10176,7 +10195,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       before_effective["stitching"]["max_output_width"] = saved_max_output_width;
       desired_effective["stitching"]["max_output_width"] = active_stitch_max_output_width_;
       const auto plan = hm::stitching::PrepareStitchingCalibrationControlsLocked(
-          config_path.parent_path(),
+          config_path.parent_path().parent_path(),
           before,
           desired,
           before_effective,
@@ -10231,8 +10250,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (stitch_frame_time_changed)
       reasons << QString("reference time %1 -> %2").arg(saved_stitch_frame_time, active_stitch_frame_time_);
     if (sync_method_changed)
-      reasons << QString("synchronization method %1 -> %2")
-                     .arg(saved_sync_method, active_iteration_settings_.sync_method);
+      reasons
+          << QString("synchronization method %1 -> %2").arg(saved_sync_method, active_iteration_settings_.sync_method);
     if (saved_control_point_matcher != active_control_point_matcher_)
       reasons << QString("matcher %1 -> %2").arg(saved_control_point_matcher, active_control_point_matcher_);
     if (saved_filtering != active_control_point_filtering_)
@@ -10295,8 +10314,9 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (replay_selected_frames) {
       appendLog("rebuilding stitching from the retained frame selection and synchronization");
     } else {
-      appendLog(QString("stitching calibration control points changed %1 -> %2; invalidating control points and "
-                        "downstream artifacts")
+      appendLog(QString(
+                    "stitching calibration control points changed %1 -> %2; invalidating control points and "
+                    "downstream artifacts")
                     .arg(previous)
                     .arg(control_points));
     }
@@ -10315,7 +10335,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
 
   if (clean_all || clean_from_control_points) {
     const auto completed = hm::stitching::CompleteStitchingCalibrationCleanup(
-        config_path.parent_path(), calibration_plan, prepared_calibration_config);
+        config_path.parent_path().parent_path(), calibration_plan, prepared_calibration_config);
     if (!completed.ok()) {
       if (absl::IsAborted(completed))
         appendLog("stitching calibration cleanup was superseded by a newer dependency invalidation");
@@ -10489,8 +10509,8 @@ bool HStreamWindow::beginObservedStitchingCalibration(const QString& reported_st
 
   const QString reported_start_stage =
       calibration_stage_index(reported_stage).has_value() ? reported_stage : QString("input");
-  const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "config.yaml";
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  const fs::path config_path = fs::path(gameDirectory(active_run_game_id_).toStdString()) / "_hockeymon/config.yaml";
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock runtime-discovered calibration state: %1")
                   .arg(config_lock.status().ToString().c_str()));
@@ -10719,8 +10739,9 @@ void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
   if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && calibration_pending_ &&
       !calibration_dialog_failed_ && !pipeline_stop_requested_ && !calibration_waiting_for_playback_restart_) {
     calibration_detail_->setText(
-        QString("An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
-                "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
+        QString(
+            "An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
+            "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
             .arg(calibration_rejected_hypotheses_)
             .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
             .arg(calibration_rejected_candidates_)
@@ -10736,7 +10757,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
       (normalized_message.contains("hmstitcher_conv0") && normalized_message.contains("failed to activate bufferpool"));
   const bool stitch_blender_oom = calibration_stitch_blender_oom_ ||
       (is_cuda_out_of_memory_diagnostic(root_cause) && normalized_message.contains("cudablend"));
-  const bool stall_watchdog = !calibration_stall_watchdog_message_.isEmpty() || is_stall_watchdog_diagnostic(root_cause);
+  const bool stall_watchdog =
+      !calibration_stall_watchdog_message_.isEmpty() || is_stall_watchdog_diagnostic(root_cause);
   if (cuda_out_of_memory) {
     root_cause = stitch_blender_oom ? "CUDA out of memory while allocating the live stitching blender's GPU buffers."
         : hmstitcher_input_pool_failure
@@ -10772,8 +10794,8 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
     root_cause = "The calibration process ended without reporting a specific cause.";
 
   const QString evidence = root_cause.toLower();
-  const int active_control_points = active_calibration_control_points_ > 0 ? active_calibration_control_points_
-                                                                           : stitchingCalibrationControlPoints();
+  const int active_control_points =
+      active_calibration_control_points_ > 0 ? active_calibration_control_points_ : stitchingCalibrationControlPoints();
   const bool reduced_control_point_limit =
       active_control_points > 0 && active_control_points < default_stitch_control_points_;
   const bool nondefault_camera_profile = active_camera_selection_ != default_camera_selection_;
@@ -10781,8 +10803,9 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
       evidence.contains("usable solution") || evidence.contains("usable hugin solution") ||
       evidence.contains("usable opencv solution");
   const bool invalid_hugin_executable_override = evidence.contains("hm_pto_gen is not executable") ||
-      evidence.contains("hm_autooptimiser is not executable") || evidence.contains("hm_pano_modify is not executable") ||
-      evidence.contains("hm_nona is not executable") || evidence.contains("hm_enblend is not executable");
+      evidence.contains("hm_autooptimiser is not executable") ||
+      evidence.contains("hm_pano_modify is not executable") || evidence.contains("hm_nona is not executable") ||
+      evidence.contains("hm_enblend is not executable");
   const bool missing_hugin_executable =
       evidence.contains("required hugin executable not found") || invalid_hugin_executable_override;
   QString explanation;
@@ -11226,8 +11249,9 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
           << (standalone || active_run_game_id_.isEmpty() ? rink_framing_controls_->arguments()
                                                           : active_rink_framing_arguments_);
     if (player_analytics_controls_)
-      args << (standalone || active_run_game_id_.isEmpty() ? player_analytics_controls_->arguments()
-                                                         : active_player_analytics_arguments_);
+      args
+          << (standalone || active_run_game_id_.isEmpty() ? player_analytics_controls_->arguments()
+                                                          : active_player_analytics_arguments_);
     if (backend_.isHockeyMon() && !detectorPrecision().isEmpty()) {
       args << "--options=hstream_ui.hockeymon.detector.model=" + detectorModel();
       args << "--options=hstream_ui.hockeymon.detector.precision=" + detectorPrecision();
@@ -11244,8 +11268,11 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
          << QString("--options=rink.tracking.cam_ignore_oversized=%1")
                 .arg(cameraControlValue("Ignore_Oversized_Players") != 0 ? "true" : "false")
          << QString("--options=rink.tracking.cam_oversized_percent=%1")
-                .arg(QString::number(
-                    cameraControlValue("Oversized_Player_Percent"), 'g', std::numeric_limits<double>::max_digits10));
+                .arg(
+                    QString::number(
+                        cameraControlValue("Oversized_Player_Percent"),
+                        'g',
+                        std::numeric_limits<double>::max_digits10));
     args
         << QString("--options=rink.camera.zoom_in_aggressiveness=%1").arg(cameraControlValue("Zoom_In_Aggressiveness"));
     if (capture_telemetry) {
@@ -11407,8 +11434,8 @@ void HStreamWindow::loadPlayerAnalyticsConfig(const YAML::Node& config) {
     const auto structural = YAML::LoadFile(structural_path.toStdString());
     YAML::Node native_defaults;
     lookup_yaml_path(defaults, "pipeline", &native_defaults);
-    defaults["pipeline"] = native_defaults.IsMap() ? merge_yaml_maps(structural, native_defaults)
-                                                 : YAML::Clone(structural);
+    defaults["pipeline"] =
+        native_defaults.IsMap() ? merge_yaml_maps(structural, native_defaults) : YAML::Clone(structural);
   }
   player_analytics_controls_->loadConfig(defaults, user_layer_, config, QFileInfo(structural_path).absolutePath());
   if (rink_framing_controls_) {
@@ -11507,8 +11534,9 @@ void HStreamWindow::updateDetectorPrecisionStatus() {
     const auto selected =
         std::find_if(models.begin(), models.end(), [&](const DetectorModel& m) { return m.id == model_id; });
     if (selected != models.end()) {
-      status += QString(" Detector model: %1. Its input resolution and accuracy differ from the default, so "
-                        "recheck tracking and oversized-player settings for this game.")
+      status += QString(
+                    " Detector model: %1. Its input resolution and accuracy differ from the default, so "
+                    "recheck tracking and oversized-player settings for this game.")
                     .arg(selected->label);
     }
   }
@@ -11808,6 +11836,19 @@ void HStreamWindow::startPipeline() {
     if (program_4k_enabled) {
       active_program_4k_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, false, true);
     }
+    for (QString* output :
+         {&active_archive_output_path_, &active_stitched_archive_output_path_, &active_program_4k_output_path_}) {
+      if (output->isEmpty())
+        continue;
+      const fs::path path(output->toStdString());
+      const auto directory =
+          hm::game_storage::ConfineWorkDirectory(gameDirectory(active_run_game_id_).toStdString(), path.parent_path());
+      if (!directory.ok()) {
+        show_startup_error(QString::fromStdString(directory.status().ToString()));
+        return;
+      }
+      *output = QString::fromStdString((*directory / path.filename()).string());
+    }
     const QString primary_archive_path = !active_archive_output_path_.isEmpty() ? active_archive_output_path_
         : !active_program_4k_output_path_.isEmpty()                             ? active_program_4k_output_path_
                                                                                 : active_stitched_archive_output_path_;
@@ -11837,9 +11878,9 @@ void HStreamWindow::startPipeline() {
       return;
     }
     archive_job_log_output_kind_ = archive_enabled ? "program"
-        : program_4k_enabled                      ? "program-4k"
-        : stitched_archive_enabled                ? "stitched"
-                                                  : "telemetry";
+        : program_4k_enabled                       ? "program-4k"
+        : stitched_archive_enabled                 ? "stitched"
+                                                   : "telemetry";
     beginArchiveJobLog(job_log_base, archive_run_id);
     if (archive_enabled) {
       output_states_["archive-file"]->setText("WRITING");
@@ -12062,8 +12103,9 @@ void HStreamWindow::startPipeline() {
                     .arg(control_points)
                     .arg(frame_count));
     } else {
-      appendLog(QString("video inputs require stitching calibration; starting one-pass program playback with control "
-                        "points=%1 frames=%2")
+      appendLog(QString(
+                    "video inputs require stitching calibration; starting one-pass program playback with control "
+                    "points=%1 frames=%2")
                     .arg(control_points)
                     .arg(frame_count));
     }
@@ -12595,6 +12637,12 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     QFile::remove(last_playtracker_runtime_snapshot_);
   }
   last_playtracker_runtime_snapshot_.clear();
+  if (!active_run_game_id_.isEmpty()) {
+    const auto inventory =
+        hm::game_storage::RefreshManifest(gameDirectory(active_run_game_id_).toStdString(), "hstream-ui");
+    if (!inventory.ok())
+      appendLog(QString("could not update game inventory after playback: %1").arg(inventory.ToString().c_str()));
+  }
   calibration_pending_ = false;
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
@@ -13656,8 +13704,9 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
     state_label = "ERROR";
   }
   playback_progress_->setToolTip(
-      QString("Pipeline: %1\nStage: %2\nActive pipelines: %3\nElapsed: %4\nTotal: %5\nRemaining: %6\nETA: %7\n"
-              "Output FPS: %8 (average %9)\nProcessing speed: %10%11")
+      QString(
+          "Pipeline: %1\nStage: %2\nActive pipelines: %3\nElapsed: %4\nTotal: %5\nRemaining: %6\nETA: %7\n"
+          "Output FPS: %8 (average %9)\nProcessing speed: %10%11")
           .arg(state_label, playback_stage_, playback_instances_, playback_elapsed_, playback_total_)
           .arg(playback_remaining_, eta, fps, playback_fps_average_)
           .arg(
@@ -13783,7 +13832,7 @@ void HStreamWindow::beginArchiveJobLog(const QString& configured_output_path, co
     return;
   }
 #ifdef Q_OS_UNIX
-  struct stat initial_log_stat {};
+  struct stat initial_log_stat{};
   if (::fstat(archive_job_log_.handle(), &initial_log_stat) != 0 || !S_ISREG(initial_log_stat.st_mode)) {
     const QString identity_error = QString::fromLocal8Bit(std::strerror(errno));
     archive_job_log_.close();
@@ -13831,7 +13880,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
   quint64 expected_log_device = 0;
   quint64 expected_log_inode = 0;
   int pinned_log_fd = -1;
-  struct stat open_log_stat {};
+  struct stat open_log_stat{};
   QString durability_error;
 #ifdef Q_OS_UNIX
   if (archive_job_log_.isOpen()) {
@@ -13841,7 +13890,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
       if (!archive_job_log_guard_path_.isEmpty()) {
         const QByteArray encoded_guard = QFile::encodeName(archive_job_log_guard_path_);
         pinned_log_fd = ::open(encoded_guard.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        struct stat pinned_log_stat {};
+        struct stat pinned_log_stat{};
         if (pinned_log_fd < 0 || ::fstat(pinned_log_fd, &pinned_log_stat) != 0 ||
             !same_file_identity(pinned_log_stat, open_log_stat)) {
           if (pinned_log_fd >= 0)
@@ -13987,7 +14036,7 @@ void HStreamWindow::resolveArchiveJobLogPath(const QString& resolved_output_path
     }
   }
   int copied_log_fd = -1;
-  struct stat copied_log_stat {};
+  struct stat copied_log_stat{};
   QString copied_log_guard_path;
   const auto rollback_cross_filesystem_copy = [&]() {
     QString rollback_error;
@@ -14262,7 +14311,7 @@ bool HStreamWindow::reopenArchiveJobLog(
       *error = QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
-  struct stat log_stat {};
+  struct stat log_stat{};
   const int stat_result = ::fstat(fd, &log_stat);
   const bool identity_matches = expected_inode == 0 ||
       (static_cast<quint64>(log_stat.st_dev) == expected_device &&
@@ -14300,7 +14349,7 @@ bool HStreamWindow::reopenArchiveJobLog(
 
 void HStreamWindow::finishArchiveJobLog(bool retire_identity_guard) {
   QString durability_error;
-  struct stat open_log_stat {};
+  struct stat open_log_stat{};
   bool have_open_log_identity = false;
   if (archive_job_log_.isOpen()) {
 #ifdef Q_OS_UNIX
@@ -14374,8 +14423,9 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
     archive_output_path_label_->setText(
         active_archive_recovery_path_.isEmpty()
             ? QString("Current archive: %1\nRoute change applies to the next run").arg(active_archive_output_path_)
-            : QString("Current archive: %1\nPrevious archive retained for recovery: "
-                      "%2\nRoute change applies to the next run")
+            : QString(
+                  "Current archive: %1\nPrevious archive retained for recovery: "
+                  "%2\nRoute change applies to the next run")
                   .arg(active_archive_output_path_, active_archive_recovery_path_));
   } else if (archive_output_path_label_ && archive_enabled) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -14394,8 +14444,9 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
         active_stitched_archive_recovery_path_.isEmpty()
             ? QString("Current stitched archive: %1\nRoute change applies to the next run")
                   .arg(active_stitched_archive_output_path_)
-            : QString("Current stitched archive: %1\nPrevious archive retained for recovery: %2\nRoute change applies "
-                      "to the next run")
+            : QString(
+                  "Current stitched archive: %1\nPrevious archive retained for recovery: %2\nRoute change applies "
+                  "to the next run")
                   .arg(active_stitched_archive_output_path_, active_stitched_archive_recovery_path_));
   } else if (stitched_archive_output_path_label_ && stitched_archive_enabled) {
     const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -14462,7 +14513,7 @@ bool HStreamWindow::acquireArchiveFinalizerOwnership(const QString& source_path,
 void HStreamWindow::releaseArchiveFinalizerOwnership(bool remove_lock_file) {
 #ifdef Q_OS_UNIX
   if (archive_finalize_owner_lock_fd_ >= 0) {
-    struct stat lock_stat {};
+    struct stat lock_stat{};
     const bool have_lock_identity =
         ::fstat(archive_finalize_owner_lock_fd_, &lock_stat) == 0 && S_ISREG(lock_stat.st_mode);
     if (remove_lock_file && have_lock_identity && !archive_finalize_owner_lock_path_.isEmpty()) {
@@ -14504,12 +14555,12 @@ bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require
   bool released = true;
 #ifdef Q_OS_UNIX
   UiDeferredCleanupRetirement deferred_retirement;
-  struct stat source_stat {};
+  struct stat source_stat{};
   if (remove_guard && archive_finalize_source_fd_ >= 0 && !archive_finalize_source_guard_path_.isEmpty() &&
       ::fstat(archive_finalize_source_fd_, &source_stat) == 0 && S_ISREG(source_stat.st_mode)) {
     QString cleanup_error;
     const bool source_path_is_primary = path_has_file_identity(archive_finalize_source_path_, source_stat);
-    struct stat target_stat {};
+    struct stat target_stat{};
     const bool target_identity_available = require_target_identity && archive_finalize_target_fd_ >= 0 &&
         ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
         static_cast<quint64>(target_stat.st_dev) == archive_finalize_target_device_ &&
@@ -14568,7 +14619,7 @@ bool HStreamWindow::releaseArchiveFinalizeSource(bool remove_guard, bool require
 bool HStreamWindow::releaseArchiveFinalizeTarget(bool remove_guard) {
   bool released = true;
 #ifdef Q_OS_UNIX
-  struct stat target_stat {};
+  struct stat target_stat{};
   if (remove_guard && archive_finalize_target_fd_ >= 0 && !archive_finalize_target_guard_path_.isEmpty() &&
       ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode)) {
     QString cleanup_error;
@@ -14697,8 +14748,9 @@ void HStreamWindow::startArchiveFinalization(
     if (!reconcile_scoped_ui_cleanup_directory(cleanup_directory, &cleanup_error)) {
       archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
       showArchiveFinalizationFailure(
-          QString("Could not reconcile an interrupted archive cleanup in %1: %2\n\nDo not start another archive "
-                  "run until the retained files have been copied to safety.")
+          QString(
+              "Could not reconcile an interrupted archive cleanup in %1: %2\n\nDo not start another archive "
+              "run until the retained files have been copied to safety.")
               .arg(cleanup_directory, cleanup_error));
       return;
     }
@@ -14756,8 +14808,8 @@ void HStreamWindow::startArchiveFinalization(
 #ifdef Q_OS_UNIX
   const QByteArray encoded_source = QFile::encodeName(archive_finalize_source_path_);
   const int source_fd = ::open(encoded_source.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  struct stat source_stat {};
-  struct stat named_source_stat {};
+  struct stat source_stat{};
+  struct stat named_source_stat{};
   if (source_fd < 0 || ::fstat(source_fd, &source_stat) != 0 || !S_ISREG(source_stat.st_mode) ||
       ::lstat(encoded_source.constData(), &named_source_stat) != 0 ||
       !same_file_identity(source_stat, named_source_stat)) {
@@ -14766,8 +14818,9 @@ void HStreamWindow::startArchiveFinalization(
       ::close(source_fd);
     archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
     showArchiveFinalizationFailure(
-        QString("Could not pin the completed archive for finalization: %1\n\nDo not start another archive run until "
-                "this file has been copied to safety.")
+        QString(
+            "Could not pin the completed archive for finalization: %1\n\nDo not start another archive run until "
+            "this file has been copied to safety.")
             .arg(QString::fromLocal8Bit(std::strerror(saved_errno))));
     return;
   }
@@ -14783,8 +14836,9 @@ void HStreamWindow::startArchiveFinalization(
     releaseArchiveFinalizeSource(false);
     archive_finalize_blocked_source_path_ = archive_finalize_source_path_;
     showArchiveFinalizationFailure(
-        QString("Could not protect the completed archive during finalization: %1\n\nDo not start another archive "
-                "run until this file has been copied to safety.")
+        QString(
+            "Could not protect the completed archive during finalization: %1\n\nDo not start another archive "
+            "run until this file has been copied to safety.")
             .arg(source_guard_error));
     return;
   }
@@ -14811,8 +14865,13 @@ void HStreamWindow::startArchiveFinalization(
     failArchiveFinalization(QString("Could not create the game directory: %1").arg(target_info.absolutePath()));
     return;
   }
+  const auto state = hm::game_storage::EnsureStateDirectory(target_info.absolutePath().toStdString());
+  if (!state.ok()) {
+    failArchiveFinalization(QString::fromStdString(state.ToString()));
+    return;
+  }
   QTemporaryDir temporary_directory(
-      QDir(target_info.absolutePath())
+      QDir(target_info.absolutePath() + "/_hockeymon")
           .filePath(QString("%1-hstream-finalize-XXXXXX").arg(target_info.completeBaseName())));
   if (!temporary_directory.isValid()) {
     failArchiveFinalization(
@@ -15037,15 +15096,9 @@ void HStreamWindow::startNextArchiveFinalization() {
         startManagedArchiveFinalization();
         return;
       }
-      const auto run = YAML::LoadFile(managed_archive_manifest_.toStdString());
-      if (run["state"].as<std::string>() != "running" || !run["outputs"].IsSequence() ||
-          run["outputs"].size() != 0) {
-        throw std::runtime_error("Managed pipeline did not complete successfully; working outputs retained");
-      }
-      // Older runners do not implement the manifest protocol. Preserve their
-      // existing publication path. Without a completed manifest there is no
-      // authority to remove this workspace.
-      appendLog("Legacy archive runner: managed workspace retained at " + managed_archive_manifest_);
+      throw std::runtime_error(
+          "The archive runner did not commit a managed completion receipt; working outputs retained. "
+          "Use a current native runner before starting a new archive run.");
     } catch (const std::exception& error) {
       ensureArchiveFinalizationDialog();
       const QString manifest = std::exchange(managed_archive_manifest_, {});
@@ -15162,7 +15215,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     bool recovery_artifact_retained = true;
     bool recovery_log_retained = true;
 #ifdef Q_OS_UNIX
-    struct stat recovery_stat {};
+    struct stat recovery_stat{};
     if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_REPLACEMENT_DURING_SYNC")) {
       const QByteArray encoded_recovery = QFile::encodeName(archive_finalize_source_path_);
       ::unlink(encoded_recovery.constData());
@@ -15194,7 +15247,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
     recovery_identity_valid = recovery_fd_valid && path_has_file_identity(archive_finalize_source_path_, recovery_stat);
     const bool recovery_guard_valid = recovery_fd_valid && !archive_finalize_source_guard_path_.isEmpty() &&
         path_has_file_identity(archive_finalize_source_guard_path_, recovery_stat);
-    struct stat recovery_log_stat {};
+    struct stat recovery_log_stat{};
     if (archive_finalize_recovery_log_fd_ >= 0) {
       if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_RECOVERY_LOG_REPLACEMENT_DURING_SYNC")) {
         const QByteArray encoded_log = QFile::encodeName(archive_job_log_path_);
@@ -15238,7 +15291,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
           archive_job_log_guard_path_.clear();
         } else if (recovery_log_fd_valid) {
           QString rescue_error;
-          struct stat rescued_log_stat {};
+          struct stat rescued_log_stat{};
           archive_job_log_path_ = rescue_open_file_no_replace(
               archive_finalize_recovery_log_fd_,
               recovery_log_stat,
@@ -15281,7 +15334,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         archive_finalize_source_guard_path_.clear();
       } else if (recovery_fd_valid) {
         QString rescue_error;
-        struct stat rescued_video_stat {};
+        struct stat rescued_video_stat{};
         archive_finalize_source_path_ = rescue_open_file_no_replace(
             archive_finalize_source_fd_,
             recovery_stat,
@@ -15355,7 +15408,7 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
       return;
     }
 #ifdef Q_OS_UNIX
-    struct stat target_stat {};
+    struct stat target_stat{};
     const bool target_fd_is_valid = archive_finalize_target_fd_ >= 0 &&
         ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
         static_cast<quint64>(target_stat.st_dev) == archive_finalize_target_device_ &&
@@ -15402,11 +15455,17 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         }
         QString new_guard_path;
         QString guard_error;
-        if (!create_open_file_guard(archive_finalize_target_fd_, candidate, &new_guard_path, &guard_error)) {
+        if (!create_open_file_guard(
+                archive_finalize_target_fd_,
+                candidate,
+                &new_guard_path,
+                &guard_error,
+                gameDirectory(archive_finalize_game_id_))) {
           QString cleanup_error;
           remove_path_if_same_identity(candidate, target_stat, &cleanup_error);
-          struct stat occupied_guard_stat {};
-          const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
+          struct stat occupied_guard_stat{};
+          const QByteArray encoded_guard =
+              QFile::encodeName(final_archive_guard_path(gameDirectory(archive_finalize_game_id_), candidate));
           if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
             continue;
           republish_error = guard_error;
@@ -15450,11 +15509,11 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
   }
 
   int pinned_partial_fd = -1;
-  struct stat partial_stat {};
+  struct stat partial_stat{};
 #ifdef Q_OS_UNIX
   const QByteArray encoded_partial = QFile::encodeName(archive_finalize_partial_path_);
   pinned_partial_fd = ::open(encoded_partial.constData(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-  struct stat named_partial_stat {};
+  struct stat named_partial_stat{};
   if (pinned_partial_fd < 0 || ::fstat(pinned_partial_fd, &partial_stat) != 0 || !S_ISREG(partial_stat.st_mode) ||
       partial_stat.st_size <= 0 || ::lstat(encoded_partial.constData(), &named_partial_stat) != 0 ||
       !same_file_identity(partial_stat, named_partial_stat)) {
@@ -15495,11 +15554,16 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         path_has_file_identity(candidate, partial_stat)) {
       QString target_guard_error;
       if (!create_open_file_guard(
-              pinned_partial_fd, candidate, &archive_finalize_target_guard_path_, &target_guard_error)) {
+              pinned_partial_fd,
+              candidate,
+              &archive_finalize_target_guard_path_,
+              &target_guard_error,
+              gameDirectory(archive_finalize_game_id_))) {
         QString cleanup_error;
         remove_path_if_same_identity(candidate, partial_stat, &cleanup_error);
-        struct stat occupied_guard_stat {};
-        const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
+        struct stat occupied_guard_stat{};
+        const QByteArray encoded_guard =
+            QFile::encodeName(final_archive_guard_path(gameDirectory(archive_finalize_game_id_), candidate));
         if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
           continue;
         publication_error = QString("Could not protect the completed MP4 at %1: %2").arg(candidate, target_guard_error);
@@ -15699,7 +15763,7 @@ void HStreamWindow::completeArchiveFinalization() {
   bool source_removed = false;
   bool source_was_replaced = false;
 #ifdef Q_OS_UNIX
-  struct stat target_stat {};
+  struct stat target_stat{};
   const bool target_is_pinned = archive_finalize_target_fd_ >= 0 &&
       ::fstat(archive_finalize_target_fd_, &target_stat) == 0 && S_ISREG(target_stat.st_mode) &&
       static_cast<quint64>(target_stat.st_dev) == archive_finalize_target_device_ &&
@@ -15712,7 +15776,7 @@ void HStreamWindow::completeArchiveFinalization() {
     final_size = target_stat.st_size;
 #endif
 #ifdef Q_OS_UNIX
-  struct stat source_stat {};
+  struct stat source_stat{};
   if (archive_finalize_source_fd_ >= 0 && ::fstat(archive_finalize_source_fd_, &source_stat) == 0 &&
       S_ISREG(source_stat.st_mode) && static_cast<quint64>(source_stat.st_dev) == archive_finalize_source_device_ &&
       static_cast<quint64>(source_stat.st_ino) == archive_finalize_source_inode_) {
@@ -15767,7 +15831,7 @@ void HStreamWindow::completeArchiveFinalization() {
   if (!releaseArchiveFinalizeTarget(true)) {
     QString retained_target;
 #ifdef Q_OS_UNIX
-    struct stat retained_target_stat {};
+    struct stat retained_target_stat{};
     const bool have_target_identity = archive_finalize_target_fd_ >= 0 &&
         ::fstat(archive_finalize_target_fd_, &retained_target_stat) == 0 && S_ISREG(retained_target_stat.st_mode);
     if (have_target_identity && path_has_file_identity(archive_finalize_target_path_, retained_target_stat)) {
@@ -15876,6 +15940,15 @@ void HStreamWindow::finishCompletedArchivePresentation(
   }
   static_cast<StitchingCalibrationDialog*>(archive_finalize_dialog_)->setCloseAllowed(true);
   writeCompletedArchiveSidecar();
+  const auto game = gameDirectory(archive_finalize_game_id_).toStdString();
+  for (const QString& path :
+       {archive_finalize_target_path_, hm::ui::ArchiveSidecarPath(archive_finalize_target_path_)}) {
+    if (QFileInfo::exists(path)) {
+      const auto inventory = hm::game_storage::RegisterPublished(game, path.toStdString(), "archive", "");
+      if (!inventory.ok())
+        appendLog(QString::fromStdString(inventory.ToString()));
+    }
+  }
   appendLog(
       QString("completed archive published: %1 (%2 bytes)%3")
           .arg(archive_finalize_target_path_)
@@ -15941,8 +16014,8 @@ void HStreamWindow::writeCompletedArchiveSidecar() {
   entry.path = archive_finalize_target_path_;
   entry.game_id = archive_finalize_game_id_;
   entry.kind = archive_finalize_output_id_ == "archive-program-4k" ? "program_4k"
-      : archive_finalize_output_id_ == "archive-stitched"         ? "stitched"
-                                                                  : "program";
+      : archive_finalize_output_id_ == "archive-stitched"          ? "stitched"
+                                                                   : "program";
   entry.start_time_ms = active_run_start_time_ms_;
   entry.start_time_known = true;
   if (archive_finalize_duration_us_ > 0)
@@ -16022,7 +16095,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
   QString failure_detail = message;
 #ifdef Q_OS_UNIX
   if (archive_finalize_target_fd_ >= 0) {
-    struct stat failed_target_stat {};
+    struct stat failed_target_stat{};
     const bool have_failed_target_identity =
         ::fstat(archive_finalize_target_fd_, &failed_target_stat) == 0 && S_ISREG(failed_target_stat.st_mode);
     const QString failed_target_path = archive_finalize_target_path_;
@@ -16041,7 +16114,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
         remove_path_if_same_identity(failed_guard_path, failed_target_stat, &cleanup_error);
     }
   }
-  struct stat original_archive_stat {};
+  struct stat original_archive_stat{};
   const bool has_pinned_archive = archive_finalize_source_fd_ >= 0 &&
       ::fstat(archive_finalize_source_fd_, &original_archive_stat) == 0 && S_ISREG(original_archive_stat.st_mode) &&
       static_cast<quint64>(original_archive_stat.st_dev) == archive_finalize_source_device_ &&
@@ -16062,7 +16135,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
       }
     }
     bool has_job_log = false;
-    struct stat original_log_stat {};
+    struct stat original_log_stat{};
     int pinned_log_fd = -1;
     if (archive_job_log_.isOpen() && ::fstat(archive_job_log_.handle(), &original_log_stat) == 0 &&
         S_ISREG(original_log_stat.st_mode)) {
@@ -16125,7 +16198,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
     for (int suffix = 1; suffix <= 1000; ++suffix) {
       const QString candidate = failed_archive_candidate(original_archive_path, suffix);
       const QString candidate_log = candidate + ".log";
-      struct stat reservation_stat {};
+      struct stat reservation_stat{};
       bool candidate_log_reserved = false;
       bool candidate_log_is_marker = false;
       bool log_pin_reanchored = false;
@@ -16241,7 +16314,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           remove_path_if_same_identity(candidate_log, reservation_stat, &cleanup_error, {}, nullptr, &marker_fd);
         if (marker_fd >= 0)
           ::close(marker_fd);
-        struct stat occupied_guard_stat {};
+        struct stat occupied_guard_stat{};
         const QByteArray encoded_guard = QFile::encodeName(candidate + ".hstream-pin");
         if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
           continue;
@@ -16260,7 +16333,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
           remove_path_if_same_identity(candidate_log, original_log_stat, &cleanup_error);
           if (marker_fd >= 0)
             ::close(marker_fd);
-          struct stat occupied_guard_stat {};
+          struct stat occupied_guard_stat{};
           const QByteArray encoded_guard = QFile::encodeName(candidate_log + ".hstream-pin");
           if (::lstat(encoded_guard.constData(), &occupied_guard_stat) == 0)
             continue;
@@ -16671,7 +16744,7 @@ void HStreamWindow::changeScoreboardPosition() {
       status = lock.status();
     } else {
       try {
-        const fs::path path = directory / "config.yaml";
+        const fs::path path = directory / "_hockeymon/config.yaml";
         YAML::Node config = fs::exists(path) ? YAML::LoadFile(path.string()) : YAML::Node(YAML::NodeType::Map);
         config["rink"]["scoreboard"]["position"] = position.toStdString();
         for (const char* key : {"scoreboard-position", "scoreboard_position"}) {
@@ -16741,8 +16814,8 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
 
     QVector<QPoint> initial_points;
     const QString game_dir = gameDirectory(active_run_game_id_);
-    const QString config_path = QDir(game_dir).filePath("config.yaml");
-    QString image_path = QDir(game_dir).filePath("s.png");
+    const QString config_path = QDir(game_dir).filePath("_hockeymon/config.yaml");
+    QString image_path = QDir(game_dir).filePath("_hockeymon/s.png");
     bool run_scoped = false;
     if (active_hockeymon_program_) {
       try {
@@ -16821,8 +16894,7 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
       scoreboard_selection_dialog_->closeAfterBackendCompletion();
       scoreboard_selection_dialog_ = nullptr;
     }
-    auto* dialog =
-        new ScoreboardSelectionDialog(QUrl(url_text), image_path, initial_points, this);
+    auto* dialog = new ScoreboardSelectionDialog(QUrl(url_text), image_path, initial_points, this);
     if (run_scoped)
       dialog->setRunScopedSelection();
     dialog->loadProposal();
@@ -16944,7 +17016,7 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
   const bool marker_valid = !marker_info.isSymLink() && marker_info.isFile() && marker_info.size() == 2 &&
       marker.open(QIODevice::ReadOnly) && marker.readAll() == "2\n";
   if (canonical_directory.isEmpty() || canonical_game.isEmpty() || !staging_info.isDir() ||
-      staging_info.dir().canonicalPath() != canonical_game ||
+      staging_info.dir().canonicalPath() != QDir(canonical_game + "/_hockeymon").canonicalPath() ||
       !staging_name_pattern.match(staging_info.fileName()).hasMatch() || !marker_valid) {
     appendLog("rejected an invalid in-progress rink leveling directory; stopping safely");
     stopPipeline();
@@ -17086,7 +17158,7 @@ void HStreamWindow::handleProjectionCropOutput(const QString& line) {
   const bool marker_valid = !marker_info.isSymLink() && marker_info.isFile() && marker_info.size() == 2 &&
       marker.open(QIODevice::ReadOnly) && marker.readAll() == "2\n";
   if (canonical_directory.isEmpty() || canonical_game.isEmpty() || !staging_info.isDir() ||
-      staging_info.dir().canonicalPath() != canonical_game ||
+      staging_info.dir().canonicalPath() != QDir(canonical_game + "/_hockeymon").canonicalPath() ||
       !staging_name_pattern.match(staging_info.fileName()).hasMatch() || !marker_valid) {
     appendLog("rejected an invalid in-progress crop selection directory; stopping safely");
     stopPipeline();
@@ -17313,7 +17385,7 @@ bool HStreamWindow::handleGpuPreviewStatus(const QString& line) {
         [](const auto& entry) { return entry.second.role == "auto"; });
     if (unknown_roles) {
       const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
-      const auto saved = hm::stitching::load_game_config_file(game / "config.yaml");
+      const auto saved = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
       if (saved.ok() && saved->has_value()) {
         auto result = camera_optics_result_;
         const YAML::Node config = **saved;
@@ -18879,7 +18951,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
   if (!ensureGameDirectory()) {
     return false;
   }
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
   std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
   const bool pending_crop = hasPendingCropSelection();
@@ -18894,7 +18966,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
     if (!width_constraint_check.has_value())
       return false;
   }
-  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
   if (!config_lock.ok()) {
     appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
     return false;
@@ -18948,7 +19020,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
       width_constraint_check = lockStitchingCanvasConstraint(game_id_edit_->text().trimmed());
     if (!width_constraint_check.has_value())
       return false;
-    config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path());
+    config_lock = hm::stitching::GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
     if (!config_lock.ok()) {
       appendLog(QString("could not lock preset config: %1").arg(config_lock.status().ToString().c_str()));
       return false;
@@ -18966,7 +19038,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
       }
     }
   }
-  const QString game_dir = QString::fromStdString(config_path.parent_path().string());
+  const QString game_dir = QString::fromStdString(config_path.parent_path().parent_path().string());
   // Hold artifact -> config locks while checking both the calibration and
   // private input settings, and keep them until publication finishes.
   if (pending_view) {
@@ -19019,7 +19091,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
       before_effective["stitching"]["max_output_width"] = previous_max_output_width;
       desired_effective["stitching"]["max_output_width"] = selected_max_output_width;
       const auto reframe = hm::stitching::PrepareStitchingReframeIntentLocked(
-          config_path.parent_path(), before_effective, desired_effective, desired_owner, config);
+          config_path.parent_path().parent_path(), before_effective, desired_effective, desired_owner, config);
       if (!reframe.ok()) {
         if (!published_playtracker_sidecar.isEmpty())
           QFile::remove(published_playtracker_sidecar);
@@ -19077,7 +19149,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
     publish = absl::InternalError("preset config publication failure requested by test");
   } else if (invalidate_rink_masks) {
     auto transaction = hm::stitching::publish_game_config_without_rink_masks(
-        config_path.parent_path(), intended_config_contents, /*remove_stitched_snapshot=*/true);
+        config_path.parent_path().parent_path(), intended_config_contents, /*remove_stitched_snapshot=*/true);
     if (transaction.ok()) {
       invalidated_masks = *transaction;
       publish = absl::OkStatus();
@@ -19085,7 +19157,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
       publish = transaction.status();
     }
   } else {
-    publish = hm::stitching::publish_game_config(config_path.parent_path(), intended_config_contents);
+    publish = hm::stitching::publish_game_config(config_path.parent_path().parent_path(), intended_config_contents);
   }
   if (fail_after_config_publish && publish.ok()) {
     publish = absl::InternalError("post-commit preset config failure requested by test");
@@ -19158,9 +19230,9 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
   const QString active_sidecar = resolve_ui_persistent_playtracker_config(config, game_dir, pipelineWorkingDirectory());
   std::error_code cleanup_error;
   const auto stale_before = fs::file_time_type::clock::now() - std::chrono::hours(24);
-  for (const char* runtime_name : {kUiDirectoryName, kLegacyUiDirectoryName}) {
+  for (const char* runtime_name : {kUiDirectoryName}) {
     cleanup_error.clear();
-    const fs::path runtime_dir = config_path.parent_path() / runtime_name;
+    const fs::path runtime_dir = config_path.parent_path().parent_path() / runtime_name;
     for (fs::directory_iterator it(runtime_dir, cleanup_error), end; !cleanup_error && it != end;
          it.increment(cleanup_error)) {
       const std::string filename = it->path().filename().string();
@@ -19192,6 +19264,11 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
     }
   }
   cleanup_error.clear();
+  const auto inventory = hm::game_storage::RefreshManifest(game_dir.toStdString(), "hstream-ui");
+  if (!inventory.ok()) {
+    appendLog(QString("preset saved but game inventory could not be updated: %1").arg(inventory.ToString().c_str()));
+    return false;
+  }
   if (invalidate_rink_masks) {
     appendLog(QString("stitch rotation saved; invalidated %1 scoreboard/ice-mask artifact(s)")
                   .arg(invalidated_config_artifacts + static_cast<int>(invalidated_masks)));
@@ -19399,7 +19476,7 @@ void HStreamWindow::cleanStitchingCalibration() {
         updatePresetDirtyState();
       };
 
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = game_dir / "_hockeymon/config.yaml";
   if (!fs::exists(config_path)) {
     appendLog("stitching calibration clean complete; no game config to prune");
     reload_controls();
@@ -19926,8 +20003,9 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     appendLog(saved_control_config_load_error_);
     return;
   }
-  const fs::path config_path =
-      editing_defaults_ ? *defaults_path : fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  const fs::path config_path = editing_defaults_
+      ? *defaults_path
+      : fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   auto loaded_config = [&]() -> absl::StatusOr<std::optional<YAML::Node>> {
     if (baseline_only)
       return std::optional<YAML::Node>{};
@@ -20591,7 +20669,8 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     captureSavedControlState();
     // Metadata may have changed with the selected recordings. Keep the on-disk
     // optics as the comparison baseline so Save/Play invalidates old maps.
-    const auto persisted_camera = hm::stitching::read_stitch_camera_selection(merge_yaml_maps(baseline_config_, config));
+    const auto persisted_camera =
+        hm::stitching::read_stitch_camera_selection(merge_yaml_maps(baseline_config_, config));
     saved_camera_selection_ = persisted_camera.ok() ? *persisted_camera : *configured_camera_selection;
     updatePresetDirtyState();
     if (normalized_nona_without_autooptimizer) {
@@ -20902,10 +20981,11 @@ bool HStreamWindow::applySavedControlConfig(
   }
   const bool max_output_width_changed = previous_max_output_width != selected_max_output_width;
   const auto canvas_constraint = max_output_width_changed
-      ? max_width_decision.value_or(hm::ui_internal::decide_stitching_canvas_constraint_change(
-            /*width_changed=*/true,
-            /*artifacts_compatible=*/std::nullopt,
-            /*requires_regeneration=*/std::nullopt))
+      ? max_width_decision.value_or(
+            hm::ui_internal::decide_stitching_canvas_constraint_change(
+                /*width_changed=*/true,
+                /*artifacts_compatible=*/std::nullopt,
+                /*requires_regeneration=*/std::nullopt))
       : hm::ui_internal::StitchingCanvasConstraintDecision{};
   const QString selected_control_point_matcher = controlPointMatcher();
   const QString selected_mapping_backend = mappingBackend();
@@ -21028,10 +21108,9 @@ bool HStreamWindow::applySavedControlConfig(
     calibration["rink_mask_status"] = "pending";
     calibration["stale_from"] = stale_from.toStdString();
     const bool only_width_changed = canvas_constraint.calibration_required && !stitch_frame_time_changed &&
-        !sync_method_changed &&
-        !control_points_changed && !frame_count_changed && !control_point_matcher_changed && !mapping_backend_changed &&
-        !camera_changed && !projection_changed && !projection_parameters_changed && !projection_framing_changed &&
-        !run_autooptimizer_changed;
+        !sync_method_changed && !control_points_changed && !frame_count_changed && !control_point_matcher_changed &&
+        !mapping_backend_changed && !camera_changed && !projection_changed && !projection_parameters_changed &&
+        !projection_framing_changed && !run_autooptimizer_changed;
     calibration["artifacts_invalidated"] =
         only_width_changed && !canvas_constraint.cleanup_required && stale_from == "canvas";
     calibration["invalidation_id"] = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
@@ -21613,10 +21692,17 @@ bool HStreamWindow::addVideoFile(const QString& path) {
         QString("could not lock video import transaction: %1").arg(config_transaction.status().ToString().c_str()));
     return false;
   }
+  const auto inventory = qScopeGuard([&] {
+    const auto status = hm::game_storage::RefreshManifest(game_dir_path, "hstream-ui");
+    if (!status.ok())
+      appendLog(QString("could not update game inventory after video import: %1").arg(status.ToString().c_str()));
+  });
 
   QString imported_relative_path;
   bool imported_path_created = false;
   if (!importVideoPath(path, &imported_relative_path, &imported_path_created)) {
+    if (imported_path_created)
+      rollbackImportedVideoPath(imported_relative_path);
     return false;
   }
 
@@ -21690,7 +21776,7 @@ void HStreamWindow::removeSelectedVideoSet() {
   }
   const QString role = item->data(Qt::UserRole).toString();
   const QString relative_path = item->data(Qt::UserRole + 1).toString();
-  const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
+  const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("_hockeymon/config.yaml");
   QByteArray original_config;
   bool had_config = false;
   bool copied_import = false;
@@ -21708,6 +21794,12 @@ void HStreamWindow::removeSelectedVideoSet() {
     video_set_list_->insertItem(row, item);
     return;
   }
+  const auto inventory = qScopeGuard([&] {
+    const auto status =
+        hm::game_storage::RefreshManifest(gameDirectory(game_id_edit_->text()).toStdString(), "hstream-ui");
+    if (!status.ok())
+      appendLog(QString("could not update game inventory after video removal: %1").arg(status.ToString().c_str()));
+  });
 
   QByteArray removed_config;
   if (!removePrivateConfigForRole(
@@ -21808,7 +21900,7 @@ void HStreamWindow::refreshVideoSets() {
     }
   }
 
-  const fs::path config_path = fs::path(dir.toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(dir.toStdString()) / "_hockeymon/config.yaml";
   auto loaded_config = hm::stitching::load_game_config_file(config_path);
   if (!loaded_config.ok()) {
     appendLog(QString("could not list configured videos: %1").arg(loaded_config.status().ToString().c_str()));
@@ -21847,8 +21939,7 @@ void HStreamWindow::refreshVideoSets() {
           if (configured_paths.count(path) || !QFileInfo::exists(game_dir.filePath(path)))
             continue;
           for (const QString& role : {QString("left"), QString("center"), QString("right")}) {
-            if (path.startsWith(QString("%1/%2/").arg(kUiDirectoryName, role)) ||
-                path.startsWith(QString("%1/%2/").arg(kLegacyUiDirectoryName, role))) {
+            if (path.startsWith(QString("%1/%2/").arg(kUiDirectoryName, role))) {
               configured_paths.insert(path);
               add_item(role, path);
               break;
@@ -21982,6 +22073,31 @@ bool HStreamWindow::importVideoPath(const QString& source_path, QString* importe
   }
 
   const QString game_dir = gameDirectory(game_id_edit_->text());
+  const auto state = hm::game_storage::EnsureStateDirectory(game_dir.toStdString());
+  if (!state.ok()) {
+    appendLog(QString("could not prepare game state for video import: %1").arg(state.ToString().c_str()));
+    return false;
+  }
+  const auto register_import = [&](const QString& path) {
+    if (role == "auto") {
+      for (const auto& imported : {QFileInfo(path).absolutePath(), path}) {
+        const auto registered =
+            hm::game_storage::RegisterInput(game_dir.toStdString(), imported.toStdString(), "hstream-ui");
+        if (!registered.ok()) {
+          appendLog(
+              QString("could not inventory imported recording %1: %2").arg(imported, registered.ToString().c_str()));
+          return false;
+        }
+      }
+    } else {
+      const auto inventory = hm::game_storage::RefreshManifest(game_dir.toStdString(), "hstream-ui");
+      if (!inventory.ok()) {
+        appendLog(QString("could not inventory imported recording: %1").arg(inventory.ToString().c_str()));
+        return false;
+      }
+    }
+    return true;
+  };
   QDir target_dir(game_dir);
   int max_cam_index = 0;
   if (role == "auto") {
@@ -22009,7 +22125,7 @@ bool HStreamWindow::importVideoPath(const QString& source_path, QString* importe
   } else if (is_explicit_role(role)) {
     const QString ui_dir = kUiDirectoryName;
     const QString role_dir = ui_dir + "/" + role;
-    if (!target_dir.exists(ui_dir) && !target_dir.mkdir(ui_dir)) {
+    if (!target_dir.exists(ui_dir) && !target_dir.mkpath(ui_dir)) {
       appendLog(QString("failed to create UI metadata directory %1").arg(ui_dir));
       return false;
     }
@@ -22037,7 +22153,7 @@ bool HStreamWindow::importVideoPath(const QString& source_path, QString* importe
     const QString relative_path = QDir(game_dir).relativeFilePath(dest_path);
     if (copied_auto_import_matches(QDir(game_dir), relative_path, auto_group_family, source_parent)) {
       *imported_relative_path = relative_path;
-      return true;
+      return register_import(dest_path);
     }
     target_dir = QDir(game_dir);
     const QString cam_dir = QString("cam%1").arg(++max_cam_index);
@@ -22076,14 +22192,14 @@ bool HStreamWindow::importVideoPath(const QString& source_path, QString* importe
   }
 
   *imported_relative_path = relativeToGameDir(dest_path);
-  return true;
+  return register_import(dest_path);
 }
 
 bool HStreamWindow::saveCopiedImport(
     const QString& relative_path,
     const QString& auto_group_family,
     const QString& source_parent) {
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -22141,7 +22257,7 @@ bool HStreamWindow::saveCopiedImport(
 
 bool HStreamWindow::rollbackImportedVideoPath(const QString& relative_path) {
   const QDir game_dir(gameDirectory(game_id_edit_->text()));
-  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(game_dir.absolutePath().toStdString()) / "_hockeymon/config.yaml";
   bool copied_import = false;
   YAML::Node config(YAML::NodeType::Map);
   if (fs::exists(config_path)) {
@@ -22247,7 +22363,7 @@ HStreamWindow::CopiedImportCleanupResult HStreamWindow::removeClearedCopiedExpli
   YAML::Node old_config;
   YAML::Node current_config;
   YAML::Node auto_config;
-  const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("config.yaml");
+  const QString config_file = QDir(gameDirectory(game_id_edit_->text())).filePath("_hockeymon/config.yaml");
   const fs::path config_path(config_file.toStdString());
   try {
     old_config = YAML::Load(original_config.toStdString());
@@ -22426,7 +22542,7 @@ bool HStreamWindow::savePrivateConfigForRole(
     *had_config = false;
   if (published_config)
     published_config->clear();
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   YAML::Node config;
   if (fs::exists(config_path)) {
     try {
@@ -22525,7 +22641,7 @@ bool HStreamWindow::removePrivateConfigForRole(
     return true;
   }
 
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   if (!fs::exists(config_path)) {
     return true;
   }
@@ -22636,7 +22752,7 @@ bool HStreamWindow::restorePrivateConfigAfterRemoveFailure(
     const QByteArray& original_config,
     bool had_config,
     const QByteArray& removed_config) {
-  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "config.yaml";
+  const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   try {
     const YAML::Node original = had_config ? YAML::Load(original_config.toStdString()) : YAML::Node();
     const YAML::Node removed = removed_config.isEmpty() ? YAML::Node() : YAML::Load(removed_config.toStdString());
@@ -22848,7 +22964,7 @@ QString HStreamWindow::writePlaytrackerRuntimeConfig() {
       ? runtime_dir.filePath(QString("play_tracker_runtime_%1.yaml").arg(scheduled_playtracker_control_generation_))
       : persistent_runtime_config;
   try {
-    const fs::path game_config_path = fs::path(game_dir.toStdString()) / "config.yaml";
+    const fs::path game_config_path = fs::path(game_dir.toStdString()) / "_hockeymon/config.yaml";
     auto loaded_game_config = hm::stitching::load_game_config_file(game_config_path);
     if (!loaded_game_config.ok()) {
       appendLog(
@@ -22926,6 +23042,12 @@ void HStreamWindow::handleRuntimeControlResponse(const QString& line) {
           QFile::remove(last_playtracker_runtime_snapshot_);
         }
         last_playtracker_runtime_snapshot_ = acknowledged.runtime_value;
+      }
+      if (!active_run_game_id_.isEmpty()) {
+        const auto inventory =
+            hm::game_storage::RefreshManifest(gameDirectory(active_run_game_id_).toStdString(), "hstream-ui");
+        if (!inventory.ok())
+          appendLog(QString("could not inventory runtime controls: %1").arg(inventory.ToString().c_str()));
       }
     }
     const auto batch = runtime_control_batches_.find(acknowledged.batch_id);
@@ -23330,12 +23452,15 @@ bool HStreamWindow::publishRotationRuntimeControls(
       changed.insert(id.toStdString());
     const auto fixed_commands = hm::program::FixedEdgeRotationCommands(values, changed, cropRotationSuppressed());
     if (!fixed_commands.ok()) {
-      appendLog("live rotation property conversion failed: " + QString::fromStdString(fixed_commands.status().ToString()));
+      appendLog(
+          "live rotation property conversion failed: " + QString::fromStdString(fixed_commands.status().ToString()));
       return false;
     }
     for (const auto& command : *fixed_commands)
-      commands.push_back({QString::fromStdString(command.element), QString::fromStdString(command.property),
-                          QString::fromStdString(command.value)});
+      commands.push_back(
+          {QString::fromStdString(command.element),
+           QString::fromStdString(command.property),
+           QString::fromStdString(command.value)});
   }
   if (epoch_command.has_value())
     commands.push_back(std::move(*epoch_command));
@@ -23808,8 +23933,10 @@ QCheckBox* HStreamWindow::addCameraCheckBox(
   const bool high_bit_depth_mode = id == "Use_10_Bit_Grading";
   if (high_bit_depth_mode) {
     checkbox->setTristate(true);
-    checkbox->setCheckState(default_high_bit_depth_mode_ == "1" ? Qt::Checked
-        : default_high_bit_depth_mode_ == "0" ? Qt::Unchecked : Qt::PartiallyChecked);
+    checkbox->setCheckState(
+        default_high_bit_depth_mode_ == "1"       ? Qt::Checked
+            : default_high_bit_depth_mode_ == "0" ? Qt::Unchecked
+                                                  : Qt::PartiallyChecked);
   } else {
     checkbox->setChecked(checked);
   }

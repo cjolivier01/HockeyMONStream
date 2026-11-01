@@ -237,7 +237,11 @@ bool link_fixture(const fs::path& source_game, const fs::path& test_game) {
   if (ec) {
     return false;
   }
-  fs::copy_file(source_game / "config.yaml", test_game / "config.yaml", fs::copy_options::overwrite_existing, ec);
+  fs::copy_file(
+      source_game / "_hockeymon/config.yaml",
+      test_game / "_hockeymon/config.yaml",
+      fs::copy_options::overwrite_existing,
+      ec);
   if (ec) {
     return false;
   }

@@ -22,6 +22,7 @@
 #include "hstream/src/gst-plugins/gst-rink-map/RinkMapOverlay.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigPath.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
@@ -171,8 +172,9 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   const auto limit = args.limit;
   std::optional<hm::BitratePerPixel> source_bitrate;
   std::filesystem::path archive_directory;
+  const auto managed_work = hm::publication::EnvironmentWorkingDirectory();
   if (encoding) {
-    archive_directory = hm::publication::EnvironmentWorkingDirectory();
+    archive_directory = managed_work;
     if (archive_directory.empty())
       archive_directory = Take(hm::user_config::output_root(launch.configuration.values)) / args.game;
     uint64_t selected_bitrate = 0, selected_pixels = 0;
@@ -195,8 +197,18 @@ void Run(const hm::program::AmdPipelineOptions& args) {
     if (!source_bitrate)
       g_printerr("Program source video bitrate metadata is unavailable; retaining configured archive bitrate\n");
   }
-  const auto archives = Take(hm::program::ResolveProgramArchives(
+  auto archives = Take(hm::program::ResolveProgramArchives(
       launch.configuration, args.sinks, output_config, archive_directory, source_bitrate));
+  if (!managed_work.empty()) {
+    std::set<std::filesystem::path> paths;
+    for (auto& [name, archive] : archives) {
+      archive.path = Take(hm::game_storage::ConfineWorkDirectory(launch.game, archive.path.parent_path())) /
+          archive.path.filename();
+      Require(
+          paths.insert(std::filesystem::weakly_canonical(archive.path)).second,
+          "Program archive outputs resolve to the same private working file");
+    }
+  }
   std::map<std::string, std::unique_ptr<hm::program::ProgramFileOutput>> files;
   for (const auto& [name, archive] : archives) {
     std::filesystem::create_directories(archive.path.parent_path());
@@ -660,7 +672,7 @@ void Run(const hm::program::AmdPipelineOptions& args) {
   if (AbortRequested())
     throw Failure(absl::CancelledError("Program cancelled before publication"));
   for (const auto& [name, file] : files) {
-    Status(file->Commit(AbortRequested));
+    Status(file->Commit(AbortRequested, managed_work.empty() ? launch.game : std::filesystem::path{}));
     const auto& archive = archives.at(name);
     hm::publication::RegisterOutput(archive.path, archive.kind, true, file->fd());
   }

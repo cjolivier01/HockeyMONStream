@@ -483,7 +483,7 @@ def verify_canvas_provenance(
 ) -> tuple[dict[str, str], str]:
   provenance: dict[str, str] = {}
   try:
-    provenance = read_canvas_provenance(game_dir / "stitching_canvas_provenance")
+    provenance = read_canvas_provenance(game_dir / "_hockeymon/stitching_canvas_provenance")
     expected_parameters = parameter_text(parameters)
     actual_width = int(provenance["canvas-width"])
     actual_height = int(provenance["canvas-height"])
@@ -549,7 +549,7 @@ def run_state(
   invalidation_id = f"matrix-{sequence:03d}-{state_id(backend, projection, parameters, framing)}"
   control_point_matcher = str(state.get("control_point_matcher", args.control_point_matcher))
   configure_game(
-      work_root / game_id / "config.yaml",
+      work_root / game_id / "_hockeymon/config.yaml",
       state,
       invalidation_id,
       control_points,
@@ -1197,7 +1197,8 @@ def create_isolated_game(source_game_dir: Path, source_config: Path) -> tuple[Pa
         if source.is_file() and CALIBRATION_ASSET_PATTERN.fullmatch(source.name):
           link_readonly_input(source, game_dir / source.relative_to(source_game_dir))
 
-    config_path = game_dir / "config.yaml"
+    (game_dir / "_hockeymon").mkdir(exist_ok=True)
+    config_path = game_dir / "_hockeymon/config.yaml"
     prepare_force_mode_camera_roles(game_dir, loaded_config)
     with config_path.open("w", encoding="utf-8") as stream:
       yaml.safe_dump(loaded_config, stream, sort_keys=False)
@@ -1226,8 +1227,8 @@ def capture_case_samples(
   ffmpeg = shutil.which("ffmpeg")
   if ffmpeg is None:
     return "", "", "ffmpeg is unavailable; could not create inspectable JPEG samples"
-  inputs = (game_dir / "left.png", game_dir / "right.png")
-  panorama = game_dir / "panorama.tif"
+  inputs = (game_dir / "_hockeymon/left.png", game_dir / "_hockeymon/right.png")
+  panorama = game_dir / "_hockeymon/panorama.tif"
   missing = [str(path) for path in (*inputs, panorama) if not path.is_file()]
   if missing:
     return "", "", f"sample source artifact(s) missing: {', '.join(missing)}"
@@ -1290,7 +1291,7 @@ def capture_case_samples(
         ("autooptimiser_out.pto", "project.pto"),
         ("stitching_canvas_provenance", "provenance.txt"),
     ):
-      source = game_dir / source_name
+      source = game_dir / "_hockeymon" / source_name
       if source.is_file():
         shutil.copy2(source, samples_dir / f"{sequence:03d}-{safe_case}-{suffix}")
   except (OSError, subprocess.SubprocessError) as exception:
@@ -1301,7 +1302,7 @@ def capture_case_samples(
 
 def main() -> int:
   args = parse_args()
-  source_config = args.source_game_dir / "config.yaml"
+  source_config = args.source_game_dir / "_hockeymon/config.yaml"
   if not source_config.is_file() or not args.hstream_cli.is_file():
     raise SystemExit("source config or hstream-cli is missing")
   lock_path = Path(tempfile.gettempdir()) / "hstream-stitching-calibration-matrix.lock"

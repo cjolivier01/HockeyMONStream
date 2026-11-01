@@ -90,7 +90,7 @@ Older batches with a resynchronized baseline must be discarded and recreated, in
 
 Adding, running, cancelling, previewing, or discarding a batch never modifies the selected game's stitching config or
 artifacts. Closing retains the complete experiment history, configurations, extracted frames and logs under the game’s
-`stitching-experiments/` directory. Reopening restores it. **Discard experiments** explicitly removes this owned
+`_hockeymon/stitching-experiments/` directory. Reopening restores it. **Discard experiments** explicitly removes this owned
 history after confirming its runners have stopped; the directory can also be removed manually while all experiment
 dialogs and runners are closed. There is no automatic eviction. Promoted inputs live separately in the main game and survive
 experiment-cache removal. The only operation that changes
@@ -263,7 +263,7 @@ follow the selection rules below.
 
 **Use selected in main Program** validates and transactionally republishes the candidate's existing Hugin project,
 mapping TIFFs, seam, panorama, source stills, and canvas provenance under a fresh destination generation identity. It
-then merges the candidate's stitching-owned settings into the selected game's `config.yaml` and invalidates dependent
+then merges the candidate's stitching-owned settings into the selected game's `_hockeymon/config.yaml` and invalidates dependent
 rink-mask/output state. Artifact and config publication share their locks and a durable recovery boundary: an
 interruption before the selected config is durable restores the prior artifact generation, while an interruption after
 it is durable retains the matching promoted generation.
@@ -563,3 +563,8 @@ NotRunning, until its queued completion and process-group shutdown release the
 durable session fence. Play, Apply, candidate edits and inspection remain
 disabled through this interval. Apply uses the same admission predicate as the
 close guard, so opening Close cannot capture a transiently unavailable promotion.
+
+Game-owned experiment stores are under `_hockeymon/stitching-experiments/`.
+Candidate games use the same private-state layout. The game inventory indexes
+retained candidates; it does not authorize eviction or replace the store's
+owner/index records. See [game storage](game-storage.md).

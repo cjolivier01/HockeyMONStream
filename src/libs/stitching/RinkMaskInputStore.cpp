@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/RinkMaskInputStore.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <fcntl.h>
 #include <openssl/evp.h>
@@ -204,7 +205,8 @@ struct Staging {
   }
 };
 absl::StatusOr<fs::path> create_staging(const fs::path& game) {
-  auto pinned = PinnedDirectory::Open(game, "rink-mask input game");
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game));
+  auto pinned = PinnedDirectory::Open(hm::game_storage::StateDirectory(game), "rink-mask input game");
   if (!pinned.ok())
     return pinned.status();
   if (::mkdirat(pinned->descriptor(), "rink-mask-input", 0700) != 0 && errno != EEXIST)
@@ -215,7 +217,7 @@ absl::StatusOr<fs::path> create_staging(const fs::path& game) {
   if (!store->has_value())
     return absl::NotFoundError("Rink-mask input store disappeared");
   // All parent components were pinned/validated above; callers own this private game.
-  std::string pattern = (game / "rink-mask-input" / ".pending-XXXXXX").string();
+  std::string pattern = (hm::game_storage::StateDirectory(game) / "rink-mask-input" / ".pending-XXXXXX").string();
   std::vector<char> name(pattern.begin(), pattern.end());
   name.push_back(0);
   char* created = ::mkdtemp(name.data());
@@ -227,15 +229,16 @@ absl::StatusOr<fs::path> create_staging(const fs::path& game) {
 }
 absl::Status publish_staging(Staging& staged, const fs::path& game, const std::string& id) {
   HM_RETURN_IF_ERROR(sync_path(staged.path, true));
-  const fs::path target = game / "rink-mask-input" / id;
+  const fs::path target = hm::game_storage::StateDirectory(game) / "rink-mask-input" / id;
   if (::rename(staged.path.c_str(), target.c_str()) != 0) {
     if (errno != EEXIST && errno != ENOTEMPTY)
       return io_error("Cannot publish rink-mask input");
-  } else {
-    staged.path.clear();
+    HM_RETURN_IF_ERROR(remove_owned_directory(staged.path, kOwnedMarker, kOwnedContents));
   }
-  HM_RETURN_IF_ERROR(sync_path(game / "rink-mask-input", true));
-  return sync_path(game, true);
+  staged.path.clear();
+  HM_RETURN_IF_ERROR(sync_path(hm::game_storage::StateDirectory(game) / "rink-mask-input", true));
+  HM_RETURN_IF_ERROR(sync_path(hm::game_storage::StateDirectory(game), true));
+  return hm::game_storage::RefreshManifest(game, "rink-mask-input");
 }
 absl::Status check_tiff(TIFF* tiff, const RinkMaskInputDescription& d) {
   uint32_t width = 0, height = 0, rows = 0;
@@ -377,7 +380,7 @@ absl::StatusOr<RinkMaskInput> InspectRinkMaskInput(
     const std::function<bool()>& stop) {
   if (!valid_id(id))
     return absl::InvalidArgumentError("Invalid rink-mask input reference");
-  auto root = PinnedDirectory::Open(game, "rink-mask input game");
+  auto root = PinnedDirectory::Open(hm::game_storage::StateDirectory(game), "rink-mask input game");
   if (!root.ok())
     return root.status();
   auto store = root->OpenChild("rink-mask-input", "rink-mask input store");
@@ -569,12 +572,12 @@ absl::Status CopyRinkMaskInput(
 absl::StatusOr<std::vector<fs::path>> RinkMaskInputArtifacts(const std::string& id) {
   if (!valid_id(id))
     return absl::InvalidArgumentError("Invalid rink-mask input reference");
-  const fs::path root = fs::path("rink-mask-input") / id;
+  const fs::path root = fs::path("_hockeymon") / "rink-mask-input" / id;
   return std::vector<fs::path>{root / "manifest.yaml", root / "input.tiff", root / kOwnedMarker};
 }
 
 absl::Status PruneRinkMaskInputs(const fs::path& game, const std::string& keep_id) {
-  auto root = PinnedDirectory::Open(game, "rink-mask input game");
+  auto root = PinnedDirectory::Open(hm::game_storage::StateDirectory(game), "rink-mask input game");
   if (!root.ok())
     return root.status();
   auto store = root->OpenChild("rink-mask-input", "rink-mask input store");
@@ -598,6 +601,6 @@ absl::Status PruneRinkMaskInputs(const fs::path& game, const std::string& keep_i
       continue;
     HM_RETURN_IF_ERROR(remove_owned_directory((**store).path() / name, kOwnedMarker, kOwnedContents));
   }
-  return absl::OkStatus();
+  return hm::game_storage::RefreshManifest(game, "rink-mask-input-cleanup");
 }
 } // namespace hm::stitching

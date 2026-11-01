@@ -40,9 +40,9 @@
 #include <cuda_runtime_api.h>
 #include <dlfcn.h>
 #include <gst-nvevent.h>
+#include <gst/audio/gstaudiobasesink.h>
 #include <gst/gstbin.h>
 #include <gst/video/video.h>
-#include <gst/audio/gstaudiobasesink.h>
 #include <gst/video/videooverlay.h>
 #include <json-glib/json-glib.h>
 #include <nvbufsurface.h>
@@ -635,8 +635,17 @@ absl::Status configure_paced_local_playback(HmApp& app) {
     if (!synchronized)
       continue;
     if (branch.queue)
-      g_object_set(branch.queue, "leaky", 0, "max-size-buffers", settings.preview_frames,
-          "max-size-bytes", 0U, "max-size-time", guint64{0}, nullptr);
+      g_object_set(
+          branch.queue,
+          "leaky",
+          0,
+          "max-size-buffers",
+          settings.preview_frames,
+          "max-size-bytes",
+          0U,
+          "max-size-time",
+          guint64{0},
+          nullptr);
     if (!owner->AttachVideoSink(branch.sink, settings.preview_frames))
       return absl::InternalError("Could not attach the paced Program video clock");
   }
@@ -2265,7 +2274,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     const gboolean realtime = render_playback_realtime();
     const hm::pipeline_internal::PreviewOverlaySelection overlay_selection = preview_overlay_state_.selection();
     const std::string game_id = game_id_ && *game_id_ ? *game_id_ : "";
-    const std::string rink_mask_file = (hm::Configurator::get_game_dir(game_id) / "rink_mask_0.png").string();
+    const std::string rink_mask_file =
+        (hm::Configurator::get_game_dir(game_id) / "_hockeymon/rink_mask_0.png").string();
 
     std::shared_ptr<const hm::stitching::PlaybackRinkMap> rink_map;
     if (!sources_only) {
@@ -2998,9 +3008,10 @@ absl::Status PipelineApplication::createMainLoop(
         return_value_ = -1;
       }
       process_clock_paused_.erase(
-          std::remove_if(process_clock_paused_.begin(), process_clock_paused_.end(), [&](const auto& paused) {
-            return paused.lock() == context;
-          }),
+          std::remove_if(
+              process_clock_paused_.begin(),
+              process_clock_paused_.end(),
+              [&](const auto& paused) { return paused.lock() == context; }),
           process_clock_paused_.end());
       hm::diagnostics::Breadcrumb("pipeline", "destroy");
       destroy_pipeline(context.get());
@@ -8243,7 +8254,8 @@ void PipelineApplication::remember_scoreboard_selection(
            config_path, generation, app->configurator().active_stitching_invalidation_id())
            .ok())
     return;
-  const auto saved = hm::stitching::load_game_config_file(std::filesystem::path(config_path) / "config.yaml");
+  const auto saved =
+      hm::stitching::load_game_config_file(std::filesystem::path(config_path) / "_hockeymon/config.yaml");
   if (!saved.ok() || !saved->has_value() ||
       hm::get_node_value(**saved, "rink.stitched_output_generation", std::string()) != generation)
     return;
@@ -9356,10 +9368,13 @@ gboolean PipelineApplication::recreate_pipeline_impl(
     }
   }
   process_clock_paused_.erase(
-      std::remove_if(process_clock_paused_.begin(), process_clock_paused_.end(), [app_ctx_ptr](const auto& paused) {
-        const auto context = paused.lock();
-        return !context || context.get() == app_ctx_ptr;
-      }),
+      std::remove_if(
+          process_clock_paused_.begin(),
+          process_clock_paused_.end(),
+          [app_ctx_ptr](const auto& paused) {
+            const auto context = paused.lock();
+            return !context || context.get() == app_ctx_ptr;
+          }),
       process_clock_paused_.end());
   g_print("Destroy pipeline\n");
   if (web_preview_) {
