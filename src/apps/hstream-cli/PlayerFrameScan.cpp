@@ -235,7 +235,14 @@ absl::StatusOr<bool> PlayerFrameScan::GateFrame(GstBuffer* buffer) {
   const auto pair = hm::stitching_frame_pair(frame);
   if (!pair || !GST_CLOCK_TIME_IS_VALID(pair->timeline_pts))
     return error("stitcher did not preserve the synchronized raw camera pair");
-  return timing_.Select(pair->timeline_pts);
+  if (!pair->left.source_uri || !pair->right.source_uri || !GST_CLOCK_TIME_IS_VALID(pair->left.source_pts) ||
+      !GST_CLOCK_TIME_IS_VALID(pair->right.source_pts))
+    return error("scan gate lost the physical source positions");
+  const PlayerFrameScanPairPosition position{
+      {{pair->left.source_uri, pair->left.source_pts}, {pair->right.source_uri, pair->right.source_pts}}};
+  const bool boundary = session_ && session_->second_pass && session_->physical_anchor &&
+      PlayerFrameScanReachedAnchor(position, *session_->physical_anchor);
+  return timing_.Select(pair->timeline_pts, boundary);
 }
 
 absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
@@ -251,10 +258,6 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
   const auto* mask = hm::UserApplicationPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame);
   if (output->generation() != expected_output_generation_ || output->hugin_generation() != initial_generation_)
     return error("baseline geometry changed during the scan");
-  if (elapsed_ns >= (session_ ? session_->pass_duration() : settings_.duration_ns))
-    return timing_.Observe(pair->timeline_pts);
-  if (observations_.size() + (session_ ? session_->observations.size() : 0) >= settings_.maximum_observations)
-    return error("observation limit exceeded");
   if (runtime_detector_identity_.empty()) {
     // Engine construction during preroll is expected. Bind the actual loaded
     // engine only after inference, then require these same bytes at shutdown.
@@ -282,6 +285,12 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
   } else if (context_["rink_mask_revision"] != mask->revision()) {
     return error("rink-mask authority changed during the scan");
   }
+  // Even an immediate physical boundary must validate the loaded detector and
+  // mask before the second pass can finish with no new samples.
+  if (timing_.AtBoundary(pair->timeline_pts))
+    return timing_.Observe(pair->timeline_pts);
+  if (observations_.size() + (session_ ? session_->observations.size() : 0) >= settings_.maximum_observations)
+    return error("observation limit exceeded");
   if (!overlap_) {
     HM_ASSIGN_OR_RETURN(
         overlap_,
@@ -298,8 +307,12 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
     return error("analysis geometry differs from overlap maps");
   stitching::PlayerFramePairIdentity identity;
   HM_ASSIGN_OR_RETURN(identity, pair_identity(*pair));
-  if (session_)
+  if (session_) {
     identity.timeline_pts_ns = session_->elapsed_before_pass() + elapsed_ns;
+    if (!session_->second_pass && !session_->physical_anchor)
+      session_->physical_anchor = PlayerFrameScanPairPosition{
+          {{pair->left.source_uri, pair->left.source_pts}, {pair->right.source_uri, pair->right.source_pts}}};
+  }
   for (const auto& camera : identity.cameras) {
     if (std::none_of(
             sources_.begin(), sources_.end(), [&](const auto& source) { return source.path == camera.path; })) {

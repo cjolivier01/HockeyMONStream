@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -8,6 +9,23 @@
 #include "absl/status/statusor.h"
 
 namespace hm::pipeline {
+
+// Source URI quarks are process-wide identities and survive graph recreation.
+struct PlayerFrameScanSourcePosition {
+  uint32_t source_uri;
+  uint64_t source_pts;
+};
+using PlayerFrameScanPairPosition = std::array<PlayerFrameScanSourcePosition, 2>;
+
+inline bool PlayerFrameScanReachedAnchor(
+    const PlayerFrameScanPairPosition& pair,
+    const PlayerFrameScanPairPosition& anchor) {
+  for (size_t i = 0; i < pair.size(); ++i) {
+    if (pair[i].source_uri == anchor[i].source_uri && pair[i].source_pts >= anchor[i].source_pts)
+      return true;
+  }
+  return false;
+}
 
 struct PlayerFrameScanProgress {
   std::optional<uint64_t> elapsed_ns;
@@ -21,16 +39,16 @@ class PlayerFrameScanTiming {
   PlayerFrameScanTiming(uint64_t duration_ns, uint64_t interval_ns)
       : duration_ns_(duration_ns), interval_ns_(interval_ns) {}
 
-  absl::StatusOr<bool> Select(uint64_t pts) {
+  absl::StatusOr<bool> Select(uint64_t pts, bool physical_boundary = false) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!first_pts_)
       first_pts_ = pts;
     if (pts < *first_pts_ || (last_sample_pts_ && pts < *last_sample_pts_))
       return absl::FailedPreconditionError("Player frame scan: source timeline went backwards");
-    if (pts - *first_pts_ >= duration_ns_) {
-      if (boundary_sent_)
-        return false;
-      boundary_sent_ = true;
+    if (boundary_pts_)
+      return false;
+    if (physical_boundary || pts - *first_pts_ >= duration_ns_) {
+      boundary_pts_ = pts;
       return true;
     }
     if (last_sample_pts_ && pts - *last_sample_pts_ < interval_ns_)
@@ -44,6 +62,11 @@ class PlayerFrameScanTiming {
     return elapsed_locked(pts);
   }
 
+  bool AtBoundary(uint64_t pts) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return boundary_pts_ && pts >= *boundary_pts_;
+  }
+
   // Call after inference/mask validation and scoring, or after validating the
   // unscored boundary frame. Queued samples ahead of that frame have then drained.
   absl::Status Observe(uint64_t pts) {
@@ -52,7 +75,7 @@ class PlayerFrameScanTiming {
     if (!elapsed.ok())
       return elapsed.status();
     progress_.elapsed_ns = *elapsed;
-    progress_.boundary_observed = *elapsed >= duration_ns_;
+    progress_.boundary_observed = boundary_pts_ && pts >= *boundary_pts_;
     return absl::OkStatus();
   }
 
@@ -76,7 +99,7 @@ class PlayerFrameScanTiming {
   mutable std::mutex mutex_;
   std::optional<uint64_t> first_pts_;
   std::optional<uint64_t> last_sample_pts_;
-  bool boundary_sent_{false};
+  std::optional<uint64_t> boundary_pts_;
   PlayerFrameScanProgress progress_;
 };
 

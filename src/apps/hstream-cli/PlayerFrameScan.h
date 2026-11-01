@@ -23,6 +23,7 @@ namespace hm::pipeline {
 struct PlayerFrameScanSession {
   stitching::PlayerFrameScanWindow window;
   bool second_pass{false};
+  std::optional<PlayerFrameScanPairPosition> physical_anchor;
   stitching::PlayerFrameSelectionContext context;
   std::vector<stitching::PlayerFrameObservation> observations;
   std::vector<stitching::PlayerFrameSourceBinding> sources;
