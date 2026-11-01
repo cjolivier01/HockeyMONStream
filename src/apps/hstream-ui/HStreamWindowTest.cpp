@@ -21383,6 +21383,19 @@ int main(int argc, char** argv) {
       return 1;
     return 0;
   }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OUTPUT_SELECTION_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_output_controls(&window) ? 0 : 1;
+  }
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_FLOW_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_output_controls(&window) && test_dual_archive_finalization(&window, true) &&
+            test_dual_archive_finalization(&window)
+        ? 0
+        : 1;
+  }
   if (!HStreamWindowTestAccess::stopProtocolChecks())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STOP_PROTOCOL_ONLY"))
@@ -21441,11 +21454,6 @@ int main(int argc, char** argv) {
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_REALTIME_ONLY"))
     return 0;
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OUTPUT_SELECTION_ONLY")) {
-    HStreamWindow window;
-    window.show();
-    return test_output_controls(&window) ? 0 : 1;
-  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STILL_ONLY"))
     return test_stitching_still() ? 0 : 1;
   if (!test_stitching_still())
@@ -21608,8 +21616,6 @@ int main(int argc, char** argv) {
     std::cerr << "test_dual_archive_finalization failed\n";
     return 1;
   }
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ARCHIVE_FLOW_ONLY"))
-    return 0;
   if (!test_camera_controls(&window)) {
     std::cerr << "test_camera_controls failed\n";
     return 1;

@@ -1075,7 +1075,7 @@ QString finalized_archive_csv_suffix(const QString& archive_path, const QString&
     return {};
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
-  const QRegularExpression pattern(QString("^%1-(?:tracking|stitched)_output-with-audio(?:-(\\d+))?$")
+  const QRegularExpression pattern(QString("^%1-(?:tracking|program_8k|stitched)_output-with-audio(?:-(\\d+))?$")
                                        .arg(QRegularExpression::escape(safe_game_id)));
   const QRegularExpressionMatch match = pattern.match(archive.completeBaseName());
   if (!match.hasMatch())
@@ -1091,7 +1091,7 @@ qint64 next_archive_generation(const QString& game_directory) {
     return -1;
   const std::array<QRegularExpression, 4> patterns = {{
       QRegularExpression(
-          R"(^(?:.*-)?(?:tracking|stitched|program_4k)_output(?:-with-audio)?(?:-(\d+))?\.(?:mp4|mkv|mov|m4v|avi)(?:\.hstream-pin)?$)",
+          R"(^(?:.*-)?(?:tracking|stitched|program_4k|program_8k)_output(?:-with-audio)?(?:-(\d+))?\.(?:mp4|mkv|mov|m4v|avi)(?:\.hstream-pin)?$)",
           QRegularExpression::CaseInsensitiveOption),
       QRegularExpression(
           R"(^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)(?:-(\d+))?\.csv$)"),

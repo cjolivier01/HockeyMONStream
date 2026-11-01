@@ -1420,7 +1420,7 @@ QString available_final_archive_path(
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
   const QString base = QString("%1-%2_output-with-audio")
-                           .arg(safe_game_id, program_4k ? "program_4k" : (stitched_archive ? "stitched" : "tracking"));
+                           .arg(safe_game_id, program_4k ? "program_4k" : (stitched_archive ? "stitched" : "program_8k"));
   const qint64 first = shared_run_suffix.isNull() ? hm::ui_internal::next_archive_generation(game_dir)
                                                   : shared_run_suffix.mid(1).toLongLong();
   if (first < 1)
