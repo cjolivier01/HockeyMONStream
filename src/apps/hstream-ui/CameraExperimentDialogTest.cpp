@@ -33,6 +33,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <iostream>
@@ -92,6 +93,68 @@ bool save_trial_dialog(QPushButton* button, const QString& path, bool accept) {
   deadline.start(5000);
   button->click();
   return seen && handled;
+}
+
+bool screenshot_export_inventory() {
+  namespace fs = std::filesystem;
+  QTemporaryDir temporary;
+  if (!temporary.isValid())
+    return false;
+  const fs::path root(temporary.path().toStdString());
+  const auto game = root / "real/Game";
+  const auto alias = root / "alias/Game";
+  const auto external = root / "external";
+  fs::create_directories(game / "nested");
+  fs::create_directories(alias.parent_path());
+  fs::create_directories(external);
+  fs::create_directory_symlink(game, alias);
+  CameraExperimentDialog dialog(QString::fromStdString(alias.string()));
+  dialog.show();
+  QCoreApplication::processEvents();
+  const auto capture = [&](const fs::path& path) {
+    QString error;
+    if (!dialog.captureScreenshot(QString::fromStdString(path.string()), &error)) {
+      std::cerr << "Screenshot export failed: " << error.toStdString() << '\n';
+      return false;
+    }
+    return !QImage(QString::fromStdString(path.string())).isNull();
+  };
+  const auto manifest = [&] { return YAML::LoadFile((game / "_hockeymon/manifest.json").string()); };
+  const auto inventoried = [&](const std::string& path, const std::string& role) {
+    for (const auto& entry : manifest()["files"])
+      if (entry["path"].as<std::string>() == path)
+        return entry["role"].as<std::string>() == role && entry["kind"].as<std::string>() == "file" &&
+            entry["size_bytes"].as<uint64_t>() == fs::file_size(game / path);
+    std::cerr << "Screenshot export is missing from game inventory: " << path << '\n';
+    return false;
+  };
+  // File choosers may return the physical filename while the selected game is
+  // an alias. The screenshot must still belong to that game's inventory.
+  if (!capture(game / "physical.png") || !inventoried("physical.png", "published"))
+    return false;
+  widget<QLineEdit>(dialog, "experimentGameDirectory")->setText(QString::fromStdString(game.string()));
+  if (!capture(game / "nested/../parent.png") || !inventoried("parent.png", "published"))
+    return false;
+  fs::create_directories(game / "_hockeymon/exports");
+  fs::create_directory_symlink(game / "_hockeymon/exports", game / "private-export");
+  if (!capture(game / "private-export/private.png") || !inventoried("_hockeymon/exports/private.png", "saved-state"))
+    return false;
+  fs::create_directory_symlink(external, game / "external-export");
+  const auto before_external = YAML::Dump(manifest());
+  if (!capture(game / "external-export/outside.png") || !fs::is_regular_file(external / "outside.png") ||
+      YAML::Dump(manifest()) != before_external) {
+    std::cerr << "Export through an external directory alias changed game inventory\n";
+    return false;
+  }
+  // A vanished selected game is reported after the screenshot is saved; no
+  // filesystem exception may escape the same capture path used by the Qt slot.
+  widget<QLineEdit>(dialog, "experimentGameDirectory")->setText(QString::fromStdString((root / "missing").string()));
+  QString error;
+  const auto saved = external / "missing-game.png";
+  if (dialog.captureScreenshot(QString::fromStdString(saved.string()), &error) ||
+      !error.contains("Screenshot saved, but game inventory failed") || !fs::is_regular_file(saved))
+    return false;
+  return true;
 }
 
 bool legacy_source_controls() {
@@ -1243,7 +1306,7 @@ int main(int argc, char** argv) {
       return e2e(app.arguments()) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments()[1] == "--confirmation")
       return confirmation(app.arguments()[2]) ? 0 : 1;
-    return legacy_source_controls() && smoke() && responsive_worker() ? 0 : 1;
+    return legacy_source_controls() && smoke() && screenshot_export_inventory() && responsive_worker() ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

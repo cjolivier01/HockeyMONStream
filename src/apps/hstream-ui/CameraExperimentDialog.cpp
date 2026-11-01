@@ -72,13 +72,19 @@ absl::Status inventory_export(const QString& game, const QString& path) {
   if (game.isEmpty())
     return absl::OkStatus();
   namespace fs = std::filesystem;
-  const auto game_path = fs::absolute(game.toStdString()).lexically_normal();
-  const auto relative = fs::absolute(path.toStdString()).lexically_normal().lexically_relative(game_path);
+  std::error_code error;
+  const auto game_path = fs::canonical(game.toStdString(), error);
+  if (error)
+    return absl::UnavailableError("Cannot resolve the game directory for export inventory: " + error.message());
+  const auto output_path = fs::canonical(path.toStdString(), error);
+  if (error)
+    return absl::UnavailableError("Cannot resolve the saved export for game inventory: " + error.message());
+  const auto relative = output_path.lexically_relative(game_path);
   if (relative.empty() || *relative.begin() == "..")
     return absl::OkStatus();
   if (*relative.begin() == "_hockeymon")
     return hm::game_storage::RefreshManifest(game_path, "camera-experiment");
-  return hm::game_storage::RegisterPublished(game_path, path.toStdString(), "camera-experiment");
+  return hm::game_storage::RegisterPublished(game_path, relative, "camera-experiment");
 }
 
 class ExperimentTimeEdit : public QDoubleSpinBox {
