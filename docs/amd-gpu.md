@@ -55,6 +55,10 @@ invalidation and cleanup completion between Qt Play and the private web adapter.
 It changes no CUDA/HIP data path and adds no frame readback. Its CPU regressions
 do not qualify an AMD calibration run or enable the missing HIP/VA browser target;
 paired AMD/native workflow validation remains required on `ripper`.
+The shared reframe Auto-playlist regression passes with ROCm on `ripper`,
+including deferred discovery and legacy recovery. Full CLI/orientation builds
+in this checkout hit the existing CUDA/HIP header conflict in
+`src/libs/common/Surface.cpp`; this check does not qualify an AMD reframe run.
 
 ## Implemented paths
 

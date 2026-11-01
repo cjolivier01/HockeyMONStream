@@ -710,6 +710,15 @@ The shared native reframe consumer compares finite numeric settings by their
 exact resolved double values, so Python's shorter YAML float spellings survive
 the stage-to-launch boundary. It uses no numeric tolerance; changed values,
 source paths, fingerprints, owners and artifact identities remain fenced.
+Auto camera discovery may fill initially unresolved Left/Right playlists during
+launch. New reframe requests freeze both complete discovered camera sets; the
+consumer accepts only those complete playlists in chapter order, with no
+explicit UI role override. Older requests can recover this transition when the
+saved optics identify exactly the two discovered cameras. They did not record
+historical chapter membership or side assignments, so recovery checks current
+complete discovery against those camera identities. Already-bound playlists
+still require exact side/order identity. This shared check applies to Qt, CLI
+and native web jobs without decoding source video.
 
 Managed publication can reserve its archive identity before staging and export
 afterward with `hstream-job --run-id ID`. The exporter and finalizer share the
