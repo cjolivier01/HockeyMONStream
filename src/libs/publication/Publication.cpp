@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/recording/Database.h"
 
@@ -154,8 +155,14 @@ struct ManifestLock {
 };
 struct GameLock {
   Fd fd;
-  explicit GameLock(const fs::path& game)
-      : fd(::open((game / ".hm-output-publication.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600)) {
+  explicit GameLock(const fs::path& game) {
+    const auto status = game_storage::EnsureStateDirectory(game);
+    if (!status.ok())
+      fail(status.ToString());
+    fd.value = ::open(
+        game_storage::StatePath(game, ".hm-output-publication.lock").c_str(),
+        O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+        0600);
     check(fd.value >= 0 && ::flock(fd.value, LOCK_EX | LOCK_NB) == 0, "Game publication is busy");
   }
 };
@@ -165,7 +172,11 @@ void save_run(YAML::Node& run) {
 void checkpoint(YAML::Node& run) {
   // The receipt is the recovery authority once publication starts, including
   // after run.yaml and its directory have been retired.
-  save(ReceiptPath(run["game_dir"].as<std::string>(), run["id"].as<std::string>()), run);
+  const fs::path game = run["game_dir"].as<std::string>();
+  save(ReceiptPath(game, run["id"].as<std::string>()), run);
+  const auto status = game_storage::RefreshManifest(game, "publication");
+  if (!status.ok())
+    fail(status.ToString());
 }
 void verify_binding(const YAML::Node& binding, const YAML::Node& run) {
   for (const char* key : {"id", "game_dir", "game_id", "work"}) {
@@ -297,12 +308,6 @@ uint64_t next_generation(const fs::path& game) {
   for (const auto& entry : fs::directory_iterator(game)) {
     std::smatch match;
     const std::string name = entry.path().filename().string();
-    if (name.rfind("hstream-job-", 0) == 0 && entry.path().extension() == ".yaml") {
-      const auto reserved = load(entry.path())["generation"].as<uint64_t>(0);
-      if (reserved == std::numeric_limits<uint64_t>::max())
-        fail("Output generation overflow");
-      result = std::max(result, reserved + 1);
-    }
     if (const auto telemetry = hm::recording::TelemetryDatabaseGeneration(name)) {
       if (*telemetry == std::numeric_limits<uint64_t>::max())
         fail("Output generation overflow");
@@ -315,7 +320,28 @@ uint64_t next_generation(const fs::path& game) {
       result = std::max(result, value + 1);
     }
   }
+  for (const auto& entry : fs::directory_iterator(game_storage::StateDirectory(game))) {
+    const auto name = entry.path().filename().string();
+    if (name.rfind("hstream-job-", 0) != 0 || entry.path().extension() != ".yaml")
+      continue;
+    const auto reserved = load(entry.path())["generation"].as<uint64_t>(0);
+    if (reserved == std::numeric_limits<uint64_t>::max())
+      fail("Output generation overflow");
+    result = std::max(result, reserved + 1);
+  }
   return result;
+}
+fs::path publication_guard(const fs::path& game, const fs::path& output) {
+  return game_storage::StatePath(game, output.filename().string() + ".hstream-pin");
+}
+void register_publication(const YAML::Node& run) {
+  const fs::path game = run["game_dir"].as<std::string>();
+  for (auto artifact : run["artifacts"]) {
+    const auto status = game_storage::RegisterPublished(
+        game, artifact["destination"].as<std::string>(), "publication", run["id"].as<std::string>());
+    if (!status.ok())
+      fail(status.ToString());
+  }
 }
 void verify_destinations(const YAML::Node& run) {
   for (auto artifact : run["artifacts"]) {
@@ -370,7 +396,10 @@ void cleanup(YAML::Node& run, const Progress& progress, Fd& work_lock, std::vect
   remove(stage, run["stage_identity"]);
   for (auto artifact : run["artifacts"]) {
     verify_destinations(run);
-    remove(artifact["destination"].as<std::string>() + ".hstream-pin", artifact["prepared_identity"], true);
+    remove(
+        publication_guard(run["game_dir"].as<std::string>(), artifact["destination"].as<std::string>()),
+        artifact["prepared_identity"],
+        true);
   }
   if (entry_exists(work)) {
     if (!matches(work, run["work_identity"]))
@@ -382,6 +411,7 @@ void cleanup(YAML::Node& run, const Progress& progress, Fd& work_lock, std::vect
   fault("after-cleanup");
   run["state"] = "complete";
   checkpoint(run);
+  register_publication(run);
 }
 } // namespace
 
@@ -391,7 +421,7 @@ void ValidateRunId(const std::string& id) {
 }
 fs::path ReceiptPath(const fs::path& game, const std::string& id) {
   ValidateRunId(id);
-  return game / ("hstream-job-" + id + ".yaml");
+  return game_storage::StatePath(game, "hstream-job-" + id + ".yaml");
 }
 fs::path EnvironmentManifest() {
   const char* value = ::getenv("HSTREAM_JOB_MANIFEST");
@@ -446,7 +476,11 @@ static fs::path create_run(const fs::path& game, const fs::path& output_root, co
   }
   if (output_root.empty())
     fail("A new run requires a working output root");
-  const fs::path parent = fs::absolute(output_root) / game_id / "runs";
+  const auto confined =
+      hm::game_storage::ConfineWorkDirectory(logical_game, fs::absolute(output_root) / game_id / "runs");
+  if (!confined.ok())
+    fail(confined.status().ToString());
+  const fs::path parent = *confined;
   fs::create_directories(parent);
   const fs::path work = fs::canonical(parent) / id;
   private_directory(work);
@@ -758,6 +792,7 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
     verify_destinations(run);
     if (state == "published")
       cleanup(run, progress, work_lock, owner_locks);
+    register_publication(run);
     for (auto artifact : run["artifacts"])
       result.push_back({artifact["destination"].as<std::string>(), artifact["kind"].as<std::string>()});
     return result;
@@ -769,8 +804,9 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
   if (state == "encoded") {
     run["generation"] = next_generation(game);
     const bool same_filesystem = same_mount(game, work);
-    run["stage"] =
-        (same_filesystem ? work / "publication" : game / (".hstream-finalize-" + run["id"].as<std::string>())).string();
+    run["stage"] = (same_filesystem ? work / "publication"
+                                    : game_storage::StatePath(game, ".hstream-finalize-" + run["id"].as<std::string>()))
+                       .string();
     run["state"] = "publishing";
     run["artifacts"] = YAML::Node(YAML::NodeType::Sequence);
     run["scratch"] = YAML::Node(YAML::NodeType::Sequence);
@@ -922,13 +958,13 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
     if (uint64_t(pinned.st_dev) != artifact["prepared_identity"]["device"].as<uint64_t>() ||
         uint64_t(pinned.st_ino) != artifact["prepared_identity"]["inode"].as<uint64_t>())
       fail("Prepared output was replaced while opening");
-    const fs::path guard = destination.string() + ".hstream-pin";
+    const fs::path guard = publication_guard(game, destination);
     if (entry_exists(guard)) {
       if (!matches(guard, artifact["prepared_identity"], true))
         fail("Output reservation belongs to another file");
     } else {
       check(hm::link_pinned_file(prepared_fd.value, AT_FDCWD, guard.c_str()) == 0, "Cannot reserve published output");
-      sync_directory(game);
+      sync_directory(guard.parent_path());
     }
     check(
         hm::link_pinned_file(prepared_fd.value, AT_FDCWD, destination.c_str()) == 0,

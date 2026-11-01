@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/Orientation.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 
 #include "hstream/src/libs/common/StatusMacros.h"
@@ -60,7 +61,7 @@ absl::Status orientation_internal::save_orientation_config(
   auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
-  const fs::path config_path = game_dir / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   try {
     if (fs::is_regular_file(config_path))

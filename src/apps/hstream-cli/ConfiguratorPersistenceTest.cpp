@@ -116,7 +116,8 @@ bool expect(bool condition, const char* message) {
 absl::StatusOr<YAML::Node> player_selection_fixture(
     const fs::path& directory,
     size_t frame_count = 1,
-    double left_frame_offset = 0.0) {
+    double left_frame_offset = 0.0,
+    bool frozen_optics = false) {
   using namespace hm::stitching;
   YAML::Node config;
   config["stitching"]["stitch_frame_time"] = "00:00:08";
@@ -124,6 +125,8 @@ absl::StatusOr<YAML::Node> player_selection_fixture(
   plan.settings.frame_count = frame_count;
   PlayerFrameObservation anchor;
   anchor.pair.timeline_pts_ns = 8 * kPlayerFrameSecond;
+  StitchCameraSelection frozen_camera{"manual", 108, 90};
+  frozen_camera.auto_fov = frozen_camera.auto_lens = false;
   for (size_t index = 0; index < 2; ++index) {
     const auto source_path = directory / (index ? "source-right.bin" : "source-left.bin");
     std::ofstream(source_path) << "physical source binding fixture";
@@ -134,6 +137,17 @@ absl::StatusOr<YAML::Node> player_selection_fixture(
     anchor.pair.cameras[index] = {source->path, 8 * kPlayerFrameSecond, static_cast<uint32_t>(index), 0};
     config["game"]["videos"][index ? "right" : "left"].push_back(source->path);
     config["game"]["stitching"]["frame_offsets"][index ? "right" : "left"] = index ? 0.0 : left_frame_offset;
+    if (frozen_optics) {
+      StitchCameraOptics optics{frozen_camera.horizontal_fov, frozen_camera.vertical_fov, frozen_camera.input_lens};
+      optics.configuration = "manual";
+      optics.auto_fov = optics.auto_lens = false;
+      optics.frozen = true;
+      frozen_camera.input_cameras[stitch_input_camera_key(directory, source_path)] = optics;
+    }
+  }
+  if (frozen_optics) {
+    write_stitch_camera_selection(config, frozen_camera);
+    config["stitching"]["auto_input_lens_frozen"] = true;
   }
   plan.selected.push_back(anchor);
   for (size_t index = 1; index < frame_count; ++index) {
@@ -177,6 +191,7 @@ int main() {
   {
     const auto directory = fs::temp_directory_path() / ("hstream-settings-overlay-" + std::to_string(getpid()));
     fs::create_directories(directory);
+    fs::create_directories(directory / "_hockeymon");
     const auto path = directory / "session.yaml";
     hm::Configurator overlay_config("overlay", "configs", -1);
     hm::ConfiguratorTestAccess::set_config(
@@ -318,7 +333,12 @@ int main() {
   }
   {
     const auto directory = fs::temp_directory_path() / ("hstream-encode-job-" + std::to_string(getpid()));
-    fs::create_directories(directory);
+    const char* original_home = std::getenv("HOME");
+    const std::optional<std::string> saved_home =
+        original_home ? std::make_optional<std::string>(original_home) : std::nullopt;
+    const auto job_home = directory / "home";
+    fs::create_directories(job_home);
+    ::setenv("HOME", job_home.c_str(), 1);
     hm::Configurator job("job-test", "configs", -1);
     job.set_encode_job(true);
     YAML::Node fixture = YAML::Load(
@@ -329,6 +349,7 @@ int main() {
         "  hmplaycropper: {enable: 1, show: 1, private-properties: {show: 1}}\n"
         "  ds-playtracker: {enable: 1, show: 1}\n");
     fixture["paths"]["output-root"] = directory.string();
+    fixture["paths"]["game-root"] = (directory / "games").string();
     fixture["pipeline"]["sink6"]["output-file"] = (directory / "custom.mkv").string();
     fixture["pipeline"]["ds-playtracker"]["private-properties"]["telemetry-db-dir"] = directory.string();
     hm::ConfiguratorTestAccess::set_config(&job, fixture);
@@ -443,6 +464,10 @@ int main() {
       ::setenv("HM_OUTPUT_WORK_DIR", saved_root->c_str(), 1);
     else
       ::unsetenv("HM_OUTPUT_WORK_DIR");
+    if (saved_home)
+      ::setenv("HOME", saved_home->c_str(), 1);
+    else
+      ::unsetenv("HOME");
     fs::remove_all(directory);
   }
   const auto memory_profile_fixture = [] {
@@ -780,6 +805,7 @@ int main() {
   const fs::path games = root / "games";
   const fs::path game_dir = games / "first-save";
   fs::create_directories(game_dir);
+  fs::create_directories(game_dir / "_hockeymon");
   ::setenv("HM_GAME_DIR", games.c_str(), 1);
 
   const fs::path baseline_root = root / "baseline";
@@ -806,8 +832,10 @@ int main() {
   for (bool game_override : {false, true}) {
     const std::string game = game_override ? "filtering-game" : "filtering-user";
     fs::create_directories(games / game);
+    fs::create_directories(games / game / "_hockeymon");
     if (game_override)
-      std::ofstream(games / game / "config.yaml") << "stitching: {control_point_filtering: {epipolar_ransac: true}}\n";
+      std::ofstream(games / game / "_hockeymon/config.yaml")
+          << "stitching: {control_point_filtering: {epipolar_ransac: true}}\n";
     hm::Configurator configured(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     const auto loaded = configured.configure();
     const hm::stitching::ControlPointFiltering expected{game_override, true};
@@ -821,7 +849,7 @@ int main() {
             configured.persist_effective_stitching_backend_choices().ok() &&
             configured.persist_effective_stitching_backend_choices().ok(),
         "CLI filter override must survive repeated worker materialization");
-    const auto persisted = YAML::LoadFile((games / game / "config.yaml").string());
+    const auto persisted = YAML::LoadFile((games / game / "_hockeymon/config.yaml").string());
     ok &= expect(
         hm::stitching::read_control_point_filtering(persisted).value() ==
             hm::stitching::ControlPointFiltering{game_override, false},
@@ -846,8 +874,9 @@ int main() {
   for (const bool game_override : {false, true}) {
     const std::string game = game_override ? "resolution-game" : "resolution-user";
     fs::create_directories(games / game);
+    fs::create_directories(games / game / "_hockeymon");
     if (game_override)
-      std::ofstream(games / game / "config.yaml") << "stitching: {control_point_resolution: native}\n";
+      std::ofstream(games / game / "_hockeymon/config.yaml") << "stitching: {control_point_resolution: native}\n";
     hm::Configurator resolution_config(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     const bool loaded = resolution_config.configure().ok();
     ok &= expect(
@@ -862,7 +891,7 @@ int main() {
             resolution_config.persist_effective_stitching_backend_choices().ok() &&
             resolution_config.persist_effective_stitching_backend_choices().ok(),
         "Explicit resolution overrides must survive repeated worker publication");
-    const auto persisted = YAML::LoadFile((games / game / "config.yaml").string());
+    const auto persisted = YAML::LoadFile((games / game / "_hockeymon/config.yaml").string());
     ok &= expect(
         hm::stitching::read_control_point_resolution(persisted).value() == hm::stitching::ControlPointResolution::k1K,
         "The worker must receive the effective CLI resolution");
@@ -883,8 +912,9 @@ int main() {
   for (const bool game_override : {false, true}) {
     const std::string game = game_override ? "provider-game" : "provider-user";
     fs::create_directories(games / game);
+    fs::create_directories(games / game / "_hockeymon");
     if (game_override)
-      std::ofstream(games / game / "config.yaml") << "stitching: {control_point_execution_provider: cuda}\n";
+      std::ofstream(games / game / "_hockeymon/config.yaml") << "stitching: {control_point_execution_provider: cuda}\n";
     hm::Configurator provider_config(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     const bool loaded = provider_config.configure().ok();
     ok &= expect(
@@ -900,7 +930,7 @@ int main() {
             provider_config.persist_effective_stitching_backend_choices().ok() &&
             provider_config.persist_effective_stitching_backend_choices().ok(),
         "Explicit provider overrides must survive repeated worker publication");
-    const auto persisted = YAML::LoadFile((games / game / "config.yaml").string());
+    const auto persisted = YAML::LoadFile((games / game / "_hockeymon/config.yaml").string());
     ok &= expect(
         hm::stitching::read_control_point_execution_provider(persisted).value() ==
             (game_override ? hm::onnx::ExecutionProvider::kCpu : hm::onnx::ExecutionProvider::kCuda),
@@ -997,6 +1027,7 @@ int main() {
        }) {
     const std::string game = "leveled-crop-" + std::to_string(crop_rotation_case_index++);
     fs::create_directories(games / game);
+    fs::create_directories(games / game / "_hockeymon");
     YAML::Node settings(YAML::NodeType::Map);
     settings["stitching"]["mapping_backend"] = test.backend;
     settings["stitching"]["run_autooptimizer"] = std::string(test.backend) == "nona";
@@ -1019,7 +1050,7 @@ int main() {
         }
       }
     }
-    const fs::path path = games / game / "config.yaml";
+    const fs::path path = games / game / "_hockeymon/config.yaml";
     const std::string saved = YAML::Dump(settings);
     std::ofstream(path) << saved;
     hm::Configurator configurator(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
@@ -1094,6 +1125,7 @@ int main() {
 
   const auto prepare_tone_routing = [&](const std::string& game, const char* high_bit_mode) {
     fs::create_directories(games / game);
+    fs::create_directories(games / game / "_hockeymon");
     auto configurator =
         std::make_unique<hm::Configurator>(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     if (!configurator->configure().ok() ||
@@ -1460,6 +1492,7 @@ int main() {
     std::ofstream(path) << YAML::Dump(structural) << '\n';
     const std::string game = std::string("mapping-structural-") + name;
     fs::create_directories(games / game);
+    fs::create_directories(games / game / "_hockeymon");
     auto app = std::make_unique<hm::Configurator>(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     if (!app->configure().ok() || !app->underlay_config("pipeline", path.string()))
       return absl::InternalError("fixture did not load");
@@ -1499,7 +1532,8 @@ int main() {
                                      const char* name) -> absl::StatusOr<YAML::Node> {
     const std::string game = std::string("blend-layers-") + name;
     fs::create_directories(games / game);
-    std::ofstream(games / game / "config.yaml") << game_yaml;
+    fs::create_directories(games / game / "_hockeymon");
+    std::ofstream(games / game / "_hockeymon/config.yaml") << game_yaml;
     hm::Configurator app(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     auto status = app.configure();
     if (!status.ok())
@@ -1580,9 +1614,10 @@ int main() {
   std::ofstream(no_application_structure_path) << YAML::Dump(no_application_structure) << '\n';
   const fs::path runtime_video_converter_game_dir = games / "mapping-runtime-video-converter";
   fs::create_directories(runtime_video_converter_game_dir);
+  fs::create_directories(runtime_video_converter_game_dir / "_hockeymon");
   YAML::Node runtime_video_converter_override(YAML::NodeType::Map);
   runtime_video_converter_override["runtime"]["video_converter"] = "dsxvideoconvert";
-  std::ofstream(runtime_video_converter_game_dir / "config.yaml")
+  std::ofstream(runtime_video_converter_game_dir / "_hockeymon/config.yaml")
       << YAML::Dump(runtime_video_converter_override) << '\n';
   hm::Configurator mapping_runtime_video_converter(
       "mapping-runtime-video-converter", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
@@ -1599,6 +1634,7 @@ int main() {
 
   const fs::path canonical_game_dir = games / "mapping-canonical";
   fs::create_directories(canonical_game_dir);
+  fs::create_directories(canonical_game_dir / "_hockeymon");
   YAML::Node canonical_overrides(YAML::NodeType::Map);
   canonical_overrides["runtime"]["video_converter"] = "nvvideoconvert";
   canonical_overrides["stitching"]["enabled"] = false;
@@ -1631,7 +1667,7 @@ int main() {
   canonical_overrides["video_out"]["output_width"] = 1280;
   canonical_overrides["video_out"]["output_height"] = 720;
   canonical_overrides["video_out"]["program_4k_interpolation"] = "lanczos";
-  std::ofstream(canonical_game_dir / "config.yaml") << YAML::Dump(canonical_overrides) << '\n';
+  std::ofstream(canonical_game_dir / "_hockeymon/config.yaml") << YAML::Dump(canonical_overrides) << '\n';
   hm::Configurator mapping_canonical("mapping-canonical", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_canonical_loaded = mapping_canonical.configure().ok() &&
       mapping_canonical.underlay_config("pipeline", structural_custom_path.string());
@@ -1678,6 +1714,7 @@ int main() {
 
   const fs::path stale_runtime_polygon_dir = games / "mapping-stale-runtime-polygon";
   fs::create_directories(stale_runtime_polygon_dir);
+  fs::create_directories(stale_runtime_polygon_dir / "_hockeymon");
   YAML::Node stale_runtime_polygon(YAML::NodeType::Map);
   stale_runtime_polygon["stitching"]["enabled"] = true;
   stale_runtime_polygon["stitching"]["post_stitch_rotate_degrees"] = 15.0;
@@ -1688,7 +1725,7 @@ int main() {
     coordinates.push_back(point.second);
     stale_runtime_polygon["rink"]["scoreboard"]["perspective_polygon"].push_back(coordinates);
   }
-  std::ofstream(stale_runtime_polygon_dir / "config.yaml") << YAML::Dump(stale_runtime_polygon) << '\n';
+  std::ofstream(stale_runtime_polygon_dir / "_hockeymon/config.yaml") << YAML::Dump(stale_runtime_polygon) << '\n';
   const fs::path stale_runtime_structure_path = root / "mapping-stale-runtime-structure.yaml";
   YAML::Node stale_runtime_structure = YAML::Clone(structural_custom);
   stale_runtime_structure["application"]["complete-configuration"] = 1;
@@ -1707,8 +1744,8 @@ int main() {
             /*show_render_scale=*/-1.0,
             bundled_baseline.ok() ? bundled_baseline->root : fs::path())
       : absl::InternalError("stale runtime scoreboard fixture did not load");
-  const YAML::Node stale_runtime_after = fs::is_regular_file(stale_runtime_polygon_dir / "config.yaml")
-      ? YAML::LoadFile((stale_runtime_polygon_dir / "config.yaml").string())
+  const YAML::Node stale_runtime_after = fs::is_regular_file(stale_runtime_polygon_dir / "_hockeymon/config.yaml")
+      ? YAML::LoadFile((stale_runtime_polygon_dir / "_hockeymon/config.yaml").string())
       : YAML::Node();
   const auto stale_runtime_rotation_marker =
       hm::get_node(stale_runtime_after, "stitching.generated_field_mask_post_stitch_rotate_degrees");
@@ -1732,11 +1769,12 @@ int main() {
   // output-dependent geometry without turning the draft into a saved setting.
   const fs::path draft_rotation_dir = games / "mapping-draft-rotation";
   fs::create_directories(draft_rotation_dir);
+  fs::create_directories(draft_rotation_dir / "_hockeymon");
   YAML::Node draft_rotation = YAML::Clone(stale_runtime_polygon);
   draft_rotation["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
-  std::ofstream(draft_rotation_dir / "config.yaml") << YAML::Dump(draft_rotation) << '\n';
-  std::ofstream(draft_rotation_dir / "rink_mask_0.png") << "stale output mask";
-  std::ofstream(draft_rotation_dir / "s.png") << "stale output still";
+  std::ofstream(draft_rotation_dir / "_hockeymon/config.yaml") << YAML::Dump(draft_rotation) << '\n';
+  std::ofstream(draft_rotation_dir / "_hockeymon/rink_mask_0.png") << "stale output mask";
+  std::ofstream(draft_rotation_dir / "_hockeymon/s.png") << "stale output still";
   hm::Configurator draft_rotation_configurator(
       "mapping-draft-rotation", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   absl::Status draft_rotation_status = draft_rotation_configurator.configure();
@@ -1756,7 +1794,7 @@ int main() {
   if (draft_rotation_status.ok())
     draft_rotation_status =
         hm::ConfiguratorTestAccess::invalidate_rotation_dependent_cache(&draft_rotation_configurator);
-  const YAML::Node draft_rotation_after = YAML::LoadFile((draft_rotation_dir / "config.yaml").string());
+  const YAML::Node draft_rotation_after = YAML::LoadFile((draft_rotation_dir / "_hockeymon/config.yaml").string());
   const auto draft_effective_rotation =
       hm::configurator_internal::effective_stitch_output_rotation(draft_rotation_configurator.config());
   const auto draft_native_polygon =
@@ -1769,7 +1807,8 @@ int main() {
       draft_rotation_after["stitching"]["post_stitch_rotate_degrees"].IsNull() &&
       draft_rotation_after["stitching"]["generated_field_mask_post_stitch_rotate_degrees"].as<double>(0.0) == -1.0 &&
       draft_rotation_after["rink"]["scoreboard"]["perspective_polygon"].IsNull() && !draft_native_polygon.has_value() &&
-      !fs::exists(draft_rotation_dir / "rink_mask_0.png") && !fs::exists(draft_rotation_dir / "s.png");
+      !fs::exists(draft_rotation_dir / "_hockeymon/rink_mask_0.png") &&
+      !fs::exists(draft_rotation_dir / "_hockeymon/s.png");
   if (!draft_output_invalidated)
     std::cerr << "unsaved rotation configuration status: " << draft_rotation_status << '\n';
   ok &= expect(
@@ -1778,6 +1817,7 @@ int main() {
 
   const fs::path canonical_null_game_dir = games / "mapping-canonical-null";
   fs::create_directories(canonical_null_game_dir);
+  fs::create_directories(canonical_null_game_dir / "_hockeymon");
   YAML::Node native_width(YAML::NodeType::Map);
   native_width["hmstitcher"]["properties"]["max-output-width"] = 2048;
   native_width["hmstitcher"]["private-properties"]["max-output-width"] = 2048;
@@ -1787,7 +1827,7 @@ int main() {
   std::ofstream(root / "mapping-native-width.yaml") << YAML::Dump(native_width) << '\n';
   YAML::Node canonical_null(YAML::NodeType::Map);
   canonical_null["stitching"]["max_output_width"] = YAML::Node(YAML::NodeType::Null);
-  std::ofstream(canonical_null_game_dir / "config.yaml") << YAML::Dump(canonical_null) << '\n';
+  std::ofstream(canonical_null_game_dir / "_hockeymon/config.yaml") << YAML::Dump(canonical_null) << '\n';
   hm::Configurator mapping_canonical_null(
       "mapping-canonical-null", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_canonical_null_loaded = mapping_canonical_null.configure().ok() &&
@@ -1897,9 +1937,10 @@ int main() {
 
   const fs::path ranked_width_game_dir = games / "mapping-ranked-max-width-alias";
   fs::create_directories(ranked_width_game_dir);
+  fs::create_directories(ranked_width_game_dir / "_hockeymon");
   YAML::Node lower_ranked_canonical(YAML::NodeType::Map);
   lower_ranked_canonical["stitching"]["max_output_width"] = 1024;
-  std::ofstream(ranked_width_game_dir / "config.yaml") << YAML::Dump(lower_ranked_canonical) << '\n';
+  std::ofstream(ranked_width_game_dir / "_hockeymon/config.yaml") << YAML::Dump(lower_ranked_canonical) << '\n';
   hm::Configurator mapping_ranked_width(
       "mapping-ranked-max-width-alias", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_ranked_width_loaded = mapping_ranked_width.configure().ok() &&
@@ -1915,10 +1956,11 @@ int main() {
 
   const fs::path max_width_tie_game_dir = games / "mapping-max-width-tie";
   fs::create_directories(max_width_tie_game_dir);
+  fs::create_directories(max_width_tie_game_dir / "_hockeymon");
   YAML::Node max_width_tie(YAML::NodeType::Map);
   max_width_tie["stitching"]["max_output_width"] = 4096;
   max_width_tie["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
-  std::ofstream(max_width_tie_game_dir / "config.yaml") << YAML::Dump(max_width_tie) << '\n';
+  std::ofstream(max_width_tie_game_dir / "_hockeymon/config.yaml") << YAML::Dump(max_width_tie) << '\n';
   hm::Configurator mapping_max_width_tie(
       "mapping-max-width-tie", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status mapping_max_width_tie_status = mapping_max_width_tie.configure().ok()
@@ -2006,12 +2048,13 @@ int main() {
 
   const fs::path fixed_edge_same_rank_game_dir = games / "mapping-fixed-edge-same-rank";
   fs::create_directories(fixed_edge_same_rank_game_dir);
+  fs::create_directories(fixed_edge_same_rank_game_dir / "_hockeymon");
   YAML::Node fixed_edge_same_rank(YAML::NodeType::Map);
   fixed_edge_same_rank["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(21.0);
   fixed_edge_same_rank["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(22.0);
   fixed_edge_same_rank["pipeline"]["hmplaycropper"]["fixed-edge-rotation-angle"] = 12.0;
   fixed_edge_same_rank["pipeline"]["ds-playtracker"]["fixed-edge-rotation-angle"] = 13.0;
-  std::ofstream(fixed_edge_same_rank_game_dir / "config.yaml") << YAML::Dump(fixed_edge_same_rank) << '\n';
+  std::ofstream(fixed_edge_same_rank_game_dir / "_hockeymon/config.yaml") << YAML::Dump(fixed_edge_same_rank) << '\n';
   hm::Configurator mapping_fixed_edge_same_rank(
       "mapping-fixed-edge-same-rank", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_fixed_edge_same_rank_loaded = mapping_fixed_edge_same_rank.configure().ok() &&
@@ -2035,10 +2078,12 @@ int main() {
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   const fs::path fixed_edge_higher_native_game_dir = games / "mapping-fixed-edge-higher-native";
   fs::create_directories(fixed_edge_higher_native_game_dir);
+  fs::create_directories(fixed_edge_higher_native_game_dir / "_hockeymon");
   YAML::Node fixed_edge_higher_native(YAML::NodeType::Map);
   fixed_edge_higher_native["pipeline"]["hmplaycropper"]["fixed-edge-rotation-angle"] = 14.0;
   fixed_edge_higher_native["pipeline"]["ds-playtracker"]["fixed-edge-rotation-angle"] = 15.0;
-  std::ofstream(fixed_edge_higher_native_game_dir / "config.yaml") << YAML::Dump(fixed_edge_higher_native) << '\n';
+  std::ofstream(fixed_edge_higher_native_game_dir / "_hockeymon/config.yaml")
+      << YAML::Dump(fixed_edge_higher_native) << '\n';
   hm::Configurator mapping_fixed_edge_higher_native(
       "mapping-fixed-edge-higher-native", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_fixed_edge_higher_native_loaded = mapping_fixed_edge_higher_native.configure().ok() &&
@@ -2061,9 +2106,10 @@ int main() {
 
   const fs::path native_game_dir = games / "mapping-native-precedence";
   fs::create_directories(native_game_dir);
+  fs::create_directories(native_game_dir / "_hockeymon");
   YAML::Node native_game_override(YAML::NodeType::Map);
   native_game_override["pipeline"]["hmstitcher"]["enable"] = 1;
-  std::ofstream(native_game_dir / "config.yaml") << YAML::Dump(native_game_override) << '\n';
+  std::ofstream(native_game_dir / "_hockeymon/config.yaml") << YAML::Dump(native_game_override) << '\n';
   hm::Configurator mapping_native_precedence(
       "mapping-native-precedence", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_native_precedence_loaded = mapping_native_precedence.configure().ok() &&
@@ -2113,12 +2159,13 @@ int main() {
 
   const fs::path disabled_stitching_game_dir = games / "disabled-stitching";
   fs::create_directories(disabled_stitching_game_dir);
+  fs::create_directories(disabled_stitching_game_dir / "_hockeymon");
   YAML::Node disabled_stitching_game(YAML::NodeType::Map);
   disabled_stitching_game["stitching"]["enabled"] = false;
   disabled_stitching_game["game"]["videos"]["left"].push_back("missing-left.mp4");
   disabled_stitching_game["game"]["videos"]["right"].push_back("missing-right.mp4");
-  std::ofstream(disabled_stitching_game_dir / "config.yaml") << YAML::Dump(disabled_stitching_game) << '\n';
-  std::ofstream(disabled_stitching_game_dir / "seam_file.png") << "must remain untouched\n";
+  std::ofstream(disabled_stitching_game_dir / "_hockeymon/config.yaml") << YAML::Dump(disabled_stitching_game) << '\n';
+  std::ofstream(disabled_stitching_game_dir / "_hockeymon/seam_file.png") << "must remain untouched\n";
   const fs::path disabled_stitching_pipeline_path = root / "disabled-stitching-pipeline.yaml";
   std::ofstream(disabled_stitching_pipeline_path) << "application:\n  complete-configuration: 1\n"
                                                   << "hmstitcher: {}\n"
@@ -2148,7 +2195,7 @@ int main() {
           disabled_stitching.config()["pipeline"]["hmstitcher"]["enable"].as<int>() == 0 &&
           !disabled_stitching.config()["pipeline"]["hmplaycropper"]["output-width"].IsDefined() &&
           !disabled_stitching.config()["pipeline"]["hmplaycropper"]["output-height"].IsDefined() &&
-          fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
+          fs::is_regular_file(disabled_stitching_game_dir / "_hockeymon/seam_file.png"),
       "stitching.enabled=false must skip runtime discovery and preserve negotiated source dimensions");
 
   hm::Configurator disabled_stitching_clean(
@@ -2166,12 +2213,14 @@ int main() {
             disabled_stitching_pipeline_path.parent_path())
       : absl::InternalError("disabled stitching clean fixture did not load");
   ok &= expect(
-      !disabled_stitching_clean_status.ok() && fs::is_regular_file(disabled_stitching_game_dir / "seam_file.png"),
+      !disabled_stitching_clean_status.ok() &&
+          fs::is_regular_file(disabled_stitching_game_dir / "_hockeymon/seam_file.png"),
       "stitching.enabled=false must not own direct clean-only artifact cleanup");
 
   const fs::path canonical_clean_game_dir = games / "canonical-clean-stitching";
   fs::create_directories(canonical_clean_game_dir);
-  std::ofstream(canonical_clean_game_dir / "seam_file.png") << "must be cleaned\n";
+  fs::create_directories(canonical_clean_game_dir / "_hockeymon");
+  std::ofstream(canonical_clean_game_dir / "_hockeymon/seam_file.png") << "must be cleaned\n";
   const fs::path canonical_clean_pipeline_path = root / "canonical-clean-stitching-pipeline.yaml";
   std::ofstream(canonical_clean_pipeline_path) << "application:\n  complete-configuration: 1\n"
                                                << "hmstitcher: {}\n";
@@ -2191,18 +2240,19 @@ int main() {
       : absl::InternalError("canonical clean stitching fixture did not load");
   ok &= expect(
       canonical_clean_stitching_status.code() == absl::StatusCode::kCancelled &&
-          !fs::exists(canonical_clean_game_dir / "seam_file.png"),
+          !fs::exists(canonical_clean_game_dir / "_hockeymon/seam_file.png"),
       "canonical stitching.enabled=true must own direct clean-only artifact cleanup");
 
   const fs::path selected_clean_game_dir = games / "selected-clean-stitching";
   fs::create_directories(selected_clean_game_dir);
+  fs::create_directories(selected_clean_game_dir / "_hockeymon");
   auto selected_clean_fixture = player_selection_fixture(selected_clean_game_dir, 1, 3.0);
   if (!expect(selected_clean_fixture.ok(), "selected clean fixture must bind synchronized source identities"))
     return 1;
   const std::string clean_fingerprint =
       (*selected_clean_fixture)["stitching"]["calibration_frame_selection"]["fingerprint"].as<std::string>();
   (*selected_clean_fixture)["stitching"]["calibration_frame_inputs_fingerprint"] = clean_fingerprint;
-  std::ofstream(selected_clean_game_dir / "config.yaml") << YAML::Dump(*selected_clean_fixture) << '\n';
+  std::ofstream(selected_clean_game_dir / "_hockeymon/config.yaml") << YAML::Dump(*selected_clean_fixture) << '\n';
   for (const char* artifact : {"left.png", "right.png", "seam_file.png"})
     std::ofstream(selected_clean_game_dir / artifact) << "selected clean fixture\n";
   hm::Configurator selected_clean_stitching(
@@ -2212,9 +2262,9 @@ int main() {
   const absl::Status selected_clean_status = selected_clean_loaded
       ? selected_clean_stitching.complete_configuration(true, true, false, {}, false, -1.0, root)
       : absl::InternalError("selected clean fixture did not load");
-  const YAML::Node selected_clean_saved = YAML::LoadFile((selected_clean_game_dir / "config.yaml").string());
+  const YAML::Node selected_clean_saved = YAML::LoadFile((selected_clean_game_dir / "_hockeymon/config.yaml").string());
   ok &= expect(
-      absl::IsCancelled(selected_clean_status) && !fs::exists(selected_clean_game_dir / "seam_file.png") &&
+      absl::IsCancelled(selected_clean_status) && !fs::exists(selected_clean_game_dir / "_hockeymon/seam_file.png") &&
           fs::exists(selected_clean_game_dir / "left.png") && fs::exists(selected_clean_game_dir / "right.png") &&
           selected_clean_saved["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) == 3.0 &&
           selected_clean_stitching.config()["game"]["stitching"]["frame_offsets"]["left"].as<double>(-1) == 3.0 &&
@@ -2225,9 +2275,10 @@ int main() {
 
   const fs::path zero_sample_span_game_dir = games / "zero-sample-span";
   fs::create_directories(zero_sample_span_game_dir);
+  fs::create_directories(zero_sample_span_game_dir / "_hockeymon");
   YAML::Node zero_sample_span_game(YAML::NodeType::Map);
   zero_sample_span_game["stitching"]["stitch_frame_time"] = "00:00:00";
-  std::ofstream(zero_sample_span_game_dir / "config.yaml") << YAML::Dump(zero_sample_span_game) << '\n';
+  std::ofstream(zero_sample_span_game_dir / "_hockeymon/config.yaml") << YAML::Dump(zero_sample_span_game) << '\n';
   const fs::path zero_sample_span_pipeline_path = root / "zero-sample-span-pipeline.yaml";
   std::ofstream(zero_sample_span_pipeline_path) << "application:\n"
                                                 << "  complete-configuration: 1\n"
@@ -2276,13 +2327,14 @@ int main() {
 
   const fs::path clear_game_dir = games / "mapping-explicit-clear";
   fs::create_directories(clear_game_dir);
+  fs::create_directories(clear_game_dir / "_hockeymon");
   YAML::Node explicit_clears(YAML::NodeType::Map);
   explicit_clears["video_out"]["bit_rate"] = YAML::Node(YAML::NodeType::Null);
   explicit_clears["video_out"]["output_video_path"] = YAML::Node(YAML::NodeType::Null);
   explicit_clears["video_out"]["output_width"] = "auto";
   explicit_clears["video_out"]["output_height"] = YAML::Node(YAML::NodeType::Null);
   explicit_clears["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
-  std::ofstream(clear_game_dir / "config.yaml") << YAML::Dump(explicit_clears) << '\n';
+  std::ofstream(clear_game_dir / "_hockeymon/config.yaml") << YAML::Dump(explicit_clears) << '\n';
   hm::Configurator mapping_explicit_clear(
       "mapping-explicit-clear", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const bool mapping_explicit_clear_loaded = mapping_explicit_clear.configure().ok() &&
@@ -2301,7 +2353,9 @@ int main() {
   const fs::path no_home_games = root / "no-home-games";
   const fs::path no_home_output = root / "no-home-output";
   fs::create_directories(no_home_games / "explicit-roots");
-  std::ofstream(no_home_games / "explicit-roots" / "config.yaml") << "pipeline:\n  private-without-home: yes\n";
+  fs::create_directories(no_home_games / "explicit-roots" / "_hockeymon");
+  std::ofstream(no_home_games / "explicit-roots" / "_hockeymon/config.yaml")
+      << "pipeline:\n  private-without-home: yes\n";
   ::unsetenv("HOME");
   ::setenv("HM_GAME_DIR", no_home_games.c_str(), 1);
   ::setenv("HM_OUTPUT_WORK_DIR", no_home_output.c_str(), 1);
@@ -2324,8 +2378,9 @@ int main() {
 
   const fs::path layered_game = games / "layered";
   fs::create_directories(layered_game);
-  std::ofstream(layered_game / "config.yaml") << "pipeline:\n  layered-value: private\n  private-only: yes\n"
-                                                 "hstream_ui: {stitching_calibration: {frame_count: 4}}\n";
+  fs::create_directories(layered_game / "_hockeymon");
+  std::ofstream(layered_game / "_hockeymon/config.yaml") << "pipeline:\n  layered-value: private\n  private-only: yes\n"
+                                                            "hstream_ui: {stitching_calibration: {frame_count: 4}}\n";
   hm::Configurator layered("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto layered_config = layered.load_config();
   ok &= expect(
@@ -2335,7 +2390,7 @@ int main() {
           (*layered_config)["pipeline"]["private-only"].as<std::string>() == "yes" &&
           (*layered_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
           !hm::get_node(layered.game_private_config(), "stitching.stitch_frame_time").has_value() &&
-          !fs::exists(layered_game / ".hstream-stitch.lock"),
+          !fs::exists(layered_game / "_hockeymon/.hstream-stitch.lock"),
       "Config precedence must be baseline, then user overlay, then game-private YAML without artifact recovery for "
       "an ordinary config");
   const fs::path defaults_path = test_home / ".config/hstream-ui/defaults.yaml";
@@ -2372,8 +2427,10 @@ int main() {
   const fs::path snapshot_root_a = root / "snapshot-root-a";
   const fs::path snapshot_root_b = root / "snapshot-root-b";
   fs::create_directories(snapshot_root_a / "snapshot-game");
+  fs::create_directories(snapshot_root_a / "snapshot-game" / "_hockeymon");
   fs::create_directories(snapshot_root_b / "snapshot-game");
-  std::ofstream(snapshot_root_a / "snapshot-game" / "config.yaml") << "pipeline:\n  snapshot-origin: a\n";
+  fs::create_directories(snapshot_root_b / "snapshot-game" / "_hockeymon");
+  std::ofstream(snapshot_root_a / "snapshot-game" / "_hockeymon/config.yaml") << "pipeline:\n  snapshot-origin: a\n";
   user_overlay[hm::user_config::kPathsKey][hm::user_config::kGameRootKey] = snapshot_root_a.string();
   std::ofstream(user_config_path) << YAML::Dump(user_overlay) << '\n';
   hm::Configurator snapshot_configurator("snapshot-game", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
@@ -2383,8 +2440,10 @@ int main() {
   YAML::Node snapshot_save(YAML::NodeType::Map);
   snapshot_save["pipeline"]["snapshot-save"] = true;
   const absl::Status snapshot_save_status = snapshot_configurator.save_private_config(snapshot_save);
-  auto snapshot_a_config = hm::stitching::load_game_config_file(snapshot_root_a / "snapshot-game" / "config.yaml");
-  auto snapshot_b_config = hm::stitching::load_game_config_file(snapshot_root_b / "snapshot-game" / "config.yaml");
+  auto snapshot_a_config =
+      hm::stitching::load_game_config_file(snapshot_root_a / "snapshot-game" / "_hockeymon/config.yaml");
+  auto snapshot_b_config =
+      hm::stitching::load_game_config_file(snapshot_root_b / "snapshot-game" / "_hockeymon/config.yaml");
   ok &= expect(
       snapshot_loaded.ok() && (*snapshot_loaded)["pipeline"]["snapshot-origin"].as<std::string>() == "a" &&
           snapshot_save_status.ok() && snapshot_a_config.ok() && snapshot_a_config->has_value() &&
@@ -2398,9 +2457,10 @@ int main() {
 
   const fs::path canvas_cache_game = games / "canvas-cache-save";
   fs::create_directories(canvas_cache_game);
-  std::ofstream(canvas_cache_game / "config.yaml") << "generation: old\n";
-  std::ofstream(canvas_cache_game / "rink_mask_0.png") << "old-mask\n";
-  std::ofstream(canvas_cache_game / "s.png") << "old-stitched-snapshot\n";
+  fs::create_directories(canvas_cache_game / "_hockeymon");
+  std::ofstream(canvas_cache_game / "_hockeymon/config.yaml") << "generation: old\n";
+  std::ofstream(canvas_cache_game / "_hockeymon/rink_mask_0.png") << "old-mask\n";
+  std::ofstream(canvas_cache_game / "_hockeymon/s.png") << "old-stitched-snapshot\n";
   hm::Configurator canvas_cache_configurator(
       "canvas-cache-save", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto canvas_cache_loaded = canvas_cache_configurator.load_config();
@@ -2411,9 +2471,10 @@ int main() {
             canvas_cache_desired, /*expected_invalidation_id=*/{}, /*remove_canvas_artifacts=*/true)
       : canvas_cache_loaded.status();
   ok &= expect(
-      canvas_cache_saved.ok() && !fs::exists(canvas_cache_game / "rink_mask_0.png") &&
-          !fs::exists(canvas_cache_game / "s.png") &&
-          YAML::LoadFile((canvas_cache_game / "config.yaml").string())["generation"].as<std::string>() == "new",
+      canvas_cache_saved.ok() && !fs::exists(canvas_cache_game / "_hockeymon/rink_mask_0.png") &&
+          !fs::exists(canvas_cache_game / "_hockeymon/s.png") &&
+          YAML::LoadFile((canvas_cache_game / "_hockeymon/config.yaml").string())["generation"].as<std::string>() ==
+              "new",
       "Configurator canvas invalidation must transactionally remove rink masks and the stitched snapshot");
 
   const fs::path tracker_base_path = root / "custom-playtracker.yaml";
@@ -2433,6 +2494,7 @@ int main() {
                                      << "  config-file: " << tracker_base_path.string() << "\n";
   const fs::path incomplete_game_dir = games / "materialize-incomplete";
   fs::create_directories(incomplete_game_dir);
+  fs::create_directories(incomplete_game_dir / "_hockeymon");
   const fs::path runtime_root = root / "runtime";
   fs::create_directories(runtime_root);
   ::setenv("XDG_RUNTIME_DIR", runtime_root.c_str(), 1);
@@ -2480,6 +2542,7 @@ int main() {
 
     const fs::path disabled_tracker_game_dir = games / "tracker-disabled";
     fs::create_directories(disabled_tracker_game_dir);
+    fs::create_directories(disabled_tracker_game_dir / "_hockeymon");
     const fs::path disabled_tracker_pipeline = root / "disabled-tracker-pipeline.yaml";
     std::ofstream(disabled_tracker_pipeline) << "application:\n  complete-configuration: 0\n"
                                              << "ds-playtracker:\n"
@@ -2501,7 +2564,7 @@ int main() {
     ok &= expect(
         disabled_tracker_status.ok() &&
             !disabled_tracker.config()["pipeline"]["ds-playtracker"]["config-file"].IsDefined() &&
-            !fs::exists(disabled_tracker_game_dir / "hstream-runtime"),
+            !fs::exists(disabled_tracker_game_dir / "_hockeymon/hstream-runtime"),
         "A disabled tracker must not require or materialize a runtime sidecar");
 
     for (int preparation : {0, 1, 2, 3}) {
@@ -2555,7 +2618,8 @@ int main() {
         ? YAML::LoadFile(incomplete_effective_path.string())
         : YAML::Node();
     ok &= expect(
-        incomplete_status.ok() && incomplete_effective_path.parent_path() == incomplete_game_dir / "hstream-runtime" &&
+        incomplete_status.ok() &&
+            incomplete_effective_path.parent_path() == incomplete_game_dir / "_hockeymon/hstream-runtime" &&
             incomplete_effective["play-tracker"]["preserve-custom-root"].as<bool>() &&
             !incomplete_effective["play-tracker"]["no-wide-start"].as<bool>() &&
             incomplete_effective["play-tracker"]["live-boxes"][1]["sticky-translation-gaussian-mult"].as<double>() ==
@@ -2566,6 +2630,7 @@ int main() {
     {
       const fs::path orientation_game = games / "orientation-runtime-config";
       fs::create_directories(orientation_game);
+      fs::create_directories(orientation_game / "_hockeymon");
       fs::copy_file(tracker_base_path, orientation_game / "tracker.yaml");
       YAML::Node saved = YAML::Load(R"(pipeline:
   ds-playtracker:
@@ -2576,7 +2641,7 @@ game:
   stitching:
     frame_offsets: {left: 7, right: 0}
 )");
-      std::ofstream(orientation_game / "config.yaml") << saved << '\n';
+      std::ofstream(orientation_game / "_hockeymon/config.yaml") << saved << '\n';
       hm::Configurator orientation_config(
           "orientation-runtime-config", bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
       const bool loaded = orientation_config.configure().ok() &&
@@ -2604,7 +2669,7 @@ game:
         expected_private["game"]["videos"][side] = chapters;
       }
       saved["game"]["stitching"]["frame_offsets"]["left"] = 99;
-      std::ofstream(orientation_game / "config.yaml") << saved << '\n';
+      std::ofstream(orientation_game / "_hockeymon/config.yaml") << saved << '\n';
       const auto imported =
           hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game);
       ok &= expect(
@@ -2620,7 +2685,7 @@ game:
       for (const auto& invalid_right : {YAML::Load("[]"), YAML::Load("not-a-playlist")}) {
         saved["game"]["videos"]["left"] = std::vector<std::string>{"must-not-be-imported.mp4"};
         saved["game"]["videos"]["right"] = invalid_right;
-        std::ofstream(orientation_game / "config.yaml") << saved << '\n';
+        std::ofstream(orientation_game / "_hockeymon/config.yaml") << saved << '\n';
         const auto rejected =
             hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game);
         ok &= expect(
@@ -2628,7 +2693,7 @@ game:
                 YAML::Dump(orientation_config.game_private_config()) == YAML::Dump(expected_private),
             "Invalid saved orientation must fail without partially replacing camera playlists");
       }
-      fs::remove(orientation_game / "config.yaml");
+      fs::remove(orientation_game / "_hockeymon/config.yaml");
       ok &= expect(
           absl::IsNotFound(
               hm::ConfiguratorTestAccess::import_stitching_orientation(&orientation_config, orientation_game)),
@@ -2718,11 +2783,12 @@ game:
                                          std::optional<double> cli_canonical) -> absl::StatusOr<double> {
       const fs::path provenance_game_dir = games / game_id;
       fs::create_directories(provenance_game_dir);
+      fs::create_directories(provenance_game_dir / "_hockeymon");
       YAML::Node game_config(YAML::NodeType::Map);
       game_config["pipeline"]["ds-playtracker"]["config-file"] = tracker_base_path.string();
       if (game_canonical.has_value())
         game_config["rink"]["camera"]["sticky_translation_gaussian_mult"] = *game_canonical;
-      std::ofstream(provenance_game_dir / "config.yaml") << YAML::Dump(game_config) << '\n';
+      std::ofstream(provenance_game_dir / "_hockeymon/config.yaml") << YAML::Dump(game_config) << '\n';
       hm::Configurator provenance(game_id, bundled_baseline->root.string(), hm::Configurator::kUseConfigFileGpu);
       if (!provenance.configure().ok() || !provenance.underlay_config("pipeline", incomplete_pipeline.string()))
         return absl::InternalError("Could not load tracker provenance fixture");
@@ -2817,7 +2883,7 @@ game:
   ok &= expect(
       configurator.save_private_config(desired).ok(), "Configurator first save after concurrent creation must publish");
 
-  auto final_config = hm::stitching::load_game_config_file(game_dir / "config.yaml");
+  auto final_config = hm::stitching::load_game_config_file(game_dir / "_hockeymon/config.yaml");
   ok &= expect(
       final_config.ok() && final_config->has_value() && (**final_config)["pipeline"]["generated"].as<bool>() &&
           (**final_config)["hstream_ui"]["keep"].as<bool>(),
@@ -2825,6 +2891,7 @@ game:
 
   const fs::path stitch_override_dir = games / "stitch-override";
   fs::create_directories(stitch_override_dir);
+  fs::create_directories(stitch_override_dir / "_hockeymon");
   YAML::Node stitch_override_config(YAML::NodeType::Map);
   stitch_override_config["stitching"]["stitch_frame_time"] = "00:00:07";
   stitch_override_config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
@@ -2835,12 +2902,12 @@ game:
   hm::Configurator stitch_override("stitch-override", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto stitch_override_loaded = stitch_override.load_config();
   const absl::Status zero_override_status = stitch_override.persist_stitch_frame_time_override({});
-  auto after_zero_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
+  auto after_zero_override = hm::stitching::load_game_config_file(stitch_override_dir / "_hockeymon/config.yaml");
   hm::Configurator stitch_override_reloaded(
       "stitch-override", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto stitch_override_reloaded_config = stitch_override_reloaded.load_config();
   const absl::Status fractional_override_status = stitch_override.persist_stitch_frame_time_override("00:00:00.500");
-  auto after_fractional_override = hm::stitching::load_game_config_file(stitch_override_dir / "config.yaml");
+  auto after_fractional_override = hm::stitching::load_game_config_file(stitch_override_dir / "_hockeymon/config.yaml");
   ok &= expect(
       stitch_override_loaded.ok() && zero_override_status.ok() && after_zero_override.ok() &&
           after_zero_override->has_value() &&
@@ -2867,11 +2934,12 @@ game:
   std::ofstream(backend_choices_baseline_root / "baseline.yaml") << YAML::Dump(backend_choices_baseline) << '\n';
   const fs::path backend_choices_dir = games / "backend-choices";
   fs::create_directories(backend_choices_dir);
+  fs::create_directories(backend_choices_dir / "_hockeymon");
   hm::Configurator backend_choices(
       "backend-choices", backend_choices_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_choices_configured = backend_choices.configure();
   const absl::Status backend_choices_persisted = backend_choices.persist_effective_stitching_backend_choices();
-  auto backend_choices_private = hm::stitching::load_game_config_file(backend_choices_dir / "config.yaml");
+  auto backend_choices_private = hm::stitching::load_game_config_file(backend_choices_dir / "_hockeymon/config.yaml");
   ok &= expect(
       backend_choices_configured.ok() && backend_choices_persisted.ok() && backend_choices_private.ok() &&
           backend_choices_private->has_value() &&
@@ -2892,11 +2960,12 @@ game:
   std::ofstream(backend_omitted_baseline_root / "baseline.yaml") << YAML::Dump(backend_omitted_baseline) << '\n';
   const fs::path backend_omitted_dir = games / "backend-omitted";
   fs::create_directories(backend_omitted_dir);
+  fs::create_directories(backend_omitted_dir / "_hockeymon");
   hm::Configurator backend_omitted(
       "backend-omitted", backend_omitted_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_omitted_configured = backend_omitted.configure();
   const absl::Status backend_omitted_persisted = backend_omitted.persist_effective_stitching_backend_choices();
-  auto backend_omitted_private = hm::stitching::load_game_config_file(backend_omitted_dir / "config.yaml");
+  auto backend_omitted_private = hm::stitching::load_game_config_file(backend_omitted_dir / "_hockeymon/config.yaml");
   ok &= expect(
       backend_omitted_configured.ok() && backend_omitted_persisted.ok() && backend_omitted_private.ok() &&
           backend_omitted_private->has_value() &&
@@ -2913,7 +2982,8 @@ game:
   const absl::Status backend_choices_changed_configured = backend_choices_changed.configure();
   const absl::Status backend_choices_changed_persisted =
       backend_choices_changed.persist_effective_stitching_backend_choices();
-  auto backend_choices_changed_private = hm::stitching::load_game_config_file(backend_choices_dir / "config.yaml");
+  auto backend_choices_changed_private =
+      hm::stitching::load_game_config_file(backend_choices_dir / "_hockeymon/config.yaml");
   ok &= expect(
       backend_choices_changed_configured.ok() && backend_choices_changed_persisted.ok() &&
           backend_choices_changed_private.ok() && backend_choices_changed_private->has_value() &&
@@ -2959,6 +3029,7 @@ game:
   ok &= expect(nona_projection_status.ok(), "Nona must accept supported non-rectilinear YAML projections");
   const fs::path backend_cli_dir = games / "backend-cli";
   fs::create_directories(backend_cli_dir);
+  fs::create_directories(backend_cli_dir / "_hockeymon");
   YAML::Node backend_cli_private(YAML::NodeType::Map);
   backend_cli_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_cli_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
@@ -2971,7 +3042,7 @@ game:
   const absl::Status backend_cli_option = backend_cli.apply_config_item("stitching.mapping_backend", "opencv-magsac");
   const absl::Status backend_cli_autooptimizer = backend_cli.apply_config_item("stitching.run_autooptimizer", "true");
   const absl::Status backend_cli_persisted = backend_cli.persist_effective_stitching_backend_choices();
-  auto backend_cli_generated = hm::stitching::load_game_config_file(backend_cli_dir / "config.yaml");
+  auto backend_cli_generated = hm::stitching::load_game_config_file(backend_cli_dir / "_hockeymon/config.yaml");
   hm::Configurator backend_cli_repeated("backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_cli_repeated_configured = backend_cli_repeated.configure();
   const absl::Status backend_cli_repeated_option =
@@ -2980,11 +3051,12 @@ game:
       backend_cli_repeated.apply_config_item("stitching.run_autooptimizer", "true");
   const absl::Status backend_cli_repeated_persisted =
       backend_cli_repeated.persist_effective_stitching_backend_choices();
-  auto backend_cli_repeated_generated = hm::stitching::load_game_config_file(backend_cli_dir / "config.yaml");
+  auto backend_cli_repeated_generated =
+      hm::stitching::load_game_config_file(backend_cli_dir / "_hockeymon/config.yaml");
   hm::Configurator backend_cli_reloaded("backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_cli_reconfigured = backend_cli_reloaded.configure();
   const absl::Status backend_cli_restored = backend_cli_reloaded.persist_effective_stitching_backend_choices();
-  auto backend_cli_final = hm::stitching::load_game_config_file(backend_cli_dir / "config.yaml");
+  auto backend_cli_final = hm::stitching::load_game_config_file(backend_cli_dir / "_hockeymon/config.yaml");
   ok &= expect(
       backend_cli_configured.ok() && backend_cli_option.ok() && backend_cli_autooptimizer.ok() &&
           backend_cli_persisted.ok() && backend_cli_generated.ok() && backend_cli_generated->has_value() &&
@@ -3015,6 +3087,7 @@ game:
         override_value == "null" ? "rink-inherited" : (override_value == "[0, 0, 0]" ? "rink-zero" : "rink-equal");
     const fs::path rink_dir = games / game;
     fs::create_directories(rink_dir);
+    fs::create_directories(rink_dir / "_hockeymon");
     YAML::Node rink_private =
         YAML::Load("stitching: {rink_config: vallco, projection_framing: {rotation_degrees: " + override_value + "}}");
     ok &= expect(
@@ -3024,7 +3097,7 @@ game:
       hm::Configurator rink_configurator(game, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
       const auto configured = rink_configurator.configure();
       const auto persisted = rink_configurator.persist_effective_stitching_backend_choices();
-      const auto loaded = hm::stitching::load_game_config_file(rink_dir / "config.yaml");
+      const auto loaded = hm::stitching::load_game_config_file(rink_dir / "_hockeymon/config.yaml");
       if (!configured.ok() || !persisted.ok())
         std::cerr << game << ": configure=" << configured << " persist=" << persisted << "\n";
       ok &= expect(
@@ -3045,6 +3118,7 @@ game:
     const std::string game = "rink-overlay-" + rink_id;
     const fs::path rink_dir = games / game;
     fs::create_directories(rink_dir);
+    fs::create_directories(rink_dir / "_hockeymon");
     YAML::Node fixture = YAML::Load("stitching: {rink_config: " + rink_id + "}");
     ok &= expect(
         hm::stitching::publish_game_config(rink_dir, YAML::Dump(fixture)).ok(), "custom rink fixture must publish");
@@ -3056,7 +3130,7 @@ game:
       const auto configured = custom_rink.configure();
       const bool overlaid = custom_rink.overlay_config("", overlay_path.string());
       const auto persisted = custom_rink.persist_effective_stitching_backend_choices();
-      const auto loaded = hm::stitching::load_game_config_file(rink_dir / "config.yaml");
+      const auto loaded = hm::stitching::load_game_config_file(rink_dir / "_hockeymon/config.yaml");
       ok &= expect(
           configured.ok() && overlaid && persisted.ok() && loaded.ok() && loaded->has_value(),
           "built-in overrides and new profiles from config overlays must reach private workers");
@@ -3070,13 +3144,14 @@ game:
   }
   const fs::path generated_zero_dir = games / "rink-generated-zero";
   fs::create_directories(generated_zero_dir);
+  fs::create_directories(generated_zero_dir / "_hockeymon");
   ok &= expect(
       hm::stitching::publish_game_config(generated_zero_dir, "stitching: {rink_config: vallco}\n").ok(),
       "generated zero fixture must publish");
   hm::Configurator generated_zero("rink-generated-zero", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto zero_configured = generated_zero.configure();
   const auto zero_persisted = generated_zero.persist_effective_stitching_backend_choices();
-  YAML::Node zero_edited = YAML::LoadFile((generated_zero_dir / "config.yaml").string());
+  YAML::Node zero_edited = YAML::LoadFile((generated_zero_dir / "_hockeymon/config.yaml").string());
   zero_edited["stitching"]["projection_framing"]["rotation_degrees"] = YAML::Load("[0, 0, 0]");
   ok &= expect(
       hm::stitching::publish_game_config(generated_zero_dir, YAML::Dump(zero_edited)).ok(),
@@ -3084,8 +3159,8 @@ game:
   hm::Configurator zero_reloaded("rink-generated-zero", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const auto zero_reconfigured = zero_reloaded.configure();
   const auto zero_repersisted = zero_reloaded.persist_effective_stitching_backend_choices();
-  const auto zero_saved =
-      hm::stitching::read_stitch_projection_framing(YAML::LoadFile((generated_zero_dir / "config.yaml").string()));
+  const auto zero_saved = hm::stitching::read_stitch_projection_framing(
+      YAML::LoadFile((generated_zero_dir / "_hockeymon/config.yaml").string()));
   ok &= expect(
       zero_configured.ok() && zero_persisted.ok() && zero_reconfigured.ok() && zero_repersisted.ok() &&
           zero_saved.ok() && !zero_saved->rotation_inherited && zero_saved->rotation_degrees[1] == 0,
@@ -3093,6 +3168,7 @@ game:
 
   const fs::path framing_cli_dir = games / "framing-cli";
   fs::create_directories(framing_cli_dir);
+  fs::create_directories(framing_cli_dir / "_hockeymon");
   YAML::Node framing_cli_private(YAML::NodeType::Map);
   framing_cli_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   framing_cli_private["stitching"]["mapping_backend"] = "opencv-magsac";
@@ -3111,11 +3187,11 @@ game:
       framing_cli.apply_config_item("stitching.projection_framing.auto_crop", "false"),
   };
   const absl::Status framing_cli_persisted = framing_cli.persist_effective_stitching_backend_choices();
-  auto framing_cli_generated = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
+  auto framing_cli_generated = hm::stitching::load_game_config_file(framing_cli_dir / "_hockeymon/config.yaml");
   hm::Configurator framing_cli_reloaded("framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status framing_cli_reconfigured = framing_cli_reloaded.configure();
   const absl::Status framing_cli_restored = framing_cli_reloaded.persist_effective_stitching_backend_choices();
-  auto framing_cli_final = hm::stitching::load_game_config_file(framing_cli_dir / "config.yaml");
+  auto framing_cli_final = hm::stitching::load_game_config_file(framing_cli_dir / "_hockeymon/config.yaml");
   const bool framing_options_ok = std::all_of(
       framing_cli_options.begin(), framing_cli_options.end(), [](const absl::Status& status) { return status.ok(); });
   ok &= expect(
@@ -3142,6 +3218,7 @@ game:
 
   const fs::path partial_framing_cli_dir = games / "partial-framing-cli";
   fs::create_directories(partial_framing_cli_dir);
+  fs::create_directories(partial_framing_cli_dir / "_hockeymon");
   YAML::Node partial_framing_private(YAML::NodeType::Map);
   partial_framing_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   partial_framing_private["stitching"]["mapping_backend"] = "opencv-magsac";
@@ -3156,12 +3233,13 @@ game:
   const absl::Status partial_framing_option =
       partial_framing_cli.apply_config_item("stitching.projection_framing.auto_crop", "false");
   const absl::Status partial_framing_persisted = partial_framing_cli.persist_effective_stitching_backend_choices();
-  auto partial_framing_generated = hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  auto partial_framing_generated =
+      hm::stitching::load_game_config_file(partial_framing_cli_dir / "_hockeymon/config.yaml");
   hm::Configurator partial_framing_reloaded(
       "partial-framing-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status partial_framing_reconfigured = partial_framing_reloaded.configure();
   const absl::Status partial_framing_restored = partial_framing_reloaded.persist_effective_stitching_backend_choices();
-  auto partial_framing_final = hm::stitching::load_game_config_file(partial_framing_cli_dir / "config.yaml");
+  auto partial_framing_final = hm::stitching::load_game_config_file(partial_framing_cli_dir / "_hockeymon/config.yaml");
   const auto partial_previous_framing = partial_framing_generated.ok() && partial_framing_generated->has_value()
       ? hm::get_node(
             **partial_framing_generated, "hstream_ui.generated_stitching_backend_choices.previous_projection_framing")
@@ -3179,8 +3257,54 @@ game:
           !hm::get_node(**partial_framing_final, "hstream_ui.generated_stitching_backend_choices").has_value(),
       "Generated framing restoration must preserve a partial private map so omitted fields continue inheriting");
 
+  // A claimed NONA worker reads the materialized private tuple directly. Keep
+  // that tuple complete while retaining the original partial framing for reload.
+  const fs::path partial_claim_dir = games / "partial-framing-claim";
+  fs::create_directories(partial_claim_dir);
+  YAML::Node partial_claim_private = YAML::Clone(partial_framing_private);
+  partial_claim_private["stitching"]["mapping_backend"] = "nona";
+  partial_claim_private["stitching"]["projection"] = "general-panini";
+  partial_claim_private["stitching"]["run_autooptimizer"] = true;
+  partial_claim_private["hstream_ui"]["stitching_calibration"]["status"] = "pending";
+  partial_claim_private["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "partial-framing-owner";
+  const auto partial_claim_published =
+      hm::stitching::publish_game_config(partial_claim_dir, YAML::Dump(partial_claim_private) + "\n");
+  hm::Configurator partial_claim("partial-framing-claim", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto partial_claim_loaded = partial_claim.configure();
+  const auto partial_claim_saved = partial_claim.persist_effective_stitching_backend_choices("partial-framing-owner");
+  const auto partial_claim_repeated =
+      partial_claim.persist_effective_stitching_backend_choices("partial-framing-owner");
+  auto partial_claim_worker = hm::stitching::load_game_config_file(partial_claim_dir / "_hockeymon/config.yaml");
+  const auto worker_framing = partial_claim_worker.ok() && partial_claim_worker->has_value()
+      ? hm::get_node(**partial_claim_worker, "stitching.projection_framing")
+      : std::nullopt;
+  const auto claimed_framing = partial_claim_worker.ok() && partial_claim_worker->has_value()
+      ? hm::get_node(**partial_claim_worker, "hstream_ui.stitching_calibration.backend_generation.projection_framing")
+      : std::nullopt;
+  hm::Configurator partial_claim_reload(
+      "partial-framing-claim", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto partial_claim_reloaded = partial_claim_reload.configure();
+  const auto partial_claim_restored = partial_claim_reload.persist_effective_stitching_backend_choices();
+  auto partial_claim_final = hm::stitching::load_game_config_file(partial_claim_dir / "_hockeymon/config.yaml");
+  const auto claim_restored_framing = partial_claim_final.ok() && partial_claim_final->has_value()
+      ? hm::get_node(**partial_claim_final, "stitching.projection_framing")
+      : std::nullopt;
+  if (!partial_claim_saved.ok() || !partial_claim_repeated.ok())
+    std::cerr << "Partial framing worker claim: " << partial_claim_saved << "; repeated: " << partial_claim_repeated
+              << '\n';
+  ok &= expect(
+      partial_claim_published.ok() && partial_claim_loaded.ok() && partial_claim_saved.ok() &&
+          partial_claim_repeated.ok() && worker_framing && claimed_framing &&
+          (*worker_framing)["auto_fov"].as<bool>() &&
+          (*worker_framing)["horizontal_fov"].as<double>() == (*claimed_framing)["horizontal_fov"].as<double>() &&
+          partial_claim_reloaded.ok() && partial_claim_restored.ok() && claim_restored_framing &&
+          claim_restored_framing->IsMap() && claim_restored_framing->size() == 1 &&
+          (*claim_restored_framing)["auto_crop"].as<bool>(),
+      "A claimed worker must receive effective framing while reload restores the original partial private intent");
+
   const fs::path malformed_backend_dir = games / "malformed-backend-cli";
   fs::create_directories(malformed_backend_dir);
+  fs::create_directories(malformed_backend_dir / "_hockeymon");
   YAML::Node malformed_backend_private(YAML::NodeType::Map);
   malformed_backend_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   malformed_backend_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
@@ -3201,13 +3325,14 @@ game:
   const absl::Status malformed_backend_autooptimizer =
       malformed_backend_cli.apply_config_item("stitching.run_autooptimizer", "false");
   const absl::Status malformed_backend_repaired = malformed_backend_cli.persist_effective_stitching_backend_choices();
-  auto malformed_backend_after_repair = hm::stitching::load_game_config_file(malformed_backend_dir / "config.yaml");
+  auto malformed_backend_after_repair =
+      hm::stitching::load_game_config_file(malformed_backend_dir / "_hockeymon/config.yaml");
   hm::Configurator malformed_backend_restarted(
       "malformed-backend-cli", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status malformed_backend_reconfigured = malformed_backend_restarted.configure();
   const absl::Status malformed_backend_restored =
       malformed_backend_restarted.persist_effective_stitching_backend_choices();
-  auto malformed_backend_final = hm::stitching::load_game_config_file(malformed_backend_dir / "config.yaml");
+  auto malformed_backend_final = hm::stitching::load_game_config_file(malformed_backend_dir / "_hockeymon/config.yaml");
   ok &= expect(
       malformed_backend_configured.ok() && malformed_backend_mapping.ok() && malformed_backend_autooptimizer.ok() &&
           malformed_backend_repaired.ok() && malformed_backend_after_repair.ok() &&
@@ -3227,6 +3352,7 @@ game:
 
   const fs::path legacy_backend_dir = games / "legacy-generated-backend";
   fs::create_directories(legacy_backend_dir);
+  fs::create_directories(legacy_backend_dir / "_hockeymon");
   YAML::Node legacy_backend_private(YAML::NodeType::Map);
   legacy_backend_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   legacy_backend_private["stitching"]["mapping_backend"] = "opencv-magsac";
@@ -3244,12 +3370,13 @@ game:
   const absl::Status legacy_backend_autooptimizer =
       legacy_backend_migration.apply_config_item("stitching.run_autooptimizer", "false");
   const absl::Status legacy_backend_migrated = legacy_backend_migration.persist_effective_stitching_backend_choices();
-  auto legacy_backend_after_migration = hm::stitching::load_game_config_file(legacy_backend_dir / "config.yaml");
+  auto legacy_backend_after_migration =
+      hm::stitching::load_game_config_file(legacy_backend_dir / "_hockeymon/config.yaml");
   hm::Configurator legacy_backend_restarted(
       "legacy-generated-backend", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status legacy_backend_reconfigured = legacy_backend_restarted.configure();
   const absl::Status legacy_backend_restored = legacy_backend_restarted.persist_effective_stitching_backend_choices();
-  auto legacy_backend_final = hm::stitching::load_game_config_file(legacy_backend_dir / "config.yaml");
+  auto legacy_backend_final = hm::stitching::load_game_config_file(legacy_backend_dir / "_hockeymon/config.yaml");
   ok &= expect(
       legacy_backend_configured.ok() && legacy_backend_mapping.ok() && legacy_backend_autooptimizer.ok() &&
           legacy_backend_migrated.ok() && legacy_backend_after_migration.ok() &&
@@ -3270,6 +3397,7 @@ game:
 
   const fs::path backend_generation_dir = games / "backend-generation";
   fs::create_directories(backend_generation_dir);
+  fs::create_directories(backend_generation_dir / "_hockeymon");
   YAML::Node backend_generation_private(YAML::NodeType::Map);
   backend_generation_private["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   backend_generation_private["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "shared-generation-a";
@@ -3295,12 +3423,13 @@ game:
       first_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
   g_unsetenv("HSTREAM_GAME_CONFIG_TEST_INTERRUPT_BEFORE_RENAME");
   auto backend_generation_after_interruption =
-      hm::stitching::load_game_config_file(backend_generation_dir / "config.yaml");
+      hm::stitching::load_game_config_file(backend_generation_dir / "_hockeymon/config.yaml");
   const absl::Status first_generation_reserved =
       first_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
   const absl::Status second_generation_rejected =
       second_backend_generation.persist_effective_stitching_backend_choices("shared-generation-a");
-  auto backend_generation_final = hm::stitching::load_game_config_file(backend_generation_dir / "config.yaml");
+  auto backend_generation_final =
+      hm::stitching::load_game_config_file(backend_generation_dir / "_hockeymon/config.yaml");
   ok &= expect(
       first_generation_configured.ok() && second_generation_configured.ok() && first_generation_backend.ok() &&
           first_generation_autooptimizer.ok() && second_generation_backend.ok() &&
@@ -3323,11 +3452,15 @@ game:
 
   const fs::path selected_generation_dir = games / "selected-frame-generation";
   fs::create_directories(selected_generation_dir);
-  const auto selected_fixture = player_selection_fixture(selected_generation_dir);
+  fs::create_directories(selected_generation_dir / "_hockeymon");
+  // The selected plan and its early worker reservation must share the same
+  // frozen source optics that launch will use, before any metadata discovery.
+  const auto selected_fixture = player_selection_fixture(selected_generation_dir, 1, 0.0, true);
   ok &= expect(selected_fixture.ok(), "selected-frame Configurator fixture must bind real local source paths");
   if (selected_fixture.ok()) {
     const fs::path input_override_dir = games / "selected-frame-input-overrides";
     fs::create_directories(input_override_dir);
+    fs::create_directories(input_override_dir / "_hockeymon");
     YAML::Node promoted = YAML::Clone(*selected_fixture);
     promoted["stitching"]["calibration_frame_count"] = 1;
     promoted["hstream_ui"]["stitching_calibration"]["frame_count"] = 1;
@@ -3342,11 +3475,11 @@ game:
       hm::Configurator overridden(
           "selected-frame-input-overrides", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
       const auto loaded = overridden.configure();
-      const auto before_override = YAML::LoadFile((input_override_dir / "config.yaml").string());
+      const auto before_override = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
       const auto reconciled = overridden.reconcile_stitch_frame_time_override(changed ? "00:00:09" : "00:00:08");
-      const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+      const auto saved = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
       const auto persisted = overridden.persist_stitch_frame_time_override(changed ? "00:00:09" : "00:00:08");
-      const auto after_persist = YAML::LoadFile((input_override_dir / "config.yaml").string());
+      const auto after_persist = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
       ok &= expect(
           loaded.ok() &&
               (changed ? absl::IsFailedPrecondition(reconciled.status()) : reconciled.ok() && !*reconciled) &&
@@ -3364,6 +3497,7 @@ game:
     g_unsetenv("HM_STITCH_CALIBRATION_FRAME_COUNT");
     const fs::path no_count_dir = games / "selected-frame-missing-count";
     fs::create_directories(no_count_dir);
+    fs::create_directories(no_count_dir / "_hockeymon");
     const auto no_count_fixture = player_selection_fixture(no_count_dir, 4);
     ok &= expect(no_count_fixture.ok(), "selected-frame count fallback fixture must validate");
     if (no_count_fixture.ok()) {
@@ -3383,10 +3517,10 @@ game:
         hm::Configurator same_count(
             "selected-frame-missing-count", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
         const auto loaded = same_count.configure();
-        const auto before_override = YAML::LoadFile((no_count_dir / "config.yaml").string());
+        const auto before_override = YAML::LoadFile((no_count_dir / "_hockeymon/config.yaml").string());
         const auto applied = same_count.apply_config_item(path, "4");
         const auto reconciled = hm::ConfiguratorTestAccess::reconcile_selected_frame_count_override(&same_count);
-        const auto saved = YAML::LoadFile((no_count_dir / "config.yaml").string());
+        const auto saved = YAML::LoadFile((no_count_dir / "_hockeymon/config.yaml").string());
         const auto saved_fingerprint = hm::stitching::player_frame_selection_fingerprint(saved);
         const auto expected_fingerprint = hm::stitching::player_frame_selection_fingerprint(no_count_config);
         ok &= expect(
@@ -3409,7 +3543,7 @@ game:
         const auto loaded = overridden.configure();
         const auto applied = overridden.apply_config_item(path, changed ? "4" : "1");
         const auto reconciled = hm::ConfiguratorTestAccess::reconcile_selected_frame_count_override(&overridden);
-        const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+        const auto saved = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
         ok &= expect(
             loaded.ok() && applied.ok() && reconciled.ok() &&
                 hm::get_node(saved, "stitching.calibration_frame_selection").has_value() == !changed &&
@@ -3435,13 +3569,13 @@ game:
           const std::string requested_time = changed_time ? "00:00:09" : "00:00:08";
           // PipelineApp reconciles the reference time before complete_configuration().
           const auto reconciled = combined.reconcile_stitch_frame_time_override(requested_time, expected_owner);
-          const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+          const auto saved = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
           // The unchanged time matches the user overlay, so reconciliation removes
           // its redundant game override while keeping the effective timestamp.
           const auto saved_time = hm::get_node(saved, "stitching.stitch_frame_time");
           const std::string owner = saved["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>();
           const auto repeated = combined.reconcile_stitch_frame_time_override(requested_time, expected_owner);
-          const auto after_repeat = YAML::LoadFile((input_override_dir / "config.yaml").string());
+          const auto after_repeat = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
           ok &= expect(
               loaded.ok() && applied.ok() && mapped.ok() && reconciled.ok() && *reconciled == changed_time &&
                   repeated.ok() && !*repeated &&
@@ -3471,7 +3605,7 @@ game:
     const auto stale_combined_applied = stale_combined.apply_config_item("stitching.calibration_frame_count", "4");
     const auto stale_combined_result =
         stale_combined.reconcile_stitch_frame_time_override("00:00:09", "superseded-selection");
-    const auto stale_combined_saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+    const auto stale_combined_saved = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
     ok &= expect(
         stale_combined_loaded.ok() && stale_combined_applied.ok() && absl::IsAborted(stale_combined_result.status()) &&
             stale_combined_saved["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:08" &&
@@ -3486,7 +3620,7 @@ game:
       const auto canonical = aliases.apply_config_item("stitching.calibration_frame_count", "ignored-invalid-value");
       const auto native = aliases.apply_config_item("pipeline.hmstitcher.calibration-frame-count", changed ? "4" : "1");
       const auto reconciled = hm::ConfiguratorTestAccess::reconcile_selected_frame_count_override(&aliases);
-      const auto saved = YAML::LoadFile((input_override_dir / "config.yaml").string());
+      const auto saved = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
       ok &= expect(
           loaded.ok() && canonical.ok() && native.ok() && reconciled.ok() &&
               aliases.config()["stitching"]["calibration_frame_count"].as<int>() == (changed ? 4 : 1) &&
@@ -3505,7 +3639,7 @@ game:
         hm::stitching::publish_game_config(input_override_dir, YAML::Dump(replacement) + "\n").ok(),
         "concurrent plan replacement must publish");
     const auto superseded_status = hm::ConfiguratorTestAccess::reconcile_selected_frame_count_override(&superseded);
-    const auto after_superseded = YAML::LoadFile((input_override_dir / "config.yaml").string());
+    const auto after_superseded = YAML::LoadFile((input_override_dir / "_hockeymon/config.yaml").string());
     ok &= expect(
         superseded_loaded.ok() && superseded_applied.ok() && absl::IsAborted(superseded_status) &&
             after_superseded["hstream_ui"]["stitching_calibration"]["frame_count"].as<int>() == 1,
@@ -3537,7 +3671,7 @@ game:
     const auto loaded = selected_generation.configure();
     const auto persisted = selected_generation.persist_effective_stitching_backend_choices(generation);
     const auto persisted_again = selected_generation.persist_effective_stitching_backend_choices(generation);
-    const auto after = hm::stitching::load_game_config_file(selected_generation_dir / "config.yaml");
+    const auto after = hm::stitching::load_game_config_file(selected_generation_dir / "_hockeymon/config.yaml");
     const auto expected_fingerprint = hm::stitching::player_frame_selection_fingerprint(selected_private);
     const auto claimed = after.ok() && after->has_value()
         ? hm::get_node(
@@ -3570,8 +3704,9 @@ game:
 
   const fs::path invalid_backend_dir = games / "invalid-backend-cli";
   fs::create_directories(invalid_backend_dir);
-  std::ofstream(invalid_backend_dir / "seam_file.png") << "preserved seam\n";
-  std::ofstream(invalid_backend_dir / "mapping_0000.tif") << "preserved mapping\n";
+  fs::create_directories(invalid_backend_dir / "_hockeymon");
+  std::ofstream(invalid_backend_dir / "_hockeymon/seam_file.png") << "preserved seam\n";
+  std::ofstream(invalid_backend_dir / "_hockeymon/mapping_0000.tif") << "preserved mapping\n";
   YAML::Node invalid_backend_private(YAML::NodeType::Map);
   invalid_backend_private["pipeline"]["application"]["complete-configuration"] = 1;
   invalid_backend_private["pipeline"]["hmstitcher"]["enable"] = 1;
@@ -3586,7 +3721,7 @@ game:
   ok &= expect(
       hm::stitching::publish_game_config(invalid_backend_dir, YAML::Dump(invalid_backend_private) + "\n").ok(),
       "invalid backend CLI fixture must publish");
-  std::ifstream invalid_backend_before_stream(invalid_backend_dir / "config.yaml", std::ios::binary);
+  std::ifstream invalid_backend_before_stream(invalid_backend_dir / "_hockeymon/config.yaml", std::ios::binary);
   const std::string invalid_backend_before{
       std::istreambuf_iterator<char>(invalid_backend_before_stream), std::istreambuf_iterator<char>()};
   hm::Configurator invalid_backend_cli(
@@ -3603,7 +3738,7 @@ game:
       /*clean_expected_invalidation_id=*/{},
       /*show_render_sink=*/false,
       /*show_render_scale=*/-1.0);
-  std::ifstream invalid_backend_after_stream(invalid_backend_dir / "config.yaml", std::ios::binary);
+  std::ifstream invalid_backend_after_stream(invalid_backend_dir / "_hockeymon/config.yaml", std::ios::binary);
   const std::string invalid_backend_after{
       std::istreambuf_iterator<char>(invalid_backend_after_stream), std::istreambuf_iterator<char>()};
   ok &= expect(
@@ -3612,8 +3747,8 @@ game:
           std::string(invalid_backend_status.message()).find("requires stitching.run_autooptimizer=true") !=
               std::string::npos &&
           invalid_backend_after == invalid_backend_before &&
-          fs::is_regular_file(invalid_backend_dir / "seam_file.png") &&
-          fs::is_regular_file(invalid_backend_dir / "mapping_0000.tif"),
+          fs::is_regular_file(invalid_backend_dir / "_hockeymon/seam_file.png") &&
+          fs::is_regular_file(invalid_backend_dir / "_hockeymon/mapping_0000.tif"),
       "A direct NONA-without-autooptimizer override must fail before changing private config or cleaning artifacts");
 
   const fs::path backend_partial_baseline_root = root / "backend-partial-baseline";
@@ -3626,6 +3761,7 @@ game:
   std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
   const fs::path backend_partial_dir = games / "backend-partial";
   fs::create_directories(backend_partial_dir);
+  fs::create_directories(backend_partial_dir / "_hockeymon");
   YAML::Node backend_partial_private(YAML::NodeType::Map);
   backend_partial_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_partial_private["stitching"]["mapping_backend"] = "nona";
@@ -3642,7 +3778,7 @@ game:
       "backend-partial", backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status backend_partial_reconfigured = backend_partial_reloaded.configure();
   const absl::Status backend_partial_restored = backend_partial_reloaded.persist_effective_stitching_backend_choices();
-  auto backend_partial_final = hm::stitching::load_game_config_file(backend_partial_dir / "config.yaml");
+  auto backend_partial_final = hm::stitching::load_game_config_file(backend_partial_dir / "_hockeymon/config.yaml");
   ok &= expect(
       backend_partial_configured.ok() && backend_partial_option.ok() && backend_partial_persisted.ok() &&
           backend_partial_reconfigured.ok() && backend_partial_restored.ok() && backend_partial_final.ok() &&
@@ -3670,7 +3806,8 @@ game:
   const absl::Status backend_partial_parameter_configured = backend_partial_parameter_changed.configure();
   const absl::Status backend_partial_parameter_persisted =
       backend_partial_parameter_changed.persist_effective_stitching_backend_choices();
-  auto backend_partial_parameter_final = hm::stitching::load_game_config_file(backend_partial_dir / "config.yaml");
+  auto backend_partial_parameter_final =
+      hm::stitching::load_game_config_file(backend_partial_dir / "_hockeymon/config.yaml");
   ok &= expect(
       backend_partial_parameter_configured.ok() && backend_partial_parameter_persisted.ok() &&
           backend_partial_parameter_final.ok() && backend_partial_parameter_final->has_value() &&
@@ -3687,7 +3824,8 @@ game:
   const absl::Status backend_partial_changed_configured = backend_partial_changed.configure();
   const absl::Status backend_partial_changed_persisted =
       backend_partial_changed.persist_effective_stitching_backend_choices();
-  auto backend_partial_changed_final = hm::stitching::load_game_config_file(backend_partial_dir / "config.yaml");
+  auto backend_partial_changed_final =
+      hm::stitching::load_game_config_file(backend_partial_dir / "_hockeymon/config.yaml");
   ok &= expect(
       backend_partial_changed_configured.ok() && backend_partial_changed_persisted.ok() &&
           backend_partial_changed_final.ok() && backend_partial_changed_final->has_value() &&
@@ -3701,6 +3839,7 @@ game:
   std::ofstream(backend_partial_baseline_root / "baseline.yaml") << YAML::Dump(backend_partial_baseline) << '\n';
   const fs::path inherited_parameter_dir = games / "inherited-projection-private-parameters";
   fs::create_directories(inherited_parameter_dir);
+  fs::create_directories(inherited_parameter_dir / "_hockeymon");
   YAML::Node inherited_parameter_private(YAML::NodeType::Map);
   inherited_parameter_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   inherited_parameter_private["stitching"]["mapping_backend"] = "nona";
@@ -3719,7 +3858,8 @@ game:
       inherited_parameter_first.apply_config_item("stitching.projection", "triplane");
   const absl::Status inherited_parameter_first_persisted =
       inherited_parameter_first.persist_effective_stitching_backend_choices();
-  auto inherited_parameter_generated = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  auto inherited_parameter_generated =
+      hm::stitching::load_game_config_file(inherited_parameter_dir / "_hockeymon/config.yaml");
   const bool inherited_inactive_parameters_captured = inherited_parameter_generated.ok() &&
       inherited_parameter_generated->has_value() &&
       (**inherited_parameter_generated)["hstream_ui"]["generated_stitching_backend_choices"]
@@ -3744,7 +3884,8 @@ game:
   const absl::Status inherited_parameter_reconfigured = inherited_parameter_reloaded.configure();
   const absl::Status inherited_parameter_restored =
       inherited_parameter_reloaded.persist_effective_stitching_backend_choices();
-  auto inherited_parameter_final = hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+  auto inherited_parameter_final =
+      hm::stitching::load_game_config_file(inherited_parameter_dir / "_hockeymon/config.yaml");
   hm::Configurator inherited_parameter_roundtrip(
       "inherited-projection-private-parameters",
       backend_partial_baseline_root.string(),
@@ -3753,7 +3894,7 @@ game:
   const absl::Status inherited_parameter_roundtrip_persisted =
       inherited_parameter_roundtrip.persist_effective_stitching_backend_choices();
   auto inherited_parameter_after_roundtrip =
-      hm::stitching::load_game_config_file(inherited_parameter_dir / "config.yaml");
+      hm::stitching::load_game_config_file(inherited_parameter_dir / "_hockeymon/config.yaml");
   ok &= expect(
       inherited_parameter_first_configured.ok() && inherited_parameter_projection_overridden.ok() &&
           inherited_parameter_first_persisted.ok() && inherited_inactive_parameters_captured &&
@@ -3780,6 +3921,7 @@ game:
 
   const fs::path generated_alias_dir = games / "generated-projection-alias";
   fs::create_directories(generated_alias_dir);
+  fs::create_directories(generated_alias_dir / "_hockeymon");
   YAML::Node generated_alias_private(YAML::NodeType::Map);
   generated_alias_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   generated_alias_private["stitching"]["mapping_backend"] = "nona";
@@ -3805,7 +3947,7 @@ game:
   const absl::Status generated_alias_configured = generated_alias_configurator.configure();
   const absl::Status generated_alias_persisted =
       generated_alias_configurator.persist_effective_stitching_backend_choices();
-  auto generated_alias_final = hm::stitching::load_game_config_file(generated_alias_dir / "config.yaml");
+  auto generated_alias_final = hm::stitching::load_game_config_file(generated_alias_dir / "_hockeymon/config.yaml");
   ok &= expect(
       generated_alias_published.ok() && generated_alias_configured.ok() && generated_alias_persisted.ok() &&
           generated_alias_final.ok() && generated_alias_final->has_value() &&
@@ -3816,6 +3958,7 @@ game:
 
   const fs::path generated_backend_alias_dir = games / "generated-backend-alias";
   fs::create_directories(generated_backend_alias_dir);
+  fs::create_directories(generated_backend_alias_dir / "_hockeymon");
   YAML::Node generated_backend_alias_private(YAML::NodeType::Map);
   generated_backend_alias_private["stitching"]["control_point_matcher"] = "native-aliked-lightglue";
   generated_backend_alias_private["stitching"]["mapping_backend"] = "MAGSAC++";
@@ -3841,7 +3984,7 @@ game:
   const absl::Status generated_backend_alias_persisted =
       generated_backend_alias_configurator.persist_effective_stitching_backend_choices();
   auto generated_backend_alias_final =
-      hm::stitching::load_game_config_file(generated_backend_alias_dir / "config.yaml");
+      hm::stitching::load_game_config_file(generated_backend_alias_dir / "_hockeymon/config.yaml");
   ok &= expect(
       generated_backend_alias_published.ok() && generated_backend_alias_configured.ok() &&
           generated_backend_alias_persisted.ok() && generated_backend_alias_final.ok() &&
@@ -3857,6 +4000,7 @@ game:
   auto invalid_previous_choice_is_retained = [&](const std::string& game_name, const std::string& metadata_key) {
     const fs::path game_dir = games / game_name;
     fs::create_directories(game_dir);
+    fs::create_directories(game_dir / "_hockeymon");
     YAML::Node private_config = YAML::Clone(generated_alias_private);
     YAML::Node choices = private_config["hstream_ui"]["generated_stitching_backend_choices"];
     choices[metadata_key] = "invalid-previous-choice";
@@ -3867,7 +4011,7 @@ game:
         game_name, backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     const absl::Status configured = configurator.configure();
     const absl::Status persisted = configurator.persist_effective_stitching_backend_choices();
-    auto final_config = hm::stitching::load_game_config_file(game_dir / "config.yaml");
+    auto final_config = hm::stitching::load_game_config_file(game_dir / "_hockeymon/config.yaml");
     if (!published.ok() || !configured.ok() || !persisted.ok() || !final_config.ok() || !final_config->has_value()) {
       return false;
     }
@@ -3891,6 +4035,7 @@ game:
   auto invalid_previous_tuple_is_retained = [&](const std::string& game_name, bool malformed_autooptimizer) {
     const fs::path game_dir = games / game_name;
     fs::create_directories(game_dir);
+    fs::create_directories(game_dir / "_hockeymon");
     YAML::Node private_config = YAML::Clone(generated_alias_private);
     YAML::Node choices = private_config["hstream_ui"]["generated_stitching_backend_choices"];
     if (malformed_autooptimizer) {
@@ -3907,7 +4052,7 @@ game:
         game_name, backend_partial_baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     const absl::Status configured = configurator.configure();
     const absl::Status persisted = configurator.persist_effective_stitching_backend_choices();
-    auto final_config = hm::stitching::load_game_config_file(game_dir / "config.yaml");
+    auto final_config = hm::stitching::load_game_config_file(game_dir / "_hockeymon/config.yaml");
     if (!published.ok() || !configured.ok() || !persisted.ok() || !final_config.ok() || !final_config->has_value()) {
       return false;
     }
@@ -3928,6 +4073,7 @@ game:
 
   const fs::path generated_alias_roundtrip_dir = games / "generated-projection-alias-roundtrip";
   fs::create_directories(generated_alias_roundtrip_dir);
+  fs::create_directories(generated_alias_roundtrip_dir / "_hockeymon");
   const absl::Status generated_alias_roundtrip_published =
       hm::stitching::publish_game_config(generated_alias_roundtrip_dir, YAML::Dump(generated_alias_private) + "\n");
   hm::Configurator generated_alias_roundtrip_override(
@@ -3940,7 +4086,7 @@ game:
   const absl::Status generated_alias_roundtrip_persisted =
       generated_alias_roundtrip_override.persist_effective_stitching_backend_choices();
   auto generated_alias_roundtrip_intermediate =
-      hm::stitching::load_game_config_file(generated_alias_roundtrip_dir / "config.yaml");
+      hm::stitching::load_game_config_file(generated_alias_roundtrip_dir / "_hockeymon/config.yaml");
   const bool generated_alias_previous_tuple_retained = generated_alias_roundtrip_intermediate.ok() &&
       generated_alias_roundtrip_intermediate->has_value() &&
       (**generated_alias_roundtrip_intermediate)["hstream_ui"]["generated_stitching_backend_choices"]
@@ -3957,7 +4103,7 @@ game:
   const absl::Status generated_alias_roundtrip_restored =
       generated_alias_roundtrip_reloaded.persist_effective_stitching_backend_choices();
   auto generated_alias_roundtrip_final =
-      hm::stitching::load_game_config_file(generated_alias_roundtrip_dir / "config.yaml");
+      hm::stitching::load_game_config_file(generated_alias_roundtrip_dir / "_hockeymon/config.yaml");
   ok &= expect(
       generated_alias_roundtrip_published.ok() && generated_alias_roundtrip_configured.ok() &&
           generated_alias_roundtrip_option.ok() && generated_alias_roundtrip_persisted.ok() &&
@@ -3974,6 +4120,7 @@ game:
 
   const fs::path malformed_displaced_parameters_dir = games / "malformed-displaced-projection-parameters";
   fs::create_directories(malformed_displaced_parameters_dir);
+  fs::create_directories(malformed_displaced_parameters_dir / "_hockeymon");
   YAML::Node malformed_displaced_parameters_private = YAML::Clone(generated_alias_private);
   malformed_displaced_parameters_private["stitching"]["projection"] = "general-panini";
   YAML::Node malformed_choices =
@@ -3990,7 +4137,7 @@ game:
   const absl::Status malformed_displaced_parameters_persisted =
       malformed_displaced_parameters_configurator.persist_effective_stitching_backend_choices();
   auto malformed_displaced_parameters_final =
-      hm::stitching::load_game_config_file(malformed_displaced_parameters_dir / "config.yaml");
+      hm::stitching::load_game_config_file(malformed_displaced_parameters_dir / "_hockeymon/config.yaml");
   ok &= expect(
       malformed_displaced_parameters_published.ok() && malformed_displaced_parameters_configured.ok() &&
           malformed_displaced_parameters_persisted.ok() && malformed_displaced_parameters_final.ok() &&
@@ -4005,6 +4152,7 @@ game:
 
   const fs::path legacy_opencv_dir = games / "legacy-opencv-no-projection";
   fs::create_directories(legacy_opencv_dir);
+  fs::create_directories(legacy_opencv_dir / "_hockeymon");
   YAML::Node legacy_opencv_private(YAML::NodeType::Map);
   legacy_opencv_private["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   legacy_opencv_private["stitching"]["mapping_backend"] = "opencv-affine-ransac";
@@ -4015,18 +4163,18 @@ game:
       "legacy-opencv-no-projection", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status legacy_opencv_first_configured = legacy_opencv_first.configure();
   const absl::Status legacy_opencv_first_persisted = legacy_opencv_first.persist_effective_stitching_backend_choices();
-  auto legacy_opencv_after_first = hm::stitching::load_game_config_file(legacy_opencv_dir / "config.yaml");
+  auto legacy_opencv_after_first = hm::stitching::load_game_config_file(legacy_opencv_dir / "_hockeymon/config.yaml");
   hm::Configurator legacy_opencv_second(
       "legacy-opencv-no-projection", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status legacy_opencv_second_configured = legacy_opencv_second.configure();
   const absl::Status legacy_opencv_second_persisted =
       legacy_opencv_second.persist_effective_stitching_backend_choices();
-  auto legacy_opencv_after_second = hm::stitching::load_game_config_file(legacy_opencv_dir / "config.yaml");
+  auto legacy_opencv_after_second = hm::stitching::load_game_config_file(legacy_opencv_dir / "_hockeymon/config.yaml");
   hm::Configurator legacy_opencv_third(
       "legacy-opencv-no-projection", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   const absl::Status legacy_opencv_third_configured = legacy_opencv_third.configure();
   const absl::Status legacy_opencv_third_persisted = legacy_opencv_third.persist_effective_stitching_backend_choices();
-  auto legacy_opencv_after_third = hm::stitching::load_game_config_file(legacy_opencv_dir / "config.yaml");
+  auto legacy_opencv_after_third = hm::stitching::load_game_config_file(legacy_opencv_dir / "_hockeymon/config.yaml");
   ok &= expect(
       legacy_opencv_first_configured.ok() && legacy_opencv_first_persisted.ok() && legacy_opencv_after_first.ok() &&
           legacy_opencv_after_first->has_value() &&
@@ -5813,7 +5961,8 @@ game:
 
   const fs::path superseded_force_dir = games / "superseded-force";
   fs::create_directories(superseded_force_dir);
-  std::ofstream(superseded_force_dir / "seam_file.png") << "newer generation\n";
+  fs::create_directories(superseded_force_dir / "_hockeymon");
+  std::ofstream(superseded_force_dir / "_hockeymon/seam_file.png") << "newer generation\n";
   YAML::Node stale_force_config(YAML::NodeType::Map);
   stale_force_config["pipeline"]["application"]["complete-configuration"] = "1";
   stale_force_config["pipeline"]["hmstitcher"]["enable"] = "1";
@@ -5842,7 +5991,7 @@ game:
       "newer forced invalidation fixture must publish");
   const absl::Status stale_save_status =
       forced_configurator.save_private_config(stale_offset_save, /*expected_invalidation_id=*/"stale-force");
-  auto after_stale_save = hm::stitching::load_game_config_file(superseded_force_dir / "config.yaml");
+  auto after_stale_save = hm::stitching::load_game_config_file(superseded_force_dir / "_hockeymon/config.yaml");
   ok &= expect(
       stale_save_status.code() == absl::StatusCode::kAborted && after_stale_save.ok() &&
           after_stale_save->has_value() && !(**after_stale_save)["game"]["stitching"]["frame_offsets"] &&
@@ -5855,7 +6004,8 @@ game:
       /*clean_stitching_from_control_points=*/false,
       /*clean_expected_invalidation_id=*/"stale-force");
   ok &= expect(
-      non_forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
+      non_forced_status.code() == absl::StatusCode::kAborted &&
+          fs::exists(superseded_force_dir / "_hockeymon/seam_file.png"),
       "A non-forced input-stale run must abort before using a superseding artifact generation");
   const absl::Status forced_status = forced_configurator.complete_configuration(
       /*force=*/true,
@@ -5863,7 +6013,8 @@ game:
       /*clean_stitching_from_control_points=*/false,
       /*clean_expected_invalidation_id=*/"stale-force");
   ok &= expect(
-      forced_status.code() == absl::StatusCode::kAborted && fs::exists(superseded_force_dir / "seam_file.png"),
+      forced_status.code() == absl::StatusCode::kAborted &&
+          fs::exists(superseded_force_dir / "_hockeymon/seam_file.png"),
       "Forced configuration must abort before using or deleting a superseding artifact generation");
 
   // A persisted native width is the old view, not a new CLI geometry edit.
@@ -5872,6 +6023,7 @@ game:
     const std::string name = "saved-native-width-" + std::to_string(width_case);
     const fs::path directory = games / name;
     fs::create_directories(directory);
+    fs::create_directories(directory / "_hockeymon");
     YAML::Node saved;
     saved["pipeline"]["application"]["complete-configuration"] = 1;
     saved["pipeline"]["hmstitcher"]["enable"] = 1;
@@ -5914,7 +6066,7 @@ game:
     }
     std::ofstream(user_config_path) << YAML::Dump(width_user) << '\n';
     const std::string contents = YAML::Dump(saved) + "\n";
-    std::ofstream(directory / "config.yaml") << contents;
+    std::ofstream(directory / "_hockeymon/config.yaml") << contents;
     hm::Configurator width_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(width_config.configure().ok(), "Saved native-width fixture must load");
     if (width_case >= 7)
@@ -5924,12 +6076,17 @@ game:
           width_config.apply_config_item("stitching.max_output_width", width_case == 5 ? "4096" : "3072").ok(),
           "CLI width override fixture must apply");
     const auto result = width_config.complete_configuration(false, false, false, name);
-    const auto after = YAML::LoadFile((directory / "config.yaml").string());
+    std::ifstream after_input(directory / "_hockeymon/config.yaml");
+    const std::string after_contents{std::istreambuf_iterator<char>(after_input), std::istreambuf_iterator<char>()};
+    const auto after = YAML::Load(after_contents);
     const auto after_state = after["hstream_ui"]["stitching_calibration"];
     if (width_case == 6 || width_case == 9) {
+      if (result.message().find("Reframing requires an optimized NONA") == std::string::npos ||
+          after_contents != contents)
+        std::cerr << name << ": " << result << " (config bytes unchanged=" << (after_contents == contents) << ")\n";
       ok &= expect(
           !result.ok() && result.message().find("Reframing requires an optimized NONA") != std::string::npos &&
-              YAML::Dump(after) == YAML::Dump(saved),
+              after_contents == contents,
           "A genuinely changed CLI width must still reject unsupported reframe without modifying the solve");
     } else {
       const bool ordinary = after_state["backend_generation"].IsDefined() &&
@@ -5950,6 +6107,7 @@ game:
     const std::string name = "auto-lens-launch-" + std::to_string(lens_case);
     const fs::path directory = games / name;
     fs::create_directories(directory);
+    fs::create_directories(directory / "_hockeymon");
     YAML::Node saved;
     saved["pipeline"]["application"]["complete-configuration"] = 1;
     saved["pipeline"]["hmstitcher"]["enable"] = 1;
@@ -5972,7 +6130,7 @@ game:
     state["control_points"] = 1500;
     state["frame_count"] = 4;
     state["invalidation_id"] = name;
-    std::ofstream(directory / "config.yaml") << YAML::Dump(saved) << '\n';
+    std::ofstream(directory / "_hockeymon/config.yaml") << YAML::Dump(saved) << '\n';
     hm::Configurator lens_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(lens_config.configure().ok(), "Auto launch fixture must load");
     if (lens_case == 0)
@@ -5991,7 +6149,7 @@ game:
           lens_config.apply_config_item("stitching.camera_fov.horizontal_fov", "119").ok(),
           "Explicit CLI optics must retain manual intent");
     const auto result = lens_config.complete_configuration(false, false, false, name);
-    const auto after = YAML::LoadFile((directory / "config.yaml").string());
+    const auto after = YAML::LoadFile((directory / "_hockeymon/config.yaml").string());
     const auto camera = hm::stitching::read_stitch_camera_selection(after);
     const bool refresh = lens_case < 3;
     const double expected_hfov = refresh ? 108 : lens_case == 5 ? 119 : 117.25;
@@ -6012,6 +6170,7 @@ game:
     const std::string name = "independent-camera-policy-" + std::to_string(policy_case);
     const auto directory = games / name;
     fs::create_directories(directory);
+    fs::create_directories(directory / "_hockeymon");
     auto legacy_user = YAML::Clone(user_overlay);
     legacy_user["stitching"]["camera_fov"]["horizontal_fov"] = 117;
     std::ofstream(user_config_path) << YAML::Dump(legacy_user) << '\n';
@@ -6026,7 +6185,7 @@ game:
       saved["stitching"]["camera_config"] = "auto";
     else
       saved["stitching"]["camera_automation"][policy_case == 0 ? "fov" : "lens"] = true;
-    std::ofstream(directory / "config.yaml") << YAML::Dump(saved) << '\n';
+    std::ofstream(directory / "_hockeymon/config.yaml") << YAML::Dump(saved) << '\n';
     hm::Configurator policy_config(name, baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(policy_config.configure().ok(), "Layered optics policies must load");
     (void)policy_config.complete_configuration(false, false, false, name);
@@ -6041,6 +6200,7 @@ game:
   {
     const fs::path reframe_dir = games / "protected-reframe";
     fs::create_directories(reframe_dir);
+    fs::create_directories(reframe_dir / "_hockeymon");
     YAML::Node protected_config = YAML::Clone(stale_force_config);
     auto calibration = protected_config["hstream_ui"]["stitching_calibration"];
     calibration["invalidation_id"] = "protected-view";
@@ -6050,27 +6210,28 @@ game:
     calibration["reframe"] = "malformed-but-must-preserve-the-alignment";
     const std::string saved = YAML::Dump(protected_config) + "\n";
     ok &= expect(hm::stitching::publish_game_config(reframe_dir, saved).ok(), "pending view fixture must publish");
-    std::ofstream(reframe_dir / "autooptimiser_out.pto") << "saved accepted alignment\n";
+    std::ofstream(reframe_dir / "_hockeymon/autooptimiser_out.pto") << "saved accepted alignment\n";
     hm::Configurator protected_view("protected-reframe", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(protected_view.configure().ok(), "pending view must load without triggering cleanup");
     const auto launch = protected_view.complete_configuration(false, false, false, "protected-view");
-    std::ifstream after_file(reframe_dir / "config.yaml");
+    std::ifstream after_file(reframe_dir / "_hockeymon/config.yaml");
     const std::string after((std::istreambuf_iterator<char>(after_file)), std::istreambuf_iterator<char>());
     ok &= expect(
-        !launch.ok() && after == saved && fs::exists(reframe_dir / "autooptimiser_out.pto"),
+        !launch.ok() && after == saved && fs::exists(reframe_dir / "_hockeymon/autooptimiser_out.pto"),
         "invalid reframe must fail before pending-generation auto-clean or settings publication");
     ok &= expect(
         !hm::stitching::clean_stitching_artifacts(reframe_dir.string(), "protected-view").ok() &&
-            fs::exists(reframe_dir / "autooptimiser_out.pto"),
+            fs::exists(reframe_dir / "_hockeymon/autooptimiser_out.pto"),
         "native cleanup cannot remove the source of a pending view request");
     const auto explicitly_cleaned = protected_view.complete_configuration(false, true, false, "protected-view");
-    const auto cleaned = YAML::LoadFile((reframe_dir / "config.yaml").string());
+    const auto cleaned = YAML::LoadFile((reframe_dir / "_hockeymon/config.yaml").string());
     ok &= expect(
-        absl::IsCancelled(explicitly_cleaned) && !fs::exists(reframe_dir / "autooptimiser_out.pto") &&
+        absl::IsCancelled(explicitly_cleaned) && !fs::exists(reframe_dir / "_hockeymon/autooptimiser_out.pto") &&
             !cleaned["hstream_ui"]["stitching_calibration"]["reframe"].IsDefined(),
         "explicit CLI Clean must clear pending intent before intentionally deleting its source");
   }
   fs::create_directories(runtime_claim_dir);
+  fs::create_directories(runtime_claim_dir / "_hockeymon");
   YAML::Node runtime_claim_config(YAML::NodeType::Map);
   runtime_claim_config["pipeline"]["application"]["complete-configuration"] = "1";
   runtime_claim_config["pipeline"]["hmstitcher"]["enable"] = "1";
@@ -6102,7 +6263,7 @@ game:
       /*clean_stitching_artifacts=*/false,
       /*clean_stitching_from_control_points=*/false,
       /*clean_expected_invalidation_id=*/"runtime-claim-a");
-  const YAML::Node claimed_runtime_config = YAML::LoadFile((runtime_claim_dir / "config.yaml").string());
+  const YAML::Node claimed_runtime_config = YAML::LoadFile((runtime_claim_dir / "_hockeymon/config.yaml").string());
   const YAML::Node claimed_runtime_calibration = claimed_runtime_config["hstream_ui"]["stitching_calibration"];
   ok &= expect(
       runtime_claim_status.code() != absl::StatusCode::kAborted &&

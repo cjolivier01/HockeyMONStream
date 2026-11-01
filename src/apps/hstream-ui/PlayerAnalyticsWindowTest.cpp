@@ -3,6 +3,7 @@
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
 #include <QtWidgets/QApplication>
@@ -52,6 +53,7 @@ T* Find(HStreamWindow& window, const char* name) {
   return control;
 }
 void Write(const QString& path, const QByteArray& content) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   Require(file.open(QIODevice::WriteOnly) && file.write(content) == content.size(), "Cannot write test game");
 }
@@ -63,7 +65,7 @@ int main(int argc, char** argv) {
   qputenv("HM_GAME_DIR", games.path().toLocal8Bit());
   QDir().mkpath(games.filePath("analytics-one"));
   QDir().mkpath(games.filePath("analytics-two"));
-  const auto config_path = games.filePath("analytics-one/config.yaml");
+  const auto config_path = games.filePath("analytics-one/_hockeymon/config.yaml");
   Write(
       config_path,
       "pipeline:\n  tracker: {reid-enable: false, ll-config-file: existing-native.yaml}\n"

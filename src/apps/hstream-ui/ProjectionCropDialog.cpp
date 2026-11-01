@@ -451,6 +451,7 @@ QString ProjectionCropDialog::savedCalibrationPreviewError(
 }
 
 void ProjectionCropDialog::loadPreview() {
+  QDir(temporary_.path()).mkpath("_hockeymon");
   if (in_progress_calibration_) {
     source_revision_ = RinkLevelingDialog::inProgressSourceRevision(game_directory_);
     if (!temporary_.isValid() || source_revision_.isEmpty()) {
@@ -458,12 +459,14 @@ void ProjectionCropDialog::loadPreview() {
       return;
     }
     for (const QString name : {"autooptimiser_out.pto", ".autooptimiser_out.aligned.pto", "left.png", "right.png"}) {
-      if (!QFile::copy(QDir(game_directory_).filePath(name), temporary_.filePath(name))) {
+      if (!QFile::copy(
+              QDir(in_progress_calibration_ ? game_directory_ : game_directory_ + "/_hockeymon").filePath(name),
+              QDir(temporary_.path() + "/_hockeymon").filePath("" + QString(name)))) {
         previewFailed("Could not copy the current calibration preview.");
         return;
       }
     }
-    if (RinkLevelingDialog::inProgressSourceRevision(temporary_.path()) != source_revision_) {
+    if (RinkLevelingDialog::inProgressSourceRevision(temporary_.path() + "/_hockeymon") != source_revision_) {
       previewFailed("Calibration changed while opening the crop editor.");
       return;
     }
@@ -484,7 +487,7 @@ void ProjectionCropDialog::loadPreview() {
     }
     // Explain calibration readiness before attempting to load its images. A
     // partial/failed run may leave old files, or have no images to snapshot yet.
-    const QString config_path = QDir(game_directory_).filePath("config.yaml");
+    const QString config_path = QDir(game_directory_).filePath("_hockeymon/config.yaml");
     if (!QFileInfo::exists(config_path)) {
       previewFailed(
           "Stitching calibration is not available yet. Save the game settings and run stitching calibration, "
@@ -517,7 +520,8 @@ void ProjectionCropDialog::loadPreview() {
       return;
     }
     for (const QString name : {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"}) {
-      const QFileInfo file(QDir(game_directory_).filePath(name));
+      const QFileInfo file(
+          QDir(in_progress_calibration_ ? game_directory_ : game_directory_ + "/_hockeymon").filePath(name));
       if (!file.exists() || file.size() == 0) {
         previewFailed(
             "Stitching calibration has not produced all the saved camera images and projection needed for "
@@ -538,15 +542,17 @@ void ProjectionCropDialog::loadPreview() {
     }
     for (const QString name :
          {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png", "config.yaml"}) {
-      const QString source = QDir(game_directory_).filePath(name);
-      if (QFileInfo(source).isSymLink() || !QFile::copy(source, temporary_.filePath(name))) {
+      const QString source =
+          QDir(in_progress_calibration_ ? game_directory_ : game_directory_ + "/_hockeymon").filePath(name);
+      if (QFileInfo(source).isSymLink() ||
+          !QFile::copy(source, QDir(temporary_.path() + "/_hockeymon").filePath("" + QString(name)))) {
         previewFailed(
             "Could not copy the saved calibration into the crop preview folder. Check file access and free disk space.");
         return;
       }
     }
     if (RinkLevelingDialog::sourceRevision(temporary_.path()) != source_revision_ ||
-        readFile(temporary_.filePath("config.yaml")) != config_contents) {
+        readFile(QDir(temporary_.path() + "/_hockeymon").filePath("config.yaml")) != config_contents) {
       previewFailed("The saved calibration changed. Reopen the crop editor.");
       return;
     }
@@ -557,15 +563,15 @@ void ProjectionCropDialog::loadPreview() {
       return;
     }
   }
-  const QByteArray pto = readFile(temporary_.filePath("autooptimiser_out.pto"));
+  const QByteArray pto = readFile(QDir(temporary_.path() + "/_hockeymon").filePath("autooptimiser_out.pto"));
   const auto prepared = hm::stitching::PrepareRinkLevelingProject(pto.toStdString());
-  const auto localized =
-      hm::stitching::LocalizeCalibrationPreviewImages(pto.toStdString(), game_directory_.toStdString());
+  const auto localized = hm::stitching::LocalizeCalibrationPreviewImages(
+      pto.toStdString(), (in_progress_calibration_ ? game_directory_ : game_directory_ + "/_hockeymon").toStdString());
   if (!prepared.ok() || !localized.ok()) {
     previewFailed("The saved project does not reference the calibrated camera images.");
     return;
   }
-  QFile preview_project(temporary_.filePath("autooptimiser_out.pto"));
+  QFile preview_project(QDir(temporary_.path() + "/_hockeymon").filePath("autooptimiser_out.pto"));
   if (!preview_project.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
       preview_project.write(QByteArray::fromStdString(*localized)) != static_cast<qint64>(localized->size()) ||
       !preview_project.flush()) {
@@ -602,7 +608,7 @@ void ProjectionCropDialog::renderPreview(bool calculate_auto_crop) {
   blend_preview_->setEnabled(false);
   accept_->setEnabled(false);
   status_->setText(requested_blend ? "Rendering blended crop preview…" : "Rendering fast hard-seam crop preview…");
-  QFile::remove(temporary_.filePath("full.png"));
+  QFile::remove(QDir(temporary_.path() + "/_hockeymon").filePath("full.png"));
   const auto render_failed = [this, previous_blend](const QString& message) {
     const QSignalBlocker blocker(blend_preview_);
     blend_preview_->setChecked(previous_blend);
@@ -625,7 +631,7 @@ void ProjectionCropDialog::renderPreview(bool calculate_auto_crop) {
        "full.png",
        "full.pto"},
       [this, calculate_auto_crop, requested_blend, render_failed]() {
-        QImageReader reader(temporary_.filePath("full.png"));
+        QImageReader reader(QDir(temporary_.path() + "/_hockeymon").filePath("full.png"));
         const QImage image = reader.read();
         if (image.isNull()) {
           render_failed("The rendered crop preview could not be loaded: " + reader.errorString());
@@ -651,8 +657,9 @@ void ProjectionCropDialog::renderPreview(bool calculate_auto_crop) {
             "pano_modify",
             {"--crop=AUTO", "-o", "auto.pto", "full.pto"},
             [this, finish]() {
-              const auto crop = QRegularExpression("(?m)^p .*?\\bS(\\d+),(\\d+),(\\d+),(\\d+)")
-                                    .match(QString::fromUtf8(readFile(temporary_.filePath("auto.pto"))));
+              const auto crop =
+                  QRegularExpression("(?m)^p .*?\\bS(\\d+),(\\d+),(\\d+),(\\d+)")
+                      .match(QString::fromUtf8(readFile(QDir(temporary_.path() + "/_hockeymon").filePath("auto.pto"))));
               if (!crop.hasMatch()) {
                 blend_preview_->setEnabled(true);
                 accept_->setEnabled(true);
@@ -696,7 +703,7 @@ void ProjectionCropDialog::runTool(
   process_ = process;
   process_output_tail_.clear();
   process_progress_partial_.clear();
-  process->setWorkingDirectory(temporary_.path());
+  process->setWorkingDirectory(temporary_.path() + "/_hockeymon");
   if (renderer)
     process->setProcessChannelMode(QProcess::MergedChannels);
   auto* timeout = new QTimer(process);

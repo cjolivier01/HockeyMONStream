@@ -22,7 +22,8 @@ except ModuleNotFoundError:
 
 class CanvasProvenanceTest(unittest.TestCase):
   def write_provenance(self, directory: Path, version: int) -> None:
-    (directory / "stitching_canvas_provenance").write_text(
+    (directory / "_hockeymon").mkdir(exist_ok=True)
+    (directory / "_hockeymon/stitching_canvas_provenance").write_text(
         "\n".join(
             (
                 f"version={version}",
@@ -81,7 +82,8 @@ class IsolatedGameTest(unittest.TestCase):
     self.root = Path(self.temporary.name)
     self.source = self.root / "source-game"
     self.source.mkdir()
-    self.config = self.source / "config.yaml"
+    (self.source / "_hockeymon").mkdir()
+    self.config = self.source / "_hockeymon/config.yaml"
 
   def touch(self, relative: str, contents: bytes = b"input") -> Path:
     path = self.source / relative
@@ -146,9 +148,10 @@ class IsolatedGameTest(unittest.TestCase):
 
     source = self.root / "vendor-game"
     source.mkdir()
+    (source / "_hockeymon").mkdir()
     for name in ("GX010001.MP4", "GA020001.MP4", "GX010002.MP4"):
       (source / name).write_bytes(b"video")
-    config = source / "config.yaml"
+    config = source / "_hockeymon/config.yaml"
     config.write_text("{}\n", encoding="utf-8")
     work_root, game_id = matrix.create_isolated_game(source, config)
     self.addCleanup(lambda: matrix.remove_work_root(work_root) if work_root.exists() else None)
@@ -172,7 +175,7 @@ class IsolatedGameTest(unittest.TestCase):
         },
     }
     _, game = self.isolate(config)
-    isolated_config = yaml.safe_load((game / "config.yaml").read_text(encoding="utf-8"))
+    isolated_config = yaml.safe_load((game / "_hockeymon/config.yaml").read_text(encoding="utf-8"))
     self.assertEqual(isolated_config["game"]["videos"]["left"], [".hstream-ui/left/left-camera.mov"])
     self.assertTrue((game / ".hstream-ui").is_dir())
     self.assertFalse((game / ".hstream-ui").is_symlink())
@@ -185,7 +188,7 @@ class IsolatedGameTest(unittest.TestCase):
     _, game = self.isolate(
         {"game": {"videos": {"left": ["recordings/camera-a.mov"], "right": ["recordings/camera-b.mov"]}}}
     )
-    isolated_config = yaml.safe_load((game / "config.yaml").read_text(encoding="utf-8"))
+    isolated_config = yaml.safe_load((game / "_hockeymon/config.yaml").read_text(encoding="utf-8"))
     self.assertEqual(isolated_config["hstream_ui"]["video_roles"]["left"], ["recordings/camera-a.mov"])
     self.assertEqual(isolated_config["hstream_ui"]["video_roles"]["right"], ["recordings/camera-b.mov"])
 
@@ -194,7 +197,7 @@ class IsolatedGameTest(unittest.TestCase):
     self.touch("left-2.mp4")
     self.touch("right-1.mp4")
     _, game = self.isolate({"hstream_ui": {"video_roles": {"left": ["left-1.mp4", "left-2.mp4"]}}})
-    isolated_config = yaml.safe_load((game / "config.yaml").read_text(encoding="utf-8"))
+    isolated_config = yaml.safe_load((game / "_hockeymon/config.yaml").read_text(encoding="utf-8"))
     self.assertEqual(isolated_config["hstream_ui"]["video_roles"]["right"], ["right-1.mp4"])
 
     self.config.write_text(
@@ -270,7 +273,8 @@ class ProcessGroupTest(unittest.TestCase):
       game_id = "game"
       game = root / game_id
       game.mkdir()
-      (game / "config.yaml").write_text("{}\n", encoding="utf-8")
+      (game / "_hockeymon").mkdir()
+      (game / "_hockeymon/config.yaml").write_text("{}\n", encoding="utf-8")
       child_pid_path = root / "child.pid"
       pipeline = root / "leader-exits"
       pipeline.write_text(
@@ -323,7 +327,8 @@ class ProcessGroupTest(unittest.TestCase):
         pipeline.chmod(0o700)
         game = root / "game"
         game.mkdir()
-        (game / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (game / "_hockeymon").mkdir()
+        (game / "_hockeymon/config.yaml").write_text("{}\n", encoding="utf-8")
         harness = root / "harness.py"
         harness.write_text(
             textwrap.dedent(

@@ -1,3 +1,4 @@
+#include <QtCore/QFileInfo>
 #include "src/apps/hstream-ui/BackendPreview.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
@@ -25,6 +26,7 @@ void require(bool condition, const char* message) {
     throw std::runtime_error(message);
 }
 void writeFile(const QString& path, const QByteArray& contents) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   require(file.open(QIODevice::WriteOnly), "Open fixture file");
   require(file.write(contents) == contents.size(), "Write fixture file");
@@ -441,7 +443,7 @@ struct HStreamWindowTestAccess {
     window.initial_launch_game_ = "game";
     window.active_hockeymon_program_ = true;
     window.active_run_telemetry_requested_ = false;
-    const QString config_path = QDir(game_directory).filePath("config.yaml");
+    const QString config_path = QDir(game_directory).filePath("_hockeymon/config.yaml");
     const QByteArray pair_config =
         "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n"
         "hstream_ui:\n  stitching_calibration:\n    status: complete\n";
@@ -592,7 +594,7 @@ int main(int argc, char** argv) {
     require(root.isValid() && preferences.isValid(), "Temporary game and preferences");
     const QString game = root.filePath("game");
     require(QDir().mkpath(game), "Create fixture game");
-    writeFile(QDir(game).filePath("config.yaml"), "{}\n");
+    writeFile(QDir(game).filePath("_hockeymon/config.yaml"), "{}\n");
     qputenv("HM_GAME_DIR", root.path().toUtf8());
     qputenv("HOME", preferences.path().toUtf8());
     qputenv("XDG_CONFIG_HOME", preferences.path().toUtf8());

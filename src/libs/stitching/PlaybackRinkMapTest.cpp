@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
       return 1;
     auto placement = rink::read_mapping_canvas_placement_locked(argv[2]);
     auto project = rink::read_bounded_regular_file_no_follow(
-        std::filesystem::path(argv[2]) / "autooptimiser_out.pto", 4 * 1024 * 1024, "projection fixture");
+        std::filesystem::path(argv[2]) / "_hockeymon" / "autooptimiser_out.pto", 4 * 1024 * 1024, "projection fixture");
     if (!placement.ok() || !project.ok())
       return 1;
     auto rays = rink::RinkProjectionRays(*project, *placement, 257, 129);

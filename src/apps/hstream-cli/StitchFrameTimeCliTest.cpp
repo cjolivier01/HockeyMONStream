@@ -101,7 +101,7 @@ int main(int argc, char** argv) {
   fs::create_directories(conflict_game_dir);
   fs::create_directories(configured_game_dir);
   fs::create_directories(canonical_zero_game_dir);
-  std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
+  std::ofstream(game_dir / "_hockeymon/config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
   std::ofstream(pipeline_config) << "application:\n  stage: 0\n";
   std::ofstream(nonstitch_pipeline_config) << "application:\n"
                                            << "  stage: 0\n"
@@ -137,20 +137,20 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  std::ofstream(game_dir / "config.yaml") << "stitching:\n  stitch_frame_time: \"\"\n";
+  std::ofstream(game_dir / "_hockeymon/config.yaml") << "stitching:\n  stitch_frame_time: \"\"\n";
   if (!exits_with_argument_error(
           argv[1], {"--game-id=malformed-config", "--cfg-file=" + pipeline_config.string()}, game_root)) {
     std::cerr << "FAIL: an explicitly empty config-file stitch-frame time did not produce an invalid-argument exit\n";
     fs::remove_all(root);
     return 1;
   }
-  std::ofstream(configured_game_dir / "config.yaml") << "stitching:\n"
-                                                     << "  stitch_frame_time: 00:00:03\n"
-                                                     << "hstream_ui:\n"
-                                                     << "  stitching_calibration:\n"
-                                                     << "    control_points: 750\n"
-                                                     << "    status: complete\n"
-                                                     << "    invalidation_id: configured-owner\n";
+  std::ofstream(configured_game_dir / "_hockeymon/config.yaml") << "stitching:\n"
+                                                                << "  stitch_frame_time: 00:00:03\n"
+                                                                << "hstream_ui:\n"
+                                                                << "  stitching_calibration:\n"
+                                                                << "    control_points: 750\n"
+                                                                << "    status: complete\n"
+                                                                << "    invalidation_id: configured-owner\n";
   const int configured_nonzero_exit = run_and_get_exit_code(
       argv[1],
       {"--game-id=configured-game",
@@ -168,7 +168,7 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  YAML::Node configured_after_nonzero = YAML::LoadFile((configured_game_dir / "config.yaml").string());
+  YAML::Node configured_after_nonzero = YAML::LoadFile((configured_game_dir / "_hockeymon/config.yaml").string());
   const YAML::Node nonzero_calibration = configured_after_nonzero["hstream_ui"]["stitching_calibration"];
   const std::string nonzero_owner = nonzero_calibration["invalidation_id"].as<std::string>("");
   if (configured_after_nonzero["stitching"]["stitch_frame_time"].as<std::string>("") != "00:00:07" ||
@@ -196,7 +196,7 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  YAML::Node configured_after_zero = YAML::LoadFile((configured_game_dir / "config.yaml").string());
+  YAML::Node configured_after_zero = YAML::LoadFile((configured_game_dir / "_hockeymon/config.yaml").string());
   const YAML::Node zero_calibration = configured_after_zero["hstream_ui"]["stitching_calibration"];
   const std::string zero_owner = zero_calibration["invalidation_id"].as<std::string>("");
   if (configured_after_zero["stitching"]["stitch_frame_time"] ||
@@ -208,13 +208,13 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  std::ofstream(canonical_zero_game_dir / "config.yaml") << "stitching:\n"
-                                                         << "  stitch_frame_time: 00:00:00.000\n"
-                                                         << "hstream_ui:\n"
-                                                         << "  stitching_calibration:\n"
-                                                         << "    control_points: 750\n"
-                                                         << "    status: complete\n"
-                                                         << "    invalidation_id: canonical-zero-owner\n";
+  std::ofstream(canonical_zero_game_dir / "_hockeymon/config.yaml") << "stitching:\n"
+                                                                    << "  stitch_frame_time: 00:00:00.000\n"
+                                                                    << "hstream_ui:\n"
+                                                                    << "  stitching_calibration:\n"
+                                                                    << "    control_points: 750\n"
+                                                                    << "    status: complete\n"
+                                                                    << "    invalidation_id: canonical-zero-owner\n";
   const int canonical_zero_exit = run_and_get_exit_code(
       argv[1],
       {"--game-id=canonical-zero-game",
@@ -227,7 +227,7 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  const YAML::Node canonical_zero_after = YAML::LoadFile((canonical_zero_game_dir / "config.yaml").string());
+  const YAML::Node canonical_zero_after = YAML::LoadFile((canonical_zero_game_dir / "_hockeymon/config.yaml").string());
   const YAML::Node canonical_zero_stitching = canonical_zero_after["stitching"];
   const YAML::Node canonical_zero_calibration = canonical_zero_after["hstream_ui"]["stitching_calibration"];
   if ((canonical_zero_stitching && canonical_zero_stitching["stitch_frame_time"]) ||
@@ -250,15 +250,15 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  std::ofstream(configured_game_dir / "config.yaml") << "stitching:\n"
-                                                     << "  stitch_frame_time: 00:00:03\n"
-                                                     << "hstream_ui:\n"
-                                                     << "  stitching_calibration:\n"
-                                                     << "    control_points: 750\n"
-                                                     << "    status: pending\n"
-                                                     << "    stale_from: input\n"
-                                                     << "    artifacts_invalidated: false\n"
-                                                     << "    invalidation_id: current-owner\n";
+  std::ofstream(configured_game_dir / "_hockeymon/config.yaml") << "stitching:\n"
+                                                                << "  stitch_frame_time: 00:00:03\n"
+                                                                << "hstream_ui:\n"
+                                                                << "  stitching_calibration:\n"
+                                                                << "    control_points: 750\n"
+                                                                << "    status: pending\n"
+                                                                << "    stale_from: input\n"
+                                                                << "    artifacts_invalidated: false\n"
+                                                                << "    invalidation_id: current-owner\n";
   const int superseded_exit = run_and_get_exit_code(
       argv[1],
       {"--game-id=configured-game",
@@ -273,7 +273,8 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  const YAML::Node configured_after_superseded = YAML::LoadFile((configured_game_dir / "config.yaml").string());
+  const YAML::Node configured_after_superseded =
+      YAML::LoadFile((configured_game_dir / "_hockeymon/config.yaml").string());
   const YAML::Node superseded_calibration = configured_after_superseded["hstream_ui"]["stitching_calibration"];
   if (configured_after_superseded["stitching"]["stitch_frame_time"].as<std::string>("") != "00:00:03" ||
       superseded_calibration["status"].as<std::string>("") != "pending" ||
@@ -283,18 +284,18 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  std::ofstream(conflict_game_dir / "config.yaml") << "pipeline:\n"
-                                                   << "  application:\n"
-                                                   << "    complete-configuration: 1\n"
-                                                   << "  hmstitcher:\n"
-                                                   << "    enable: 1\n"
-                                                   << "hstream_ui:\n"
-                                                   << "  stitching_calibration:\n"
-                                                   << "    control_points: 750\n"
-                                                   << "    status: pending\n"
-                                                   << "    stale_from: input\n"
-                                                   << "    artifacts_invalidated: true\n"
-                                                   << "    invalidation_id: saved-control-points\n";
+  std::ofstream(conflict_game_dir / "_hockeymon/config.yaml") << "pipeline:\n"
+                                                              << "  application:\n"
+                                                              << "    complete-configuration: 1\n"
+                                                              << "  hmstitcher:\n"
+                                                              << "    enable: 1\n"
+                                                              << "hstream_ui:\n"
+                                                              << "  stitching_calibration:\n"
+                                                              << "    control_points: 750\n"
+                                                              << "    status: pending\n"
+                                                              << "    stale_from: input\n"
+                                                              << "    artifacts_invalidated: true\n"
+                                                              << "    invalidation_id: saved-control-points\n";
   if (!exits_with_argument_error(
           argv[1],
           {"--game-id=control-point-conflict", "--cfg-file=" + pipeline_config.string()},

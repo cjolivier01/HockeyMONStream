@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 
@@ -38,7 +39,8 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   if (fs::exists(destination))
     throw std::runtime_error("Output game directory must not already exist");
   auto lock = checked(stitching::HuginProject::RecoverAndLock(source));
-  auto source_config = checked(stitching::load_game_config_file(source / "config.yaml"));
+  auto source_config =
+      checked(stitching::load_game_config_file(hm::game_storage::StateDirectory(source) / "config.yaml"));
   if (!source_config.has_value())
     throw std::runtime_error("Source game has no config.yaml");
   // Saved calibrated AKAZE points describe rectified images. Nona receives
@@ -105,7 +107,7 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
   options.max_output_width = config["stitching"]["max_output_width"].as<size_t>(3840);
   config["stitching"]["max_output_width"] = *options.max_output_width;
 
-  std::ifstream project(source / "hm_project.pto");
+  std::ifstream project(hm::game_storage::StateDirectory(source) / "hm_project.pto");
   if (!project)
     throw std::runtime_error("Cannot read source hm_project.pto");
   std::vector<stitching::FeatureMatch> matches;
@@ -166,13 +168,15 @@ void replay(const fs::path& source, const fs::path& destination, const fs::path&
     throw std::runtime_error("Saved calibration has no camera FOV or insufficient control points");
   if (!fs::create_directories(destination))
     throw std::runtime_error("Output game directory was created by another process");
-  std::ofstream output_config(destination / "config.yaml");
-  output_config << config << '\n';
-  output_config.close();
-  if (!output_config)
-    throw std::runtime_error("Cannot write output config.yaml");
-  const auto status =
-      stitching::HuginProject::Configure(destination, source / "left.png", source / "right.png", matches, options);
+  const auto publication = stitching::publish_game_config(destination, YAML::Dump(config) + "\n");
+  if (!publication.ok())
+    throw std::runtime_error(publication.ToString());
+  const auto status = stitching::HuginProject::Configure(
+      destination,
+      hm::game_storage::StateDirectory(source) / "left.png",
+      hm::game_storage::StateDirectory(source) / "right.png",
+      matches,
+      options);
   if (!status.ok())
     throw std::runtime_error(status.ToString());
   std::cout << "Replayed " << matches.size() << " saved control points into " << destination << '\n';

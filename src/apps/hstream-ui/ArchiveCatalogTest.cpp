@@ -1,4 +1,6 @@
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 
 #include <iostream>
 
@@ -16,6 +18,7 @@ bool expect(bool condition, const char* message) {
 }
 
 bool write_file(const QString& path, const QByteArray& contents) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size();
 }
@@ -35,7 +38,10 @@ int main() {
   ok &= expect(directory.isValid(), "temporary test directory must be available");
   if (!directory.isValid())
     return 1;
-  const auto path_for = [&directory](const QString& name) { return directory.filePath(name); };
+  QDir(directory.path()).mkpath("_hockeymon");
+  const auto path_for = [&directory](const QString& name) {
+    return directory.filePath(name.endsWith(".hstream-pin") ? "_hockeymon/" + name : name);
+  };
 
   ok &= expect(
       write_file(path_for("gse-16a-tracking_output-with-audio-1.mp4"), "a") &&
@@ -65,7 +71,8 @@ int main() {
         archives.at(3).kind == "stitched" && archives.at(3).generation == 0,
         "an archive without a generation suffix must read as generation zero");
     ok &= expect(
-        archives.at(0).game_id == "gse-16a" && archives.at(0).path == path_for("gse-16a-tracking_output-with-audio-2.mp4"),
+        archives.at(0).game_id == "gse-16a" &&
+            archives.at(0).path == path_for("gse-16a-tracking_output-with-audio-2.mp4"),
         "discovery must report the full path and the requested game id");
     ok &= expect(
         !archives.at(0).start_time_known && archives.at(0).start_time_ms == 0 && archives.at(0).duration_ms == -1,
@@ -82,8 +89,7 @@ int main() {
       bracketed.size() == 1 && bracketed.at(0).kind == "program" && bracketed.at(0).generation == 1,
       "a game id with glob characters must still find its archive");
   ok &= expect(
-      DiscoverArchives(directory.path(), "gse-16a").size() == 4,
-      "another game's archive must not leak into this one");
+      DiscoverArchives(directory.path(), "gse-16a").size() == 4, "another game's archive must not leak into this one");
 
   ok &= expect(
       ArchiveSidecarPath("/games/x.mp4") == "/games/x.mp4.hstream-archive.json",
@@ -128,8 +134,7 @@ int main() {
 
   ok &= expect(
       write_file(
-          ArchiveSidecarPath(saved.path),
-          QJsonDocument(QJsonObject{{"schema", 2}, {"start_time_ms", 1}}).toJson()),
+          ArchiveSidecarPath(saved.path), QJsonDocument(QJsonObject{{"schema", 2}, {"start_time_ms", 1}}).toJson()),
       "an unsupported-schema fixture must be writable");
   ArchiveEntry rejected;
   ok &= expect(

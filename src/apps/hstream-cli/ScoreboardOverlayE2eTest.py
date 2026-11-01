@@ -48,11 +48,11 @@ def make_window():
 
 def link_fixture(source, destination):
     destination.mkdir()
-    shutil.copy2(source / "config.yaml", destination / "config.yaml")
+    shutil.copy2(source / "_hockeymon/config.yaml", destination / "_hockeymon/config.yaml")
     if (source / "hstream-ui").is_dir():
         shutil.copytree(source / "hstream-ui", destination / "hstream-ui")
-    if (source / "player-frame-inputs").is_dir():
-        shutil.copytree(source / "player-frame-inputs", destination / "player-frame-inputs")
+    if (source / "_hockeymon/player-frame-inputs").is_dir():
+        shutil.copytree(source / "_hockeymon/player-frame-inputs", destination / "_hockeymon/player-frame-inputs")
     for name in ("cam1", "cam2", "autooptimiser_out.pto", "hm_project.pto", "left.png", "right.png",
                  "panorama.tif", "rink_mask_0.png", "s.png", "seam_file.png",
                  "stitching_canvas_provenance", "stitching_generation_id"):
@@ -80,10 +80,10 @@ def decode_frame(video, image):
 
 
 def scoreboard_reference(source_game, stitched_frame, output_width, output_height):
-    with (source_game / "s.png").open("rb") as image:
+    with (source_game / "_hockeymon/s.png").open("rb") as image:
         png_header = image.read(24)
     canvas_width, canvas_height = struct.unpack(">II", png_header[16:24])
-    polygon = np.array(yaml.safe_load((source_game / "config.yaml").read_text())["rink"]["scoreboard"]["perspective_polygon"],
+    polygon = np.array(yaml.safe_load((source_game / "_hockeymon/config.yaml").read_text())["rink"]["scoreboard"]["perspective_polygon"],
                        dtype=np.float32)
     horizontal = (np.linalg.norm(polygon[1] - polygon[0]) + np.linalg.norm(polygon[2] - polygon[3])) / 2
     vertical = (np.linalg.norm(polygon[3] - polygon[0]) + np.linalg.norm(polygon[2] - polygon[1])) / 2
@@ -121,7 +121,7 @@ def main():
         raise SystemExit("expected hstream-cli, videoprep plugin, pipeline config")
     real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     source = Path(os.environ.get("HSTREAM_SCOREBOARD_FIXTURE_ROOT", str(real_home / "Videos/blackhawks-p2")))
-    if not (source / "s.png").is_file() or not (source / "config.yaml").is_file():
+    if not (source / "_hockeymon/s.png").is_file() or not (source / "_hockeymon/config.yaml").is_file():
         raise RuntimeError(f"calibrated scoreboard fixture is unavailable at {source}")
     root = Path(tempfile.mkdtemp(prefix="hstream-scoreboard-e2e-"))
     game_root, output_root = root / "games", root / "output"

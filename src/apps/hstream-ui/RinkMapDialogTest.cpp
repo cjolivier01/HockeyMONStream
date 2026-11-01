@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
-#include "src/apps/hstream-ui/ActionIcons.h"
+#include <QtCore/QFileInfo>
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
@@ -43,10 +44,12 @@ bool expect(bool condition, const char* message) {
   return condition;
 }
 bool write(const QString& path, const QByteArray& text) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   return file.open(QIODevice::WriteOnly) && file.write(text) == text.size();
 }
 bool placement(const QString& path, float left) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   TIFF* file = TIFFOpen(path.toStdString().c_str(), "w");
   if (!file)
     return false;
@@ -247,13 +250,11 @@ int main(int argc, char** argv) {
         return 1;
       dialog.findChild<QPushButton*>("rinkMapUndoButton")->click();
       if (!expect(
-              idle(dialog) && table->item(board_row, 0)->checkState() == Qt::Unchecked,
-              "Undo restores review state"))
+              idle(dialog) && table->item(board_row, 0)->checkState() == Qt::Unchecked, "Undo restores review state"))
         return 1;
       dialog.findChild<QPushButton*>("suggestRinkMaskButton")->click();
       if (!expect(
-              idle(dialog, 60000) && table->rowCount() == suggested_rows,
-              "Repeated assistance replaces its evidence"))
+              idle(dialog, 60000) && table->rowCount() == suggested_rows, "Repeated assistance replaces its evidence"))
         return 1;
       return dialog.grab().save(QString::fromLocal8Bit(argv[3])) ? 0 : 1;
     }
@@ -396,31 +397,32 @@ int main(int argc, char** argv) {
   }
   QTemporaryDir game, bin;
   bool ok = game.isValid() && bin.isValid();
+  ok &= QDir().mkpath(game.filePath("_hockeymon"));
   QImage source(3600, 1800, QImage::Format_RGB32);
   source.fill(QColor(120, 150, 160));
-  ok &= source.save(game.filePath("left.png")) && source.save(game.filePath("right.png"));
+  ok &= source.save(game.filePath("_hockeymon/left.png")) && source.save(game.filePath("_hockeymon/right.png"));
   const QByteArray pto =
       "p f2 w3600 h1800 v360 n\"PNG\"\ni w3600 h1800 f4 v360 y0 p0 r0 n\"left.png\"\ni w3600 h1800 f4 v360 y0 p0 r0 n\"right.png\"\n";
-  ok &= write(game.filePath("autooptimiser_out.pto"), pto);
-  ok &= write(game.filePath("hm_project.pto"), pto);
+  ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto);
+  ok &= write(game.filePath("_hockeymon/hm_project.pto"), pto);
   for (const char* name : {"mapping_0000.tif", "mapping_0000_x.tif", "mapping_0000_y.tif"})
-    ok &= placement(game.filePath(name), 900);
+    ok &= placement(game.filePath("_hockeymon/" + QString(name)), 900);
   for (const char* name : {"mapping_0001.tif", "mapping_0001_x.tif", "mapping_0001_y.tif"})
-    ok &= placement(game.filePath(name), 1800);
-  ok &= write(game.filePath("seam_file.png"), "fixture");
+    ok &= placement(game.filePath("_hockeymon/" + QString(name)), 1800);
+  ok &= write(game.filePath("_hockeymon/seam_file.png"), "fixture");
   const QByteArray config =
       "hstream_ui:\n  stitching_calibration:\n    status: complete\n"
       "stitching:\n  projection_framing:\n    rotation_degrees: [0, 0, 0]\n";
-  ok &= write(game.filePath("config.yaml"), config);
+  ok &= write(game.filePath("_hockeymon/config.yaml"), config);
   ok &= write(
-      game.filePath("stitching_canvas_provenance"),
+      game.filePath("_hockeymon/stitching_canvas_provenance"),
       "version=3\nmax-output-width=1800\nmax-canvas-dimension=0\nsource-canvas-width=7200\nsource-canvas-height=3600\ncanvas-width=1800\ncanvas-height=1200\nmax-output-width-applied=1\nmax-canvas-dimension-applied=0\nmapping-backend=nona\nprojection=equirectangular\n");
   ok &= write(bin.filePath("pano_trafo"), "#!/bin/sh\nawk '{print $2, $3}'\n");
   QFile::setPermissions(bin.filePath("pano_trafo"), QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
   qputenv("PATH", bin.path().toLocal8Bit() + ":" + qgetenv("PATH"));
-  ok &= write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: complete\n");
+  ok &= write(game.filePath("_hockeymon/config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: complete\n");
   ok &= expect(!CheckRinkMapSetup(game.path()).ok(), "An unlevelled calibration cannot open the map editor");
-  ok &= write(game.filePath("config.yaml"), config);
+  ok &= write(game.filePath("_hockeymon/config.yaml"), config);
   ok &= expect(CheckRinkMapSetup(game.path()).ok(), "Explicitly accepted zero leveling angles are valid");
   auto snapshot = LoadRinkMapSnapshot(game.path());
   if (!expect(ok && snapshot.ok(), snapshot.ok() ? "fixture" : snapshot.status().ToString().c_str()))
@@ -1040,7 +1042,7 @@ int main(int argc, char** argv) {
           "Capped playback uses the published TIFF origin and extent, not source dimensions or PTO crop origin");
   }
   ok &= expect(!SaveRinkMap(competitor, document).ok(), "A competing editor must not overwrite a newer map");
-  ok &= write(game.filePath("config.yaml"), config + "unrelated_preference: true\n");
+  ok &= write(game.filePath("_hockeymon/config.yaml"), config + "unrelated_preference: true\n");
   ok &= expect(SaveRinkMap(*snapshot, document).ok(), "Unrelated preferences must not invalidate rink evidence");
   {
     RinkMapDialog dialog(game.path());
@@ -1376,11 +1378,11 @@ int main(int argc, char** argv) {
         saved.ok() && saved->observations.size() == 2 && saved->observations[1].camera == 1,
         "Saved deletion preserves the other camera's feature");
   }
-  ok &= write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
+  ok &= write(game.filePath("_hockeymon/config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: pending\n");
   ok &= expect(!rink::LoadPlaybackRinkMap(game.path().toStdString()).ok(), "Playback rejects pending calibration");
   ok &= expect(!SaveRinkMap(*snapshot, document).ok(), "Pending recalibration blocks saving old evidence");
-  ok &= write(game.filePath("config.yaml"), config);
-  ok &= write(game.filePath("autooptimiser_out.pto"), pto + "# changed\n");
+  ok &= write(game.filePath("_hockeymon/config.yaml"), config);
+  ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto + "# changed\n");
   ok &= expect(!SaveRinkMap(*snapshot, document).ok(), "Changed camera geometry blocks a stale save");
   if (ok)
     std::cout << "RinkMapDialog tests passed\n";

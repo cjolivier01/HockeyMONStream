@@ -52,8 +52,7 @@ bool read_optional_int(const QJsonObject& object, const QString& key, int* value
   if (!json_value.isDouble())
     return false;
   const double number = json_value.toDouble();
-  if (number < 0 || number > std::numeric_limits<int>::max() ||
-      number != static_cast<double>(static_cast<int>(number)))
+  if (number < 0 || number > std::numeric_limits<int>::max() || number != static_cast<double>(static_cast<int>(number)))
     return false;
   *value = static_cast<int>(number);
   return true;
@@ -147,7 +146,7 @@ QVector<ArchiveEntry> DiscoverArchives(const QString& game_dir, const QString& g
     const QFileInfo info(path);
     if (!info.isFile() || info.size() <= 0)
       continue;
-    const QFileInfo guard(path + ".hstream-pin");
+    const QFileInfo guard(directory.filePath("_hockeymon/" + name + ".hstream-pin"));
     if (guard.exists() || guard.isSymLink())
       continue;
     ArchiveEntry entry;
@@ -215,8 +214,7 @@ bool SaveArchiveSidecar(const ArchiveEntry& entry, QString* error) {
     root.insert("width", entry.width);
     root.insert("height", entry.height);
   }
-  return write_file_durably(
-      ArchiveSidecarPath(entry.path), QJsonDocument(root).toJson(QJsonDocument::Indented), error);
+  return write_file_durably(ArchiveSidecarPath(entry.path), QJsonDocument(root).toJson(QJsonDocument::Indented), error);
 }
 
 } // namespace hm::ui

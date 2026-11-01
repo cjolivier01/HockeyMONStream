@@ -95,7 +95,7 @@ forbids video outputs; the producer cannot clear telemetry capture. Ordinary
 archive admissions still require video. Both modes retain exact file checks,
 completed-database validation, runner-success fencing and retryable cleanup.
 
-Before encoding, `hstream-job-<run-id>.yaml` in the game directory records the
+Before encoding, `_hockeymon/hstream-job-<run-id>.yaml` inside the game records the
 admitted working directory and its identity. Retries follow that binding even if
 the configured output root changes; missing or replaced working data is an error.
 The same file becomes the publication receipt, so no extra permanent file is
@@ -112,7 +112,7 @@ Publication can also be resumed directly:
 ```bash
 hstream-finalize --manifest /path/to/run/run.yaml
 # The durable admission record/receipt can also be used:
-hstream-finalize --manifest /path/to/game/hstream-job-RUN-ID.yaml
+hstream-finalize --manifest /path/to/game/_hockeymon/hstream-job-RUN-ID.yaml
 ```
 
 A receipt initially records the working-directory binding, then publication
@@ -152,11 +152,11 @@ numeric generation, for example:
 <game-dir>/game-42-stitched_output-with-audio-1.mp4
 <game-dir>/game-42_telemetry-1.db
 <game-dir>/<video-name>.mp4.hstream-archive.json
-<game-dir>/hstream-job-<run-id>.yaml
+<game-dir>/_hockeymon/hstream-job-<run-id>.yaml
 ```
 
 The game root resolves from `HM_GAME_DIR`, then `paths.game-root`, then `~/Videos`.
-Published videos have temporary `.hstream-pin` guards while the transaction is
+Published videos have temporary `.hstream-pin` guards inside `_hockeymon` while the transaction is
 unfinished, so archive discovery does not offer them prematurely. The receipt's
 `state: complete` identifies successful publication and cleanup of the whole set.
 
@@ -169,7 +169,7 @@ using hard links, with no additional full-file copy.
 When they are on different mounts, it uses one private hidden directory:
 
 ```text
-<game-dir>/.hstream-finalize-<run-id>/
+<game-dir>/_hockeymon/.hstream-finalize-<run-id>/
 ```
 
 ffmpeg writes its final MP4 bytes directly on the destination filesystem. This
@@ -193,7 +193,7 @@ No working source is deleted until every required video, database, and sidecar
 has been published and synchronized. Cleanup removes the exact recorded source
 files, prepared-file links, temporary guards, owned runtime staging, and the
 private run directory. Working telemetry database copies and working logs are
-removed along with the videos. The small final receipt remains in the game
+removed along with the videos. The small final receipt remains under `_hockeymon` in the game
 directory as the run result and recovery record.
 
 Cleanup checks file identities, including run metadata and externally configured
@@ -253,3 +253,13 @@ Source: [publication library](src/libs/publication/Publication.cpp),
 [job exporter](src/apps/hstream-job/main.cpp),
 [CLI output configuration](src/apps/hstream-cli/configurator.cpp), and
 [desktop integration](src/apps/hstream-ui/HStreamWindow.cpp).
+
+## Game-owned state
+
+All private game state uses `_hockeymon/`; recordings and published video,
+telemetry and portable archive sidecars remain at the game root.
+`_hockeymon/manifest.json` inventories internal files and explicitly registered
+outputs. It is an index, not publication or cleanup authority. See
+[game storage](docs/game-storage.md) for the layout, inventory schema and
+operation boundaries. Flat game configurations/calibration are not imported or
+read; configure each game afresh. Existing files are never migrated or removed.

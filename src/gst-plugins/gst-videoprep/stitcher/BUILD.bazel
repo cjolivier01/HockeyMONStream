@@ -44,6 +44,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:game_storage",
         ":high_bit_stitch_cuda",
         ":high_bit_stitch_cuda_h",
         "//src/gst-plugins/gst-videoprep/algorithm-base",

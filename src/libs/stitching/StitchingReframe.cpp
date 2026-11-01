@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/StitchingReframe.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <fcntl.h>
 #include <openssl/evp.h>
@@ -492,7 +493,9 @@ absl::StatusOr<HuginProject::CanvasProvenance> source_provenance(const fs::path&
   HM_ASSIGN_OR_RETURN(
       contents,
       read_bounded_regular_file_no_follow(
-          directory / kStitchCanvasProvenanceArtifact, 64 * 1024, "reframe canvas provenance"));
+          hm::game_storage::StateDirectory(directory) / kStitchCanvasProvenanceArtifact,
+          64 * 1024,
+          "reframe canvas provenance"));
   if (contents.rfind("version=10\n", 0) != 0 && contents.rfind("version=11\n", 0) != 0 &&
       contents.rfind("version=12\n", 0) != 0 && contents.rfind("version=13\n", 0) != 0 &&
       contents.rfind("version=14\n", 0) != 0 && contents.rfind("version=15\n", 0) != 0 &&
@@ -623,7 +626,10 @@ absl::StatusOr<StitchingReframeIntent> validate_intent(const fs::path& directory
     if (!is_sha256(result.source_image_sha256[camera]))
       return absl::InvalidArgumentError("Invalid representative PNG hash in reframe intent");
     std::string actual;
-    HM_ASSIGN_OR_RETURN(actual, file_sha256(directory / (camera ? "right.png" : "left.png"), 512ULL * 1024 * 1024));
+    HM_ASSIGN_OR_RETURN(
+        actual,
+        file_sha256(
+            hm::game_storage::StateDirectory(directory) / (camera ? "right.png" : "left.png"), 512ULL * 1024 * 1024));
     if (actual != result.source_image_sha256[camera])
       return absl::AbortedError("A saved representative PNG changed; reframe request was preserved");
   }
@@ -776,7 +782,10 @@ static absl::StatusOr<bool> prepare_reframe_intent_locked(
       std::array<std::string, 2> hashes;
       for (size_t camera = 0; camera < 2; ++camera) {
         HM_ASSIGN_OR_RETURN(
-            hashes[camera], file_sha256(directory / (camera ? "right.png" : "left.png"), 512ULL * 1024 * 1024));
+            hashes[camera],
+            file_sha256(
+                hm::game_storage::StateDirectory(directory) / (camera ? "right.png" : "left.png"),
+                512ULL * 1024 * 1024));
         record["source_image_sha256"].push_back(hashes[camera]);
       }
       HM_RETURN_IF_ERROR(validate_selected_inputs(directory, before, source, hashes));

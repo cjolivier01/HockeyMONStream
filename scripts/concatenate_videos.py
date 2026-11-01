@@ -163,7 +163,7 @@ def main(game_id: str, force: bool, parallel: bool) -> None:
     home_dir = os.environ.get("HOME")
     if home_dir is None:
         raise EnvironmentError("HOME environment variable is not set.")
-    config_path = os.path.join(home_dir, "Videos", game_id, "config.yaml")
+    config_path = os.path.join(home_dir, "Videos", game_id, "_hockeymon", "config.yaml")
     base_dir = pathlib.Path(config_path).parent.resolve()
     data = parse_config(config_path)
 
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--game-id",
         required=True,
-        help="Game identifier used to locate the config file in $HOME/Videos/<game-id>/config.yaml",
+        help="Game identifier used to locate the config file in $HOME/Videos/<game-id>/_hockeymon/config.yaml",
     )
     parser.add_argument(
         "--force",

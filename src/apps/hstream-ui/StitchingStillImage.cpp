@@ -30,7 +30,7 @@ QByteArray StitchingStillRevision(const QString& directory) {
         "mapping_0001_y.tif",
         "seam_file.png"}) {
     struct stat info{};
-    const QByteArray path = QFile::encodeName(QDir(directory).filePath(name));
+    const QByteArray path = QFile::encodeName(QDir(directory).filePath("_hockeymon/" + QString(name)));
     result += name;
     if (::lstat(path.constData(), &info) == 0) {
       for (qint64 value :
@@ -152,8 +152,8 @@ SavedStitchingStill ReadSavedStitchingStill(
   SavedStitchingStill result;
   result.revision = expected_revision;
   bool png_current = false;
-  QFile png(QDir(directory).filePath("s.png"));
-  QFile tiff(QDir(directory).filePath("panorama.tif"));
+  QFile png(QDir(directory).filePath("_hockeymon/s.png"));
+  QFile tiff(QDir(directory).filePath("_hockeymon/panorama.tif"));
   {
     // Cancellation closes admission before draining this section. Every lock
     // acquired below is nonblocking and is released before metadata_mutex,
@@ -170,7 +170,7 @@ SavedStitchingStill ReadSavedStitchingStill(
     if (metadata_locked)
       metadata_locked();
     const auto text = hm::stitching::read_bounded_regular_file_no_follow(
-        std::filesystem::path(path) / "config.yaml", 4 * 1024 * 1024, "calibration preview settings");
+        std::filesystem::path(path) / "_hockeymon/config.yaml", 4 * 1024 * 1024, "calibration preview settings");
     if (!text.ok())
       return result;
     try {

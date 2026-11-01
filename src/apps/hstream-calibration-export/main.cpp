@@ -15,6 +15,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
@@ -120,7 +121,7 @@ void export_calibration(
   if (!artifacts.artifact_lock || !artifacts.load_snapshot)
     throw std::runtime_error("Native stitching calibration is missing or incompatible; calibrate in hstream-ui first");
   auto config_lock = take(stitching::GameConfigTransactionLock::Acquire(game));
-  const YAML::Node public_config = YAML::LoadFile((game / "config.yaml").string());
+  const YAML::Node public_config = YAML::LoadFile((hm::game_storage::StatePath(game, "config.yaml")).string());
   const YAML::Node calibration = public_config["hstream_ui"]["stitching_calibration"];
   if (!calibration.IsMap() || !calibration["status"] || calibration["status"].as<std::string>() != "complete" ||
       !calibration["invalidation_id"])
@@ -191,9 +192,10 @@ void export_calibration(
   manifest["frame_offsets"] = YAML::Clone(offsets);
   manifest["sources"] = sources;
   manifest["configuration"] = effective;
-  const auto original_identity = take(stitching::stitch_artifact_content_identity_locked(game));
+  const auto original_identity =
+      take(stitching::stitch_artifact_content_identity_locked(hm::game_storage::StateDirectory(game)));
   for (const std::string& name : stitching::stitch_artifact_names()) {
-    const auto source = game / name;
+    const auto source = hm::game_storage::StatePath(game, name);
     if (!fs::exists(source))
       continue;
     check(stitching::clone_or_copy_stitch_rollback_file(source, destination / name));

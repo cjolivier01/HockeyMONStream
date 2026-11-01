@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
   clip.end_ms = 13000;
   clip.annotations = {a};
   plan.intervals = {card, clip, card};
-  const QString file = dir.filePath("highlights.json");
+  const QString file = dir.filePath("_hockeymon/highlights.json");
   HighlightPlan loaded;
   ok &= expect(
       SaveHighlightPlan(file, plan, &error) && LoadHighlightPlan(file, &loaded, &error) &&

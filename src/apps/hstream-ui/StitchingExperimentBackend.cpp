@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 
 #include "hstream/src/libs/common/BaselineConfig.h"
@@ -725,7 +726,7 @@ absl::Status copy_frame_inspection_for_promotion(
   const std::string owner = calibration["invalidation_id"].as<std::string>("");
   if (!std::regex_match(owner, std::regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")))
     return absl::InvalidArgumentError("Invalid calibration inspection owner during promotion");
-  const fs::path source = source_game / "calibration-frame-inspection" / owner;
+  const fs::path source = source_game / "_hockeymon/calibration-frame-inspection" / owner;
   for (const auto& directory : {source.parent_path(), source}) {
     std::error_code error;
     const auto type = fs::symlink_status(directory, error).type();
@@ -779,7 +780,7 @@ absl::Status copy_frame_inspection_for_promotion(
   }
   if (files.empty())
     return absl::OkStatus();
-  const fs::path root = destination_game / "calibration-frame-inspection";
+  const fs::path root = destination_game / "_hockeymon/calibration-frame-inspection";
   const fs::path destination = root / owner;
   std::error_code error;
   const auto root_type = fs::symlink_status(root, error).type();
@@ -840,7 +841,8 @@ absl::StatusOr<std::string> ReusableStitchingExperimentSelectionFingerprint(
   if (!lock.ok())
     return lock.status();
   try {
-    return reusable_selection_fingerprint(YAML::LoadFile((game_directory / "config.yaml").string()), settings);
+    return reusable_selection_fingerprint(
+        YAML::LoadFile((game_directory / "_hockeymon/config.yaml").string()), settings);
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError("Unable to read saved frame selection: " + std::string(error.what()));
   }
@@ -853,7 +855,7 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
   if (!lock.ok())
     return lock.status();
   try {
-    YAML::Node config = YAML::LoadFile((game_directory / "config.yaml").string());
+    YAML::Node config = YAML::LoadFile((game_directory / "_hockeymon/config.yaml").string());
     const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     std::string fingerprint;
     HM_ASSIGN_OR_RETURN(fingerprint, hm::stitching::player_frame_selection_fingerprint(config));
@@ -987,7 +989,7 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
   std::error_code error;
   if (!fs::is_directory(source_game_directory, error) || error)
     return absl::NotFoundError("Select an existing game directory for stitching experiments");
-  const fs::path source_config = source_game_directory / "config.yaml";
+  const fs::path source_config = source_game_directory / "_hockeymon/config.yaml";
   if (!fs::is_regular_file(source_config, error) || error)
     return absl::NotFoundError("The selected game has no config.yaml");
   fs::create_directories(experiment_root, error);
@@ -1011,6 +1013,7 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
   if (!pinned_candidate->has_value())
     return absl::AbortedError("New experiment workspace disappeared before publication");
   const fs::path workspace_path = (**pinned_candidate).path();
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(workspace_path));
   struct CleanupCandidate {
     const hm::stitching::PinnedDirectory& parent;
     const hm::stitching::PinnedDirectory& directory;
@@ -1099,7 +1102,8 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
       HM_RETURN_IF_ERROR(
           hm::stitching::ValidateCalibrationMatchInputs(matches, config, workspace_path, frozen_settings.frame_count));
     }
-    HM_RETURN_IF_ERROR(write_config(workspace_path / "config.yaml", config));
+    HM_RETURN_IF_ERROR(write_config(workspace_path / "_hockeymon/config.yaml", config));
+    HM_RETURN_IF_ERROR(hm::game_storage::RefreshManifest(workspace_path, "stitching-experiment"));
     HM_RETURN_IF_ERROR(sync_workspace_directory_tree(**pinned_candidate));
     // Candidate and session names must survive with their config and media-link
     // hierarchy before a later catalog Save may advertise the queued row. Qt
@@ -1163,7 +1167,8 @@ static absl::Status validate_clone_source(const StitchingExperimentWorkspace& so
       fs::absolute(source.root / source.game_id).lexically_normal() !=
           fs::absolute(source.game_directory).lexically_normal() ||
       fs::symlink_status(source.game_directory, error).type() != fs::file_type::directory || error ||
-      fs::symlink_status(source.game_directory / "config.yaml", error).type() != fs::file_type::regular || error)
+      fs::symlink_status(source.game_directory / "_hockeymon/config.yaml", error).type() != fs::file_type::regular ||
+      error)
     return absl::FailedPreconditionError("Experiment source workspace identity is invalid");
   if (source.invalidation_id.empty() ||
       config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("") != source.invalidation_id)
@@ -1179,7 +1184,7 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentEditableCo
   if (!lock.ok())
     return lock.status();
   try {
-    const YAML::Node config = YAML::LoadFile((source.game_directory / "config.yaml").string());
+    const YAML::Node config = YAML::LoadFile((source.game_directory / "_hockeymon/config.yaml").string());
     HM_RETURN_IF_ERROR(validate_clone_source(source, config));
     auto settings = source.settings;
     settings.manual_control_points.reset();
@@ -1199,7 +1204,7 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWork
   if (!lock.ok())
     return lock.status();
   try {
-    const YAML::Node config = YAML::LoadFile((source.game_directory / "config.yaml").string());
+    const YAML::Node config = YAML::LoadFile((source.game_directory / "_hockeymon/config.yaml").string());
     HM_RETURN_IF_ERROR(validate_clone_source(source, config));
     const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     if (source.invalidation_id.empty() || expected_match_snapshot.empty() ||
@@ -1247,7 +1252,7 @@ absl::Status PromoteStitchingExperiment(
   return hm::stitching::HuginProject::PromoteArtifactsAndConfig(
       experiment.game_directory, game_directory, [&]() -> absl::StatusOr<std::string> {
         try {
-          const YAML::Node source = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
+          const YAML::Node source = YAML::LoadFile((experiment.game_directory / "_hockeymon/config.yaml").string());
           const YAML::Node calibration = source["hstream_ui"]["stitching_calibration"];
           const YAML::Node request = calibration["reframe"];
           if (calibration["status"].as<std::string>("") != "complete" || (request && !request.IsNull()))
@@ -1259,7 +1264,9 @@ absl::Status PromoteStitchingExperiment(
         HM_ASSIGN_OR_RETURN(
             selected,
             BuildStitchingExperimentSelectionConfig(
-                experiment.game_directory / "config.yaml", game_directory / "config.yaml", blend));
+                experiment.game_directory / "_hockeymon/config.yaml",
+                game_directory / "_hockeymon/config.yaml",
+                blend));
         try {
           const YAML::Node selected_config = YAML::Load(selected);
           HM_RETURN_IF_ERROR(copy_match_bundles(experiment.game_directory, game_directory, selected_config));
@@ -1279,7 +1286,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
   try {
     YAML::Node selected = YAML::LoadFile(experiment_config.string());
     YAML::Node current = YAML::LoadFile(game_config.string());
-    HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game_config.parent_path()));
+    HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game_config.parent_path().parent_path()));
     YAML::Node selected_stitching = selected["stitching"];
     YAML::Node current_stitching = current["stitching"];
     const YAML::Node request = selected["hstream_ui"]["stitching_calibration"]["reframe"];
@@ -1387,7 +1394,7 @@ absl::Status CompleteStitchingExperimentWorkspace(
   if (!config_lock.ok())
     return config_lock.status();
   try {
-    YAML::Node config = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
+    YAML::Node config = YAML::LoadFile((experiment.game_directory / "_hockeymon/config.yaml").string());
     HM_RETURN_IF_ERROR(hm::stitching::validate_stitching_generation_owner(config, experiment.invalidation_id));
     if (mask_generation) {
       HM_RETURN_IF_ERROR(hm::stitching::validate_stitched_output_generation_hugin(*mask_generation, *generation));
@@ -1472,8 +1479,8 @@ absl::StatusOr<StitchingExperimentPlayerSelection> PreparePlayerSelectedStitchin
   if (!candidate_config_lock.ok())
     return candidate_config_lock.status();
   try {
-    const YAML::Node source_config = YAML::LoadFile((baseline.game_directory / "config.yaml").string());
-    YAML::Node config = YAML::LoadFile((candidate.game_directory / "config.yaml").string());
+    const YAML::Node source_config = YAML::LoadFile((baseline.game_directory / "_hockeymon/config.yaml").string());
+    YAML::Node config = YAML::LoadFile((candidate.game_directory / "_hockeymon/config.yaml").string());
     HM_RETURN_IF_ERROR(hm::stitching::validate_stitching_generation_owner(source_config, baseline.invalidation_id));
     HM_RETURN_IF_ERROR(hm::stitching::validate_pending_stitching_invalidation(config, candidate.invalidation_id));
     if (source_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") != "complete" ||
@@ -1527,8 +1534,8 @@ absl::Status ReuseStitchingExperimentPlayerSelection(
   if (!candidate_lock.ok())
     return candidate_lock.status();
   try {
-    const YAML::Node source_config = YAML::LoadFile((source.game_directory / "config.yaml").string());
-    YAML::Node config = YAML::LoadFile((candidate.game_directory / "config.yaml").string());
+    const YAML::Node source_config = YAML::LoadFile((source.game_directory / "_hockeymon/config.yaml").string());
+    YAML::Node config = YAML::LoadFile((candidate.game_directory / "_hockeymon/config.yaml").string());
     if (source.invalidation_id.empty() ||
         source_config["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>("") !=
             source.invalidation_id)
@@ -1554,7 +1561,7 @@ absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFra
   if (!lock.ok())
     return lock.status();
   try {
-    const YAML::Node config = YAML::LoadFile((experiment.game_directory / "config.yaml").string());
+    const YAML::Node config = YAML::LoadFile((experiment.game_directory / "_hockeymon/config.yaml").string());
     // A failed or cancelled solve still has useful frozen choices to inspect.
     // Unlike publication, this read-only path only needs the workspace identity.
     if (experiment.invalidation_id.empty() ||
@@ -1565,14 +1572,15 @@ absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFra
     if (!std::regex_match(experiment.invalidation_id, std::regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,159}")))
       return absl::InvalidArgumentError("Invalid calibration inspection owner");
     const fs::path match_images =
-        experiment.game_directory / "calibration-frame-inspection" / experiment.invalidation_id;
+        experiment.game_directory / "_hockeymon/calibration-frame-inspection" / experiment.invalidation_id;
     const auto set_match_images = [&](StitchingExperimentSelectedFrame& frame, size_t index) {
       frame.match_images = {
           match_images / ("points_" + std::to_string(index) + ".jpg"),
           match_images / ("matches_" + std::to_string(index) + ".jpg")};
     };
     if (!selection || selection.IsNull()) {
-      const fs::path images = experiment.game_directory / "calibration-frame-inspection" / experiment.invalidation_id;
+      const fs::path images =
+          experiment.game_directory / "_hockeymon/calibration-frame-inspection" / experiment.invalidation_id;
       std::ifstream file(images / "frames.yaml");
       if (!file)
         return absl::NotFoundError("No captured calibration frames are available for this candidate");
@@ -1639,7 +1647,7 @@ absl::StatusOr<StitchingExperimentFrameInspection> InspectStitchingExperimentFra
     const absl::Status sources = hm::stitching::ValidatePlayerFrameSources(plan);
     result.source_validation =
         sources.ok() ? "Source files still match the recorded selection." : "Source validation: " + sources.ToString();
-    const fs::path images = experiment.game_directory / "player-frame-inspection" / plan.fingerprint;
+    const fs::path images = experiment.game_directory / "_hockeymon/player-frame-inspection" / plan.fingerprint;
     for (size_t index = 0; index < plan.selected.size(); ++index) {
       const auto& selected = plan.selected[index];
       StitchingExperimentSelectedFrame frame;

@@ -11,6 +11,14 @@
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 namespace st = hm::stitching;
 namespace fs = std::filesystem;
 void require(bool value, const char* message) {
@@ -267,37 +275,39 @@ void cleanup(const fs::path& game) {
   auto before = baseline(), desired = YAML::Clone(before);
   desired["hstream_ui"]["stitching_calibration"]["control_points"] = 1600;
   const auto plan = prepare(game, before, desired);
-  write(game / "config.yaml", YAML::Dump(desired));
+  write(saved_state(game) / "config.yaml", YAML::Dump(desired));
   for (const char* name : {"left.png", "right.png", "hm_project.pto", "mapping_0000.tif", "rink_mask_0.png"})
-    write(game / name, "old artifact");
-  write(game / "player-frame-inputs" / "historical" / "input.png", "immutable input");
-  write(game / "rink-mask-input" / "historical" / "manifest.yaml", "immutable provenance");
+    write(saved_state(game) / name, "old artifact");
+  write(saved_state(game) / "player-frame-inputs" / "historical" / "input.png", "immutable input");
+  write(saved_state(game) / "rink-mask-input" / "historical" / "manifest.yaml", "immutable provenance");
   check(st::clean_stitching_artifacts_from_control_points(game.string(), plan.owner));
   require(
-      fs::exists(game / "left.png") && fs::exists(game / "right.png") && !fs::exists(game / "hm_project.pto") &&
-          !fs::exists(game / "mapping_0000.tif") && !fs::exists(game / "rink_mask_0.png"),
+      fs::exists(saved_state(game) / "left.png") && fs::exists(saved_state(game) / "right.png") &&
+          !fs::exists(saved_state(game) / "hm_project.pto") && !fs::exists(saved_state(game) / "mapping_0000.tif") &&
+          !fs::exists(saved_state(game) / "rink_mask_0.png"),
       "Native cleanup retained the wrong dependency artifacts");
-  auto superseded = YAML::LoadFile((game / "config.yaml").string());
+  auto superseded = YAML::LoadFile((saved_state(game) / "config.yaml").string());
   superseded["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "newer-owner";
-  write(game / "config.yaml", YAML::Dump(superseded));
+  write(saved_state(game) / "config.yaml", YAML::Dump(superseded));
   require(
       !st::CompleteStitchingCalibrationCleanup(game, plan, desired).ok(), "Superseded cleanup completed a stale owner");
   superseded["hstream_ui"]["stitching_calibration"]["invalidation_id"] = plan.owner;
   superseded["stitching"]["sync_method"] = "imu";
-  write(game / "config.yaml", YAML::Dump(superseded));
+  write(saved_state(game) / "config.yaml", YAML::Dump(superseded));
   require(
       !st::CompleteStitchingCalibrationCleanup(game, plan, desired).ok(),
       "A changed control must reject cleanup completion even if its owner is unchanged");
   superseded["stitching"]["sync_method"] = desired["stitching"]["sync_method"];
-  write(game / "config.yaml", YAML::Dump(superseded));
+  write(saved_state(game) / "config.yaml", YAML::Dump(superseded));
   check(st::CompleteStitchingCalibrationCleanup(game, plan, desired));
   require(
-      YAML::LoadFile((game / "config.yaml").string())["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"]
+      YAML::LoadFile(
+          (saved_state(game) / "config.yaml").string())["hstream_ui"]["stitching_calibration"]["artifacts_invalidated"]
           .as<bool>(),
       "Native cleanup did not publish its checked completion");
   require(
-      fs::exists(game / "player-frame-inputs" / "historical" / "input.png") &&
-          fs::exists(game / "rink-mask-input" / "historical" / "manifest.yaml"),
+      fs::exists(saved_state(game) / "player-frame-inputs" / "historical" / "input.png") &&
+          fs::exists(saved_state(game) / "rink-mask-input" / "historical" / "manifest.yaml"),
       "Cleanup deleted immutable historical input bundles");
 }
 } // namespace

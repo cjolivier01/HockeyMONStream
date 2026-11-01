@@ -1,4 +1,5 @@
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/stitching/CalibrationReferenceFrames.h"
 
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
@@ -855,7 +856,7 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
   std::optional<YAML::Node> saved_config;
   if (!config_file_.empty())
     HM_ASSIGN_OR_RETURN(
-        saved_config, stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml"));
+        saved_config, stitching::load_game_config_file(hm::game_storage::StatePath(config_file_, "config.yaml")));
   reframe_pending_ = saved_config && stitching::HasStitchingReframeIntent(*saved_config);
   if (reframe_pending_ && !one_pass_mode_ && !configure_only_)
     return absl::FailedPreconditionError("The saved view edit requires calibration before loading stitch maps");
@@ -1072,7 +1073,8 @@ absl::Status StitcherPriv::initialize_calibration_frame_selection() {
   if (config_file_.empty())
     return absl::OkStatus();
   std::optional<YAML::Node> config;
-  HM_ASSIGN_OR_RETURN(config, stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml"));
+  HM_ASSIGN_OR_RETURN(
+      config, stitching::load_game_config_file(hm::game_storage::StatePath(config_file_, "config.yaml")));
   if (!config)
     return absl::OkStatus();
   const YAML::Node stitching_config = (*config)["stitching"];
@@ -1312,7 +1314,7 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
       }
       absl::Status configure_status;
       if (end_relative_calibration_) {
-        auto config = stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml");
+        auto config = stitching::load_game_config_file(hm::game_storage::StatePath(config_file_, "config.yaml"));
         if (!config.ok() || !*config)
           return config.ok() ? absl::NotFoundError("Calibration config disappeared") : config.status();
         std::vector<stitching::CalibrationFrameInput> inputs;
@@ -2608,7 +2610,7 @@ absl::Status StitcherPriv::GenerateOutput(
           frame.sources = {
               calibration_frame_source(frame_info_left.frame_meta),
               calibration_frame_source(frame_info_right.frame_meta)};
-          auto saved = stitching::load_game_config_file(std::filesystem::path(config_file_) / "config.yaml");
+          auto saved = stitching::load_game_config_file(hm::game_storage::StatePath(config_file_, "config.yaml"));
           if (!saved.ok())
             return report_calibration_failure(saved.status());
           YAML::Node saved_config = saved->value_or(YAML::Node(YAML::NodeType::Map));
@@ -2633,7 +2635,9 @@ absl::Status StitcherPriv::GenerateOutput(
             if (!lock.ok())
               return report_calibration_failure(lock.status());
             stitching::StitchArtifactContentIdentity identity;
-            HM_ASSIGN_OR_RETURN(identity, stitching::stitch_artifact_content_identity_locked(config_file_));
+            HM_ASSIGN_OR_RETURN(
+                identity,
+                stitching::stitch_artifact_content_identity_locked(hm::game_storage::StateDirectory(config_file_)));
             if (identity.generation_id != hugin_generation)
               return report_calibration_failure(absl::AbortedError("Rink-mask input mapping changed"));
             if (mask_preparation_ && frame.selection == requested_time && frame.recording_time_ns) {

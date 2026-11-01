@@ -7,6 +7,8 @@
 #include <cerrno>
 #include <cstring>
 
+#include "hstream/src/libs/common/GameStorage.h"
+
 namespace hm::program {
 namespace {
 absl::Status Error(const char* operation) {
@@ -38,7 +40,7 @@ absl::StatusOr<std::unique_ptr<ProgramFileOutput>> ProgramFileOutput::Create(con
   if (impl->directory < 0)
     return Error("Cannot open Program output directory");
   impl->name = destination.filename().string();
-  struct stat entry {};
+  struct stat entry{};
   if (!fstatat(impl->directory, impl->name.c_str(), &entry, AT_SYMLINK_NOFOLLOW))
     return absl::AlreadyExistsError("Program output already exists");
   if (errno != ENOENT)
@@ -53,7 +55,7 @@ absl::StatusOr<std::unique_ptr<ProgramFileOutput>> ProgramFileOutput::Create(con
 int ProgramFileOutput::fd() const {
   return impl_->file;
 }
-absl::Status ProgramFileOutput::Commit(const std::function<bool()>& cancelled) {
+absl::Status ProgramFileOutput::Commit(const std::function<bool()>& cancelled, const std::filesystem::path& game) {
   if (impl_->committed)
     return absl::FailedPreconditionError("Program output is already published");
   if (cancelled && cancelled())
@@ -69,6 +71,27 @@ absl::Status ProgramFileOutput::Commit(const std::function<bool()>& cancelled) {
   impl_->committed = true;
   if (fsync(impl_->directory))
     return Error("Program output is published but directory flush failed");
+  if (!game.empty()) {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    const auto root = fs::canonical(game, error);
+    if (error)
+      return absl::UnavailableError(
+          "Program output is published but game inventory root is unavailable: " + error.message());
+    // The destination directory remains pinned even if its original alias or
+    // pathname changes while the encoder runs. Inventory the committed file's
+    // actual directory, without claiming an external export as game state.
+    const auto directory = fs::canonical("/proc/self/fd/" + std::to_string(impl_->directory), error);
+    if (error)
+      return absl::UnavailableError(
+          "Program output is published but inventory path is unavailable: " + error.message());
+    const auto relative = (directory / impl_->name).lexically_relative(root);
+    if (!relative.empty() && *relative.begin() != "..") {
+      if (*relative.begin() == "_hockeymon")
+        return game_storage::RefreshManifest(root, "amd-program");
+      return game_storage::RegisterPublished(root, relative, "amd-program");
+    }
+  }
   return absl::OkStatus();
 }
 } // namespace hm::program

@@ -333,7 +333,7 @@ cc_library(
     srcs = ["ProgramCalibration.cpp"],
     hdrs = ["ProgramCalibration.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["//src/libs/common:config_path",
+    deps = ["//src/libs/common:game_storage", "//src/libs/common:config_path",
             "//src/libs/stitching:game_config", "//src/libs/stitching:hugin_project"],
 )
 
@@ -349,6 +349,7 @@ cc_library(
     hdrs = ["ProgramLaunchConfig.h"],
     include_prefix = "hstream/src/libs/program",
     deps = [
+    "//src/libs/common:game_storage",
         ":amd_program_settings", "//src/libs/common:config_layers",
         "//src/libs/common:baseline_config", "//src/libs/common:user_config",
         "//src/libs/stitching:game_config", "//src/libs/tracking:program_camera_mapping",
@@ -407,12 +408,12 @@ cc_library(
     srcs = ["ProgramFileOutput.cpp"],
     hdrs = ["ProgramFileOutput.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["@com_google_absl//absl/status:statusor"],
+    deps = ["//src/libs/common:game_storage", "@com_google_absl//absl/status:statusor"],
 )
 cc_test(
     name = "file_output_test",
     srcs = ["ProgramFileOutputTest.cpp"],
-    deps = [":file_output"],
+    deps = [":file_output", "@yaml-cpp"],
 )
 
 cc_library(

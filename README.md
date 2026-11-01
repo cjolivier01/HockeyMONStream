@@ -312,7 +312,7 @@ Runtime behavior is controlled by YAML configs in `configs/` and CLI overrides:
 - Play tracking structure: `configs/play_tracker_config.yaml`
 
 Configuration layers are applied in this order: the bundled `configs/baseline.yaml`, the
-per-user `~/.hstream/hstream.yaml` overlay, the game's private `config.yaml`,
+per-user `~/.hstream/hstream.yaml` overlay, the game's private `_hockeymon/config.yaml`,
 then command-line overrides. On first use HockeyMONStream creates the user overlay with:
 
 ```yaml
@@ -377,3 +377,8 @@ fails instead of silently selecting another copy.
 ## Acknowledgements
 
 This repo contains code and build patterns derived from the DeepStream-Yolo ecosystem (see `LICENSE.md` and `docs/`).
+
+Game configuration, calibration, experiments and runtime state live in
+`<game>/_hockeymon/`, alongside a versioned `manifest.json` inventory. Recordings
+and published media remain at the game root. Old flat calibration/configuration
+is ignored; configure each game afresh. See [game storage](docs/game-storage.md).

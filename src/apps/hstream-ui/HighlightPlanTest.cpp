@@ -1,4 +1,6 @@
 #include "src/apps/hstream-ui/HighlightPlan.h"
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 
 #include <iostream>
 
@@ -17,6 +19,7 @@ bool expect(bool condition, const char* message) {
 }
 
 bool write_text(const QString& path, const QByteArray& contents) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(contents) == contents.size();
 }
@@ -47,15 +50,16 @@ int main() {
       HighlightPlan initial;
       ok &= expect(initial.base_name == "season-reel", "new plans must resolve their name from the baseline");
       initial.base_name = "Saved reel";
-      const QString saved_path = defaults.filePath("highlights.json");
+      const QString saved_path = defaults.filePath("_hockeymon/highlights.json");
       ok &= expect(SaveHighlightPlan(saved_path, initial, &error), "explicit plan name saved");
       HighlightPlan reopened;
       ok &= expect(
           LoadHighlightPlan(saved_path, &reopened, &error) && reopened.base_name == "Saved reel",
           "saved plan names must override the baseline");
-      for (const auto& invalid : {QByteArray("hstream_ui: {}\n"),
-                                 QByteArray("hstream_ui:\n  highlights:\n    base_name: []\n"),
-                                 QByteArray("hstream_ui:\n  highlights:\n    base_name: '../outside'\n")}) {
+      for (const auto& invalid :
+           {QByteArray("hstream_ui: {}\n"),
+            QByteArray("hstream_ui:\n  highlights:\n    base_name: []\n"),
+            QByteArray("hstream_ui:\n  highlights:\n    base_name: '../outside'\n")}) {
         ok &= expect(write_text(baseline, invalid), "invalid Highlights baseline written");
         bool rejected = false;
         try {
@@ -168,7 +172,7 @@ int main() {
   ok &= expect(directory.isValid(), "temporary test directory must be available");
   if (!directory.isValid())
     return 1;
-  const QString path = directory.filePath("highlights.json");
+  const QString path = directory.filePath("_hockeymon/highlights.json");
   HighlightPlan restored_origin;
   ok &= expect(
       SaveHighlightPlan(directory.filePath("origin.json"), moving, &error) &&

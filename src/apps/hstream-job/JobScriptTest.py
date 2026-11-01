@@ -24,6 +24,7 @@ class JobScriptTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.game = self.root / "games" / "a 'quoted' $(touch INJECTED) game"
         self.game.mkdir(parents=True)
+        (self.game / "_hockeymon").mkdir()
         self.output = self.root / "observed.json"
         self.runner = self.root / "fake 'hstream-cli'"
         self.runner.write_text(
@@ -41,7 +42,7 @@ class JobScriptTest(unittest.TestCase):
             "--stitch-frame-time=00:00:17",
         ]
         # JSON is valid YAML, and avoids requiring PyYAML in the test environment.
-        (self.game / "config.yaml").write_text(
+        (self.game / "_hockeymon/config.yaml").write_text(
             json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}})
         )
         self.command = [
@@ -131,8 +132,8 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(run.returncode, 7, run.stderr)
         actual = json.loads(self.output.read_text())
         self.assertEqual(actual["env"]["HSTREAM_ARCHIVE_RUN_ID"], identity)
-        self.assertTrue((self.game / f"hstream-job-{identity}.yaml").is_file())
-        self.assertEqual(len(list(self.game.glob("hstream-job-*.yaml"))), 1)
+        self.assertTrue((self.game / "_hockeymon" / f"hstream-job-{identity}.yaml").is_file())
+        self.assertEqual(len(list((self.game / "_hockeymon").glob("hstream-job-*.yaml"))), 1)
 
     def test_invalid_or_unmanaged_run_identity_cannot_publish_a_script(self):
         for identity in ("", "short", "x" * 101, "../outside", "unsafe/run", "new\nline", "$(touch INJECTED)"):
@@ -217,7 +218,7 @@ class JobScriptTest(unittest.TestCase):
 
     def test_interactive_preserves_protocol_sinks_and_runtime_without_finalizer(self):
         self.arguments[0] = "--enable-sinks=WEBRTC"
-        (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+        (self.game / "_hockeymon/config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
         self.runner.write_text(
             "#!/usr/bin/env python3\nimport json,os,sys\n"
             "with open(os.environ['JOB_TEST_OUTPUT'],'w') as f:\n"
@@ -249,7 +250,7 @@ class JobScriptTest(unittest.TestCase):
     def test_interactive_publication_preserves_stdin_and_does_not_adopt_failure(self):
         self.arguments[0] = "--enable-sinks=WEBRTC,ENCODE_FILE,RTMP"
         self.arguments.append("--render-realtime")
-        (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+        (self.game / "_hockeymon/config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
         self.runner.write_text(
             "#!/usr/bin/env python3\nimport json,os,sys\n"
             "with open(os.environ['JOB_TEST_OUTPUT'],'w') as f:\n"
@@ -272,7 +273,7 @@ class JobScriptTest(unittest.TestCase):
         manifest = Path(actual["env"]["HSTREAM_JOB_MANIFEST"])
         self.assertEqual(Path(actual["env"]["HSTREAM_RUNTIME_CACHE_DIR"]), manifest.parent / "runtime")
         self.assertFalse(list(self.game.glob("*.mp4")))
-        receipts = list(self.game.glob("hstream-job-*.yaml"))
+        receipts = list((self.game / "_hockeymon").glob("hstream-job-*.yaml"))
         self.assertEqual(len(receipts), 1)
         self.assertIn("runner_succeeded: false", manifest.read_text())
         self.assertNotIn("runner_succeeded: true", receipts[0].read_text())
@@ -291,7 +292,7 @@ class JobScriptTest(unittest.TestCase):
             "-t", "0.4", "-c:v", "libx264", "-y", str(fixture),
         ], check=True)
         self.arguments[0] = "--enable-sinks=WEBRTC,ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE"
-        (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
+        (self.game / "_hockeymon/config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}}))
         self.runner.write_text(
             "#!/usr/bin/env python3\nimport subprocess,sys\n"
             "assert sys.stdin.readline() == 'q\\n'\n"
@@ -304,7 +305,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(len(list(self.game.glob("*.mp4"))), 3)
         self.assertEqual(len(list(self.game.glob("*.db"))), 1)
         self.assertEqual(len(list(self.game.glob("*.hstream-archive.json"))), 3)
-        receipts = list(self.game.glob("hstream-job-*.yaml"))
+        receipts = list((self.game / "_hockeymon").glob("hstream-job-*.yaml"))
         self.assertEqual(len(receipts), 1)
         self.assertEqual(receipts[0].name, "hstream-job-interactive-admitted-id.yaml")
         self.assertIn("state: complete", receipts[0].read_text())
@@ -322,7 +323,7 @@ class JobScriptTest(unittest.TestCase):
         self.game = game
         self.command[self.command.index("--game-dir") + 1] = str(game)
         arguments = ["--enable-sinks=WEBRTC", "--render-realtime"]
-        (game / "config.yaml").write_text(json.dumps({
+        (game / "_hockeymon/config.yaml").write_text(json.dumps({
             "hstream_ui": {"job": {"arguments": arguments, "capture_telemetry": True}}
         }))
         self.runner.write_text(
@@ -347,7 +348,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertFalse(list(game.glob("*.mp4")))
         self.assertFalse(list(game.glob("*.hstream-archive.json")))
         self.assertEqual(len(list(game.glob("*.db"))), 1)
-        receipt = game / "hstream-job-telemetry-only-admitted-id.yaml"
+        receipt = game / "_hockeymon/hstream-job-telemetry-only-admitted-id.yaml"
         self.assertIn("state: complete", receipt.read_text())
         self.assertIn("runner_succeeded: true", receipt.read_text())
         self.assertIn("kind: telemetry", receipt.read_text())
@@ -365,7 +366,7 @@ class JobScriptTest(unittest.TestCase):
                     job["capture_telemetry"] = capture
                 if calibration:
                     job["arguments"].append("--stitching-calibration-only")
-                (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": job}}))
+                (self.game / "_hockeymon/config.yaml").write_text(json.dumps({"hstream_ui": {"job": job}}))
                 result = self.generate("--interactive-publication", "--force")
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("explicitly selected Program telemetry", result.stderr)
@@ -375,7 +376,7 @@ class JobScriptTest(unittest.TestCase):
             ["--enable-sinks=WEBRTC"],
             ["--stitching-calibration-only", "--enable-sinks=WEBRTC,ENCODE_FILE"],
         ):
-            (self.game / "config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": arguments}}}))
+            (self.game / "_hockeymon/config.yaml").write_text(json.dumps({"hstream_ui": {"job": {"arguments": arguments}}}))
             result = self.generate("--interactive-publication", "--force")
             self.assertNotEqual(result.returncode, 0)
         self.assertNotEqual(self.generate("--interactive-publication", "--runtime-only").returncode, 0)
@@ -424,7 +425,7 @@ class JobScriptTest(unittest.TestCase):
     def test_export_freezes_explicit_telemetry_checkbox(self):
         for capture in (False, True):
             with self.subTest(capture=capture):
-                config = self.game / "config.yaml"
+                config = self.game / "_hockeymon/config.yaml"
                 config.write_text(json.dumps({"hstream_ui": {"job": {
                     "arguments": self.arguments, "capture_telemetry": capture,
                 }}}))
@@ -481,7 +482,7 @@ class JobScriptTest(unittest.TestCase):
                     "hstream_ui": {"export_archive_routes": ["program_4k"]},
                 }))
                 (home / ".hstream/hstream.yaml").write_text("{}")
-                (self.game / "config.yaml").write_text(json.dumps({
+                (self.game / "_hockeymon/config.yaml").write_text(json.dumps({
                     "hstream_ui": {"job": {"arguments": options}}
                 }))
                 self.env.pop("HM_OUTPUT_WORK_DIR", None)
@@ -492,7 +493,7 @@ class JobScriptTest(unittest.TestCase):
                 (home / ".hstream/hstream.yaml").write_text(json.dumps(
                     {"paths": user_paths} if user_paths is not None else {}
                 ))
-                (self.game / "config.yaml").write_text(json.dumps(
+                (self.game / "_hockeymon/config.yaml").write_text(json.dumps(
                     {"paths": game_paths} if game_paths is not None or name == "clear-paths" else {}
                 ))
                 if environment:
@@ -523,9 +524,9 @@ class JobScriptTest(unittest.TestCase):
         Path(self.env["HOME"]).mkdir()
         original = self.root / "original work"
         changed = self.root / "changed work"
-        config = json.loads((self.game / "config.yaml").read_text())
+        config = json.loads((self.game / "_hockeymon/config.yaml").read_text())
         config["paths"] = {"output-root": str(original)}
-        (self.game / "config.yaml").write_text(json.dumps(config))
+        (self.game / "_hockeymon/config.yaml").write_text(json.dumps(config))
         generated = self.generate()
         self.assertEqual(generated.returncode, 0, generated.stderr)
         script = self.game / "hstream-job.sh"
@@ -537,7 +538,7 @@ class JobScriptTest(unittest.TestCase):
         self.output.unlink()
         config["paths"]["output-root"] = str(changed)
         for contents in (json.dumps(config), "invalid: ["):
-            (self.game / "config.yaml").write_text(contents)
+            (self.game / "_hockeymon/config.yaml").write_text(contents)
             retried = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
             self.assertEqual(retried.returncode, 1, (retried.stdout, retried.stderr))
             self.assertIn("Encoding did not complete", retried.stderr)
@@ -671,7 +672,7 @@ class JobScriptTest(unittest.TestCase):
         install = self.install_packaged_launcher()
         self.env["HSTREAM_RUNTIME_CACHE_DIR"] = str(self.root / "private runtime")
         self.arguments[0] = "--enable-sinks=WEBRTC"
-        (self.game / "config.yaml").write_text(
+        (self.game / "_hockeymon/config.yaml").write_text(
             json.dumps({"hstream_ui": {"job": {"arguments": self.arguments}}})
         )
         for mode, extra, expected in (
@@ -798,7 +799,7 @@ class JobScriptTest(unittest.TestCase):
              "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE"),
         ):
             with self.subTest(sinks=sinks):
-                (self.game / "config.yaml").write_text(json.dumps({
+                (self.game / "_hockeymon/config.yaml").write_text(json.dumps({
                     "hstream_ui": {"job": {"arguments": [
                         "--enable-sinks", sinks, "--show", "--render-realtime",
                         "--show-scaled=0.5", "--show-stitching", "0.5",
@@ -826,7 +827,7 @@ class JobScriptTest(unittest.TestCase):
                     arguments = ["--enable-sinks=ENCODE_STITCHED_FILE"]
                     if explicit_mode:
                         arguments.append("--stitching-calibration-only")
-                    (self.game / "config.yaml").write_text(json.dumps({
+                    (self.game / "_hockeymon/config.yaml").write_text(json.dumps({
                         "hstream_ui": {"job": {
                             "arguments": arguments, "capture_telemetry": capture,
                         }}
@@ -845,7 +846,7 @@ class JobScriptTest(unittest.TestCase):
         original = script.read_bytes()
         for sinks in ("ENCODE_FILE", "ENCODE_PROGRAM_4K_FILE", "ENCODE_FILE,ENCODE_STITCHED_FILE"):
             with self.subTest(sinks=sinks):
-                (self.game / "config.yaml").write_text(json.dumps({
+                (self.game / "_hockeymon/config.yaml").write_text(json.dumps({
                     "hstream_ui": {"job": {"arguments": [
                         "--stitching-calibration-only", "--enable-sinks=" + sinks,
                     ]}}
@@ -871,7 +872,7 @@ class JobScriptTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("require YAML pipeline configs", result.stderr)
         self.assertEqual(script.read_bytes(), original)
-        (self.game / "config.yaml").write_text(json.dumps({
+        (self.game / "_hockeymon/config.yaml").write_text(json.dumps({
             "hstream_ui": {"job": {"arguments": ["--stitching-calibration-only"]}}
         }))
         result = self.generate("--force")
@@ -879,21 +880,21 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(script.read_bytes(), original)
 
     def test_plain_config_and_custom_output(self):
-        (self.game / "config.yaml").write_text("pipeline: {}\n")
+        (self.game / "_hockeymon/config.yaml").write_text("pipeline: {}\n")
         custom = self.root / "custom.sh"
         result = self.generate("--output", str(custom))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(custom.exists())
         self.assertIn("--enable-sinks=ENCODE_PROGRAM_4K_FILE", custom.read_text())
         self.assertIn("--encode-job", custom.read_text())
-        (self.game / "config.yaml").write_text("[invalid")
+        (self.game / "_hockeymon/config.yaml").write_text("[invalid")
         self.assertNotEqual(self.generate().returncode, 0)
 
     def test_export_fallback_requires_the_shared_baseline_archive_recipe(self):
         baseline = self.root / "baseline"
         baseline.mkdir()
         self.env["HM_CONFIG_ROOT"] = str(baseline)
-        (self.game / "config.yaml").write_text("pipeline: {}\n")
+        (self.game / "_hockeymon/config.yaml").write_text("pipeline: {}\n")
         (baseline / "baseline.yaml").write_text(json.dumps({
             "hstream_ui": {"export_archive_routes": ["stitched"]},
         }))

@@ -223,7 +223,7 @@ def write_job_scripts(root: Path) -> None:
         if game.is_symlink() or not game.is_dir():
             continue
         # hstream-job reads the game's config.yaml; other directories are not games.
-        if not (game / "config.yaml").is_file():
+        if not (game / "_hockeymon/config.yaml").is_file():
             continue
         try:
             # The default output is the game directory's own hstream-job.sh.

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HighlightScene.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <QtCore/QBuffer>
 #include <QtCore/QCryptographicHash>
@@ -198,13 +199,19 @@ HighlightLogoImportResult ImportHighlightLogo(
   buffer.open(QIODevice::WriteOnly);
   if (!image.save(&buffer, "PNG"))
     return storage_failure("Could not encode logo");
-  const QString relative = "highlight-assets/" +
+  const QString relative = "_hockeymon/highlight-assets/" +
       QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()) + ".png";
-  if (!QDir(game).mkpath("highlight-assets"))
+  const auto state = hm::game_storage::EnsureStateDirectory(game.toStdString());
+  if (!state.ok())
+    return storage_failure(QString::fromStdString(state.ToString()));
+  if (!QDir(game).mkpath("_hockeymon/highlight-assets"))
     return storage_failure("Could not create highlight-assets");
   QSaveFile file(QDir(game).filePath(relative));
   if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
     return storage_failure("Could not save logo: " + file.errorString());
+  const auto inventory = hm::game_storage::RefreshManifest(game.toStdString(), "highlights");
+  if (!inventory.ok())
+    return storage_failure(QString::fromStdString(inventory.ToString()));
   *path = relative;
   return HighlightLogoImportResult::Imported;
 }

@@ -90,6 +90,18 @@ int main(int argc, char** argv) {
         fixture.string() + "'";
     require(std::system(make_fixture.c_str()) == 0, "create real encoded test fixture");
     const std::vector<std::string> command = {fs::canonical(argv[0]).string(), "--produce", fixture.string()};
+    {
+      const auto game = base / "contained-work";
+      fs::create_directories(game);
+      const auto manifest = pub::CreateRun(game, game, "contained-work-run");
+      require(
+          manifest.lexically_relative(game).begin()->string() == "_hockeymon",
+          "an in-game working output root keeps run state beneath _hockeymon");
+      require(!fs::exists(game / game.filename()), "working output configuration does not create root-level scratch");
+      require(
+          pub::CreateRun(game, game, "contained-work-run") == manifest,
+          "in-game working directory admission remains idempotent");
+    }
     const auto exercise = [&](const std::string& name,
                               const fs::path& work_root,
                               const char* interruption,
@@ -115,7 +127,9 @@ int main(int argc, char** argv) {
           count(game, ".mp4") == 3 && count(game, ".db") == 1 && count(game, ".json") == 3,
           "all outputs published once");
       for (const auto& entry : fs::directory_iterator(game)) {
-        require(!entry.is_directory(), "no game staging directory remains");
+        require(
+            !entry.is_directory() || entry.path().filename() == "_hockeymon",
+            "only application state is a root directory");
         require(entry.path().extension() != ".next", "no journal temporary file remains");
         require(entry.path().extension() != ".hstream-pin", "no video reservation remains");
         if (entry.path().extension() == ".mp4") {
@@ -126,12 +140,28 @@ int main(int argc, char** argv) {
         if (entry.path().extension() == ".json")
           require(YAML::LoadFile(entry.path().string())["start_time_ms"].as<int>() == 1234, "archive origin preserved");
       }
+      const auto inventory = YAML::LoadFile((game / "_hockeymon/manifest.json").string());
+      require(inventory["schema_version"].as<int>() == 1, "game inventory is versioned");
+      size_t published = 0;
+      for (const auto& entry : inventory["files"]) {
+        if (entry["role"].as<std::string>() == "published") {
+          ++published;
+          require(fs::is_regular_file(game / entry["path"].as<std::string>()), "published inventory path exists");
+        }
+      }
+      require(
+          published == 7,
+          "game manifest includes all published videos, telemetry and sidecars: " + std::to_string(published));
+      for (const auto& entry : fs::directory_iterator(game / "_hockeymon")) {
+        require(!entry.is_directory(), "publication staging is retired from application state");
+        require(entry.path().extension() != ".hstream-pin", "publication pins retire from application state");
+      }
       const auto receipt = YAML::LoadFile(pub::ReceiptPath(game, id).string());
       require(receipt["state"].as<std::string>() == "complete", "receipt records completed cleanup");
       if (destination_stage)
         require(
-            fs::path(receipt["stage"].as<std::string>()).parent_path() == game,
-            "different mounts stage directly in the game directory");
+            fs::path(receipt["stage"].as<std::string>()).parent_path() == game / "_hockeymon",
+            "different mounts stage beneath the game state directory");
     };
     if (argc == 2 && std::string(argv[1]) == "--bind-mount") {
       // Always isolate mounts, even if this test mode is invoked directly.
@@ -176,6 +206,20 @@ int main(int argc, char** argv) {
       auto runner = command;
       runner.push_back("--telemetry-only");
       require(pub::RunJob(game, root, id, runner, {}, true) == 0, "publish requested telemetry without video");
+      const auto inventory = YAML::LoadFile((game / "_hockeymon/manifest.json").string());
+      require(inventory["schema_version"].as<int>() == 1, "game inventory is versioned");
+      size_t published = 0;
+      for (const auto& entry : inventory["files"]) {
+        if (entry["role"].as<std::string>() == "published") {
+          ++published;
+          require(fs::is_regular_file(game / entry["path"].as<std::string>()), "published inventory path exists");
+        }
+      }
+      require(published == 1, "game manifest includes the published telemetry database");
+      for (const auto& entry : fs::directory_iterator(game / "_hockeymon")) {
+        require(!entry.is_directory(), "publication staging is retired from application state");
+        require(entry.path().extension() != ".hstream-pin", "publication pins retire from application state");
+      }
       const auto receipt = YAML::LoadFile(pub::ReceiptPath(game, id).string());
       require(
           receipt["state"].as<std::string>() == "complete" && receipt["telemetry_only"].as<bool>() &&
@@ -222,6 +266,20 @@ int main(int argc, char** argv) {
       }
       require(refused == (mode != "success"), "desktop telemetry publishes only a completed requested output");
       if (mode == "success") {
+        const auto inventory = YAML::LoadFile((game / "_hockeymon/manifest.json").string());
+        require(inventory["schema_version"].as<int>() == 1, "game inventory is versioned");
+        size_t published = 0;
+        for (const auto& entry : inventory["files"]) {
+          if (entry["role"].as<std::string>() == "published") {
+            ++published;
+            require(fs::is_regular_file(game / entry["path"].as<std::string>()), "published inventory path exists");
+          }
+        }
+        require(published == 1, "game manifest includes the published telemetry database");
+        for (const auto& entry : fs::directory_iterator(game / "_hockeymon")) {
+          require(!entry.is_directory(), "publication staging is retired from application state");
+          require(entry.path().extension() != ".hstream-pin", "publication pins retire from application state");
+        }
         const auto receipt = YAML::LoadFile(pub::ReceiptPath(game, id).string());
         require(
             receipt["state"].as<std::string>() == "complete" && receipt["telemetry_only"].as<bool>() &&

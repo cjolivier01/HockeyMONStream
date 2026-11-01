@@ -388,7 +388,7 @@ int main(int argc, char** argv) {
   QTemporaryDir directory;
   if (!directory.isValid())
     return 1;
-  const QString image_path = directory.filePath("s.png");
+  const QString image_path = directory.filePath("_hockeymon/s.png");
   QImage image(100, 80, QImage::Format_RGB32);
   image.fill(QColor(35, 80, 110));
   if (!image.save(image_path))

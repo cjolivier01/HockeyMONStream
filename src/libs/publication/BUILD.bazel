@@ -4,7 +4,7 @@ cc_library(
     hdrs = ["Cleanup.h", "Publication.h"],
     include_prefix = "hstream/src/libs/publication",
     visibility = ["//visibility:public"],
-    deps = ["//src/libs/recording", "//src/libs/common:pinned_file", "@yaml-cpp"],
+    deps = ["//src/libs/common:game_storage", "//src/libs/recording", "//src/libs/common:pinned_file", "@yaml-cpp"],
 )
 
 cc_test(

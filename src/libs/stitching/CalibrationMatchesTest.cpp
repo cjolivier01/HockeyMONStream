@@ -15,6 +15,14 @@
 #include <opencv2/imgcodecs.hpp>
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 namespace fs = std::filesystem;
 using namespace hm::stitching;
 
@@ -129,7 +137,7 @@ void roundtrip_and_reset(const fs::path& game, const fs::path& copied) {
   require(!PublishCalibrationMatches(game, invalid).ok(), "Automatic sets cannot carry reset-reference chains");
 
   // A leftover predictable pending-name symlink must never redirect publication.
-  const auto sets = copied / "calibration-matches" / "sets";
+  const auto sets = saved_state(copied) / "calibration-matches" / "sets";
   fs::remove(sets / (manual_fingerprint + ".yaml"));
   const auto unrelated = copied / "unrelated.txt";
   write(unrelated, "preserve me");
@@ -138,7 +146,7 @@ void roundtrip_and_reset(const fs::path& game, const fs::path& copied) {
       take(PublishCalibrationMatches(copied, manual)) == manual_fingerprint && read(unrelated) == "preserve me",
       "Publication must not follow a predictable pending-file symlink");
 
-  const auto original_path = game / "calibration-matches" / "sets" / (fingerprint + ".yaml");
+  const auto original_path = saved_state(game) / "calibration-matches" / "sets" / (fingerprint + ".yaml");
   const auto bytes = read(original_path);
   write(original_path, bytes + "# changed\n");
   require(
@@ -267,7 +275,7 @@ void metadata_and_bounds(const fs::path& game) {
   fs::create_directory(outside);
   const auto symlink_game = game / "symlink-game";
   fs::create_directory(symlink_game);
-  fs::create_directory_symlink(outside, symlink_game / "calibration-matches");
+  fs::create_directory_symlink(outside, saved_state(symlink_game) / "calibration-matches");
   require(
       !PublishCalibrationMatches(symlink_game, set).ok() && fs::is_empty(outside),
       "Publishing cannot follow a symlinked store root");

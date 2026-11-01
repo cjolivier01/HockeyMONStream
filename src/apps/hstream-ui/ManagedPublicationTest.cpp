@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
   try {
     const auto game = path / "games/game's files";
     fs::create_directories(game);
-    std::ofstream(game / "config.yaml") << "{}\n";
+    std::ofstream(game / "_hockeymon/config.yaml") << "{}\n";
     const auto fixture = path / "fixture.mkv";
     require(
         QProcess::execute(
@@ -277,6 +277,23 @@ int main(int argc, char** argv) {
               id + ": successful publication removes workspace and log identities");
         }
       }
+    }
+    {
+      const std::string id = "ui-unsupported-runner";
+      const auto manifest = hm::publication::CreateRun(game, path / "work", id);
+      hm::publication::BeginRun(manifest);
+      const auto source = manifest.parent_path() / "unregistered-program.mkv";
+      fs::copy_file(fixture, source);
+      const auto before = readFile(source);
+      HStreamWindowTestAccess::publish(window, manifest, {{source, "program"}});
+      require(HStreamWindowTestAccess::failed(window), "runner without managed completion cannot publish");
+      require(
+          HStreamWindowTestAccess::detail(window).contains("managed completion receipt"),
+          "unsupported runner explains the missing completion evidence");
+      require(readFile(source) == before, "unsupported runner retains exact working video");
+      require(
+          YAML::LoadFile(hm::publication::ReceiptPath(game, id).string())["state"].as<std::string>() == "admitted",
+          "unsupported runner preserves admission receipt");
     }
     for (const bool failed : {false, true}) {
       const std::string id = failed ? "ui-explicitly-failed" : "ui-incomplete-managed";

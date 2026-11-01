@@ -1,3 +1,4 @@
+#include <QtCore/QFileInfo>
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 
@@ -25,6 +26,7 @@ QByteArray read(const QString& path) {
 }
 
 bool write(const QString& path, const QByteArray& bytes, bool executable = false) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() &&
       (!executable || file.setPermissions(file.permissions() | QFileDevice::ExeOwner));
@@ -53,8 +55,8 @@ bool test_snapshot_paths() {
   QImage image(800, 400, QImage::Format_RGB32);
   image.fill(Qt::gray);
   if (!expect(
-          game.isValid() && tools.isValid() && image.save(game.filePath("left.png")) &&
-              image.save(game.filePath("right.png")),
+          game.isValid() && tools.isValid() && image.save(game.filePath("_hockeymon/left.png")) &&
+              image.save(game.filePath("_hockeymon/right.png")),
           "Cannot create camera image fixtures"))
     return false;
   const QByteArray metadata =
@@ -68,8 +70,10 @@ bool test_snapshot_paths() {
       "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n"
       "control-point-resolution=native\n";
   if (!expect(
-          write(game.filePath("config.yaml"), "hstream_ui:\n  stitching_calibration:\n    status: complete\n") &&
-              write(game.filePath("stitching_canvas_provenance"), metadata) &&
+          write(
+              game.filePath("_hockeymon/config.yaml"),
+              "hstream_ui:\n  stitching_calibration:\n    status: complete\n") &&
+              write(game.filePath("_hockeymon/stitching_canvas_provenance"), metadata) &&
               write(
                   tools.filePath("pano_modify"),
                   "#!/bin/sh\ncase \"$*\" in\n*--crop=AUTO*) cp full.pto auto.pto;;\n"
@@ -94,7 +98,7 @@ bool test_snapshot_paths() {
         "left.png\"\n"
         "i w800 h400 f0 v90 y30 p0 r0 n\"" +
         prefix + "right.png\"\n";
-    ok &= write(game.filePath("autooptimiser_out.pto"), project);
+    ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), project);
     ok &= write(game.filePath(".autooptimiser_out.aligned.pto"), project);
     for (bool in_progress : {false, true}) {
       ProjectionCropDialog crop(game.path(), {}, "cylindrical", {}, camera, {}, nullptr, in_progress);
@@ -103,7 +107,7 @@ bool test_snapshot_paths() {
           game.path(), {}, nullptr, camera, in_progress, hm::stitching::StitchProjection::kCylindrical);
       ok &= expect(leveling.loadError().isEmpty(), "Relative and absolute projects must load for rink leveling");
       ok &= expect(
-          read(game.filePath("autooptimiser_out.pto")) == project &&
+          read(game.filePath("_hockeymon/autooptimiser_out.pto")) == project &&
               read(game.filePath(".autooptimiser_out.aligned.pto")) == project,
           "Preview preparation must preserve the published calibration projects");
     }
@@ -114,7 +118,7 @@ bool test_snapshot_paths() {
 
 // Optional read-only smoke against a real game, using installed Hugin tools.
 bool test_saved_game(const QString& directory) {
-  const auto config = YAML::Load(read(QDir(directory).filePath("config.yaml")).toStdString());
+  const auto config = YAML::Load(read(QDir(directory).filePath("_hockeymon/config.yaml")).toStdString());
   const auto framing = hm::stitching::read_stitch_projection_framing(config);
   const auto camera = hm::stitching::read_stitch_camera_selection(config);
   const std::string projection_name = config["stitching"]["projection"].as<std::string>();

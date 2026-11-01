@@ -229,9 +229,10 @@ bool run_precaps(
 bool expect_oversized_seam_repair_artifact_rejected(const fs::path& tmpdir) {
   const fs::path game_dir = tmpdir / "oversized-seam-repair";
   fs::create_directories(game_dir);
-  std::ofstream(game_dir / "mapping_0000.tif", std::ios::binary) << "tiff";
-  std::ofstream(game_dir / "mapping_0001.tif", std::ios::binary) << "tiff";
-  if (::truncate((game_dir / "mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0)
+  fs::create_directories(game_dir / "_hockeymon");
+  std::ofstream(game_dir / "_hockeymon/mapping_0000.tif", std::ios::binary) << "tiff";
+  std::ofstream(game_dir / "_hockeymon/mapping_0001.tif", std::ios::binary) << "tiff";
+  if (::truncate((game_dir / "_hockeymon/mapping_0000.tif").c_str(), 2LL * 1024LL * 1024LL * 1024LL + 1) != 0)
     return false;
 
   hm::stitcher::StitcherPriv stitcher(/*gpu_id=*/0, /*batch_size=*/2);
@@ -639,6 +640,7 @@ bool expect_prepare_runtime_partial_fails() {
 bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
   const fs::path root = parent_dir / "exact-plan";
   fs::create_directories(root);
+  fs::create_directories(root / "_hockeymon");
   YAML::Node config;
   hm::stitching::PlayerFrameSelectionPlan plan;
   plan.settings.frame_count = 1;
@@ -681,7 +683,7 @@ bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
   }
   plan.fingerprint = *fingerprint;
   config["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
-  std::ofstream(root / "config.yaml") << YAML::Dump(config);
+  std::ofstream(root / "_hockeymon/config.yaml") << YAML::Dump(config);
 
   for (bool source_eos : {false, true}) {
     hm::stitcher::StitcherPriv stitcher(0, 2);
@@ -756,7 +758,7 @@ bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
   };
   for (const std::string& marker : {std::string("wrong-fingerprint"), plan.fingerprint}) {
     config["stitching"]["calibration_frame_inputs_fingerprint"] = marker;
-    std::ofstream(root / "config.yaml") << YAML::Dump(config);
+    std::ofstream(root / "_hockeymon/config.yaml") << YAML::Dump(config);
     hm::stitcher::StitcherPriv stitcher(0, 2);
     const auto initialized = initialize_cached(stitcher);
     if (!absl::IsFailedPrecondition(initialized)) {
@@ -794,7 +796,7 @@ bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
     YAML::Node changed = YAML::Clone(config);
     changed["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(changed_plan);
     changed["stitching"]["calibration_frame_inputs_fingerprint"] = changed_plan.fingerprint;
-    std::ofstream(root / "config.yaml") << YAML::Dump(changed);
+    std::ofstream(root / "_hockeymon/config.yaml") << YAML::Dump(changed);
     NvDsBatchMeta* batch = nvds_create_batch_meta(2);
     for (guint index = 0; index < 2; ++index) {
       auto* frame = nvds_acquire_frame_meta_from_pool(batch);
@@ -817,7 +819,7 @@ bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
       return false;
     }
   }
-  std::ofstream(root / "config.yaml") << YAML::Dump(config);
+  std::ofstream(root / "_hockeymon/config.yaml") << YAML::Dump(config);
   {
     hm::stitcher::StitcherPriv stitcher(0, 2);
     if (!initialize_cached(stitcher).ok())
@@ -832,7 +834,8 @@ bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
       return false;
     }
   }
-  std::ofstream(root / "player-frame-inputs" / plan.fingerprint / "left_0.png", std::ios::trunc) << "corrupt";
+  std::ofstream(root / "_hockeymon/player-frame-inputs" / plan.fingerprint / "left_0.png", std::ios::trunc)
+      << "corrupt";
   {
     hm::stitcher::StitcherPriv stitcher(0, 2);
     if (initialize_cached(stitcher).ok()) {

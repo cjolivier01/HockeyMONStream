@@ -175,6 +175,7 @@ QByteArray read(const QString& path) {
 }
 
 void write(const QString& path, const QByteArray& contents) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   require(file.open(QIODevice::WriteOnly), "Cannot write fixture");
   require(file.write(contents) == contents.size(), "Incomplete fixture write");
@@ -447,7 +448,14 @@ void exercise_frame_navigation(const QString& root) {
 void exercise_filtering_queue(const QString& game, const QString& root) {
   {
     StitchingExperimentDialog dialog(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     auto* epipolar = widget<QCheckBox>(dialog, "stitchExperimentEpipolarRansac");
     auto* homography = widget<QCheckBox>(dialog, "stitchExperimentHomographyConsistency");
     const auto baseline = hm::baseline_config::load();
@@ -476,7 +484,7 @@ void exercise_filtering_queue(const QString& game, const QString& root) {
   for (size_t i = 0; i < 4; ++i) {
     const auto& workspace = saved->experiments[i].workspace;
     const hm::stitching::ControlPointFiltering expected{i >= 2, i % 2 != 0};
-    const auto config = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+    const auto config = YAML::LoadFile((workspace.game_directory / "_hockeymon/config.yaml").string());
     const auto actual = hm::stitching::read_control_point_filtering(config);
     require(
         workspace.settings.control_point_filtering == expected && actual.ok() && *actual == expected,
@@ -485,23 +493,37 @@ void exercise_filtering_queue(const QString& game, const QString& root) {
 }
 
 void exercise_resolution_queue(const QString& game, const QString& root) {
-  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   for (bool auto_setting : {false, true}) {
     if (auto_setting)
       config["stitching"]["control_point_resolution"] = "auto";
-    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+    write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
     StitchingExperimentDialog defaults(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     require(
         widget<QComboBox>(defaults, "stitchExperimentControlPointResolution")->currentData() == "2k",
         "New experiments must use 2K for missing and auto settings");
   }
   config["stitching"]["control_point_resolution"] = "1k";
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   {
     StitchingExperimentDialog dialog(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     auto* size = widget<QComboBox>(dialog, "stitchExperimentControlPointResolution");
     auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
     require(
@@ -520,7 +542,7 @@ void exercise_resolution_queue(const QString& game, const QString& root) {
     const std::array<std::string, 3> expected{"1k", "native", "2k"};
     for (size_t row = 0; row < expected.size(); ++row) {
       const auto& workspace = saved->experiments[row].workspace;
-      const auto yaml = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+      const auto yaml = YAML::LoadFile((workspace.game_directory / "_hockeymon/config.yaml").string());
       require(
           workspace.settings.control_point_resolution == expected[row] &&
               yaml["stitching"]["control_point_resolution"].as<std::string>() == expected[row] &&
@@ -531,22 +553,43 @@ void exercise_resolution_queue(const QString& game, const QString& root) {
   }
   {
     StitchingExperimentDialog reopened(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     require(
         widget<QTableWidget>(reopened, "stitchExperimentCandidates")->rowCount() == 3,
         "Reopening must restore all sizes");
   }
   config["stitching"]["control_point_matcher"] = "loftr";
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   StitchingExperimentDialog fixed(
-      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      10,
+      1,
+      "00:00:00");
   require(
       !widget<QComboBox>(fixed, "stitchExperimentControlPointResolution")->isEnabled(),
       "Fixed-size matchers must not offer ineffective image size choices");
   config["stitching"]["control_point_resolution"] = "invalid";
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   StitchingExperimentDialog invalid(
-      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      10,
+      1,
+      "00:00:00");
   require(
       !widget<QPushButton>(invalid, "addStitchExperimentsToBatchButton")->isEnabled() &&
           widget<QPushButton>(invalid, "startStitchExperimentBatchButton")->isEnabled(),
@@ -554,7 +597,7 @@ void exercise_resolution_queue(const QString& game, const QString& root) {
 }
 
 void exercise_generated_matcher(const QString& game, const QString& root) {
-  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   config["stitching"]["control_point_matcher"] = "loftr";
   config["stitching"]["mapping_backend"] = "opencv-magsac";
   config["stitching"]["projection"] = "rectilinear";
@@ -566,9 +609,16 @@ previous_control_point_matcher: superpoint-lightglue
 previous_mapping_backend: nona
 previous_projection: cylindrical
 )");
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   StitchingExperimentDialog dialog(
-      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      10,
+      1,
+      "00:00:00");
   require(
       widget<QComboBox>(dialog, "stitchExperimentControlPointMatcher")->currentData() == "superpoint-lightglue" &&
           widget<QComboBox>(dialog, "stitchExperimentControlPointResolution")->isEnabled(),
@@ -578,7 +628,8 @@ previous_projection: cylindrical
   require(store.ok(), "Cannot open generated matcher test store");
   const auto saved = LoadStitchingExperimentStore(*store);
   require(saved.ok() && saved->experiments.size() == 1, "Restored matcher candidate must persist");
-  const auto yaml = YAML::LoadFile((saved->experiments[0].workspace.game_directory / "config.yaml").string());
+  const auto yaml =
+      YAML::LoadFile((saved->experiments[0].workspace.game_directory / "_hockeymon/config.yaml").string());
   require(
       yaml["stitching"]["control_point_matcher"].as<std::string>() == "superpoint-lightglue" &&
           yaml["stitching"]["mapping_backend"].as<std::string>() == "nona" &&
@@ -587,16 +638,23 @@ previous_projection: cylindrical
 }
 
 void exercise_matcher_queue(const QString& game, const QString& root) {
-  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   hm::stitching::write_control_point_filtering(config, {true, true});
   config["stitching"]["control_point_matcher"] = "dedode-lightglue";
   config["stitching"]["control_point_resolution"] = "1k";
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   const std::array<std::string, 4> choices{"superpoint-lightglue", "dedode-lightglue", "loftr", "akaze-hamming"};
   QStringList labels;
   {
     StitchingExperimentDialog dialog(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     auto* matcher = widget<QComboBox>(dialog, "stitchExperimentControlPointMatcher");
     auto* size = widget<QComboBox>(dialog, "stitchExperimentControlPointResolution");
     auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
@@ -620,7 +678,7 @@ void exercise_matcher_queue(const QString& game, const QString& root) {
     require(saved.ok() && saved->experiments.size() == choices.size(), "Every matcher must persist");
     for (size_t row = 0; row < choices.size(); ++row) {
       const auto& workspace = saved->experiments[row].workspace;
-      const auto yaml = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+      const auto yaml = YAML::LoadFile((workspace.game_directory / "_hockeymon/config.yaml").string());
       require(
           workspace.settings.control_point_matcher == choices[row] &&
               yaml["stitching"]["control_point_matcher"].as<std::string>() == choices[row] &&
@@ -636,9 +694,16 @@ void exercise_matcher_queue(const QString& game, const QString& root) {
     }
   }
   config["stitching"]["control_point_matcher"] = "loftr";
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   StitchingExperimentDialog reopened(
-      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      10,
+      1,
+      "00:00:00");
   auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
   require(table->rowCount() == 4, "Reopening must restore matcher variants");
   for (int row = 0; row < 4; ++row)
@@ -658,7 +723,7 @@ T* camera_widget(StitchingExperimentDialog& dialog, const char* name) {
 
 void exercise_input_lens_queue(const QString& game, const QString& root) {
   using namespace hm::stitching;
-  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   config["stitching"]["camera_configs"]["auto"] =
       YAML::Load("{display_name: Game Auto fallback, horizontal_fov: 117.25, vertical_fov: 90}");
   for (const char* inherited : {"null", "{}", "{projection: null}"}) {
@@ -666,9 +731,16 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     empty["stitching"].remove("camera_config");
     empty["stitching"]["camera_fov"] = YAML::Load("{horizontal_fov: null}");
     empty["stitching"]["input_lens"] = YAML::Load(inherited);
-    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(empty)));
+    write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(empty)));
     StitchingExperimentDialog dialog(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     require(
         camera_widget<QComboBox>(dialog, "cameraProfileCombo")->currentData() == "auto",
         "Inherit-only game optics must retain Auto in experiments");
@@ -677,9 +749,16 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     auto legacy = YAML::Clone(config);
     legacy["stitching"]["camera_config"] = YAML::Node(YAML::NodeType::Null);
     legacy["stitching"]["camera_fov"]["horizontal_fov"] = 123;
-    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(legacy)));
+    write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(legacy)));
     StitchingExperimentDialog dialog(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     require(
         camera_widget<QComboBox>(dialog, "cameraProfileCombo")->currentData() == "manual" &&
             camera_widget<QDoubleSpinBox>(dialog, "sourceCameraHorizontalFovSpin")->value() == 123,
@@ -696,9 +775,16 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
       inherited.auto_fov = auto_fov;
       inherited.auto_lens = auto_lens;
       write_stitch_camera_selection(config, inherited);
-      write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+      write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
       StitchingExperimentDialog dialog(
-          game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+          game,
+          "/bin/false",
+          root,
+          root + "/_hockeymon/config.yaml",
+          QProcessEnvironment::systemEnvironment(),
+          10,
+          1,
+          "00:00:00");
       require(
           camera_widget<QCheckBox>(dialog, "sourceCameraAutoFovCheck")->isChecked() == auto_fov &&
               camera_widget<QCheckBox>(dialog, "sourceOptics_inputLensAutoCheck")->isChecked() == auto_lens &&
@@ -708,10 +794,17 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     }
   }
   write_stitch_camera_selection(config, camera);
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   {
     StitchingExperimentDialog dialog(
-        game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
     require(
         camera_widget<QComboBox>(dialog, "sourceOptics_inputLensProjectionCombo")->currentData() ==
                 "full-frame-fisheye" &&
@@ -741,22 +834,31 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
     if (row)
       expected.input_lens.distortion[1] = 0.03;
     const auto& workspace = saved->experiments[row].workspace;
-    const auto yaml = YAML::LoadFile((workspace.game_directory / "config.yaml").string());
+    const auto yaml = YAML::LoadFile((workspace.game_directory / "_hockeymon/config.yaml").string());
     const auto actual = read_stitch_camera_selection(yaml);
     require(
         workspace.settings.camera && workspace.settings.camera->input_cameras.size() == 2 &&
             workspace.settings.camera->for_source("left.mp4") == expected && actual.ok() &&
             actual->for_source("left.mp4") == expected && actual->for_source("right.mp4") == camera,
         "Candidate config and saved history must retain full precision optics and FOV");
-    require(!yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
-            "Named candidates must not freeze a future Auto selection");
+    require(
+        !yaml["stitching"]["auto_input_lens_frozen"].as<bool>(),
+        "Named candidates must not freeze a future Auto selection");
   }
   StitchingExperimentDialog reopened(
-      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 10, 1, "00:00:00");
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      10,
+      1,
+      "00:00:00");
   auto* restored_table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
-  require(restored_table->rowCount() == 2 && restored_table->item(0, 9)->toolTip().contains("0.020829") &&
-              restored_table->item(1, 9)->toolTip().contains("0.03"),
-          "Reopening must restore both exact lens variants");
+  require(
+      restored_table->rowCount() == 2 && restored_table->item(0, 9)->toolTip().contains("0.020829") &&
+          restored_table->item(1, 9)->toolTip().contains("0.03"),
+      "Reopening must restore both exact lens variants");
   // A new dialog deliberately permits another solve; only repeated additions
   // in the same dialog are deduplicated.
   add_options(reopened);
@@ -804,9 +906,11 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
           automatic->experiments.back().workspace.settings.camera->for_source("left.mp4").configuration == "auto" &&
           automatic->experiments.back().workspace.settings.camera->for_source("left.mp4").horizontal_fov == 117.25,
       "New Auto candidate keeps its camera selection and game-specific fallback");
-  const auto automatic_config = YAML::LoadFile((automatic->experiments.back().workspace.game_directory / "config.yaml").string());
-  require(automatic_config["stitching"]["auto_input_lens_frozen"].as<bool>(),
-          "Auto candidate snapshots must disable metadata reimport in the runner");
+  const auto automatic_config =
+      YAML::LoadFile((automatic->experiments.back().workspace.game_directory / "_hockeymon/config.yaml").string());
+  require(
+      automatic_config["stitching"]["auto_input_lens_frozen"].as<bool>(),
+      "Auto candidate snapshots must disable metadata reimport in the runner");
   const int auto_rows = restored_table->rowCount();
   camera_widget<QCheckBox>(reopened, "sourceOptics_inputLensAutoCheck")->setChecked(false);
   add_options(reopened);
@@ -836,7 +940,7 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
   const auto mixed = LoadStitchingExperimentStore(*store);
   require(mixed.ok(), "Mixed-source candidate must save");
   const auto& mixed_workspace = mixed->experiments.back().workspace;
-  const auto mixed_yaml = YAML::LoadFile((mixed_workspace.game_directory / "config.yaml").string());
+  const auto mixed_yaml = YAML::LoadFile((mixed_workspace.game_directory / "_hockeymon/config.yaml").string());
   const auto mixed_selection = read_stitch_camera_selection(mixed_yaml);
   require(mixed_selection.ok(), "Mixed-source selection must read");
   const auto mixed_camera = mixed_selection->for_source("left.mp4");
@@ -854,11 +958,11 @@ void exercise_input_lens_queue(const QString& game, const QString& root) {
 }
 
 void exercise_player_queue(const QString& game, const QString& root) {
-  auto initial = YAML::Load(read(game + "/config.yaml").toStdString());
+  auto initial = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   initial["game"]["stitching"]["frame_offsets"]["left"] = 0;
   initial["game"]["stitching"]["frame_offsets"]["right"] = 70.330809;
   initial["stitching"]["sync_method"] = "auto";
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(initial)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(initial)));
   const QString runner = root + "/record-runner.sh";
   const QString arguments = root + "/runner-arguments.txt";
   write(
@@ -874,7 +978,8 @@ void exercise_player_queue(const QString& game, const QString& root) {
   QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HM_OUTPUT_WORK_DIR", root + "/queue-output");
   environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
-  StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 4, "00:00:00");
+  StitchingExperimentDialog dialog(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 4, "00:00:00");
   dialog.show();
   QCoreApplication::processEvents();
   auto* players = widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames");
@@ -957,7 +1062,7 @@ void exercise_player_queue(const QString& game, const QString& root) {
   const auto queued = LoadStitchingExperimentStore(*store);
   require(queued.ok() && queued->experiments.size() == 2, "Cannot inspect queued baseline");
   const auto baseline = queued->experiments.front().workspace.game_directory;
-  const auto baseline_config = YAML::LoadFile((baseline / "config.yaml").string());
+  const auto baseline_config = YAML::LoadFile((baseline / "_hockeymon/config.yaml").string());
   require(
       baseline_config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "features" &&
           baseline_config["game"]["stitching"]["frame_offsets"]["right"].as<double>() == 70.330809,
@@ -1041,7 +1146,7 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
   const auto environment = QProcessEnvironment::systemEnvironment();
   {
     StitchingExperimentDialog queued(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
     queued.show();
     widget<QLineEdit>(queued, "stitchExperimentControlPoints")->setText("100,150");
     widget<QCheckBox>(queued, "stitchExperimentPreferPlayerFrames")->setChecked(true);
@@ -1054,7 +1159,7 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
   }
   {
     StitchingExperimentDialog reopened(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 200, 2, "00:00:00");
     reopened.show();
     auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
     require(
@@ -1072,7 +1177,14 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
     auto recording_environment = environment;
     recording_environment.insert("HSTREAM_TEST_ARGUMENTS", root + "/queued-reopen-arguments.txt");
     StitchingExperimentDialog restored(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", recording_environment, 200, 2, "00:00:00");
+        game,
+        root + "/record-runner.sh",
+        root,
+        root + "/_hockeymon/config.yaml",
+        recording_environment,
+        200,
+        2,
+        "00:00:00");
     restored.show();
     auto* table = widget<QTableWidget>(restored, "stitchExperimentCandidates");
     require(table->rowCount() == 4, "Every queued row must reappear after another reopen");
@@ -1101,7 +1213,7 @@ void exercise_preparation_failure(const QString& game, const QString& root) {
   require(QFile::rename(game + "/right.mp4", game + "/right.offline"), "Cannot interrupt baseline source preparation");
   {
     StitchingExperimentDialog dialog(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
     dialog.show();
     widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(true);
     widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
@@ -1133,7 +1245,7 @@ void exercise_preparation_failure(const QString& game, const QString& root) {
   }
   require(QFile::rename(game + "/right.offline", game + "/right.mp4"), "Cannot restore failed baseline source");
   StitchingExperimentDialog reopened(
-      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+      game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
   reopened.show();
   require(
       widget<QTableWidget>(reopened, "stitchExperimentCandidates")->rowCount() == 0 &&
@@ -1185,7 +1297,7 @@ hm::stitching::PlayerFrameSelectionPlan selected_plan_fixture(const QString& gam
 
 void exercise_match_save_retry(const QString& game, const QString& root) {
   using namespace hm::stitching;
-  YAML::Node config = YAML::Load(read(game + "/config.yaml").toStdString());
+  YAML::Node config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   auto plan = selected_plan_fixture(game, config);
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
@@ -1221,7 +1333,7 @@ void exercise_match_save_retry(const QString& game, const QString& root) {
   const auto snapshot = PublishCalibrationMatches(game.toStdString(), automatic);
   require(snapshot.ok(), "Cannot retain retry fixture matches");
   calibration["match_snapshot"] = *snapshot;
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   const QString runner = root + "/match-retry-runner.sh";
   const QString marker = root + "/match-retry-runner-started";
   write(runner, "#!/bin/sh\nprintf started > \"$HSTREAM_MATCH_RETRY_MARKER\"\nexit 13\n");
@@ -1231,7 +1343,8 @@ void exercise_match_save_retry(const QString& game, const QString& root) {
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_MATCH_RETRY_MARKER", marker);
   environment.insert("HM_OUTPUT_WORK_DIR", root + "/match-retry-output");
-  StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+  StitchingExperimentDialog dialog(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
   dialog.show();
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   require(table->rowCount() == 1, "Retry fixture must expose its main calibration");
@@ -1323,7 +1436,7 @@ QueuedOwnerFixture queued_owner_fixture(const QString& game, const QString& root
         game,
         root + "/record-runner.sh",
         root,
-        root + "/config.yaml",
+        root + "/_hockeymon/config.yaml",
         QProcessEnvironment::systemEnvironment(),
         100,
         2,
@@ -1362,11 +1475,11 @@ void exercise_baseline_retry(const QString& game, const QString& root, const std
   if (change == "reference") {
     reference = "00:00:10";
   } else if (change == "source") {
-    auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+    auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
     config["stitching"]["camera_fov"]["horizontal_fov"] = 126.5;
     config["game"]["stitching"]["frame_offsets"]["left"] = 0;
     config["game"]["stitching"]["frame_offsets"]["right"] = 5;
-    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+    write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   } else if (change == "legacy") {
     const QString path = QString::fromStdString((fixture.store.directory / "index.yaml").string());
     auto catalog = YAML::Load(read(path).toStdString());
@@ -1378,7 +1491,7 @@ void exercise_baseline_retry(const QString& game, const QString& root, const std
       game,
       root + "/record-runner.sh",
       root,
-      root + "/config.yaml",
+      root + "/_hockeymon/config.yaml",
       QProcessEnvironment::systemEnvironment(),
       150,
       2,
@@ -1402,12 +1515,14 @@ void exercise_baseline_retry(const QString& game, const QString& root, const std
               baseline.workspace.game_directory.lexically_relative(fixture.store.directory).generic_string() &&
           owner.source_config_revision == baseline.source_config_revision &&
           owner.source_config_revision ==
-              QCryptographicHash::hash(read(game + "/config.yaml"), QCryptographicHash::Sha256).toHex().toStdString() &&
+              QCryptographicHash::hash(read(game + "/_hockeymon/config.yaml"), QCryptographicHash::Sha256)
+                  .toHex()
+                  .toStdString() &&
           baseline.workspace.settings.stitch_frame_time == reference.toStdString(),
       "A retry's selection owner must bind the compatible baseline and actual source revision");
   if (change == "source") {
     for (const auto* row : {&baseline, &owner}) {
-      const auto config = YAML::LoadFile((row->workspace.game_directory / "config.yaml").string());
+      const auto config = YAML::LoadFile((row->workspace.game_directory / "_hockeymon/config.yaml").string());
       require(
           config["stitching"]["camera_fov"]["horizontal_fov"].as<double>() == 126.5 &&
               config["game"]["stitching"]["frame_offsets"]["right"].as<double>() == 5,
@@ -1425,21 +1540,21 @@ void exercise_queued_source_change(const QString& game, const QString& root, boo
   const auto environment = QProcessEnvironment::systemEnvironment();
   {
     StitchingExperimentDialog queued(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
     queued.show();
     add_options(queued);
     queued.reject();
     require(wait_until([&] { return !queued.isVisible(); }, 1000), "Source-change fixture queue did not close");
   }
-  auto config = YAML::Load(read(game + "/config.yaml").toStdString());
+  auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   config["stitching"]["camera_fov"]["horizontal_fov"] = 126.5;
   config["game"]["stitching"]["frame_offsets"]["left"] = 0;
   config["game"]["stitching"]["frame_offsets"]["right"] = 5;
   const QByteArray changed = QByteArray::fromStdString(YAML::Dump(config));
   if (!during_copy)
-    write(game + "/config.yaml", changed);
+    write(game + "/_hockeymon/config.yaml", changed);
   StitchingExperimentDialog reopened(
-      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 150, 2, "00:00:00");
+      game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 150, 2, "00:00:00");
   reopened.show();
   auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
   auto* status = widget<QLabel>(reopened, "stitchExperimentStatus");
@@ -1448,7 +1563,7 @@ void exercise_queued_source_change(const QString& game, const QString& root, boo
     QObject::connect(table, &QTableWidget::itemChanged, &reopened, [&](QTableWidgetItem* item) {
       if (!changed_during_copy && item->row() == 2 && item->column() == 5 && item->text() == "Queued") {
         changed_during_copy = true;
-        write(game + "/config.yaml", changed);
+        write(game + "/_hockeymon/config.yaml", changed);
       }
     });
   }
@@ -1485,7 +1600,7 @@ void exercise_pre_run_cancellation(const QString& game, const QString& root) {
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
   StitchingExperimentDialog dialog(
-      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+      game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
   dialog.show();
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   auto* cancel = widget<QPushButton>(dialog, "cancelStitchExperimentsButton");
@@ -1525,11 +1640,12 @@ void exercise_unexpected_pre_run_selection(const QString& game, const QString& r
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
   StitchingExperimentDialog dialog(
-      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+      game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 200, 2, "00:00:00");
   dialog.show();
   // Model main acquiring a selection between Add's initial fingerprint query
   // and workspace creation, leaving the queued index unaware of that plan.
-  const QString path = QString::fromStdString((fixture.owner.workspace.game_directory / "config.yaml").string());
+  const QString path =
+      QString::fromStdString((fixture.owner.workspace.game_directory / "_hockeymon/config.yaml").string());
   YAML::Node config = YAML::Load(read(path).toStdString());
   const auto plan = selected_plan_fixture(game, config);
   config["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
@@ -1558,9 +1674,9 @@ void exercise_unexpected_pre_run_selection(const QString& game, const QString& r
 
 void exercise_frozen_selection_recovery(const QString& game, const QString& root, const std::string& scenario) {
   using namespace hm::stitching;
-  const QByteArray main_config = read(game + "/config.yaml");
+  const QByteArray main_config = read(game + "/_hockeymon/config.yaml");
   auto fixture = queued_owner_fixture(game, root);
-  write(game + "/panorama.tif", "retained-main-panorama");
+  write(game + "/_hockeymon/panorama.tif", "retained-main-panorama");
   auto& owner = fixture.owner;
   owner.reservation_token = "frozen-selection-recovery-reservation";
   owner.state = scenario == "failed" ? "failed" : "scan";
@@ -1572,7 +1688,8 @@ void exercise_frozen_selection_recovery(const QString& game, const QString& root
   const auto reserved =
       ReserveStitchingExperimentFrameCount(fixture.store, 2, 0, owner.workspace, owner.reservation_token);
   require(reserved.ok() && !reserved->has_value(), "Cannot reserve interrupted scan count");
-  const QString config_path = QString::fromStdString((owner.workspace.game_directory / "config.yaml").string());
+  const QString config_path =
+      QString::fromStdString((owner.workspace.game_directory / "_hockeymon/config.yaml").string());
   YAML::Node config = YAML::Load(read(config_path).toStdString());
   const auto plan = selected_plan_fixture(game, config);
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
@@ -1586,7 +1703,7 @@ void exercise_frozen_selection_recovery(const QString& game, const QString& root
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
   StitchingExperimentDialog reopened(
-      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+      game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 200, 2, "00:00:00");
   reopened.show();
   auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
   auto* status = widget<QLabel>(reopened, "stitchExperimentStatus");
@@ -1615,8 +1732,9 @@ void exercise_frozen_selection_recovery(const QString& game, const QString& root
         "Only confirmed-dead process intent may be cleared independently of corrupt selection metadata");
     discard_experiments(reopened);
     require(
-        read(game + "/config.yaml") == main_config && read(game + "/panorama.tif") == "retained-main-panorama" &&
-            read(game + "/left.mp4") == "left" && read(game + "/right.mp4") == "right",
+        read(game + "/_hockeymon/config.yaml") == main_config &&
+            read(game + "/_hockeymon/panorama.tif") == "retained-main-panorama" && read(game + "/left.mp4") == "left" &&
+            read(game + "/right.mp4") == "right",
         "Explicit experiment discard must preserve Main configuration, calibration and source media");
     if (scenario != "unconfirmed") {
       require(
@@ -1667,7 +1785,7 @@ void exercise_frozen_selection_recovery(const QString& game, const QString& root
 
 void exercise_actual_workspace_selection(const QString& game, const QString& root, bool player_group) {
   using namespace hm::stitching;
-  const QByteArray original = read(game + "/config.yaml");
+  const QByteArray original = read(game + "/_hockeymon/config.yaml");
   YAML::Node selected_config = YAML::Load(original.toStdString());
   const auto plan = selected_plan_fixture(game, selected_config);
   selected_config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
@@ -1682,7 +1800,8 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
       "Cannot make snapshot runner executable");
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
-  StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+  StitchingExperimentDialog dialog(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
   dialog.show();
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
@@ -1690,7 +1809,7 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
   QObject::connect(table, &QTableWidget::itemChanged, &dialog, [&](QTableWidgetItem* item) {
     if (!published_between_lookup_and_copy && item->row() == 0 && item->column() == 5 && item->text() == "Queued") {
       published_between_lookup_and_copy = true;
-      write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(selected_config)));
+      write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(selected_config)));
     }
   });
   widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(player_group);
@@ -1704,8 +1823,7 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
   const auto copied = LoadStitchingExperimentStore(*store);
   require(
       published_between_lookup_and_copy && copied.ok() &&
-          copied->experiments.size() == static_cast<std::size_t>(initial_count) &&
-          table->rowCount() == initial_count,
+          copied->experiments.size() == static_cast<std::size_t>(initial_count) && table->rowCount() == initial_count,
       "Snapshot race fixture must publish after Add lookup and before workspace creation");
   for (int row = 0; row < initial_count; ++row) {
     const auto& record = copied->experiments[row];
@@ -1715,14 +1833,16 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
         actual.ok() && *actual == plan.fingerprint && record.saved_selection_fingerprint == plan.fingerprint &&
             record.selection_fingerprint == plan.fingerprint && table->item(row, 0)->text().startsWith("Players") &&
             record.source_config_revision ==
-                QCryptographicHash::hash(read(game + "/config.yaml"), QCryptographicHash::Sha256).toHex().toStdString(),
+                QCryptographicHash::hash(read(game + "/_hockeymon/config.yaml"), QCryptographicHash::Sha256)
+                    .toHex()
+                    .toStdString(),
         "Ordinary, baseline and dependent rows must bind both saved fingerprints and their label to the copied plan");
   }
   // Main now requests another count. The copied frame set must still own count
   // two before any solve completes, including another Add in this dialog.
   YAML::Node moved_main = YAML::Load(original.toStdString());
   moved_main["stitching"]["calibration_frame_count"] = 3;
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(moved_main)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(moved_main)));
   widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(false);
   widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("200");
   add_options(dialog);
@@ -1753,16 +1873,16 @@ void exercise_actual_workspace_selection(const QString& game, const QString& roo
 
 void exercise_known_selection_copy_race(const QString& game, const QString& root) {
   using namespace hm::stitching;
-  const QByteArray original = read(game + "/config.yaml");
+  const QByteArray original = read(game + "/_hockeymon/config.yaml");
   YAML::Node selected_config = YAML::Load(original.toStdString());
   const auto plan = selected_plan_fixture(game, selected_config);
   selected_config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(selected_config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(selected_config)));
   const QString arguments = game + "/runner-arguments.txt";
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
   StitchingExperimentDialog dialog(
-      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+      game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
   dialog.show();
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   bool moved_main = false;
@@ -1771,7 +1891,7 @@ void exercise_known_selection_copy_race(const QString& game, const QString& root
       moved_main = true;
       YAML::Node replacement = YAML::Load(original.toStdString());
       replacement["stitching"]["calibration_frame_count"] = 3;
-      write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(replacement)));
+      write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(replacement)));
     }
   });
   widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")->click();
@@ -1807,7 +1927,7 @@ void exercise_failed_ordinary_selection_recovery(
   environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
   {
     StitchingExperimentDialog queued(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
     queued.show();
     widget<QCheckBox>(queued, "stitchExperimentPreferPlayerFrames")->setChecked(false);
     add_options(queued);
@@ -1824,13 +1944,13 @@ void exercise_failed_ordinary_selection_recovery(
       ordinary.selection_owner_sequence == 0 && ordinary.selection_fingerprint.empty() &&
           SaveStitchingExperiment(*store, ordinary).ok(),
       "Cannot persist the legacy failed ordinary row");
-  const QString path = QString::fromStdString((ordinary.workspace.game_directory / "config.yaml").string());
+  const QString path = QString::fromStdString((ordinary.workspace.game_directory / "_hockeymon/config.yaml").string());
   YAML::Node config = YAML::Load(read(path).toStdString());
   const auto plan = selected_plan_fixture(game, config);
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   write(path, QByteArray::fromStdString(YAML::Dump(config)));
   StitchingExperimentDialog reopened(
-      game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+      game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 200, 2, "00:00:00");
   reopened.show();
   auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
   const auto recovered = LoadStitchingExperimentStore(*store);
@@ -1874,7 +1994,7 @@ void exercise_failed_ordinary_selection_recovery(
 
 void exercise_saved_selection(const QString& game, const QString& root) {
   using namespace hm::stitching;
-  const QByteArray original = read(game + "/config.yaml");
+  const QByteArray original = read(game + "/_hockeymon/config.yaml");
   YAML::Node config = YAML::Load(original.toStdString());
   auto plan = selected_plan_fixture(game, config);
   const auto fingerprint = PlayerFrameSelectionFingerprint(plan);
@@ -1896,8 +2016,8 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   config["hstream_ui"]["stitching_calibration"]["control_points"] = 100;
   config["hstream_ui"]["stitching_calibration"]["frame_count"] = 2;
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
-  const QString match_directory = game + "/calibration-frame-inspection/fixture-main-calibration";
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  const QString match_directory = game + "/_hockeymon/calibration-frame-inspection/fixture-main-calibration";
   require(QDir().mkpath(match_directory), "Cannot create generation-owned match fixture");
   const auto match_images = MakeCalibrationMatchImages(
       {cv::Mat(300, 600, CV_8UC3, cv::Scalar::all(64)), cv::Mat(400, 800, CV_8UC3, cv::Scalar::all(96))},
@@ -1914,7 +2034,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     const QString arguments = root + "/saved-runner-arguments.txt";
     environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
     StitchingExperimentDialog dialog(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
     dialog.show();
     auto* points = widget<QLineEdit>(dialog, "stitchExperimentControlPoints");
     auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
@@ -1953,7 +2073,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   }
   config["stitching"]["control_point_matcher"] = "loftr";
   config["stitching"]["projection_framing"]["horizontal_fov"] = 170;
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   {
     auto environment = QProcessEnvironment::systemEnvironment();
     const QString arguments = root + "/reopened-runner-arguments.txt";
@@ -1963,14 +2083,16 @@ void exercise_saved_selection(const QString& game, const QString& root) {
             QFile::rename(game + "/right.mp4", game + "/right.offline"),
         "Cannot take fixture sources offline");
     StitchingExperimentDialog reopened(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 100, 2, "00:00:01");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:01");
     reopened.show();
     auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
     require(
         table->rowCount() == 3 && table->item(0, 0)->text() == "Main calibration",
         "Reopening must restore the main calibration and every saved result");
     require(
-        widget<QLabel>(reopened, "stitchExperimentCacheLocation")->text().contains(game + "/stitching-experiments"),
+        widget<QLabel>(reopened, "stitchExperimentCacheLocation")
+            ->text()
+            .contains(game + "/_hockeymon/stitching-experiments"),
         "Experiment storage must remain inside its associated game");
     table->selectRow(1);
     bool inspected_log = false;
@@ -2075,7 +2197,8 @@ void exercise_saved_selection(const QString& game, const QString& root) {
       const auto catalog = LoadStitchingExperimentStore(*opened);
       require(catalog.ok() && !catalog->experiments.empty(), "Cannot load retained rerun catalog");
       const auto& latest = catalog->experiments.back();
-      const YAML::Node candidate_config = YAML::LoadFile((latest.workspace.game_directory / "config.yaml").string());
+      const YAML::Node candidate_config =
+          YAML::LoadFile((latest.workspace.game_directory / "_hockeymon/config.yaml").string());
       require(
           latest.workspace.settings.control_points == 100 &&
               latest.saved_selection_fingerprint == expected.fingerprint &&
@@ -2110,7 +2233,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         PublishPlayerFrameInputs(game.toStdString(), replacement, inputs).ok(), "Cannot publish replacement selection");
     config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(replacement);
     config["stitching"]["calibration_frame_inputs_fingerprint"] = replacement.fingerprint;
-    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+    write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
     add_options(reopened);
     require(
         table->rowCount() == 6, "A replacement main fingerprint must permit a new identical solve in the same dialog");
@@ -2151,7 +2274,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   // different count before any solve publishes selected_by_count for this one.
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
-  write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
   PlayerFrameSelectionPlan three = plan;
   three.settings.frame_count = 3;
   auto third = three.selected.back();
@@ -2171,7 +2294,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         game,
         root + "/record-runner.sh",
         root,
-        root + "/config.yaml",
+        root + "/_hockeymon/config.yaml",
         QProcessEnvironment::systemEnvironment(),
         200,
         2,
@@ -2181,7 +2304,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
         game,
         root + "/record-runner.sh",
         root,
-        root + "/config.yaml",
+        root + "/_hockeymon/config.yaml",
         QProcessEnvironment::systemEnvironment(),
         100,
         2,
@@ -2191,7 +2314,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(three);
     config["stitching"]["calibration_frame_inputs_fingerprint"] = three.fingerprint;
     config["hstream_ui"]["stitching_calibration"]["frame_count"] = 3;
-    write(game + "/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+    write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
     widget<QLineEdit>(queued, "stitchExperimentControlPoints")->setText("150");
     add_options(queued);
     auto* table = widget<QTableWidget>(queued, "stitchExperimentCandidates");
@@ -2214,7 +2337,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     const QString arguments = root + "/retained-count-runner-arguments.txt";
     environment.insert("HSTREAM_TEST_ARGUMENTS", arguments);
     StitchingExperimentDialog reopened(
-        game, root + "/record-runner.sh", root, root + "/config.yaml", environment, 200, 2, "00:00:00");
+        game, root + "/record-runner.sh", root, root + "/_hockeymon/config.yaml", environment, 200, 2, "00:00:00");
     reopened.show();
     auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
     add_options(reopened);
@@ -2247,7 +2370,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     discard_experiments(reopened);
     reopened.reject();
   }
-  write(game + "/config.yaml", original);
+  write(game + "/_hockeymon/config.yaml", original);
 }
 
 void exercise_preview_and_promotion_failure(const QString& game, const QString& root) {
@@ -2283,7 +2406,7 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
       "touch \"$HSTREAM_TEST_PREVIEW_STARTED\"\n"
       "while [ ! -f \"$HSTREAM_TEST_PREVIEW_RELEASE\" ]; do sleep 0.05; done\n"
       "exit \"$(cat \"$HSTREAM_TEST_PREVIEW_RELEASE\")\";;\nesac\n"
-      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/\"\n");
+      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/_hockeymon/\"\n");
   require(
       QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
       "Cannot prepare completion runner");
@@ -2296,9 +2419,10 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   environment.insert("HSTREAM_TEST_DELAY_PREVIEW", delayed_preview);
   environment.insert("HSTREAM_TEST_CHILD_STARTED", child_started);
   environment.insert("HSTREAM_TEST_CHILD_RELEASE", child_release);
-  StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  StitchingExperimentDialog dialog(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
-  const auto original_config = read(game + "/config.yaml");
+  const auto original_config = read(game + "/_hockeymon/config.yaml");
   widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   add_options(dialog);
   auto* remove = widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton");
@@ -2406,15 +2530,17 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   const auto retained_directory = before->experiments.back().workspace.game_directory;
   auto* still = widget<QWidget>(dialog, "stitchExperimentStillPreview");
   for (const auto& path : {removed_directory, retained_directory}) {
-    auto config = YAML::LoadFile((path / "config.yaml").string());
+    auto config = YAML::LoadFile((path / "_hockeymon/config.yaml").string());
     auto calibration = config["hstream_ui"]["stitching_calibration"];
     calibration["status"] = "complete";
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
-    write(QString::fromStdString((path / "config.yaml").string()), QByteArray::fromStdString(YAML::Dump(config)));
+    write(
+        QString::fromStdString((path / "_hockeymon/config.yaml").string()),
+        QByteArray::fromStdString(YAML::Dump(config)));
     QImage image(800, 240, QImage::Format_RGB32);
     image.fill(path == removed_directory ? Qt::red : Qt::blue);
-    require(image.save(QString::fromStdString((path / "s.png").string())), "Cannot save candidate still");
+    require(image.save(QString::fromStdString((path / "_hockeymon/s.png").string())), "Cannot save candidate still");
   }
   auto shows = [&](Qt::GlobalColor color) {
     if (!still->isVisible())
@@ -2440,14 +2566,14 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   remove_completed_experiments(dialog, false);
   require(
       table->rowCount() == 2 && read(index_path) == original_index &&
-          std::filesystem::exists(removed_directory / "mapping_0000.tif"),
+          std::filesystem::exists(removed_directory / "_hockeymon/mapping_0000.tif"),
       "Cancel must preserve completed rows, their catalog, and saved artifacts");
   remove_completed_experiments(dialog, true);
   const auto after = LoadStitchingExperimentStore(*store);
   require(
       table->rowCount() == 1 && after.ok() && after->experiments.size() == 1 &&
           !std::filesystem::exists(removed_directory) && std::filesystem::exists(retained_directory) &&
-          read(game + "/config.yaml") == original_config && read(game + "/left.mp4") == "left",
+          read(game + "/_hockeymon/config.yaml") == original_config && read(game + "/left.mp4") == "left",
       "Confirmed removal must delete only the selected completed result");
   table->selectRow(0);
   answer_close_guard(dialog, "stitchExperimentCloseUse", true);
@@ -2460,7 +2586,7 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
       "Failed promotion must retain the dialog and its results");
   answer_close_guard(dialog, "stitchExperimentCloseDiscard", true);
   require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Keeping results must close completed results");
-  const auto retained_config_path = QString::fromStdString((retained_directory / "config.yaml").string());
+  const auto retained_config_path = QString::fromStdString((retained_directory / "_hockeymon/config.yaml").string());
   const auto retained_config = read(retained_config_path);
   for (const QString scenario : {"pending", "changed-generation", "unconfirmed", "quarantined", "failed"}) {
     auto history = LoadStitchingExperimentStore(*store);
@@ -2481,7 +2607,8 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
     }
     require(SaveStitchingExperiment(*store, legacy).ok(), "Cannot save legacy preview failure");
     {
-      StitchingExperimentDialog recovery(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+      StitchingExperimentDialog recovery(
+          game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
       recovery.show();
       widget<QTableWidget>(recovery, "stitchExperimentCandidates")->selectRow(0);
       const bool expected = scenario == "failed" || scenario == "quarantined";
@@ -2505,7 +2632,8 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
     ready.artifact_generation_id = original_generation;
     require(SaveStitchingExperiment(*store, ready).ok(), "Cannot restore completed preview fixture");
   }
-  StitchingExperimentDialog reopened(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  StitchingExperimentDialog reopened(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   reopened.show();
   auto* restored = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
   require(restored->rowCount() == 1, "Reopening must retain the surviving completed result");
@@ -2523,7 +2651,7 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
 // matrix axis: switching it replays the selected candidate against the calibration it already has.
 void exercise_blend_preview(const QString& game, const QString& root) {
   write(
-      game + "/config.yaml",
+      game + "/_hockeymon/config.yaml",
       "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n"
       "stitching: {blend_mode: laplacian, blend_feather_fraction: 0.05}\n"
       "pipeline: {hmstitcher: {private-properties: {blend_mode: Alpha, blend_feather_fraction: 0.2}}}\n");
@@ -2534,7 +2662,7 @@ void exercise_blend_preview(const QString& game, const QString& root) {
       "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
       "printf '%s' \"$*\" > \"$HSTREAM_TEST_CAPTURED_ARGS\"\nexit 0;;\nesac\n"
       "printf '%s' \"$*\" > \"$HSTREAM_TEST_CAPTURED_ARGS.calibration\"\n"
-      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/\"\n");
+      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/_hockeymon/\"\n");
   require(
       QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
       "Cannot prepare blend runner");
@@ -2542,7 +2670,8 @@ void exercise_blend_preview(const QString& game, const QString& root) {
   environment.insert("HM_OUTPUT_WORK_DIR", root + "/blend-output");
   environment.insert("HSTREAM_TEST_ARTIFACTS", root + "/synthetic-artifacts");
   environment.insert("HSTREAM_TEST_CAPTURED_ARGS", captured);
-  StitchingExperimentDialog dialog(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  StitchingExperimentDialog dialog(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
 
   auto* blend = widget<QComboBox>(dialog, "stitchExperimentBlendMode");
@@ -2594,8 +2723,9 @@ void exercise_blend_preview(const QString& game, const QString& root) {
   answer_close_guard(dialog, "stitchExperimentCloseDiscard", true);
   require(wait_until([&] { return !dialog.isVisible(); }, 5000), "Blend dialog did not close");
 
-  write(game + "/config.yaml", "stitching: {blend_mode: multiblend}\n");
-  StitchingExperimentDialog unsupported(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  write(game + "/_hockeymon/config.yaml", "stitching: {blend_mode: multiblend}\n");
+  StitchingExperimentDialog unsupported(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   auto* unsupported_mode = widget<QComboBox>(unsupported, "stitchExperimentBlendMode");
   require(
       unsupported_mode->currentData().toString() == "multiblend" &&
@@ -2606,8 +2736,9 @@ void exercise_blend_preview(const QString& game, const QString& root) {
       unsupported_mode->currentData().toString() == "laplacian",
       "Selecting Laplacian must replace the unsupported initial choice");
 
-  write(game + "/config.yaml", "stitching: {blend_mode: alpha, blend_feather_fraction: 1.5}\n");
-  StitchingExperimentDialog invalid(game, runner, root, root + "/config.yaml", environment, 100, 1, "00:00:00");
+  write(game + "/_hockeymon/config.yaml", "stitching: {blend_mode: alpha, blend_feather_fraction: 1.5}\n");
+  StitchingExperimentDialog invalid(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   require(
       !widget<QComboBox>(invalid, "stitchExperimentBlendMode")->isEnabled() &&
           widget<QLabel>(invalid, "stitchExperimentStatus")->text().contains("Cannot load seam blend"),
@@ -2642,7 +2773,14 @@ void exercise_completed_dependency_removal(const QString& game, const QString& r
     rows.push_back(record);
   }
   StitchingExperimentDialog dialog(
-      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 100, 1, "00:00:00");
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      100,
+      1,
+      "00:00:00");
   dialog.show();
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   require(table->rowCount() == 4, "All completed dependency fixtures must restore");
@@ -2678,7 +2816,14 @@ void exercise_stale_completed_removal(const QString& game, const QString& root) 
   record.state = "queued";
   require(SaveStitchingExperiment(*store, record).ok(), "Cannot persist queued stale-removal fixture");
   StitchingExperimentDialog dialog(
-      game, "/bin/false", root, root + "/config.yaml", QProcessEnvironment::systemEnvironment(), 100, 1, "00:00:00");
+      game,
+      "/bin/false",
+      root,
+      root + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      100,
+      1,
+      "00:00:00");
   dialog.show();
   auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   require(table->rowCount() == 1, "Stale dialog must retain the queued row");
@@ -2714,7 +2859,8 @@ void exercise_player_cancellation(const QString& game, const QString& root) {
       "Cannot make waiting runner executable");
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HM_OUTPUT_WORK_DIR", root + "/cancellation-output");
-  StitchingExperimentDialog waiting(game, runner, root, root + "/config.yaml", environment, 100, 2, "00:00:00");
+  StitchingExperimentDialog waiting(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
   waiting.show();
   widget<QCheckBox>(waiting, "stitchExperimentPreferPlayerFrames")->setChecked(true);
   add_options(waiting);
@@ -2742,7 +2888,7 @@ void exercise(
     const QString& log_path,
     bool player_selection = false) {
   const QString anchor = player_selection ? qEnvironmentVariable("HSTREAM_TEST_PLAYER_ANCHOR", "00:00:00") : "00:00:00";
-  const QByteArray original_config = read(game + "/config.yaml");
+  const QByteArray original_config = read(game + "/_hockeymon/config.yaml");
   const QStringList original_files = QDir(game).entryList(QDir::Files);
   bool selected = false;
   QTemporaryDir experiment_cache;
@@ -2814,13 +2960,13 @@ void exercise(
   add_options(dialog);
   const int expected_rows = initial_rows + (player_selection ? 3 : 2);
   require(table->rowCount() == expected_rows && start->isEnabled(), "Queue must deduplicate without running");
-  require(read(game + "/config.yaml") == original_config, "Queue changed source config");
+  require(read(game + "/_hockeymon/config.yaml") == original_config, "Queue changed source config");
   start->click();
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
   require(
       wait_until([&] { return status->text().startsWith("Batch complete."); }, gpu ? 900000 : 10000),
       "Batch did not finish");
-  require(read(game + "/config.yaml") == original_config, "Calibration changed source config");
+  require(read(game + "/_hockeymon/config.yaml") == original_config, "Calibration changed source config");
   if (gpu) {
     if (player_selection)
       require(
@@ -2886,7 +3032,7 @@ void exercise(
               passage_log.contains("App run successful"),
           "Preview did not present frames");
     }
-    require(read(game + "/config.yaml") == original_config, "Preview changed source config");
+    require(read(game + "/_hockeymon/config.yaml") == original_config, "Preview changed source config");
     require(
         QDir(game).entryList(QDir::Files) == original_files, "Experiments published source artifacts before selection");
     if (player_selection) {
@@ -2955,11 +3101,11 @@ void exercise(
     require(wait_until([&] { return selected || apply->isEnabled(); }, 60000), "Candidate promotion timed out");
     if (!selected)
       throw std::runtime_error("Candidate promotion failed: " + status->text().toStdString());
-    require(read(game + "/config.yaml") != original_config, "Explicit selection did not publish config");
+    require(read(game + "/_hockeymon/config.yaml") != original_config, "Explicit selection did not publish config");
     require(
         wait_until([&] { return !dialog.isVisible(); }, 1000) && dialog.result() == QDialog::Accepted,
         "Successful publication must close the dialog and accept the selection");
-    const QByteArray promoted_provenance = read(game + "/stitching_canvas_provenance");
+    const QByteArray promoted_provenance = read(game + "/_hockeymon/stitching_canvas_provenance");
     QProcess program;
     QProcessEnvironment program_environment = QProcessEnvironment::systemEnvironment();
     program_environment.insert("HM_GAME_DIR", QFileInfo(game).absolutePath());
@@ -2996,11 +3142,11 @@ void exercise(
     require(
         !program_output.contains("stage=features status=started") &&
             !program_output.contains("captured stitching calibration frame pair") &&
-            read(game + "/stitching_canvas_provenance") == promoted_provenance,
+            read(game + "/_hockeymon/stitching_canvas_provenance") == promoted_provenance,
         "Main Program must reuse the promoted calibration without selecting or solving new frames");
     if (player_selection) {
       using namespace hm::stitching;
-      const YAML::Node promoted = YAML::Load(read(game + "/config.yaml").toStdString());
+      const YAML::Node promoted = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
       auto plan = ParsePlayerFrameSelectionPlan(promoted["stitching"]["calibration_frame_selection"]);
       require(
           plan.ok() &&
@@ -3083,7 +3229,7 @@ void exercise(
           reused.ok() && reused->has_value() && digests(**reused) == selected_digests,
           "Every reused full-resolution PNG must match its promoted content digest");
       require(
-          read(game + "/stitching_canvas_provenance") == promoted_provenance,
+          read(game + "/_hockeymon/stitching_canvas_provenance") == promoted_provenance,
           "A retained-frame experiment must leave the promoted main geometry unchanged");
       history->selectRow(before_add);
       answer_close_guard(reopened, "stitchExperimentCloseDiscard", true);
@@ -3125,7 +3271,7 @@ int main(int argc, char** argv) {
           game,
           "/bin/false",
           game,
-          game + "/config.yaml",
+          game + "/_hockeymon/config.yaml",
           QProcessEnvironment::systemEnvironment(),
           100,
           1,
@@ -3158,7 +3304,7 @@ int main(int argc, char** argv) {
       const auto make_game = [&](const char* name) {
         const QString game = fixture.path() + "/" + name;
         require(QDir().mkpath(game), "Cannot create fixture game");
-        write(game + "/config.yaml", "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n");
+        write(game + "/_hockeymon/config.yaml", "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n");
         write(game + "/left.mp4", "left");
         write(game + "/right.mp4", "right");
         return game;
@@ -3172,7 +3318,7 @@ int main(int argc, char** argv) {
             make_game("layout"),
             "/bin/false",
             fixture.path(),
-            fixture.path() + "/config.yaml",
+            fixture.path() + "/_hockeymon/config.yaml",
             QProcessEnvironment::systemEnvironment(),
             100,
             1,

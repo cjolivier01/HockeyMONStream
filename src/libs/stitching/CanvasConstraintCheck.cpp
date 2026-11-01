@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/MappingCanvasPlacement.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
@@ -275,7 +276,10 @@ absl::StatusOr<int> lock_canvas_constraint_artifacts_impl(const fs::path& game_d
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Canvas compatibility check requires an existing game directory");
-  const fs::path lock_path = game_dir / ".hstream-stitch.lock";
+  const auto storage = hm::game_storage::EnsureStateDirectory(game_dir);
+  if (!storage.ok())
+    return storage;
+  const fs::path lock_path = hm::game_storage::StateDirectory(game_dir) / ".hstream-stitch.lock";
   const int descriptor = ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (descriptor < 0)
     return absl::InternalError("Unable to open stitching artifact lock: " + std::string(std::strerror(errno)));
@@ -1519,7 +1523,7 @@ const std::vector<std::string>& stitch_artifact_names() {
   return kArtifacts;
 }
 
-absl::Status validate_stitch_generation_artifact_bounds_locked(const fs::path& game_dir) {
+absl::Status validate_stitch_generation_artifact_bounds_at_directory(const fs::path& game_dir) {
   for (const char* name : kGenerationArtifacts) {
     const absl::Status status = validate_stitch_artifact_bounds(game_dir, name, /*required=*/true);
     if (!status.ok())
@@ -1528,7 +1532,12 @@ absl::Status validate_stitch_generation_artifact_bounds_locked(const fs::path& g
   return validate_stitch_artifact_bounds(game_dir, kStitchCanvasProvenanceArtifact, /*required=*/false);
 }
 
-absl::Status validate_stitch_seam_repair_artifact_bounds_locked(const fs::path& game_dir) {
+absl::Status validate_stitch_generation_artifact_bounds_locked(const fs::path& game) {
+  return validate_stitch_generation_artifact_bounds_at_directory(hm::game_storage::StateDirectory(game));
+}
+
+absl::Status validate_stitch_seam_repair_artifact_bounds_locked(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   for (const char* name : {"mapping_0000.tif", "mapping_0001.tif"}) {
     const absl::Status status = validate_stitch_artifact_bounds(game_dir, name, /*required=*/true);
     if (!status.ok())
@@ -1660,7 +1669,8 @@ absl::Status publish_stitch_file_atomically(const fs::path& path, const std::str
 
 absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_publication(
     const fs::path& staging,
-    const fs::path& game_dir) {
+    const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   const fs::path committed_identity = game_dir / kStitchGenerationArtifact;
   std::error_code error;
   const bool identity_exists = fs::exists(committed_identity, error);
@@ -1671,7 +1681,7 @@ absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_pu
       return absl::FailedPreconditionError("Existing Hugin generation identity is not a regular file");
     auto current_bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
     if (current_bindings.ok()) {
-      auto generation = stitch_artifact_generation_id_locked(game_dir);
+      auto generation = stitch_artifact_generation_id_locked(game);
       if (!generation.ok())
         return generation.status();
     } else if (!absl::IsNotFound(current_bindings.status())) {
@@ -1724,7 +1734,8 @@ absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_pu
 
 absl::Status rebind_published_stitch_generation_artifact(
     const PreparedStitchGenerationPublication& prepared,
-    const fs::path& game_dir) {
+    const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   if (!prepared.impl_)
     return absl::InvalidArgumentError("Prepared Hugin publication is empty");
   std::ostringstream bindings;
@@ -1786,8 +1797,9 @@ absl::Status validate_prepared_stitch_generation_artifact(
 
 absl::Status record_published_stitch_generation_artifact(
     PreparedStitchGenerationPublication& prepared,
-    const fs::path& game_dir,
+    const fs::path& game,
     const std::string& name) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   if (!prepared.impl_)
     return absl::InvalidArgumentError("Prepared Hugin publication is empty");
   const auto artifact = std::find_if(
@@ -1863,7 +1875,8 @@ absl::Status mark_stitch_transaction_rolled_back(const fs::path& transaction) {
   return publish_transaction_state(transaction, "ROLLED_BACK\n");
 }
 
-absl::Status recover_stitch_transactions_locked(const fs::path& root) {
+absl::Status recover_stitch_transactions_locked(const fs::path& game_dir) {
+  const fs::path root = hm::game_storage::StateDirectory(game_dir);
   auto scan_required = transaction_recovery_scan_required(root, TransactionJournalKind::kStitch);
   if (!scan_required.ok())
     return scan_required.status();
@@ -2274,7 +2287,8 @@ absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_co
       return std::unique_ptr<CanvasConstraintArtifactLock>();
     return config.status();
   }
-  auto readable = transaction_snapshot_readable(game_dir, TransactionJournalKind::kStitch);
+  auto readable =
+      transaction_snapshot_readable(hm::game_storage::StateDirectory(game_dir), TransactionJournalKind::kStitch);
   if (!readable.ok())
     return readable.status();
   if (!*readable)
@@ -2283,7 +2297,8 @@ absl::StatusOr<std::unique_ptr<CanvasConstraintArtifactLock>> try_lock_canvas_co
   return lock;
 }
 
-absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path& game_dir) {
+absl::StatusOr<std::string> stitch_artifact_generation_id_locked(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   const bool unreliable_filesystem = stitch_filesystem_has_unreliable_metadata(game_dir);
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (!identity.ok()) {
@@ -2385,25 +2400,27 @@ absl::StatusOr<StitchArtifactContentIdentity> stitch_artifact_content_identity_l
   };
 }
 
-absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const fs::path& game_dir) {
+absl::StatusOr<std::string> stitch_artifact_preflight_generation_id_locked(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (!identity.ok()) {
     if (absl::IsNotFound(identity.status()))
       return stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kLegacyGeneration);
-    return stitch_artifact_generation_id_locked(game_dir);
+    return stitch_artifact_generation_id_locked(game);
   }
   auto parsed = parse_stitch_generation_identity(*identity);
   if (!parsed.ok() || parsed->version != 3)
-    return stitch_artifact_generation_id_locked(game_dir);
+    return stitch_artifact_generation_id_locked(game);
   auto bindings = stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
   if (!bindings.ok())
     return bindings.status();
   if (parsed->bindings != *bindings)
-    return stitch_artifact_generation_id_locked(game_dir);
+    return stitch_artifact_generation_id_locked(game);
   return parsed->logical_id;
 }
 
-absl::StatusOr<std::string> stitch_artifact_snapshot_generation_id_locked(const fs::path& game_dir) {
+absl::StatusOr<std::string> stitch_artifact_snapshot_generation_id_locked(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   auto identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (!identity.ok()) {
     if (absl::IsNotFound(identity.status()))
@@ -2421,11 +2438,13 @@ absl::StatusOr<std::string> stitch_artifact_snapshot_generation_id_locked(const 
   return parsed->logical_id;
 }
 
-absl::StatusOr<std::string> stitch_artifact_binding_revision_locked(const fs::path& game_dir) {
+absl::StatusOr<std::string> stitch_artifact_binding_revision_locked(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   return stitch_artifact_stat_id(game_dir, StitchStatIdentityFormat::kBinding);
 }
 
-absl::StatusOr<std::string> stitch_artifact_revision_locked(const fs::path& game_dir) {
+absl::StatusOr<std::string> stitch_artifact_revision_locked(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   std::string identity;
   auto current_identity = read_stitch_generation_artifact(game_dir / kStitchGenerationArtifact);
   if (current_identity.ok()) {
@@ -2443,7 +2462,8 @@ absl::StatusOr<std::string> stitch_artifact_revision_locked(const fs::path& game
   return revision.str();
 }
 
-bool stitch_artifact_metadata_is_reliable(const fs::path& game_dir) {
+bool stitch_artifact_metadata_is_reliable(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   return !stitch_filesystem_has_unreliable_metadata(game_dir);
 }
 
@@ -2458,7 +2478,7 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
       return CanvasConstraintCompatibility{.requires_regeneration = has_mappings};
     return dependency_status;
   }
-  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(game_dir);
+  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_at_directory(game_dir);
   if (!artifact_bounds.ok()) {
     if (absl::IsNotFound(artifact_bounds) || absl::IsFailedPrecondition(artifact_bounds) ||
         absl::IsInvalidArgument(artifact_bounds)) {
@@ -2505,18 +2525,21 @@ absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked_imp
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_locked(
-    const fs::path& game_dir,
+    const fs::path& game,
     size_t max_output_width) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   return check_canvas_constraint_locked_impl(game_dir, max_output_width, /*validate_seam_payload=*/true);
 }
 
 absl::StatusOr<CanvasConstraintCompatibility> check_canvas_constraint_metadata_locked(
-    const fs::path& game_dir,
+    const fs::path& game,
     size_t max_output_width) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   return check_canvas_constraint_locked_impl(game_dir, max_output_width, /*validate_seam_payload=*/false);
 }
 
-absl::StatusOr<MappingCanvasPlacement> read_mapping_canvas_placement_locked(const fs::path& game_dir) {
+absl::StatusOr<MappingCanvasPlacement> read_mapping_canvas_placement_locked(const fs::path& game) {
+  const fs::path game_dir = hm::game_storage::StateDirectory(game);
   return mapping_canvas_placement(game_dir);
 }
 

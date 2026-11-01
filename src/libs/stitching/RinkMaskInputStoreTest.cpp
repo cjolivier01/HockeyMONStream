@@ -10,6 +10,14 @@
 namespace fs = std::filesystem;
 using namespace hm::stitching;
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 bool expect(bool ok, const char* message) {
   if (!ok)
     std::cerr << "FAIL: " << message << '\n';
@@ -58,6 +66,17 @@ int main() {
     return 1;
   }
   bool ok = true;
+  {
+    const auto duplicate = PublishRinkMaskInput(game, d, limits, reader);
+    ok &= expect(duplicate.ok() && duplicate->id == published->id, "duplicate publication reuses immutable input");
+    const auto inventory = YAML::LoadFile((saved_state(game) / "manifest.json").string());
+    bool inventory_current = true;
+    for (const auto& entry : inventory["files"]) {
+      const auto relative = entry["path"].as<std::string>();
+      inventory_current &= fs::exists(game / relative) && relative.find(".pending-") == std::string::npos;
+    }
+    ok &= expect(inventory_current, "duplicate input publication must not retain retired staging in its inventory");
+  }
   auto compare = [&](const RinkMaskInput& input) {
     return ReadRinkMaskInputRows(input, [&](uint32_t y, const void* row, size_t bytes) {
       return std::memcmp(row, pixels.data() + y * d.width * 4, bytes) == 0 ? absl::OkStatus()
@@ -110,15 +129,15 @@ int main() {
   oversized.width = 65537;
   ok &= expect(!PublishRinkMaskInput(game, oversized, limits, reader).ok(), "existing native geometry limit enforced");
   ok &= expect(
-      PruneRinkMaskInputs(game, "").ok() && fs::exists(game / "rink-mask-input" / published->id),
+      PruneRinkMaskInputs(game, "").ok() && fs::exists(saved_state(game) / "rink-mask-input" / published->id),
       "in-flight lease protects a candidate from pruning");
   const std::string id = published->id;
   published = absl::CancelledError("release lease");
   ok &= expect(
-      PruneRinkMaskInputs(game, "").ok() && !fs::exists(game / "rink-mask-input" / id),
+      PruneRinkMaskInputs(game, "").ok() && !fs::exists(saved_state(game) / "rink-mask-input" / id),
       "unreferenced unleased evidence is pruned");
   // A same-size mutation must fail checksum validation before any row is consumed.
-  const fs::path payload = copy / "rink-mask-input" / id / "input.tiff";
+  const fs::path payload = saved_state(copy) / "rink-mask-input" / id / "input.tiff";
   {
     std::fstream file(payload, std::ios::in | std::ios::out | std::ios::binary);
     file.seekp(16);

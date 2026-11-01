@@ -1,5 +1,6 @@
 #include <yaml-cpp/yaml.h>
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
@@ -200,10 +201,9 @@ int main(int argc, char** argv) {
                      "for managed jobs; the supervisor must service calibration prompts.\n";
         std::cout << "--runtime-only forwards only the script's arguments, for native sampling and\n"
                      "runtime-info subcommands that cannot inherit a saved playback recipe.\n";
-        std::cout
-            << "--interactive-publication preserves interactive sinks and stdin through the managed finalizer.\n"
-               "Use it when an interactive session records archives or Program telemetry; success requires\n"
-               "the native output receipt.\n";
+        std::cout << "--interactive-publication preserves interactive sinks and stdin through the managed finalizer.\n"
+                     "Use it when an interactive session records archives or Program telemetry; success requires\n"
+                     "the native output receipt.\n";
         std::cout << "Capabilities: telemetry-only-publication-v1\n";
         return 0;
       }
@@ -270,7 +270,15 @@ int main(int argc, char** argv) {
       game = game.parent_path();
     if (game.filename().empty() || !fs::is_directory(game))
       throw std::runtime_error("--game-dir must name an existing game directory");
-    const YAML::Node saved = YAML::LoadFile((game / "config.yaml").string());
+    const auto register_script = [&](const fs::path& path) {
+      const auto relative = fs::absolute(path).lexically_normal().lexically_relative(game);
+      if (!relative.empty() && *relative.begin() != "..") {
+        const auto inventory = hm::game_storage::RegisterPublished(game, path, "job-export", "");
+        if (!inventory.ok())
+          throw std::runtime_error(inventory.ToString());
+      }
+    };
+    const YAML::Node saved = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
     if (!saved.IsMap())
       throw std::runtime_error("game config.yaml must be a mapping");
     // Export can happen on a different host, without the execution runtime.
@@ -383,6 +391,7 @@ export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
       }
       script += " \\\n  \"$@\"\n";
       write_script(output, script, overwrite);
+      register_script(output);
       std::cout << output.string() << "\n";
       return 0;
     }
@@ -415,6 +424,7 @@ export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
       script += " \"$@\"";
     script += "\n";
     write_script(output, script, overwrite);
+    register_script(output);
     std::cout << output.string() << "\n";
     return 0;
   } catch (const std::exception& error) {

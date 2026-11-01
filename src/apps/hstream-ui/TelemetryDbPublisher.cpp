@@ -10,6 +10,7 @@
 #include <QtCore/QTemporaryFile>
 #include <cerrno>
 #include <stdexcept>
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 
@@ -17,11 +18,14 @@ namespace {
 class PublicationLock {
  public:
   explicit PublicationLock(const QString& directory) {
-    const QByteArray path = QFile::encodeName(QDir(directory).filePath(".hm-output-publication.lock"));
+    const auto state = hm::game_storage::EnsureStateDirectory(directory.toStdString());
+    if (!state.ok())
+      throw std::runtime_error(state.ToString());
+    const QByteArray path = QFile::encodeName(QDir(directory).filePath("_hockeymon/.hm-output-publication.lock"));
     fd_ = open(path.constData(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd_ < 0)
       throw std::runtime_error("Cannot open telemetry publication lock");
-    struct stat info {};
+    struct stat info{};
     if (fstat(fd_, &info) != 0 || !S_ISREG(info.st_mode) || flock(fd_, LOCK_EX) != 0) {
       close(fd_);
       throw std::runtime_error("Cannot acquire telemetry publication lock");
@@ -79,7 +83,7 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     hm::recording::TelemetryDatabaseStem(game_id);
     if (suffix && !telemetry_csv_destination_paths_available(publication_directory, *suffix))
       throw std::runtime_error("Telemetry generation already exists or cannot be checked");
-    QTemporaryFile stage(QDir(publication_directory).filePath(".hstream-database-XXXXXX"));
+    QTemporaryFile stage(QDir(publication_directory).filePath("_hockeymon/.hstream-database-XXXXXX"));
     if (!stage.open())
       throw std::runtime_error(stage.errorString().toStdString());
     const QString staged_path = stage.fileName();
@@ -119,6 +123,10 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     close(dir);
     if (committed)
       throw std::runtime_error("Database copied but publication directory synchronization failed");
+    const auto inventory = hm::game_storage::RegisterPublished(
+        publication_directory.toStdString(), destination.toStdString(), "telemetry", "");
+    if (!inventory.ok())
+      throw std::runtime_error(inventory.ToString());
     result.ok = true;
     result.published_paths.append(destination);
   } catch (const std::exception& e) {

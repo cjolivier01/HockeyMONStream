@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <algorithm>
 #include <array>
@@ -488,7 +489,9 @@ absl::Status CompleteStitchingCalibrationCleanup(
   try {
     std::string bytes;
     HM_ASSIGN_OR_RETURN(
-        bytes, read_bounded_regular_file_no_follow(game / "config.yaml", 4 * 1024 * 1024, "calibration config"));
+        bytes,
+        read_bounded_regular_file_no_follow(
+            hm::game_storage::StateDirectory(game) / "config.yaml", 4 * 1024 * 1024, "calibration config"));
     auto current = YAML::Load(bytes);
     auto state = current["hstream_ui"]["stitching_calibration"];
     if (scalar(state, {"invalidation_id"}) != plan.owner || scalar(state, {"status"}) != "pending" ||

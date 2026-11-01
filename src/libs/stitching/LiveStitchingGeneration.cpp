@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
@@ -295,7 +296,9 @@ absl::StatusOr<SavedRotationStage> stage_saved_stitched_output_rotation(
   try {
     std::string bytes;
     HM_ASSIGN_OR_RETURN(
-        bytes, read_bounded_regular_file_no_follow(root / "config.yaml", 4 * 1024 * 1024, "game config"));
+        bytes,
+        read_bounded_regular_file_no_follow(
+            hm::game_storage::StateDirectory(root) / "config.yaml", 4 * 1024 * 1024, "game config"));
     YAML::Node config = YAML::Load(bytes);
     if (!config.IsMap())
       return absl::InvalidArgumentError("Game config must be a map");
@@ -338,7 +341,7 @@ absl::StatusOr<bool> reconcile_inactive_live_stitched_output_authorization(const
   auto config_transaction = GameConfigTransactionLock::Acquire(root);
   if (!config_transaction.ok())
     return config_transaction.status();
-  const fs::path config_path = root / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(root) / "config.yaml";
   std::error_code error;
   const bool has_config = fs::is_regular_file(config_path, error);
   if (error == std::errc::no_such_file_or_directory)
@@ -419,7 +422,7 @@ absl::Status validate_live_output_epoch(
   if (current_hugin != loaded_hugin_generation)
     return absl::AbortedError("Live output epoch targets a different loaded Hugin calibration");
   try {
-    const YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
+    const YAML::Node config = YAML::LoadFile((hm::game_storage::StateDirectory(root) / "config.yaml").string());
     const std::string completed = config["rink"]["stitched_output_generation"].as<std::string>();
     EmbeddedHuginGeneration embedded;
     HM_ASSIGN_OR_RETURN(embedded, embedded_hugin_generation(completed));
@@ -476,7 +479,7 @@ absl::StatusOr<LiveStitchedOutputAuthorization> authorize_live_stitched_output_r
   if (!config_transaction.ok())
     return config_transaction.status();
 
-  const fs::path config_path = root / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(root) / "config.yaml";
   std::error_code error;
   const bool has_config = fs::is_regular_file(config_path, error);
   if (error)
@@ -617,7 +620,7 @@ absl::StatusOr<std::optional<LiveStitchedOutputAuthorization>> rollback_live_sti
   if (!config_transaction.ok())
     return config_transaction.status();
 
-  const fs::path config_path = root / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(root) / "config.yaml";
   std::error_code error;
   const bool has_config = fs::is_regular_file(config_path, error);
   if (error)
@@ -709,7 +712,7 @@ absl::Status commit_live_stitched_output_rotation(
   if (!config_transaction.ok())
     return config_transaction.status();
 
-  const fs::path config_path = root / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(root) / "config.yaml";
   std::error_code error;
   const bool has_config = fs::is_regular_file(config_path, error);
   if (error)

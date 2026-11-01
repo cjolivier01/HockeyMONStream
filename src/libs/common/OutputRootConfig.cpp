@@ -1,5 +1,7 @@
 #include "hstream/src/libs/common/OutputRootConfig.h"
 
+#include "hstream/src/libs/common/GameStorage.h"
+
 #include <cstdlib>
 #include <map>
 
@@ -43,7 +45,7 @@ absl::StatusOr<std::filesystem::path> output_root_for_game(
     };
     overlay(baseline->values);
     overlay(*user);
-    const auto game_config = game / "config.yaml";
+    const auto game_config = hm::game_storage::StatePath(game, "config.yaml");
     if (std::filesystem::exists(game_config))
       overlay(YAML::LoadFile(game_config.string()));
     for (const auto& group : option_groups) {

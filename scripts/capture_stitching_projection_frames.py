@@ -587,8 +587,8 @@ def main() -> int:
   config_root = resolve_path(pipeline.get("config_root", "configs"), workspace, "pipeline.config_root")
   pipeline_config = resolve_path(pipeline.get("config", "configs/ds_hockey_app_config.yaml"), workspace, "pipeline.config")
   assert source_game_dir and output_dir and workspace and executable and config_root and pipeline_config
-  if not (source_game_dir / "config.yaml").is_file():
-    raise SystemExit(f"source game config is missing: {source_game_dir / 'config.yaml'}")
+  if not (source_game_dir / "_hockeymon/config.yaml").is_file():
+    raise SystemExit(f"source game config is missing: {source_game_dir / '_hockeymon/config.yaml'}")
   if not executable.is_file():
     raise SystemExit(f"pipeline executable is missing: {executable}")
   ffmpeg = shutil.which("ffmpeg")
@@ -638,7 +638,7 @@ def main() -> int:
     prepare_output_directory(output_dir)
     shutil.copy2(cli.config, output_dir / "matrix-config.yaml")
     source_config_snapshot = output_dir / "source-game-config.yaml"
-    shutil.copy2(source_game_dir / "config.yaml", source_config_snapshot)
+    shutil.copy2(source_game_dir / "_hockeymon/config.yaml", source_config_snapshot)
     manifest_path = output_dir / "manifest.csv"
     manifest_rows = read_manifest(manifest_path)
     for sequence, state in selected:
@@ -680,12 +680,12 @@ def main() -> int:
       try:
         calibration_matrix.wait_for_resource_headroom(runner_args)
         work_root, game_id = calibration_matrix.create_isolated_game(source_game_dir, source_config_snapshot)
-        apply_case_camera_selection(work_root / game_id / "config.yaml", state)
+        apply_case_camera_selection(work_root / game_id / "_hockeymon/config.yaml", state)
         result = calibration_matrix.run_state(runner_args, work_root, game_id, state, sequence, log_path)
         if result["outcome"] == "pass":
-          convert_panorama(work_root / game_id / "panorama.tif", png_path, ffmpeg)
+          convert_panorama(work_root / game_id / "_hockeymon/panorama.tif", png_path, ffmpeg)
           for source_name, suffix in (("autooptimiser_out.pto", ".pto"), ("stitching_canvas_provenance", ".provenance.txt")):
-            source = work_root / game_id / source_name
+            source = work_root / game_id / "_hockeymon" / source_name
             if source.is_file():
               shutil.copy2(source, evidence_dir / f"{stem}{suffix}")
       except Exception as exception:

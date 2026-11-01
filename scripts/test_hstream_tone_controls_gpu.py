@@ -64,11 +64,11 @@ def main():
     artifacts = args.artifacts.resolve()
     if artifacts == source or source in artifacts.parents:
         parser.error("Artifacts must be outside the source recording")
-    for name in ("config.yaml", "panorama.tif"):
+    for name in ("_hockeymon/config.yaml", "_hockeymon/panorama.tif"):
         if not (source / name).is_file():
             parser.error(f"The calibrated recording must contain {name}")
     source_config_hash = hashlib.sha256(
-        (source / "config.yaml").read_bytes()
+        (source / "_hockeymon/config.yaml").read_bytes()
     ).hexdigest()
     driver = (
         Path(__file__).resolve().parent.parent
@@ -85,7 +85,7 @@ def main():
     games.mkdir()
     game = games / source.name
     copy_fixture(source, game)
-    config_path = game / "config.yaml"
+    config_path = game / "_hockeymon/config.yaml"
     config = yaml.safe_load(config_path.read_text())
     ui = config.setdefault("hstream_ui", {})
     ui.pop("job", None)
@@ -146,7 +146,7 @@ def main():
     with runner.open("rb") as binary:
         final_digest = hashlib.file_digest(binary, "sha256").hexdigest()
     source_unchanged = (
-        hashlib.sha256((source / "config.yaml").read_bytes()).hexdigest()
+        hashlib.sha256((source / "_hockeymon/config.yaml").read_bytes()).hexdigest()
         == source_config_hash
     )
     if (

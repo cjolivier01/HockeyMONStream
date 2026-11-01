@@ -21,7 +21,8 @@ class ProjectionFrameConfigTest(unittest.TestCase):
   def write_runtime_fixture(self, root: Path, labels: tuple[str, ...] = ("first",)) -> tuple[Path, Path]:
     source_game = root / "source-game"
     source_game.mkdir()
-    (source_game / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (source_game / "_hockeymon").mkdir()
+    (source_game / "_hockeymon/config.yaml").write_text("{}\n", encoding="utf-8")
     executable = root / "hstream-cli"
     executable.touch()
     pipeline_config = root / "pipeline.yaml"

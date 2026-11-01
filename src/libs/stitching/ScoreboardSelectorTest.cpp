@@ -28,6 +28,14 @@
 #include <yaml-cpp/yaml.h>
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 
 bool reject_proposal = false;
 int proposal_calls = 0;
@@ -101,13 +109,13 @@ bool write_mapping_tiff(
 
 bool write_hugin_generation_fixture(const std::filesystem::path& directory) {
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
-    std::ofstream output(directory / name, std::ios::binary | std::ios::trunc);
+    std::ofstream output(saved_state(directory) / name, std::ios::binary | std::ios::trunc);
     output << name << '\n';
     if (!output)
       return false;
   }
-  if (!write_mapping_tiff(directory / "mapping_0000.tif", 64, 32, 0.0f) ||
-      !write_mapping_tiff(directory / "mapping_0001.tif", 64, 32, 32.0f)) {
+  if (!write_mapping_tiff(saved_state(directory) / "mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(saved_state(directory) / "mapping_0001.tif", 64, 32, 32.0f)) {
     return false;
   }
   const cv::Mat remap(32, 64, CV_16U, cv::Scalar(0));
@@ -117,12 +125,12 @@ bool write_hugin_generation_fixture(const std::filesystem::path& directory) {
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
        }) {
-    if (!cv::imwrite((directory / name).string(), remap))
+    if (!cv::imwrite((saved_state(directory) / name).string(), remap))
       return false;
   }
   cv::Mat seam(32, 96, CV_8U, cv::Scalar(0));
   seam.colRange(48, seam.cols).setTo(255);
-  return cv::imwrite((directory / "seam_file.png").string(), seam);
+  return cv::imwrite((saved_state(directory) / "seam_file.png").string(), seam);
 }
 
 bool write_all(int fd, const std::string& value) {
@@ -194,7 +202,7 @@ bool exercise_http_selector(
     bool explicit_request = false) {
   const std::string authority_host = remote ? "scoreboard.test" : "127.0.0.1";
   cv::Mat image(32, 96, CV_8UC3, cv::Scalar(255, 255, 255));
-  if (!cv::imwrite((directory / "s.png").string(), image))
+  if (!cv::imwrite((saved_state(directory) / "s.png").string(), image))
     return false;
   int cancellation_pipe[2]{};
   if (::pipe2(cancellation_pipe, O_NONBLOCK | O_CLOEXEC) != 0)
@@ -426,11 +434,11 @@ int main() {
   fixture_config["pipeline"]["hmplaycropper"]["scoreboard-perspective-polygon"] = "1,2,3,4,5,6,7,8";
   fixture_config["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard_perspective_polygon"] =
       "1,2,3,4,5,6,7,8";
-  std::ofstream(directory / "config.yaml") << fixture_config << '\n';
+  std::ofstream(saved_state(directory) / "config.yaml") << fixture_config << '\n';
   auto status = Selector::Save(directory, disabled);
   ok &= expect(status.ok(), "disabled sentinel must save");
   if (status.ok()) {
-    const auto saved = YAML::LoadFile((directory / "config.yaml").string());
+    const auto saved = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
     const auto cropper = saved["pipeline"]["hmplaycropper"];
     ok &= expect(
         !cropper["scoreboard-perspective-polygon"].IsDefined() &&
@@ -440,16 +448,16 @@ int main() {
     ok &= expect(polygon.IsSequence() && polygon.size() == 4, "saved sentinel must contain four points");
     ok &= expect(polygon[3][0].as<int>() == 0 && polygon[3][1].as<int>() == 0, "saved sentinel must stay zero");
   }
-  fixture_config = YAML::LoadFile((directory / "config.yaml").string());
+  fixture_config = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
   fixture_config["rink"].remove("scoreboard");
-  std::ofstream(directory / "config.yaml") << fixture_config << '\n';
-  cv::imwrite((directory / "s.png").string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(255, 255, 255)));
+  std::ofstream(saved_state(directory) / "config.yaml") << fixture_config << '\n';
+  cv::imwrite((saved_state(directory) / "s.png").string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(255, 255, 255)));
   ok &= expect(
       absl::IsAborted(Selector::Run(directory)),
       "scoreboard selector must reject a snapshot whose dimensions do not match its output generation");
-  cv::imwrite((directory / "s.png").string(), cv::Mat(32, 96, CV_8UC3, cv::Scalar(255, 255, 255)));
+  cv::imwrite((saved_state(directory) / "s.png").string(), cv::Mat(32, 96, CV_8UC3, cv::Scalar(255, 255, 255)));
   {
-    std::fstream image(directory / "s.png", std::ios::in | std::ios::out | std::ios::binary);
+    std::fstream image(saved_state(directory) / "s.png", std::ios::in | std::ios::out | std::ios::binary);
     const std::array<unsigned char, 4> oversized_width = {0, 0, 128, 0};
     image.seekp(16);
     image.write(
@@ -473,18 +481,18 @@ int main() {
   ok &= expect(
       exercise_http_selector(directory, false, 0, false, Selector::Polygon{}, true),
       "Explicit reselection must open the authenticated selector even when automatic startup prompts are disabled");
-  if (std::filesystem::is_regular_file(directory / "config.yaml")) {
+  if (std::filesystem::is_regular_file(saved_state(directory) / "config.yaml")) {
     const YAML::Node polygon =
-        YAML::LoadFile((directory / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];
+        YAML::LoadFile((saved_state(directory) / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"];
     ok &= expect(
         polygon.IsSequence() && polygon.size() == 4 && polygon[0][0].as<int>() == 0,
         "HTTP no-scoreboard choice must persist the disabled sentinel");
   } else {
     ok &= expect(false, "HTTP selector must publish config.yaml");
   }
-  YAML::Node remote_fixture_config = YAML::LoadFile((directory / "config.yaml").string());
+  YAML::Node remote_fixture_config = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
   remote_fixture_config["rink"].remove("scoreboard");
-  std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
+  std::ofstream(saved_state(directory) / "config.yaml") << remote_fixture_config << '\n';
   ok &= expect(
       exercise_http_selector(directory, false, 0, true),
       "Rejected automatic corners must keep the manual editor available and allow an operator choice");
@@ -496,14 +504,14 @@ int main() {
         auto cropper = alias_config["pipeline"]["hmplaycropper"];
         auto destination = *bag ? cropper[bag] : cropper;
         destination[key] = no_scoreboard ? "0,0,0,0,0,0,0,0" : "10,5,80,5,80,25,10,25";
-        std::ofstream(directory / "config.yaml") << alias_config << '\n';
+        std::ofstream(saved_state(directory) / "config.yaml") << alias_config << '\n';
         ok &= expect(
             exercise_http_selector(directory, false, 0, false, no_scoreboard ? disabled : saved_corners),
             "Saved native polygon aliases, including disabled sentinels, must bypass inference on reselect");
       }
     }
   }
-  std::ofstream(directory / "config.yaml") << remote_fixture_config << '\n';
+  std::ofstream(saved_state(directory) / "config.yaml") << remote_fixture_config << '\n';
   ok &= expect(
       exercise_http_selector(directory, true),
       "remote scoreboard mode must accept its explicit public authority and matching origin");
@@ -518,12 +526,12 @@ int main() {
   const auto live_rotation_generation =
       hm::stitching::stitched_output_generation_id(fixture_hugin_generation, 9.0, 96, 32);
   if (live_rotation_generation.ok()) {
-    YAML::Node live_rotation_config = YAML::LoadFile((directory / "config.yaml").string());
+    YAML::Node live_rotation_config = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
     live_rotation_config["stitching"]["post_stitch_rotate_degrees"] = 7.5;
     live_rotation_config["rink"]["stitched_output_generation"] = *live_rotation_generation;
     live_rotation_config["rink"]["stitched_output_persisted_rotation_degrees"] = 7.5;
     live_rotation_config["rink"].remove("scoreboard");
-    std::ofstream(directory / "config.yaml") << live_rotation_config << '\n';
+    std::ofstream(saved_state(directory) / "config.yaml") << live_rotation_config << '\n';
   }
   const cv::Mat mismatched_live_rotation_snapshot(24, 32, CV_8UC3, cv::Scalar(32, 64, 96));
   ok &= expect(
@@ -545,18 +553,18 @@ int main() {
           exercise_http_selector(directory),
       "snapshot publication and scoreboard selection must accept an authoritative live rotation override");
   if (live_rotation_generation.ok()) {
-    YAML::Node changed_persisted_rotation = YAML::LoadFile((directory / "config.yaml").string());
+    YAML::Node changed_persisted_rotation = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
     changed_persisted_rotation["stitching"]["post_stitch_rotate_degrees"] = 8.0;
-    std::ofstream(directory / "config.yaml") << changed_persisted_rotation << '\n';
+    std::ofstream(saved_state(directory) / "config.yaml") << changed_persisted_rotation << '\n';
   }
   ok &= expect(
       live_rotation_generation.ok() && absl::IsAborted(Selector::Run(directory)),
       "scoreboard selection must reject a persisted rotation changed after producer publication");
-  YAML::Node restored_fixture_config = YAML::LoadFile((directory / "config.yaml").string());
+  YAML::Node restored_fixture_config = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
   restored_fixture_config["stitching"]["post_stitch_rotate_degrees"] = 0.0;
   restored_fixture_config["rink"]["stitched_output_generation"] = fixture_output_generation;
   restored_fixture_config["rink"].remove("stitched_output_persisted_rotation_degrees");
-  std::ofstream(directory / "config.yaml") << restored_fixture_config << '\n';
+  std::ofstream(saved_state(directory) / "config.yaml") << restored_fixture_config << '\n';
   auto hugin_lock = hm::stitching::HuginProject::RecoverAndLock(directory);
   ok &= expect(hugin_lock.ok(), "scoreboard generation race test must lock Hugin artifacts");
   std::string stale_generation;
@@ -575,11 +583,11 @@ int main() {
   const Selector::CanvasGeneration stale_snapshot_generation{
       .hugin_generation = stale_generation,
       .stitched_output_generation = fixture_output_generation,
-      .snapshot_identity = file_identity(directory / "s.png"),
+      .snapshot_identity = file_identity(saved_state(directory) / "s.png"),
   };
   const std::filesystem::path rollback_link = directory / "s-rollback-link.png";
   std::error_code rollback_link_error;
-  std::filesystem::create_hard_link(directory / "s.png", rollback_link, rollback_link_error);
+  std::filesystem::create_hard_link(saved_state(directory) / "s.png", rollback_link, rollback_link_error);
   if (!rollback_link_error)
     std::filesystem::remove(rollback_link, rollback_link_error);
   ok &= expect(
@@ -590,24 +598,24 @@ int main() {
   const bool wrote_replacement_snapshot = cv::imwrite(replacement_snapshot_path.string(), replacement_snapshot);
   std::error_code replacement_error;
   if (wrote_replacement_snapshot)
-    std::filesystem::rename(replacement_snapshot_path, directory / "s.png", replacement_error);
+    std::filesystem::rename(replacement_snapshot_path, saved_state(directory) / "s.png", replacement_error);
   ok &= expect(
       wrote_replacement_snapshot && !replacement_error && !stale_snapshot_generation.snapshot_identity.empty() &&
           absl::IsAborted(Selector::Save(directory, disabled, stale_snapshot_generation)),
       "a selector opened on replaced snapshot bytes must not publish stale coordinates");
   auto rotated_generation = hm::stitching::stitched_output_generation_id(stale_generation, 1.0, 96, 32);
   if (rotated_generation.ok()) {
-    YAML::Node rotated_config = YAML::LoadFile((directory / "config.yaml").string());
+    YAML::Node rotated_config = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
     rotated_config["rink"]["stitched_output_generation"] = *rotated_generation;
-    std::ofstream(directory / "config.yaml") << rotated_config << '\n';
+    std::ofstream(saved_state(directory) / "config.yaml") << rotated_config << '\n';
   }
   ok &= expect(
       rotated_generation.ok() && absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
       "a selector opened on a different output rotation must not publish stale coordinates");
-  const std::filesystem::path replacement_mapping = directory / "mapping_0000.tif.replacement";
+  const std::filesystem::path replacement_mapping = saved_state(directory) / "mapping_0000.tif.replacement";
   const bool wrote_replacement_mapping = write_mapping_tiff(replacement_mapping, 64, 32, 0.0f, 1);
   if (wrote_replacement_mapping)
-    std::filesystem::rename(replacement_mapping, directory / "mapping_0000.tif");
+    std::filesystem::rename(replacement_mapping, saved_state(directory) / "mapping_0000.tif");
   ok &= expect(
       wrote_replacement_mapping && !stale_generation.empty() &&
           absl::IsAborted(Selector::Save(directory, disabled, stale_canvas_generation)),
@@ -617,8 +625,8 @@ int main() {
   YAML::Node single_config;
   single_config["game"]["videos"]["source"].push_back("recording.mp4");
   single_config["game"]["videos"]["left"] = YAML::Node(YAML::NodeType::Null);
-  std::ofstream(single_directory / "config.yaml") << single_config << '\n';
-  cv::imwrite((single_directory / "s.png").string(), replacement_snapshot);
+  std::ofstream(saved_state(single_directory) / "config.yaml") << single_config << '\n';
+  cv::imwrite((saved_state(single_directory) / "s.png").string(), replacement_snapshot);
   const auto single_canvas = Selector::OpenCanvas(single_directory, true);
   ok &= expect(
       single_canvas.ok() && single_canvas->width == 96 && single_canvas->height == 32 &&
@@ -629,19 +637,19 @@ int main() {
         Selector::Save(single_directory, disabled, single_canvas->generation).ok(),
         "single-source scoreboard save must use the native config transaction");
     cv::imwrite((single_directory / "replacement.png").string(), replacement_snapshot);
-    std::filesystem::rename(single_directory / "replacement.png", single_directory / "s.png");
+    std::filesystem::rename(single_directory / "replacement.png", saved_state(single_directory) / "s.png");
     ok &= expect(
         absl::IsAborted(Selector::Save(single_directory, disabled, single_canvas->generation)),
         "single-source scoreboard must reject a replaced image");
     single_config["game"]["videos"]["source"] = "recording.mp4";
-    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    std::ofstream(saved_state(single_directory) / "config.yaml") << single_config << '\n';
     const auto new_canvas = Selector::OpenCanvas(single_directory, true);
     ok &= expect(
         new_canvas.ok() && new_canvas->generation.hugin_generation.empty() &&
             Selector::Save(single_directory, disabled, new_canvas->generation).ok(),
         "a scalar source playlist supports single-source scoreboard selection and save");
     single_config["game"]["videos"]["right"] = "second.mp4";
-    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    std::ofstream(saved_state(single_directory) / "config.yaml") << single_config << '\n';
     ok &= expect(
         new_canvas.ok() && absl::IsAborted(Selector::Save(single_directory, disabled, new_canvas->generation)),
         "single-source scoreboard must reject a game changed to multiple camera playlists");
@@ -652,13 +660,13 @@ int main() {
   std::ofstream(recording) << "recording";
   YAML::Node reference_config;
   reference_config["game"]["videos"]["source"].push_back(recording.string());
-  std::ofstream(source_reference / "config.yaml") << reference_config << '\n';
-  cv::imwrite((source_reference / "s.png").string(), replacement_snapshot);
+  std::ofstream(saved_state(source_reference) / "config.yaml") << reference_config << '\n';
+  cv::imwrite((saved_state(source_reference) / "s.png").string(), replacement_snapshot);
   const auto reference_canvas = Selector::OpenCanvas(source_reference, true);
-  auto pair_config = YAML::LoadFile((directory / "config.yaml").string());
+  auto pair_config = YAML::LoadFile((saved_state(directory) / "config.yaml").string());
   pair_config["game"]["videos"]["left"] = recording.string();
   pair_config["game"]["videos"]["right"] = recording.string();
-  std::ofstream(directory / "config.yaml") << pair_config << '\n';
+  std::ofstream(saved_state(directory) / "config.yaml") << pair_config << '\n';
   const auto pair_ownership = Selector::SameSingleSource(directory, source_reference);
   ok &= expect(pair_ownership.ok() && !*pair_ownership, "A private source must not claim a saved pair's scoreboard");
   if (reference_canvas.ok()) {
@@ -667,16 +675,18 @@ int main() {
         "A private source must not persist coordinates into a saved pair");
     single_config["game"]["videos"].remove("right");
     single_config["game"]["videos"]["source"] = recording.string();
-    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
-    std::filesystem::remove(single_directory / "s.png");
+    std::ofstream(saved_state(single_directory) / "config.yaml") << single_config << '\n';
+    std::filesystem::remove(saved_state(single_directory) / "s.png");
     const auto same_ownership = Selector::SameSingleSource(single_directory, source_reference);
     ok &= expect(
         same_ownership.ok() && *same_ownership &&
             Selector::Save(single_directory, disabled, reference_canvas->generation, source_reference).ok(),
         "Saved single-source selections persist through a private canvas without publishing game/s.png");
-    ok &= expect(!std::filesystem::exists(single_directory / "s.png"), "Persistence must not create a saved canvas");
+    ok &= expect(
+        !std::filesystem::exists(saved_state(single_directory) / "s.png"),
+        "Persistence must not create a saved canvas");
     single_config["game"]["videos"]["right"] = recording.string();
-    std::ofstream(single_directory / "config.yaml") << single_config << '\n';
+    std::ofstream(saved_state(single_directory) / "config.yaml") << single_config << '\n';
     ok &= expect(
         absl::IsAborted(Selector::Save(single_directory, disabled, reference_canvas->generation, source_reference)),
         "A saved source change during selection must reject the private canvas");
@@ -685,11 +695,11 @@ int main() {
   std::filesystem::create_directories(cancellation_game);
   const std::string original_config =
       "game: {videos: {source: [source.mp4]}}\nrink: {scoreboard: {perspective_polygon: [[2,2],[30,2],[30,10],[2,10]]}}\n";
-  std::ofstream(cancellation_game / "config.yaml") << original_config;
-  cv::imwrite((cancellation_game / "s.png").string(), replacement_snapshot);
+  std::ofstream(saved_state(cancellation_game) / "config.yaml") << original_config;
+  cv::imwrite((saved_state(cancellation_game) / "s.png").string(), replacement_snapshot);
   auto cancellation_canvas = Selector::OpenCanvas(cancellation_game, true);
   ok &= expect(cancellation_canvas.ok(), "deadline fixture must open its native canvas");
-  const int held_config = ::open((cancellation_game / ".hstream-config.lock").c_str(), O_RDWR);
+  const int held_config = ::open((saved_state(cancellation_game) / ".hstream-config.lock").c_str(), O_RDWR);
   ok &= expect(held_config >= 0 && ::flock(held_config, LOCK_EX) == 0, "deadline fixture must hold config lock");
   auto expires = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
   auto cancelled = [&] { return std::chrono::steady_clock::now() >= expires; };
@@ -713,7 +723,7 @@ int main() {
                 {},
                 [&] { return ++cancellation_checks > 1; })),
         "a deadline reached after acquiring ownership must still prevent publication");
-    std::ifstream unchanged_file(cancellation_game / "config.yaml");
+    std::ifstream unchanged_file(saved_state(cancellation_game) / "config.yaml");
     const std::string unchanged_config((std::istreambuf_iterator<char>(unchanged_file)), {});
     ok &= expect(unchanged_config == original_config, "cancelled native save must preserve exact config bytes");
     ok &= expect(

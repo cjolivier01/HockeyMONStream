@@ -372,7 +372,7 @@ pipeline:
           game["pipeline"]["hmplaycropper"]["private-properties"]["retained"].as<std::string>() == "custom" &&
           game["plot"]["unknown_flag"].as<std::string>() == "keep",
       "Edited canonical drawing failed to reconcile its alias or destroyed advanced/native keys");
-  const auto path = QDir(root).filePath("config.yaml");
+  const auto path = QDir(root).filePath("_hockeymon/config.yaml");
   Write(path, QByteArray::fromStdString(YAML::Dump(game)));
   widget.loadConfig(defaults, user, YAML::LoadFile(path.toStdString()), root);
   Require(

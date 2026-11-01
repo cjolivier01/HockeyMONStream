@@ -23,12 +23,12 @@ if [[ ! -d ${source_game} ]]; then
   echo "Game directory does not exist: ${source_game}" >&2
   exit 2
 fi
-if [[ ! -s ${source_game}/config.yaml ]]; then
-  echo "The UI E2E test requires a non-empty ${source_game}/config.yaml" >&2
+if [[ ! -s ${source_game}/_hockeymon/config.yaml ]]; then
+  echo "The UI E2E test requires a non-empty ${source_game}/_hockeymon/config.yaml" >&2
   exit 2
 fi
-if [[ ! -s ${source_game}/panorama.tif ]]; then
-  echo "The UI E2E test requires configured stitching at ${source_game}/panorama.tif" >&2
+if [[ ! -s ${source_game}/_hockeymon/panorama.tif ]]; then
+  echo "The UI E2E test requires configured stitching at ${source_game}/_hockeymon/panorama.tif" >&2
   exit 2
 fi
 if ! command -v curl >/dev/null 2>&1; then
@@ -51,14 +51,6 @@ mkdir -p "${sandbox_game}" "${output_root}"
 while IFS= read -r -d '' entry; do
   name=$(basename "${entry}")
   case ${name} in
-    config.yaml)
-      cp --reflink=auto -- "${entry}" "${sandbox_game}/config.yaml"
-      ;;
-    .hstream-ui)
-      mkdir -p "${sandbox_game}/.hstream-ui"
-      ;;
-    .hstream-*.lock)
-      ;;
     cam[0-9]*)
       mkdir -p "${sandbox_game}/${name}"
       while IFS= read -r -d '' camera_entry; do

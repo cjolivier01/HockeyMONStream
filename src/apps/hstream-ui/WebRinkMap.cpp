@@ -205,7 +205,7 @@ QJsonObject RunRinkMap(const Request& request, QJsonArray& artifacts, const std:
   for (const auto& feature : rink::RinkMapFeatures())
     features.append(QJsonObject{{"id", feature.id}, {"name", feature.name}, {"line", feature.line}});
   for (int camera = 0; camera < 2; ++camera) {
-    const auto path = request.game / (camera ? "right.png" : "left.png");
+    const auto path = request.game / "_hockeymon" / (camera ? "right.png" : "left.png");
     artifacts.append(Artifact(request, path, "image"));
     images.append(text(Relative(request, path)));
     sizes.append(QJsonArray{snapshot.original_sizes[camera].width(), snapshot.original_sizes[camera].height()});

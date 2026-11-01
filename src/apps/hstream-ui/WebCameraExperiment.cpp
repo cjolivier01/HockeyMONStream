@@ -437,7 +437,7 @@ QJsonObject RunCameraExperiment(
   const auto source = RequiredString(request.payload, "media_kind", 32);
   if (source == "original-cameras") {
     media.stitching = take(PrepareExperimentSources(request.game.string(), session->width(), session->height()));
-    media.path = (request.game / "config.yaml").string();
+    media.path = (request.game / "_hockeymon/config.yaml").string();
     media.width = session->width();
     media.height = session->height();
   } else {

@@ -30,6 +30,7 @@
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/ShadowToneCurve.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/cudaPlayCropper.h"
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/playtracker_payload.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/utils.h"
@@ -909,7 +910,7 @@ absl::Status PlayCropperPriv::LoadScoreboardPerspectiveFromConfig() {
   }
   std::filesystem::path config_path(config_file_);
   if (std::filesystem::is_directory(config_path)) {
-    config_path /= "config.yaml";
+    config_path = hm::game_storage::StatePath(config_path, "config.yaml");
   }
   auto loaded_config = stitching::load_game_config_file(config_path);
   if (!loaded_config.ok()) {
@@ -1013,13 +1014,15 @@ absl::Status PlayCropperPriv::EnsureScoreboardPerspectiveConfigured(
   std::error_code ec;
   if (!std::filesystem::is_directory(game_dir, ec) &&
       (game_dir.extension() == ".yaml" || game_dir.extension() == ".yml")) {
-    game_dir = game_dir.parent_path();
+    if (game_dir.parent_path().filename() != "_hockeymon" || game_dir.filename() != "config.yaml")
+      return absl::InvalidArgumentError("Game configuration must be _hockeymon/config.yaml");
+    game_dir = game_dir.parent_path().parent_path();
   }
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("Could not determine game directory from playcropper config-file");
   }
 
-  const std::filesystem::path stitched_image = game_dir / "s.png";
+  const std::filesystem::path stitched_image = hm::game_storage::StatePath(game_dir, "s.png");
   if (!std::filesystem::exists(stitched_image, ec) || ec || std::filesystem::file_size(stitched_image, ec) == 0 || ec) {
     std::string producer_output_generation;
     if (const auto* payload = stitching::find_stitched_output_generation_meta(frame_meta)) {

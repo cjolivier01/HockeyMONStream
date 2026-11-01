@@ -67,6 +67,7 @@ void fixture(
     const std::string& mode,
     bool configure_only) {
   fs::create_directory(directory);
+  fs::create_directories(directory / "_hockeymon");
   YAML::Node config = YAML::Clone(baseline);
   config["pipeline"]["application"]["complete-configuration"] = 1;
   config["pipeline"]["application"]["gpu-memory-profile"] = "normal";
@@ -90,22 +91,35 @@ void fixture(
   config["stitching"]["rink_mask_frame_time"] = "00:00:01";
   config["stitching"]["max_output_width"] = 0;
   config["stitching"]["max_output_dimension"] = 0;
-  write_stitch_camera_selection(config, {"manual", 108, 90});
-  config["stitching"]["camera_automation"]["fov"] = false;
-  config["stitching"]["camera_automation"]["lens"] = false;
-  config["game"]["videos"]["left"].push_back(video.string());
-  config["game"]["videos"]["right"].push_back(video.string());
+  // Completed calibration binds independent cameras. Freeze that same tuple
+  // here so this test exercises precision changes rather than optics discovery.
+  StitchCameraSelection camera{"manual", 108, 90};
+  camera.auto_fov = camera.auto_lens = false;
+  for (const char* role : {"left", "right"}) {
+    const fs::path source = directory / (std::string(role) + ".mp4");
+    fs::copy_file(video, source);
+    StitchCameraOptics optics{camera.horizontal_fov, camera.vertical_fov, camera.input_lens};
+    optics.configuration = "manual";
+    optics.auto_fov = optics.auto_lens = false;
+    optics.frozen = true;
+    camera.input_cameras[stitch_input_camera_key(directory, source)] = optics;
+    config["game"]["videos"][role].push_back(source.string());
+  }
+  write_stitch_camera_selection(config, camera);
+  config["stitching"]["auto_input_lens_frozen"] = true;
   config["game"]["stitching"]["frame_offsets"]["left"] = 0;
   config["game"]["stitching"]["frame_offsets"]["right"] = 0;
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "precision-owner";
   config["hstream_ui"]["stitching_calibration"]["control_points"] = 1500;
   config["hstream_ui"]["stitching_calibration"]["frame_count"] = 4;
-  std::ofstream(directory / "config.yaml") << config;
+  std::ofstream(directory / "_hockeymon/config.yaml") << config;
   for (const char* name : {"left.png", "right.png"})
-    require(cv::imwrite((directory / name).string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(64, 64, 64))), "source image");
+    require(
+        cv::imwrite((directory / "_hockeymon" / name).string(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(64, 64, 64))),
+        "source image");
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
-    std::ofstream(directory / name) << "p f2 w32 h24\n";
+    std::ofstream(directory / "_hockeymon" / name) << "p f2 w32 h24\n";
   for (const char* name :
        {"mapping_0000.tif",
         "mapping_0001.tif",
@@ -113,15 +127,15 @@ void fixture(
         "mapping_0000_y.tif",
         "mapping_0001_x.tif",
         "mapping_0001_y.tif"})
-    mapping(directory / name);
+    mapping(directory / "_hockeymon" / name);
   cv::Mat seam(24, 32, CV_8U, cv::Scalar(0));
   seam.colRange(16, 32).setTo(255);
-  require(cv::imwrite((directory / "seam_file.png").string(), seam), "seam");
+  require(cv::imwrite((directory / "_hockeymon/seam_file.png").string(), seam), "seam");
   const auto projection = value(ParseStitchProjection(config["stitching"]["projection"].as<std::string>()));
   const auto parameters =
       FormatStitchProjectionParameters(value(read_stitch_projection_parameters(config, projection)));
-  std::ofstream(directory / kStitchCanvasProvenanceArtifact)
-      << "version=14\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=32\nsource-canvas-height=24\n"
+  std::ofstream(directory / "_hockeymon" / kStitchCanvasProvenanceArtifact)
+      << "version=16\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=32\nsource-canvas-height=24\n"
          "canvas-width=32\ncanvas-height=24\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
          "mapping-backend=nona\nprojection="
       << StitchProjectionName(projection) << "\nprojection-parameters=" << (parameters.empty() ? "none" : parameters)
@@ -132,10 +146,10 @@ void fixture(
          "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n"
          "control-point-resolution=native\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\ninput-lens="
       << SerializeStitchInputLens(value(read_stitch_camera_selection(config)).input_lens)
-      << "\ncontrol-point-filtering=0,0\n";
+      << "\ninput-cameras=" << SerializeStitchInputCameras(camera.input_cameras) << "\ncontrol-point-filtering=0,0\n";
   auto lock = value(HuginProject::RecoverAndLock(directory));
   const auto generation = value(HuginProject::GenerationId(directory, *lock));
-  const auto identity = value(stitch_artifact_content_identity_locked(directory));
+  const auto identity = value(stitch_artifact_content_identity_locked(directory / "_hockeymon"));
   lock.reset();
   RinkMaskInputDescription description;
   description.width = 32;
@@ -145,7 +159,7 @@ void fixture(
   description.hugin_fingerprint = identity.fingerprint;
   description.frame.selection = "00:00:01";
   description.frame.recording_time_ns = 1000000000ULL;
-  description.frame.sources = {{{video, 1.0}, {video, 1.0}}};
+  description.frame.sources = {{{directory / "left.mp4", 1.0}, {directory / "right.mp4", 1.0}}};
   auto input = value(PublishRinkMaskInput(
       directory, description, value(ReadRinkMaskInputLimits(config)), [](uint32_t, void* row, size_t bytes) {
         std::memset(row, 0, bytes);
@@ -261,7 +275,7 @@ int main(int argc, char** argv) {
           test.name + std::string(": preparation flags"));
       if (test.prepare) {
         require(configurator.stitching_calibration_start_stage() == "rink-mask", "reuse solved alignment");
-        const auto saved = YAML::LoadFile((root / test.name / "config.yaml").string());
+        const auto saved = YAML::LoadFile((root / test.name / "_hockeymon/config.yaml").string());
         require(
             saved["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
                 saved["hstream_ui"]["stitching_calibration"]["rink_mask_status"].as<std::string>() == "pending" &&

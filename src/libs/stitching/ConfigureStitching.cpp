@@ -1,11 +1,12 @@
-#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/CalibrationModels.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/FeatureMatcher.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -68,6 +69,12 @@ namespace hm {
 namespace stitching {
 
 namespace {
+
+void refresh_manifest_after_cleanup(const fs::path& game) {
+  const auto status = hm::game_storage::RefreshManifest(game, "stitching-cleanup");
+  if (!status.ok())
+    std::cerr << "Game inventory refresh after stitching cleanup failed: " << status << '\n';
+}
 
 absl::StatusOr<std::vector<fs::directory_entry>> directory_entries(
     const fs::path& directory,
@@ -446,7 +453,7 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
     if (!lock.ok())
       return lock.status();
     try {
-      const auto config = YAML::LoadFile((game_dir / "config.yaml").string());
+      const auto config = YAML::LoadFile((hm::game_storage::StateDirectory(game_dir) / "config.yaml").string());
       HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, invalidation_id, expected));
       if (projection_crop_reviewed(config, geometry))
         return framing;
@@ -590,42 +597,6 @@ absl::StatusOr<size_t> clean_files_matching(const fs::path& game_dir, const std:
     size_t entry_removed = 0;
     HM_ASSIGN_OR_RETURN(entry_removed, remove_file_if_present(it->path()));
     removed += entry_removed;
-  }
-  if (ec) {
-    return absl::InternalError(
-        TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
-  }
-  return removed;
-}
-
-absl::StatusOr<size_t> delete_extracted_frames(const fs::path& game_dir) {
-  static const std::set<std::string> kVideoExtensions = {".mp4", ".mkv", ".m4v", ".mov", ".avi"};
-  size_t removed = 0;
-  std::error_code ec;
-  for (auto it = fs::recursive_directory_iterator(game_dir, ec); it != fs::recursive_directory_iterator();
-       it.increment(ec)) {
-    if (ec) {
-      return absl::InternalError(
-          TO_STRING("Failed to iterate stitch game directory \"" << game_dir.string() << "\": " << ec.message()));
-    }
-    const fs::path p = it->path();
-    if (!it->is_regular_file(ec)) {
-      if (ec) {
-        ec.clear();
-      }
-      continue;
-    }
-    std::string ext = p.extension().string();
-    std::transform(
-        ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (kVideoExtensions.find(ext) == kVideoExtensions.end()) {
-      continue;
-    }
-    fs::path png = p;
-    png.replace_extension(".png");
-    size_t png_removed = 0;
-    HM_ASSIGN_OR_RETURN(png_removed, remove_file_if_present(png));
-    removed += png_removed;
   }
   if (ec) {
     return absl::InternalError(
@@ -1010,7 +981,7 @@ absl::Status verify_pinned_load_artifacts(
 }
 
 absl::Status remove_stale_control_mask_snapshots(const fs::path& game_dir) {
-  auto opened_root = PinnedDirectory::Open(game_dir, "control-mask snapshot root");
+  auto opened_root = PinnedDirectory::Open(hm::game_storage::StateDirectory(game_dir), "control-mask snapshot root");
   if (!opened_root.ok())
     return opened_root.status();
   PinnedDirectory root = std::move(*opened_root);
@@ -1211,8 +1182,8 @@ ScaledCanvas scale_canvas_to_max_output_width(
 }
 
 absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
-  const fs::path mapping0_path = game_dir / "mapping_0000.tif";
-  const fs::path mapping1_path = game_dir / "mapping_0001.tif";
+  const fs::path mapping0_path = hm::game_storage::StateDirectory(game_dir) / "mapping_0000.tif";
+  const fs::path mapping1_path = hm::game_storage::StateDirectory(game_dir) / "mapping_0001.tif";
   if (!fs::exists(mapping0_path) || !fs::exists(mapping1_path)) {
     return absl::NotFoundError(
         TO_STRING("Cannot determine stitched canvas size; missing mapping TIFFs under " << game_dir.string()));
@@ -1229,8 +1200,8 @@ absl::StatusOr<CanvasSize> get_mapping_canvas_size(const fs::path& game_dir) {
 absl::StatusOr<CanvasSize> get_effective_mapping_canvas_size(const fs::path& game_dir, size_t max_output_width) {
   TiffPlacement p0;
   TiffPlacement p1;
-  HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(game_dir / "mapping_0000.tif"));
-  HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(game_dir / "mapping_0001.tif"));
+  HM_ASSIGN_OR_RETURN(p0, read_tiff_placement(hm::game_storage::StateDirectory(game_dir) / "mapping_0000.tif"));
+  HM_ASSIGN_OR_RETURN(p1, read_tiff_placement(hm::game_storage::StateDirectory(game_dir) / "mapping_0001.tif"));
   CanvasSize native;
   HM_ASSIGN_OR_RETURN(native, normalize_and_measure_canvas(&p0, &p1));
   return scale_canvas_to_max_output_width(p0, p1, native, max_output_width).size;
@@ -1680,8 +1651,8 @@ absl::Status validate_stitched_snapshot_generation_locked(
     return hugin_generation.status();
   YAML::Node config(YAML::NodeType::Map);
   try {
-    if (fs::is_regular_file(root / "config.yaml"))
-      config = YAML::LoadFile((root / "config.yaml").string());
+    if (fs::is_regular_file(hm::game_storage::StateDirectory(root) / "config.yaml"))
+      config = YAML::LoadFile((hm::game_storage::StateDirectory(root) / "config.yaml").string());
     const YAML::Node configured_generation = config["rink"]["stitched_output_generation"];
     if (!configured_generation || !configured_generation.IsScalar()) {
       return absl::FailedPreconditionError(
@@ -1771,7 +1742,8 @@ absl::Status save_stitched_image(
   }
 
   const fs::path root(game_dir);
-  std::string pattern = (root / ".s.png-XXXXXX.png").string();
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(root));
+  std::string pattern = (hm::game_storage::StateDirectory(root) / ".s.png-XXXXXX.png").string();
   std::vector<char> writable_pattern(pattern.begin(), pattern.end());
   writable_pattern.push_back('\0');
   const int temporary_descriptor = ::mkstemps(writable_pattern.data(), 4);
@@ -1812,11 +1784,12 @@ absl::Status save_stitched_image(
     return config_lock.status();
   HM_RETURN_IF_ERROR(
       validate_stitched_snapshot_generation_locked(game_dir, root, producer_output_generation, **hugin_lock));
-  fs::rename(temporary, root / "s.png", ec);
+  fs::rename(temporary, hm::game_storage::StateDirectory(root) / "s.png", ec);
   if (ec)
     return absl::InternalError("Unable to atomically publish stitched scoreboard image: " + ec.message());
   cleanup.path.clear();
-  return fsync_path(root, true);
+  HM_RETURN_IF_ERROR(fsync_path(hm::game_storage::StateDirectory(root), true));
+  return hm::game_storage::RefreshManifest(root, "stitched-snapshot");
 }
 
 namespace {
@@ -1852,7 +1825,8 @@ absl::StatusOr<bool> is_stitching_invalidation_cleanup_applied(
   auto config_transaction = GameConfigTransactionLock::Acquire(game_dir_path);
   if (!config_transaction.ok())
     return config_transaction.status();
-  return read_stitching_invalidation_cleanup_state(game_dir_path / "config.yaml", expected_invalidation_id);
+  return read_stitching_invalidation_cleanup_state(
+      hm::game_storage::StateDirectory(game_dir_path) / "config.yaml", expected_invalidation_id);
 }
 
 absl::Status clean_stitching_artifacts_impl(
@@ -1879,7 +1853,7 @@ absl::Status clean_stitching_artifacts_impl(
   if (!config_transaction.ok())
     return config_transaction.status();
 
-  const fs::path cfg_file_path = game_dir_path / "config.yaml";
+  const fs::path cfg_file_path = hm::game_storage::StateDirectory(game_dir_path) / "config.yaml";
   if (fs::exists(cfg_file_path)) {
     try {
       if (HasStitchingReframeIntent(YAML::LoadFile(cfg_file_path.string())))
@@ -1915,7 +1889,7 @@ absl::Status clean_stitching_artifacts_impl(
   size_t removed_files = 0;
   auto clean_pattern = [&](const std::string& pattern) -> absl::Status {
     size_t removed = 0;
-    HM_ASSIGN_OR_RETURN(removed, clean_files_matching(game_dir_path, pattern));
+    HM_ASSIGN_OR_RETURN(removed, clean_files_matching(hm::game_storage::StateDirectory(game_dir_path), pattern));
     removed_files += removed;
     return absl::OkStatus();
   };
@@ -1935,9 +1909,6 @@ absl::Status clean_stitching_artifacts_impl(
   if (!preserve_synchronized_inputs) {
     HM_RETURN_IF_ERROR(clean_pattern("left.png"));
     HM_RETURN_IF_ERROR(clean_pattern("right.png"));
-    size_t removed_extracted_frames = 0;
-    HM_ASSIGN_OR_RETURN(removed_extracted_frames, delete_extracted_frames(game_dir_path));
-    removed_files += removed_extracted_frames;
   }
 
   if (fs::exists(cfg_file_path)) {
@@ -1968,7 +1939,7 @@ absl::Status clean_stitching_artifacts_impl(
                                                : " stitch artifact file(s) from \"")
               << game_dir << "\"\n";
   }
-  return absl::OkStatus();
+  return hm::game_storage::RefreshManifest(game_dir, "clean-stitching");
 }
 
 absl::Status clean_stitching_artifacts(const std::string& game_dir, const std::string& expected_invalidation_id) {
@@ -2001,7 +1972,7 @@ struct ConfiguredStitchAlgorithms {
 };
 
 absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
-  const fs::path config_path = fs::path(game_dir) / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   std::error_code config_error;
   if (!fs::exists(config_path, config_error) && !config_error)
     return std::nullopt;
@@ -2172,7 +2143,7 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
   if (!up_to_date) {
     return false;
   }
-  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_locked(artifact_dir);
+  const absl::Status artifact_bounds = validate_stitch_generation_artifact_bounds_at_directory(artifact_dir);
   if (!artifact_bounds.ok()) {
     std::cout << "Stitching artifacts are unsafe or exceed parser byte limits: " << artifact_bounds << std::endl;
     if (absl::IsNotFound(artifact_bounds) || absl::IsFailedPrecondition(artifact_bounds) ||
@@ -2209,7 +2180,7 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     return canvas_status.status();
   }
   canvas_size = *canvas_status;
-  auto provenance = HuginProject::ReadCanvasProvenance(artifact_dir, artifact_lock);
+  auto provenance = HuginProject::ReadCanvasProvenanceAtDirectory(artifact_dir);
   if (!provenance.ok()) {
     if (absl::IsFailedPrecondition(provenance.status()) || absl::IsInvalidArgument(provenance.status()) ||
         absl::IsNotFound(provenance.status())) {
@@ -2288,7 +2259,11 @@ absl::StatusOr<bool> is_stitching_configured(const std::string& game_dir, size_t
   if (!artifact_lock.ok())
     return artifact_lock.status();
   return validate_stitching_artifacts_locked(
-      game_dir, game_dir, max_output_width, SeamValidationMode::kContent, **artifact_lock);
+      hm::game_storage::StateDirectory(game_dir).string(),
+      game_dir,
+      max_output_width,
+      SeamValidationMode::kContent,
+      **artifact_lock);
 }
 
 struct StitchingArtifactLoadSnapshot::Impl {
@@ -2296,6 +2271,7 @@ struct StitchingArtifactLoadSnapshot::Impl {
       : directory(std::move(directory)), source_directory(std::move(source_directory)) {}
   ~Impl() {
     (void)remove_owned_directory(directory, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
+    refresh_manifest_after_cleanup(source_directory);
   }
   fs::path directory;
   fs::path source_directory;
@@ -2318,14 +2294,15 @@ const fs::path& StitchingArtifactLoadSnapshot::directory() const {
 absl::Status StitchingArtifactLoadSnapshot::verify() const {
   const bool metadata_is_reliable = stitch_artifact_metadata_is_reliable(impl_->source_directory);
   if (metadata_is_reliable) {
-    HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(impl_->source_directory, impl_->artifacts));
+    HM_RETURN_IF_ERROR(
+        verify_pinned_load_artifacts(hm::game_storage::StateDirectory(impl_->source_directory), impl_->artifacts));
     auto revision = stitch_artifact_revision_locked(impl_->source_directory);
     if (!revision.ok())
       return revision.status();
     if (*revision != impl_->expected_revision)
       return absl::AbortedError("Control-mask artifact paths changed while their pinned generation was loaded");
   } else {
-    auto identity = stitch_artifact_content_identity_locked(impl_->source_directory);
+    auto identity = stitch_artifact_content_identity_locked(hm::game_storage::StateDirectory(impl_->source_directory));
     if (!identity.ok())
       return identity.status();
     if (identity->generation_id != impl_->expected_generation_id ||
@@ -2347,7 +2324,7 @@ absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snaps
     const fs::path& game_dir,
     bool stable_validation_snapshot) {
   HM_RETURN_IF_ERROR(remove_stale_control_mask_snapshots(game_dir));
-  std::string pattern = (game_dir / "hstream-control-mask-snapshot-XXXXXX").string();
+  std::string pattern = (hm::game_storage::StateDirectory(game_dir) / "hstream-control-mask-snapshot-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -2375,7 +2352,7 @@ absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snaps
       "HM_TEST_STITCH_LOAD_SNAPSHOT_RELEASE"));
 
   const auto add_artifact = [&](const char* name, bool required) -> absl::Status {
-    auto artifact = pin_stitch_snapshot_artifact(game_dir / name);
+    auto artifact = pin_stitch_snapshot_artifact(hm::game_storage::StateDirectory(game_dir) / name);
     if (!artifact.ok()) {
       if (!required && absl::IsNotFound(artifact.status()))
         return absl::OkStatus();
@@ -2400,7 +2377,8 @@ absl::StatusOr<CreatedStitchingArtifactSnapshot> create_stitching_artifact_snaps
     for (const char* name : kControlMaskLoadArtifacts)
       HM_RETURN_IF_ERROR(add_artifact(name, /*required=*/true));
   }
-  HM_RETURN_IF_ERROR(verify_pinned_load_artifacts(game_dir, snapshot_impl_ptr->artifacts));
+  HM_RETURN_IF_ERROR(
+      verify_pinned_load_artifacts(hm::game_storage::StateDirectory(game_dir), snapshot_impl_ptr->artifacts));
   return CreatedStitchingArtifactSnapshot{.snapshot = std::move(snapshot), .impl = snapshot_impl_ptr};
 }
 
@@ -2432,7 +2410,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
       previously_validated->max_canvas_dimension == live_stitch_max_canvas_dimension()) {
     auto artifact_revision = stitch_artifact_revision_locked(game_dir);
     if (artifact_revision.ok() && *artifact_revision == previously_validated->artifact_revision &&
-        test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
+        test_dependency_tree(hm::game_storage::StateDirectory(game_dir).string(), /*add_rink_mask=*/false)) {
       auto provenance = HuginProject::ReadCanvasProvenance(game_dir, **artifact_lock);
       if (provenance.ok()) {
         CanvasProvenanceCompatibility algorithm_compatibility;
@@ -2465,7 +2443,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     HM_ASSIGN_OR_RETURN(
         configured,
         validate_stitching_artifacts_locked(
-            game_dir,
+            hm::game_storage::StateDirectory(game_dir).string(),
             game_dir,
             max_output_width,
             validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
@@ -2533,7 +2511,8 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
           return absl::InternalError(
               "Unable to replace a legacy private snapshot generation identity: " + remove_error.message());
         }
-        auto current_identity = pin_stitch_snapshot_artifact(fs::path(game_dir) / kStitchGenerationArtifact);
+        auto current_identity =
+            pin_stitch_snapshot_artifact(hm::game_storage::StateDirectory(game_dir) / kStitchGenerationArtifact);
         if (!current_identity.ok())
           return current_identity.status();
         HM_RETURN_IF_ERROR(
@@ -2619,7 +2598,7 @@ absl::StatusOr<bool> stitching_artifacts_exceed_live_canvas_limit(
   auto artifact_lock = HuginProject::RecoverAndLock(game_dir);
   if (!artifact_lock.ok())
     return artifact_lock.status();
-  bool up_to_date = test_dependency_tree(game_dir, /*add_rink_mask=*/false);
+  bool up_to_date = test_dependency_tree(hm::game_storage::StateDirectory(game_dir).string(), /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
   }
@@ -2687,10 +2666,10 @@ absl::Status maybe_create_default_seam_file(const std::string& game_dir, size_t 
   if (!artifact_lock.ok())
     return artifact_lock.status();
   HM_RETURN_IF_ERROR(validate_stitch_seam_repair_artifact_bounds_locked(root));
-  const fs::path seam_path = root / "seam_file.png";
+  const fs::path seam_path = hm::game_storage::StateDirectory(root) / "seam_file.png";
 
-  const fs::path mapping0_path = root / "mapping_0000.tif";
-  const fs::path mapping1_path = root / "mapping_0001.tif";
+  const fs::path mapping0_path = hm::game_storage::StateDirectory(root) / "mapping_0000.tif";
+  const fs::path mapping1_path = hm::game_storage::StateDirectory(root) / "mapping_0001.tif";
   if (!fs::exists(mapping0_path) || !fs::exists(mapping1_path)) {
     return absl::NotFoundError(
         TO_STRING("Cannot create default seam_file.png; missing mapping TIFFs under " << root.string()));
@@ -3023,10 +3002,10 @@ absl::Status write_stitching_calibration_frame_inspection(
   auto config_lock = GameConfigTransactionLock::Acquire(game_dir);
   if (!config_lock.ok())
     return config_lock.status();
-  HM_RETURN_IF_ERROR(
-      validate_stitching_generation_owner_file_locked(fs::path(game_dir) / "config.yaml", expected_invalidation_id));
+  HM_RETURN_IF_ERROR(validate_stitching_generation_owner_file_locked(
+      hm::game_storage::StateDirectory(game_dir) / "config.yaml", expected_invalidation_id));
 
-  const fs::path root = fs::path(game_dir) / "calibration-frame-inspection";
+  const fs::path root = hm::game_storage::StateDirectory(game_dir) / "calibration-frame-inspection";
   const fs::path inspection = root / expected_invalidation_id;
   std::error_code error;
   for (const fs::path& directory : {root, inspection}) {
@@ -3109,7 +3088,8 @@ absl::Status write_stitching_calibration_frame_inspection(
       return absl::InternalError("Cannot publish calibration frame inspection manifest: " + error.message());
     HM_RETURN_IF_ERROR(fsync_stitch_path(inspection, true));
     HM_RETURN_IF_ERROR(fsync_stitch_path(root, true));
-    return fsync_stitch_path(game_dir, true);
+    HM_RETURN_IF_ERROR(fsync_stitch_path(hm::game_storage::StateDirectory(game_dir), true));
+    return hm::game_storage::RefreshManifest(game_dir, "calibration-inspection");
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Invalid calibration frame inspection: " + std::string(exception.what()));
   } catch (const cv::Exception& exception) {
@@ -3131,9 +3111,9 @@ absl::Status update_stitching_match_inspection(
   auto lock = GameConfigTransactionLock::Acquire(game_dir);
   if (!lock.ok())
     return lock.status();
-  HM_RETURN_IF_ERROR(
-      validate_stitching_generation_owner_file_locked(fs::path(game_dir) / "config.yaml", expected_invalidation_id));
-  const fs::path root = fs::path(game_dir) / "calibration-frame-inspection";
+  HM_RETURN_IF_ERROR(validate_stitching_generation_owner_file_locked(
+      hm::game_storage::StateDirectory(game_dir) / "config.yaml", expected_invalidation_id));
+  const fs::path root = hm::game_storage::StateDirectory(game_dir) / "calibration-frame-inspection";
   const fs::path directory = root / expected_invalidation_id;
   std::error_code error;
   for (const auto& path : {root, directory}) {
@@ -3181,7 +3161,8 @@ absl::Status update_stitching_match_inspection(
   }
   HM_RETURN_IF_ERROR(fsync_stitch_path(directory, true));
   HM_RETURN_IF_ERROR(fsync_stitch_path(root, true));
-  return fsync_stitch_path(game_dir, true);
+  HM_RETURN_IF_ERROR(fsync_stitch_path(hm::game_storage::StateDirectory(game_dir), true));
+  return hm::game_storage::RefreshManifest(game_dir, "calibration-inspection");
 }
 
 } // namespace
@@ -3201,7 +3182,7 @@ absl::Status create_control_points(
   StitchingBackendChoices backend_choices;
   std::optional<std::array<StitchCameraOptics, 2>> ordered_input_cameras;
   std::optional<PlayerFrameSelectionPlan> selected_plan;
-  const fs::path game_config_path = fs::path(game_dir) / "config.yaml";
+  const fs::path game_config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   try {
     if (fs::exists(game_config_path)) {
       const YAML::Node config = YAML::LoadFile(game_config_path.string());
@@ -3298,7 +3279,8 @@ absl::Status create_control_points(
     }
   }
 
-  std::string pattern = (fs::path(game_dir) / "hstream-calibration-input-XXXXXX").string();
+  HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_dir));
+  std::string pattern = (hm::game_storage::StateDirectory(game_dir) / "hstream-calibration-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -3309,11 +3291,15 @@ absl::Status create_control_points(
   const fs::path input_dir(created);
   struct RemoveInputDirectory {
     fs::path path;
+    fs::path game;
     ~RemoveInputDirectory() {
       std::error_code ignored;
       fs::remove_all(path, ignored);
+      // Nested publication may have inventoried this scratch directory before
+      // returning to its owner. Remove that entry when the operation finishes.
+      refresh_manifest_after_cleanup(game);
     }
-  } input_cleanup{input_dir};
+  } input_cleanup{input_dir, game_dir};
   if (::chmod(input_dir.c_str(), 0700) != 0) {
     return absl::InternalError("Unable to protect private calibration input directory");
   }
@@ -3473,8 +3459,8 @@ absl::Status create_control_points(
     if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
       // Inspection reuses the CPU stills that matching already requires. This
       // bounded private diagnostic never adds readback to scan or Program video.
-      const fs::path inspection =
-          fs::path(game_dir) / "player-frame-inspection" / backend_choices.calibration_frame_selection_fingerprint;
+      const fs::path inspection = hm::game_storage::StateDirectory(game_dir) / "player-frame-inspection" /
+          backend_choices.calibration_frame_selection_fingerprint;
       std::error_code inspection_error;
       fs::create_directories(inspection, inspection_error);
       if (inspection_error)
@@ -4264,7 +4250,7 @@ absl::Status validate_stitched_output_generation(
   if (!hugin_generation.ok())
     return hugin_generation.status();
   HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
-  auto config = load_config_or_empty(root / "config.yaml");
+  auto config = load_config_or_empty(hm::game_storage::StateDirectory(root) / "config.yaml");
   if (!config.ok())
     return config.status();
   return validate_stitching_generation_owner(*config, expected_invalidation_id);
@@ -4285,7 +4271,7 @@ absl::StatusOr<std::string> configured_stitched_output_generation_id(
   auto config_lock = GameConfigTransactionLock::Acquire(root);
   if (!config_lock.ok())
     return config_lock.status();
-  auto config = load_config_or_empty(root / "config.yaml");
+  auto config = load_config_or_empty(hm::game_storage::StateDirectory(root) / "config.yaml");
   if (!config.ok())
     return config.status();
   CanvasSize output_size;
@@ -4310,7 +4296,7 @@ absl::StatusOr<std::string> current_stitched_output_generation_id(const std::str
   auto hugin_generation = HuginProject::GenerationId(root, **hugin_lock);
   if (!hugin_generation.ok())
     return hugin_generation.status();
-  auto config = load_config_or_empty(root / "config.yaml");
+  auto config = load_config_or_empty(hm::game_storage::StateDirectory(root) / "config.yaml");
   if (!config.ok())
     return config.status();
   return current_stitched_output_generation_id_locked(game_dir, *config, *hugin_generation);
@@ -4479,7 +4465,7 @@ absl::Status visit_current_field_mask_impl(
     if (!artifact_revision.ok())
       return artifact_revision.status();
     if (*artifact_revision == previously_validated->artifact_revision &&
-        test_dependency_tree(game_dir, /*add_rink_mask=*/false)) {
+        test_dependency_tree(hm::game_storage::StateDirectory(game_dir).string(), /*add_rink_mask=*/false)) {
       hugin_generation = previously_validated->generation_id;
       reused_generation = true;
       generation_content_validated = previously_validated->content_validated;
@@ -4493,7 +4479,7 @@ absl::Status visit_current_field_mask_impl(
       generation_content_validated = true;
     }
   }
-  auto config = load_config_or_empty(root / "config.yaml");
+  auto config = load_config_or_empty(hm::game_storage::StateDirectory(root) / "config.yaml");
   if (!config.ok())
     return config.status();
   HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
@@ -4577,7 +4563,7 @@ absl::Status visit_current_field_mask_impl(
   } catch (const YAML::Exception& exception) {
     return absl::InvalidArgumentError("Invalid field-mask generation metadata: " + std::string(exception.what()));
   }
-  const fs::path mask_path = root / "rink_mask_0.png";
+  const fs::path mask_path = hm::game_storage::StateDirectory(root) / "rink_mask_0.png";
   std::error_code ec;
   if (!fs::exists(mask_path, ec) || ec) {
     return absl::NotFoundError("Field mask is missing: " + mask_path.string());
@@ -4813,12 +4799,12 @@ absl::Status validate_field_mask_publication_authority(
     return config_lock.status();
   try {
     std::error_code error;
-    if (!fs::is_regular_file(root / "config.yaml", error)) {
+    if (!fs::is_regular_file(hm::game_storage::StateDirectory(root) / "config.yaml", error)) {
       if (error)
         return absl::InternalError("Unable to inspect game config: " + error.message());
       return absl::NotFoundError("Game config is missing");
     }
-    const YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
+    const YAML::Node config = YAML::LoadFile((hm::game_storage::StateDirectory(root) / "config.yaml").string());
     return validate_live_output_publication_authority(
         config, expected_output_generation, expected_output_authorization_id);
   } catch (const YAML::Exception& exception) {
@@ -5018,7 +5004,7 @@ absl::Status save_rink_profile_locked(
     return config_transaction.status();
 
   std::vector<fs::path> old_files;
-  auto old_entries = directory_entries(root, "old rink masks");
+  auto old_entries = directory_entries(hm::game_storage::StateDirectory(root), "old rink masks");
   if (!old_entries.ok())
     return old_entries.status();
   for (const auto& entry : *old_entries) {
@@ -5026,7 +5012,7 @@ absl::Status save_rink_profile_locked(
     if (is_rink_artifact_name(name) && (name != "s.png" || stitched_image != nullptr))
       old_files.push_back(entry.path());
   }
-  auto opened_root = PinnedDirectory::Open(root, "rink profile root");
+  auto opened_root = PinnedDirectory::Open(hm::game_storage::StateDirectory(root), "rink profile root");
   if (!opened_root.ok())
     return opened_root.status();
   std::vector<std::string> old_names;
@@ -5047,10 +5033,11 @@ absl::Status save_rink_profile_locked(
   if (bounded_published_names.size() > kMaximumRinkTransactionArtifacts)
     return absl::ResourceExhaustedError("Rink profile transaction contains too many artifacts");
 
-  auto pending_status = mark_transaction_recovery_pending(root, TransactionJournalKind::kRink);
+  auto pending_status =
+      mark_transaction_recovery_pending(hm::game_storage::StateDirectory(root), TransactionJournalKind::kRink);
   if (!pending_status.ok())
     return pending_status;
-  std::string pattern = (root / "hstream-rink-XXXXXX").string();
+  std::string pattern = (hm::game_storage::StateDirectory(root) / "hstream-rink-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -5102,7 +5089,7 @@ absl::Status save_rink_profile_locked(
       return sync_status;
   }
 
-  const fs::path config_path = root / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(root) / "config.yaml";
   YAML::Node config(YAML::NodeType::Map);
   try {
     if (fs::is_regular_file(config_path))
@@ -5196,7 +5183,7 @@ absl::Status save_rink_profile_locked(
       HM_ASSIGN_OR_RETURN(input, InspectRinkMaskInput(root, frame.input_id, limits, is_cancelled));
       const auto& retained = input.description;
       StitchArtifactContentIdentity identity;
-      HM_ASSIGN_OR_RETURN(identity, stitch_artifact_content_identity_locked(root));
+      HM_ASSIGN_OR_RETURN(identity, stitch_artifact_content_identity_locked(hm::game_storage::StateDirectory(root)));
       if (retained.hugin_generation != hugin_generation || identity.generation_id != hugin_generation ||
           retained.hugin_fingerprint != identity.fingerprint ||
           retained.width != static_cast<uint32_t>(expected_size.width) ||
@@ -5310,7 +5297,7 @@ absl::Status save_rink_profile_locked(
     return sync_status;
   // Persist the PREPARED transaction directory entry before deleting or
   // replacing any flat config/mask artifacts in the game directory.
-  sync_status = fsync_path(root, true);
+  sync_status = fsync_path(hm::game_storage::StateDirectory(root), true);
   if (!sync_status.ok())
     return sync_status;
   cleanup.prepared = true;
@@ -5320,18 +5307,18 @@ absl::Status save_rink_profile_locked(
   }
 
   auto rollback_error = [&](const std::string& message) {
-    const auto rollback_status = recover_rink_transactions_locked(root);
+    const auto rollback_status = recover_rink_transactions_locked(hm::game_storage::StateDirectory(root));
     if (!rollback_status.ok())
       return absl::InternalError(message + "; rollback also failed: " + std::string(rollback_status.message()));
     return absl::InternalError(message);
   };
   for (const std::string& name : published_names) {
-    fs::remove(root / name, error);
+    fs::remove(hm::game_storage::StateDirectory(root) / name, error);
     if (error)
       return rollback_error("Unable to remove old rink artifact: " + error.message());
   }
   for (const fs::path& source : new_files) {
-    const fs::path destination = root / source.filename();
+    const fs::path destination = hm::game_storage::StateDirectory(root) / source.filename();
     fs::rename(source, destination, error);
     if (error)
       return rollback_error("Unable to publish rink artifact: " + error.message());
@@ -5339,7 +5326,7 @@ absl::Status save_rink_profile_locked(
     if (!sync_status.ok())
       return rollback_error(std::string(sync_status.message()));
   }
-  sync_status = fsync_path(root, true);
+  sync_status = fsync_path(hm::game_storage::StateDirectory(root), true);
   if (!sync_status.ok())
     return rollback_error(std::string(sync_status.message()));
   sync_status = write_transaction_file(staging / "state.committed", "COMMITTED\n");
@@ -5354,16 +5341,16 @@ absl::Status save_rink_profile_locked(
   sync_status = remove_owned_directory(staging, kOwnedDirectoryMarkerName, kOwnedDirectoryMarkerContents);
   if (!sync_status.ok())
     return sync_status;
-  sync_status = fsync_path(root, true);
+  sync_status = fsync_path(hm::game_storage::StateDirectory(root), true);
   if (!sync_status.ok())
     return sync_status;
-  sync_status = complete_transaction_recovery(root, TransactionJournalKind::kRink);
+  sync_status = complete_transaction_recovery(hm::game_storage::StateDirectory(root), TransactionJournalKind::kRink);
   if (!sync_status.ok())
     return sync_status;
   const absl::Status prune = PruneRinkMaskInputs(root, frame.input_id);
   if (!prune.ok())
     std::cerr << "Retained rink-mask input cleanup deferred: " << prune << '\n';
-  return absl::OkStatus();
+  return hm::game_storage::RefreshManifest(root, "rink-profile");
 }
 
 absl::Status save_rink_profile(
@@ -5411,7 +5398,7 @@ absl::Status save_rink_profile_with_stitched_image(
     auto config_transaction = GameConfigTransactionLock::Acquire(root);
     if (!config_transaction.ok())
       return config_transaction.status();
-    auto config = load_config_or_empty(root / "config.yaml");
+    auto config = load_config_or_empty(hm::game_storage::StateDirectory(root) / "config.yaml");
     if (!config.ok())
       return config.status();
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
@@ -5453,7 +5440,7 @@ absl::Status create_field_mask(
   if (!expected_output_generation.empty()) {
     HM_RETURN_IF_ERROR(validate_output_generation_hugin(expected_output_generation, *hugin_generation));
   }
-  auto frame_config = load_config_or_empty(root / "config.yaml");
+  auto frame_config = load_config_or_empty(hm::game_storage::StateDirectory(root) / "config.yaml");
   if (!frame_config.ok())
     return frame_config.status();
   std::string requested_time;
@@ -5470,7 +5457,7 @@ absl::Status create_field_mask(
     auto config_transaction = GameConfigTransactionLock::Acquire(root);
     if (!config_transaction.ok())
       return config_transaction.status();
-    auto config = load_config_or_empty(root / "config.yaml");
+    auto config = load_config_or_empty(hm::game_storage::StateDirectory(root) / "config.yaml");
     if (!config.ok())
       return config.status();
     HM_RETURN_IF_ERROR(validate_stitching_generation_owner(*config, expected_invalidation_id));
@@ -5488,7 +5475,7 @@ absl::Status create_field_mask(
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
-  std::string pattern = (root / "hstream-field-mask-input-XXXXXX").string();
+  std::string pattern = (hm::game_storage::StateDirectory(root) / "hstream-field-mask-input-XXXXXX").string();
   std::vector<char> writable(pattern.begin(), pattern.end());
   writable.push_back('\0');
   char* created = ::mkdtemp(writable.data());
@@ -5497,11 +5484,15 @@ absl::Status create_field_mask(
   const fs::path input_dir(created);
   struct RemoveInputDirectory {
     fs::path path;
+    fs::path game;
     ~RemoveInputDirectory() {
       std::error_code ignored;
       fs::remove_all(path, ignored);
+      // Nested publication may have inventoried this scratch directory before
+      // returning to its owner. Remove that entry when the operation finishes.
+      refresh_manifest_after_cleanup(game);
     }
-  } input_cleanup{input_dir};
+  } input_cleanup{input_dir, game_dir};
   if (::chmod(input_dir.c_str(), 0700) != 0)
     return absl::InternalError("Unable to protect private rink input directory");
   const fs::path stitched_path = input_dir / "s.png";
@@ -5567,7 +5558,7 @@ absl::Status configure_orientation(
 }
 
 bool is_scoreboard_configured(const std::string& game_dir) {
-  const fs::path config_file = fs::path(game_dir) / "config.yaml";
+  const fs::path config_file = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   auto loaded_config = load_game_config_file(config_file);
   if (!loaded_config.ok() || !loaded_config->has_value()) {
     return false;
@@ -5605,7 +5596,7 @@ absl::Status reframe_stitching(
     size_t max_output_width) {
   if (expected_invalidation_id.empty())
     return absl::FailedPreconditionError("Reusing the saved alignment requires a pending calibration owner");
-  const fs::path config_path = fs::path(game_dir) / "config.yaml";
+  const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   StitchingReframeIntent intent;
   std::string request;
   {
@@ -5685,7 +5676,7 @@ absl::Status configure_stitching(
     size_t max_output_width,
     const std::string& captured_frame_selection_fingerprint) {
   std::optional<YAML::Node> config;
-  HM_ASSIGN_OR_RETURN(config, load_game_config_file(fs::path(game_dir) / "config.yaml"));
+  HM_ASSIGN_OR_RETURN(config, load_game_config_file(hm::game_storage::StateDirectory(game_dir) / "config.yaml"));
   if (config && HasStitchingReframeIntent(*config))
     return reframe_stitching(game_dir, expected_invalidation_id, is_cancelled, max_output_width);
   HM_RETURN_IF_ERROR(create_control_points(

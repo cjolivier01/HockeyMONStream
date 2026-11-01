@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <algorithm>
 #include <chrono>
@@ -138,7 +139,8 @@ absl::StatusOr<std::string> RinkMapCalibrationRevision(const std::filesystem::pa
   if (!hash || EVP_DigestInit_ex(hash.get(), EVP_sha256(), nullptr) != 1)
     return absl::InternalError("Could not initialize rink calibration digest");
   for (const char* name : {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"}) {
-    auto bytes = read_bounded_regular_file_no_follow(directory / name, 128 * 1024 * 1024, "rink-map calibration");
+    auto bytes = read_bounded_regular_file_no_follow(
+        hm::game_storage::StateDirectory(directory) / name, 128 * 1024 * 1024, "rink-map calibration");
     if (!bytes.ok())
       return bytes.status();
     const std::string size = std::to_string(bytes->size());
@@ -254,7 +256,8 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
     auto config_lock = GameConfigTransactionLock::TryAcquire(directory.string());
     if (!config_lock.ok())
       return config_lock.status();
-    auto saved = read_bounded_regular_file_no_follow(directory / "rink-map.yaml", 512 * 1024, "saved rink map");
+    auto saved = read_bounded_regular_file_no_follow(
+        hm::game_storage::StateDirectory(directory) / "rink-map.yaml", 512 * 1024, "saved rink map");
     if (!saved.ok())
       return absl::FailedPreconditionError("Save a reviewed rink map before using rink-aware framing or the mini-map");
     auto parsed = ParseRinkMap(*saved);
@@ -270,7 +273,8 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
     auto revision = RinkMapCalibrationRevision(directory);
     if (!digest.ok() || !revision.ok() || *digest != document.generation || *revision != document.calibration_revision)
       return absl::FailedPreconditionError("The rink map belongs to an older calibration; review and save it again");
-    auto config = read_bounded_regular_file_no_follow(directory / "config.yaml", 4 * 1024 * 1024, "rink configuration");
+    auto config = read_bounded_regular_file_no_follow(
+        hm::game_storage::StateDirectory(directory) / "config.yaml", 4 * 1024 * 1024, "rink configuration");
     if (!config.ok())
       return config.status();
     try {
@@ -293,8 +297,8 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
     canvas = *placement;
     if (canvas.width != (**provenance).canvas_width || canvas.height != (**provenance).canvas_height)
       return absl::FailedPreconditionError("Mapping TIFFs do not match their published canvas");
-    auto project =
-        read_bounded_regular_file_no_follow(directory / "autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
+    auto project = read_bounded_regular_file_no_follow(
+        hm::game_storage::StateDirectory(directory) / "autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
     if (!project.ok())
       return project.status();
     pto = *project;

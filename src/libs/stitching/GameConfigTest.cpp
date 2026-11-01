@@ -20,6 +20,14 @@
 #include <yaml-cpp/yaml.h>
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 
 namespace fs = std::filesystem;
 
@@ -33,7 +41,7 @@ int update_key(const fs::path& root, const std::string& key) {
   auto lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   if (!lock.ok())
     return 1;
-  YAML::Node config = YAML::LoadFile((root / "config.yaml").string());
+  YAML::Node config = YAML::LoadFile((saved_state(root) / "config.yaml").string());
   config["writers"][key] = true;
   return hm::stitching::publish_game_config(root, YAML::Dump(config) + "\n").ok() ? 0 : 2;
 }
@@ -212,7 +220,7 @@ int main() {
   const fs::path root = fs::temp_directory_path() / ("game-config-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
   fs::create_directories(root);
-  std::ofstream(root / "config.yaml") << "unrelated:\n  keep: true\n";
+  std::ofstream(saved_state(root) / "config.yaml") << "unrelated:\n  keep: true\n";
   ok &= test_player_frame_selection_state(root / "player-selection");
 
   using hm::stitching::ControlPointFiltering;
@@ -729,7 +737,7 @@ stitching:
   std::atomic<bool> reader_finished{false};
   std::atomic<bool> reader_succeeded{false};
   std::thread waiter([&]() {
-    auto loaded = hm::stitching::load_game_config_file(root / "config.yaml");
+    auto loaded = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
     reader_succeeded = loaded.ok() && loaded->has_value();
     reader_finished = true;
   });
@@ -745,7 +753,8 @@ stitching:
     available_lock->reset();
   const fs::path symlinked_game_root = root.parent_path() / (root.filename().string() + "-symlink");
   fs::create_directory_symlink(root, symlinked_game_root);
-  const auto symlinked_game_read = hm::stitching::load_game_config_file(symlinked_game_root / "config.yaml");
+  const auto symlinked_game_read =
+      hm::stitching::load_game_config_file(saved_state(symlinked_game_root) / "config.yaml");
   ok &= expect(
       symlinked_game_read.ok() && symlinked_game_read->has_value(),
       "config recovery must follow and pin a caller-selected symlinked game directory");
@@ -765,14 +774,14 @@ stitching:
       WIFEXITED(first_status) && WEXITSTATUS(first_status) == 0 && WIFEXITED(second_status) &&
           WEXITSTATUS(second_status) == 0,
       "concurrent config writers must both publish successfully");
-  YAML::Node merged = YAML::LoadFile((root / "config.yaml").string());
+  YAML::Node merged = YAML::LoadFile((saved_state(root) / "config.yaml").string());
   ok &= expect(
       merged["unrelated"]["keep"].as<bool>() && merged["writers"]["first"].as<bool>() &&
           merged["writers"]["second"].as<bool>(),
       "serialized disjoint config updates must preserve every key");
   struct stat metadata{};
   ok &= expect(
-      ::stat((root / "config.yaml").c_str(), &metadata) == 0 && (metadata.st_mode & 0777) == 0600,
+      ::stat((saved_state(root) / "config.yaml").c_str(), &metadata) == 0 && (metadata.st_mode & 0777) == 0600,
       "atomically published private config must be owner-only");
 
   YAML::Node absent_baseline;
@@ -835,33 +844,34 @@ stitching:
           ordered_merged[1].as<std::string>() == "A.mp4" && ordered_merged[2].as<std::string>() == "C.mp4",
       "rollback merging must preserve the latest sequence's relative order around restored entries");
 
-  const fs::path visible_user_directory = root / "hstream-rink-ABC123";
+  const fs::path visible_user_directory = saved_state(root) / "hstream-rink-ABC123";
   fs::create_directories(visible_user_directory);
   std::ofstream(visible_user_directory / "notes.txt") << "operator-owned\n";
-  const fs::path visible_user_file = root / "hstream-rink-DEF456";
+  const fs::path visible_user_file = saved_state(root) / "hstream-rink-DEF456";
   std::ofstream(visible_user_file) << "operator-owned\n";
-  const fs::path visible_user_symlink = root / "hstream-rink-GHI789";
+  const fs::path visible_user_symlink = saved_state(root) / "hstream-rink-GHI789";
   fs::create_symlink(visible_user_file, visible_user_symlink);
   ok &= expect(
-      hm::stitching::mark_transaction_recovery_pending(root, hm::stitching::TransactionJournalKind::kRink).ok() &&
-          hm::stitching::load_game_config_file(root / "config.yaml").ok() &&
+      hm::stitching::mark_transaction_recovery_pending(saved_state(root), hm::stitching::TransactionJournalKind::kRink)
+              .ok() &&
+          hm::stitching::load_game_config_file(saved_state(root) / "config.yaml").ok() &&
           fs::exists(visible_user_directory / "notes.txt") && fs::is_regular_file(visible_user_file) &&
           fs::is_symlink(visible_user_symlink),
       "rink recovery must ignore unauthenticated visible directory, file, and symlink prefix collisions");
 
-  const fs::path interrupted = root / ".hstream-rink-interrupted";
+  const fs::path interrupted = saved_state(root) / ".hstream-rink-interrupted";
   fs::create_directories(interrupted / "previous");
   std::ofstream(interrupted / "previous" / "config.yaml") << "recovered:\n  old: true\n";
   std::ofstream(interrupted / "previous" / "rink_mask_0.png") << "old-mask";
   std::ofstream(interrupted / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(interrupted / "state") << "PREPARED\n";
-  std::ofstream(root / "config.yaml") << "interrupted: true\n";
-  std::ofstream(root / "rink_mask_0.png") << "new-mask";
+  std::ofstream(saved_state(root) / "config.yaml") << "interrupted: true\n";
+  std::ofstream(saved_state(root) / "rink_mask_0.png") << "new-mask";
   const fs::path rollback_state_target = root / "rink-rollback-state-target";
   std::ofstream(rollback_state_target) << "preserved\n";
   fs::create_symlink(rollback_state_target, interrupted / "state.rolled_back");
   ::setenv("HM_TEST_RINK_DISABLE_LINK_CLONE", "1", 1);
-  auto recovered_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  auto recovered_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ::unsetenv("HM_TEST_RINK_DISABLE_LINK_CLONE");
   ok &= expect(
       recovered_read.ok() && recovered_read->has_value(),
@@ -877,7 +887,7 @@ stitching:
           "a config update after rink recovery must publish");
     }
   }
-  YAML::Node recovered = YAML::LoadFile((root / "config.yaml").string());
+  YAML::Node recovered = YAML::LoadFile((saved_state(root) / "config.yaml").string());
   ok &= expect(
       recovered["recovered"]["old"].as<bool>() && recovered["after_recovery"].as<bool>() && !recovered["interrupted"],
       "rink recovery must precede and preserve the subsequent config mutation");
@@ -890,19 +900,19 @@ stitching:
   ok &= expect(!fs::exists(interrupted), "recovered rink journal must be removed");
   fs::remove(rollback_state_target);
 
-  const fs::path symlinked_transaction = root / ".hstream-rink-symlinked-transaction";
+  const fs::path symlinked_transaction = saved_state(root) / ".hstream-rink-symlinked-transaction";
   const fs::path transaction_target = root / "rink-transaction-symlink-target";
   fs::create_directories(transaction_target / "previous");
-  fs::copy_file(root / "config.yaml", transaction_target / "previous" / "config.yaml");
-  fs::copy_file(root / "rink_mask_0.png", transaction_target / "previous" / "rink_mask_0.png");
+  fs::copy_file(saved_state(root) / "config.yaml", transaction_target / "previous" / "config.yaml");
+  fs::copy_file(saved_state(root) / "rink_mask_0.png", transaction_target / "previous" / "rink_mask_0.png");
   std::ofstream(transaction_target / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(transaction_target / "state") << "PREPARED\n";
   fs::create_directory_symlink(transaction_target, symlinked_transaction);
   const std::string config_before_symlinked_transaction = [&]() {
-    std::ifstream input(root / "config.yaml", std::ios::binary);
+    std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
-  const auto symlinked_transaction_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto symlinked_transaction_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsFailedPrecondition(symlinked_transaction_read.status()) &&
           fs::is_symlink(fs::symlink_status(symlinked_transaction)) &&
@@ -911,7 +921,7 @@ stitching:
             return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) == "PREPARED\n";
           }() &&
           [&]() {
-            std::ifstream input(root / "config.yaml", std::ios::binary);
+            std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
             return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
                 config_before_symlinked_transaction;
           }(),
@@ -919,16 +929,16 @@ stitching:
   fs::remove(symlinked_transaction);
   fs::remove_all(transaction_target);
 
-  const fs::path symlinked_previous = root / ".hstream-rink-symlinked-previous";
+  const fs::path symlinked_previous = saved_state(root) / ".hstream-rink-symlinked-previous";
   const fs::path previous_target = root / "rink-previous-symlink-target";
   fs::create_directories(symlinked_previous);
   fs::create_directories(previous_target);
-  fs::copy_file(root / "config.yaml", previous_target / "config.yaml");
-  fs::copy_file(root / "rink_mask_0.png", previous_target / "rink_mask_0.png");
+  fs::copy_file(saved_state(root) / "config.yaml", previous_target / "config.yaml");
+  fs::copy_file(saved_state(root) / "rink_mask_0.png", previous_target / "rink_mask_0.png");
   fs::create_directory_symlink(previous_target, symlinked_previous / "previous");
   std::ofstream(symlinked_previous / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(symlinked_previous / "state") << "PREPARED\n";
-  const auto symlinked_previous_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto symlinked_previous_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsFailedPrecondition(symlinked_previous_read.status()) && fs::exists(symlinked_previous) &&
           fs::is_symlink(fs::symlink_status(symlinked_previous / "previous")) &&
@@ -938,52 +948,52 @@ stitching:
   fs::remove_all(previous_target);
 
   const auto root_config_contents = [&]() {
-    std::ifstream input(root / "config.yaml", std::ios::binary);
+    std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   };
-  const fs::path missing_previous = root / ".hstream-rink-missing-previous";
+  const fs::path missing_previous = saved_state(root) / ".hstream-rink-missing-previous";
   fs::create_directories(missing_previous);
   std::ofstream(missing_previous / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(missing_previous / "state") << "PREPARED\n";
   const std::string config_before_missing_previous = root_config_contents();
-  const auto missing_previous_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto missing_previous_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsFailedPrecondition(missing_previous_read.status()) && fs::exists(missing_previous) &&
           root_config_contents() == config_before_missing_previous,
       "config recovery must reject a prepared journal without backups before mutating committed files");
   fs::remove_all(missing_previous);
 
-  const fs::path unmanifested_backup = root / ".hstream-rink-unmanifested-backup";
+  const fs::path unmanifested_backup = saved_state(root) / ".hstream-rink-unmanifested-backup";
   fs::create_directories(unmanifested_backup / "previous");
-  fs::copy_file(root / "config.yaml", unmanifested_backup / "previous" / "config.yaml");
+  fs::copy_file(saved_state(root) / "config.yaml", unmanifested_backup / "previous" / "config.yaml");
   std::ofstream(unmanifested_backup / "previous" / "s.png") << "unmanifested";
   std::ofstream(unmanifested_backup / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(unmanifested_backup / "state") << "PREPARED\n";
   const std::string config_before_unmanifested_backup = root_config_contents();
-  const auto unmanifested_backup_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto unmanifested_backup_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsInvalidArgument(unmanifested_backup_read.status()) && fs::exists(unmanifested_backup) &&
-          root_config_contents() == config_before_unmanifested_backup && !fs::exists(root / "s.png"),
+          root_config_contents() == config_before_unmanifested_backup && !fs::exists(saved_state(root) / "s.png"),
       "config recovery must reject an unmanifested validly named backup before root mutation");
   fs::remove_all(unmanifested_backup);
 
-  const fs::path oversized_backup = root / ".hstream-rink-oversized-backup";
+  const fs::path oversized_backup = saved_state(root) / ".hstream-rink-oversized-backup";
   fs::create_directories(oversized_backup / "previous");
-  fs::copy_file(root / "config.yaml", oversized_backup / "previous" / "config.yaml");
-  fs::copy_file(root / "rink_mask_0.png", oversized_backup / "previous" / "rink_mask_0.png");
+  fs::copy_file(saved_state(root) / "config.yaml", oversized_backup / "previous" / "config.yaml");
+  fs::copy_file(saved_state(root) / "rink_mask_0.png", oversized_backup / "previous" / "rink_mask_0.png");
   const bool oversized_backup_created =
       ::truncate((oversized_backup / "previous" / "config.yaml").c_str(), 16LL * 1024LL * 1024LL + 1) == 0;
   std::ofstream(oversized_backup / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(oversized_backup / "state") << "PREPARED\n";
   const std::string config_before_oversized_backup = root_config_contents();
-  const auto oversized_backup_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto oversized_backup_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       oversized_backup_created && absl::IsFailedPrecondition(oversized_backup_read.status()) &&
           fs::exists(oversized_backup) && root_config_contents() == config_before_oversized_backup,
       "config recovery must reject an oversized backup before deleting the committed generation");
   fs::remove_all(oversized_backup);
 
-  const fs::path over_count = root / ".hstream-rink-over-count";
+  const fs::path over_count = saved_state(root) / ".hstream-rink-over-count";
   fs::create_directories(over_count / "previous");
   {
     std::ofstream manifest(over_count / "new-files");
@@ -993,31 +1003,31 @@ stitching:
   }
   std::ofstream(over_count / "state") << "PREPARED\n";
   const std::string config_before_over_count = root_config_contents();
-  const auto over_count_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto over_count_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsResourceExhausted(over_count_read.status()) && fs::exists(over_count) &&
           root_config_contents() == config_before_over_count,
       "config recovery must reject over-count rink journals before staging any restore");
   fs::remove_all(over_count);
 
-  const fs::path symlinked_manifest = root / ".hstream-rink-symlinked-manifest";
+  const fs::path symlinked_manifest = saved_state(root) / ".hstream-rink-symlinked-manifest";
   const fs::path manifest_target = root / "rink-manifest-symlink-target";
   fs::create_directories(symlinked_manifest / "previous");
-  fs::copy_file(root / "config.yaml", symlinked_manifest / "previous" / "config.yaml");
-  fs::copy_file(root / "rink_mask_0.png", symlinked_manifest / "previous" / "rink_mask_0.png");
+  fs::copy_file(saved_state(root) / "config.yaml", symlinked_manifest / "previous" / "config.yaml");
+  fs::copy_file(saved_state(root) / "rink_mask_0.png", symlinked_manifest / "previous" / "rink_mask_0.png");
   std::ofstream(manifest_target) << "config.yaml\nrink_mask_0.png\n";
   fs::create_symlink(manifest_target, symlinked_manifest / "new-files");
   std::ofstream(symlinked_manifest / "state") << "PREPARED\n";
   const std::string config_before_symlinked_manifest = [&]() {
-    std::ifstream input(root / "config.yaml", std::ios::binary);
+    std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
-  const auto symlinked_manifest_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto symlinked_manifest_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsFailedPrecondition(symlinked_manifest_read.status()) && fs::exists(symlinked_manifest) &&
           fs::is_symlink(fs::symlink_status(symlinked_manifest / "new-files")) &&
           [&]() {
-            std::ifstream input(root / "config.yaml", std::ios::binary);
+            std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
             return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
                 config_before_symlinked_manifest;
           }(),
@@ -1025,22 +1035,22 @@ stitching:
   fs::remove_all(symlinked_manifest);
   fs::remove(manifest_target);
 
-  const fs::path unreadable = root / ".hstream-rink-unreadable";
+  const fs::path unreadable = saved_state(root) / ".hstream-rink-unreadable";
   fs::create_directories(unreadable / "previous");
-  fs::copy_file(root / "config.yaml", unreadable / "previous" / "config.yaml");
-  fs::copy_file(root / "rink_mask_0.png", unreadable / "previous" / "rink_mask_0.png");
+  fs::copy_file(saved_state(root) / "config.yaml", unreadable / "previous" / "config.yaml");
+  fs::copy_file(saved_state(root) / "rink_mask_0.png", unreadable / "previous" / "rink_mask_0.png");
   std::ofstream(unreadable / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(unreadable / "state") << "PREPARED\n";
   const std::string config_before_unreadable_recovery = [&]() {
-    std::ifstream input(root / "config.yaml", std::ios::binary);
+    std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
   fs::permissions(unreadable / "previous", fs::perms::owner_exec, fs::perm_options::replace);
-  const auto unreadable_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto unreadable_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
-      !unreadable_read.ok() && fs::exists(unreadable) && fs::is_regular_file(root / "config.yaml") &&
+      !unreadable_read.ok() && fs::exists(unreadable) && fs::is_regular_file(saved_state(root) / "config.yaml") &&
           [&]() {
-            std::ifstream input(root / "config.yaml", std::ios::binary);
+            std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
             return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
                 config_before_unreadable_recovery;
           }(),
@@ -1048,24 +1058,24 @@ stitching:
   fs::permissions(unreadable / "previous", fs::perms::owner_all, fs::perm_options::replace);
   fs::remove_all(unreadable);
 
-  const fs::path symlinked_backup = root / ".hstream-rink-symlinked-backup";
+  const fs::path symlinked_backup = saved_state(root) / ".hstream-rink-symlinked-backup";
   const fs::path symlinked_backup_target = root / "config-backup-symlink-target.yaml";
   fs::create_directories(symlinked_backup / "previous");
-  fs::copy_file(root / "config.yaml", symlinked_backup_target);
+  fs::copy_file(saved_state(root) / "config.yaml", symlinked_backup_target);
   fs::create_symlink(symlinked_backup_target, symlinked_backup / "previous" / "config.yaml");
-  fs::copy_file(root / "rink_mask_0.png", symlinked_backup / "previous" / "rink_mask_0.png");
+  fs::copy_file(saved_state(root) / "rink_mask_0.png", symlinked_backup / "previous" / "rink_mask_0.png");
   std::ofstream(symlinked_backup / "new-files") << "config.yaml\nrink_mask_0.png\n";
   std::ofstream(symlinked_backup / "state") << "PREPARED\n";
   const std::string config_before_symlinked_backup = [&]() {
-    std::ifstream input(root / "config.yaml", std::ios::binary);
+    std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
-  const auto symlinked_backup_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto symlinked_backup_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       !symlinked_backup_read.ok() && fs::exists(symlinked_backup) &&
           fs::is_symlink(fs::symlink_status(symlinked_backup / "previous" / "config.yaml")) &&
           [&]() {
-            std::ifstream input(root / "config.yaml", std::ios::binary);
+            std::ifstream input(saved_state(root) / "config.yaml", std::ios::binary);
             return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
                 config_before_symlinked_backup;
           }(),
@@ -1073,21 +1083,22 @@ stitching:
   fs::remove_all(symlinked_backup);
   fs::remove(symlinked_backup_target);
 
-  const fs::path fifo_state = root / ".hstream-rink-fifo-state";
+  const fs::path fifo_state = saved_state(root) / ".hstream-rink-fifo-state";
   fs::create_directories(fifo_state);
   ok &= expect(::mkfifo((fifo_state / "state").c_str(), 0600) == 0, "FIFO transaction-state fixture must be created");
-  const auto fifo_state_read = hm::stitching::load_game_config_file(root / "config.yaml");
+  const auto fifo_state_read = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsFailedPrecondition(fifo_state_read.status()) && fs::exists(fifo_state),
       "config recovery must reject a FIFO state without blocking");
   fs::remove_all(fifo_state);
 
-  std::ofstream(root / "config.yaml") << "generation: old\n";
-  std::ofstream(root / "rink_mask_0.png") << "old-mask-zero";
-  std::ofstream(root / "rink_mask_1.png") << "old-mask-one";
-  std::ofstream(root / "s.png") << "old-stitched-snapshot";
+  std::ofstream(saved_state(root) / "config.yaml") << "generation: old\n";
+  std::ofstream(saved_state(root) / "rink_mask_0.png") << "old-mask-zero";
+  std::ofstream(saved_state(root) / "rink_mask_1.png") << "old-mask-one";
+  std::ofstream(saved_state(root) / "s.png") << "old-stitched-snapshot";
   absl::StatusOr<size_t> oversized_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
-  const bool oversized_mask_created = ::truncate((root / "rink_mask_0.png").c_str(), 128LL * 1024LL * 1024LL + 1) == 0;
+  const bool oversized_mask_created =
+      ::truncate((saved_state(root) / "rink_mask_0.png").c_str(), 128LL * 1024LL * 1024LL + 1) == 0;
   {
     auto oversized_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
     if (oversized_lock.ok()) {
@@ -1099,13 +1110,13 @@ stitching:
   }
   ok &= expect(
       oversized_mask_created && absl::IsFailedPrecondition(oversized_invalidation.status()) &&
-          YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "old",
+          YAML::LoadFile((saved_state(root) / "config.yaml").string())["generation"].as<std::string>() == "old",
       "rink rollback publication must reject oversized masks before portable copying");
-  std::ofstream(root / "rink_mask_0.png", std::ios::trunc) << "old-mask-zero";
+  std::ofstream(saved_state(root) / "rink_mask_0.png", std::ios::trunc) << "old-mask-zero";
   const fs::path invalidation_symlink_target = root / "snapshot-symlink-target.png";
   std::error_code invalidation_symlink_error;
-  fs::rename(root / "s.png", invalidation_symlink_target, invalidation_symlink_error);
-  fs::create_symlink(invalidation_symlink_target, root / "s.png", invalidation_symlink_error);
+  fs::rename(saved_state(root) / "s.png", invalidation_symlink_target, invalidation_symlink_error);
+  fs::create_symlink(invalidation_symlink_target, saved_state(root) / "s.png", invalidation_symlink_error);
   absl::StatusOr<size_t> symlinked_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
   {
     auto symlinked_invalidation_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
@@ -1116,20 +1127,20 @@ stitching:
   }
   ok &= expect(
       !invalidation_symlink_error && absl::IsFailedPrecondition(symlinked_invalidation.status()) &&
-          fs::is_symlink(fs::symlink_status(root / "s.png")) &&
+          fs::is_symlink(fs::symlink_status(saved_state(root) / "s.png")) &&
           [&]() {
             std::ifstream input(invalidation_symlink_target, std::ios::binary);
             return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
                 "old-stitched-snapshot";
           }() &&
-          YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "old",
+          YAML::LoadFile((saved_state(root) / "config.yaml").string())["generation"].as<std::string>() == "old",
       "rink invalidation must reject a symlinked snapshot without mutating its target or config");
-  fs::remove(root / "s.png", invalidation_symlink_error);
-  fs::rename(invalidation_symlink_target, root / "s.png", invalidation_symlink_error);
+  fs::remove(saved_state(root) / "s.png", invalidation_symlink_error);
+  fs::rename(invalidation_symlink_target, saved_state(root) / "s.png", invalidation_symlink_error);
   ok &= expect(!invalidation_symlink_error, "symlinked invalidation fixture must restore the regular snapshot");
   struct stat original_snapshot_metadata{};
   ok &= expect(
-      ::stat((root / "s.png").c_str(), &original_snapshot_metadata) == 0,
+      ::stat((saved_state(root) / "s.png").c_str(), &original_snapshot_metadata) == 0,
       "rink invalidation snapshot fixture must have a stable inode");
   auto invalidation_lock = hm::stitching::GameConfigTransactionLock::Acquire(root);
   ok &= expect(invalidation_lock.ok(), "rink invalidation test must acquire the config transaction");
@@ -1139,16 +1150,18 @@ stitching:
         root, "generation: new\n", /*remove_stitched_snapshot=*/true);
     ::unsetenv("HM_TEST_RINK_INVALIDATION_FAIL_AFTER_REMOVE");
     ok &= expect(!failed.ok(), "injected rink invalidation failure must abort publication");
-    const YAML::Node rolled_back = YAML::LoadFile((root / "config.yaml").string());
+    const YAML::Node rolled_back = YAML::LoadFile((saved_state(root) / "config.yaml").string());
     struct stat restored_snapshot_metadata{};
     ok &= expect(
-        rolled_back["generation"].as<std::string>() == "old" && fs::is_regular_file(root / "rink_mask_0.png") &&
-            fs::is_regular_file(root / "rink_mask_1.png") && fs::is_regular_file(root / "s.png") &&
-            ::stat((root / "s.png").c_str(), &restored_snapshot_metadata) == 0 &&
+        rolled_back["generation"].as<std::string>() == "old" &&
+            fs::is_regular_file(saved_state(root) / "rink_mask_0.png") &&
+            fs::is_regular_file(saved_state(root) / "rink_mask_1.png") &&
+            fs::is_regular_file(saved_state(root) / "s.png") &&
+            ::stat((saved_state(root) / "s.png").c_str(), &restored_snapshot_metadata) == 0 &&
             restored_snapshot_metadata.st_ino != original_snapshot_metadata.st_ino &&
             restored_snapshot_metadata.st_dev == original_snapshot_metadata.st_dev &&
             [&]() {
-              std::ifstream input(root / "s.png", std::ios::binary);
+              std::ifstream input(saved_state(root) / "s.png", std::ios::binary);
               return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()) ==
                   "old-stitched-snapshot";
             }(),
@@ -1157,18 +1170,20 @@ stitching:
         root, "generation: new\n", /*remove_stitched_snapshot=*/true);
     ok &= expect(
         published.ok() && *published == 3 &&
-            YAML::LoadFile((root / "config.yaml").string())["generation"].as<std::string>() == "new" &&
-            !fs::exists(root / "rink_mask_0.png") && !fs::exists(root / "rink_mask_1.png") &&
-            !fs::exists(root / "s.png"),
+            YAML::LoadFile((saved_state(root) / "config.yaml").string())["generation"].as<std::string>() == "new" &&
+            !fs::exists(saved_state(root) / "rink_mask_0.png") && !fs::exists(saved_state(root) / "rink_mask_1.png") &&
+            !fs::exists(saved_state(root) / "s.png"),
         "successful canvas invalidation must atomically publish config and remove every canvas-relative artifact");
     struct stat invalidated_metadata{};
     ok &= expect(
-        ::stat((root / "config.yaml").c_str(), &invalidated_metadata) == 0 &&
+        ::stat((saved_state(root) / "config.yaml").c_str(), &invalidated_metadata) == 0 &&
             (invalidated_metadata.st_mode & 0777) == 0600,
         "rink invalidation must publish the replacement private config as owner-only");
 
     ok &= expect(
-        hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml").ok(),
+        hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(
+            saved_state(root) / "config.yaml")
+            .ok(),
         "Hugin publication validation must allow a config without a live authorization");
     ok &= expect(
         hm::stitching::publish_game_config(root, "rink:\n  stitched_output_pending_generation: pending-generation\n")
@@ -1176,7 +1191,8 @@ stitching:
         "incomplete live authorization fixture must publish");
     ok &= expect(
         absl::IsInvalidArgument(
-            hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml")),
+            hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(
+                saved_state(root) / "config.yaml")),
         "Hugin publication validation must reject an incomplete live authorization");
     const auto live_owner = hm::stitching::current_live_stitched_output_owner_process();
     ok &= expect(live_owner.ok(), "live authorization fixture must identify its owner process");
@@ -1245,7 +1261,8 @@ stitching:
         "complete live authorization fixture must publish");
     ok &= expect(
         absl::IsAborted(
-            hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml")),
+            hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(
+                saved_state(root) / "config.yaml")),
         "Hugin publication validation must fence artifact replacement during a live authorization");
     ok &= expect(
         hm::stitching::publish_game_config(
@@ -1256,7 +1273,9 @@ stitching:
             .ok(),
         "crashed live authorization fixture must publish");
     ok &= expect(
-        hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(root / "config.yaml").ok(),
+        hm::stitching::validate_no_pending_live_stitched_output_authorization_file_locked(
+            saved_state(root) / "config.yaml")
+            .ok(),
         "a dead owner process must not permanently fence artifact publication");
   }
   if (invalidation_lock.ok())
@@ -1287,7 +1306,7 @@ stitching:
       "superpoint-lightglue", "opencv-affine-ransac", "rectilinear", false};
   const absl::Status reserved =
       hm::stitching::reserve_stitching_backend_generation(root, "backend-generation-a", magsac_choices);
-  auto claimed = hm::stitching::load_game_config_file(root / "config.yaml");
+  auto claimed = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       reserved.ok() && claimed.ok() && claimed->has_value() &&
           (**claimed)["hstream_ui"]["stitching_calibration"]["backend_generation"]["projection"].as<std::string>() ==
@@ -1296,7 +1315,7 @@ stitching:
       "a calibration generation must migrate, reserve, and validate one immutable worker backend tuple");
   const absl::Status conflicting_reservation =
       hm::stitching::reserve_stitching_backend_generation(root, "backend-generation-a", affine_choices);
-  auto after_conflict = hm::stitching::load_game_config_file(root / "config.yaml");
+  auto after_conflict = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
   ok &= expect(
       absl::IsAborted(conflicting_reservation) && after_conflict.ok() && after_conflict->has_value() &&
           (**after_conflict)["hstream_ui"]["stitching_calibration"]["backend_generation"]["mapping_backend"]
@@ -1553,11 +1572,11 @@ stitching:
   leveling_choices.projection_framing.rotation_inherited = true;
   const absl::Status leveling_reserved = hm::stitching::reserve_stitching_backend_generation_in_config(
       leveling_generation, "leveling-generation", leveling_choices);
-  std::ofstream(leveling_root / "config.yaml") << YAML::Dump(leveling_generation) << '\n';
+  std::ofstream(saved_state(leveling_root) / "config.yaml") << YAML::Dump(leveling_generation) << '\n';
   const std::array<double, 3> selected_leveling{12.5, -31.25, 1.75};
   const auto applied_leveling = hm::stitching::apply_stitching_leveling_rotation(
       leveling_root, "leveling-generation", leveling_choices, selected_leveling);
-  auto applied_leveling_config = hm::stitching::load_game_config_file(leveling_root / "config.yaml");
+  auto applied_leveling_config = hm::stitching::load_game_config_file(saved_state(leveling_root) / "config.yaml");
   bool applied_leveling_valid = false;
   if (applied_leveling.ok() && applied_leveling_config.ok() && applied_leveling_config->has_value()) {
     const auto framing = hm::stitching::read_stitch_projection_framing(**applied_leveling_config);
@@ -1627,7 +1646,7 @@ stitching:
   if (applied_leveling.ok()) {
     const auto selected_crop = hm::stitching::apply_stitching_crop_selection(
         leveling_root, "leveling-generation", *applied_leveling, cropped_framing, crop_geometry);
-    const auto crop_config = YAML::LoadFile((leveling_root / "config.yaml").string());
+    const auto crop_config = YAML::LoadFile((saved_state(leveling_root) / "config.yaml").string());
     ok &= expect(
         selected_crop.ok() && hm::stitching::projection_crop_reviewed(crop_config, crop_geometry) &&
             !hm::stitching::projection_crop_reviewed(crop_config, "different-geometry") &&
@@ -1648,9 +1667,9 @@ stitching:
   const fs::path writer_bounds_root = root.parent_path() / (root.filename().string() + "-writer-bounds");
   fs::remove_all(writer_bounds_root);
   fs::create_directories(writer_bounds_root);
-  std::ofstream(writer_bounds_root / "config.yaml") << "generation: old\n";
+  std::ofstream(saved_state(writer_bounds_root) / "config.yaml") << "generation: old\n";
   for (size_t index = 0; index < hm::stitching::kMaximumRinkTransactionArtifacts; ++index)
-    std::ofstream(writer_bounds_root / ("rink_mask_" + std::to_string(index) + ".png")) << "mask\n";
+    std::ofstream(saved_state(writer_bounds_root) / ("rink_mask_" + std::to_string(index) + ".png")) << "mask\n";
   absl::StatusOr<size_t> over_count_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
   absl::StatusOr<size_t> bounded_invalidation = absl::FailedPreconditionError("fixture lock unavailable");
   auto writer_bounds_lock = hm::stitching::GameConfigTransactionLock::Acquire(writer_bounds_root);
@@ -1658,7 +1677,7 @@ stitching:
     over_count_invalidation = hm::stitching::publish_game_config_without_rink_masks(
         writer_bounds_root, "generation: rejected\n", /*remove_stitched_snapshot=*/false);
     fs::remove(
-        writer_bounds_root /
+        saved_state(writer_bounds_root) /
         ("rink_mask_" + std::to_string(hm::stitching::kMaximumRinkTransactionArtifacts - 1) + ".png"));
     bounded_invalidation = hm::stitching::publish_game_config_without_rink_masks(
         writer_bounds_root, "generation: accepted\n", /*remove_stitched_snapshot=*/false);
@@ -1666,12 +1685,35 @@ stitching:
   ok &= expect(
       writer_bounds_lock.ok() && absl::IsResourceExhausted(over_count_invalidation.status()) &&
           bounded_invalidation.ok() && *bounded_invalidation == hm::stitching::kMaximumRinkTransactionArtifacts - 1 &&
-          YAML::LoadFile((writer_bounds_root / "config.yaml").string())["generation"].as<std::string>() == "accepted",
+          YAML::LoadFile((saved_state(writer_bounds_root) / "config.yaml").string())["generation"].as<std::string>() ==
+              "accepted",
       "rink invalidation writer must reject over-limit manifests and accept the exact artifact-count boundary");
   if (writer_bounds_lock.ok())
     writer_bounds_lock->reset();
   fs::remove_all(writer_bounds_root);
 
+  // Starting fresh ignores the former flat layout and inventories only owned state.
+  const fs::path fresh = root / "fresh-layout";
+  fs::create_directory(fresh);
+  std::ofstream(fresh / "config.yaml") << "old_layout: true\n";
+  std::ofstream(fresh / "left.mp4") << "original recording";
+  const auto absent = hm::stitching::load_game_config_file(fresh / "_hockeymon" / "config.yaml");
+  ok &= expect(absent.ok() && !absent->has_value(), "flat game settings must not enter a fresh state layout");
+  {
+    auto fresh_lock = hm::stitching::GameConfigTransactionLock::Acquire(fresh);
+    const auto saved =
+        fresh_lock.ok() ? hm::stitching::publish_game_config(fresh, "new_layout: true\n") : fresh_lock.status();
+    ok &= expect(saved.ok(), "fresh state configuration must publish with its inventory");
+  }
+  bool recorded_config = false;
+  const auto manifest = YAML::LoadFile((fresh / "_hockeymon" / "manifest.json").string());
+  for (const auto& file : manifest["files"])
+    recorded_config |= file["path"].as<std::string>() == "_hockeymon/config.yaml";
+  ok &= expect(
+      manifest["schema_version"].as<int>() == 1 && recorded_config &&
+          YAML::LoadFile((fresh / "config.yaml").string())["old_layout"].as<bool>() &&
+          !fs::exists(fresh / ".hstream-config.lock") && !fs::exists(fresh / ".hstream-rink.lock"),
+      "saved state must be inventoried without changing former files or writing root locks");
   fs::remove_all(root);
   return ok ? 0 : 1;
 }

@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/RinkMapBackend.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -46,7 +47,7 @@ std::string GenerationDigest(const std::string& generation) {
 
 absl::Status CalibrationComplete(const QString& directory) {
   auto text = rink::read_bounded_regular_file_no_follow(
-      std::filesystem::path(directory.toStdString()) / "config.yaml", 4 * 1024 * 1024, "rink-map settings");
+      std::filesystem::path(directory.toStdString()) / "_hockeymon/config.yaml", 4 * 1024 * 1024, "rink-map settings");
   if (!text.ok())
     return text.status();
   try {
@@ -92,7 +93,7 @@ absl::StatusOr<QByteArray> CalibrationRevision(const QString& directory) {
 }
 
 absl::StatusOr<std::optional<std::string>> ReadSavedMap(const QString& directory) {
-  const auto path = std::filesystem::path(directory.toStdString()) / "rink-map.yaml";
+  const auto path = std::filesystem::path(directory.toStdString()) / "_hockeymon/rink-map.yaml";
   std::error_code error;
   const auto status = std::filesystem::symlink_status(path, error);
   if (status.type() == std::filesystem::file_type::not_found &&
@@ -307,8 +308,8 @@ absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
             *revision != snapshot.revision)
           return absl::FailedPreconditionError("Calibration changed. Reopen Rink map before using the mask.");
         hugin_generation = *generation;
-        const auto config_text =
-            rink::read_bounded_regular_file_no_follow(root / "config.yaml", 4 * 1024 * 1024, "rink settings");
+        const auto config_text = rink::read_bounded_regular_file_no_follow(
+            root / "_hockeymon/config.yaml", 4 * 1024 * 1024, "rink settings");
         if (!config_text.ok())
           return config_text.status();
         try {
@@ -317,8 +318,8 @@ absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
           return absl::InvalidArgumentError(error.what());
         }
         const auto canvas = rink::read_mapping_canvas_placement_locked(root);
-        const auto project =
-            rink::read_bounded_regular_file_no_follow(root / "autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
+        const auto project = rink::read_bounded_regular_file_no_follow(
+            root / "_hockeymon/autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
         if (!canvas.ok())
           return canvas.status();
         if (!project.ok())
@@ -472,7 +473,7 @@ absl::StatusOr<std::vector<rink::RinkMapObservation>> MaskBoards(
   if (results.empty())
     return absl::NotFoundError(unavailable);
   struct stat current{}, pinned{};
-  const auto mask_path = QDir(snapshot.game_directory).filePath("rink_mask_0.png").toStdString();
+  const auto mask_path = QDir(snapshot.game_directory).filePath("_hockeymon/rink_mask_0.png").toStdString();
   if (::lstat(mask_path.c_str(), &current) != 0 || ::fstat(mask_file.handle(), &pinned) != 0 ||
       current.st_dev != identity.st_dev || current.st_ino != identity.st_ino || pinned.st_size != identity.st_size ||
       pinned.st_mtim.tv_sec != identity.st_mtim.tv_sec || pinned.st_mtim.tv_nsec != identity.st_mtim.tv_nsec ||
@@ -669,7 +670,7 @@ absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_director
       return saved.status();
     result.saved_map = *saved;
     auto pto = rink::read_bounded_regular_file_no_follow(
-        std::filesystem::path(game_directory.toStdString()) / "autooptimiser_out.pto",
+        std::filesystem::path(game_directory.toStdString()) / "_hockeymon/autooptimiser_out.pto",
         4 * 1024 * 1024,
         "rink-map project");
     if (!pto.ok())
@@ -683,7 +684,8 @@ absl::StatusOr<RinkMapSnapshot> LoadRinkMapSnapshot(const QString& game_director
       return absl::InternalError("Could not prepare rink coordinate transforms");
     sphere.close();
     for (int camera = 0; camera < 2; ++camera) {
-      files[camera] = std::make_unique<QFile>(QDir(game_directory).filePath(camera ? "right.png" : "left.png"));
+      files[camera] = std::make_unique<QFile>(
+          QDir(game_directory).filePath(camera ? "_hockeymon/right.png" : "_hockeymon/left.png"));
       if (!files[camera]->open(QIODevice::ReadOnly))
         return absl::NotFoundError("The saved camera images are unavailable");
       result.original_sizes[camera] = QSize(project->image_sizes[camera][0], project->image_sizes[camera][1]);
@@ -784,10 +786,12 @@ absl::Status SaveRinkMap(RinkMapSnapshot& snapshot, const rink::RinkMapDocument&
     return saved.status();
   if (*saved != snapshot.saved_map)
     return absl::FailedPreconditionError("Another editor saved this rink map. Reopen it before saving your changes.");
-  auto status =
-      rink::publish_named_file(std::filesystem::path(snapshot.game_directory.toStdString()) / "rink-map.yaml", *text);
-  if (status.ok())
+  auto status = rink::publish_named_file(
+      std::filesystem::path(snapshot.game_directory.toStdString()) / "_hockeymon/rink-map.yaml", *text);
+  if (status.ok()) {
     snapshot.saved_map = *text;
+    status = hm::game_storage::RefreshManifest(snapshot.game_directory.toStdString(), "rink-map");
+  }
   return status;
 }
 

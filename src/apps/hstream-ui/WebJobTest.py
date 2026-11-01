@@ -16,6 +16,7 @@ from pathlib import Path
 
 def request(root, operation, payload):
     (root / "game").mkdir(exist_ok=True)
+    (root / "game/_hockeymon").mkdir(exist_ok=True)
     value = {
         "schema": 1,
         "run_id": "companion-contract-123",
@@ -91,6 +92,7 @@ def assert_artifacts(root, receipt):
 def calibration_fixture(game, owner="owner"):
     """Small uncompressed RGB TIFFs: exercise native completion without GPU work."""
     game.mkdir(exist_ok=True)
+    (game / "_hockeymon").mkdir(exist_ok=True)
     tags = [
         (256, 4, 1, 8),
         (257, 4, 1, 8),
@@ -115,10 +117,10 @@ def calibration_fixture(game, owner="owner"):
         "mapping_0001_y.tif",
         "panorama.tif",
     ):
-        (game / name).write_bytes(tiff)
+        (game / "_hockeymon" / name).write_bytes(tiff)
     for name in ("hm_project.pto", "autooptimiser_out.pto", "seam_file.png"):
-        (game / name).write_text("fixture")
-    (game / "config.yaml").write_text(
+        (game / "_hockeymon" / name).write_text("fixture")
+    (game / "_hockeymon/config.yaml").write_text(
         "hstream_ui:\n  stitching_calibration:\n    status: pending\n"
         f"    invalidation_id: {owner}\n"
     )
@@ -166,15 +168,15 @@ def calibration_still_contract(binary, root):
             config = config.replace("complete", "pending")
         elif case == "invalidated-png":
             config += "    artifacts_invalidated: true\n"
-        (game / "config.yaml").write_text(config)
+        (game / "_hockeymon/config.yaml").write_text(config)
         if case not in {"missing-still", "tiff-fallback"}:
-            png_fixture(game / "s.png")
+            png_fixture(game / "_hockeymon/s.png")
         if case in {"png-only", "missing-still"}:
-            (game / "panorama.tif").unlink()
+            (game / "_hockeymon/panorama.tif").unlink()
         if case == "broken-png":
-            (game / "s.png").write_bytes(b"broken PNG")
+            (game / "_hockeymon/s.png").write_bytes(b"broken PNG")
         if case == "pending-recovery-still":
-            journal = game / ".hstream-stitch-Ab12CD"
+            journal = game / "_hockeymon/.hstream-stitch-Ab12CD"
             journal.mkdir()
             (journal / "journal_version").write_text("2\n")
             (journal / "state").write_text("PREPARED\n")
@@ -217,16 +219,17 @@ def calibration_still_contract(binary, root):
                 path.stat().st_ino,
                 path.stat().st_mtime_ns,
             ) == identity
-        assert not (game / "setup-preview.png").exists()
+        assert not (game / "_hockeymon/setup-preview.png").exists()
 
     directory = root / "still-output-symlink"
     directory.mkdir()
     game = directory / "game"
     game.mkdir()
-    (game / "config.yaml").write_text(
+    (game / "_hockeymon").mkdir()
+    (game / "_hockeymon/config.yaml").write_text(
         "hstream_ui: {stitching_calibration: {status: complete}}\n"
     )
-    source = game / "s.png"
+    source = game / "_hockeymon/s.png"
     png_fixture(source)
     before = (source.read_bytes(), source.stat().st_ino, source.stat().st_mtime_ns)
     (directory / "saved-stitching-preview.png").symlink_to(source)
@@ -258,12 +261,12 @@ def calibration_contract(binary, root):
         elif case == "wrong-owner":
             payload["invalidation_id"] = "stale-owner"
         elif case == "missing-generation":
-            (directory / "game" / "mapping_0001.tif").unlink()
+            (directory / "game" / "_hockeymon/mapping_0001.tif").unlink()
         elif case == "missing-preview":
-            (directory / "game" / "panorama.tif").unlink()
+            (directory / "game" / "_hockeymon/panorama.tif").unlink()
         elif case == "valid-png-only":
-            (directory / "game" / "panorama.tif").unlink()
-            png_fixture(directory / "game" / "s.png")
+            (directory / "game" / "_hockeymon/panorama.tif").unlink()
+            png_fixture(directory / "game" / "_hockeymon/s.png")
         path = request(directory, "calibration-complete", payload)
         valid = case in {"valid", "valid-png-only"}
         run(binary, path, 0 if valid else 1)
@@ -275,10 +278,10 @@ def calibration_contract(binary, root):
         preview = directory / receipt["result"]["preview"]
         assert preview.read_bytes().startswith(b"\x89PNG")
         assert any(
-            item["path"] == "game/setup-preview.png" and item["kind"] == "image"
+            item["path"] == "game/_hockeymon/setup-preview.png" and item["kind"] == "image"
             for item in receipt["artifacts"]
         )
-        assert "status: complete" in (directory / "game" / "config.yaml").read_text()
+        assert "status: complete" in (directory / "game" / "_hockeymon/config.yaml").read_text()
         identity = preview.stat().st_mtime_ns
         run(binary, path)
         assert preview.stat().st_mtime_ns == identity
@@ -389,7 +392,7 @@ def automatic_experiment_optics_contract(binary, root):
                 if isinstance(metadata, bytes)
                 else gopro_optics_movie() if metadata else b"metadata unavailable"
             )
-        (directory / "game/config.yaml").write_text(
+        (directory / "game/_hockeymon/config.yaml").write_text(
             "game:\n  videos:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
             "hstream_ui:\n  video_roles:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
             "stitching:\n  camera_fov: {horizontal_fov: 111, vertical_fov: 77}\n"
@@ -538,13 +541,13 @@ def automatic_experiment_optics_contract(binary, root):
     for side in ("cam1", "cam2"):
         (directory / "game" / side / "clip.mp4").write_bytes(b"metadata unavailable")
     game = directory / profile["game_directory"]
-    config = game / "config.yaml"
+    config = game / "_hockeymon/config.yaml"
     config.write_text(
         config.read_text().replace(
             "auto_input_lens_frozen: true", "auto_input_lens_frozen: false"
         )
     )
-    inspection = game / "calibration-frame-inspection" / profile["invalidation_id"]
+    inspection = game / "_hockeymon/calibration-frame-inspection" / profile["invalidation_id"]
     inspection.mkdir(parents=True)
     (inspection / "frames.yaml").write_text(
         "version: 1\nexpected_pair_count: 1\ninvalidation_id: "
@@ -596,7 +599,7 @@ def confined_experiment_optics_contract(binary, root):
         )
         if kind == "playlist":
             config += f"hstream_ui:\n  video_roles:\n    left: [{external}]\n    right: [{external}]\n"
-        (directory / "game/config.yaml").write_text(config)
+        (directory / "game/_hockeymon/config.yaml").write_text(config)
         if kind == "authorized":
             document = json.loads(path.read_text())
             document["authorized_media"] = [str(external)]
@@ -940,7 +943,7 @@ def main():
             (experiments / "game" / camera / "clip.mp4").write_bytes(
                 b"native-workspace-fixture"
             )
-        (experiments / "game" / "config.yaml").write_text(
+        (experiments / "game" / "_hockeymon/config.yaml").write_text(
             "game:\n  videos:\n    left: [cam1/clip.mp4]\n    right: [cam2/clip.mp4]\n"
             "stitching:\n  camera_config: manual\n"
             "  camera_fov: {horizontal_fov: 111, vertical_fov: 77}\n"
@@ -957,7 +960,7 @@ def main():
         assert receipt["result"]["selection_fingerprint"] == ""
         assert not any(item["path"].endswith(".mp4") for item in receipt["artifacts"])
         candidate = receipt["result"]["workspace"]
-        assert (experiments / candidate["game_directory"] / "config.yaml").is_file()
+        assert (experiments / candidate["game_directory"] / "_hockeymon/config.yaml").is_file()
         optics = candidate["settings"]["camera"]
         assert optics["camera_fov"] == {"horizontal_fov": 103, "vertical_fov": 77}
         assert optics["input_lens"] == {
@@ -984,8 +987,8 @@ def main():
                     }
                 },
             )
-            (signed / "game" / "config.yaml").write_bytes(
-                (experiments / "game" / "config.yaml").read_bytes()
+            (signed / "game" / "_hockeymon/config.yaml").write_bytes(
+                (experiments / "game" / "_hockeymon/config.yaml").read_bytes()
             )
             for camera in ("cam1", "cam2"):
                 (signed / "game" / camera).mkdir()
@@ -1060,7 +1063,7 @@ def main():
         inspection = (
             experiments
             / candidate["game_directory"]
-            / "calibration-frame-inspection"
+            / "_hockeymon/calibration-frame-inspection"
             / candidate["invalidation_id"]
         )
         inspection.mkdir(parents=True)
@@ -1155,8 +1158,8 @@ def main():
             media.write_bytes(b"native-workspace-fixture")
             (linked / "game" / camera / "clip.mp4").symlink_to(media)
             authorized.append(str(media))
-        (linked / "game/config.yaml").write_bytes(
-            (experiments / "game/config.yaml").read_bytes()
+        (linked / "game/_hockeymon/config.yaml").write_bytes(
+            (experiments / "game/_hockeymon/config.yaml").read_bytes()
         )
         run(args.binary, path, 1)
         assert (
@@ -1193,7 +1196,7 @@ def main():
             "exporter": "/bin/false",
             "cli": "/bin/false",
             "root": str(experiments),
-            "config": str(experiments / "game/config.yaml"),
+            "config": str(experiments / "game/_hockeymon/config.yaml"),
         }
         path.write_text(json.dumps(value))
         run(args.binary, path, 1)

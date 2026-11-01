@@ -1,4 +1,5 @@
 #include "hstream/src/libs/program/ProgramLaunchConfig.h"
+#include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/stitching/CameraSourceStart.h"
 
 #include <cmath>
@@ -46,7 +47,7 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       return root.status();
     ProgramLaunchConfig result;
     result.game = fs::absolute(*root / game_id);
-    auto game = stitching::load_game_config_file(result.game / "config.yaml");
+    auto game = stitching::load_game_config_file(hm::game_storage::StateDirectory(result.game) / "config.yaml");
     if (!game.ok())
       return game.status();
     if (!*game)

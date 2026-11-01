@@ -20,6 +20,14 @@ namespace fs = std::filesystem;
 using namespace hm::stitching;
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 
 bool expect(bool condition, const std::string& message) {
   if (!condition)
@@ -106,12 +114,15 @@ std::vector<std::array<fs::path, 2>> make_images(const fs::path& root) {
 }
 
 fs::path bundle_path(const fs::path& game, const PlayerFrameSelectionPlan& plan) {
-  return game / "player-frame-inputs" / plan.fingerprint;
+  return saved_state(game) / "player-frame-inputs" / plan.fingerprint;
 }
 
 void clone_bundle(const fs::path& source, const fs::path& destination) {
   fs::create_directories(destination);
-  fs::copy(source / "player-frame-inputs", destination / "player-frame-inputs", fs::copy_options::recursive);
+  fs::copy(
+      saved_state(source) / "player-frame-inputs",
+      saved_state(destination) / "player-frame-inputs",
+      fs::copy_options::recursive);
 }
 
 bool run(const fs::path& root) {
@@ -147,26 +158,28 @@ bool run(const fs::path& root) {
       "a validated retained bundle restores equivalent legacy rotation text");
   YAML::Node game_config;
   game_config["stitching"]["calibration_frame_selection"] = rewritten;
-  write_bytes(source / "config.yaml", YAML::Dump(game_config));
-  auto reopened = load_game_config_file(source / "config.yaml");
+  write_bytes(saved_state(source) / "config.yaml", YAML::Dump(game_config));
+  auto reopened = load_game_config_file(saved_state(source) / "config.yaml");
   ok &= expect(
       reopened.ok() && reopened->has_value() &&
           ParsePlayerFrameSelectionPlan((**reopened)["stitching"]["calibration_frame_selection"]).ok(),
       "the ordinary game-config loader recovers an old externally rewritten plan");
-  const YAML::Node persisted = YAML::LoadFile((source / "config.yaml").string());
+  const YAML::Node persisted = YAML::LoadFile((saved_state(source) / "config.yaml").string());
   ok &= expect(
       ParsePlayerFrameSelectionPlan(persisted["stitching"]["calibration_frame_selection"]).ok(),
       "recovery atomically leaves a valid plan for direct YAML readers");
-  const std::string repaired_bytes = read_bytes(source / "config.yaml");
+  const std::string repaired_bytes = read_bytes(saved_state(source) / "config.yaml");
   ok &= expect(
-      load_game_config_file(source / "config.yaml").ok() && read_bytes(source / "config.yaml") == repaired_bytes,
+      load_game_config_file(saved_state(source) / "config.yaml").ok() &&
+          read_bytes(saved_state(source) / "config.yaml") == repaired_bytes,
       "reloading a valid plan does not rewrite the game config");
   YAML::Node malformed_config = YAML::Clone(game_config);
   malformed_config["stitching"]["calibration_frame_selection"]["schema"] = 99;
-  write_bytes(source / "config.yaml", YAML::Dump(malformed_config));
-  const std::string malformed_bytes = read_bytes(source / "config.yaml");
+  write_bytes(saved_state(source) / "config.yaml", YAML::Dump(malformed_config));
+  const std::string malformed_bytes = read_bytes(saved_state(source) / "config.yaml");
   ok &= expect(
-      load_game_config_file(source / "config.yaml").ok() && read_bytes(source / "config.yaml") == malformed_bytes &&
+      load_game_config_file(saved_state(source) / "config.yaml").ok() &&
+          read_bytes(saved_state(source) / "config.yaml") == malformed_bytes &&
           !ParsePlayerFrameSelectionPlan(malformed_config["stitching"]["calibration_frame_selection"]).ok(),
       "an unrelated malformed plan is not rewritten or silently accepted");
   YAML::Node altered = YAML::Clone(rewritten);
@@ -350,18 +363,19 @@ bool run(const fs::path& root) {
 
   const fs::path symlink_store = root / "symlink-store";
   fs::create_directories(symlink_store);
-  fs::create_directory_symlink(source / "player-frame-inputs", symlink_store / "player-frame-inputs");
+  fs::create_directory_symlink(
+      saved_state(source) / "player-frame-inputs", saved_state(symlink_store) / "player-frame-inputs");
   ok &= expect(!LoadPlayerFrameInputs(symlink_store, plan).ok(), "store parent cannot redirect through a symlink");
   ok &= expect(!PublishPlayerFrameInputs(symlink_store, plan, images).ok(), "publication rejects a symlink store");
   const fs::path redirected = root / "unowned-target";
   fs::create_directory(redirected);
-  fs::remove(symlink_store / "player-frame-inputs");
-  fs::create_directory_symlink(redirected, symlink_store / "player-frame-inputs");
+  fs::remove(saved_state(symlink_store) / "player-frame-inputs");
+  fs::create_directory_symlink(redirected, saved_state(symlink_store) / "player-frame-inputs");
   ok &= expect(
       !PublishPlayerFrameInputs(symlink_store, plan, images).ok() && fs::is_empty(redirected),
       "rejecting a redirected store must not create a lock or any other file in its target");
   const fs::path symlink_bundle = root / "symlink-bundle";
-  fs::create_directories(symlink_bundle / "player-frame-inputs");
+  fs::create_directories(saved_state(symlink_bundle) / "player-frame-inputs");
   fs::create_directory_symlink(bundle_path(source, plan), bundle_path(symlink_bundle, plan));
   ok &= expect(!LoadPlayerFrameInputs(symlink_bundle, plan).ok(), "bundle directory cannot redirect through a symlink");
 

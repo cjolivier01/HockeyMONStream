@@ -58,15 +58,15 @@ int main(int argc, char** argv) {
         "preserve positive suffix spelling");
     const QString concurrent_game = root.filePath("concurrent-game");
     check(QDir().mkpath(concurrent_game), "concurrent publication directory");
-    const QByteArray lock_path = QFile::encodeName(QDir(concurrent_game).filePath(".hm-output-publication.lock"));
+    check(QDir(concurrent_game).mkpath("_hockeymon"), "publication state directory");
+    const QByteArray lock_path =
+        QFile::encodeName(QDir(concurrent_game).filePath("_hockeymon/.hm-output-publication.lock"));
     const int lock_fd = open(lock_path.constData(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     check(lock_fd >= 0 && flock(lock_fd, LOCK_EX) == 0, "hold shared publication lock");
-    auto plain_job = std::async(std::launch::async, [&] {
-      return publish_telemetry_database(source, concurrent_game, QString("-1"));
-    });
-    auto padded_job = std::async(std::launch::async, [&] {
-      return publish_telemetry_database(source, concurrent_game, QString("-001"));
-    });
+    auto plain_job = std::async(
+        std::launch::async, [&] { return publish_telemetry_database(source, concurrent_game, QString("-1")); });
+    auto padded_job = std::async(
+        std::launch::async, [&] { return publish_telemetry_database(source, concurrent_game, QString("-001")); });
     const bool plain_waiting = plain_job.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
     const bool padded_waiting = padded_job.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout;
     close(lock_fd);

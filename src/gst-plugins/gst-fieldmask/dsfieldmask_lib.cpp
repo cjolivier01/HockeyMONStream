@@ -141,6 +141,8 @@ absl::Status DsFieldMaskProcessFrame(
     // We are a No-op
     return absl::OkStatus();
   }
+  if (std::filesystem::path(ctx->initParams.detection_mask_file).parent_path().filename() != "_hockeymon")
+    return absl::InvalidArgumentError("Game rink masks must be inside _hockeymon");
   if (!frame_meta)
     return absl::InvalidArgumentError("Field-mask processing requires frame metadata");
 
@@ -179,7 +181,7 @@ absl::Status DsFieldMaskProcessFrame(
     ctx->required_mask_size = mask_size;
     HM_RETURN_IF_ERROR(
         hm::stitching::validate_field_mask_publication_authority(
-            mask_path.parent_path().string(), output_generation, output_authorization_id));
+            mask_path.parent_path().parent_path().string(), output_generation, output_authorization_id));
   }
 
   // Only consider the mask "obsolete" if we've already loaded one but it no longer matches the current frame size.
@@ -210,9 +212,9 @@ absl::Status DsFieldMaskProcessFrame(
     const auto load_current_mask = [&]() {
       if (!output_generation.empty() && !loaded_hugin_generation.empty()) {
         return hm::stitching::load_field_mask_for_loaded_generation(
-            mask_path.parent_path().string(), output_generation, loaded_hugin_generation);
+            mask_path.parent_path().parent_path().string(), output_generation, loaded_hugin_generation);
       }
-      return hm::stitching::load_field_mask(mask_path.parent_path().string(), output_generation);
+      return hm::stitching::load_field_mask(mask_path.parent_path().parent_path().string(), output_generation);
     };
     if (ctx->superseded_output_generation.has_value()) {
       if (!ctx->superseded_authority_monitor)
@@ -242,7 +244,7 @@ absl::Status DsFieldMaskProcessFrame(
       hm::surface::Surface this_surface(&surface->surfaceList[frame_index]);
 #endif
       const absl::Status created = hm::stitching::create_field_mask(
-          mask_path.parent_path().string(),
+          mask_path.parent_path().parent_path().string(),
           this_surface,
           output_generation,
           ctx->calibration_invalidation_id,
@@ -254,7 +256,7 @@ absl::Status DsFieldMaskProcessFrame(
         if (!ctx->superseded_authority_monitor)
           ctx->superseded_authority_monitor = std::make_unique<hm::stitching::FieldMaskPublicationAuthorityMonitor>();
         HM_RETURN_IF_ERROR(ctx->superseded_authority_monitor->Watch(
-            mask_path.parent_path().string(), output_generation, output_authorization_id));
+            mask_path.parent_path().parent_path().string(), output_generation, output_authorization_id));
         return absl::OkStatus();
       }
       HM_RETURN_IF_ERROR(created);

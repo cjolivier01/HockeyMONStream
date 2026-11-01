@@ -68,11 +68,11 @@ int main(int argc, char** argv) {
   fs::create_directories(root / "config-root");
   fs::copy_file(argv[3], root / "config-root" / "baseline.yaml");
   fs::create_directories(full_game);
-  std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
+  std::ofstream(full_game / "_hockeymon/seam_file.png") << "generated artifact\n";
   const bool full_clean_ok =
-      run_clean("clean-only-test", {"--clean"}, nullptr) && !fs::exists(full_game / "seam_file.png");
+      run_clean("clean-only-test", {"--clean"}, nullptr) && !fs::exists(full_game / "_hockeymon/seam_file.png");
 
-  std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
+  std::ofstream(full_game / "_hockeymon/seam_file.png") << "generated artifact\n";
   const bool default_config_from_executable = run_clean(
                                                   "clean-only-test",
                                                   {"--clean"},
@@ -80,14 +80,14 @@ int main(int argc, char** argv) {
                                                   nullptr,
                                                   /*append_calibration_config=*/false,
                                                   /*unrelated_working_directory=*/true) &&
-      !fs::exists(full_game / "seam_file.png");
+      !fs::exists(full_game / "_hockeymon/seam_file.png");
 
   const fs::path partial_game = root / "games" / "partial-clean-only-test";
   fs::create_directories(partial_game);
-  std::ofstream(partial_game / "left.png") << "synchronized left input\n";
-  std::ofstream(partial_game / "right.png") << "synchronized right input\n";
-  std::ofstream(partial_game / "seam_file.png") << "generated artifact\n";
-  std::ofstream(partial_game / "config.yaml")
+  std::ofstream(partial_game / "_hockeymon/left.png") << "synchronized left input\n";
+  std::ofstream(partial_game / "_hockeymon/right.png") << "synchronized right input\n";
+  std::ofstream(partial_game / "_hockeymon/seam_file.png") << "generated artifact\n";
+  std::ofstream(partial_game / "_hockeymon/config.yaml")
       << "game:\n  stitching:\n    frame_offsets:\n      left: 3\n      right: 0\n"
       << "hstream_ui:\n  stitching_calibration:\n    control_points: 750\n    status: pending\n"
       << "    stale_from: features\n"
@@ -97,43 +97,43 @@ int main(int argc, char** argv) {
           "partial-clean-only-test",
           {"--clean-from-control-points", "--clean-expected-invalidation-id=partial-clean-token"},
           nullptr) &&
-      !fs::exists(partial_game / "seam_file.png") && fs::exists(partial_game / "left.png") &&
-      fs::exists(partial_game / "right.png");
-  std::ifstream partial_config_input(partial_game / "config.yaml");
+      !fs::exists(partial_game / "_hockeymon/seam_file.png") && fs::exists(partial_game / "_hockeymon/left.png") &&
+      fs::exists(partial_game / "_hockeymon/right.png");
+  std::ifstream partial_config_input(partial_game / "_hockeymon/config.yaml");
   const std::string partial_config(
       (std::istreambuf_iterator<char>(partial_config_input)), std::istreambuf_iterator<char>());
   const bool synchronization_preserved = partial_config.find("frame_offsets") != std::string::npos;
 
   const fs::path combined_game = root / "games" / "combined-clean-only-test";
   fs::create_directories(combined_game);
-  std::ofstream(combined_game / "left.png") << "synchronized left input\n";
-  std::ofstream(combined_game / "right.png") << "synchronized right input\n";
-  std::ofstream(combined_game / "seam_file.png") << "generated artifact\n";
+  std::ofstream(combined_game / "_hockeymon/left.png") << "synchronized left input\n";
+  std::ofstream(combined_game / "_hockeymon/right.png") << "synchronized right input\n";
+  std::ofstream(combined_game / "_hockeymon/seam_file.png") << "generated artifact\n";
   const bool combined_clean_ok =
       run_clean("combined-clean-only-test", {"--clean", "--clean-from-control-points"}, nullptr) &&
-      !fs::exists(combined_game / "seam_file.png") && !fs::exists(combined_game / "left.png") &&
-      !fs::exists(combined_game / "right.png");
+      !fs::exists(combined_game / "_hockeymon/seam_file.png") && !fs::exists(combined_game / "_hockeymon/left.png") &&
+      !fs::exists(combined_game / "_hockeymon/right.png");
   const bool mismatched_runtime_token_rejected = !run_clean(
       "clean-only-test", {"--clean", "--clean-expected-invalidation-id=cli-token"}, "different-environment-token");
   const fs::path incomplete_malformed_config = root / "incomplete-malformed.yaml";
   std::ofstream(incomplete_malformed_config) << "application:\n  stage: -1\n  complete-configuration: 0\n"
                                              << "hmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: malformed\n";
-  std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
+  std::ofstream(full_game / "_hockeymon/seam_file.png") << "generated artifact\n";
   const bool incomplete_context_skipped =
       run_clean("clean-only-test", {"--clean"}, nullptr, &incomplete_malformed_config) &&
-      !fs::exists(full_game / "seam_file.png");
+      !fs::exists(full_game / "_hockeymon/seam_file.png");
 
   const fs::path incomplete_missing_subconfig = root / "incomplete-missing-subconfig.yaml";
   std::ofstream(incomplete_missing_subconfig) << "application:\n  stage: -1\n  complete-configuration: 0\n"
                                               << "source0:\n  enable: 1\n  config-file: missing-source-sidecar.yaml\n";
-  std::ofstream(full_game / "seam_file.png") << "generated artifact\n";
+  std::ofstream(full_game / "_hockeymon/seam_file.png") << "generated artifact\n";
   const bool incomplete_subconfig_skipped =
       run_clean("clean-only-test", {"--clean"}, nullptr, &incomplete_missing_subconfig) &&
-      !fs::exists(full_game / "seam_file.png");
+      !fs::exists(full_game / "_hockeymon/seam_file.png");
 
   const fs::path configure_only_game = root / "games" / "configure-only-clean-test";
   fs::create_directories(configure_only_game);
-  std::ofstream(configure_only_game / "seam_file.png") << "generated artifact\n";
+  std::ofstream(configure_only_game / "_hockeymon/seam_file.png") << "generated artifact\n";
   const fs::path configure_only_config = root / "configure-only-stitching.yaml";
   std::ofstream(configure_only_config) << "application:\n  stage: -1\n  complete-configuration: 1\n"
                                        << "hmstitcher:\n  configure-only: 1\n";
@@ -143,11 +143,11 @@ int main(int argc, char** argv) {
                                            nullptr,
                                            &configure_only_config,
                                            /*append_calibration_config=*/false) &&
-      !fs::exists(configure_only_game / "seam_file.png");
+      !fs::exists(configure_only_game / "_hockeymon/seam_file.png");
 
   const fs::path one_pass_game = root / "games" / "one-pass-clean-test";
   fs::create_directories(one_pass_game);
-  std::ofstream(one_pass_game / "seam_file.png") << "generated artifact\n";
+  std::ofstream(one_pass_game / "_hockeymon/seam_file.png") << "generated artifact\n";
   const fs::path one_pass_config = root / "one-pass-stitching.yaml";
   std::ofstream(one_pass_config) << "application:\n  stage: 0\n  complete-configuration: 1\n"
                                  << "hmstitcher:\n  one-pass-mode: 1\n";
@@ -157,23 +157,23 @@ int main(int argc, char** argv) {
                                      nullptr,
                                      &one_pass_config,
                                      /*append_calibration_config=*/false) &&
-      !fs::exists(one_pass_game / "seam_file.png");
+      !fs::exists(one_pass_game / "_hockeymon/seam_file.png");
 
   const fs::path malformed_camera_game = root / "games" / "malformed-camera-clean-only-test";
   fs::create_directories(malformed_camera_game);
-  std::ofstream(malformed_camera_game / "seam_file.png") << "generated artifact\n";
-  std::ofstream(malformed_camera_game / "config.yaml")
+  std::ofstream(malformed_camera_game / "_hockeymon/seam_file.png") << "generated artifact\n";
+  std::ofstream(malformed_camera_game / "_hockeymon/config.yaml")
       << "rink:\n  camera:\n    fixed_edge_rotation_angle: malformed\n";
   const bool malformed_camera_ignored = run_clean("malformed-camera-clean-only-test", {"--clean"}, nullptr) &&
-      !fs::exists(malformed_camera_game / "seam_file.png");
+      !fs::exists(malformed_camera_game / "_hockeymon/seam_file.png");
 
   const fs::path missing_tracker_game = root / "games" / "missing-tracker-clean-only-test";
   fs::create_directories(missing_tracker_game);
-  std::ofstream(missing_tracker_game / "seam_file.png") << "generated artifact\n";
-  std::ofstream(missing_tracker_game / "config.yaml")
+  std::ofstream(missing_tracker_game / "_hockeymon/seam_file.png") << "generated artifact\n";
+  std::ofstream(missing_tracker_game / "_hockeymon/config.yaml")
       << "pipeline:\n  ds-playtracker:\n    config-file: missing-playtracker-sidecar.yaml\n";
   const bool missing_tracker_ignored = run_clean("missing-tracker-clean-only-test", {"--clean"}, nullptr) &&
-      !fs::exists(missing_tracker_game / "seam_file.png");
+      !fs::exists(missing_tracker_game / "_hockeymon/seam_file.png");
 
   const bool no_asset_download = !fs::exists(root / "home" / ".cache" / "hstream" / "models");
   fs::remove_all(root);

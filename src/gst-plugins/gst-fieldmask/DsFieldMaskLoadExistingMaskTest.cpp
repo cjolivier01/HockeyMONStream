@@ -61,12 +61,13 @@ int main() {
   const fs::path tmpdir =
       fs::temp_directory_path() / ("dsfieldmask_load_existing_mask_test_" + std::to_string(::getpid()));
   fs::create_directories(tmpdir);
+  fs::create_directories(tmpdir / "_hockeymon");
 
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
-    std::ofstream(tmpdir / name) << "generation-test-artifact\n";
+    std::ofstream(tmpdir / "_hockeymon" / name) << "generation-test-artifact\n";
   }
-  if (!write_mapping_tiff(tmpdir / "mapping_0000.tif", 32, 64, 0.0f) ||
-      !write_mapping_tiff(tmpdir / "mapping_0001.tif", 32, 64, 32.0f)) {
+  if (!write_mapping_tiff(tmpdir / "_hockeymon/mapping_0000.tif", 32, 64, 0.0f) ||
+      !write_mapping_tiff(tmpdir / "_hockeymon/mapping_0001.tif", 32, 64, 32.0f)) {
     std::cerr << "Failed to write mapping placement TIFF fixtures" << std::endl;
     return 15;
   }
@@ -76,15 +77,15 @@ int main() {
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
        }) {
-    cv::imwrite((tmpdir / name).string(), cv::Mat(64, 32, CV_32FC1, cv::Scalar(0.0f)));
+    cv::imwrite((tmpdir / "_hockeymon" / name).string(), cv::Mat(64, 32, CV_32FC1, cv::Scalar(0.0f)));
   }
 
   cv::Mat seam(64, 64, CV_8UC1, cv::Scalar(0));
   seam.colRange(32, seam.cols).setTo(255);
-  cv::imwrite((tmpdir / "seam_file.png").string(), seam);
+  cv::imwrite((tmpdir / "_hockeymon/seam_file.png").string(), seam);
   // This fixture publishes a mask with no sampled-frame provenance, which is
   // the automatic selection rather than the configured ice-mask frame.
-  std::ofstream(tmpdir / "config.yaml") << "stitching:\n  rink_mask_frame_time: auto\n";
+  std::ofstream(tmpdir / "_hockeymon/config.yaml") << "stitching:\n  rink_mask_frame_time: auto\n";
   cv::Mat mask(64, 64, CV_8UC1, cv::Scalar(0));
   mask(cv::Rect(8, 16, 48, 33)).setTo(255);
   hm::stitching::RinkProfile profile;
@@ -96,7 +97,7 @@ int main() {
     std::cerr << "Failed to publish test mask: " << saved << std::endl;
     return 2;
   }
-  const fs::path mask_path = tmpdir / "rink_mask_0.png";
+  const fs::path mask_path = tmpdir / "_hockeymon/rink_mask_0.png";
 
   std::string initial_output_generation;
   std::string rotated_output_generation;
@@ -316,7 +317,7 @@ int main() {
   }
 
   {
-    std::ofstream config(tmpdir / "config.yaml");
+    std::ofstream config(tmpdir / "_hockeymon/config.yaml");
     config << "stitching:\n"
               "  rink_mask_frame_time: auto\n"
               "hstream_ui:\n"
@@ -341,7 +342,7 @@ int main() {
       DsFieldMaskProcessFrame(nullptr, /*frame_index=*/0, frame_meta, stale_ctx, /*draw=*/false);
   DsFieldMaskCtxDeinit(stale_ctx);
   const auto superseded_config = [&]() {
-    std::ifstream input(tmpdir / "config.yaml");
+    std::ifstream input(tmpdir / "_hockeymon/config.yaml");
     return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
   }();
   if (!superseded_status.ok() || !repeated_superseded_status.ok() || fs::exists(mask_path) ||

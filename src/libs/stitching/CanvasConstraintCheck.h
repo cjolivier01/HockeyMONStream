@@ -59,6 +59,8 @@ const std::vector<std::string>& required_stitch_artifact_names();
 const std::vector<std::string>& stitch_artifact_names();
 // Verifies the parser-facing generation artifacts through bounded, no-follow,
 // nonblocking descriptors. The caller must hold the artifact lock.
+// Flat private snapshots use their explicit artifact directory.
+absl::Status validate_stitch_generation_artifact_bounds_at_directory(const std::filesystem::path& directory);
 absl::Status validate_stitch_generation_artifact_bounds_locked(const std::filesystem::path& game_dir);
 // Bounds the parser-facing placement TIFFs and an optional seam before legacy
 // seam repair. The caller must hold the artifact lock.
@@ -160,7 +162,8 @@ struct StitchArtifactContentIdentity {
 
 // Resolves a stable artifact set by content without updating its generation
 // sidecar or syncing files. Returns FailedPrecondition for legacy or
-// content-mismatched sidecars.
+// content-mismatched sidecars. Takes a literal flat artifact directory; for a
+// game, pass game_storage::StateDirectory(game).
 absl::StatusOr<StitchArtifactContentIdentity> stitch_artifact_content_identity_locked(
     const std::filesystem::path& artifact_directory);
 

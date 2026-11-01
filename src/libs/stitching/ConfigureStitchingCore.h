@@ -398,7 +398,7 @@ absl::Status configure_stitching(
     size_t max_output_width = 0,
     const std::string& captured_frame_selection_fingerprint = {});
 
-// Validate that `${game_dir}/seam_file.png` exists.
+// Validate that `${game_dir}/_hockeymon/seam_file.png` exists.
 //
 // Some environments produce the mapping TIFFs but fail to generate `seam_file.png` (e.g. missing enblend/multiblend).
 // The runtime stitcher requires a seam mask; without it the pipeline will render a gray canvas.

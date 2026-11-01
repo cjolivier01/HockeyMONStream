@@ -1,4 +1,6 @@
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
@@ -27,6 +29,7 @@ bool expect(bool ok, const char* message) {
   return ok;
 }
 bool write(const QString& path, const QByteArray& contents, bool executable = false) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   const bool ok = file.open(QIODevice::WriteOnly) && file.write(contents) == contents.size();
   if (ok && executable)
@@ -128,15 +131,17 @@ int main(int argc, char** argv) {
           "An unavailable crop preview must explain why and keep crop controls available");
     };
     ok &= check_unavailable("Stitching calibration is not available yet");
-    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
+    ok &= write(partial.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
     ok &= check_unavailable("Stitching calibration is incomplete");
-    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: failed}}\n");
+    ok &= write(partial.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: failed}}\n");
     ok &= check_unavailable("Stitching calibration failed");
-    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+    ok &=
+        write(partial.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
     ok &= check_unavailable("has not produced all the saved camera images and projection");
-    ok &= write(partial.filePath("config.yaml"), "{}\n");
+    ok &= write(partial.filePath("_hockeymon/config.yaml"), "{}\n");
     ok &= check_unavailable("has not produced all the saved camera images and projection");
-    ok &= write(partial.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: [invalid]}}\n");
+    ok &=
+        write(partial.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: [invalid]}}\n");
     ok &= check_unavailable("Could not read the game's calibration status");
   }
   {
@@ -195,11 +200,13 @@ int main(int argc, char** argv) {
         "Cancel must leave the caller's settings unchanged");
   }
   QTemporaryDir game, bin;
+  QDir(game.path()).mkpath("_hockeymon");
   const QByteArray pto =
       "p f19 w800 h400 v180 P\"100 0 0\" S80,720,80,360 n\"PNG\"\n"
       "i w100 h100 f0 v90 y-30 p0 r0 n\"left.png\"\n"
       "i w100 h100 f0 v90 y30 p0 r0 n\"right.png\"\n";
-  ok &= write(game.filePath("autooptimiser_out.pto"), pto) && write(game.filePath("config.yaml"), "{}\n");
+  ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), pto) &&
+      write(game.filePath("_hockeymon/config.yaml"), "{}\n");
   const QByteArray legacy_provenance =
       "version=7\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
       "canvas-width=800\ncanvas-height=400\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
@@ -210,10 +217,10 @@ int main(int argc, char** argv) {
   const QByteArray provenance = QByteArray(legacy_provenance).replace("version=7", "version=8") +
       "projection-rotation-0=0\nprojection-rotation-1=0\nprojection-rotation-2=0\n"
       "projection-crop-0=0\nprojection-crop-1=1\nprojection-crop-2=0\nprojection-crop-3=1\n";
-  ok &= write(game.filePath("stitching_canvas_provenance"), provenance);
+  ok &= write(game.filePath("_hockeymon/stitching_canvas_provenance"), provenance);
   QImage source(100, 100, QImage::Format_RGB32);
   source.fill(Qt::gray);
-  ok &= source.save(game.filePath("left.png")) && source.save(game.filePath("right.png"));
+  ok &= source.save(game.filePath("_hockeymon/left.png")) && source.save(game.filePath("_hockeymon/right.png"));
   ok &= write(
       bin.filePath("pano_modify"),
       "#!/bin/sh\ncase \"$*\" in\n*--crop=AUTO*) cp autooptimiser_out.pto auto.pto;;\n*) cp autooptimiser_out.pto full.pto;;\nesac\n",
@@ -237,7 +244,7 @@ int main(int argc, char** argv) {
   qputenv("PATH", bin.path().toUtf8() + ":/usr/bin:/bin");
   qputenv("CROP_NONA_ARGS", bin.filePath("crop-nona-arguments").toUtf8());
   {
-    ok &= write(game.filePath("stitching_canvas_provenance"), legacy_provenance);
+    ok &= write(game.filePath("_hockeymon/stitching_canvas_provenance"), legacy_provenance);
     ok &= expect(
         ProjectionCropDialog::savedCalibrationPreviewError(game.path(), framing, "general-panini", {100, 0, 0}, camera)
             .isEmpty(),
@@ -249,11 +256,11 @@ int main(int argc, char** argv) {
         waitUntil([&]() { return !canvas->imageRect().isEmpty(); }),
         "Reusable legacy calibration must produce a crop preview");
     dialog.close();
-    ok &= write(game.filePath("stitching_canvas_provenance"), provenance);
+    ok &= write(game.filePath("_hockeymon/stitching_canvas_provenance"), provenance);
   }
   {
     // Old image artifacts do not make a pending calibration ready.
-    ok &= write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
+    ok &= write(game.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: pending}}\n");
     ProjectionCropDialog dialog(game.path(), framing, "general-panini", {100, 0, 0}, camera);
     dialog.show();
     ok &= expect(
@@ -265,12 +272,12 @@ int main(int argc, char** argv) {
             dialog.sourceRevision().isEmpty(),
         "Pending calibration must be explained even when old preview artifacts exist");
     dialog.close();
-    ok &= write(game.filePath("config.yaml"), "{}\n");
+    ok &= write(game.filePath("_hockeymon/config.yaml"), "{}\n");
   }
   {
     QTemporaryDir staging;
     for (const QString name : {"autooptimiser_out.pto", "left.png", "right.png"})
-      ok &= QFile::copy(game.filePath(name), staging.filePath(name));
+      ok &= QFile::copy(game.filePath("_hockeymon/" + QString(name)), staging.filePath(name));
     ok &= write(staging.filePath(".autooptimiser_out.aligned.pto"), pto);
     hm::stitching::StitchProjectionFraming full;
     ProjectionCropDialog dialog(staging.path(), full, "general-panini", {100, 0, 0}, camera, {}, nullptr, true);
@@ -387,13 +394,13 @@ int main(int argc, char** argv) {
     ok &= expect(
         dialog.framing().crop == std::array<double, 4>{0.1, 0.9, 0.2, 0.9} && !keep->isChecked(),
         "Manual can start from the Auto rectangle with Keep full width unchecked");
-    write(game.filePath("config.yaml"), "changed: true\n");
+    write(game.filePath("_hockeymon/config.yaml"), "changed: true\n");
     dialog.findChild<QPushButton*>("acceptProjectionCropButton")->click();
     ok &= expect(dialog.result() != QDialog::Accepted, "a stale calibration preview cannot be applied");
     dialog.close();
   }
   {
-    ok &= write(game.filePath("config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
+    ok &= write(game.filePath("_hockeymon/config.yaml"), "hstream_ui: {stitching_calibration: {status: complete}}\n");
     ok &= write(bin.filePath("nona"), "#!/bin/sh\nprintf 'invalid preview' > full.png\n", true);
     ProjectionCropDialog dialog(game.path(), framing, "general-panini", {100, 0, 0}, camera);
     dialog.show();

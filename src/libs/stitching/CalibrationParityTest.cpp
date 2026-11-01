@@ -134,11 +134,15 @@ std::optional<HuginOutcome> configure_hugin(
     const fs::path& game_dir,
     const std::vector<hm::stitching::FeatureMatch>& matches) {
   std::error_code error;
-  fs::create_directories(output_dir, error);
+  fs::create_directories(output_dir / "_hockeymon", error);
   if (error)
     return std::nullopt;
   for (const char* image : {"left.png", "right.png"}) {
-    fs::copy_file(game_dir / image, output_dir / image, fs::copy_options::overwrite_existing, error);
+    fs::copy_file(
+        game_dir / "_hockeymon" / image,
+        output_dir / "_hockeymon" / image,
+        fs::copy_options::overwrite_existing,
+        error);
     if (error)
       return std::nullopt;
   }
@@ -151,14 +155,14 @@ std::optional<HuginOutcome> configure_hugin(
     std::cerr << "FAIL: Hugin outcome generation failed for " << output_dir.filename() << ": " << configured << '\n';
     return std::nullopt;
   }
-  const auto project = read_file(output_dir / "autooptimiser_out.pto");
+  const auto project = read_file(output_dir / "_hockeymon" / "autooptimiser_out.pto");
   if (!project.has_value())
     return std::nullopt;
   const auto canvas = hm::stitching::HuginProject::ParseCanvasSize(*project);
   const auto projection = hm::stitching::HuginProject::ParseProjection(*project);
   const auto first = hm::stitching::HuginProject::ParseCameraPose(*project, 0);
   const auto second = hm::stitching::HuginProject::ParseCameraPose(*project, 1);
-  const cv::Mat seam = cv::imread((output_dir / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
+  const cv::Mat seam = cv::imread((output_dir / "_hockeymon" / "seam_file.png").string(), cv::IMREAD_GRAYSCALE);
   if (!canvas.ok() || !projection.ok() || *projection != 1 || !first.ok() || !second.ok() || seam.empty()) {
     std::cerr << "FAIL: optimized Hugin outcome could not be parsed for " << output_dir.filename() << '\n';
     return std::nullopt;
@@ -196,11 +200,12 @@ int main(int argc, char** argv) {
   const fs::path rink_model = model_path("HM_RINK_ONNX_MODEL", "ice-rink-mask2former-swin-s-2c231f9f4897779d.onnx");
   const fs::path matcher_model =
       model_path("HM_FEATURE_MATCHER_ONNX_MODEL", "aliked-lightglue-k2048-ea4a4ab2cb556958.onnx");
-  if (!fs::is_regular_file(game_dir / "left.png") || !fs::is_regular_file(game_dir / "right.png") ||
-      !fs::is_regular_file(rink_model) || !fs::is_regular_file(matcher_model)) {
+  if (!fs::is_regular_file(game_dir / "_hockeymon" / "left.png") ||
+      !fs::is_regular_file(game_dir / "_hockeymon" / "right.png") || !fs::is_regular_file(rink_model) ||
+      !fs::is_regular_file(matcher_model)) {
     return skip_or_fail("native models and left/right game fixtures are required for Python parity");
   }
-  if (required() && !fs::is_regular_file(game_dir / "s.png"))
+  if (required() && !fs::is_regular_file(game_dir / "_hockeymon" / "s.png"))
     return skip_or_fail("mandatory parity fixture is missing s.png: " + game_dir.string());
 
   char temporary_template[] = "/tmp/hstream-python-parity-XXXXXX";
@@ -249,8 +254,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const cv::Mat left = cv::imread((game_dir / "left.png").string(), cv::IMREAD_COLOR);
-  const cv::Mat right = cv::imread((game_dir / "right.png").string(), cv::IMREAD_COLOR);
+  const cv::Mat left = cv::imread((game_dir / "_hockeymon" / "left.png").string(), cv::IMREAD_COLOR);
+  const cv::Mat right = cv::imread((game_dir / "_hockeymon" / "right.png").string(), cv::IMREAD_COLOR);
   auto matcher = hm::stitching::FeatureMatcher::CreateLegacyAlikedParity(matcher_model.string());
   if (!matcher.ok()) {
     std::cerr << "FAIL: native matcher model contract failed: " << matcher.status() << '\n';
@@ -405,7 +410,7 @@ int main(int argc, char** argv) {
     }
     std::cerr << "SKIP: HockeyMOM rink parity is unavailable: " << reason << '\n';
   } else {
-    const cv::Mat stitched = cv::imread((game_dir / "s.png").string(), cv::IMREAD_COLOR);
+    const cv::Mat stitched = cv::imread((game_dir / "_hockeymon" / "s.png").string(), cv::IMREAD_COLOR);
     auto rink = hm::stitching::RinkSegmentation::Create(rink_model.string(), {}, hm::onnx::ExecutionProvider::kCpu);
     if (stitched.empty() || !rink.ok()) {
       std::cerr << "FAIL: native rink model/fixture contract failed\n";

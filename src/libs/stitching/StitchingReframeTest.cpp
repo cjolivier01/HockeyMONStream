@@ -18,6 +18,14 @@ namespace fs = std::filesystem;
 using namespace hm::stitching;
 
 namespace {
+std::filesystem::path saved_state(const std::filesystem::path& game) {
+  const auto state = game / "_hockeymon";
+  std::filesystem::create_directories(state);
+  return state;
+}
+} // namespace
+
+namespace {
 
 class ScopedEnvironment {
  public:
@@ -127,7 +135,7 @@ YAML::Node fixture(const fs::path& root) {
   require(reserve_stitching_backend_generation_in_config(config, "completed-solve", choices(config)));
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
     write(
-        root / name,
+        saved_state(root) / name,
         "p f19 w64 h32 v180\ni w16 h16 f0 v109 r0 p0 y0 n\"left.png\"\ni w16 h16 f0 v109 r0 p0 y45 n\"right.png\"\nc n0 N1 x1 y2 X3 Y4 t0\n");
   for (const char* name :
        {"mapping_0000.tif",
@@ -136,10 +144,10 @@ YAML::Node fixture(const fs::path& root) {
         "mapping_0001.tif",
         "mapping_0001_x.tif",
         "mapping_0001_y.tif"})
-    if (!cv::imwrite((root / name).string(), cv::Mat(32, 64, CV_16UC1, cv::Scalar(1))))
+    if (!cv::imwrite((saved_state(root) / name).string(), cv::Mat(32, 64, CV_16UC1, cv::Scalar(1))))
       throw std::runtime_error("Cannot create TIFF fixture");
   for (const char* name : {"left.png", "right.png", "seam_file.png"})
-    if (!cv::imwrite((root / name).string(), cv::Mat(16, 16, CV_8UC3, cv::Scalar(1, 2, 3))))
+    if (!cv::imwrite((saved_state(root) / name).string(), cv::Mat(16, 16, CV_8UC3, cv::Scalar(1, 2, 3))))
       throw std::runtime_error("Cannot create PNG fixture");
   return config;
 }
@@ -152,7 +160,7 @@ void provenance(
     double horizontal_fov = 180) {
   const auto parameters = FormatStitchProjectionParameters(DefaultStitchProjectionParameters(projection));
   write(
-      root / kStitchCanvasProvenanceArtifact,
+      saved_state(root) / kStitchCanvasProvenanceArtifact,
       "version=10\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=64\nsource-canvas-height=32\n"
       "canvas-width=64\ncanvas-height=32\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
       "mapping-backend=nona\nprojection=" +
@@ -213,8 +221,8 @@ bool test_serialized_intent(const fs::path& root) {
   record["source_solver"]["camera_fov"]["horizontal_fov"] = YAML::Load("109.0");
   record["source_solver"]["frame_offsets"]["left"] = YAML::Load("1.0");
   record["source_solver"]["frame_offsets"]["right"] = YAML::Load("0.885511");
-  write(root / "config.yaml", YAML::Dump(launch));
-  const auto roundtrip = YAML::LoadFile((root / "config.yaml").string());
+  write(saved_state(root) / "config.yaml", YAML::Dump(launch));
+  const auto roundtrip = YAML::LoadFile((saved_state(root) / "config.yaml").string());
   const auto valid = ValidateStitchingReframeIntentLocked(root, roundtrip);
   ok &= expect(valid.ok(), "runtime accepts equal numeric values after outer launch serialization");
   if (!valid.ok())
@@ -267,14 +275,14 @@ bool test_camera_start_reframe(const fs::path& root, int version) {
   require(reserve_stitching_backend_generation_in_config(before, "completed-solve", choices(before)));
   provenance(root);
   if (version >= 16) {
-    std::ifstream input(root / kStitchCanvasProvenanceArtifact);
+    std::ifstream input(saved_state(root) / kStitchCanvasProvenanceArtifact);
     std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     text.replace(0, std::string("version=10").size(), "version=" + std::to_string(version));
     text += "input-lens=" + SerializeStitchInputLens(camera.input_lens) + "\n";
     if (version == 17)
       text += "manual-control-points=" + std::string(64, 'a') + "\n";
     text += "input-cameras=" + SerializeStitchInputCameras(camera.input_cameras) + "\ncontrol-point-filtering=0,0\n";
-    write(root / kStitchCanvasProvenanceArtifact, text);
+    write(saved_state(root) / kStitchCanvasProvenanceArtifact, text);
   }
   auto artifact_lock = value(lock_canvas_constraint_artifacts(root));
   auto config_lock = value(GameConfigTransactionLock::Acquire(root));
@@ -339,12 +347,12 @@ bool test_auto_playlist_materialization(const fs::path& root, bool legacy, bool 
     write_stitch_camera_selection(before, camera);
     before["hstream_ui"]["stitching_calibration"].remove("backend_generation");
     require(reserve_stitching_backend_generation_in_config(before, "completed-solve", choices(before)));
-    std::ifstream input(root / kStitchCanvasProvenanceArtifact);
+    std::ifstream input(saved_state(root) / kStitchCanvasProvenanceArtifact);
     std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     text.replace(0, std::string("version=10").size(), "version=16");
     text += "input-lens=" + SerializeStitchInputLens(camera.input_lens) + "\n";
     text += "input-cameras=" + SerializeStitchInputCameras(camera.input_cameras) + "\ncontrol-point-filtering=0,0\n";
-    write(root / kStitchCanvasProvenanceArtifact, text);
+    write(saved_state(root) / kStitchCanvasProvenanceArtifact, text);
   }
   before["game"]["videos"]["left"] = YAML::Node();
   before["game"]["videos"]["right"] = YAML::Node();
@@ -523,7 +531,7 @@ bool test_ownership_and_edits(const fs::path& root) {
   ok &= expect(
       HasStitchingReframeIntent(malformed) && !ValidateStitchingReframeIntentLocked(root, malformed).ok(),
       "malformed explicit request cannot become ordinary calibration");
-  write(root / "left.png", "replaced representative");
+  write(saved_state(root) / "left.png", "replaced representative");
   ok &= expect(
       !ValidateStitchingReframeIntentLocked(root, rebound).ok(),
       "representative replacement is detected outside generation fingerprint");
@@ -566,7 +574,7 @@ bool test_capture_guards(const fs::path& root) {
   prepare = PrepareStitchingReframeIntentLocked(root, mismatched, edited, "wrong-source", edited);
   ok &= expect(!prepare.ok(), "pre-edit source must agree with completed backend claim");
   edited = desired_view(before);
-  fs::remove(root / kStitchCanvasProvenanceArtifact);
+  fs::remove(saved_state(root) / kStitchCanvasProvenanceArtifact);
   prepare = PrepareStitchingReframeIntentLocked(root, before, edited, "missing-provenance", edited);
   ok &= expect(!prepare.ok(), "missing source provenance fails without authorizing matching");
   unchanged = YAML::Clone(legacy);
@@ -758,11 +766,11 @@ bool test_manual_identity(const fs::path& root) {
   bool ok = expect(
       !PrepareStitchingReframeIntentLocked(root, before, desired, "manual-view", desired).ok(),
       "manual inputs cannot reframe alignment carrying automatic provenance");
-  std::ifstream input(root / kStitchCanvasProvenanceArtifact);
+  std::ifstream input(saved_state(root) / kStitchCanvasProvenanceArtifact);
   std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
   text.replace(0, std::string("version=10").size(), "version=11");
   text += "manual-control-points=" + manual + "\n";
-  write(root / kStitchCanvasProvenanceArtifact, text);
+  write(saved_state(root) / kStitchCanvasProvenanceArtifact, text);
   desired = desired_view(before);
   const auto prepared = PrepareStitchingReframeIntentLocked(root, before, desired, "manual-view", desired);
   ok &= expect(prepared.ok() && *prepared, "matching manual provenance authorizes a geometry-only reframe");
@@ -784,7 +792,7 @@ bool test_selected_retention(const fs::path& root) {
   before["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
   before["hstream_ui"]["stitching_calibration"].remove("backend_generation");
   require(reserve_stitching_backend_generation_in_config(before, "completed-solve", choices(before)));
-  std::vector<std::array<fs::path, 2>> images(2, {root / "left.png", root / "right.png"});
+  std::vector<std::array<fs::path, 2>> images(2, {saved_state(root) / "left.png", saved_state(root) / "right.png"});
   for (size_t camera = 0; camera < 2; ++camera) {
     images[0][camera] = root / (camera ? "first-right.png" : "first-left.png");
     if (!cv::imwrite(images[0][camera].string(), cv::Mat(16, 16, CV_8UC3, cv::Scalar(4, 5, 6))))

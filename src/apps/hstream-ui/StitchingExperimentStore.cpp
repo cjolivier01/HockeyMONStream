@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
+#include "hstream/src/libs/common/GameStorage.h"
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -434,7 +435,7 @@ absl::StatusOr<YAML::Node> validate_workspace_config(
   if (!directory.ok())
     return directory.status();
   YAML::Node config;
-  HM_ASSIGN_OR_RETURN(config, read_config(directory->path() / "config.yaml"));
+  HM_ASSIGN_OR_RETURN(config, read_config(directory->path() / "_hockeymon/config.yaml"));
   const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
   require(
       calibration.IsMap() && calibration["invalidation_id"].as<std::string>("") == workspace.invalidation_id,
@@ -500,8 +501,13 @@ absl::StatusOr<std::unique_ptr<StoreLock>> acquire(
       store.directory.is_absolute() && store.directory == store.directory.lexically_normal() &&
           store.game_directory.is_absolute() && store.game_directory == store.game_directory.lexically_normal(),
       "Experiment store paths must be canonical absolute paths");
-  require(store.directory == store.game_directory / "stitching-experiments", "Experiment store is outside its game");
-  auto game = hm::stitching::PinnedDirectory::Open(store.game_directory, "experiment game");
+  require(
+      store.directory == store.game_directory / "_hockeymon/stitching-experiments",
+      "Experiment store is outside its game");
+  if (create)
+    HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(store.game_directory));
+  auto game = hm::stitching::PinnedDirectory::Open(
+      hm::game_storage::StateDirectory(store.game_directory), "experiment game state");
   if (!game.ok())
     return game.status();
   auto lock = std::make_unique<StoreLock>();
@@ -607,7 +613,8 @@ absl::Status write_index(const StoreLock& lock, const StitchingExperimentStore& 
   emitter << node;
   if (!emitter.good() || emitter.size() + 1 > kMaximumStitchingExperimentCatalogBytes)
     return absl::ResourceExhaustedError("Experiment catalog is full; retained history was not truncated");
-  return atomic_write(lock, "index.yaml", std::string(emitter.c_str()) + '\n');
+  HM_RETURN_IF_ERROR(atomic_write(lock, "index.yaml", std::string(emitter.c_str()) + '\n'));
+  return hm::game_storage::RefreshManifest(store.game_directory, "stitching-experiments");
 }
 
 absl::StatusOr<Index> read_index(const StoreLock& lock, const StitchingExperimentStore& store) {
@@ -707,7 +714,7 @@ absl::StatusOr<StitchingExperimentStore> OpenStitchingExperimentStore(const fs::
   try {
     const auto game = fs::canonical(game_directory);
     require(fs::is_directory(game), "Experiment game is not a directory");
-    const fs::path directory = game / "stitching-experiments";
+    const fs::path directory = game / "_hockeymon/stitching-experiments";
     StitchingExperimentStore store{directory, game};
     auto lock = acquire(store, false, true);
     if (!lock.ok())
@@ -746,6 +753,7 @@ absl::StatusOr<StitchingExperimentStore> OpenStitchingExperimentStore(const fs::
         return index.status();
     }
     HM_RETURN_IF_ERROR(make_private_directory(directory / "sessions"));
+    HM_RETURN_IF_ERROR(hm::game_storage::RefreshManifest(store.game_directory, "stitching-experiments"));
     return store;
   } catch (const std::exception& error) {
     return invalid_catalog(error);
@@ -870,7 +878,7 @@ absl::Status SaveStitchingExperiment(
         // finishes. A different main count leaves this count available, but a
         // newer same-count default/reservation must never be overwritten.
         publish_selection = false;
-        const auto main = read_config(store.game_directory / "config.yaml");
+        const auto main = read_config(store.game_directory / "_hockeymon/config.yaml");
         if (main.ok()) {
           const auto plan = selected_plan(*main);
           const int count = experiment.workspace.settings.frame_count;
@@ -1050,13 +1058,14 @@ absl::Status DiscardStitchingExperimentStore(const StitchingExperimentStore& sto
       marker["discard_pending"] = true;
       HM_RETURN_IF_ERROR(atomic_write(**lock, "owner.yaml", YAML::Dump(marker) + '\n'));
     }
-    auto parent = hm::stitching::PinnedDirectory::Open(store.game_directory, "experiment game");
+    auto parent = hm::stitching::PinnedDirectory::Open(
+        hm::game_storage::StateDirectory(store.game_directory), "experiment game state");
     if (!parent.ok())
       return parent.status();
     const auto removed =
         hm::stitching::remove_pinned_directory(*parent, "stitching-experiments", (*lock)->directory, "owner.yaml");
     return removed.ok()
-        ? removed
+        ? hm::game_storage::RefreshManifest(store.game_directory, "stitching-experiments")
         : absl::InternalError(
               "Experiment discard started but file cleanup is incomplete. Use Discard results again to finish: " +
               removed.ToString());
@@ -1165,14 +1174,14 @@ absl::Status RemoveStitchingExperiments(
         experiments.end());
     HM_RETURN_IF_ERROR(write_index(**lock, store, index));
     for (const auto& removal : removals) {
-      const auto status =
-          hm::stitching::remove_pinned_directory(removal.parent, removal.name, removal.candidate, "config.yaml");
+      const auto status = hm::stitching::remove_pinned_directory(
+          removal.parent, removal.name, removal.candidate, "_hockeymon/config.yaml");
       if (!status.ok())
         return absl::InternalError(
             "Experiment records were removed from history, but private files remain in " + store.directory.string() +
             ". Reload the saved rows; use Discard results or remove the leftover files manually: " + status.ToString());
     }
-    return absl::OkStatus();
+    return hm::game_storage::RefreshManifest(store.game_directory, "stitching-experiments");
   } catch (const std::exception& error) {
     return invalid_catalog(error);
   }
