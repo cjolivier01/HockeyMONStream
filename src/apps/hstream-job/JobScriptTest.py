@@ -901,6 +901,33 @@ class JobScriptTest(unittest.TestCase):
         self.assertEqual(entry["role"], "saved-state")
         self.assertEqual(entry["size_bytes"], custom.stat().st_size)
 
+    def test_job_export_inventories_the_resolved_output_path(self):
+        nested = self.game / "nested"
+        nested.mkdir()
+        custom = nested / ".." / "normalized.sh"
+        result = self.generate("--output", str(custom))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        inventory_path = self.game / "_hockeymon/manifest.json"
+        inventory = json.loads(inventory_path.read_text())
+        entry = next(item for item in inventory["files"] if item["path"] == "normalized.sh")
+        self.assertEqual(entry["role"], "published")
+        self.assertEqual(entry["size_bytes"], custom.stat().st_size)
+
+        external = self.root / "external"
+        (external / "nested").mkdir(parents=True)
+        alias = self.game / "directory-alias"
+        alias.symlink_to(external / "nested", target_is_directory=True)
+        # Resolving '..' after the alias writes outside the game. A same-named
+        # existing game file must not be adopted into its inventory instead.
+        unrelated = self.game / "external.sh"
+        unrelated.write_text("unrelated")
+        result = self.generate("--output", str(alias / ".." / "external.sh"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(os.access(external / "external.sh", os.X_OK))
+        self.assertEqual(unrelated.read_text(), "unrelated")
+        inventory = json.loads(inventory_path.read_text())
+        self.assertFalse(any(item["path"] == "external.sh" for item in inventory["files"]))
+
     def test_export_fallback_requires_the_shared_baseline_archive_recipe(self):
         baseline = self.root / "baseline"
         baseline.mkdir()

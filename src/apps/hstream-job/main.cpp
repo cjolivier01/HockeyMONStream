@@ -271,11 +271,13 @@ int main(int argc, char** argv) {
     if (game.filename().empty() || !fs::is_directory(game))
       throw std::runtime_error("--game-dir must name an existing game directory");
     const auto register_script = [&](const fs::path& path) {
-      const auto relative = fs::absolute(path).lexically_normal().lexically_relative(game);
+      // Register the file actually written, including outputs using '..' or a
+      // directory alias. Lexical normalization alone can name a different file.
+      const auto relative = fs::canonical(path).lexically_relative(fs::canonical(game));
       if (!relative.empty() && *relative.begin() != "..") {
         const auto inventory = *relative.begin() == "_hockeymon"
             ? hm::game_storage::RefreshManifest(game, "job-export")
-            : hm::game_storage::RegisterPublished(game, path, "job-export", "");
+            : hm::game_storage::RegisterPublished(game, relative, "job-export", "");
         if (!inventory.ok())
           throw std::runtime_error(inventory.ToString());
       }
