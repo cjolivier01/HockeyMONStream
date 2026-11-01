@@ -236,6 +236,7 @@ cc_library(
   deps = [
     ":scoreboard_proposal",
     ":stitching_reframe",
+    ":video_discovery",
     ":calibration_match_images",
     ":calibration_matches",
     ":calibration_frame_exif",
@@ -886,6 +887,7 @@ cc_library(
   visibility = ["//visibility:public"],
   linkopts = ["-lcrypto"],
   deps = [
+    ":video_discovery",
     ":hugin_project",
     ":game_config",
     ":canvas_constraint_check",
@@ -1031,4 +1033,18 @@ cc_test(
   name = "calibration_reference_frames_test",
   srcs = ["CalibrationReferenceFramesTest.cpp"],
   deps = [":stitching_core", "//src/libs/common:process", "@opencv_linux//:opencv", "@yaml-cpp"],
+)
+
+cc_library(
+  name = "video_discovery",
+  srcs = ["VideoDiscovery.cpp"],
+  hdrs = ["VideoDiscovery.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [
+    "//src/libs/common:status_macros",
+    "//src/libs/common:utils_base",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+  ],
 )

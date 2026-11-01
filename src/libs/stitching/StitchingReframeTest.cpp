@@ -318,6 +318,110 @@ bool test_camera_start_reframe(const fs::path& root, int version) {
   return ok;
 }
 
+bool test_auto_playlist_materialization(const fs::path& root, bool legacy, bool camera_directories) {
+  auto before = fixture(root);
+  const std::vector<std::string> left = camera_directories
+      ? std::vector<std::string>{"cam2/GX010106.MP4", "cam2/GX020106.MP4"}
+      : std::vector<std::string>{"GX010106.MP4", "GX020106.MP4"};
+  const std::vector<std::string> right = camera_directories
+      ? std::vector<std::string>{"cam1/GX010105.MP4", "cam1/GX020105.MP4", "cam1/GX030105.MP4"}
+      : std::vector<std::string>{"GX010105.MP4", "GX020105.MP4", "GX030105.MP4"};
+  for (const auto& playlist : {left, right})
+    for (const auto& path : playlist) {
+      fs::create_directories((root / path).parent_path());
+      write(root / path, "media identity fixture");
+    }
+  provenance(root);
+  if (legacy) {
+    auto camera = value(read_stitch_camera_selection(before));
+    camera.input_cameras[left.front()] = {109, 64, camera.input_lens};
+    camera.input_cameras[right.front()] = {115, 70, camera.input_lens};
+    write_stitch_camera_selection(before, camera);
+    before["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+    require(reserve_stitching_backend_generation_in_config(before, "completed-solve", choices(before)));
+    std::ifstream input(root / kStitchCanvasProvenanceArtifact);
+    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    text.replace(0, std::string("version=10").size(), "version=16");
+    text += "input-lens=" + SerializeStitchInputLens(camera.input_lens) + "\n";
+    text += "input-cameras=" + SerializeStitchInputCameras(camera.input_cameras) + "\ncontrol-point-filtering=0,0\n";
+    write(root / kStitchCanvasProvenanceArtifact, text);
+  }
+  before["game"]["videos"]["left"] = YAML::Node();
+  before["game"]["videos"]["right"] = YAML::Node();
+  auto artifact_lock = value(lock_canvas_constraint_artifacts(root));
+  auto config_lock = value(GameConfigTransactionLock::Acquire(root));
+  auto launch = desired_view(before);
+  const auto prepared = PrepareStitchingReframeIntentLocked(root, before, launch, "auto-view", launch);
+  bool ok = expect(prepared.ok() && *prepared, "Auto request captures the completed alignment");
+  if (!prepared.ok() || !*prepared)
+    return false;
+  auto record = launch["hstream_ui"]["stitching_calibration"]["reframe"];
+  ok &= expect(record["source_auto_videos"].size() == 2, "new Auto requests freeze both complete camera sets");
+  if (legacy)
+    record.remove("source_auto_videos");
+  pending(launch, "auto-view");
+  ok &= expect(ValidateStitchingReframeIntentLocked(root, launch).ok(), "Auto request validates before discovery");
+  launch["game"]["videos"]["left"] = left;
+  launch["game"]["videos"]["right"] = right;
+  launch = YAML::Load(YAML::Dump(launch));
+  const auto valid = ValidateStitchingReframeIntentLocked(root, launch);
+  ok &= expect(valid.ok(), "Auto discovery can publish unequal complete playlists without invalidating reframe");
+  if (!valid.ok())
+    std::cerr << valid.status() << '\n';
+  auto retry = YAML::Clone(launch);
+  ok &= expect(
+      value(PrepareResolvedStitchingReframeIntentLocked(root, launch, retry, "auto-retry", retry)),
+      "a failed launch can rebind its saved Auto request after discovery");
+  for (const char* change : {"reorder", "truncate", "duplicate", "replace", "role", "offset", "start", "optics"}) {
+    auto changed = YAML::Clone(launch);
+    const std::string name(change);
+    if (name == "reorder")
+      changed["game"]["videos"]["right"] = std::vector<std::string>{right[0], right[2], right[1]};
+    else if (name == "truncate")
+      changed["game"]["videos"]["right"] = std::vector<std::string>{right[0]};
+    else if (name == "duplicate")
+      changed["game"]["videos"]["right"] = left;
+    else if (name == "replace")
+      changed["game"]["videos"]["right"][0] = "GX010999.MP4";
+    else if (name == "role")
+      changed["hstream_ui"]["video_roles"]["left"] = left;
+    else if (name == "offset")
+      changed["game"]["stitching"]["frame_offsets"]["left"] = 8;
+    else if (name == "start")
+      changed["stitching"]["input_start_times"][right[0]] = 102;
+    else
+      changed["stitching"]["camera_fov"]["horizontal_fov"] = 120;
+    ok &= expect(!ValidateStitchingReframeIntentLocked(root, changed).ok(), "Auto reframe rejects changed " + name);
+  }
+  // Bound source lists retain exact side/order identity, even when discovery
+  // would also find those same files.
+  auto explicit_before = YAML::Clone(before);
+  explicit_before["game"]["videos"]["left"] = left;
+  explicit_before["game"]["videos"]["right"] = right;
+  auto explicit_launch = desired_view(explicit_before);
+  ok &= expect(
+      value(PrepareStitchingReframeIntentLocked(root, explicit_before, explicit_launch, "bound-view", explicit_launch)),
+      "bound request captures");
+  pending(explicit_launch, "bound-view");
+  explicit_launch["game"]["videos"]["left"] = right;
+  explicit_launch["game"]["videos"]["right"] = left;
+  ok &=
+      expect(!ValidateStitchingReframeIntentLocked(root, explicit_launch).ok(), "bound request rejects swapped sides");
+  if (!legacy) {
+    const auto extra = camera_directories ? "cam1/GX040105.MP4" : "GX040105.MP4";
+    write(root / extra, "new chapter");
+    launch["game"]["videos"]["right"].push_back(extra);
+    ok &= expect(
+        !ValidateStitchingReframeIntentLocked(root, launch).ok(), "new requests reject added discovered chapters");
+    fs::remove(root / extra);
+    fs::remove(root / right.back());
+    launch["game"]["videos"]["right"] = std::vector<std::string>{right[0], right[1]};
+    ok &= expect(
+        !ValidateStitchingReframeIntentLocked(root, launch).ok(), "new requests reject removed discovered chapters");
+  }
+  return ok;
+}
+
 bool test_ownership_and_edits(const fs::path& root) {
   auto before = fixture(root);
   provenance(root);
@@ -701,6 +805,12 @@ int main() {
     ok &= test_serialized_intent(root / "serialized");
     for (int version : {10, 16, 17})
       ok &= test_camera_start_reframe(root / ("camera-start-" + std::to_string(version)), version);
+    for (bool legacy : {false, true})
+      for (bool camera_directories : {false, true})
+        ok &= test_auto_playlist_materialization(
+            root / (std::string(legacy ? "legacy-auto" : "auto") + (camera_directories ? "-dirs" : "-root")),
+            legacy,
+            camera_directories);
     ok &= test_ownership_and_edits(root / "ownership");
     ok &= test_capture_guards(root / "capture");
     ok &= test_environment_canvas_limit(root / "environment");

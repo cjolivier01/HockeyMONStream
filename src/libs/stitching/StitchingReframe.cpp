@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <tuple>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/StatusMacros.h"
@@ -20,6 +21,7 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
+#include "hstream/src/libs/stitching/VideoDiscovery.h"
 
 namespace hm::stitching {
 namespace {
@@ -163,6 +165,104 @@ std::string view_text(const YAML::Node& view) {
   for (const char* key : {"horizontal_fov", "crop", "rotation_degrees"})
     normalize_numbers(node_at(normalized, {"projection_framing", key}));
   return canonical_text(normalized);
+}
+
+// Auto has no side assignments until orientation runs. Its generated playlists
+// are a cache, but each playlist must still be a complete discovered camera in
+// chapter order. Never apply this equivalence to a saved explicit playlist.
+bool unresolved_videos(const YAML::Node& videos) {
+  if (!videos || videos.IsNull())
+    return true;
+  if (!videos.IsMap())
+    return false;
+  for (const auto& entry : videos) {
+    const auto key = entry.first.as<std::string>();
+    if ((key != "left" && key != "right") || (entry.second && !entry.second.IsNull()))
+      return false;
+  }
+  return true;
+}
+
+bool auto_video_roles(const YAML::Node& config) {
+  const auto roles = node_at(config, {"hstream_ui", "video_roles"});
+  if (!roles || roles.IsNull())
+    return true;
+  if (!roles.IsMap())
+    return false;
+  for (const auto& entry : roles)
+    if (entry.second && !entry.second.IsNull() && (!entry.second.IsSequence() || entry.second.size()))
+      return false;
+  return true;
+}
+
+absl::StatusOr<YAML::Node> auto_video_sets(const fs::path& directory) {
+  const auto absolute_directory = fs::absolute(directory).lexically_normal();
+  VideosDict discovered;
+  HM_ASSIGN_OR_RETURN(discovered, get_available_videos(absolute_directory.string()));
+  discovered.erase("stitched");
+  YAML::Node sets(YAML::NodeType::Map);
+  if (discovered.size() != 2)
+    return sets;
+  for (const auto& [_, chapters] : discovered) {
+    if (chapters.empty())
+      return YAML::Node(YAML::NodeType::Map);
+    YAML::Node playlist(YAML::NodeType::Sequence);
+    for (const auto& [chapter, path] : chapters)
+      playlist.push_back(stitch_input_camera_key(absolute_directory, path));
+    sets[playlist[0].as<std::string>()] = playlist;
+  }
+  return sets;
+}
+
+absl::Status validate_auto_videos(
+    const fs::path& directory,
+    const YAML::Node& effective,
+    const YAML::Node& record,
+    const YAML::Node& videos) {
+  const auto mismatch =
+      absl::FailedPreconditionError("Stitching reframe Auto camera playlists changed after the request was saved");
+  if (!unresolved_videos(node_at(record, {"source_solver", "videos"})) || !auto_video_roles(effective))
+    return mismatch;
+  YAML::Node discovered;
+  HM_ASSIGN_OR_RETURN(discovered, auto_video_sets(directory));
+  if (discovered.size() != 2)
+    return mismatch;
+  const auto frozen = node_at(record, {"source_auto_videos"});
+  if (frozen && !frozen.IsNull()) {
+    if (canonical_text(frozen) != canonical_text(discovered))
+      return mismatch;
+  } else {
+    // Old requests did not freeze Auto chapter lists. Recover only when the
+    // original solve identifies exactly these two cameras through its optics.
+    // The backend claim and published provenance are verified below as usual.
+    const auto cameras = node_at(record, {"source_solver", "input_cameras"});
+    if (!cameras || !cameras.IsMap() || cameras.size() != 2)
+      return mismatch;
+    for (const auto& entry : discovered)
+      if (!cameras[entry.first.as<std::string>()])
+        return mismatch;
+  }
+  if (unresolved_videos(videos))
+    return absl::OkStatus();
+  if (!videos.IsMap() || videos.size() != 2)
+    return mismatch;
+  YAML::Node used(YAML::NodeType::Map);
+  for (const char* side : {"left", "right"}) {
+    const auto playlist = node_at(videos, {side});
+    if (!playlist || !playlist.IsSequence() || !playlist.size())
+      return mismatch;
+    YAML::Node normalized(YAML::NodeType::Sequence);
+    for (const auto& path : playlist) {
+      if (!path.IsScalar())
+        return mismatch;
+      normalized.push_back(stitch_input_camera_key(directory, path.as<std::string>()));
+    }
+    const auto key = normalized[0].as<std::string>();
+    if (used[key] || canonical_text(normalized) != canonical_text(discovered[key]))
+      return mismatch;
+    used[key] = true;
+  }
+  return absl::OkStatus();
 }
 
 absl::StatusOr<size_t> nonnegative_size(const YAML::Node& node, const char* label, size_t fallback = 0) {
@@ -458,10 +558,32 @@ absl::StatusOr<StitchingReframeIntent> validate_intent(const fs::path& directory
   Snapshot current;
   HM_ASSIGN_OR_RETURN(current, snapshot(effective));
   HM_RETURN_IF_ERROR(supported(current));
-  if (solver_text(current.solver) != solver_text(record["source_solver"]) ||
-      view_text(current.view) != view_text(record["desired_view"]))
+  auto comparable = YAML::Clone(current.solver);
+  if (record["source_auto_videos"] ||
+      canonical_text(current.solver["videos"]) != canonical_text(record["source_solver"]["videos"])) {
+    HM_RETURN_IF_ERROR(validate_auto_videos(directory, effective, record, current.solver["videos"]));
+    comparable["videos"] = YAML::Clone(record["source_solver"]["videos"]);
+  }
+  for (const auto& [kind, actual, saved] :
+       {std::tuple{"solver", solver_text(comparable), solver_text(record["source_solver"])},
+        std::tuple{"view", view_text(current.view), view_text(record["desired_view"])}}) {
+    if (actual == saved)
+      continue;
+    const auto actual_fields = YAML::Load(actual);
+    const auto saved_fields = YAML::Load(saved);
+    std::string changed;
+    for (const auto& fields : {actual_fields, saved_fields})
+      for (const auto& field : fields) {
+        const auto key = field.first.as<std::string>();
+        if (canonical_text(actual_fields[key]) != canonical_text(saved_fields[key])) {
+          changed = key;
+          break;
+        }
+      }
     return absl::FailedPreconditionError(
-        "Stitching reframe settings or selected inputs changed after the request was saved");
+        "Stitching reframe settings or selected inputs changed after the request was saved (" + std::string(kind) +
+        ": " + changed + ")");
+  }
   YAML::Node original = YAML::Clone(effective);
   const YAML::Node source_view = record["source_view"];
   original["stitching"]["projection"] = source_view["projection"];
@@ -639,6 +761,13 @@ static absl::StatusOr<bool> prepare_reframe_intent_locked(
       record["source_generation"] = generation;
       record["source_owner"] = source_owner;
       record["source_solver"] = original.solver;
+      if (unresolved_videos(original.solver["videos"]) && auto_video_roles(before) &&
+          original.choices.calibration_frame_selection_fingerprint.empty()) {
+        YAML::Node discovered;
+        HM_ASSIGN_OR_RETURN(discovered, auto_video_sets(directory));
+        if (discovered.size() == 2)
+          record["source_auto_videos"] = discovered;
+      }
       record["source_view"] = original.view;
       record["source_view"]["max_output_width"] = source.max_output_width;
       record["source_view"]["max_output_dimension"] = source.max_canvas_dimension;
