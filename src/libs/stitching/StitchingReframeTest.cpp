@@ -368,6 +368,30 @@ bool test_auto_playlist_materialization(const fs::path& root, bool legacy, bool 
   ok &= expect(valid.ok(), "Auto discovery can publish unequal complete playlists without invalidating reframe");
   if (!valid.ok())
     std::cerr << valid.status() << '\n';
+  if (!legacy) {
+    auto unbound_legacy = YAML::Clone(launch);
+    unbound_legacy["hstream_ui"]["stitching_calibration"]["reframe"].remove("source_auto_videos");
+    ok &= expect(
+        !ValidateStitchingReframeIntentLocked(root, unbound_legacy).ok(),
+        "legacy recovery requires saved independent camera identities");
+  } else {
+    auto replaced = YAML::Clone(launch);
+    std::vector<std::string> other_camera;
+    for (const auto& path : right) {
+      const auto original = fs::path(path);
+      auto filename = original.filename().string();
+      filename.replace(4, 4, "0999");
+      const auto other = (original.parent_path() / filename).generic_string();
+      fs::rename(root / path, root / other);
+      other_camera.push_back(other);
+    }
+    replaced["game"]["videos"]["right"] = other_camera;
+    ok &= expect(
+        !ValidateStitchingReframeIntentLocked(root, replaced).ok(),
+        "legacy recovery rejects another complete discovered camera with unchanged saved optics");
+    for (size_t i = 0; i < right.size(); ++i)
+      fs::rename(root / other_camera[i], root / right[i]);
+  }
   auto retry = YAML::Clone(launch);
   ok &= expect(
       value(PrepareResolvedStitchingReframeIntentLocked(root, launch, retry, "auto-retry", retry)),

@@ -163,7 +163,7 @@ camera files / live sources -> decode and batch -> hmstitcher
 
 | Responsibility | Start reading here |
 | --- | --- |
-| Source discovery, chapter transitions, audio alignment, and decoding | `src/apps/apps-common/deepstream_source_bin.cpp`, `UriPlaylistDiscovery.h`; `src/libs/stitching/Orientation.cpp`, `Synchronization.cpp` |
+| Source discovery, chapter transitions, audio alignment, and decoding | `src/apps/apps-common/deepstream_source_bin.cpp`, `UriPlaylistDiscovery.h`; `src/libs/stitching/VideoDiscovery.cpp`, `Orientation.cpp`, `Synchronization.cpp` |
 | Lossless URI batching and demux | `src/apps/apps-common/HStreamLosslessMux.cpp`, `HStreamBatchDemux.cpp`, and `nvstreammux_lossless*.patch` |
 | GPU transform framework and plugin registration | `src/gst-plugins/gst-videoprep/gstvideoprep.cpp`, `videoprep_plugins.cpp`, `algorithm-base/` |
 | Panorama, camera policy, and Program crop | `src/gst-plugins/gst-videoprep/stitcher/`, `playtracker/`, `playcropper/` respectively |
