@@ -187,7 +187,10 @@ bool CommandList::AddTriangle(float x0, float y0, float x1, float y1, float x2, 
 }
 bool CommandList::AddText(float x, float y, float height, std::string_view text, Color color, TextWeight weight) {
   const float advance = height * (static_cast<float>(detail::kGlyphWidth) / detail::kGlyphHeight);
-  if (!(height > 0 && height <= 512) || text.size() > 64 || !Finite(x) || !Finite(y) || !ValidColor(color) ||
+  // Mapped previews express glyphs in panorama coordinates. A 48-pixel mark
+  // can exceed 512 source units without growing its atlas or output workload.
+  // Bound geometry like the other primitives; renderers separately bound work.
+  if (!(height > 0 && height <= kMaximumSide) || text.size() > 64 || !Finite(x) || !Finite(y) || !ValidColor(color) ||
       !Finite(x + text.size() * advance) || !Finite(y + height)) {
     ++rejected_;
     return false;
