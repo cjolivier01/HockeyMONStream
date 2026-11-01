@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 VIDEO_RE = re.compile(
-    r"^(?P<base>.*(?:tracking|stitched|program_4k|program-4k)_output(?:-with-audio)?)"
+    r"^(?P<base>.*(?:tracking|stitched|program_4k|program-4k|program_8k)_output(?:-with-audio)?)"
     r"(?:-(?P<version>\d+))?\.(?P<ext>mp4|mkv)$",
     re.IGNORECASE,
 )
@@ -179,7 +179,7 @@ def symlink_plex_programs(root: Path, destination: Path) -> set[Path]:
                 continue
             base = match.group("base").lower().removesuffix("-with-audio")
             is_4k = base.endswith(("program_4k_output", "program-4k_output"))
-            if not is_4k and not base.endswith("tracking_output"):
+            if not is_4k and not base.endswith(("tracking_output", "program_8k_output")):
                 continue
             candidates.append((int(match.group("version") or 0), is_4k,
                                "-with-audio" in match.group("base").lower(), path))

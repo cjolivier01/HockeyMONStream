@@ -43,7 +43,7 @@ class PlexLinksTest(unittest.TestCase):
         symlink_plex_programs(self.root, self.plex)
         self.assertEqual(list(self.plex.iterdir()), [self.plex / 'sharks.mp4'])
         self.assertEqual((self.plex / 'sharks.mp4').resolve(), chosen)
-        newer = self.video('sharks/tracking_output-10.mp4')
+        newer = self.video('sharks/program_8k_output-10.mp4')
         symlink_plex_programs(self.root, self.plex)
         self.assertEqual((self.plex / 'sharks.mp4').resolve(), newer)
 

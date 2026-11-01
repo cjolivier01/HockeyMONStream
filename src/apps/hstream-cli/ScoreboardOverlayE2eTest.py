@@ -192,7 +192,7 @@ def main():
                 raise AssertionError(f"expected one {prefix} archive, found {matches}")
             return matches[0]
         stitched = decode_frame(get_file("stitched_output"), root / "stitched.png")
-        program = decode_frame(get_file("tracking_output"), root / "program.png")
+        program = decode_frame(get_file("program_8k_output"), root / "program.png")
         program_4k = decode_frame(get_file("program_4k_output"), root / "program-4k.png")
         preview_image = cv2.imread(str(preview))
         if preview_image is None:

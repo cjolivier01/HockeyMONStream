@@ -1403,7 +1403,7 @@ QString archive_output_path(
   return QDir(QDir(output_work_dir).filePath(game_id))
       .filePath(
           program_4k ? "program_4k_output-with-audio.mkv"
-                     : (stitching_calibration ? "stitched_output-with-audio.mkv" : "tracking_output-with-audio.mkv"));
+                     : (stitching_calibration ? "stitched_output-with-audio.mkv" : "program_8k_output-with-audio.mkv"));
 }
 
 QString final_archive_guard_path(const QString& game, const QString& archive) {
@@ -7111,7 +7111,7 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
   const std::vector<std::pair<QString, QString>> outputs = {
       {"youtube-primary", "YouTube Primary"},
       {"rtsp-local", "RTSP Local"},
-      {"archive-file", "Archive File"},
+      {"archive-file", "Encode 8K Program"},
       {"archive-program-4k", "Encode 4K Program"},
       {"archive-stitched", "Archive Stitched"},
       {"spare-rtmp", "Spare RTMP"},
@@ -7176,7 +7176,7 @@ void HStreamWindow::configureControlHelp() {
       "runModeCombo",
       "Choose Program for the full output pipeline, or Stitching Calibration for a stitching-only graph without "
       "detection, tracking, rink-mask filtering, cropping, or Program output. Archive Stitched records the stitched "
-      "canvas with audio in either mode. Archive File and Encode 4K Program independently record Program output.");
+      "canvas with audio in either mode. Encode 8K Program and Encode 4K Program independently record Program output.");
   help(
       "controlPointsSpin",
       "Set the maximum number of feature control points per synchronized frame pair. Contributions add across "
@@ -18591,7 +18591,8 @@ void HStreamWindow::updateRunControls() {
     set_control_help(
         copy->second,
         "Save an HEVC Program MP4 with audio for YouTube upload, scaled to fit 3840x2160 while "
-        "preserving aspect ratio. Select independently of Archive File. Telemetry refers to the full-size Program video. "
+        "preserving aspect ratio. Select independently of Encode 8K Program. "
+        "Telemetry refers to the full-size Program video. "
         "Available in Program mode.");
   }
   if (const auto stitched_archive = output_toggles_.find("archive-stitched");

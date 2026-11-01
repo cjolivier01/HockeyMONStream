@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
     Check(result.ok(), result.status().ToString());
     Check(
         result->size() == 2 && result->at("ENCODE_FILE").sink_id == 2 &&
-            result->at("ENCODE_FILE").path == directory / "tracking_output.mp4" &&
+            result->at("ENCODE_FILE").path == directory / "program_8k_output.mp4" &&
             result->at("ENCODE_PROGRAM_4K_FILE").kind == "program-4k" &&
             result->at("ENCODE_PROGRAM_4K_FILE").path == directory / "program_4k_output.mp4" &&
             result->at("ENCODE_FILE").output.bitrate_kbps == 20000 &&
@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     for (const auto* clear : {"video_out.output_video_path=null", "pipeline.sink2.output-file=null"}) {
       result = resolve({clear}, game);
       Check(
-          result.ok() && result->at("ENCODE_FILE").path == directory / "tracking_output.mp4",
+          result.ok() && result->at("ENCODE_FILE").path == directory / "program_8k_output.mp4",
           "Cleared archive filename retained the lower-layer saved filename");
     }
     result =

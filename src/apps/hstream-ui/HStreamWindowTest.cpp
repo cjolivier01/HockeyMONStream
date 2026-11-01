@@ -3828,7 +3828,7 @@ bool test_highlights_dialog_controls(HStreamWindow* window) {
   // Highlights reads a published archive rather than re-running the pipeline,
   // so a file on disk is the entire precondition; nothing has to have run here.
   const QString staged_archive =
-      QDir(window->gameDirectoryText()).filePath(window->gameIdText() + "-tracking_output-with-audio-1.mp4");
+      QDir(window->gameDirectoryText()).filePath(window->gameIdText() + "-program_8k_output-with-audio-1.mp4");
   {
     QFile file(staged_archive);
     if (!expect(file.open(QIODevice::WriteOnly) && file.write("archive") == 7, "Could not stage a published archive"))
@@ -9046,7 +9046,7 @@ bool test_output_controls(HStreamWindow* window) {
   game_id_edit->setText("archive-relative-path-test");
   const QString relative_planned_path =
       QDir(QDir(QDir::currentPath()).filePath("relative-output-test/archive-relative-path-test"))
-          .filePath("tracking_output-with-audio.mkv");
+          .filePath("program_8k_output-with-audio.mkv");
   const bool relative_override_resolved = expect(
       archive_path->text().contains(relative_planned_path),
       "A relative HM_OUTPUT_WORK_DIR should resolve from the backend working directory in both the UI and backend");
@@ -9062,12 +9062,12 @@ bool test_output_controls(HStreamWindow* window) {
           calibration_archive_path_unmodified && stitched_archive->isEnabled() &&
           !calibration_archive_arguments.join(' ').contains("RTMP") &&
           !calibration_archive_arguments.join(' ').contains("RTSP"),
-      "Stitching Calibration must disable Program Archive File without enabling streams");
+      "Stitching Calibration must disable Program Encode 8K Program without enabling streams");
   archive->setChecked(false);
   stitched_archive->setChecked(true);
   if (!expect(
           HStreamWindowTestAccess::pipelineArguments(window).contains("--enable-sinks=RENDER,ENCODE_STITCHED_FILE"),
-          "Calibration must allow Archive Stitched without Archive File"))
+          "Calibration must allow Archive Stitched without Encode 8K Program"))
     return false;
   stitched_archive->setChecked(false);
   if (!expect(
@@ -9092,13 +9092,13 @@ bool test_output_controls(HStreamWindow* window) {
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   game_id_edit->setText("archive-label-refresh-test");
   const QString alternate_path =
-      QDir(QDir(output_root.path()).filePath("archive-label-refresh-test")).filePath("tracking_output-with-audio.mkv");
+      QDir(QDir(output_root.path()).filePath("archive-label-refresh-test")).filePath("program_8k_output-with-audio.mkv");
   const bool path_refreshes_with_game = expect(
       archive_path->text().contains(alternate_path),
       "Archive path should refresh immediately when the game ID changes");
   game_id_edit->setText(original_game_id);
   const QString planned_path =
-      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("tracking_output-with-audio.mkv");
+      QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("program_8k_output-with-audio.mkv");
   const QString expected_path =
       QDir(QDir(output_root.path()).filePath(window->gameIdText())).filePath("custom-archive.mkv");
   const QString expected_job_log = expected_path + ".log";
@@ -9225,7 +9225,7 @@ bool test_output_controls(HStreamWindow* window) {
     const QString resolved_guard = resolved_log + ".hstream-pin";
     QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
     const QStringList provisional_logs_before =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QFile::remove(resolved_log);
     QFile::remove(resolved_guard);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", resolved_source.toLocal8Bit());
@@ -9242,7 +9242,7 @@ bool test_output_controls(HStreamWindow* window) {
       QTest::qWait(10);
     }
     const QStringList provisional_logs_running =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString active_provisional_guard;
     struct stat active_provisional_guard_stat{};
     bool active_provisional_guard_pinned = false;
@@ -9264,7 +9264,7 @@ bool test_output_controls(HStreamWindow* window) {
     qunsetenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
     qunsetenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
     const QStringList provisional_logs_after =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     bool fallback_log_retained = false;
     bool foreign_source_retained = false;
     for (const QString& provisional_log : provisional_logs_after) {
@@ -9425,7 +9425,7 @@ bool test_output_controls(HStreamWindow* window) {
     const QString cross_filesystem_sync_failure_log = cross_filesystem_sync_failure_source + ".log";
     QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
     const QStringList provisional_logs_before =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_sync_failure_source.toLocal8Bit());
     qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_SYNC_FAILURE", "1");
     activate(start);
@@ -9439,7 +9439,7 @@ bool test_output_controls(HStreamWindow* window) {
       QTest::qWait(10);
     }
     const QStringList provisional_logs_after =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString fallback_log_text;
     for (const QString& provisional_log : provisional_logs_after) {
       if (provisional_logs_before.contains(provisional_log))
@@ -9459,7 +9459,7 @@ bool test_output_controls(HStreamWindow* window) {
         QDir(cross_filesystem_root.path()).filePath("cross-filesystem-copy-replacement.mkv");
     const QString cross_filesystem_copy_replacement_log = cross_filesystem_copy_replacement_source + ".log";
     const QStringList replacement_provisional_logs_before =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_copy_replacement_source.toLocal8Bit());
     qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_COPY_REPLACEMENT", "1");
     activate(start);
@@ -9473,7 +9473,7 @@ bool test_output_controls(HStreamWindow* window) {
       QTest::qWait(10);
     }
     const QStringList replacement_provisional_logs_after =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString replacement_fallback_log_text;
     for (const QString& provisional_log : replacement_provisional_logs_after) {
       if (replacement_provisional_logs_before.contains(provisional_log))
@@ -9497,7 +9497,7 @@ bool test_output_controls(HStreamWindow* window) {
         QDir(cross_filesystem_root.path()).filePath("cross-filesystem-reopen-failure.mkv");
     const QString cross_filesystem_reopen_failure_log = cross_filesystem_reopen_failure_source + ".log";
     const QStringList reopen_provisional_logs_before =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_reopen_failure_source.toLocal8Bit());
     qputenv(
         "HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_REOPEN_FAILURE", cross_filesystem_reopen_failure_log.toLocal8Bit());
@@ -9512,7 +9512,7 @@ bool test_output_controls(HStreamWindow* window) {
       QTest::qWait(10);
     }
     const QStringList reopen_provisional_logs_after =
-        provisional_log_dir.entryList({"tracking_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString reopen_fallback_log_text;
     for (const QString& provisional_log : reopen_provisional_logs_after) {
       if (reopen_provisional_logs_before.contains(provisional_log))
