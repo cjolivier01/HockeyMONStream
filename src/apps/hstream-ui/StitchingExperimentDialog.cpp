@@ -863,18 +863,8 @@ struct StitchingExperimentDialog::Impl {
         !batch_active && !preview_owned && !promoting && !stopping && !closing);
     shared_rotation->setEnabled(editing_batch);
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
-    const auto references = start_frames->text().split(',', Qt::SkipEmptyParts);
-    const bool has_end_relative = std::any_of(
-        references.begin(), references.end(), [](const QString& value) { return value.trimmed().startsWith('-'); });
-    const bool end_relative = !references.empty() &&
-        std::all_of(
-            references.begin(), references.end(), [](const QString& value) { return value.trimmed().startsWith('-'); });
-    prefer_player_frames->setText(
-        end_relative           ? "End-relative frames use circular sampling"
-            : has_end_relative ? "Prefer player-rich frames (positive times only)"
-                               : "Prefer player-rich frames");
-    prefer_player_frames->setEnabled(editing_batch && !end_relative);
-    scan_duration->setEnabled(editing_batch && !end_relative && prefer_player_frames->isChecked());
+    prefer_player_frames->setEnabled(editing_batch);
+    scan_duration->setEnabled(editing_batch && prefer_player_frames->isChecked());
     control_point_matcher->setEnabled(editing_batch && feature_settings_error.isEmpty());
     camera_configuration->setEnabled(editing_batch && feature_settings_error.isEmpty());
     input_lens->setEnabled(editing_batch && feature_settings_error.isEmpty());
@@ -1947,8 +1937,15 @@ struct StitchingExperimentDialog::Impl {
                   .arg(QString::fromStdString(scan_report_path(candidate).string()))
            << QString("--stitching-player-scan-interval-ms=%1").arg(scan_interval_ms)
            << QString("--stitching-player-scan-frame-count=%1").arg(candidate.settings.frame_count)
-           << QString("--start-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time))
            << QString("-t=%1").arg(candidate.scan_duration_seconds);
+      if (candidate.settings.player_scan_playback_start) {
+        args << QString("--stitching-player-scan-reference=%1")
+                    .arg(QString::fromStdString(candidate.settings.stitch_frame_time))
+             << QString("--stitching-player-scan-playback-start=%1")
+                    .arg(QString::fromStdString(*candidate.settings.player_scan_playback_start));
+      } else {
+        args << QString("--start-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time));
+      }
     } else {
       env.insert("HSTREAM_CALIBRATION_PENDING", "1");
       env.insert("HSTREAM_CALIBRATION_START_STAGE", "features");
@@ -2018,7 +2015,8 @@ struct StitchingExperimentDialog::Impl {
   }
 
   static bool same_settings(const StitchingExperimentSettings& left, const StitchingExperimentSettings& right) {
-    return left.control_points == right.control_points && left.frame_count == right.frame_count &&
+    return left.player_scan_playback_start == right.player_scan_playback_start &&
+        left.control_points == right.control_points && left.frame_count == right.frame_count &&
         hm::stitch_frame_time_to_nanoseconds(left.stitch_frame_time) ==
         hm::stitch_frame_time_to_nanoseconds(right.stitch_frame_time) &&
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
@@ -2242,6 +2240,7 @@ struct StitchingExperimentDialog::Impl {
                     hm::stitching::ControlPointFiltering{
                         epipolar_ransac->isChecked(), homography_consistency->isChecked()},
             };
+            settings.player_scan_playback_start = initial_settings.player_scan_playback_start;
             settings.camera->input_lens = input_lens->lens();
             const auto exact_fov = camera_horizontal_fov->property("exactLensFov");
             settings.camera->horizontal_fov =
@@ -2298,8 +2297,7 @@ struct StitchingExperimentDialog::Impl {
                   true);
               return;
             }
-            const bool selected = !saved->empty() || owner ||
-                (prefer_player_frames->isChecked() && frame_count > 1 && !start.startsWith('-'));
+            const bool selected = !saved->empty() || owner || (prefer_player_frames->isChecked() && frame_count > 1);
             const Candidate* duplicate = find([&](const Candidate& item) {
               const bool item_selected = item.has_selected_frames || item.selection_owner_sequence != 0 ||
                   !item.saved_selection_fingerprint.empty();
@@ -3346,7 +3344,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     int frame_count,
     const QString& stitch_frame_time,
     QWidget* parent,
-    std::function<void()> selection_applied)
+    std::function<void()> selection_applied,
+    const QString& playback_start_time)
     // A native Dialog window cannot maximize on Mutter. Qt::Window retains
     // QDialog's parent/modal lifecycle while allowing normal window actions.
     : QDialog(parent, Qt::Window), impl_(std::make_unique<Impl>(this)) {
@@ -3368,6 +3367,11 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.pipeline_config = pipeline_config;
   s.environment = environment;
   s.initial_settings = {control_points, frame_count, stitch_frame_time.toStdString(), std::nullopt};
+  s.initial_settings.player_scan_playback_start = playback_start_time.isEmpty()
+      ? experiment_baseline->values["hstream_ui"]["playback_start_time"].as<std::string>()
+      : playback_start_time.toStdString();
+  if (hm::stitch_frame_time_to_nanoseconds(*s.initial_settings.player_scan_playback_start) < 0)
+    throw std::runtime_error("Playback start must be nonnegative");
   s.selection_applied = std::move(selection_applied);
 
   auto* root = new QVBoxLayout(this);
@@ -3767,6 +3771,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.prefer_player_frames->setChecked(experiment_defaults.prefer_player_frames);
   s.prefer_player_frames->setToolTip(
       "Choose player-rich frames once per frame count, using one ordinary baseline and the Program ice mask. "
+      "At the recording end, search resumes at Playback start for the remaining duration. "
       "Later options reuse that exact selection and its original search duration, even when this box is unchecked. "
       "Saved selections are always retained. One-frame candidates keep only the anchor.");
   s.scan_duration = new QSpinBox();

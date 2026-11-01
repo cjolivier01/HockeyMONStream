@@ -91,7 +91,7 @@ absl::Status MarkStitchingExperimentProcessStopped(
 absl::StatusOr<std::optional<StoredStitchingExperiment>> ReserveStitchingExperimentFrameCount(
     const StitchingExperimentStore& store,
     int frame_count,
-    uint64_t anchor_ns,
+    int64_t anchor_ns,
     const StitchingExperimentWorkspace& owner_workspace,
     const std::string& reservation_token);
 absl::Status ReleaseStitchingExperimentFrameCount(

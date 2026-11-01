@@ -10,6 +10,8 @@
 
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 namespace hm::stitching {
 absl::StatusOr<std::vector<std::array<CalibrationFrameSource, 2>>> PlanCalibrationReferenceFrames(
@@ -53,15 +55,18 @@ CalibrationImageWriter Writer(
     std::string ffmpeg,
     std::shared_ptr<std::array<CalibrationFrameSource, 2>> sources,
     size_t camera,
-    std::function<bool()> is_cancelled) {
-  return [ffmpeg = std::move(ffmpeg), sources = std::move(sources), camera, is_cancelled](
+    std::function<bool()> is_cancelled,
+    bool exact = false) {
+  return [ffmpeg = std::move(ffmpeg), sources = std::move(sources), camera, is_cancelled, exact](
              const std::filesystem::path& output) {
     if (is_cancelled && is_cancelled())
       return absl::CancelledError("Calibration frame extraction cancelled");
     const auto began = std::chrono::steady_clock::now();
     const auto requested = sources->at(camera);
     std::ostringstream time;
-    time << std::fixed << std::setprecision(9) << requested.seconds;
+    // FFmpeg seeks at microsecond precision. Start one microsecond before an
+    // exact selected PTS to avoid rounding past that frame, then verify it.
+    time << std::fixed << std::setprecision(9) << (exact ? requested.seconds - 0.000001 : requested.seconds);
     std::optional<double> actual;
     int64_t time_base_n = 0, time_base_d = 0;
     std::string errors;
@@ -103,6 +108,8 @@ CalibrationImageWriter Writer(
       return absl::FailedPreconditionError(
           "Could not seek/decode calibration frame at " + time.str() + " in " + requested.video.string() + ": " +
           errors);
+    if (exact && std::abs((*actual - requested.seconds) * 1e9) > 2.0)
+      return absl::FailedPreconditionError("Selected player frame decoded to a different source timestamp");
     sources->at(camera).seconds = *actual;
     std::cout << "Calibration still: keyframe seek/decode " << requested.video.filename()
               << " requested=" << std::setprecision(12) << requested.seconds << " decoded=" << *actual << " elapsed_ms="
@@ -113,17 +120,11 @@ CalibrationImageWriter Writer(
 }
 } // namespace
 
-absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
+namespace {
+absl::StatusOr<std::array<CameraRecordingWindow, 2>> RecordingWindows(
     const std::filesystem::path& game,
-    const YAML::Node& config,
-    size_t count,
-    const std::function<bool()>& is_cancelled) {
+    const YAML::Node& config) {
   try {
-    const auto reference =
-        hm::stitch_frame_time_to_nanoseconds(config["stitching"]["stitch_frame_time"].as<std::string>());
-    const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
-    if (!ffmpeg)
-      return absl::NotFoundError("End-relative calibration requires ffmpeg");
     std::array<CameraRecordingWindow, 2> cameras;
     for (size_t index = 0; index < 2; ++index) {
       const auto role = index == 0 ? "left" : "right";
@@ -141,13 +142,67 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
       HM_ASSIGN_OR_RETURN(
           cameras[index], CameraRecordingWindowAt(files, frames / full.fps, std::numeric_limits<double>::max()));
     }
+    return cameras;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Cannot read calibration recording timeline: " + std::string(error.what()));
+  }
+}
+} // namespace
+
+absl::StatusOr<CalibrationRecordingTimeline> ReadCalibrationRecordingTimeline(
+    const std::filesystem::path& game,
+    const YAML::Node& config) {
+  std::array<CameraRecordingWindow, 2> cameras;
+  HM_ASSIGN_OR_RETURN(cameras, RecordingWindows(game, config));
+  const double duration = std::min(cameras[0].duration_seconds, cameras[1].duration_seconds);
+  const double interval = std::max(1.0 / cameras[0].fps, 1.0 / cameras[1].fps);
+  if (!std::isfinite(duration) || !std::isfinite(interval) || duration <= 0 || interval <= 0 ||
+      duration * 1e9 > static_cast<double>(std::numeric_limits<int64_t>::max()))
+    return absl::InvalidArgumentError("Invalid synchronized recording duration");
+  return CalibrationRecordingTimeline{
+      static_cast<uint64_t>(std::llround(duration * 1e9)), static_cast<uint64_t>(std::llround(interval * 1e9))};
+}
+
+absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    size_t count,
+    const std::function<bool()>& is_cancelled) {
+  try {
+    const auto reference =
+        hm::stitch_frame_time_to_nanoseconds(config["stitching"]["stitch_frame_time"].as<std::string>());
+    const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
+    if (!ffmpeg)
+      return absl::NotFoundError("End-relative calibration requires ffmpeg");
+    std::array<CameraRecordingWindow, 2> cameras;
+    HM_ASSIGN_OR_RETURN(cameras, RecordingWindows(game, config));
     std::vector<std::array<CalibrationFrameSource, 2>> planned;
-    HM_ASSIGN_OR_RETURN(planned, PlanCalibrationReferenceFrames(cameras, reference, count));
+    const auto selection = config["stitching"]["calibration_frame_selection"];
+    const bool selected = selection && !selection.IsNull();
+    if (selected) {
+      PlayerFrameSelectionPlan plan;
+      HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(selection));
+      HM_RETURN_IF_ERROR(validate_player_frame_selection_sources(config));
+      if (plan.selected.size() != count || plan.context.find("scan_clock") == plan.context.end() ||
+          plan.context.at("scan_clock") != "wrapped-elapsed-v1")
+        return absl::FailedPreconditionError("Lazy selected-frame capture requires the exact wrapped scan plan");
+      for (const auto& observation : plan.selected) {
+        const auto& pair = observation.pair.cameras;
+        planned.push_back(
+            {CalibrationFrameSource{pair[0].path, double(pair[0].source_pts_ns) / 1e9},
+             CalibrationFrameSource{pair[1].path, double(pair[1].source_pts_ns) / 1e9}});
+      }
+    } else {
+      HM_ASSIGN_OR_RETURN(planned, PlanCalibrationReferenceFrames(cameras, reference, count));
+    }
     std::vector<CalibrationFrameInput> inputs;
     for (const auto& pair : planned) {
       auto decoded = std::make_shared<std::array<CalibrationFrameSource, 2>>(pair);
       CalibrationFrameInput input{
-          Writer(*ffmpeg, decoded, 0, is_cancelled), Writer(*ffmpeg, decoded, 1, is_cancelled), pair[0], pair[1]};
+          Writer(*ffmpeg, decoded, 0, is_cancelled, selected),
+          Writer(*ffmpeg, decoded, 1, is_cancelled, selected),
+          pair[0],
+          pair[1]};
       input.decoded_sources = decoded;
       inputs.push_back(std::move(input));
     }

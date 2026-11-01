@@ -774,6 +774,12 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
       ? RequiredString(object, "stitch_frame_time", 32).toStdString()
       : effective["stitching"]["stitch_frame_time"].as<std::string>();
   (void)hm::stitch_frame_time_to_nanoseconds(result.stitch_frame_time);
+  if (object.contains("player_scan_playback_start")) {
+    result.player_scan_playback_start = RequiredString(object, "player_scan_playback_start", 13).toStdString();
+    require(
+        hm::stitch_frame_time_to_nanoseconds(*result.player_scan_playback_start) >= 0,
+        "Player scan Playback start must be nonnegative");
+  }
   if (object.contains("control_point_matcher"))
     result.control_point_matcher = RequiredString(object, "control_point_matcher", 64).toStdString();
   if (object.contains("control_point_resolution"))
@@ -797,6 +803,8 @@ QJsonObject settings_json(const StitchingExperimentSettings& value) {
       {"control_points", value.control_points},
       {"frame_count", value.frame_count},
       {"stitch_frame_time", text(value.stitch_frame_time)}};
+  if (value.player_scan_playback_start)
+    result.insert("player_scan_playback_start", text(*value.player_scan_playback_start));
   if (value.camera)
     result.insert("camera", camera_json(*value.camera));
   if (value.control_point_filtering)
@@ -965,12 +973,16 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
         source.payload["workspace"] = request.payload.value("source_workspace");
         source_game = workspace(source).game_directory;
       }
+      auto candidate_settings = settings(
+          request.payload.value("settings").toObject(),
+          YAML::LoadFile((source_game / "_hockeymon/config.yaml").string()));
+      if (!candidate_settings.player_scan_playback_start)
+        candidate_settings.player_scan_playback_start =
+            take(hm::baseline_config::load()).values["hstream_ui"]["playback_start_time"].as<std::string>();
       created = take(CreateStagedStitchingExperimentWorkspace(
           source_game,
           request.root / "experiments",
-          settings(
-              request.payload.value("settings").toObject(),
-              YAML::LoadFile((source_game / "_hockeymon/config.yaml").string())),
+          candidate_settings,
           sequence,
           authorized_media,
           !request.payload.value("settings").toObject().value("camera").toObject().isEmpty()));

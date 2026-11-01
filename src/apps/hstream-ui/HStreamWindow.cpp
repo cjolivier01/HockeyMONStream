@@ -6484,7 +6484,8 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
           *selection_applied = true;
           loadSavedControlConfig();
           appendLog("selected stitching experiment published; main Program will reuse its maps and seam");
-        });
+        },
+        format_stitch_frame_time(playback_start_time_edit_->time()));
     connect(dialog, &QDialog::finished, this, [this, game_directory, selection_applied](int) {
       if (*selection_applied)
         openPromotedStitchingLeveling(game_directory);

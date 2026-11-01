@@ -6,6 +6,7 @@
 #include "hstream/src/libs/program/ToneControlCommand.h"
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/stitching/CalibrationReferenceFrames.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/tracking/CameraSeekState.h"
@@ -1800,6 +1801,28 @@ absl::Status PipelineApplication::createPipelines(
   // Resolve an end-relative reference on the same trimmed video chapter clock
   // as offline sample extraction. The live first pair/preview must show that
   // reference too; extra calibration pairs are extracted independently.
+  if (stitching_player_scan_reference_ && !player_scan_session_) {
+    const auto game = hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : "");
+    const auto config = YAML::LoadFile((std::filesystem::path(game) / "_hockeymon/config.yaml").string());
+    hm::stitching::CalibrationRecordingTimeline timeline;
+    HM_ASSIGN_OR_RETURN(timeline, hm::stitching::ReadCalibrationRecordingTimeline(game, config));
+    const int64_t reference = hm::stitch_frame_time_to_nanoseconds(stitching_player_scan_reference_);
+    const int64_t playback = hm::stitch_frame_time_to_nanoseconds(stitching_player_scan_playback_start_);
+    if (playback < 0)
+      return absl::InvalidArgumentError("Player scan Playback start must be nonnegative");
+    hm::stitching::PlayerFrameScanWindow window;
+    HM_ASSIGN_OR_RETURN(
+        window,
+        hm::stitching::PlanPlayerFrameScanWindow(
+            reference,
+            timeline.duration_ns,
+            timeline.frame_interval_ns,
+            playback,
+            static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND));
+    player_scan_session_ = std::make_shared<hm::pipeline::PlayerFrameScanSession>();
+    player_scan_session_->window = window;
+    start_time_ns_ = window.anchor_ns;
+  }
   resolved_stitch_frame_positions_.clear();
   if (stitch_frame_time_ns_ < 0) {
     for (const auto& app : app_contexts) {
@@ -1937,7 +1960,8 @@ absl::Status PipelineApplication::createPipelines(
               app_contexts[i].get(),
               hm::Configurator::get_game_dir(game_id_ && *game_id_ ? *game_id_ : ""),
               settings,
-              start_time_ns_));
+              start_time_ns_,
+              player_scan_session_));
       HM_RETURN_IF_ERROR(player_frame_scan_->Attach());
       // Registered before the playback cleanup, so pads are detached only after
       // streaming has stopped, and before the owning pipeline can be destroyed.
@@ -3319,6 +3343,8 @@ absl::Status PipelineApplication::playPipelines(
   if (player_frame_scan_) {
     // Inspect natural EOS before graceful shutdown synthesizes EOS for a user
     // stop. Only the inferred boundary frame can complete a timed scan.
+    player_scan_natural_eos_ = std::all_of(
+        app_contexts.begin(), app_contexts.end(), [](const auto& context) { return context->eos_received; });
     player_scan_clean_completion_ = hm::pipeline::PlayerFrameScanCompletedCleanly(
         player_frame_scan_->progress(),
         player_scan_interrupted_,
@@ -3535,6 +3561,20 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &stitching_player_scan_output_,
        "Analyze rink-filtered people and write a frame-selection report",
        "PATH"},
+      {"stitching-player-scan-reference",
+       0,
+       0,
+       G_OPTION_ARG_STRING,
+       &stitching_player_scan_reference_,
+       "Signed calibration reference for a bounded player scan that wraps at EOS",
+       "TIME"},
+      {"stitching-player-scan-playback-start",
+       0,
+       0,
+       G_OPTION_ARG_STRING,
+       &stitching_player_scan_playback_start_,
+       "Frozen Playback start to resume at after the player scan reaches EOS",
+       "TIME"},
       {"int8-sample-output",
        0,
        0,
@@ -3895,6 +3935,22 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
   if (stitching_calibration_with_ice_mask_ && !stitching_calibration_only_)
     return absl::InvalidArgumentError("--stitching-calibration-with-ice-mask requires --stitching-calibration-only");
+  if (stitching_player_scan_reference_ || stitching_player_scan_playback_start_) {
+    global_cleanup_stack.push([this] {
+      g_free(stitching_player_scan_reference_);
+      g_free(stitching_player_scan_playback_start_);
+      stitching_player_scan_reference_ = stitching_player_scan_playback_start_ = nullptr;
+    });
+    if (!stitching_player_scan_output_ || !stitching_player_scan_reference_ || !stitching_player_scan_playback_start_)
+      return absl::InvalidArgumentError("A wrapped player scan requires reference, Playback start and report path");
+    try {
+      (void)hm::stitch_frame_time_to_nanoseconds(stitching_player_scan_reference_);
+      if (hm::stitch_frame_time_to_nanoseconds(stitching_player_scan_playback_start_) < 0)
+        return absl::InvalidArgumentError("Player scan Playback start must be nonnegative");
+    } catch (const std::exception& error) {
+      return absl::InvalidArgumentError(error.what());
+    }
+  }
   if (stitching_player_scan_output_) {
     global_cleanup_stack.push([this] {
       g_free(stitching_player_scan_output_);
@@ -4176,6 +4232,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     for (size_t preparation_pass = 0;; ++preparation_pass) {
       rink_mask_preparation_ = RinkMaskPreparation::kNone;
       rink_mask_preparation_complete_ = false;
+      bool scan_wrap = false;
       {
         auto cache_lock_cleanup = absl::MakeCleanup([] { hm::pipeline::ReleaseTensorRtModelCacheLocks(); });
         emit_ui_startup("stitching", "Discovering source chapters and validating saved stitching artifacts");
@@ -4201,24 +4258,35 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
           if (player_frame_scan_) {
             if (!player_scan_clean_completion_ || player_scan_interrupted_)
               return absl::CancelledError("Player frame scan cancelled before completion");
-            HM_RETURN_IF_ERROR(player_frame_scan_->Finish(stitching_player_scan_output_));
+            scan_wrap = player_scan_session_ && !player_scan_session_->second_pass &&
+                player_scan_session_->window.second_duration_ns && player_scan_natural_eos_ && !cintr_;
+            HM_RETURN_IF_ERROR(player_frame_scan_->Finish(stitching_player_scan_output_, scan_wrap));
           }
         }
         HM_RETURN_IF_ERROR(waitForPipelinesStopped(app_contexts));
       }
-      if (rink_mask_preparation_ == RinkMaskPreparation::kNone)
-        break;
-      if (!rink_mask_preparation_complete_ || cintr_ || quit_)
-        return absl::CancelledError("Rink mask preparation stopped before completion");
-      if (preparation_pass >= 2)
-        return absl::AbortedError("Rink mask preparation did not produce a reusable mask");
-      rink_mask_alignment_prepared_ = true;
-      if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
-        rink_mask_prepared_ = true;
-        g_print(
-            "HSTREAM_CALIBRATION stage=calibration status=complete message=Stitching and ice mask preparation are complete\n");
-        if (current_stage_ < 0)
+      if (scan_wrap) {
+        if (cintr_ || player_scan_interrupted_)
+          return absl::CancelledError("Player scan cancelled at the recording boundary");
+        player_scan_session_->second_pass = true;
+        start_time_ns_ = player_scan_session_->window.playback_start_ns;
+        quit_ = FALSE;
+        g_print("HSTREAM_PLAYER_SCAN status=wrapping playback_start_ns=%" G_GUINT64_FORMAT "\n", start_time_ns_);
+      } else {
+        if (rink_mask_preparation_ == RinkMaskPreparation::kNone)
           break;
+        if (!rink_mask_preparation_complete_ || cintr_ || quit_)
+          return absl::CancelledError("Rink mask preparation stopped before completion");
+        if (preparation_pass >= 2)
+          return absl::AbortedError("Rink mask preparation did not produce a reusable mask");
+        rink_mask_alignment_prepared_ = true;
+        if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
+          rink_mask_prepared_ = true;
+          g_print(
+              "HSTREAM_CALIBRATION stage=calibration status=complete message=Stitching and ice mask preparation are complete\n");
+          if (current_stage_ < 0)
+            break;
+        }
       }
       for (auto& previous : app_contexts) {
         auto next = std::make_shared<HmApp>(game_id_ ? *game_id_ : "", previous->app_config_file(), override_gpu_id_);

@@ -48,6 +48,23 @@ struct PlayerFrameSelectionSettings {
   size_t maximum_observations{1200};
 };
 
+// Two bounded passes over the common synchronized recording. Selection order
+// uses elapsed scan time; physical camera paths and PTS remain unchanged.
+struct PlayerFrameScanWindow {
+  int64_t reference_ns;
+  uint64_t recording_duration_ns;
+  uint64_t anchor_ns;
+  uint64_t playback_start_ns;
+  uint64_t first_duration_ns;
+  uint64_t second_duration_ns;
+};
+absl::StatusOr<PlayerFrameScanWindow> PlanPlayerFrameScanWindow(
+    int64_t reference_ns,
+    uint64_t recording_duration_ns,
+    uint64_t frame_interval_ns,
+    uint64_t playback_start_ns,
+    uint64_t search_duration_ns);
+
 struct PlayerFrameBox {
   double left{0};
   double top{0};

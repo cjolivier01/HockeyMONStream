@@ -333,7 +333,8 @@ It then reopens the dialog, inspects Main without a runner, and solves another s
 checking every input digest and requiring no new player search or frame capture.
 Set `QT_QPA_PLATFORM=offscreen HSTREAM_TEST_HEADLESS=1` to skip X11 video presentation while retaining real GPU
 calibration, scanning, inspection, promotion, Program playback through a fake sink, and saved-frame reuse checks.
-`HSTREAM_TEST_PLAYER_ANCHOR=HH:MM:SS[.mmm]` selects the action passage for that mode. The input must contain enough
+`HSTREAM_TEST_PLAYBACK_START=HH:MM:SS[.mmm]` freezes the wrap destination.
+`HSTREAM_TEST_PLAYER_ANCHOR=[-]HH:MM:SS[.mmm]` selects the action passage for that mode. The input must contain enough
 on-ice people for the requested pair count; unavailable coverage is intentionally a failed smoke test.
 
 Re-leveling remains available for completed calibration, including version-10 automatic and version-11 manual-match

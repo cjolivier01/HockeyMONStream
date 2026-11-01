@@ -26,6 +26,8 @@ struct StitchingExperimentSettings {
   // Full source optics frozen for this candidate; old records inherit their saved config.
   std::optional<hm::stitching::StitchCameraSelection> camera;
   std::optional<hm::stitching::ControlPointFiltering> control_point_filtering;
+  // Frozen when queued; later playback edits do not alter an existing scan.
+  std::optional<std::string> player_scan_playback_start;
 };
 
 struct StitchingExperimentWorkspace {

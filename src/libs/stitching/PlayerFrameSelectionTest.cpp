@@ -40,6 +40,26 @@ PlayerFrameSelectionContext context() {
 
 int main() {
   bool ok = true;
+  const auto second = kPlayerFrameSecond;
+  const auto window = PlanPlayerFrameScanWindow(-second, 120 * second, second / 25, 30 * second, 60 * second);
+  ok &= expect(
+      window.ok() && window->anchor_ns == 119 * second && window->first_duration_ns == second &&
+          window->playback_start_ns == 30 * second && window->second_duration_ns == 59 * second,
+      "negative scan wraps to the explicit Playback start using only the remaining duration");
+  const auto short_scan = PlanPlayerFrameScanWindow(-10 * int64_t(second), 120 * second, second / 25, 0, 5 * second);
+  ok &= expect(short_scan.ok() && short_scan->second_duration_ns == 0, "a scan ending within the tail must not wrap");
+  const auto exhausted = PlanPlayerFrameScanWindow(-second, 4 * second, second / 25, second, 60 * second);
+  ok &= expect(
+      exhausted.ok() && exhausted->second_duration_ns == 2 * second,
+      "a short recording stops before revisiting the original physical anchor");
+  const auto zero = PlanPlayerFrameScanWindow(-second, 120 * second, second / 25, 0, 60 * second);
+  ok &= expect(
+      zero.ok() && zero->playback_start_ns == 0 && zero->second_duration_ns == 59 * second,
+      "undefined Playback start resolved from the baseline resumes at zero");
+  ok &= expect(
+      !PlanPlayerFrameScanWindow(-121 * int64_t(second), 120 * second, second / 25, 0, second).ok() &&
+          !PlanPlayerFrameScanWindow(-second, 120 * second, second / 25, 120 * second, second).ok(),
+      "invalid reference and wrap targets cannot authorize a scan");
   const fs::path root = fs::temp_directory_path() / ("player-selection-test-" + std::to_string(getpid()));
   fs::create_directories(root);
   struct Cleanup {
@@ -163,8 +183,7 @@ int main() {
     quoted_document = YAML::Load(YAML::Dump(quoted_document));
     for (const auto& [key, value] : string_context.context) {
       ok &= expect(
-          quoted_document["context"][key].Tag() == "!" &&
-              quoted_document["context"][key].as<std::string>() == value,
+          quoted_document["context"][key].Tag() == "!" && quoted_document["context"][key].as<std::string>() == value,
           "ordinary native re-saves retain quoted context strings from external YAML tools");
     }
     auto rewritten_plan = ParsePlayerFrameSelectionPlan(quoted_document);
@@ -172,8 +191,7 @@ int main() {
         rewritten_plan.ok() && rewritten_plan->fingerprint == string_context.fingerprint,
         "repeated native re-saves preserve the externally quoted plan fingerprint");
   }
-  auto mixed_scalars =
-      YAML::Load(YAML::Dump(YAML::Load("text: '0.000000'\ncount: 3\nratio: 0.5\nenabled: true\n")));
+  auto mixed_scalars = YAML::Load(YAML::Dump(YAML::Load("text: '0.000000'\ncount: 3\nratio: 0.5\nenabled: true\n")));
   ok &= expect(
       mixed_scalars["text"].Tag() == "!" && mixed_scalars["count"].Tag() == "?" &&
           mixed_scalars["count"].as<int>() == 3 && mixed_scalars["ratio"].Tag() == "?" &&

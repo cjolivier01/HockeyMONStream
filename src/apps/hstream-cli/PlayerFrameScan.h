@@ -20,23 +20,45 @@ typedef struct _NvDsFrameMeta NvDsFrameMeta;
 
 namespace hm::pipeline {
 
+struct PlayerFrameScanSession {
+  stitching::PlayerFrameScanWindow window;
+  bool second_pass{false};
+  stitching::PlayerFrameSelectionContext context;
+  std::vector<stitching::PlayerFrameObservation> observations;
+  std::vector<stitching::PlayerFrameSourceBinding> sources;
+  uint64_t elapsed_before_pass() const {
+    return second_pass ? window.first_duration_ns : 0;
+  }
+  uint64_t pass_duration() const {
+    return second_pass ? window.second_duration_ns : window.first_duration_ns;
+  }
+};
+
 class PlayerFrameScan {
  public:
   static absl::StatusOr<std::unique_ptr<PlayerFrameScan>> Create(
       AppCtx* app,
       const std::filesystem::path& game_directory,
       const stitching::PlayerFrameSelectionSettings& settings,
-      uint64_t decode_anchor_ns);
+      uint64_t decode_anchor_ns,
+      std::shared_ptr<PlayerFrameScanSession> session = {});
   ~PlayerFrameScan();
   absl::Status Attach();
   PlayerFrameScanProgress progress() const {
-    return timing_.progress();
+    auto result = timing_.progress();
+    if (result.elapsed_ns && session_)
+      *result.elapsed_ns += session_->elapsed_before_pass();
+    return result;
   }
   // Called only after successful, quiescent pipeline shutdown.
-  absl::Status Finish(const std::filesystem::path& report_path);
+  absl::Status Finish(const std::filesystem::path& report_path, bool continue_after_eos = false);
 
  private:
-  PlayerFrameScan(AppCtx* app, std::filesystem::path game_directory, stitching::PlayerFrameSelectionSettings settings);
+  PlayerFrameScan(
+      AppCtx* app,
+      std::filesystem::path game_directory,
+      stitching::PlayerFrameSelectionSettings settings,
+      std::shared_ptr<PlayerFrameScanSession> session);
   static GstPadProbeReturn Gate(GstPad* pad, GstPadProbeInfo* info, gpointer data);
   static GstPadProbeReturn Observe(GstPad* pad, GstPadProbeInfo* info, gpointer data);
   absl::StatusOr<bool> GateFrame(GstBuffer* buffer);
@@ -46,6 +68,7 @@ class PlayerFrameScan {
   AppCtx* app_;
   std::filesystem::path game_directory_;
   stitching::PlayerFrameSelectionSettings settings_;
+  std::shared_ptr<PlayerFrameScanSession> session_;
   PlayerFrameScanTiming timing_;
   stitching::PlayerFrameSelectionContext context_;
   std::vector<stitching::PlayerFrameObservation> observations_;
