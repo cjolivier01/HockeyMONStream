@@ -388,9 +388,10 @@ void RinkLevelingDialog::loadSnapshot() {
     }
     const int version = fields.value("version").toInt();
     // Versions 10 and 11 add selected-frame and manual-match provenance.
-    // Versions 12 and 13 add input lens correction; 14 and 15 add match filtering.
+    // Versions 12 and 13 add input lens correction; 14 and 15 add match filtering;
+    // 16 and 17 bind independent optics to each source camera.
     // Rotation keeps its version-9 representation.
-    if (version < 2 || version > 15 || fields.value("mapping-backend") != "nona") {
+    if (version < 2 || version > 17 || fields.value("mapping-backend") != "nona") {
       load_error_ = "Leveling requires saved NONA calibration metadata. Run stitching calibration first.";
       return;
     }
@@ -399,7 +400,17 @@ void RinkLevelingDialog::loadSnapshot() {
           "This older calibration has no camera-model metadata. Recalibrate once with the current camera settings before leveling the rink.";
       return;
     }
-    if (expected_camera_) {
+    if (version >= 16) {
+      const auto cameras = hm::stitching::ParseStitchInputCameras(fields.value("input-cameras").toStdString());
+      if (!cameras.ok() || cameras->size() != 2) {
+        load_error_ = "The saved calibration has invalid per-camera optics metadata. Recalibrate before leveling.";
+        return;
+      }
+      if (expected_camera_ && *cameras != expected_camera_->input_cameras) {
+        load_error_ = "The camera optics differ from the saved calibration. Recalibrate before leveling the rink.";
+        return;
+      }
+    } else if (expected_camera_) {
       bool horizontal_ok = false, vertical_ok = false;
       const double horizontal = fields.value("camera-horizontal-fov").toDouble(&horizontal_ok);
       const double vertical = fields.value("camera-vertical-fov").toDouble(&vertical_ok);

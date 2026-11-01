@@ -106,6 +106,11 @@ struct CalibrationFrameInput {
   CalibrationFrameSource right_source;
   std::filesystem::path left_image;
   std::filesystem::path right_image;
+  // Seeked offline writers report the physical PTS of the frame they decoded.
+  std::shared_ptr<std::array<CalibrationFrameSource, 2>> decoded_sources;
+  const CalibrationFrameSource& source(size_t camera) const {
+    return decoded_sources ? decoded_sources->at(camera) : camera == 0 ? left_source : right_source;
+  }
 };
 
 // Retains one ordinary calibration pair for private experiment inspection. CPU

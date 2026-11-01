@@ -252,6 +252,72 @@ bool test_serialized_intent(const fs::path& root) {
   return ok;
 }
 
+bool test_camera_start_reframe(const fs::path& root, int version) {
+  auto before = fixture(root);
+  auto camera = value(read_stitch_camera_selection(before));
+  camera.input_start_times["right.mp4"] = 102;
+  if (version >= 16) {
+    camera.input_cameras["left.mp4"] = {109, 64, camera.input_lens};
+    camera.input_cameras["right.mp4"] = {115, 70, camera.input_lens};
+  }
+  write_stitch_camera_selection(before, camera);
+  if (version == 17)
+    before["stitching"]["manual_control_points"] = std::string(64, 'a');
+  before["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  require(reserve_stitching_backend_generation_in_config(before, "completed-solve", choices(before)));
+  provenance(root);
+  if (version >= 16) {
+    std::ifstream input(root / kStitchCanvasProvenanceArtifact);
+    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    text.replace(0, std::string("version=10").size(), "version=" + std::to_string(version));
+    text += "input-lens=" + SerializeStitchInputLens(camera.input_lens) + "\n";
+    if (version == 17)
+      text += "manual-control-points=" + std::string(64, 'a') + "\n";
+    text += "input-cameras=" + SerializeStitchInputCameras(camera.input_cameras) + "\ncontrol-point-filtering=0,0\n";
+    write(root / kStitchCanvasProvenanceArtifact, text);
+  }
+  auto artifact_lock = value(lock_canvas_constraint_artifacts(root));
+  auto config_lock = value(GameConfigTransactionLock::Acquire(root));
+  const auto generation = value(stitch_artifact_generation_id_locked(root));
+  auto desired = desired_view(before);
+  auto prepared = PrepareStitchingReframeIntentLocked(root, before, desired, "level-with-start", desired);
+  bool ok = expect(
+      prepared.ok() && *prepared, "unchanged source starts permit leveling with provenance " + std::to_string(version));
+  if (!prepared.ok())
+    std::cerr << prepared.status() << '\n';
+  if (!prepared.ok() || !*prepared)
+    return false;
+  pending(desired, "level-with-start");
+  auto valid = ValidateStitchingReframeIntentLocked(root, YAML::Load(YAML::Dump(desired)));
+  ok &= expect(valid.ok() && valid->source_generation == generation, "serialized leveling intent preserves alignment");
+  for (bool edit_start : {true, false}) {
+    auto changed = desired_view(before);
+    if (edit_start)
+      changed["stitching"]["input_start_times"]["right.mp4"] = 103;
+    else if (version >= 16)
+      changed["stitching"]["input_cameras"]["right.mp4"]["horizontal_fov"] = 116;
+    else
+      changed["stitching"]["camera_fov"]["horizontal_fov"] = 110;
+    bool inputs_changed = false;
+    auto result =
+        PrepareStitchingReframeIntentLocked(root, before, changed, "changed-inputs", changed, &inputs_changed);
+    ok &= expect(
+        result.ok() && !*result && inputs_changed && !HasStitchingReframeIntent(changed),
+        "changed starts or optics still require a fresh alignment");
+    auto stale_claim = desired_view(changed);
+    stale_claim["stitching"]["projection_framing"]["rotation_degrees"][1] = -25;
+    ok &= expect(
+        !PrepareStitchingReframeIntentLocked(root, changed, stale_claim, "stale-claim", stale_claim).ok(),
+        "an old completed generation cannot authorize changed starts or optics");
+    auto pending_change = YAML::Clone(desired);
+    pending_change["stitching"] = YAML::Clone(changed["stitching"]);
+    ok &= expect(
+        !ValidateStitchingReframeIntentLocked(root, pending_change).ok(),
+        "pending leveling rejects later changes to starts or optics");
+  }
+  return ok;
+}
+
 bool test_ownership_and_edits(const fs::path& root) {
   auto before = fixture(root);
   provenance(root);
@@ -633,6 +699,8 @@ int main() {
     ScopedEnvironment no_platform_limit("HM_ALLOW_OVERSIZED_LIVE_STITCH", "1");
     bool ok = test_optional_presence();
     ok &= test_serialized_intent(root / "serialized");
+    for (int version : {10, 16, 17})
+      ok &= test_camera_start_reframe(root / ("camera-start-" + std::to_string(version)), version);
     ok &= test_ownership_and_edits(root / "ownership");
     ok &= test_capture_guards(root / "capture");
     ok &= test_environment_canvas_limit(root / "environment");

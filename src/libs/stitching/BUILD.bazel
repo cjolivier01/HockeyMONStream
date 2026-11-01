@@ -204,6 +204,7 @@ cc_library(
   name = "stitching_core",
   srcs = [
     "CalibrationModels.cpp",
+    "CalibrationReferenceFrames.cpp",
     "ConfigureStitching.cpp",
     "Orientation.cpp",
     "ScoreboardSelector.cpp",
@@ -212,6 +213,7 @@ cc_library(
   hdrs = [
     "CalibrationCompletion.h",
     "CalibrationModels.h",
+    "CalibrationReferenceFrames.h",
     "ConfigureStitchingCore.h",
     "FieldMaskArtifact.h",
     "LiveStitchingGeneration.h",
@@ -1023,4 +1025,10 @@ cc_test(
   name = "camera_source_start_test",
   srcs = ["CameraSourceStartTest.cpp"],
   deps = [":game_config"],
+)
+
+cc_test(
+  name = "calibration_reference_frames_test",
+  srcs = ["CalibrationReferenceFramesTest.cpp"],
+  deps = [":stitching_core", "//src/libs/common:process", "@opencv_linux//:opencv", "@yaml-cpp"],
 )

@@ -109,7 +109,9 @@ uint64_t hhmmss_to_nanoseconds(const std::string& hhmmss_string) {
   return static_cast<uint64_t>(nanoseconds);
 }
 
-uint64_t stitch_frame_time_to_nanoseconds(const std::string& stitch_frame_time) {
+int64_t stitch_frame_time_to_nanoseconds(const std::string& value) {
+  const bool negative = !value.empty() && value.front() == '-';
+  const std::string stitch_frame_time = negative ? value.substr(1) : value;
   const bool has_milliseconds = stitch_frame_time.size() == 12 && stitch_frame_time[8] == '.';
   if ((stitch_frame_time.size() != 8 && !has_milliseconds) || stitch_frame_time[2] != ':' ||
       stitch_frame_time[5] != ':') {
@@ -138,9 +140,12 @@ uint64_t stitch_frame_time_to_nanoseconds(const std::string& stitch_frame_time) 
     milliseconds = static_cast<unsigned>(stitch_frame_time[9] - '0') * 100U +
         static_cast<unsigned>(stitch_frame_time[10] - '0') * 10U + static_cast<unsigned>(stitch_frame_time[11] - '0');
   }
-  return (static_cast<uint64_t>(hours) * 3600ULL + static_cast<uint64_t>(minutes) * 60ULL + seconds) *
-      1'000'000'000ULL +
+  const int64_t result =
+      (static_cast<uint64_t>(hours) * 3600ULL + static_cast<uint64_t>(minutes) * 60ULL + seconds) * 1'000'000'000ULL +
       static_cast<uint64_t>(milliseconds) * 1'000'000ULL;
+  if (negative && result == 0)
+    throw std::invalid_argument("Negative zero selects the recording end, where no frame exists");
+  return negative ? -result : result;
 }
 
 namespace utils {

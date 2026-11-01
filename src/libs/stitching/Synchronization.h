@@ -9,6 +9,8 @@ namespace hm::stitching {
 struct CameraChapterSlice {
   std::string file;
   double start_seconds, duration_seconds;
+  // Physical video PTS origin. Slice bounds above are relative to this origin.
+  double timestamp_origin_seconds{0};
 };
 struct CameraRecordingWindow {
   std::vector<CameraChapterSlice> chapters;

@@ -240,7 +240,8 @@ absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
     }
     const double local = std::max(0.0, start_seconds - skipped);
     const double take = std::min(duration - local, duration_seconds - result.duration_seconds);
-    result.chapters.push_back({file, local, take});
+    const double origin = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time * av_q2d(stream->time_base);
+    result.chapters.push_back({file, local, take, origin});
     result.duration_seconds += take;
     if (result.duration_seconds >= duration_seconds)
       break;

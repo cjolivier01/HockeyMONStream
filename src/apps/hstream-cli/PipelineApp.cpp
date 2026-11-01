@@ -7,6 +7,7 @@
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/tracking/CameraSeekState.h"
 /* clang-format off */
 #include "src/libs/common/Status.h"
@@ -426,7 +427,7 @@ absl::StatusOr<uint64_t> parse_time_option(const char* option, const char* value
   }
 }
 
-absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, const char* value) {
+absl::StatusOr<int64_t> parse_stitch_frame_time_option(const char* option, const char* value) {
   try {
     return hm::stitch_frame_time_to_nanoseconds(value ? value : "");
   } catch (const std::exception& error) {
@@ -435,13 +436,15 @@ absl::StatusOr<uint64_t> parse_stitch_frame_time_option(const char* option, cons
   }
 }
 
-std::string normalized_stitch_frame_time_config_value(uint64_t nanoseconds) {
-  const uint64_t total_milliseconds = nanoseconds / GST_MSECOND;
+std::string normalized_stitch_frame_time_config_value(int64_t nanoseconds) {
+  const uint64_t total_milliseconds = std::abs(nanoseconds) / GST_MSECOND;
   const uint64_t hours = total_milliseconds / (60 * 60 * 1000);
   const uint64_t minutes = total_milliseconds / (60 * 1000) % 60;
   const uint64_t seconds = total_milliseconds / 1000 % 60;
   const uint64_t milliseconds = total_milliseconds % 1000;
   std::ostringstream value;
+  if (nanoseconds < 0)
+    value << '-';
   value << std::setfill('0') << std::setw(2) << hours << ':' << std::setw(2) << minutes << ':' << std::setw(2)
         << seconds;
   if (milliseconds != 0) {
@@ -450,7 +453,7 @@ std::string normalized_stitch_frame_time_config_value(uint64_t nanoseconds) {
   return value.str();
 }
 
-absl::StatusOr<uint64_t> configured_stitch_frame_time(const YAML::Node& config) {
+absl::StatusOr<int64_t> configured_stitch_frame_time(const YAML::Node& config) {
   const auto value = hm::get_node(config, "stitching.stitch_frame_time");
   if (!value.has_value()) {
     return 0;
@@ -1612,7 +1615,7 @@ absl::Status PipelineApplication::configureInstances(
         config["pipeline"]["hmstitcher"]["private-properties"]["rink-mask-frame-time"] = mask_time;
       }
       if (!stitch_frame_time_set_) {
-        uint64_t configured_stitch_frame_time_ns = 0;
+        int64_t configured_stitch_frame_time_ns = 0;
         HM_ASSIGN_OR_RETURN(configured_stitch_frame_time_ns, configured_stitch_frame_time(config));
         if (stitch_frame_time_loaded_from_config_ && stitch_frame_time_ns_ != configured_stitch_frame_time_ns) {
           return absl::InvalidArgumentError(
@@ -1784,6 +1787,42 @@ absl::Status PipelineApplication::createPipelines(
       *initial = preview_overlay_selection_from_environment();
     preview_overlay_state_ = hm::pipeline_internal::PreviewOverlayRuntimeState(*initial);
     preview_overlay_initialized_ = true;
+  }
+  // Resolve an end-relative reference on the same trimmed video chapter clock
+  // as offline sample extraction. The live first pair/preview must show that
+  // reference too; extra calibration pairs are extracted independently.
+  resolved_stitch_frame_positions_.clear();
+  if (stitch_frame_time_ns_ < 0) {
+    for (const auto& app : app_contexts) {
+      if (!app->configurator().stitching_calibration_required())
+        continue;
+      if (app->config.num_source_sub_bins != 2)
+        return absl::FailedPreconditionError("End-relative calibration requires two recorded cameras");
+      double duration = std::numeric_limits<double>::max(), interval = 0;
+      for (guint index = 0; index < 2; ++index) {
+        const auto& source = app->config.multi_source_config[index];
+        std::vector<std::string> files;
+        for (const auto& uri : split_uri_list(source.uri_list)) {
+          const auto file = file_uri_to_path(uri.c_str());
+          if (!file)
+            return absl::FailedPreconditionError("End-relative calibration requires local recorded chapters");
+          files.push_back(*file);
+        }
+        hm::stitching::CameraRecordingWindow recording;
+        HM_ASSIGN_OR_RETURN(
+            recording,
+            hm::stitching::CameraRecordingWindowAt(
+                files,
+                double(hmstitcher_source_offset_ns(app->config.hmsticher_config, index)) / GST_SECOND,
+                std::numeric_limits<double>::max()));
+        duration = std::min(duration, recording.duration_seconds);
+        interval = std::max(interval, 1.0 / recording.fps);
+      }
+      const double reference = duration + double(stitch_frame_time_ns_) / GST_SECOND;
+      if (reference < 0 || reference >= duration || duration < interval)
+        return absl::OutOfRangeError("First calibration frame is outside the synchronized recording");
+      resolved_stitch_frame_positions_[app.get()] = std::llround(std::min(reference, duration - interval) * GST_SECOND);
+    }
   }
   // Section 2: Create pipelines for each instance.
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
@@ -3803,7 +3842,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        G_OPTION_ARG_STRING,
        &stitch_frame_time,
        "Use the frame at this timestamp for one-pass stitching calibration",
-       "HH:MM:SS[.mmm]"},
+       "[-]HH:MM:SS[.mmm]"},
       {"input-uri",
        'i',
        0,
@@ -7887,11 +7926,13 @@ gboolean PipelineApplication::event_thread_func_static(gpointer arg) {
 uint64_t PipelineApplication::initial_pipeline_position_ns(const HmApp* app_ctx) const {
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask)
     return rink_mask_position_ns_;
+  const auto resolved = resolved_stitch_frame_positions_.find(app_ctx);
   const uint64_t configured_position = hm::pipeline_internal::stitch_frame_initial_position(
       start_time_ns_,
       stitch_frame_time_ns_,
       app_ctx && app_ctx->configurator().stitching_calibration_required(),
-      app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0);
+      app_ctx && stitch_frame_rewound_contexts_.count(app_ctx) != 0,
+      resolved == resolved_stitch_frame_positions_.end() ? std::nullopt : std::optional<uint64_t>(resolved->second));
   const uint64_t runtime_offset_ns = runtime_playback_offset_ns_.load(std::memory_order_acquire);
   return runtime_offset_ns > G_MAXUINT64 - configured_position ? G_MAXUINT64 : configured_position + runtime_offset_ns;
 }

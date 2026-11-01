@@ -270,6 +270,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   bool fused_rgb10_remap_{true};
   bool compact_workspace_{false};
   size_t calibration_frame_count_{4};
+  bool end_relative_calibration_{false};
   uint64_t calibration_sample_span_ns_{0};
   int max_output_width_{0};
   std::string expected_artifact_revision_;

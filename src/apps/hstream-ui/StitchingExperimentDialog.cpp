@@ -328,12 +328,14 @@ std::optional<std::vector<QString>> parse_time_list(const QString& text, QString
   std::vector<QString> values;
   std::set<QString> unique;
   for (const QString& item : text.split(',', Qt::SkipEmptyParts)) {
-    const auto parsed = parse_time(item);
-    if (!parsed.has_value()) {
-      *error = QString("Invalid start frame time ‘%1’; use HH:MM:SS or HH:MM:SS.mmm.").arg(item.trimmed());
+    QString normalized;
+    try {
+      const auto ns = hm::stitch_frame_time_to_nanoseconds(item.trimmed().toStdString());
+      normalized = (ns < 0 ? QString("-") : QString()) + format_time(QTime(0, 0).addMSecs(std::abs(ns) / 1000000));
+    } catch (const std::exception&) {
+      *error = QString("Invalid first calibration frame ‘%1’; use [-]HH:MM:SS[.mmm].").arg(item.trimmed());
       return std::nullopt;
     }
-    const QString normalized = format_time(*parsed);
     if (unique.insert(normalized).second)
       values.push_back(normalized);
   }
@@ -861,8 +863,18 @@ struct StitchingExperimentDialog::Impl {
         !batch_active && !preview_owned && !promoting && !stopping && !closing);
     shared_rotation->setEnabled(editing_batch);
     rotations->setEnabled(editing_batch && !shared_rotation->isChecked());
-    prefer_player_frames->setEnabled(editing_batch);
-    scan_duration->setEnabled(editing_batch && prefer_player_frames->isChecked());
+    const auto references = start_frames->text().split(',', Qt::SkipEmptyParts);
+    const bool has_end_relative = std::any_of(
+        references.begin(), references.end(), [](const QString& value) { return value.trimmed().startsWith('-'); });
+    const bool end_relative = !references.empty() &&
+        std::all_of(
+            references.begin(), references.end(), [](const QString& value) { return value.trimmed().startsWith('-'); });
+    prefer_player_frames->setText(
+        end_relative           ? "End-relative frames use circular sampling"
+            : has_end_relative ? "Prefer player-rich frames (positive times only)"
+                               : "Prefer player-rich frames");
+    prefer_player_frames->setEnabled(editing_batch && !end_relative);
+    scan_duration->setEnabled(editing_batch && !end_relative && prefer_player_frames->isChecked());
     control_point_matcher->setEnabled(editing_batch && feature_settings_error.isEmpty());
     camera_configuration->setEnabled(editing_batch && feature_settings_error.isEmpty());
     input_lens->setEnabled(editing_batch && feature_settings_error.isEmpty());
@@ -2284,7 +2296,8 @@ struct StitchingExperimentDialog::Impl {
                   true);
               return;
             }
-            const bool selected = !saved->empty() || owner || (prefer_player_frames->isChecked() && frame_count > 1);
+            const bool selected = !saved->empty() || owner ||
+                (prefer_player_frames->isChecked() && frame_count > 1 && !start.startsWith('-'));
             const Candidate* duplicate = find([&](const Candidate& item) {
               const bool item_selected = item.has_selected_frames || item.selection_owner_sequence != 0 ||
                   !item.saved_selection_fingerprint.empty();
@@ -3382,7 +3395,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.frame_counts->setPlaceholderText("1,4,8");
   s.start_frames = new QLineEdit(stitch_frame_time);
   s.start_frames->setObjectName("stitchExperimentStartFrames");
-  s.start_frames->setPlaceholderText("00:05:00,00:10:00.500");
+  s.start_frames->setPlaceholderText("00:05:00,-00:00:01");
+  s.start_frames->setToolTip(
+      "Negative times count back from the synchronized recording end. The first frame is retained; additional samples wrap around the recording.");
   s.control_point_matcher = new QComboBox();
   s.control_point_matcher->setObjectName("stitchExperimentControlPointMatcher");
   s.control_point_matcher->addItem("SuperPoint + LightGlue", "superpoint-lightglue");
@@ -3762,6 +3777,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   player_options->addWidget(s.scan_duration);
   matrix_layout->addRow("Player search", player_options);
   connect(s.prefer_player_frames, &QCheckBox::toggled, this, [&s]() { s.update_controls(); });
+  connect(s.start_frames, &QLineEdit::textChanged, this, [&s]() { s.update_controls(); });
   auto* matrix_actions = new QHBoxLayout();
   s.add_to_batch = new QPushButton(action_icon(ActionIcon::Add), "Add options to batch");
   s.add_to_batch->setObjectName("addStitchExperimentsToBatchButton");

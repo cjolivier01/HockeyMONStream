@@ -712,7 +712,7 @@ class HStreamWindow : public QMainWindow {
   // Keep the edited crop's revision when Auto temporarily hides it. Enforce it
   // only while the effective crop differs from the saved preset.
   QByteArray crop_selection_revision_;
-  QTimeEdit* stitch_frame_time_edit_{nullptr};
+  QLineEdit* stitch_frame_time_edit_{nullptr};
   QTimeEdit* playback_start_time_edit_{nullptr};
   QCheckBox* gyro_sync_check_{nullptr};
   QCheckBox* show_crop_dialog_check_{nullptr};

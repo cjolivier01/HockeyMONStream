@@ -756,7 +756,7 @@ int main(int argc, char** argv) {
     selected_provenance +=
         "control-point-resolution=native\ncalibration-frame-selection-policy=players\n"
         "calibration-frame-selection-fingerprint=saved-frames\n";
-    for (const int version : {10, 11, 12, 13, 14, 15}) {
+    for (const int version : {10, 11, 12, 13, 14, 15, 16, 17}) {
       QByteArray current_provenance = selected_provenance;
       current_provenance.replace("version=10", "version=" + QByteArray::number(version));
       auto selected_camera = changed_camera;
@@ -766,8 +766,18 @@ int main(int argc, char** argv) {
         current_provenance += "input-lens=" +
             QByteArray::fromStdString(hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
       }
-      if (version == 11 || version == 13 || version == 15)
+      if (version == 11 || version == 13 || version == 15 || version == 17)
         current_provenance += "manual-control-points=" + QByteArray(64, 'a') + '\n';
+      if (version >= 16) {
+        for (const auto& name : {"left.png", "right.png"}) {
+          auto& camera = selected_camera.input_cameras[name];
+          camera.horizontal_fov = name == std::string("left.png") ? 90 : 100;
+          camera.vertical_fov = 70;
+          camera.input_lens = selected_camera.input_lens;
+        }
+        current_provenance += "input-cameras=" +
+            QByteArray::fromStdString(hm::stitching::SerializeStitchInputCameras(selected_camera.input_cameras)) + '\n';
+      }
       if (version >= 14)
         current_provenance += "control-point-filtering=1,1\n";
       write(game.filePath("stitching_canvas_provenance"), current_provenance);
@@ -784,9 +794,20 @@ int main(int argc, char** argv) {
           "automatic and manual calibrations can preview new leveling");
       accept->click();
       ok &= expect(selected.result() == QDialog::Accepted, "re-leveling promoted matches returns the revised angles");
+      if (version >= 16) {
+        selected_camera.input_cameras.at("right.png").horizontal_fov += 1;
+        RinkLevelingDialog mismatched(game.path(), {0, -33, 2}, nullptr, selected_camera);
+        ok &= expect(!mismatched.loadError().isEmpty(), "Changing either camera's optics must require recalibration");
+        auto malformed = current_provenance;
+        const int begin = malformed.indexOf("input-cameras=");
+        malformed.replace(begin, malformed.indexOf('\n', begin) - begin, "input-cameras={}");
+        write(game.filePath("stitching_canvas_provenance"), malformed);
+        RinkLevelingDialog invalid(game.path(), {0, -33, 2});
+        ok &= expect(!invalid.loadError().isEmpty(), "Per-camera metadata must remain valid without an expected model");
+      }
     }
     QByteArray future_provenance = selected_provenance;
-    future_provenance.replace("version=10", "version=16");
+    future_provenance.replace("version=10", "version=18");
     write(game.filePath("stitching_canvas_provenance"), future_provenance);
     RinkLevelingDialog unsupported(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!unsupported.loadError().isEmpty(), "unknown future metadata must still be rejected");

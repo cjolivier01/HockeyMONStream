@@ -257,7 +257,8 @@ absl::StatusOr<StitchingCalibrationControls> ReadStitchingCalibrationControls(co
     std::optional<int64_t> time;
     HM_ASSIGN_OR_RETURN(
         time, ParseRinkMaskFrameTime(at(effective, {"stitching", "stitch_frame_time"}).as<std::string>()));
-    if (!time || *time < 0 || *time >= 24LL * 3600 * kPlayerFrameSecond)
+    if (!time || *time <= -24LL * 3600 * int64_t(kPlayerFrameSecond) ||
+        *time >= 24LL * 3600 * int64_t(kPlayerFrameSecond))
       return absl::InvalidArgumentError("Calibration reference time must be within one day");
     result.frame_time = FormatRinkMaskFrameTime(time);
     result.sync_method = at(effective, {"stitching", "sync_method"}).as<std::string>();

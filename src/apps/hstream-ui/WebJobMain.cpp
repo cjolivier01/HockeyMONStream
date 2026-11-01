@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
@@ -771,8 +772,7 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
   result.stitch_frame_time = object.contains("stitch_frame_time")
       ? RequiredString(object, "stitch_frame_time", 32).toStdString()
       : effective["stitching"]["stitch_frame_time"].as<std::string>();
-  qint64 milliseconds;
-  require(hm::ui::ParseHighlightTime(text(result.stitch_frame_time), &milliseconds), "Invalid calibration timestamp");
+  (void)hm::stitch_frame_time_to_nanoseconds(result.stitch_frame_time);
   if (object.contains("control_point_matcher"))
     result.control_point_matcher = RequiredString(object, "control_point_matcher", 64).toStdString();
   if (object.contains("control_point_resolution"))

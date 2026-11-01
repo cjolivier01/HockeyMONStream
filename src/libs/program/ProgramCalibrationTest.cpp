@@ -47,12 +47,19 @@ int main() {
       Check(ValidateProgramCalibrationSelection(fractional, {time, "original"}).ok(), "Decimal reference differs");
     for (const auto* time : {"62.098999999", "62.099000001", "62.0990000001"})
       Check(!ValidateProgramCalibrationSelection(fractional, {time, "original"}).ok(), "Distinct reference accepted");
-    for (const auto* time : {"", "bad", "-1", "nan", "1e50", "0:0:0:219", "219.", "0::219", "18446744073.709551616"})
+    fractional["stitching"]["stitch_frame_time"] = "-00:01:02.099";
+    for (const auto* time : {"-62.099", "-01:02.099", "-00:01:02.0990000000"})
+      Check(ValidateProgramCalibrationSelection(fractional, {time, "original"}).ok(), "End-relative reference differs");
+    for (const auto* time : {"62.099", "-62.098999999", "-62.099000001", "--62.099", "-0"})
+      Check(
+          !ValidateProgramCalibrationSelection(fractional, {time, "original"}).ok(),
+          "Distinct end-relative reference accepted");
+    for (const auto* time : {"", "bad", "nan", "1e50", "0:0:0:219", "219.", "0::219", "9223372036.854775808"})
       Check(!ValidateProgramCalibrationSelection(saved, {time, "original"}).ok(), "Invalid reference accepted");
     auto boundary = YAML::Clone(saved);
-    boundary["stitching"]["stitch_frame_time"] = "18446744073.709551615";
+    boundary["stitching"]["stitch_frame_time"] = "9223372036.854775807";
     Check(
-        ValidateProgramCalibrationSelection(boundary, {"5124095:34:33.709551615", "original"}).ok(),
+        ValidateProgramCalibrationSelection(boundary, {"2562047:47:16.854775807", "original"}).ok(),
         "Largest representable reference differs");
     for (const auto* owner : {"", "replacement"})
       Check(!ValidateProgramCalibrationSelection(saved, {"219", owner}).ok(), "Wrong owner accepted");

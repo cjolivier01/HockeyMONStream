@@ -413,7 +413,8 @@ class PipelineApplication {
   bool rink_mask_prepared_{false};
   uint64_t rink_mask_playback_restart_generation_{0};
   uint64_t rink_mask_position_ns_{0};
-  uint64_t stitch_frame_time_ns_{0};
+  int64_t stitch_frame_time_ns_{0};
+  std::map<const AppCtx*, uint64_t> resolved_stitch_frame_positions_;
   std::string stitch_frame_time_override_config_value_;
   bool stitch_frame_time_set_{false};
   bool stitch_frame_time_loaded_from_config_{false};

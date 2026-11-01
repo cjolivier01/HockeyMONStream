@@ -611,6 +611,16 @@ bool run(const fs::path& root) {
   ok &= stopped_process_with_corrupt_config(root / "stopped-corrupt-config");
   ok &= retained_main_counts(root / "retained-main-counts");
   {
+    auto signed_references = open_store(root / "signed-references");
+    auto record = make_record(signed_references, "session-a", 1, 3, "-00:00:01.125");
+    ok &= expect(SaveStitchingExperiment(signed_references, record).ok(), "save a fractional negative reference");
+    auto reopened = LoadStitchingExperimentStore(signed_references);
+    ok &= expect(
+        reopened.ok() && reopened->experiments.size() == 1 &&
+            reopened->experiments[0].workspace.settings.stitch_frame_time == "-00:00:01.125",
+        "reopening preserves a fractional negative reference");
+  }
+  {
     auto interrupted = open_store(root / "partial-preparation");
     auto baseline = make_record(interrupted, "session-a", 1);
     auto players = make_record(interrupted, "session-a", 2);
