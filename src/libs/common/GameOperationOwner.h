@@ -63,7 +63,10 @@ std::string Authorization(const std::filesystem::path& game);
 
 // Local UI/CLI owners use a unique inherited capability to find helpers even
 // after they create a new POSIX session. Remote workflow retirement never uses
-// this local-only proof. Inaccessible process metadata fails closed.
+// this local-only proof. Registration retains the owner's original ancestor
+// identities. An unreadable process is excluded only with pinned ancestry proof
+// through an unrelated process predating admission; orphans and uncertain
+// metadata stay reserved. A process without that registration has no proof.
 absl::StatusOr<bool> LocalChildrenStopped(const std::string& token);
 absl::Status SignalLocalChildren(const std::string& token, int signal);
 absl::Status ReleaseLocal(const std::filesystem::path& game, const std::string& token, bool cleanup_complete);

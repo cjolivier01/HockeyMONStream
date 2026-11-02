@@ -8,9 +8,10 @@ import sys
 import time
 from pathlib import Path
 
-from .controller import Controller, serve
+from .controller import Controller, SubmissionRejected, serve
 from .files import private_directory, read_json, sync_directory, write_json
 from .schema import WorkflowError, digest, require, validate_plan
+from .state import Registry
 
 
 def export_plan(registry, plan_path, output):
@@ -158,8 +159,32 @@ def main(argv=None):
             result = controller.tick(args.workflow)
         print(json.dumps(result, sort_keys=True))
         return 0
+    except SubmissionRejected as exc:
+        print(
+            json.dumps(
+                {
+                    "error": str(exc)[:8192],
+                    "submission": "rejected",
+                    "workflow_id": exc.workflow_id,
+                }
+            ),
+            file=sys.stderr,
+        )
+        return 2
     except (OSError, WorkflowError, ValueError) as exc:
-        print(json.dumps({"error": str(exc)[:8192]}), file=sys.stderr)
+        response = {"error": str(exc)[:8192]}
+        if args.command == "submit":
+            try:
+                plan = validate_plan(read_json(args.plan))
+                registry = Registry(args.registry)
+                with registry.lock():
+                    if plan["workflow_id"] not in registry.read()["workflows"]:
+                        response.update(
+                            submission="rejected", workflow_id=plan["workflow_id"]
+                        )
+            except (OSError, ValueError):
+                pass  # An unreadable registry cannot prove non-acceptance.
+        print(json.dumps(response), file=sys.stderr)
         return 2
 
 

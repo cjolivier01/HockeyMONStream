@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
-from hstream_workflow.controller import Controller
+from hstream_workflow.controller import Controller, SubmissionRejected
 from hstream_workflow.files import file_digest, locked, read_json, write_json
 from hstream_workflow.profiles import controller_files
 from hstream_workflow.schema import WorkflowError, digest
@@ -169,6 +169,64 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
         self.assertEqual(self.controller.registry.read()["reservations"], {})
+
+    def test_profile_rejection_has_exact_unregistered_submission_identity(self):
+        self.controller.config["profiles"]["cpu"]["label"] = "changed"
+        with self.assertRaises(SubmissionRejected) as failure:
+            self.controller.register(self.plan, self.game)
+        self.assertEqual(failure.exception.workflow_id, self.plan["workflow_id"])
+        self.assertEqual(self.controller.registry.read()["workflows"], {})
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+
+    def test_registered_or_unreadable_state_never_claims_nonacceptance(self):
+        self.controller.register(self.plan, self.game)
+        self.controller.config["profiles"]["cpu"]["label"] = "changed"
+        with self.assertRaises(WorkflowError) as failure:
+            self.controller.register(self.plan, self.game)
+        self.assertNotIsInstance(failure.exception, SubmissionRejected)
+        self.controller.config["profiles"]["cpu"].pop("label")
+        self.wait()
+        fresh = copy.deepcopy(self.plan)
+        fresh["workflow_id"] = str(uuid4())
+        fresh["profiles"]["cpu"]["label"] = "changed"
+        with patch.object(
+            self.controller.registry, "read", side_effect=OSError("unavailable")
+        ):
+            with self.assertRaises(WorkflowError) as failure:
+                self.controller.register(fresh, self.game)
+        self.assertNotIsInstance(failure.exception, SubmissionRejected)
+
+    def test_cli_classifies_profile_and_configuration_rejection(self):
+        plan = self.root / "plan.json"
+        write_json(plan, self.plan)
+        config = read_json(self.registry / "config.json")
+        for invalid_config in (False, True):
+            with self.subTest(invalid_config=invalid_config):
+                changed = copy.deepcopy(config)
+                if invalid_config:
+                    changed["defaults"] = {}
+                else:
+                    changed["profiles"]["cpu"]["label"] = "changed"
+                write_json(self.registry / "config.json", changed)
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(Path(__file__).parent / "hstream-workflow"),
+                        "submit",
+                        "--registry",
+                        str(self.registry),
+                        "--plan",
+                        str(plan),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 2)
+                error = json.loads(result.stderr)
+                self.assertEqual(error["submission"], "rejected")
+                self.assertEqual(error["workflow_id"], self.plan["workflow_id"])
+        write_json(self.registry / "config.json", config)
 
     def test_failed_sibling_retry_preserves_successful_result(self):
         self.plan["stages"][0]["inputs"]["fail"] = True

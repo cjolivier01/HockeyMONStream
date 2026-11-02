@@ -248,3 +248,11 @@ py_test(
     main = "hstream_workflow_files_test.py",
     deps = [":workflow_library"],
 )
+
+py_test(
+    name = "workflow_processes_test",
+    size = "small",
+    srcs = ["hstream_workflow_processes_test.py"],
+    main = "hstream_workflow_processes_test.py",
+    deps = [":workflow_library"],
+)

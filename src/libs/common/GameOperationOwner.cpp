@@ -1,6 +1,7 @@
 #include "hstream/src/libs/common/GameOperationOwner.h"
 
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/file.h>
 #include <sys/random.h>
@@ -8,6 +9,7 @@
 #include <sys/syscall.h>
 #include <time.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
@@ -27,7 +29,18 @@ constexpr size_t kMaximumOwnerBytes = 16384;
 constexpr const char* kOwner = "game-operation.yaml";
 std::mutex authorizations_mutex;
 std::map<std::string, std::string> authorizations;
-std::map<std::string, uint64_t> local_token_start_ticks;
+struct ProcessIdentity {
+  pid_t pid;
+  pid_t parent;
+  uint64_t started;
+  char state;
+};
+struct LocalAdmission {
+  uint64_t started{0};
+  std::optional<std::vector<ProcessIdentity>> ancestors;
+};
+std::optional<std::vector<ProcessIdentity>> capture_ancestors();
+std::map<std::string, LocalAdmission> local_admissions;
 uint64_t boot_ticks() {
   struct timespec now{};
   const long rate = ::sysconf(_SC_CLK_TCK);
@@ -321,7 +334,8 @@ Owner LocalOwner(const std::string& kind, const std::string& id, const std::stri
 void RegisterAuthorization(const std::filesystem::path& game, const std::string& token) {
   std::lock_guard<std::mutex> lock(authorizations_mutex);
   authorizations[key(game)] = token;
-  local_token_start_ticks.emplace(token, boot_ticks());
+  if (!local_admissions.count(token))
+    local_admissions.emplace(token, LocalAdmission{boot_ticks(), capture_ancestors()});
 }
 
 void ForgetAuthorization(const std::filesystem::path& game, const std::string& token) {
@@ -329,7 +343,7 @@ void ForgetAuthorization(const std::filesystem::path& game, const std::string& t
   const auto found = authorizations.find(key(game));
   if (found != authorizations.end() && found->second == token)
     authorizations.erase(found);
-  local_token_start_ticks.erase(token);
+  local_admissions.erase(token);
 }
 
 std::string Authorization(const std::filesystem::path& game) {
@@ -352,19 +366,195 @@ struct ProcessPins {
       ::close(fd);
   }
 };
+
+absl::StatusOr<std::string> proc_file(pid_t pid, const char* name) {
+  const auto path = "/proc/" + std::to_string(pid) + "/" + name;
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (fd < 0)
+    return errno == ENOENT || errno == ESRCH ? absl::NotFoundError("Process exited") : io("Cannot inspect process");
+  struct Close {
+    int fd;
+    ~Close() {
+      ::close(fd);
+    }
+  } close{fd};
+  std::string result;
+  char buffer[4096];
+  for (;;) {
+    const auto count = ::read(fd, buffer, sizeof(buffer));
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count < 0)
+      return io("Cannot read process identity");
+    if (!count)
+      return result;
+    result.append(buffer, count);
+    if (result.size() > 65536)
+      return absl::ResourceExhaustedError("Process metadata exceeds ownership bound");
+  }
+}
+
+absl::StatusOr<ProcessIdentity> process_identity(pid_t pid) {
+  const auto value = proc_file(pid, "stat");
+  if (!value.ok())
+    return value.status();
+  const auto end_name = value->rfind(')');
+  if (end_name == std::string::npos)
+    return absl::UnavailableError("Invalid process identity");
+  std::istringstream fields(value->substr(end_name + 2));
+  ProcessIdentity result{pid, 0, 0, 0};
+  std::string field;
+  for (int index = 3; index <= 22; ++index) {
+    if (!(fields >> field))
+      return absl::UnavailableError("Incomplete process identity");
+    if (index == 3)
+      result.state = field.front();
+    if (index == 4)
+      result.parent = static_cast<pid_t>(std::stol(field));
+    if (index == 22)
+      result.started = std::stoull(field);
+  }
+  return result;
+}
+
+absl::StatusOr<bool> same_user(pid_t pid) {
+  const auto value = proc_file(pid, "status");
+  if (!value.ok())
+    return value.status();
+  std::istringstream lines(*value);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (line.rfind("Uid:", 0) != 0)
+      continue;
+    std::istringstream fields(line.substr(4));
+    bool matches = false;
+    for (int index = 0; index < 4; ++index) {
+      uint64_t uid;
+      if (!(fields >> uid))
+        return absl::UnavailableError("Invalid process credentials");
+      matches |= uid == ::geteuid();
+    }
+    return matches;
+  }
+  return absl::UnavailableError("Process credentials are unavailable");
+}
+
+bool same_identity(const ProcessIdentity& left, const ProcessIdentity& right) {
+  return left.pid == right.pid && left.started == right.started;
+}
+
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+absl::StatusOr<bool> process_exited(int descriptor) {
+  struct pollfd watched{descriptor, POLLIN, 0};
+  int result;
+  do {
+    result = ::poll(&watched, 1, 0);
+  } while (result < 0 && errno == EINTR);
+  if (result < 0)
+    return io("Cannot inspect pinned process liveness");
+  if (watched.revents & (POLLERR | POLLNVAL))
+    return absl::UnavailableError("Pinned process liveness is unavailable");
+  return (watched.revents & (POLLIN | POLLHUP)) != 0;
+}
+
+absl::StatusOr<ProcessIdentity> pin_process(pid_t pid, ProcessPins& pins) {
+  const int fd = ::syscall(SYS_pidfd_open, pid, 0);
+  if (fd < 0)
+    return io("Cannot pin process ancestry");
+  pins.descriptors.push_back(fd);
+  const auto identity = process_identity(pid);
+  if (!identity.ok())
+    return identity.status();
+  const auto exited = process_exited(fd);
+  if (!exited.ok())
+    return exited.status();
+  if (*exited)
+    return absl::UnavailableError("Process ancestry changed while pinning");
+  return identity;
+}
+
+bool stable_chain(const std::vector<ProcessIdentity>& chain, const ProcessPins& pins) {
+  if (chain.size() != pins.descriptors.size())
+    return false;
+  for (size_t index = 0; index < chain.size(); ++index) {
+    const auto current = process_identity(chain[index].pid);
+    const auto exited = process_exited(pins.descriptors[index]);
+    if (!current.ok() || !same_identity(*current, chain[index]) || current->parent != chain[index].parent ||
+        !exited.ok() || *exited)
+      return false;
+  }
+  return true;
+}
+#endif
+
+std::optional<std::vector<ProcessIdentity>> capture_ancestors() {
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+  try {
+    ProcessPins pins;
+    std::vector<ProcessIdentity> chain;
+    pid_t pid = ::getpid();
+    for (size_t depth = 0; depth < 128 && pid > 0; ++depth) {
+      const auto current = pin_process(pid, pins);
+      if (!current.ok() || (!chain.empty() && current->started > chain.back().started))
+        return std::nullopt;
+      chain.push_back(*current);
+      pid = current->parent;
+    }
+    if (pid != 0 || !stable_chain(chain, pins))
+      return std::nullopt;
+    return chain;
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+#else
+  return std::nullopt;
+#endif
+}
+
+bool proven_unrelated(const ProcessIdentity& candidate, const LocalAdmission& admission) {
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+  if (!admission.ancestors || admission.ancestors->empty())
+    return false;
+  try {
+    ProcessPins pins;
+    std::vector<ProcessIdentity> chain;
+    pid_t pid = candidate.pid;
+    for (size_t depth = 0; depth < 128 && pid > 1; ++depth) {
+      const auto current = pin_process(pid, pins);
+      if (!current.ok() || (chain.empty() && !same_identity(*current, candidate)) ||
+          (!chain.empty() && current->started > chain.back().started))
+        return false;
+      chain.push_back(*current);
+      if (std::any_of(admission.ancestors->begin(), admission.ancestors->end(), [&](const auto& ancestor) {
+            return same_identity(ancestor, *current);
+          }))
+        return false;
+      if (current->started < admission.started)
+        return stable_chain(chain, pins);
+      pid = current->parent;
+    }
+  } catch (const std::exception&) {
+    return false;
+  }
+#endif
+  // Orphans, original ancestors/subreapers and uncertain traversals may still
+  // contain an owned detached helper. They cannot provide exclusion evidence.
+  return false;
+}
+
 absl::Status inspect_children(const std::string& token, ProcessPins& pins) {
   if (!identity(token))
     return absl::InvalidArgumentError("Missing process capability");
 #if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
   try {
-    uint64_t earliest = 0;
+    LocalAdmission admission;
     {
       std::lock_guard<std::mutex> lock(authorizations_mutex);
-      const auto found = local_token_start_ticks.find(token);
-      if (found != local_token_start_ticks.end())
-        earliest = found->second;
+      const auto found = local_admissions.find(token);
+      if (found != local_admissions.end())
+        admission = found->second;
     }
-    if (!earliest)
+    if (!admission.started)
       return absl::FailedPreconditionError("No local process admission epoch is available");
     const std::string expected = "HSTREAM_GAME_OPERATION_TOKEN=" + token;
     bool saw_self = false;
@@ -377,36 +567,24 @@ absl::Status inspect_children(const std::string& token, ProcessPins& pins) {
         saw_self = true;
         continue;
       }
-      struct stat owner{};
-      if (::lstat(entry.path().c_str(), &owner) != 0) {
-        if (errno == ENOENT)
-          continue;
-        return io("Cannot inspect process owner");
-      }
-      if (owner.st_uid != ::geteuid())
-        continue;
       // Unrelated preexisting processes cannot have inherited this newly
       // created capability. Their /proc environments may legitimately be
       // unreadable (for example setuid desktop services).
-      std::ifstream stat_file(entry.path() / "stat");
-      std::string stat_text;
-      std::getline(stat_file, stat_text);
-      const auto end_name = stat_text.rfind(')');
-      if (end_name == std::string::npos) {
-        if (!std::filesystem::exists(entry.path()))
+      const auto identity = process_identity(pid);
+      if (!identity.ok()) {
+        if (absl::IsNotFound(identity.status()))
           continue;
-        return absl::UnavailableError("Cannot establish process admission epoch");
+        return identity.status();
       }
-      std::istringstream fields(stat_text.substr(end_name + 2));
-      std::string field, process_state;
-      for (int index = 3; index <= 22; ++index) {
-        if (!(fields >> field))
-          return absl::UnavailableError("Invalid process admission epoch");
-        if (index == 3)
-          process_state = field;
+      if (identity->started < admission.started || identity->state == 'Z' || identity->state == 'X')
+        continue;
+      const auto eligible = same_user(pid);
+      if (!eligible.ok()) {
+        if (absl::IsNotFound(eligible.status()))
+          continue;
+        return eligible.status();
       }
-      const auto process_started = std::stoull(field);
-      if (process_started < earliest || process_state == "Z" || process_state == "X")
+      if (!*eligible)
         continue;
       const int pin = ::syscall(SYS_pidfd_open, pid, 0);
       if (pin < 0) {
@@ -421,31 +599,27 @@ absl::Status inspect_children(const std::string& token, ProcessPins& pins) {
             ::close(fd);
         }
       } pinned{pin};
+      const auto current = process_identity(pid);
+      if (!current.ok() || !same_identity(*current, *identity)) {
+        const auto exited = process_exited(pin);
+        if (exited.ok() && *exited)
+          continue;
+        return absl::UnavailableError("Process identity changed before ownership inspection");
+      }
       const int env = ::open((entry.path() / "environ").c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
       if (env < 0) {
-        if (::syscall(SYS_pidfd_send_signal, pin, 0, nullptr, 0) < 0 && errno == ESRCH)
+        const int access_error = errno;
+        const auto exited = process_exited(pin);
+        if (exited.ok() && *exited)
           continue;
         // Exit can race the first stat read. Zombies have released their files
         // and GPU resources, but their environ is unreadable until reaped.
-        std::ifstream final_stat(entry.path() / "stat");
-        std::string final_text;
-        std::getline(final_stat, final_text);
-        const auto final_name = final_text.rfind(')');
-        if (final_name != std::string::npos) {
-          std::istringstream final_fields(final_text.substr(final_name + 2));
-          std::string final_state, final_field;
-          bool valid = true;
-          for (int index = 3; index <= 22; ++index) {
-            if (!(final_fields >> final_field)) {
-              valid = false;
-              break;
-            }
-            if (index == 3)
-              final_state = final_field;
-          }
-          if (valid && std::stoull(final_field) == process_started && (final_state == "Z" || final_state == "X"))
-            continue;
-        }
+        const auto final = process_identity(pid);
+        if (final.ok() && same_identity(*final, *identity) && (final->state == 'Z' || final->state == 'X'))
+          continue;
+        if ((access_error == EACCES || access_error == EPERM) && proven_unrelated(*identity, admission))
+          continue;
+        errno = access_error;
         return io(("Cannot prove local helper ownership for process " + std::to_string(pid)).c_str());
       }
       Close environment{env};
@@ -463,11 +637,11 @@ absl::Status inspect_children(const std::string& token, ProcessPins& pins) {
         if (contents.size() > 1024 * 1024)
           return absl::ResourceExhaustedError("Process environment exceeds ownership bound");
       }
-      if (::syscall(SYS_pidfd_send_signal, pin, 0, nullptr, 0) < 0) {
-        if (errno == ESRCH)
-          continue;
-        return io("Cannot recheck process identity");
-      }
+      const auto exited = process_exited(pin);
+      if (!exited.ok())
+        return exited.status();
+      if (*exited)
+        continue;
       bool owned = false;
       for (size_t offset = 0; offset < contents.size();) {
         const size_t end = contents.find('\0', offset);

@@ -15,6 +15,7 @@
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QDialog>
 
 #include <algorithm>
 #include <functional>
@@ -42,6 +43,69 @@ bool waitFor(const std::function<bool()>& condition, int timeout_ms = 10000) {
 } // namespace
 
 struct HStreamWindowTestAccess {
+  static void checkOwnedGameReopen(const QString& directory) {
+    const auto game = std::filesystem::path(directory.toStdString()).parent_path() / "owned-reopen";
+    const auto config_path = QString::fromStdString((game / "_hockeymon/config.yaml").string());
+    const QByteArray config =
+        "hstream_ui:\n  stitching_calibration:\n    control_points: 125\n"
+        "  video_roles:\n    left: [left.mp4]\n    right: [right.mp4]\n";
+    writeFile(config_path, config);
+    writeFile(QString::fromStdString((game / "left.mp4").string()), "left fixture");
+    writeFile(QString::fromStdString((game / "right.mp4").string()), "right fixture");
+    auto owner = hm::game_operation::LocalOwner("workflow", "unbound-reopen", "unbound-reopen-token");
+    owner.workflow_directory = (game / "_hockeymon/workflows" / owner.id).string();
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      require(lock.ok() && (*lock)->Claim(owner).ok(), "Claim workflow before fresh main window starts");
+    }
+    {
+      HStreamWindow fresh(nullptr, {"hockeymon", "/bin/true"});
+      fresh.openGame("owned-reopen", false);
+      fresh.updateRunControls();
+      require(
+          fresh.saved_control_config_load_error_.isEmpty() && fresh.stitchingCalibrationControlPoints() == 125,
+          "Fresh main window reads saved controls while a workflow owns the game");
+      bool left = false, right = false;
+      for (int index = 0; index < fresh.video_set_list_->count(); ++index) {
+        const auto* item = fresh.video_set_list_->item(index);
+        left |= item->data(Qt::UserRole).toString() == "left";
+        right |= item->data(Qt::UserRole).toString() == "right";
+      }
+      require(left && right, "Fresh main window reads saved source roles under workflow ownership");
+      for (const bool unavailable_config : {false, true}) {
+        if (unavailable_config) {
+          writeFile(config_path, "[invalid configuration\n");
+          fresh.loadSavedControlConfig();
+          require(
+              !fresh.saved_control_config_load_error_.isEmpty(), "Unreadable game config remains an explicit error");
+          fresh.updateRunControls();
+        }
+        require(
+            !fresh.start_button_->isEnabled() && !fresh.save_preset_button_->isEnabled() &&
+                !fresh.clean_stitching_button_->isEnabled() && fresh.stitching_experiments_button_->isEnabled(),
+            "Fresh main window fences mutations while retaining the workflow launcher");
+        fresh.stitching_experiments_button_->click();
+        auto* monitor = fresh.findChild<QDialog*>("stitchingExperimentDialog");
+        require(monitor && monitor->isVisible(), "Fresh main window opens the unbound workflow monitor");
+        const auto* cancel = monitor->findChild<QPushButton*>("cancelStitchExperimentsButton");
+        require(cancel && cancel->isEnabled(), "Reopened monitor exposes Stop while retained data is unavailable");
+        monitor->close();
+        QTest::qWait(10);
+      }
+      const auto current = hm::game_operation::Inspect(game);
+      require(
+          current.ok() && current->has_value() && (**current).token == owner.token &&
+              (**current).revision == owner.revision,
+          "Read-only fresh-window monitoring preserves durable game ownership");
+      QFile current_config(config_path);
+      require(
+          current_config.open(QIODevice::ReadOnly) && current_config.readAll() == "[invalid configuration\n",
+          "Monitoring does not recover or rewrite unreadable game configuration");
+    }
+    auto lock = hm::game_operation::Lock::Acquire(game);
+    require(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "Retire fresh-window test owner");
+  }
+
   static void checkGameOwnership(HStreamWindow& window, const QString& directory) {
     const std::filesystem::path game(directory.toStdString());
     auto owner = hm::game_operation::LocalOwner("workflow", "remote-test", "remote-test-token");
@@ -636,6 +700,7 @@ int main(int argc, char** argv) {
     HStreamWindow window(nullptr, {"hockeymon", "/bin/true"});
     window.openGame("game", false);
     HStreamWindowTestAccess::checkGameOwnership(window, game);
+    HStreamWindowTestAccess::checkOwnedGameReopen(game);
     HStreamWindowTestAccess::check(window, game);
     const QString runner = root.filePath("backend.py");
     writeFile(runner, R"PY(import json, os, pathlib, shutil, sys

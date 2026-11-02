@@ -194,13 +194,16 @@ def option(name): return args[args.index(name)+1]
 with (root/'calls').open('a') as f: f.write(operation+'\n')
 if operation=='profiles': value=json.loads((root/'profiles.json').read_text())
 elif operation=='submit':
- plan=json.loads(Path(option('--plan')).read_text()); (root/'submitted.json').write_text(json.dumps(plan))
+ plan=json.loads(Path(option('--plan')).read_text())
+ if (root/'reject-submit').exists():
+  print(json.dumps(dict(error='Resource profile changed before admission',submission='rejected',workflow_id=plan['workflow_id'])),file=sys.stderr); raise SystemExit(2)
+ (root/'submitted.json').write_text(json.dumps(plan))
  nodes=[]
  for index,node in enumerate(plan['stages']):
   node=dict(node); node.update(state='running' if index==0 else 'waiting',reason='Waiting for verified prerequisite',result=None)
   node['attempts']=[dict(id='attempt-current',epoch=0,state='running',details={'scheduler_id':'31','host':'compute-a','reason':'Resources'})] if index==0 else []
   nodes.append(node)
- value=dict(workflow_id=plan['workflow_id'],state='running',epoch=0,revision=1,nodes=nodes)
+ value=dict(workflow_id=plan['workflow_id'],state='running',epoch=0,revision=1,nodes=nodes,limits=plan['limits'])
  (root/'state.json').write_text(json.dumps(value))
  if (root/'lose-submit-response').exists():
   (root/'status-unavailable').write_text('2'); print('Submission response unavailable',file=sys.stderr); raise SystemExit(1)
@@ -299,6 +302,24 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(
       QFileInfo::exists(export_message.mid(QString("Exported batch: ").size())),
       "Export response did not identify the created file");
+  write(root + "/reject-submit", "rejected");
+  pane->start(store, catalog(store));
+  require(
+      wait([&] { return !pane->busy() && !pane->active(); }),
+      "Definite submission rejection retained active ownership");
+  require(pane->workflowId().isEmpty() && profiles_control->isEnabled(), "Rejected submission did not restore editing");
+  require(!QFileInfo::exists(root + "/submitted.json"), "Rejected submission created compute intent");
+  QFile::remove(root + "/reject-submit");
+  require(
+      QFile::rename(root + "/scripts/hstream-workflow", root + "/scripts/controller-away"),
+      "Cannot hide fixture launcher");
+  pane->start(store, catalog(store));
+  require(
+      wait([&] { return !pane->busy() && !pane->active(); }), "Failed-to-start controller retained active ownership");
+  require(pane->workflowId().isEmpty(), "Failed-to-start controller retained workflow identity");
+  require(
+      QFile::rename(root + "/scripts/controller-away", root + "/scripts/hstream-workflow"),
+      "Cannot restore fixture launcher");
   write(root + "/lose-submit-response", "lost");
   pane->start(store, catalog(store));
   require(
@@ -376,6 +397,12 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   content_layout->addWidget(pane);
   pane->attach(id);
   require(wait([&] { return pane->hasSelection(); }), "Reopening did not restore workflow status");
+  require(
+      wait([&] {
+        return widget<QComboBox>(*pane, "stitchWorkflowProfile")->currentData().toString() == "gpu" &&
+            widget<QSpinBox>(*pane, "stitchWorkflowParallel")->value() == 3;
+      }),
+      "Reopening did not restore the frozen profile and parallel limit");
   pane->cancel();
   require(
       wait([&] { return !pane->active() && !pane->busy(); }), "Explicit cancellation did not use the current epoch");
@@ -480,6 +507,31 @@ void dialogOwnership(const QString& root) {
     auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
     require(lock.ok() && (*lock)->Claim(remote).ok(), "Cannot bind remote ownership fixture");
   }
+  const auto index_path = QString::fromStdString((store->directory / "index.yaml").string());
+  QFile index(index_path);
+  require(index.open(QIODevice::ReadOnly), "Cannot snapshot unbound catalog");
+  const auto unbound_index = index.readAll();
+  index.close();
+  for (const bool unreadable_catalog : {false, true}) {
+    if (unreadable_catalog)
+      write(index_path, "[invalid catalog\n");
+    StitchingExperimentDialog reopened(
+        game, runner, root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    reopened.show();
+    require(
+        wait([&] {
+          return widget<QComboBox>(reopened, "stitchWorkflowStage")->count() > 4 &&
+              widget<QPushButton>(reopened, "cancelStitchExperimentsButton")->isEnabled();
+        }),
+        "Durable owner did not restore monitoring before catalog binding or with unreadable retained data");
+    require(
+        !widget<QPushButton>(reopened, "addStitchExperimentsToBatchButton")->isEnabled() &&
+            !widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->isEnabled(),
+        "Unbound workflow monitoring permitted a conflicting batch");
+    reopened.close();
+    require(wait([&] { return !reopened.isVisible(); }), "Unbound owner monitor did not detach");
+  }
+  write(index_path, unbound_index);
   hm::game_operation::RegisterAuthorization(store->game_directory, remote.token);
   for (auto& row : saved->experiments) {
     row.workflow_id = id;

@@ -685,6 +685,19 @@ struct StitchingExperimentDialog::Impl {
 
   explicit Impl(StitchingExperimentDialog* owner) : dialog(owner) {}
 
+  absl::StatusOr<QString> owned_workflow() const {
+    const auto owner = hm::game_operation::Inspect(game_directory.toStdString());
+    if (!owner.ok())
+      return owner.status();
+    if (!owner->has_value() || (**owner).kind != "workflow")
+      return QString();
+    std::error_code error;
+    const auto game = std::filesystem::canonical(game_directory.toStdString(), error);
+    if (error || (**owner).workflow_directory != (game / "_hockeymon/workflows" / (**owner).id).string())
+      return absl::FailedPreconditionError("The workflow owner has an invalid game directory");
+    return QString::fromStdString((**owner).id);
+  }
+
   bool claim_local_operation() {
     if (!local_operation_token.isEmpty())
       return true;
@@ -1359,6 +1372,17 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void restore_persistent_store(const StitchingExperimentSettings& displayed_settings) {
+    const auto owned = owned_workflow();
+    if (!owned.ok()) {
+      store_error = QString::fromStdString(owned.status().ToString());
+      show_status(store_error, true);
+      return;
+    }
+    // Admission precedes catalog binding. Reopen the authoritative owner even
+    // when the submitting client exited before its rows acquired workflow IDs,
+    // or retained calibration data cannot currently be read.
+    if (workflow && !owned->isEmpty())
+      workflow->attach(*owned);
     auto opened = OpenStitchingExperimentStore(game_directory.toStdString());
     if (!opened.ok()) {
       store_error = QString::fromStdString(opened.status().ToString());
@@ -1452,7 +1476,7 @@ struct StitchingExperimentDialog::Impl {
                                                                                    : std::string();
         if (record.workspace.game_directory.lexically_relative(store->directory).generic_string() == owner_key)
           candidate.selection_owner_sequence = candidate.sequence;
-        if (workflow && (workflow->workflowId().isEmpty() || record.workflow_active))
+        if (workflow && owned->isEmpty() && (workflow->workflowId().isEmpty() || record.workflow_active))
           workflow->attach(QString::fromStdString(record.workflow_id));
         append_candidate(std::move(candidate));
         continue;
@@ -4076,9 +4100,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   hm::experiment::merge_settings(workflow_settings, *workflow_user);
   const auto workflow_game = hm::stitching::load_game_config_file(
       std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml", /*advisory_read=*/true);
-  if (!workflow_game.ok())
-    throw std::runtime_error(workflow_game.status().ToString());
-  if (workflow_game->has_value())
+  if (!workflow_game.ok()) {
+    const auto owned = s.owned_workflow();
+    if (!owned.ok() || owned->isEmpty())
+      throw std::runtime_error(workflow_game.status().ToString());
+    s.store_error = QString::fromStdString(workflow_game.status().ToString());
+  } else if (workflow_game->has_value())
     hm::experiment::merge_settings(workflow_settings, **workflow_game);
   s.workflow =
       new StitchingWorkflow(game_directory, working_directory, environment, workflow_settings, candidate_panel);

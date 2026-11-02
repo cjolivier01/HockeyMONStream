@@ -401,6 +401,7 @@ struct StitchingWorkflow::Impl {
   QJsonObject profiles, snapshot;
   QString workflow, selected_candidate;
   bool command_pending{false}, status_pending{false}, profiles_ready{false}, editing{true}, queued{false};
+  bool restore_controls{false};
   int timeout_ms{0};
   uint64_t request_generation{0};
   bool log_pending{false};
@@ -459,7 +460,12 @@ struct StitchingWorkflow::Impl {
         if (failure.isEmpty())
           failure = "The workflow command did not return a valid response; retained work may still be running";
       }
-      done(document.object(), failure);
+      auto value = document.object();
+      if (!failure.isEmpty())
+        value = QJsonDocument::fromJson(*error).object();
+      if (process->error() == QProcess::FailedToStart)
+        value.insert("client_not_started", true);
+      done(value, failure);
       process->deleteLater();
     };
     QObject::connect(
@@ -541,10 +547,35 @@ struct StitchingWorkflow::Impl {
     if (owner->changed)
       owner->changed();
   }
+  void restoreAttachedControls() {
+    if (!restore_controls || !profiles_ready || snapshot.value("nodes").toArray().isEmpty())
+      return;
+    QString profile_id;
+    for (const auto& value : snapshot.value("nodes").toArray()) {
+      const auto node = value.toObject();
+      if (node.value("kind").toString() == "experiment-run") {
+        profile_id = node.value("profile_id").toString();
+        break;
+      }
+    }
+    const int maximum = snapshot.value("limits").toObject().value("max_parallel").toInt();
+    if (profile_id.isEmpty() || maximum < 1 || maximum > 256)
+      return;
+    QSignalBlocker profile_block(profile), parallel_block(parallel);
+    int index = profile->findData(profile_id);
+    if (index < 0) {
+      profile->addItem(profile_id + " (retained profile unavailable)", profile_id);
+      index = profile->count() - 1;
+    }
+    profile->setCurrentIndex(index);
+    parallel->setValue(maximum);
+    restore_controls = false;
+  }
   void render(QJsonObject value) {
     if (value.value("workflow_id").toString() != workflow)
       return;
     snapshot = std::move(value);
+    restoreAttachedControls();
     const auto current = stage->currentData().toString();
     {
       QSignalBlocker blocker(stage);
@@ -669,12 +700,20 @@ struct StitchingWorkflow::Impl {
       arguments << "--output" << destination;
     else
       arguments << "--game-dir" << game;
-    call(arguments, [this, temporary, exporting](QJsonObject result, QString error) {
+    call(arguments, [this, temporary, exporting, id](QJsonObject result, QString error) {
       command_pending = false;
       if (!error.isEmpty()) {
         notify(error, true);
-        if (!exporting)
-          refresh();
+        if (!exporting) {
+          if (result.value("client_not_started").toBool() ||
+              (result.value("submission").toString() == "rejected" && result.value("workflow_id").toString() == id)) {
+            poll->stop();
+            workflow.clear();
+            snapshot = {};
+            monitor->hide();
+          } else
+            refresh();
+        }
       } else if (exporting)
         notify("Exported batch: " + result.value("script").toString());
       else {
@@ -851,6 +890,7 @@ StitchingWorkflow::StitchingWorkflow(
           s.profile->addItem(id + " (" + object.value("executor").toString() + ")", id);
         }
         s.profiles_ready = true;
+        s.restoreAttachedControls();
         s.controls();
         if (s.owner->changed)
           s.owner->changed();
@@ -924,6 +964,7 @@ void StitchingWorkflow::attach(const QString& id) {
   ++impl_->request_generation;
   impl_->workflow = id;
   impl_->snapshot = {};
+  impl_->restore_controls = true;
   impl_->monitor->show();
   impl_->poll->start();
   impl_->refresh();

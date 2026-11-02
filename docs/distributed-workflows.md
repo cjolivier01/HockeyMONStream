@@ -216,7 +216,11 @@ at most the current segment's last 1 MiB. State transitions retain two 1 MiB
 append-only diagnostic event segments; `events` returns at most 512 records and
 can select one stage. `state.json` remains authoritative if a crash interrupts
 a diagnostic append. Metadata and artifact verification also
-have protocol bounds. A missing local supervisor cannot prove that escaped
+have protocol bounds. Local supervisors require the kernel to report that no
+children remain after reaping; an empty process-directory scan is not shutdown
+proof because a child can fork during the scan. Native ownership checks keep
+unreadable helpers fenced unless pinned ancestry proves they descend from an
+unrelated service that predates admission. A missing local supervisor cannot prove that escaped
 children died, so ambiguous local shutdown retains ownership and capacity.
 Restoring accounting, the expected deployment, storage or controller is safer
 than discarding durable recovery state.

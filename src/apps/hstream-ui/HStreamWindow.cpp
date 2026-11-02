@@ -171,6 +171,15 @@ namespace fs = std::filesystem;
 
 namespace {
 
+absl::StatusOr<std::optional<YAML::Node>> load_desktop_game_config(const fs::path& path) {
+  const auto owner = hm::game_operation::Inspect(path.parent_path().parent_path());
+  if (!owner.ok())
+    return owner.status();
+  // Retain ordinary transaction recovery when idle. An owning operation alone
+  // may recover its state; another desktop window only takes advisory snapshots.
+  return hm::stitching::load_game_config_file(path, /*advisory_read=*/owner->has_value());
+}
+
 QString ui_settings_path() {
   return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation))
       .filePath("hstream-ui/settings.ini");
@@ -6444,7 +6453,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       "Generate stitching candidates, replay one moving passage across their seams, and use the selected maps "
       "without recalibrating.");
   connect(stitching_experiments_button_, &QPushButton::clicked, this, [this]() {
-    if (!ensureSavedControlConfigLoaded())
+    const auto selected_game = fs::path(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
+    const auto owner = hm::game_operation::Inspect(selected_game);
+    std::error_code owner_error;
+    const auto canonical_game = fs::canonical(selected_game, owner_error);
+    const bool monitoring = owner.ok() && owner->has_value() && (**owner).kind == "workflow" && !owner_error &&
+        (**owner).workflow_directory == (canonical_game / "_hockeymon/workflows" / (**owner).id).string();
+    if (!monitoring && !ensureSavedControlConfigLoaded())
       return;
     if (auto* existing = findChild<QDialog*>("stitchingExperimentDialog")) {
       existing->show();
@@ -6459,12 +6474,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     }
     const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
     const QString game_directory = gameDirectory(game_id);
-    if (game_id.isEmpty() || !QFileInfo::exists(QDir(game_directory).filePath("_hockeymon/config.yaml"))) {
+    if (game_id.isEmpty() ||
+        (!monitoring && !QFileInfo::exists(QDir(game_directory).filePath("_hockeymon/config.yaml")))) {
       QMessageBox::information(
           this, "Stitching Experiments", "Select a saved game with two camera videos before experimenting.");
       return;
     }
-    if (save_preset_button_ && save_preset_button_->isEnabled()) {
+    if (!monitoring && save_preset_button_ && save_preset_button_->isEnabled()) {
       QMessageBox::information(
           this,
           "Stitching Experiments",
@@ -6472,7 +6488,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       return;
     }
     const QString runner = nativeRunnerPath();
-    if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
+    if (!monitoring && QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
       QMessageBox::warning(this, "Stitching Experiments", "The hstream-cli runner is unavailable: " + runner);
       return;
     }
@@ -6481,7 +6497,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       env.insert("HM_CONFIG_ROOT", baseline_config_root_);
     const QString working_directory = pipelineWorkingDirectory();
     const QString runtime_error =
-        configure_pipeline_runtime_environment(env, working_directory, development_bazel_bin_);
+        monitoring ? QString() : configure_pipeline_runtime_environment(env, working_directory, development_bazel_bin_);
     if (!runtime_error.isEmpty()) {
       QMessageBox::warning(this, "Stitching Experiments", runtime_error);
       return;
@@ -8724,7 +8740,7 @@ void HStreamWindow::changeInputCameraOptics(size_t index, bool refresh) {
     if (key != source)
       camera.frozen = true;
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
-  auto saved = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
+  auto saved = load_desktop_game_config(game / "_hockeymon/config.yaml");
   if (!saved.ok()) {
     camera_configuration_combo_->setProperty("autoInputLensFrozen", was_frozen);
     updateInputCameraTabs(camera_optics_result_);
@@ -8769,7 +8785,7 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
   YAML::Node effective = YAML::Clone(baseline_config_);
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
   auto saved = editing_defaults_ ? absl::StatusOr<std::optional<YAML::Node>>(std::optional<YAML::Node>{})
-                                 : hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
+                                 : load_desktop_game_config(game / "_hockeymon/config.yaml");
   if (saved.ok() && saved->has_value())
     effective = merge_yaml_maps(effective, **saved);
   effective["stitching"].remove("auto_input_lens_frozen");
@@ -20124,7 +20140,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     if (baseline_only)
       return std::optional<YAML::Node>{};
     if (!editing_defaults_)
-      return hm::stitching::load_game_config_file(config_path);
+      return load_desktop_game_config(config_path);
     auto defaults = hm::user_config::load_defaults();
     if (!defaults.ok())
       return defaults.status();
@@ -22015,7 +22031,7 @@ void HStreamWindow::refreshVideoSets() {
   }
 
   const fs::path config_path = fs::path(dir.toStdString()) / "_hockeymon/config.yaml";
-  auto loaded_config = hm::stitching::load_game_config_file(config_path);
+  auto loaded_config = load_desktop_game_config(config_path);
   if (!loaded_config.ok()) {
     appendLog(QString("could not list configured videos: %1").arg(loaded_config.status().ToString().c_str()));
   } else if (loaded_config->has_value()) {

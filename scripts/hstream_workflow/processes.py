@@ -78,29 +78,36 @@ def signal_descendants(number):
 
 
 def reap():
+    """Reap exited children and return whether the kernel proves none remain.
+
+    The task supervisor becomes a subreaper before launching any task. A live
+    descendant therefore retains a direct child, including after reparenting.
+    An empty /proc scan cannot establish this: a child can fork and exit between
+    directory enumeration and its stat read, hiding the new adopted child.
+    """
     while True:
         try:
             pid, _ = os.waitpid(-1, os.WNOHANG)
             if pid == 0:
-                break
+                return False
         except ChildProcessError:
-            break
+            return True
+        except InterruptedError:
+            continue
 
 
 def retire(grace_seconds):
     deadline = time.monotonic() + grace_seconds
     signal_descendants(signal.SIGTERM)
     while time.monotonic() < deadline:
-        reap()
-        if not descendants():
+        if reap():
             return True
         time.sleep(0.05)
     signal_descendants(signal.SIGKILL)
     # Killing a process in uninterruptible sleep does not prove it stopped.
     deadline = time.monotonic() + grace_seconds
     while time.monotonic() < deadline:
-        reap()
-        if not descendants():
+        if reap():
             return True
         signal_descendants(signal.SIGKILL)
         time.sleep(0.05)

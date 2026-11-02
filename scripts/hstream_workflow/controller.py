@@ -39,6 +39,12 @@ class NativeControlError(WorkflowError):
         self.code = code
 
 
+class SubmissionRejected(WorkflowError):
+    def __init__(self, message, workflow_id):
+        super().__init__(message)
+        self.workflow_id = workflow_id
+
+
 class Controller:
     def __init__(self, registry):
         self.registry = Registry(registry)
@@ -97,6 +103,28 @@ class Controller:
             request.unlink(missing_ok=True)
 
     def register(self, plan, game):
+        try:
+            return self._register(plan, game)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            workflow_id = plan.get("workflow_id") if isinstance(plan, dict) else None
+            if not isinstance(workflow_id, str):
+                workflow_id = None
+            # External admission follows durable registry insertion. Prove its
+            # absence under the same lock before classifying a definite rejection.
+            # A failed read leaves acceptance ambiguous and must keep monitoring.
+            try:
+                with self.registry.lock():
+                    absent = (
+                        workflow_id
+                        and workflow_id not in self.registry.read()["workflows"]
+                    )
+            except (OSError, ValueError):
+                absent = False
+            if absent:
+                raise SubmissionRejected(str(exc), workflow_id) from exc
+            raise
+
+    def _register(self, plan, game):
         plan = validate_plan(plan)
         game = validate_game(self.config, game)
         for key, profile in plan["profiles"].items():
@@ -269,6 +297,7 @@ class Controller:
         value = graph.snapshot(plan, graph.cancel(plan, state) if pending else state)
         value["revision"] = state["revision"]
         value["owner_released"] = read_json(directory / "owner.json")["released"]
+        value["limits"] = copy.deepcopy(plan["limits"])
         value["cancellation_pending"] = pending and not state["cancel_requested"]
         stages = {stage["id"]: stage for stage in plan["stages"]}
         for node in value["nodes"]:
