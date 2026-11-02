@@ -5465,9 +5465,12 @@ HStreamWindow::~HStreamWindow() {
     if (!status.ok())
       qWarning("live rotation cleanup failed: %s", status.ToString().c_str());
   }
+  const bool abandoned_completion = static_cast<bool>(pending_pipeline_completion_);
+  pending_pipeline_completion_ = {};
+  refreshFinishedGameInventory();
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
-  finishArchiveJobLog();
+  finishArchiveJobLog(!abandoned_completion);
   releaseArchiveFinalizeSource(false);
   releaseArchiveFinalizerOwnership(false);
 }
@@ -5525,7 +5528,7 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
       return;
     }
   }
-  if (live_rotation_authorization_pending_) {
+  if (live_rotation_authorization_pending_ || pending_pipeline_completion_) {
     appendLog("window close deferred while live rotation config I/O finishes");
     close_waiting_for_live_rotation_authorization_ = true;
     event->ignore();
@@ -11758,7 +11761,7 @@ void HStreamWindow::startPipeline() {
       return;
     }
   }
-  if (live_rotation_authorization_pending_) {
+  if (live_rotation_authorization_pending_ || pending_pipeline_completion_) {
     appendLog("pipeline start deferred while live rotation config I/O finishes");
     return;
   }
@@ -12481,7 +12484,11 @@ void HStreamWindow::pauseOrResumePipeline() {
 }
 
 void HStreamWindow::confirmStopPipeline() {
-  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || pipeline_stop_requested_)
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    stopPipeline();
+    return;
+  }
+  if (pipeline_stop_requested_)
     return;
   const auto generation = pipeline_run_generation_;
   const bool has_outputs = active_run_telemetry_requested_ || !active_archive_output_path_.isEmpty() ||
@@ -12833,10 +12840,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   }
   last_playtracker_runtime_snapshot_.clear();
   if (!active_run_game_id_.isEmpty()) {
-    const auto inventory =
-        hm::game_storage::RefreshManifest(gameDirectory(active_run_game_id_).toStdString(), "hstream-ui");
-    if (!inventory.ok())
-      appendLog(QString("could not update game inventory after playback: %1").arg(inventory.ToString().c_str()));
+    // Inventory publication changes the recovery root's directory timestamp.
+    // Wait for every rotation transaction before touching that root again.
+    pending_finished_game_inventory_directory_ = gameDirectory(active_run_game_id_);
+    if (!live_rotation_config_owner_ || !live_rotation_config_owner_->pending())
+      refreshFinishedGameInventory();
   }
   calibration_pending_ = false;
   calibration_waiting_for_playback_restart_ = false;
@@ -12895,6 +12903,27 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_stitched_archive_initial_size_ = -1;
   active_program_4k_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
+  const auto complete = [this,
+                         archive_completed,
+                         completed_successfully,
+                         archive_game_id,
+                         retain_archive_log_guard_for_recovery] {
+    finishPipelinePublication(
+        archive_completed, completed_successfully, archive_game_id, retain_archive_log_guard_for_recovery);
+  };
+  if (live_rotation_config_owner_ && live_rotation_config_owner_->pending()) {
+    pending_pipeline_completion_ = complete;
+    updateRunControls();
+    return;
+  }
+  complete();
+}
+
+void HStreamWindow::finishPipelinePublication(
+    bool archive_completed,
+    bool completed_successfully,
+    const QString& archive_game_id,
+    bool retain_archive_log_guard_for_recovery) {
   if (pending_archive_finalizations_.empty() && !managed_archive_manifest_.isEmpty()) {
     if (archive_completed) {
       // Telemetry-only runs have no archive queue. Require the same successful
@@ -14642,7 +14671,7 @@ void HStreamWindow::finishArchiveJobLogAfterFinalizationFailure() {
 
 bool HStreamWindow::isArchiveFinalizing() const {
   return (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      !pending_archive_finalizations_.empty() || telemetry_publication_worker_;
+      !pending_archive_finalizations_.empty() || telemetry_publication_worker_ || pending_pipeline_completion_;
 }
 
 void HStreamWindow::updateArchiveOutputPathLabel() {
@@ -15335,6 +15364,8 @@ void HStreamWindow::showManagedArchiveFinalizationFailure(
 }
 
 void HStreamWindow::startNextArchiveFinalization() {
+  if (pending_pipeline_completion_ || (live_rotation_config_owner_ && live_rotation_config_owner_->pending()))
+    return;
   if (!managed_archive_manifest_.isEmpty() && !telemetry_publication_worker_) {
     try {
       if (hm::publication::PipelineCompleted(managed_archive_manifest_.toStdString())) {
@@ -23837,6 +23868,13 @@ void HStreamWindow::pollLiveRotationConfigOwner() {
   live_rotation_config_owner_->Poll();
   if (live_rotation_config_owner_->pending())
     return;
+  refreshFinishedGameInventory();
+  if (pending_pipeline_completion_) {
+    auto complete = std::exchange(pending_pipeline_completion_, {});
+    complete();
+  }
+  if (live_rotation_config_owner_->pending())
+    return;
   live_rotation_authorization_pending_ = false;
   updateRunControls();
   flushScheduledRuntimeControls();
@@ -23848,6 +23886,15 @@ void HStreamWindow::pollLiveRotationConfigOwner() {
   } else {
     maybeStartDeferredRestart();
   }
+}
+
+void HStreamWindow::refreshFinishedGameInventory() {
+  if (pending_finished_game_inventory_directory_.isEmpty())
+    return;
+  const auto directory = std::exchange(pending_finished_game_inventory_directory_, QString());
+  const auto inventory = hm::game_storage::RefreshManifest(directory.toStdString(), "hstream-ui");
+  if (!inventory.ok())
+    appendLog(QString("could not update game inventory after playback: %1").arg(inventory.ToString().c_str()));
 }
 
 void HStreamWindow::rollbackLiveRotationAuthorization(

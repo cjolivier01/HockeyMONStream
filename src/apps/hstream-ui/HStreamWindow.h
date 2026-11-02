@@ -243,6 +243,11 @@ class HStreamWindow : public QMainWindow {
   void stopPipeline(bool publish_partial = false);
   void handlePipelineStarted();
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
+  void finishPipelinePublication(
+      bool archive_completed,
+      bool completed_successfully,
+      const QString& archive_game_id,
+      bool retain_archive_log_guard_for_recovery);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
   void handlePipelineOutputLine(const QString& line, bool stderr_output);
@@ -577,6 +582,7 @@ class HStreamWindow : public QMainWindow {
       const std::optional<LiveRotationAuthorization>& live_rotation_authorization);
   hm::stitching::LiveRotationConfigOwner& liveRotationConfigOwner();
   void pollLiveRotationConfigOwner();
+  void refreshFinishedGameInventory();
   void rollbackLiveRotationAuthorization(
       const LiveRotationAuthorization& authorization,
       const QString& reason,
@@ -1136,6 +1142,8 @@ class HStreamWindow : public QMainWindow {
   QString deferred_restart_game_id_;
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
   std::unique_ptr<hm::stitching::LiveRotationConfigOwner> live_rotation_config_owner_;
+  QString pending_finished_game_inventory_directory_;
+  std::function<void()> pending_pipeline_completion_;
   bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};

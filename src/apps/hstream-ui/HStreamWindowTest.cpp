@@ -333,6 +333,81 @@ while True:
     return true;
   }
 
+  static bool finishedArchiveWaitsForRotationChecks() {
+#ifdef Q_OS_UNIX
+    HStreamWindow window;
+    const QString game = "archive-waits-for-rotation";
+    const auto directory = std::filesystem::path(window.gameDirectory(game).toStdString());
+    std::filesystem::create_directories(directory / "_hockeymon");
+    const auto config_path = directory / "_hockeymon/config.yaml";
+    const auto inventory_path = directory / "_hockeymon/manifest.json";
+    const QString source = QString::fromStdString((directory / "_hockeymon/finished.mkv").string());
+    QFile archive(source);
+    if (!archive.open(QIODevice::WriteOnly) || archive.write("guarded archive contents") != 24)
+      return false;
+    archive.close();
+    if (!hm::stitching::publish_game_config(
+             directory,
+             "rink: {stitched_output_pending_generation: finish-generation, "
+             "stitched_output_pending_authorization_id: finish-authorization}\n")
+             .ok())
+      return false;
+    window.game_id_edit_->setText(game);
+    window.active_run_game_id_ = game;
+    window.active_archive_output_path_ = source;
+    window.active_archive_initial_size_ = -1;
+    window.active_live_rotation_authorization_ = HStreamWindow::LiveRotationAuthorization{
+        game, directory.string(), "finish-generation", "finish-authorization", false, {}};
+    window.baseline_config_["workflow"]["poll_interval_ms"] = 10;
+    if (!window.beginGameOperation("pipeline"))
+      return false;
+    auto rollback_lock = hm::stitching::GameConfigTransactionLock::Acquire(directory);
+    if (!rollback_lock.ok())
+      return false;
+    QFile inventory_pin(QString::fromStdString(inventory_path.string()));
+    struct stat original_inventory{};
+    if (!inventory_pin.open(QIODevice::ReadOnly) || ::fstat(inventory_pin.handle(), &original_inventory) != 0)
+      return false;
+    const auto original_bytes = inventory_pin.readAll();
+    window.handlePipelineFinished(0, QProcess::NormalExit);
+    QTest::qWait(100);
+    struct stat blocked_inventory{};
+    const bool publication_waited = ::stat(inventory_path.c_str(), &blocked_inventory) == 0 &&
+        blocked_inventory.st_dev == original_inventory.st_dev && blocked_inventory.st_ino == original_inventory.st_ino &&
+        blocked_inventory.st_size == original_inventory.st_size &&
+        blocked_inventory.st_mtim.tv_sec == original_inventory.st_mtim.tv_sec &&
+        blocked_inventory.st_mtim.tv_nsec == original_inventory.st_mtim.tv_nsec && inventory_pin.seek(0) &&
+        inventory_pin.readAll() == original_bytes && window.live_rotation_authorization_pending_ &&
+        window.pending_pipeline_completion_ && !window.start_button_->isEnabled() &&
+        window.archive_finalize_process_->state() == QProcess::NotRunning && QFileInfo::exists(source) &&
+        !window.operation_token_.empty() && !window.close();
+    rollback_lock->reset();
+    const bool publication_completed = QTest::qWaitFor(
+        [&] {
+          return window.outputStateText("archive-file") == "SAVED" &&
+              !window.live_rotation_authorization_pending_ && !window.pending_pipeline_completion_ &&
+              window.operation_token_.empty();
+        },
+        10000);
+    struct stat completed_inventory{};
+    const auto completed_config = YAML::LoadFile(config_path.string());
+    const bool refreshed = ::stat(inventory_path.c_str(), &completed_inventory) == 0 &&
+        completed_inventory.st_ino != original_inventory.st_ino &&
+        !completed_config["rink"]["stitched_output_pending_authorization_id"].IsDefined();
+    QFile completed(window.archive_finalize_target_path_);
+    const bool complete = publication_waited && publication_completed && refreshed &&
+        completed.open(QIODevice::ReadOnly) && completed.readAll() == "guarded archive contents" &&
+        !QFileInfo::exists(source);
+    if (!complete)
+      std::cerr << "Finished archive must wait for rotation rollback before inventory/publication\n"
+                << "waited=" << publication_waited << " published=" << publication_completed
+                << " refreshed=" << refreshed << '\n' << window.logText().toStdString();
+    return complete;
+#else
+    return true;
+#endif
+  }
+
   static bool killedPipelineGuardChecks() {
     HStreamWindow window;
     const QString game = "killed-pipeline-guard";
@@ -8439,18 +8514,39 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           pending["rink"]["stitched_output_pending_authorization_id"].as<std::string>() != "ui-rejection-predecessor";
     }
     auto rejection_exit_lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
+    const QString inventory_path = QString::fromStdString((config.parent_path() / "manifest.json").string());
+    QFile inventory_before_exit(inventory_path);
+    struct stat inventory_before_exit_identity{};
+    const bool inventory_before_exit_read = inventory_before_exit.open(QIODevice::ReadOnly) &&
+        ::fstat(inventory_before_exit.handle(), &inventory_before_exit_identity) == 0;
+    const QByteArray inventory_before_exit_bytes =
+        inventory_before_exit_read ? inventory_before_exit.readAll() : QByteArray();
     const bool exit_requested_during_rejection = rejection_exit_lock.ok() &&
         HStreamWindowTestAccess::requestPipelineProcessExit(window) == QByteArray("@test-exit\n").size();
     for (int i = 0; i < 150 && window->pipelineStateText() != "STOPPED"; ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    QFile inventory_during_rollback(inventory_path);
+    const bool inventory_during_rollback_read = inventory_during_rollback.open(QIODevice::ReadOnly);
+    struct stat inventory_during_rollback_identity{};
+    const bool inventory_waited_for_rotation = inventory_before_exit_read && inventory_during_rollback_read &&
+        ::fstat(inventory_during_rollback.handle(), &inventory_during_rollback_identity) == 0 &&
+        inventory_during_rollback_identity.st_ino == inventory_before_exit_identity.st_ino &&
+        inventory_during_rollback_identity.st_mtim.tv_sec == inventory_before_exit_identity.st_mtim.tv_sec &&
+        inventory_during_rollback_identity.st_mtim.tv_nsec == inventory_before_exit_identity.st_mtim.tv_nsec &&
+        inventory_during_rollback.readAll() == inventory_before_exit_bytes &&
+        HStreamWindowTestAccess::liveRotationAuthorizationPending(window) && !start->isEnabled();
+    inventory_during_rollback.close();
     if (rejection_exit_lock.ok())
       rejection_exit_lock->reset();
     for (int i = 0; i < 200 && HStreamWindowTestAccess::liveRotationAuthorizationPending(window); ++i) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
+    const YAML::Node inventory_after_rollback = YAML::LoadFile(inventory_path.toStdString());
+    const bool inventory_refreshed_after_rotation = inventory_after_rollback["updated_by"].IsScalar() &&
+        inventory_after_rollback["updated_by"].as<std::string>() == "hstream-ui";
     const YAML::Node after_rejection_exit = YAML::LoadFile(config.string());
     const bool rejection_exit_unwound = rejection_predecessor.ok() && *rejection_predecessor &&
         rejection_authorization_published && exit_requested_during_rejection &&
@@ -8486,6 +8582,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         !expect(
             rejection_exit_unwound,
             "Pipeline exit during rejection rollback must unwind restored predecessor authority") ||
+        !expect(
+            inventory_waited_for_rotation && inventory_refreshed_after_rotation,
+            "Playback inventory must wait for rotation rollback and refresh before another run can start") ||
         !expect(
             window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=save/restart") &&
                 !window->logText().contains("camera control Left_Fixed_Edge_Rotation_Angle_x10=310 apply=pending") &&
@@ -21709,6 +21808,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ROTATION_FINISH_ONLY"))
+    return HStreamWindowTestAccess::finishedArchiveWaitsForRotationChecks() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STILL_ONLY"))
     return test_stitching_still() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_LATE_RENDER_RINK_MAP_ONLY"))
@@ -21761,7 +21862,8 @@ int main(int argc, char** argv) {
       return 1;
     return 0;
   }
-  if (!HStreamWindowTestAccess::stopProtocolChecks())
+  if (!HStreamWindowTestAccess::finishedArchiveWaitsForRotationChecks() ||
+      !HStreamWindowTestAccess::stopProtocolChecks())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STOP_PROTOCOL_ONLY"))
     return 0;
