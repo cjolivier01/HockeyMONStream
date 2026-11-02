@@ -10548,14 +10548,17 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const auto crop_framing = hm::stitching::read_stitch_projection_framing(crop_preview_config);
   const auto crop_resolution = hm::stitching::read_control_point_resolution(crop_preview_config);
   const auto crop_provider = hm::stitching::read_control_point_execution_provider(crop_preview_config);
-  if (!crop_framing.ok() || !crop_resolution.ok() || !crop_provider.ok())
+  const auto crop_filtering = hm::stitching::read_control_point_filtering(crop_preview_config);
+  if (!crop_framing.ok() || !crop_resolution.ok() || !crop_provider.ok() || !crop_filtering.ok())
     return expect(false, "Completed crop source must have valid effective alignment settings");
   crop_choices.projection_framing = *crop_framing;
   crop_choices.control_point_resolution = *crop_resolution;
   crop_choices.control_point_execution_provider = *crop_provider;
+  crop_choices.control_point_filtering = *crop_filtering;
   const auto crop_claim = hm::stitching::reserve_stitching_backend_generation_in_config(
       crop_preview_config, "ui-crop-completed-source", crop_choices);
-  if (!expect(crop_claim.ok(), "Completed crop source must own its backend generation"))
+  if (!expect(
+          crop_claim.ok(), "Completed crop source must own its backend generation: " + crop_claim.ToString()))
     return false;
   std::ofstream(config_path) << YAML::Dump(crop_preview_config) << '\n';
   activate(create);
@@ -10590,7 +10593,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       "control-point-resolution=" +
       QByteArray(hm::stitching::ControlPointResolutionName(*crop_resolution)) +
       "\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\ninput-lens=" + crop_default_lens +
-      "\ncontrol-point-filtering=1,1\n";
+      "\ncontrol-point-filtering=" + QByteArray::number(crop_filtering->epipolar_ransac) + "," +
+      QByteArray::number(crop_filtering->homography_consistency) + "\n";
   if (!expect(
           crop_tools.isValid() && QDir().mkpath(crop_game.filePath("_hockeymon")) &&
               crop_image.save(crop_game.filePath("_hockeymon/left.png")) &&
@@ -10916,12 +10920,38 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   activate(right_role);
   video_path->setText(reframe_right_video);
   activate(add_video);
+  const auto duplicate_camera = HStreamWindowTestAccess::currentCameraSelection(window);
   auto duplicate_source = YAML::LoadFile(config_path.string());
   duplicate_source["stitching"] = YAML::Clone(crop_preview_config["stitching"]);
   duplicate_source["hstream_ui"]["stitching_calibration"] =
       YAML::Clone(crop_preview_config["hstream_ui"]["stitching_calibration"]);
   duplicate_source["game"]["stitching"]["frame_offsets"] = YAML::Load("{left: 5, right: 9}");
   duplicate_source["stitching"]["frame_offsets"] = YAML::Load("{left: 5, right: 9}");
+  // This completed solve belongs to the newly imported source playlists.
+  // Freeze the resolved per-source optics in its config, claim and provenance.
+  hm::stitching::write_stitch_camera_selection(duplicate_source, duplicate_camera);
+  auto duplicate_choices = crop_choices;
+  duplicate_choices.camera = duplicate_camera;
+  duplicate_source["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  const auto duplicate_claim = hm::stitching::reserve_stitching_backend_generation_in_config(
+      duplicate_source, "ui-crop-completed-source", duplicate_choices);
+  QFile original_crop_generation(crop_game.filePath("_hockeymon/stitching_generation_id"));
+  if (!original_crop_generation.open(QIODevice::ReadOnly))
+    return false;
+  const auto original_crop_generation_bytes = original_crop_generation.readAll();
+  original_crop_generation.close();
+  QByteArray duplicate_provenance = crop_provenance;
+  duplicate_provenance.replace("version=14\n", "version=16\n");
+  const auto duplicate_cameras =
+      QByteArray::fromStdString(hm::stitching::SerializeStitchInputCameras(duplicate_camera.input_cameras));
+  duplicate_provenance.insert(
+      duplicate_provenance.indexOf("control-point-filtering="),
+      "input-cameras=" + duplicate_cameras + "\n");
+  if (!expect(
+          duplicate_claim.ok() &&
+              write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), duplicate_provenance),
+          "Completed duplicate-add source must retain its resolved optics: " + duplicate_claim.ToString()))
+    return false;
   std::ofstream(config_path) << YAML::Dump(duplicate_source) << '\n';
   activate(create);
   HStreamWindowTestAccess::setTestLevelingRotation(window, -36);
@@ -10929,7 +10959,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const auto before_duplicate = YAML::LoadFile(config_path.string());
   const auto duplicate_intent = before_duplicate["hstream_ui"]["stitching_calibration"]["reframe"];
   if (!expect(
-          !save->isEnabled() && duplicate_intent.IsMap(),
+          !save->isEnabled() && duplicate_intent.IsDefined() && duplicate_intent.IsMap(),
           "Duplicate-add fixture must capture a valid view request against synchronized source playlists"))
     return false;
   QFile duplicate_config(QString::fromStdString(config_path.string()));
@@ -11012,6 +11042,11 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
               !orphan_removed["game"]["stitching"]["frame_offsets"] && !orphan_removed["stitching"]["frame_offsets"],
           "Removing an orphan copied import must retain runtime-playlist and synchronization cleanup") ||
       !verify_input_recalibration())
+    return false;
+  // Return to the original completed source and its recorded generation before
+  // restoring the cancelled request that still names that exact source.
+  if (!write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), crop_provenance) ||
+      !write_crop_fixture(crop_game.filePath("_hockeymon/stitching_generation_id"), original_crop_generation_bytes))
     return false;
   std::ofstream(config_path) << YAML::Dump(cancelled_reframe) << '\n';
   activate(create);
