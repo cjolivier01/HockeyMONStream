@@ -1010,7 +1010,9 @@ bool ensure_rink_mask_texture(GstHmGpuPreviewSink* self, const PreviewOverlays& 
   } else if (overlays.stitched_output_generation.empty()) {
     artifact_status = absl::FailedPreconditionError("preview frame has no stitched-output generation metadata");
   } else {
-    const std::string game_dir = std::filesystem::path(state->rink_mask_file).parent_path().string();
+    // The live mask is <game>/_hockeymon/rink_mask_0.png. Artifact
+    // validation accepts the game root and adds the private state directory.
+    const std::string game_dir = std::filesystem::path(state->rink_mask_file).parent_path().parent_path().string();
     const char* invalidation = g_getenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
     artifact_status = hm::stitching::visit_current_field_mask(
         game_dir,
