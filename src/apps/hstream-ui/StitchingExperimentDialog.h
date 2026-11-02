@@ -18,7 +18,8 @@ class StitchingExperimentDialog : public QDialog {
       int frame_count,
       const QString& stitch_frame_time,
       QWidget* parent = nullptr,
-      std::function<void()> selection_applied = {});
+      std::function<void()> selection_applied = {},
+      const QString& playback_start_time = {});
   ~StitchingExperimentDialog() override;
   void done(int result) override;
 

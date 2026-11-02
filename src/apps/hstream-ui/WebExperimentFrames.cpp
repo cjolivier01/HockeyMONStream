@@ -58,9 +58,14 @@ StitchingExperimentPlayerSelection ScanExperimentFrames(
              "--stitching-player-scan-output=" + report.string(),
              "--stitching-player-scan-interval-ms=" + std::to_string(controls.scan_interval_ms),
              "--stitching-player-scan-frame-count=" + std::to_string(candidate.settings.frame_count),
-             "--start-time=" + candidate.settings.stitch_frame_time,
              "--time-limit=" + std::to_string(duration)})
       arguments.push_back(argument);
+    if (candidate.settings.player_scan_playback_start) {
+      arguments.push_back("--stitching-player-scan-reference=" + candidate.settings.stitch_frame_time);
+      arguments.push_back("--stitching-player-scan-playback-start=" + *candidate.settings.player_scan_playback_start);
+    } else {
+      arguments.push_back("--start-time=" + candidate.settings.stitch_frame_time);
+    }
     document["hstream_ui"]["job"]["arguments"] = arguments;
     check(hm::stitching::publish_game_config(baseline.game_directory, YAML::Dump(document)));
   }

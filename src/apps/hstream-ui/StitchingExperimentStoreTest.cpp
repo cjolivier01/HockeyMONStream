@@ -470,6 +470,25 @@ bool retained_main_counts(const fs::path& root) {
   return ok;
 }
 
+bool playback_start_settings(const fs::path& root) {
+  auto store = open_store(root);
+  auto legacy = make_record(store, "playback", 1);
+  bool ok = expect(SaveStitchingExperiment(store, legacy).ok(), "legacy playback setting remains absent");
+  auto record = make_record(store, "playback", 2);
+  record.workspace.settings.player_scan_playback_start = "00:03:45.125";
+  ok &= expect(SaveStitchingExperiment(store, record).ok(), "nonzero playback start persists");
+  auto restored = LoadStitchingExperimentStore(store);
+  if (!expect(restored.ok() && restored->experiments.size() == 2, "playback history reloads"))
+    return false;
+  ok &= expect(
+      !restored->experiments[0].workspace.settings.player_scan_playback_start &&
+          restored->experiments[1].workspace.settings.player_scan_playback_start == "00:03:45.125",
+      "history preserves legacy absence and exact frozen playback start");
+  record.workspace.settings.player_scan_playback_start = "00:00:00";
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "queued playback start is immutable");
+  return ok;
+}
+
 bool resolution_settings(const fs::path& root) {
   auto store = open_store(root);
   auto legacy = make_record(store, "resolution", 1);
@@ -609,6 +628,7 @@ bool run(const fs::path& root) {
   ok &= manual_match_settings(root / "manual-settings");
   ok &= lens_settings(root / "lens-settings");
   ok &= resolution_settings(root / "resolution-settings");
+  ok &= playback_start_settings(root / "playback-settings");
   ok &= matcher_settings(root / "matcher-settings");
   ok &= stopped_process_with_corrupt_config(root / "stopped-corrupt-config");
   ok &= retained_main_counts(root / "retained-main-counts");

@@ -309,9 +309,13 @@ class PipelineApplication {
   gboolean stitching_calibration_only_{FALSE};
   gboolean stitching_calibration_with_ice_mask_{FALSE};
   gchar* stitching_player_scan_output_{nullptr};
+  gchar* stitching_player_scan_reference_{nullptr};
+  gchar* stitching_player_scan_playback_start_{nullptr};
   gint stitching_player_scan_interval_ms_{500};
   gint stitching_player_scan_frame_count_{4};
   std::unique_ptr<hm::pipeline::PlayerFrameScan> player_frame_scan_;
+  std::shared_ptr<hm::pipeline::PlayerFrameScanSession> player_scan_session_;
+  bool player_scan_natural_eos_{false};
   gchar* int8_sample_output_{nullptr};
   gint int8_sample_count_{64};
   gint int8_sample_width_{1984};

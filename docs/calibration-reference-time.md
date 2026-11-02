@@ -14,10 +14,13 @@ independently. Seeking selects the first decodable frame at the requested
 time; a position inside the final frame interval uses that last frame.
 Positive references retain their existing forward sampling behavior.
 
-End-relative candidates use this circular sampling instead of the optional
-forward player-search pass. Both interfaces show that policy next to Player
-search. Returning to a positive reference restores the prior checkbox choice.
-Retained player selections cannot be silently relabeled as end-relative.
+Prefer player-rich frames is available for either reference sign. An end-relative
+scan runs to EOF, then resumes at the Playback start frozen when the candidate
+was queued (00:00:00 by default), using the remaining search duration. It wraps
+at most once and stops before revisiting the original anchor. Selected pairs
+retain their physical source paths and decoded timestamps for exact replay;
+changing Playback start later does not change an existing selection. Without
+player selection, end-relative candidates retain circular sampling.
 
 `PipelineApp` resolves the live initial seek so the calibration preview shows
 the reference pair. `CalibrationReferenceFrames` probes chapter headers and

@@ -4,6 +4,13 @@
 #include "hstream/src/libs/stitching/Synchronization.h"
 
 namespace hm::stitching {
+struct CalibrationRecordingTimeline {
+  uint64_t duration_ns;
+  uint64_t frame_interval_ns;
+};
+absl::StatusOr<CalibrationRecordingTimeline> ReadCalibrationRecordingTimeline(
+    const std::filesystem::path& game,
+    const YAML::Node& config);
 // Plan a circular, evenly spaced sample on the common synchronized clock.
 // The first pair is always the requested reference. Inputs are already trimmed
 // by each camera's effective synchronization offset.

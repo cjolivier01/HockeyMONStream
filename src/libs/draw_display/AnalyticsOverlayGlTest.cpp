@@ -586,11 +586,10 @@ void MaskPixels() {
   std::cout << "gl_mask inverse_affine=1 transparent_border=1 letterbox_preserved=1 gpu_rgb_max_error=" << maximum
             << '\n';
 }
-void LargeCanvasWatermark() {
+void LargeCanvasWatermark(float width, float height, unsigned preview_width, unsigned preview_height) {
   // The native panorama is wider than 16K; only the bounded preview framebuffer
   // is allocated. Match the geometry that failed in blackhawks-p3 playback.
-  constexpr float width = 20457, height = 5256;
-  Target target(2560, 658);
+  Target target(preview_width, preview_height);
   target.Clear();
   const auto before = target.Read();
   a::CommandList commands;
@@ -615,7 +614,8 @@ void LargeCanvasWatermark() {
       Check(actual[pixel] > before[pixel], "large-canvas watermark is not red");
     }
   Check(changed > 100, "large-canvas watermark is not visible");
-  std::cout << "gl_watermark canvas=20457x5256 preview=2560x658 visible=1 placement=bottom-right\n";
+  std::cout << "gl_watermark canvas=" << width << 'x' << height << " preview=" << preview_width << 'x' << preview_height
+            << " visible=1 placement=bottom-right\n";
 }
 void FailureSuppression() {
   Target target(128, 96);
@@ -718,6 +718,11 @@ int main(int argc, char** argv) {
     Context context;
     std::cout << "gl_renderer=" << glGetString(GL_RENDERER) << " version=" << glGetString(GL_VERSION) << '\n';
     Cuda(cudaSetDevice(0));
+    if (argc == 2 && std::string(argv[1]) == "--watermark-only") {
+      LargeCanvasWatermark(20457, 5256, 2560, 658);
+      LargeCanvasWatermark(21636, 11479, 1280, 680);
+      return 0;
+    }
     Pixels(false);
     Pixels(true);
     StateAndCapacity(context);
@@ -725,7 +730,8 @@ int main(int argc, char** argv) {
     ScaledViewport(20457, 5256);
     ScaledViewport(5256, 20457);
     MaskPixels();
-    LargeCanvasWatermark();
+    LargeCanvasWatermark(20457, 5256, 2560, 658);
+    LargeCanvasWatermark(21636, 11479, 1280, 680);
     FailureSuppression();
     if (argc == 2 && std::string(argv[1]) == "--benchmark") {
       Benchmark(1920, 1080);

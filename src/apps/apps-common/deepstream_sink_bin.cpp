@@ -40,10 +40,10 @@
 #include "hstream/src/apps/apps-common/ArchiveWatermark.h"
 #include "hstream/src/apps/apps-common/EncoderDimensions.h"
 #include "hstream/src/apps/apps-common/HStreamBatchDemux.h"
-#include "hstream/src/apps/apps-common/WebPreviewObserver.h"
-#include "hstream/src/apps/apps-common/WebRtcSignaling.h"
-#include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
 #include "hstream/src/apps/apps-common/PreviewRouteGraph.h"
+#include "hstream/src/apps/apps-common/WebPreviewObserver.h"
+#include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
+#include "hstream/src/apps/apps-common/WebRtcSignaling.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/pipeline_utils.h" // For gst_element_request_pad_simple on jetson
 
@@ -442,7 +442,6 @@ bool rtsp_audio_enabled_for_sink_id(guint sink_id) {
   return rtsp_audio_sink_ids.count(sink_id) > 0;
 }
 
-
 } // namespace
 
 void prepare_webrtc_sinks_for_stop(GstElement* pipeline) {
@@ -459,7 +458,8 @@ gboolean start_webrtc_signaling_for_preview(
     std::shared_ptr<hm::preview::WebPreviewSignaling> preview) {
   if (!endpoint || !config || !preview || !preview->observer || !preview->replace_peer || !preview->detach_peer)
     return FALSE;
-  return hm::webrtc::Start(endpoint, config->webrtc_port ? config->webrtc_port : kDefaultWebRtcPort, std::move(preview));
+  return hm::webrtc::Start(
+      endpoint, config->webrtc_port ? config->webrtc_port : kDefaultWebRtcPort, std::move(preview));
 }
 
 gboolean link_webrtc_rtp_src_to_sink(
@@ -628,7 +628,8 @@ gboolean create_fakesink_bin(const NvDsSinkRenderConfig* config, NvDsSinkBinSubB
     goto done;
   }
 
-  g_object_set(G_OBJECT(bin->sink), "sync", config->sync, "max-lateness", -1, "async", FALSE, "qos", config->qos, NULL);
+  g_object_set(
+      G_OBJECT(bin->sink), "sync", config->sync, "max-lateness", gint64{-1}, "async", FALSE, "qos", config->qos, NULL);
 
   if (!prop.integrated) {
     g_snprintf(elem_name, sizeof(elem_name), "sink_sub_bin_cap_filter%d", uid);
@@ -797,7 +798,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
       "sync",
       unsynchronized_gpu_preview || (!gpu_preview_fake && use_xvideo) ? FALSE : config->sync,
       "max-lateness",
-      -1,
+      gint64{-1},
       "async",
       FALSE,
       "qos",
@@ -809,7 +810,7 @@ static gboolean create_render_bin(NvDsSinkRenderConfig* config, NvDsSinkBinSubBi
       "sync",
       unsynchronized_gpu_preview ? FALSE : config->sync,
       "max-lateness",
-      -1,
+      gint64{-1},
       "async",
       FALSE,
       "qos",
@@ -2192,8 +2193,7 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
         return config.enable && config.source_id == index && !config.link_to_demux && config.type == NV_DS_SINK_WEBRTC;
       })) {
     std::string error;
-    if (!hm::preview::AttachPlaybackClock(
-            {hm::preview::RouteTap::Kind::kExistingTee, bin->bin, bin->tee}, &error)) {
+    if (!hm::preview::AttachPlaybackClock({hm::preview::RouteTap::Kind::kExistingTee, bin->bin, bin->tee}, &error)) {
       NVGSTDS_ERR_MSG_V("Could not attach WebRTC playback clock: %s", error.c_str());
       goto done;
     }

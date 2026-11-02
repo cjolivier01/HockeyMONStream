@@ -75,6 +75,52 @@ bool boundary_waits_for_inference() {
   return ok;
 }
 
+bool physical_wrap_boundary() {
+  using namespace hm::pipeline;
+  const PlayerFrameScanPairPosition anchor{{{11, 3120000000}, {22, 3100000000}}};
+  bool ok = expect(
+      !PlayerFrameScanReachedAnchor({{{10, 9000000000}, {21, 9000000000}}}, anchor),
+      "PTS in earlier chapter files must not trigger the physical boundary");
+  ok &= expect(
+      PlayerFrameScanReachedAnchor({{{11, 3080000000}, {22, 3100000000}}}, anchor),
+      "either camera reaching its anchor stops scanning despite independent offsets");
+  ok &= expect(
+      PlayerFrameScanReachedAnchor({{{11, 3200000000}, {22, 3080000000}}}, anchor),
+      "variable frame gaps that jump past the anchor must also stop scanning");
+  // Fractional seeks at 25 fps retain 3.120 s for requested 3.131 s and
+  // 0 s for requested .001 s. The nominal 3.130 s span includes a duplicate.
+  PlayerFrameScanTiming timing(3130000000, kSecond / 2);
+  for (uint64_t pts = 0; pts <= 3120000000; pts += 40000000) {
+    const bool boundary =
+        PlayerFrameScanReachedAnchor({{{11, pts}, {22, pts > 20000000 ? pts - 20000000 : 0}}}, anchor);
+    const auto selected = timing.Select(pts, boundary);
+    ok &= expect(selected.ok(), "fractional wrapped timeline stays valid");
+    if (selected.ok() && *selected) {
+      if (boundary) {
+        ok &= expect(
+            timing.AtBoundary(pts) && !timing.progress().boundary_observed,
+            "physical boundary enters inference without being scored or completing early");
+      } else {
+        ok &=
+            expect(pts < anchor[0].source_pts && !timing.AtBoundary(pts), "only unique physical frames can be scored");
+      }
+      ok &= expect(timing.Observe(pts).ok(), "validated inferred frames advance wrap progress");
+    }
+  }
+  ok &= expect(timing.progress().boundary_observed, "physical anchor completes the shorter wrapped span");
+  const auto beyond = timing.Select(3160000000);
+  ok &= expect(beyond.ok() && !*beyond, "frames after physical boundary never enter inference");
+  PlayerFrameScanTiming immediate(1000000, kSecond / 2);
+  const auto first = immediate.Select(3120000000, true);
+  ok &= expect(
+      first.ok() && *first && immediate.AtBoundary(3120000000) && !immediate.progress().boundary_observed,
+      "immediate overlap still requires an inferred boundary, even with zero new scored frames");
+  ok &= expect(
+      immediate.Observe(3120000000).ok() && immediate.progress().boundary_observed,
+      "validated immediate overlap completes without scoring its duplicated anchor");
+  return ok;
+}
+
 bool cancellation_before_first_frame() {
   const hm::pipeline::PlayerFrameScanProgress pending;
   return expect(
@@ -87,5 +133,8 @@ bool cancellation_before_first_frame() {
 } // namespace
 
 int main() {
-  return cold_start_at_nonzero_seek() && boundary_waits_for_inference() && cancellation_before_first_frame() ? 0 : 1;
+  return cold_start_at_nonzero_seek() && boundary_waits_for_inference() && physical_wrap_boundary() &&
+          cancellation_before_first_frame()
+      ? 0
+      : 1;
 }

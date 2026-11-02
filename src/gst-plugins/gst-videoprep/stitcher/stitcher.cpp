@@ -1115,10 +1115,8 @@ absl::Status StitcherPriv::initialize_calibration_frame_selection() {
   const auto reference = stitching_config["stitch_frame_time"];
   try {
     if (reference && hm::stitch_frame_time_to_nanoseconds(reference.as<std::string>()) < 0) {
-      if (selection && !selection.IsNull())
-        return absl::FailedPreconditionError(
-            "End-relative calibration uses circular frame sampling; clear the retained player-rich selection first");
-      end_relative_calibration_ = true;
+      if (!selection || selection.IsNull())
+        end_relative_calibration_ = true;
     }
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Invalid first calibration frame: " + std::string(error.what()));
@@ -1161,6 +1159,12 @@ absl::Status StitcherPriv::initialize_calibration_frame_selection() {
         "hmstitcher: reusing %zu retained calibration frame pairs (selection %s) without recapture\n",
         cached_calibration_frame_pairs_.size(),
         captured_frame_selection_fingerprint_.c_str());
+    return absl::OkStatus();
+  }
+  if (const auto clock = plan.context.find("scan_clock"); clock != plan.context.end()) {
+    if (clock->second != "wrapped-elapsed-v1")
+      return absl::FailedPreconditionError("Unsupported selected-frame scan clock");
+    end_relative_calibration_ = true; // Lazy exact-source extraction, including the wrap.
     return absl::OkStatus();
   }
   HM_ASSIGN_OR_RETURN(calibration_frame_selector_, stitching::PlayerFrameReplaySelector::Create(plan));
@@ -1328,7 +1332,7 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
             calibration_invalidation_id_,
             [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
             max_output_width_,
-            "");
+            captured_frame_selection_fingerprint_);
       } else {
         configure_status = stitching::configure_stitching(
             config_file_,

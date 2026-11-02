@@ -300,6 +300,33 @@ PlayerFrameObservation parse_observation(const YAML::Node& node) {
 }
 } // namespace
 
+absl::StatusOr<PlayerFrameScanWindow> PlanPlayerFrameScanWindow(
+    int64_t reference_ns,
+    uint64_t recording_duration_ns,
+    uint64_t frame_interval_ns,
+    uint64_t playback_start_ns,
+    uint64_t search_duration_ns) {
+  if (!frame_interval_ns || recording_duration_ns < frame_interval_ns ||
+      recording_duration_ns > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) || !search_duration_ns ||
+      search_duration_ns > 300 * kPlayerFrameSecond || playback_start_ns >= recording_duration_ns)
+    return invalid("invalid recording, playback start or search duration");
+  const int64_t anchor = reference_ns < 0 ? static_cast<int64_t>(recording_duration_ns) + reference_ns : reference_ns;
+  if (anchor < 0 || static_cast<uint64_t>(anchor) >= recording_duration_ns)
+    return invalid("calibration reference lies outside the synchronized recording");
+  const uint64_t resolved = std::min(static_cast<uint64_t>(anchor), recording_duration_ns - frame_interval_ns);
+  const uint64_t first = std::min(search_duration_ns, recording_duration_ns - resolved);
+  // Never revisit physical pairs already scanned in the tail. A short
+  // recording may therefore exhaust unique evidence before the time budget.
+  const uint64_t available = playback_start_ns < resolved ? resolved - playback_start_ns : 0;
+  return PlayerFrameScanWindow{
+      reference_ns,
+      recording_duration_ns,
+      resolved,
+      playback_start_ns,
+      first,
+      std::min(search_duration_ns - first, available)};
+}
+
 absl::Status ValidatePlayerFrameSelectionSettings(const PlayerFrameSelectionSettings& settings) {
   if (settings.frame_count < 1 || settings.frame_count > kPlayerFrameMaximumPairs || settings.duration_ns == 0 ||
       settings.duration_ns > 300 * kPlayerFrameSecond || settings.interval_ns == 0 ||

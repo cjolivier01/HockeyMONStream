@@ -34,7 +34,7 @@ constexpr size_t kMaximumFailureBytes = 4096;
 constexpr size_t kMaximumOwnerBytes = 16 * 1024;
 
 struct Reservation {
-  uint64_t anchor_ns{0};
+  int64_t anchor_ns{0};
   std::string key;
   std::string token;
 };
@@ -140,7 +140,8 @@ bool same_camera_snapshot(
 }
 
 bool same_settings(const StitchingExperimentSettings& left, const StitchingExperimentSettings& right) {
-  return left.control_points == right.control_points && left.frame_count == right.frame_count &&
+  return left.player_scan_playback_start == right.player_scan_playback_start &&
+      left.control_points == right.control_points && left.frame_count == right.frame_count &&
       left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
       left.control_point_resolution == right.control_point_resolution &&
       left.control_point_filtering == right.control_point_filtering &&
@@ -160,6 +161,12 @@ YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
   node["control_points"] = settings.control_points;
   node["frame_count"] = settings.frame_count;
   node["reference"] = settings.stitch_frame_time;
+  if (settings.player_scan_playback_start) {
+    require(
+        hm::stitch_frame_time_to_nanoseconds(*settings.player_scan_playback_start) >= 0,
+        "Player scan Playback start must be nonnegative");
+    node["player_scan_playback_start"] = *settings.player_scan_playback_start;
+  }
   if (settings.camera) {
     YAML::Node saved;
     hm::stitching::write_stitch_camera_selection(saved, *settings.camera);
@@ -207,6 +214,7 @@ StitchingExperimentSettings parse_settings(const YAML::Node& node) {
       {"control_points",
        "frame_count",
        "reference",
+       "player_scan_playback_start",
        "rotation",
        "control_point_resolution",
        "control_point_filtering",
@@ -219,6 +227,8 @@ StitchingExperimentSettings parse_settings(const YAML::Node& node) {
   settings.control_points = static_cast<int>(control_points);
   settings.frame_count = count_value(node["frame_count"]);
   settings.stitch_frame_time = string_value(node["reference"], 13);
+  if (node["player_scan_playback_start"])
+    settings.player_scan_playback_start = string_value(node["player_scan_playback_start"], 13);
   if (node["camera"]) {
     YAML::Node saved;
     saved["stitching"] = YAML::Clone(node["camera"]);
@@ -484,7 +494,9 @@ absl::StatusOr<hm::stitching::PlayerFrameSelectionPlan> selected_plan(const YAML
   return hm::stitching::ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]);
 }
 
-uint64_t plan_anchor(const hm::stitching::PlayerFrameSelectionPlan& plan) {
+int64_t plan_anchor(const hm::stitching::PlayerFrameSelectionPlan& plan) {
+  if (const auto reference = plan.context.find("scan_reference_ns"); reference != plan.context.end())
+    return YAML::Node(reference->second).as<int64_t>();
   const auto found = plan.context.find("decode_anchor_ns");
   require(found != plan.context.end(), "Saved selection has no numeric decode anchor");
   return uint_value(YAML::Node(found->second));
@@ -672,7 +684,7 @@ absl::StatusOr<Index> read_index(const StoreLock& lock, const StitchingExperimen
     const int count = count_value(item.first);
     keys(item.second, {"anchor_ns", "key", "token"});
     Reservation reservation{
-        uint_value(item.second["anchor_ns"]),
+        item.second["anchor_ns"].as<int64_t>(),
         string_value(item.second["key"], 520),
         string_value(item.second["token"], 160)};
     (void)key_path(store, reservation.key);
@@ -948,7 +960,7 @@ absl::Status SaveStitchingExperiment(
 absl::StatusOr<std::optional<StoredStitchingExperiment>> ReserveStitchingExperimentFrameCount(
     const StitchingExperimentStore& store,
     int frame_count,
-    uint64_t anchor_ns,
+    int64_t anchor_ns,
     const StitchingExperimentWorkspace& owner_workspace,
     const std::string& reservation_token) {
   try {
