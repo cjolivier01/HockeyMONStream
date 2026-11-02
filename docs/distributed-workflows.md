@@ -224,7 +224,10 @@ can select one stage. `state.json` remains authoritative if a crash interrupts
 a diagnostic append. Metadata and artifact verification also
 have protocol bounds. Local supervisors require the kernel to report that no
 children remain after reaping; an empty process-directory scan is not shutdown
-proof because a child can fork during the scan. Native ownership checks keep
+proof because a child can fork during the scan. Python supervisors signal pinned
+process descriptors and check kernel pidfd support before launching work. Python
+builds without pidfd wrappers use the same libc interfaces; there is no numeric
+PID signaling fallback. Native ownership checks keep
 the CLI inside its own subreaper scope. Qt commands use the installed
 `hstream-process-guard` and exact token-bound completion receipts, so unrelated Qt
 children remain under their normal QProcess owners. Descendants that detach,

@@ -2627,7 +2627,10 @@ bool write_fake_runner(const QString& path) {
   file.write("delay_next_preview_overlays = False\n");
   file.write("delayed_preview_overlay_responses = []\n");
   file.write("runtime_control_delay_seconds = 0.0\n");
-  file.write("deadline = time.monotonic() + 15.0\n");
+  // Interactive protocol checks include several acknowledged guard pauses.
+  // Let the driver stop this worker; a short wall deadline can end a valid
+  // pause/resume test before its final assertions.
+  file.write("deadline = time.monotonic() + 120.0\n");
   file.write("stdin_fd = sys.stdin.fileno()\n");
   file.write("pending_stdin = b''\n");
   file.write("while time.monotonic() < deadline:\n");
