@@ -202,9 +202,16 @@ elif operation=='submit':
   nodes.append(node)
  value=dict(workflow_id=plan['workflow_id'],state='running',epoch=0,revision=1,nodes=nodes)
  (root/'state.json').write_text(json.dumps(value))
+ if (root/'lose-submit-response').exists():
+  (root/'status-unavailable').write_text('2'); print('Submission response unavailable',file=sys.stderr); raise SystemExit(1)
 elif operation=='export':
  plan=json.loads(Path(option('--plan')).read_text()); destination=Path(option('--output')); destination.write_text('#!/bin/sh\n'); destination.with_suffix('.json').write_text(json.dumps(plan)); value={'script':str(destination),'workflow_id':plan['workflow_id']}
-elif operation=='status': time.sleep(.03); value=json.loads((root/'state.json').read_text())
+elif operation=='status':
+ time.sleep(.03)
+ unavailable=root/'status-unavailable'
+ if unavailable.exists() and int(unavailable.read_text())>0:
+  unavailable.write_text(str(int(unavailable.read_text())-1)); print('Workflow registration temporarily unavailable',file=sys.stderr); raise SystemExit(1)
+ value=json.loads((root/'state.json').read_text())
 elif operation in ('cancel','retry'):
  value=json.loads((root/'state.json').read_text()); assert int(option('--epoch'))==value['epoch']
  if operation=='cancel': value['state']='cancelled'; value['cancel_requested']=True
@@ -292,10 +299,14 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(
       QFileInfo::exists(export_message.mid(QString("Exported batch: ").size())),
       "Export response did not identify the created file");
+  write(root + "/lose-submit-response", "lost");
   pane->start(store, catalog(store));
   require(
       wait([&] { return QFileInfo::exists(root + "/submitted.json") && pane->hasSelection(); }),
-      "Workflow submission did not return live stages");
+      "Accepted workflow with lost submit response and unavailable first status was not polled to recovery");
+  require(
+      read(root + "/state.json").value("workflow_id") == pane->workflowId(),
+      "Submission recovery changed the intended workflow identity");
   require(pane->active() && ticks > 1, "Workflow request blocked Qt event processing");
   const auto submitted = read(root + "/submitted.json");
   require(
@@ -456,6 +467,55 @@ void dialogOwnership(const QString& root) {
   QFile after(root + "/calls");
   require(after.open(QIODevice::ReadOnly), "Cannot reread controller calls");
   require(after.readAll().count("cancel") == calls.count("cancel"), "Dialog close cancelled submitted jobs");
+  // Real submission owns the game durably. Reopening must use advisory config
+  // reads, not attempt transaction recovery through the mutation admission gate.
+  auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot reopen workflow ownership store");
+  auto saved = LoadStitchingExperimentStore(*store);
+  require(saved.ok(), "Cannot read workflow ownership fixture rows");
+  const auto id = read(root + "/state.json").value("workflow_id").toString().toStdString();
+  auto remote = hm::game_operation::LocalOwner("workflow", id, "remote-workflow-token");
+  remote.workflow_directory = (store->game_directory / "_hockeymon/workflows" / id).string();
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(lock.ok() && (*lock)->Claim(remote).ok(), "Cannot bind remote ownership fixture");
+  }
+  hm::game_operation::RegisterAuthorization(store->game_directory, remote.token);
+  for (auto& row : saved->experiments) {
+    row.workflow_id = id;
+    row.workflow_directory = remote.workflow_directory;
+    row.workflow_active = true;
+    require(SaveStitchingExperiment(*store, row).ok(), "Cannot bind remote catalog fixture");
+  }
+  hm::game_operation::ForgetAuthorization(store->game_directory, remote.token);
+  QFile main_config(game + "/_hockeymon/config.yaml");
+  require(main_config.open(QIODevice::ReadOnly), "Cannot snapshot main config");
+  const auto before_reopen = main_config.readAll();
+  main_config.close();
+  {
+    StitchingExperimentDialog reopened(
+        game, runner, root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    reopened.show();
+    require(
+        wait([&] {
+          return widget<QComboBox>(reopened, "stitchWorkflowStage")->count() > 4 &&
+              widget<QPushButton>(reopened, "cancelStitchExperimentsButton")->isEnabled();
+        }),
+        "Workflow-owned game did not reopen and attach to running stages");
+    const auto owner = hm::game_operation::Inspect(store->game_directory);
+    require(
+        owner.ok() && owner->has_value() && (**owner).id == id && (**owner).revision == remote.revision,
+        "Read-only reopen changed durable workflow admission");
+    require(
+        main_config.open(QIODevice::ReadOnly) && main_config.readAll() == before_reopen,
+        "Read-only workflow reopen rewrote the main configuration");
+    reopened.close();
+    require(wait([&] { return !reopened.isVisible(); }), "Reopened monitor did not detach");
+  }
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(lock.ok() && (*lock)->Release(remote.token, remote.revision, true).ok(), "Cannot retire remote test owner");
+  }
 }
 
 } // namespace

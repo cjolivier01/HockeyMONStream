@@ -635,6 +635,7 @@ cc_test(
         ":stitching_experiment_dialog",
         ":stitching_experiment_store",
         "//src/libs/common:baseline_config",
+        "//src/libs/common:game_operation_owner",
         "//src/libs/stitching:calibration_match_images",
         "//src/libs/stitching:calibration_matches",
         "//src/libs/stitching:game_config",

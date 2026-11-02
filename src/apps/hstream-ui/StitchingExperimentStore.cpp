@@ -275,8 +275,10 @@ void validate_workflow_result_path(const StitchingExperimentStore& store, const 
           record.workflow_directory == store.game_directory / "_hockeymon/workflows" / record.workflow_id,
       "Invalid workflow directory");
   require(
-      record.process_session_id == 0 && record.process_token.empty(),
-      "Workflow ownership cannot use local PID recovery");
+      (record.process_session_id == 0 && record.process_token.empty()) ||
+          (!record.workflow_active && record.state == "complete" && record.result_workspace &&
+           !record.process_token.empty()),
+      "Only an inactive completed workflow result may have a separate local preview");
   const auto validate_reference = [&](const std::optional<StitchingExperimentWorkspace>& saved,
                                       const std::string& attempt_id) {
     if (!saved) {
@@ -883,6 +885,69 @@ absl::StatusOr<StitchingExperimentCatalog> LoadStitchingExperimentStore(const St
     Index index;
     HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
     return std::move(index.catalog);
+  } catch (const std::exception& error) {
+    return invalid_catalog(error);
+  }
+}
+
+absl::Status RecordStitchingExperimentPreview(
+    const StitchingExperimentStore& store,
+    StoredStitchingExperiment& experiment,
+    int64_t process_session_id,
+    const std::string& process_token,
+    bool stopped) {
+  try {
+    auto admission = hm::game_operation::Mutation(store.game_directory);
+    if (!admission.ok())
+      return admission.status();
+    const auto owner = (*admission)->Read();
+    if (!owner.ok())
+      return owner.status();
+    require(
+        owner->has_value() && (**owner).kind == "experiment" && !(**owner).cancel_requested,
+        "Completed workflow preview requires the local experiment supervisor");
+    auto lock = acquire(store);
+    if (!lock.ok())
+      return lock.status();
+    Index index;
+    HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
+    auto found = std::find_if(index.catalog.experiments.begin(), index.catalog.experiments.end(), [&](const auto& row) {
+      return row.workspace.game_directory == experiment.workspace.game_directory;
+    });
+    if (found == index.catalog.experiments.end() || found->revision != experiment.revision ||
+        found->revision == std::numeric_limits<uint64_t>::max() ||
+        found->workspace.invalidation_id != experiment.workspace.invalidation_id)
+      return absl::AbortedError("Saved experiment changed before preview ownership update");
+    require(
+        !found->workflow_id.empty() && !found->workflow_active && found->state == "complete" &&
+            found->result_workspace && !found->artifact_generation_id.empty(),
+        "Only a completed retired workflow result may be previewed locally");
+    require(
+        process_session_id >= 0 && process_session_id <= std::numeric_limits<int>::max() && !process_token.empty() &&
+            process_token.size() <= 160 && process_token.find('\0') == std::string::npos,
+        "Invalid local preview process identity");
+    if (stopped) {
+      require(
+          found->process_session_id == process_session_id && found->process_token == process_token,
+          "Preview ownership changed before shutdown reconciliation");
+      found->process_session_id = 0;
+      found->process_token.clear();
+    } else {
+      require(
+          found->process_token.empty() ||
+              (found->process_token == process_token &&
+               (found->process_session_id == 0 || found->process_session_id == process_session_id)),
+          "Another local preview already owns this completed result");
+      found->process_session_id = process_session_id;
+      found->process_token = process_token;
+    }
+    // Deliberately start from the stored record. A preview caller cannot replace
+    // scientific state, adopted paths, workflow binding, failure or selections.
+    ++found->revision;
+    validate_record(store, *found);
+    HM_RETURN_IF_ERROR(write_index(**lock, store, index));
+    experiment = *found;
+    return absl::OkStatus();
   } catch (const std::exception& error) {
     return invalid_catalog(error);
   }

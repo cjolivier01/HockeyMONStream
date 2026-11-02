@@ -161,7 +161,10 @@ retry epoch is rejected. Cancellation intent is durable independently of the
 controller's reconciliation lock, so status and Stop remain usable while the
 controller checks scheduler state or hashes an artifact. Worker supervision sees
 the attempt cancellation directly; queued Slurm allocations are cancelled by
-reconciliation.
+reconciliation. The final bounded native catalog commit and cancellation are
+serialized: a committed cancellation prevents adoption; a completed adoption is
+retained if cancellation arrives afterward. Cancellation needs exact shutdown and
+cleanup proof, but does not need successful output files to remain available.
 
 Export writes a sealed plan beside an executable launcher and does not submit:
 

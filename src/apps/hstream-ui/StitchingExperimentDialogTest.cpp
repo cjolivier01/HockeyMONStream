@@ -5,6 +5,7 @@
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
 
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -2378,6 +2379,135 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   write(game + "/_hockeymon/config.yaml", original);
 }
 
+void exercise_completed_workflow_preview(const QString& game, const QString& root) {
+  const QString working = root + "/workflow-preview-fixture";
+  require(QDir().mkpath(working + "/scripts"), "Cannot create workflow preview fixture");
+  auto main_config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
+  main_config["workflow"]["registry"] = working.toStdString();
+  main_config["workflow"]["poll_interval_ms"] = 100;
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(main_config)));
+  const QString fixtures = root + "/synthetic-artifacts";
+  const QString started = working + "/started";
+  const QString release = working + "/release";
+  const QString runner = working + "/runner";
+  write(
+      runner,
+      "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
+      "touch \"$HSTREAM_TEST_PREVIEW_STARTED\"\n"
+      "while [ ! -f \"$HSTREAM_TEST_PREVIEW_RELEASE\" ]; do sleep 0.05; done\n"
+      "exit \"$(cat \"$HSTREAM_TEST_PREVIEW_RELEASE\")\";;\nesac\n"
+      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/_hockeymon/\"\n");
+  require(
+      QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot prepare workflow preview runner");
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_ARTIFACTS", fixtures);
+  environment.insert("HSTREAM_TEST_PREVIEW_STARTED", started);
+  environment.insert("HSTREAM_TEST_PREVIEW_RELEASE", release);
+  {
+    StitchingExperimentDialog dialog(
+        game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    add_options(dialog);
+    widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+    require(
+        wait_until(
+            [&] { return widget<QLabel>(dialog, "stitchExperimentStatus")->text().startsWith("Batch complete."); },
+            10000),
+        "Completed-workflow preview fixture did not calibrate");
+  }
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open workflow preview store");
+  auto catalog = LoadStitchingExperimentStore(*store);
+  require(catalog.ok() && catalog->experiments.size() == 1, "Missing completed workflow preview fixture");
+  auto record = catalog->experiments.front();
+  record.workflow_id = "preview-workflow";
+  record.workflow_directory = store->game_directory / "_hockeymon/workflows" / record.workflow_id;
+  auto result = record.workspace;
+  result.root = record.workflow_directory / "attempts/solve/workspace";
+  result.game_directory = result.root / result.game_id;
+  std::filesystem::create_directories(result.root);
+  std::filesystem::copy(
+      record.workspace.game_directory,
+      result.game_directory,
+      std::filesystem::copy_options::recursive | std::filesystem::copy_options::copy_symlinks);
+  record.result_workspace = result;
+  record.result_attempt_id = "solve";
+  record.workflow_active = false;
+  auto owner = hm::game_operation::LocalOwner("workflow", record.workflow_id, "preview-workflow-token");
+  owner.workflow_directory = record.workflow_directory.string();
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(lock.ok() && (*lock)->Claim(owner).ok(), "Cannot claim completed workflow fixture");
+  }
+  hm::game_operation::RegisterAuthorization(store->game_directory, owner.token);
+  require(SaveStitchingExperiment(*store, record).ok(), "Cannot adopt completed workflow preview fixture");
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(
+        lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(),
+        "Cannot release completed workflow fixture");
+  }
+  hm::game_operation::ForgetAuthorization(store->game_directory, owner.token);
+  write(
+      working + "/scripts/hstream-workflow",
+      "#!/bin/sh\ncase \"$1\" in\nprofiles) echo '{\"profiles\":[]}' ;;\n"
+      "status) echo '{\"workflow_id\":\"preview-workflow\",\"state\":\"succeeded\",\"owner_released\":true,\"epoch\":0,\"nodes\":[]}' ;;\nesac\n");
+  require(
+      QFile::setPermissions(
+          working + "/scripts/hstream-workflow", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot prepare completed workflow observer");
+  for (int exit_code : {0, 7, -1}) {
+    QFile::remove(started);
+    QFile::remove(release);
+    StitchingExperimentDialog dialog(
+        game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    widget<QTableWidget>(dialog, "stitchExperimentCandidates")->selectRow(0);
+    widget<QCheckBox>(dialog, "stitchExperimentLoop")->setChecked(false);
+    auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
+    auto* stop = widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton");
+    require(
+        wait_until([&] { return play->isEnabled(); }, 10000),
+        "Completed workflow did not enable preview after reattach");
+    play->click();
+    require(
+        wait_until([&] { return QFile::exists(started) && stop->isEnabled(); }, 10000),
+        "Completed workflow preview failed to acquire separate local ownership");
+    require(
+        wait_until(
+            [&] {
+              const auto current = LoadStitchingExperimentStore(*store);
+              return current.ok() && current->experiments.front().process_session_id > 0;
+            },
+            10000),
+        "Started preview did not persist its process session");
+    const auto running = LoadStitchingExperimentStore(*store);
+    const auto admission = hm::game_operation::Inspect(store->game_directory);
+    require(
+        running.ok() && running->experiments.front().process_session_id > 0 &&
+            !running->experiments.front().process_token.empty() && admission.ok() && admission->has_value() &&
+            (**admission).kind == "experiment",
+        "Completed workflow preview has no durable local process owner");
+    if (exit_code < 0)
+      stop->click();
+    else
+      write(release, QByteArray::number(exit_code));
+    require(
+        wait_until([&] { return play->isEnabled(); }, 10000),
+        "Completed workflow preview did not retire local ownership");
+    catalog = LoadStitchingExperimentStore(*store);
+    require(
+        catalog.ok() && catalog->experiments.front().process_session_id == 0 &&
+            catalog->experiments.front().process_token.empty() && catalog->experiments.front().state == "complete" &&
+            catalog->experiments.front().workflow_id == record.workflow_id &&
+            catalog->experiments.front().result_attempt_id == "solve" &&
+            catalog->experiments.front().artifact_generation_id == record.artifact_generation_id &&
+            catalog->experiments.front().result_workspace->game_directory == result.game_directory,
+        "Preview success, failure or Stop changed the completed workflow result");
+  }
+}
+
 void exercise_preview_and_promotion_failure(const QString& game, const QString& root) {
   const QString fixtures = root + "/synthetic-artifacts";
   require(QDir().mkpath(fixtures), "Cannot create synthetic artifacts");
@@ -3340,6 +3470,7 @@ int main(int argc, char** argv) {
       }
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_BLEND_ONLY") != 0) {
         exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
+        exercise_completed_workflow_preview(make_game("workflow-preview"), fixture.path());
         exercise_blend_preview(make_game("blend-preview"), fixture.path());
         std::cout << "Stitching experiment blend checks passed\n";
         return 0;
@@ -3374,6 +3505,7 @@ int main(int argc, char** argv) {
       exercise_saved_selection(make_game("saved"), fixture.path());
       exercise_match_save_retry(make_game("match-save-retry"), fixture.path());
       exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
+      exercise_completed_workflow_preview(make_game("workflow-preview"), fixture.path());
       exercise_blend_preview(make_game("blend-preview"), fixture.path());
       exercise_completed_dependency_removal(make_game("completed-dependencies"), fixture.path());
       exercise_stale_completed_removal(make_game("stale-completed"), fixture.path());

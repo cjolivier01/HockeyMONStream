@@ -889,8 +889,10 @@ absl::Status copy_frame_inspection_for_promotion(
 
 absl::StatusOr<std::string> ReusableStitchingExperimentSelectionFingerprint(
     const fs::path& game_directory,
-    const StitchingExperimentSettings& settings) {
-  auto lock = hm::stitching::GameConfigTransactionLock::Acquire(game_directory);
+    const StitchingExperimentSettings& settings,
+    bool advisory_read) {
+  auto lock = advisory_read ? hm::stitching::GameConfigTransactionLock::TryAcquireSnapshot(game_directory)
+                            : hm::stitching::GameConfigTransactionLock::Acquire(game_directory);
   if (!lock.ok())
     return lock.status();
   try {
@@ -903,8 +905,10 @@ absl::StatusOr<std::string> ReusableStitchingExperimentSelectionFingerprint(
 
 absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperimentWorkspace(
     const fs::path& game_directory,
-    const StitchingExperimentSettings& displayed_settings) {
-  auto lock = hm::stitching::GameConfigTransactionLock::Acquire(game_directory);
+    const StitchingExperimentSettings& displayed_settings,
+    bool advisory_read) {
+  auto lock = advisory_read ? hm::stitching::GameConfigTransactionLock::TryAcquireSnapshot(game_directory)
+                            : hm::stitching::GameConfigTransactionLock::Acquire(game_directory);
   if (!lock.ok())
     return lock.status();
   try {

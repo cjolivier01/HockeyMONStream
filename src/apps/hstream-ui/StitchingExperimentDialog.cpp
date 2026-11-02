@@ -775,8 +775,8 @@ struct StitchingExperimentDialog::Impl {
         candidate.workspace = ResolvedStitchingExperimentWorkspace(record);
         candidate.complete = record.state == "complete" && !record.artifact_generation_id.empty();
         candidate.has_selected_frames = !record.selection_fingerprint.empty();
-        candidate.selection_reuse_blocked =
-            record.workflow_active && !candidate.complete && !record.selection_workspace;
+        candidate.selection_reuse_blocked = (!record.process_token.empty() || record.process_session_id != 0) ||
+            (record.workflow_active && !candidate.complete && !record.selection_workspace);
         candidate.queued = record.state == "queued" && record.workflow_id.empty();
         candidate.failure = QString::fromStdString(record.failure);
         break;
@@ -1375,7 +1375,8 @@ struct StitchingExperimentDialog::Impl {
       show_status(store_error + " Use Discard experiments to explicitly remove this retained history.", true);
       return;
     }
-    auto main = MainStitchingExperimentWorkspace(game_directory.toStdString(), displayed_settings);
+    auto main =
+        MainStitchingExperimentWorkspace(game_directory.toStdString(), displayed_settings, /*advisory_read=*/true);
     if (!main.ok()) {
       store_error = QString::fromStdString(main.status().ToString());
       show_status(store_error, true);
@@ -1388,7 +1389,8 @@ struct StitchingExperimentDialog::Impl {
       candidate.sequence = ++next_candidate_sequence;
       candidate.queued = false;
       candidate.main_calibration = true;
-      auto fingerprint = ReusableStitchingExperimentSelectionFingerprint((**main).game_directory, candidate.settings);
+      auto fingerprint = ReusableStitchingExperimentSelectionFingerprint(
+          (**main).game_directory, candidate.settings, /*advisory_read=*/true);
       if (fingerprint.ok()) {
         candidate.saved_selection_fingerprint = *fingerprint;
         candidate.has_selected_frames = !fingerprint->empty();
@@ -1424,10 +1426,25 @@ struct StitchingExperimentDialog::Impl {
       if (!record.workflow_id.empty()) {
         candidate.queued = false;
         candidate.complete = record.state == "complete" && !record.artifact_generation_id.empty();
-        candidate.selection_reuse_blocked =
-            record.workflow_active && !candidate.complete && !record.selection_workspace;
+        candidate.selection_reuse_blocked = (!record.process_token.empty() || record.process_session_id != 0) ||
+            (record.workflow_active && !candidate.complete && !record.selection_workspace);
         if (record.workflow_active)
           candidate.failure = "Workflow " + QString::fromStdString(record.workflow_id) + " owns this candidate";
+        if (!record.workflow_active && (!record.process_token.empty() || record.process_session_id)) {
+          candidate.selection_reuse_blocked = true;
+          candidate.failure = "Completed workflow preview ownership is unconfirmed";
+          if (!experiment_session_alive(record.process_session_id, QString::fromStdString(record.process_token)) &&
+              claim_local_operation()) {
+            auto saved = record;
+            const auto retired =
+                RecordStitchingExperimentPreview(*store, saved, record.process_session_id, record.process_token, true);
+            if (retired.ok()) {
+              candidate.stored = std::move(saved);
+              candidate.selection_reuse_blocked = false;
+              candidate.failure.clear();
+            }
+          }
+        }
         const auto selected = catalog->selected_by_count.find(candidate.settings.frame_count);
         const auto retained = catalog->retained_by_count.find(candidate.settings.frame_count);
         const std::string owner_key = selected != catalog->selected_by_count.end() ? selected->second
@@ -2820,6 +2837,19 @@ struct StitchingExperimentDialog::Impl {
     // A preview owns a previously completed calibration. Persist its process
     // separately so an interrupted cleanup cannot turn that solve into a failure.
     auto saved = candidate_record(candidate, "complete");
+    if (!saved.workflow_id.empty()) {
+      if (stopped && candidate.selection_reuse_blocked)
+        return absl::FailedPreconditionError("Preview shutdown remains unconfirmed; retaining its local ownership");
+      const auto persisted = RecordStitchingExperimentPreview(
+          *store,
+          saved,
+          stopped ? saved.process_session_id : preview_process_group,
+          stopped ? saved.process_token : preview_process_token.toStdString(),
+          stopped);
+      if (persisted.ok())
+        candidate.stored = std::move(saved);
+      return persisted;
+    }
     if (stopped && !candidate.selection_reuse_blocked) {
       saved.process_session_id = 0;
       saved.process_token.clear();
@@ -3696,7 +3726,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     overlay_feature_settings(s.feature_defaults, *user);
     YAML::Node effective = YAML::Clone(s.feature_defaults);
     const auto saved = hm::stitching::load_game_config_file(
-        std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml");
+        std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml", /*advisory_read=*/true);
     if (!saved.ok())
       throw std::runtime_error(saved.status().ToString());
     if (saved->has_value()) {
@@ -4045,7 +4075,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     throw std::runtime_error(workflow_user.status().ToString());
   hm::experiment::merge_settings(workflow_settings, *workflow_user);
   const auto workflow_game = hm::stitching::load_game_config_file(
-      std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml");
+      std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml", /*advisory_read=*/true);
   if (!workflow_game.ok())
     throw std::runtime_error(workflow_game.status().ToString());
   if (workflow_game->has_value())
@@ -4163,7 +4193,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     if (!user.ok())
       throw std::runtime_error(user.status().ToString());
     const auto game = hm::stitching::load_game_config_file(
-        std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml");
+        std::filesystem::path(game_directory.toStdString()) / "_hockeymon/config.yaml", /*advisory_read=*/true);
     if (!game.ok())
       throw std::runtime_error(game.status().ToString());
     const auto blend =

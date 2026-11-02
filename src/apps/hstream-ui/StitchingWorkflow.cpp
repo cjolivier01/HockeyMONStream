@@ -657,6 +657,9 @@ struct StitchingWorkflow::Impl {
       snapshot = {{"workflow_id", id}, {"state", "submitting"}, {"epoch", 0}, {"nodes", QJsonArray{}}};
       monitor->show();
       summary->setText("Submitting workflow " + id);
+      // The controller can accept the request before its response is lost. Keep
+      // observing this exact ID even when submission or the first status fails.
+      poll->start();
     }
     controls();
     if (owner->changed)
@@ -676,7 +679,6 @@ struct StitchingWorkflow::Impl {
         notify("Exported batch: " + result.value("script").toString());
       else {
         render(result);
-        poll->start();
         notify("Workflow submitted. Closing this dialog detaches; Cancel batch stops its jobs.");
       }
       controls();

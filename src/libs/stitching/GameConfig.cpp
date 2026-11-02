@@ -2437,10 +2437,11 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   return removed;
 }
 
-absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& config_path) {
+absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& config_path, bool advisory_read) {
   if (config_path.filename() != "config.yaml" || config_path.parent_path().filename() != "_hockeymon")
     return absl::InvalidArgumentError("Game config must be _hockeymon/config.yaml");
-  auto lock = GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
+  auto lock = advisory_read ? GameConfigTransactionLock::TryAcquireSnapshot(config_path.parent_path().parent_path())
+                            : GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
   if (!lock.ok())
     return lock.status();
   std::error_code error;
@@ -2456,7 +2457,7 @@ absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& 
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
     const YAML::Node selection =
         stitching && stitching.IsMap() ? stitching["calibration_frame_selection"] : YAML::Node();
-    if (selection && !selection.IsNull()) {
+    if (!advisory_read && selection && !selection.IsNull()) {
       const auto parsed = ParsePlayerFrameSelectionPlan(selection);
       if (!parsed.ok() &&
           parsed.status().message().find("plan fingerprint does not match its contents") != std::string::npos) {

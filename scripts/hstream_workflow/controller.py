@@ -56,9 +56,10 @@ class Controller:
             "defaults": copy.deepcopy(self.defaults),
         }
 
-    def _native(self, directory, action, payload):
+    def _native(self, directory, action, payload, *, runtime_checked=False):
         helper = self.config["profiles"][self.config["admission_profile"]]
-        preflight_runtime(helper)
+        if not runtime_checked:
+            preflight_runtime(helper)
         request = Path(directory) / ("control-" + str(uuid4()) + ".json")
         write_json(request, payload, exclusive=True)
         try:
@@ -544,7 +545,9 @@ class Controller:
             )
         return self._save(directory, plan, state)
 
-    def _verify_result(self, root, request, completion, profile):
+    @staticmethod
+    def _verify_completion(request, completion, profile):
+        require(completion.get("schema") == 1, "Unsupported completion schema")
         require(
             completion.get("request_digest") == digest(request)
             and completion.get("attempt_id") == request["attempt_id"],
@@ -559,6 +562,9 @@ class Controller:
             and completion.get("cleanup_complete") is True,
             "Native descendants or cleanup remain unresolved",
         )
+
+    def _verify_result(self, root, request, completion, profile):
+        self._verify_completion(request, completion, profile)
         require(
             completion.get("exit_code") == 0
             and not completion.get("error")
@@ -673,67 +679,95 @@ class Controller:
                     and request["stage_id"] == stage["id"],
                     "Request belongs to another plan stage",
                 )
-                result = None
-                try:
-                    if attempt["backend"] == "slurm":
-                        require(
-                            observation["state"] == "COMPLETED"
-                            and observation.get("exit_code") == "0:0",
-                            "Slurm did not complete successfully: "
-                            + observation["state"],
-                        )
-                    result = self._verify_result(root, request, complete, profile)
-                    outcome = result["status"]
-                    details = {
-                        "verified": True,
-                        "outputs": result["outputs"],
-                        "reason": result.get("message", outcome),
-                    }
-                except ValueError as exc:
-                    outcome, details = "failed", {"reason": str(exc)[:8192]}
+                # Cancellation requires shutdown proof, never usable success
+                # artifacts. A missing NFS result must not prevent explicit Stop.
+                self._verify_completion(request, complete, profile)
                 state = self._apply_cancel(directory, plan, state)
-                if (
+                result, verification_error = None, None
+                outcome, details = "cancelled", {
+                    "reason": "Cancelled after confirmed shutdown"
+                }
+                if not state["cancel_requested"]:
+                    try:
+                        if attempt["backend"] == "slurm":
+                            require(
+                                observation["state"] == "COMPLETED"
+                                and observation.get("exit_code") == "0:0",
+                                "Slurm did not complete successfully: "
+                                + observation["state"],
+                            )
+                        result = self._verify_result(root, request, complete, profile)
+                        outcome = result["status"]
+                        details = {
+                            "verified": True,
+                            "outputs": result["outputs"],
+                            "reason": result.get("message", outcome),
+                        }
+                    except OSError as exc:
+                        # Recheck cancellation before keeping transient storage
+                        # failures in recovery; no artifact is needed to cancel.
+                        verification_error = exc
+                    except ValueError as exc:
+                        outcome, details = "failed", {"reason": str(exc)[:8192]}
+                adoption = bool(
                     result is not None
                     and outcome == "succeeded"
-                    and not state["cancel_requested"]
                     and result["outputs"].get("catalog_key")
-                ):
-                    # A response can be lost after adoption commits. Keep
-                    # recovery and retry the exact idempotent native adoption.
-                    self._native(
-                        directory,
-                        (
-                            "adopt-selection"
-                            if result["outputs"].get("adoption") == "selection"
-                            else "adopt"
-                        ),
-                        {
-                            "game": owner["game"],
-                            "token": owner["token"],
-                            "workflow_id": plan["workflow_id"],
-                            "workflow_directory": str(directory),
-                            "attempt_id": attempt["id"],
-                            "catalog_key": result["outputs"]["catalog_key"],
-                            "workspace": result["outputs"]["workspace"],
-                            "require_ice_mask": bool(
-                                request["operation"] == "experiment-baseline"
-                                or request["inputs"].get("require_ice_mask", False)
+                )
+                if adoption:
+                    preflight_runtime(
+                        self.config["profiles"][self.config["admission_profile"]]
+                    )
+                # Linearize the final publication against cancel(). File hashing
+                # and runtime preflight stay outside this short bounded native
+                # commit. A cancel already committed always wins; a later one
+                # observes the terminal state published under this same lock.
+                with locked(directory / "control-intent.lock"):
+                    state = self._apply_cancel(directory, plan, state)
+                    if state["cancel_requested"]:
+                        outcome, details = "cancelled", {
+                            "reason": "Cancelled after confirmed shutdown"
+                        }
+                    elif verification_error is not None:
+                        raise verification_error
+                    elif adoption:
+                        # Lost responses retain recovery for exact idempotent
+                        # adoption; never assume the catalog write did not happen.
+                        self._native(
+                            directory,
+                            (
+                                "adopt-selection"
+                                if result["outputs"].get("adoption") == "selection"
+                                else "adopt"
                             ),
+                            {
+                                "game": owner["game"],
+                                "token": owner["token"],
+                                "workflow_id": plan["workflow_id"],
+                                "workflow_directory": str(directory),
+                                "attempt_id": attempt["id"],
+                                "catalog_key": result["outputs"]["catalog_key"],
+                                "workspace": result["outputs"]["workspace"],
+                                "require_ice_mask": bool(
+                                    request["operation"] == "experiment-baseline"
+                                    or request["inputs"].get("require_ice_mask", False)
+                                ),
+                            },
+                            runtime_checked=True,
+                        )
+                    details.update(
+                        stopped=True,
+                        cleanup_complete=True,
+                        **{
+                            key: value
+                            for key, value in observation.items()
+                            if key in {"scheduler_id", "cluster", "host"}
                         },
                     )
-                details.update(
-                    stopped=True,
-                    cleanup_complete=True,
-                    **{
-                        key: value
-                        for key, value in observation.items()
-                        if key in {"scheduler_id", "cluster", "host"}
-                    }
-                )
-                state = graph.update_attempt(
-                    plan, state, stage["id"], attempt["id"], outcome, details
-                )
-                self._save(directory, plan, state)
+                    state = graph.update_attempt(
+                        plan, state, stage["id"], attempt["id"], outcome, details
+                    )
+                    self._save(directory, plan, state)
                 self.registry.release(
                     plan["workflow_id"],
                     attempt["id"],

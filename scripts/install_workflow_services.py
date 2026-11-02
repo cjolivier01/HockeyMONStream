@@ -337,7 +337,14 @@ def unit_argument(value):
 
 
 def render_unit(
-    description, identity, directory, argv, environment=(), environment_file=None
+    description,
+    identity,
+    directory,
+    argv,
+    environment=(),
+    environment_file=None,
+    *,
+    independent_attempts=False,
 ):
     lines = [
         "[Unit]",
@@ -354,7 +361,9 @@ def render_unit(
         "Restart=on-failure",
         "RestartSec=5",
         "TimeoutStopSec=300",
-        "KillMode=mixed",
+        # Attempt supervisors own descendant shutdown and completion receipts.
+        # A dispatcher restart must not kill their inherited service cgroup.
+        "KillMode=process" if independent_attempts else "KillMode=mixed",
     ]
     lines += ["Environment=" + unit_argument(value) for value in environment]
     if environment_file:
@@ -658,6 +667,7 @@ class Installer:
                     argv,
                     environment,
                     workflow["environment_file"],
+                    independent_attempts=True,
                 ),
             )
         dagster = manifest["dagster"]

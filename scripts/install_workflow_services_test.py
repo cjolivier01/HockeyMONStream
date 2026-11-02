@@ -16,6 +16,7 @@ from install_workflow_services import (
     Installer,
     InstallError,
     read_regular,
+    render_unit,
     unit_argument,
     validate_manifest,
     validate_slurm_configuration,
@@ -65,6 +66,22 @@ class HostCommands:
 
 
 class InstallerTest(unittest.TestCase):
+    def test_only_dispatcher_units_preserve_independent_attempts(self):
+        identity = {"user": "worker", "gid": 1001}
+        for independent in (False, True):
+            unit = render_unit(
+                "fixture",
+                identity,
+                "/tmp",
+                ["/usr/bin/python3"],
+                independent_attempts=independent,
+            ).decode()
+            expected = "KillMode=process" if independent else "KillMode=mixed"
+            self.assertIn(expected, unit.splitlines())
+        files = self.installer.expected_files("integrate")
+        unit = files["/etc/systemd/system/hstream-workflow-controller.service"][0]
+        self.assertIn(b"KillMode=process\n", unit)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

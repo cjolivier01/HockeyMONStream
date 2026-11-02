@@ -337,6 +337,24 @@ location in the merged workspace during integration. The older
 `HockeyMON/scripts/slurm_gpu_installer.py` overwrites a single-node cluster and
 disables accounting; it is not a migration path for this installation.
 
+## Controller service lifecycle
+
+Workflow controller services deliberately use `KillMode=process`: stopping,
+restarting or upgrading the standalone controller or web dispatcher leaves local
+attempt supervisors running. A new dispatcher reconciles their exact persisted
+identities and completion receipts. Use HStream's Cancel/Stop action to cancel
+compute, and wait for confirmed cleanup before removing a deployment. Do not use
+`systemctl stop` as a substitute for workflow cancellation. Dagster services keep
+their normal cgroup shutdown behavior because they only observe native work.
+
+The opt-in `scripts/hstream_workflow_systemd_e2e.py` qualification creates one
+temporary CPU workflow and transient systemd unit. It verifies stop/start,
+restart and a killed dispatcher MainPID while the same attempt supervisor stays
+alive in its original cgroup, then checks successful completion and ownership
+release. Run it with `HSTREAM_SYSTEMD_TESTS=1 PYTHONPATH=scripts python3
+scripts/hstream_workflow_systemd_e2e.py` on a host with passwordless sudo for
+systemd. It does not change installed services.
+
 ## Configuring the Dagster address
 
 The registrar's `--url` is its GraphQL/control endpoint. The installer runs the

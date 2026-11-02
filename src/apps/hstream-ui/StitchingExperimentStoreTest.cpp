@@ -212,6 +212,95 @@ bool workflow_references(const fs::path& root) {
   return ok;
 }
 
+bool workflow_preview(const fs::path& root) {
+  auto store = open_store(root / "workflow-preview");
+  auto record = make_record(store, "session", 1);
+  bool ok = expect(SaveStitchingExperiment(store, record).ok(), "save preview candidate");
+  record.workflow_id = "completed-workflow";
+  record.workflow_directory = store.game_directory / "_hockeymon/workflows" / record.workflow_id;
+  record.workflow_active = true;
+  fs::create_directories(record.workflow_directory);
+  auto owner = hm::game_operation::LocalOwner("workflow", record.workflow_id, "workflow-preview-token");
+  owner.workflow_directory = record.workflow_directory.string();
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store.game_directory);
+    ok &= expect(lock.ok() && (*lock)->Claim(owner).ok(), "claim preview fixture workflow");
+  }
+  hm::game_operation::RegisterAuthorization(store.game_directory, owner.token);
+  auto result = record.workspace;
+  result.root = record.workflow_directory / "attempts/solve/workspace";
+  result.game_directory = result.root / result.game_id;
+  write_file(
+      result.game_directory / "_hockeymon/config.yaml",
+      read_file(record.workspace.game_directory / "_hockeymon/config.yaml"));
+  record.result_workspace = result;
+  record.result_attempt_id = "solve";
+  record.artifact_generation_id = "completed-generation";
+  record.state = "complete";
+  ok &= expect(SaveStitchingExperiment(store, record).ok(), "adopt completed workflow calibration");
+  ok &= expect(
+      !RecordStitchingExperimentPreview(store, record, 0, "preview").ok(),
+      "active workflow cannot start local preview");
+  ok &= expect(
+      !MarkStitchingExperimentProcessStopped(store, record, "").ok(),
+      "local PID proof cannot retire workflow ownership");
+  record.workflow_active = false;
+  ok &= expect(SaveStitchingExperiment(store, record).ok(), "retire completed workflow");
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store.game_directory);
+    ok &= expect(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "release completed workflow");
+  }
+  hm::game_operation::ForgetAuthorization(store.game_directory, owner.token);
+  ok &= expect(
+      !RecordStitchingExperimentPreview(store, record, 0, "preview").ok(), "preview requires durable local admission");
+  owner = hm::game_operation::LocalOwner("experiment", "local-preview", "local-preview-token");
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store.game_directory);
+    ok &= expect(lock.ok() && (*lock)->Claim(owner).ok(), "claim local preview");
+  }
+  hm::game_operation::RegisterAuthorization(store.game_directory, owner.token);
+  auto stale = record;
+  record.state = "failed";
+  record.failure = "must not alter scientific state";
+  record.artifact_generation_id = "forged";
+  record.result_attempt_id = "forged";
+  ok &= expect(
+      RecordStitchingExperimentPreview(store, record, 0, "preview").ok(),
+      "completed workflow records pending local preview intent");
+  ok &= expect(
+      record.state == "complete" && record.failure.empty() && record.artifact_generation_id == "completed-generation" &&
+          record.result_attempt_id == "solve",
+      "preview updates only process ownership and preserves canonical scientific state");
+  ok &= expect(!RecordStitchingExperimentPreview(store, stale, 42, "preview").ok(), "stale preview revision rejected");
+  ok &= expect(!RecordStitchingExperimentPreview(store, record, 42, "other").ok(), "different preview token rejected");
+  ok &= expect(RecordStitchingExperimentPreview(store, record, 42, "preview").ok(), "record started preview session");
+  ok &= expect(!RecordStitchingExperimentPreview(store, record, 43, "preview").ok(), "different preview PID rejected");
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "generic workflow mutation still requires supervisor");
+  ok &= expect(
+      !DiscardStitchingExperimentStore(store).ok() &&
+          !RemoveStitchingExperiments(
+               store, {record.workspace.game_directory.lexically_relative(store.directory).generic_string()})
+               .ok(),
+      "active local preview prevents discard and removal");
+  ok &= expect(
+      !RecordStitchingExperimentPreview(store, record, 43, "preview", true).ok(),
+      "shutdown proof must match exact local preview");
+  ok &=
+      expect(RecordStitchingExperimentPreview(store, record, 42, "preview", true).ok(), "retire exact stopped preview");
+  ok &= expect(
+      record.process_session_id == 0 && record.process_token.empty() && !record.workflow_active &&
+          record.workflow_id == "completed-workflow" && record.state == "complete" &&
+          record.result_workspace->game_directory == result.game_directory &&
+          record.artifact_generation_id == "completed-generation",
+      "preview shutdown retains immutable completed workflow result");
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store.game_directory);
+    ok &= expect(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "release local preview");
+  }
+  hm::game_operation::ForgetAuthorization(store.game_directory, owner.token);
+  return ok;
+}
+
 struct InterruptCleanup {
   std::string previous;
   bool was_set{false};
@@ -1116,6 +1205,7 @@ bool run(const fs::path& root) {
   ok &= failed_attempt_removal(root);
   ok &= completed_result_removal(root);
   ok &= workflow_references(root);
+  ok &= workflow_preview(root);
   return ok;
 }
 

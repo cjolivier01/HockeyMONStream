@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -239,6 +240,130 @@ class ControllerTest(unittest.TestCase):
         result = self.wait()
         self.assertTrue(all(not node["attempts"] for node in result["nodes"]))
 
+    def completed_attempt_before_adoption(self):
+        self.plan["stages"] = [self.stage("a")]
+        self.controller.register(self.plan, self.game)
+        self.controller.tick(self.plan["workflow_id"])
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        root = next((directory / "attempts").iterdir())
+        until = time.monotonic() + 10
+        while not (root / "completion.json").exists() and time.monotonic() < until:
+            time.sleep(0.02)
+        self.assertTrue((root / "completion.json").exists())
+        return directory, root
+
+    def cancel_without_success_file(self, missing):
+        _, root = self.completed_attempt_before_adoption()
+        (root / missing).unlink()
+        self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+        result = self.wait()
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["owner_released"])
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
+
+    def test_cancel_stopped_attempt_without_success_receipt(self):
+        self.cancel_without_success_file("native-result.json")
+
+    def test_cancel_stopped_attempt_without_success_artifact(self):
+        self.cancel_without_success_file("output.txt")
+
+    def test_cancel_cannot_release_foreign_completion(self):
+        _, root = self.completed_attempt_before_adoption()
+        completion = read_json(root / "completion.json")
+        changed = {**completion, "attempt_id": str(uuid4())}
+        write_json(root / "completion.json", changed)
+        self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+        result = self.controller.tick(self.plan["workflow_id"])
+        self.assertEqual(result["state"], "recovery")
+        self.assertFalse(
+            self.controller.status(self.plan["workflow_id"])["owner_released"]
+        )
+        self.assertEqual(len(self.controller.registry.read()["reservations"]), 1)
+        write_json(root / "completion.json", completion)
+        self.assertEqual(self.wait()["state"], "cancelled")
+
+    def test_cancel_committed_before_publication_prevents_adoption(self):
+        self.completed_attempt_before_adoption()
+        verify = self.controller._verify_result
+
+        def verified(*args):
+            result = verify(*args)
+            result["outputs"].update(
+                catalog_key="candidate", workspace={"fixture": "result"}
+            )
+            with patch.object(
+                self.controller,
+                "_cancel_owner",
+                side_effect=OSError("cancel helper timed out"),
+            ):
+                self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+            return result
+
+        with patch.object(
+            self.controller, "_verify_result", side_effect=verified
+        ), patch.object(
+            self.controller, "_native", wraps=self.controller._native
+        ) as native:
+            result = self.controller.tick(self.plan["workflow_id"])
+        self.assertFalse(
+            any(
+                call.args[1] in {"adopt", "adopt-selection"}
+                for call in native.call_args_list
+            )
+        )
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(
+            self.controller.status(self.plan["workflow_id"])["owner_released"]
+        )
+
+    def test_inflight_adoption_publishes_before_later_cancel(self):
+        directory, _ = self.completed_attempt_before_adoption()
+        verify, native = self.controller._verify_result, self.controller._native
+        attempted = threading.Event()
+        outcomes, failures, threads = [], [], []
+
+        def verified(*args):
+            result = verify(*args)
+            result["outputs"].update(
+                catalog_key="candidate", workspace={"fixture": "result"}
+            )
+            return result
+
+        def cancel():
+            attempted.set()
+            try:
+                outcomes.append(
+                    self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+                )
+            except Exception as exc:
+                failures.append(exc)
+
+        def adopting(directory, action, payload, **kwargs):
+            if action == "adopt":
+                thread = threading.Thread(target=cancel)
+                threads.append(thread)
+                thread.start()
+                self.assertTrue(attempted.wait(2))
+                thread.join(0.1)
+                self.assertTrue(thread.is_alive())
+                self.assertFalse((directory / "cancel-intent.json").exists())
+            return native(directory, action, payload, **kwargs)
+
+        try:
+            with patch.object(
+                self.controller, "_verify_result", side_effect=verified
+            ), patch.object(self.controller, "_native", side_effect=adopting):
+                result = self.controller.tick(self.plan["workflow_id"])
+        finally:
+            for thread in threads:
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+        self.assertFalse(failures)
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(result["state"], "succeeded")
+        self.assertFalse(read_json(directory / "state.json")["cancel_requested"])
+        self.assertFalse((directory / "cancel-intent.json").exists())
+
     def test_old_epoch_cannot_cancel_or_retry_a_new_attempt(self):
         self.plan["stages"] = [self.stage("a", fail=True)]
         self.controller.register(self.plan, self.game)
@@ -367,6 +492,7 @@ class ControllerTest(unittest.TestCase):
             write_json(
                 root / "completion.json",
                 {
+                    "schema": 1,
                     "attempt_id": root.name,
                     "request_digest": digest(request),
                     "profile_digest": digest(profile),

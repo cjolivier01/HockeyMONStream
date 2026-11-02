@@ -87,13 +87,15 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWork
 // and malformed plans are errors; this query does not require source media.
 absl::StatusOr<std::string> ReusableStitchingExperimentSelectionFingerprint(
     const std::filesystem::path& game_directory,
-    const StitchingExperimentSettings& settings);
+    const StitchingExperimentSettings& settings,
+    bool advisory_read = false);
 
 // Describes the current main calibration for read-only inspection/preview.
 // An uncalibrated game with no frozen plan returns no row.
 absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperimentWorkspace(
     const std::filesystem::path& game_directory,
-    const StitchingExperimentSettings& displayed_settings);
+    const StitchingExperimentSettings& displayed_settings,
+    bool advisory_read = false);
 
 // After the runner and its helpers stop, validates the generation and durably
 // marks the private calibration complete before offering preview or promotion.

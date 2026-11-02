@@ -89,6 +89,17 @@ absl::Status SaveStitchingExperiment(
     bool publish_selection = false,
     const std::string& authoritative_main_fingerprint = {});
 
+// Preview ownership is separate from immutable distributed adoption. Only the
+// exact local experiment supervisor may change these two process fields on an
+// inactive, completed workflow row. Stopped requires exact shutdown proof from
+// that supervisor; scientific state, result references and history are retained.
+absl::Status RecordStitchingExperimentPreview(
+    const StitchingExperimentStore& store,
+    StoredStitchingExperiment& experiment,
+    int64_t process_session_id,
+    const std::string& process_token,
+    bool stopped = false);
+
 // The caller must prove this exact persisted process session/token has stopped.
 // Reconciles only process intent and failure status through revision CAS; retains
 // selections/reservations without reading possibly corrupt workspace config.

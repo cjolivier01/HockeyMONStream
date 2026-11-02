@@ -361,7 +361,11 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
 
 // Loads game/_hockeymon/config.yaml while holding the config/rink transaction
 // lock. Other locations are rejected; a missing file is an empty optional node.
-absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const std::filesystem::path& config_path);
+// Advisory readers never recover or rewrite calibration state and may inspect a
+// workflow-owned game. A pending transaction returns Unavailable.
+absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(
+    const std::filesystem::path& config_path,
+    bool advisory_read = false);
 
 // Requires the supplied document to contain the expected pending stitching
 // invalidation. Callers use this while holding GameConfigTransactionLock so
