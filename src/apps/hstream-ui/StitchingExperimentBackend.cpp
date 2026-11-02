@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/stitching/CalibrationReferenceFrames.h"
 #include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 
 #include "hstream/src/libs/common/BaselineConfig.h"
@@ -362,7 +363,11 @@ absl::StatusOr<std::string> reusable_selection_fingerprint(
   if (parsed.ec != std::errc() || parsed.ptr != anchor.data() + anchor.size())
     return absl::InvalidArgumentError("The saved player frames have an invalid decode anchor");
   try {
-    if (anchor_ns != hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time))
+    const auto wrapped = selection["context"]["scan_reference_ns"];
+    const bool same_reference = wrapped
+        ? wrapped.as<int64_t>() == hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time)
+        : static_cast<int64_t>(anchor_ns) == hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
+    if (!same_reference)
       return absl::FailedPreconditionError(
           "The saved player frames fix the reference time. Restore that time or explicitly change the frame count; "
           "the saved selection was preserved.");
@@ -935,7 +940,7 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
         ? calibration["frame_count"].as<int>(settings.frame_count)
         : static_cast<int>(config["stitching"]["calibration_frame_selection"]["selected"].size());
     settings.stitch_frame_time = config["stitching"]["stitch_frame_time"].as<std::string>(settings.stitch_frame_time);
-    if (!fingerprint.empty()) {
+    if (!fingerprint.empty() && !config["stitching"]["calibration_frame_selection"]["context"]["scan_clock"]) {
       const uint64_t anchor =
           config["stitching"]["calibration_frame_selection"]["context"]["decode_anchor_ns"].as<uint64_t>();
       if (anchor >= 24ULL * 3600ULL * 1000000000ULL || anchor % 1000000ULL != 0)
@@ -1462,8 +1467,26 @@ absl::StatusOr<StitchingExperimentPlayerSelection> PreparePlayerSelectedStitchin
     return absl::InvalidArgumentError("Player scan decode anchor is out of range");
   }
   try {
-    if (anchor_ns != hm::stitch_frame_time_to_nanoseconds(candidate.settings.stitch_frame_time))
+    const auto reference = hm::stitch_frame_time_to_nanoseconds(candidate.settings.stitch_frame_time);
+    if (const auto clock = plan.context.find("scan_clock"); clock != plan.context.end()) {
+      if (clock->second != "wrapped-elapsed-v1" || !candidate.settings.player_scan_playback_start)
+        return absl::InvalidArgumentError("Wrapped scan is missing its frozen Playback start");
+      const auto config = YAML::LoadFile((baseline.game_directory / "_hockeymon/config.yaml").string());
+      hm::stitching::CalibrationRecordingTimeline timeline;
+      HM_ASSIGN_OR_RETURN(timeline, hm::stitching::ReadCalibrationRecordingTimeline(baseline.game_directory, config));
+      const auto playback = hm::stitch_frame_time_to_nanoseconds(*candidate.settings.player_scan_playback_start);
+      hm::stitching::PlayerFrameScanWindow window;
+      HM_ASSIGN_OR_RETURN(
+          window,
+          hm::stitching::PlanPlayerFrameScanWindow(
+              reference, timeline.duration_ns, timeline.frame_interval_ns, playback, plan.settings.duration_ns));
+      if (anchor_ns != window.anchor_ns || plan.context.at("scan_reference_ns") != std::to_string(reference) ||
+          plan.context.at("scan_recording_duration_ns") != std::to_string(timeline.duration_ns) ||
+          plan.context.at("scan_playback_start_ns") != std::to_string(playback))
+        return absl::AbortedError("Player scan used a different reference, recording or Playback start");
+    } else if (reference < 0 || anchor_ns != static_cast<uint64_t>(reference)) {
       return absl::AbortedError("Player scan used a different anchor from its candidate");
+    }
   } catch (const std::exception&) {
     return absl::InvalidArgumentError("The candidate has an invalid calibration anchor");
   }

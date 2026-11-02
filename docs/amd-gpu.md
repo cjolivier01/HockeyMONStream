@@ -1390,3 +1390,9 @@ EGL/HIP interoperability qualification is implied.
 Signed end-relative calibration references are accepted when validating saved Program calibration identities. Fresh automatic calibration, including circular frame extraction, retains the existing AMD calibration limitation; this does not add a new AMD calibration graph.
 The shared CPU extraction, signed-reference planning, Defaults and experiment-store regressions pass on `ripper`.
 The full `hstream-web-job` executable still depends on `@local_cuda//:cuda`, so its native experiment-create regression is qualified on NVIDIA only.
+
+The shared watermark command validator accepts source-coordinate glyph heights on
+large stitched canvases (including 21636×11479 scaled to 1280×680). The bounded
+render workload remains unchanged. Wrapped player-scan planning and exact still
+replay are shared; the existing AMD fresh-calibration limitation above still
+applies. NVIDIA FakeSink lateness uses the required signed 64-bit property type.

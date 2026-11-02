@@ -990,6 +990,11 @@ void exercise_player_queue(const QString& game, const QString& root) {
   require(
       players->isChecked() && duration->isEnabled() && duration->value() == 60 && duration->maximum() == 300,
       "Player selection must default on with bounded search controls");
+  widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("-00:00:01");
+  require(
+      players->isEnabled() && players->text() == "Prefer player-rich frames" && duration->isEnabled(),
+      "An unconfigured end-relative experiment must retain player selection controls");
+  widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->setText("00:00:00");
   players->setChecked(false);
   require(!duration->isEnabled(), "Disabling player selection must disable its search controls");
   add_options(dialog);
@@ -2909,7 +2914,8 @@ void exercise(
       1,
       anchor,
       &main_window,
-      [&] { selected = true; });
+      [&] { selected = true; },
+      qEnvironmentVariable("HSTREAM_TEST_PLAYBACK_START", "00:00:00"));
   dialog.setWindowModality(Qt::WindowModal);
   auto* log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
   struct SaveLog {
@@ -3127,7 +3133,7 @@ void exercise(
          "--enable-sinks=FAKE",
          "-c",
          repo + "/configs/ds_hockey_app_config.yaml",
-         "--start-time=" + anchor,
+         "--start-time=" + qEnvironmentVariable("HSTREAM_TEST_PLAYBACK_START", "00:00:00"),
          "--stitch-frame-time=" + anchor,
          "--options=pipeline.hmaudio.enable=0,pipeline.hmplaycropper.show-scoreboard=0",
          "-t=5"});

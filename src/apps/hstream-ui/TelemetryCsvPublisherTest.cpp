@@ -94,6 +94,8 @@ bool archive_generation_test(const QString& root) {
         "game-stitched_output-with-audio-4.mp4"})
     ok &= write_file(QDir(game).filePath(name), "old video");
   ok &= expect(next_archive_generation(game) == 5, "tracking and stitched archives must share a high watermark");
+  ok &= write_file(QDir(game).filePath("game-program_8k_output-with-audio-7.mp4"), "new Program video");
+  ok &= expect(next_archive_generation(game) == 8, "8K Program archives must reserve generations alongside legacy files");
   ok &= write_file(QDir(game).filePath("camera-12.csv"), "old CSV");
   ok &= expect(next_archive_generation(game) == 13, "orphan companion must reserve its generation");
   ok &= QFile::link(QDir(game).filePath("missing"), QDir(game).filePath("rink_mask_0-17.png"));
@@ -311,6 +313,10 @@ int main(int argc, char** argv) {
       hm::ui_internal::finalized_archive_csv_suffix(
           QDir(game).filePath("sabercats-16a-tracking_output-with-audio.mp4"), "sabercats-16a") == "",
       "legacy unnumbered video names remain readable");
+  valid &= expect(
+      hm::ui_internal::finalized_archive_csv_suffix(
+          QDir(game).filePath("sabercats-16a-program_8k_output-with-audio-8.mp4"), "sabercats-16a") == "-8",
+      "8K Program archives must retain their telemetry generation");
   for (const QString& suffix : {QString(""), QString("-0"), QString("-000")}) {
     valid &= expect(
         !hm::ui_internal::telemetry_csv_destination_paths_available(game, suffix),

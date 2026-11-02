@@ -299,7 +299,7 @@ std::string basename(const std::string& game, const std::string& kind, uint64_t 
   const std::string suffix = "-" + std::to_string(generation);
   if (kind == "telemetry")
     return hm::recording::TelemetryDatabaseStem(game) + suffix + ".db";
-  const std::string route = kind == "program" ? "tracking" : kind == "program-4k" ? "program_4k" : "stitched";
+  const std::string route = kind == "program" ? "program_8k" : kind == "program-4k" ? "program_4k" : "stitched";
   return game + "-" + route + "_output-with-audio" + suffix + ".mp4";
 }
 uint64_t next_generation(const fs::path& game) {

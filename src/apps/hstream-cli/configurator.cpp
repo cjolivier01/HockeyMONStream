@@ -132,7 +132,7 @@ bool is_bundled_detector_config(const std::vector<std::string>& prefixes, const 
 
 constexpr const char* kEnableFlagField = "enable";
 
-constexpr const char* kDefaultOutputVideoName = "tracking_output.mkv";
+constexpr const char* kDefaultOutputVideoName = "program_8k_output.mkv";
 constexpr const char* kLegacyDefaultOutputName = "out.mkv";
 constexpr size_t kDefaultStitchingCalibrationFrameCount = 4;
 bool is_enabled(YAML::Node n);
@@ -7146,7 +7146,8 @@ absl::Status Configurator::configure_stitching_calibration_archive_name(YAML::No
       const fs::path configured_path(configured);
       if (configured.empty() ||
           (!configured_path.has_parent_path() &&
-           (configured == kDefaultOutputVideoName || configured == kLegacyDefaultOutputName))) {
+           (configured == kDefaultOutputVideoName || configured == "tracking_output.mkv" ||
+            configured == kLegacyDefaultOutputName))) {
         sink["output-file"] = "stitched_output.mkv";
       }
     }

@@ -45,7 +45,7 @@ int main() {
 
   ok &= expect(
       write_file(path_for("gse-16a-tracking_output-with-audio-1.mp4"), "a") &&
-          write_file(path_for("gse-16a-tracking_output-with-audio-2.mp4"), "a") &&
+          write_file(path_for("gse-16a-program_8k_output-with-audio-2.mp4"), "a") &&
           write_file(path_for("gse-16a-program_4k_output-with-audio-1.mp4"), "a") &&
           write_file(path_for("gse-16a-stitched_output.mp4"), "a") &&
           write_file(path_for("gse-16a-tracking_output-with-audio-9.mp4"), "a") &&
@@ -72,7 +72,7 @@ int main() {
         "an archive without a generation suffix must read as generation zero");
     ok &= expect(
         archives.at(0).game_id == "gse-16a" &&
-            archives.at(0).path == path_for("gse-16a-tracking_output-with-audio-2.mp4"),
+            archives.at(0).path == path_for("gse-16a-program_8k_output-with-audio-2.mp4"),
         "discovery must report the full path and the requested game id");
     ok &= expect(
         !archives.at(0).start_time_known && archives.at(0).start_time_ms == 0 && archives.at(0).duration_ms == -1,

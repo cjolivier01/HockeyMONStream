@@ -103,21 +103,29 @@ absl::StatusOr<stitching::PlayerFramePairIdentity> pair_identity(const hm::Stitc
 }
 } // namespace
 
-PlayerFrameScan::PlayerFrameScan(AppCtx* app, fs::path game_directory, stitching::PlayerFrameSelectionSettings settings)
+PlayerFrameScan::PlayerFrameScan(
+    AppCtx* app,
+    fs::path game_directory,
+    stitching::PlayerFrameSelectionSettings settings,
+    std::shared_ptr<PlayerFrameScanSession> session)
     : app_(app),
       game_directory_(std::move(game_directory)),
       settings_(settings),
-      timing_(settings.duration_ns, settings.interval_ns) {}
+      session_(std::move(session)),
+      timing_(session_ ? session_->pass_duration() : settings.duration_ns, settings.interval_ns) {}
 
 absl::StatusOr<std::unique_ptr<PlayerFrameScan>> PlayerFrameScan::Create(
     AppCtx* app,
     const fs::path& game_directory,
     const stitching::PlayerFrameSelectionSettings& settings,
-    uint64_t decode_anchor_ns) {
+    uint64_t decode_anchor_ns,
+    std::shared_ptr<PlayerFrameScanSession> session) {
   HM_RETURN_IF_ERROR(stitching::ValidatePlayerFrameSelectionSettings(settings));
   if (!app)
     return error("missing pipeline");
-  auto result = std::unique_ptr<PlayerFrameScan>(new PlayerFrameScan(app, game_directory, settings));
+  auto result = std::unique_ptr<PlayerFrameScan>(new PlayerFrameScan(app, game_directory, settings, session));
+  if (session)
+    decode_anchor_ns = session->window.anchor_ns;
   result->decode_anchor_ns_ = decode_anchor_ns;
   result->rotation_degrees_ = app->config.hmsticher_config.post_stitch_rotate_degrees;
   HM_ASSIGN_OR_RETURN(result->initial_generation_, generation(game_directory));
@@ -132,6 +140,12 @@ absl::StatusOr<std::unique_ptr<PlayerFrameScan>> PlayerFrameScan::Create(
   HM_ASSIGN_OR_RETURN(
       result->context_["source_context"], stitching::player_frame_source_context(config, decode_anchor_ns));
   result->context_["decode_anchor_ns"] = std::to_string(decode_anchor_ns);
+  if (session) {
+    result->context_["scan_clock"] = "wrapped-elapsed-v1";
+    result->context_["scan_reference_ns"] = std::to_string(session->window.reference_ns);
+    result->context_["scan_recording_duration_ns"] = std::to_string(session->window.recording_duration_ns);
+    result->context_["scan_playback_start_ns"] = std::to_string(session->window.playback_start_ns);
+  }
   result->context_["baseline_generation"] = result->initial_generation_;
   result->context_["output_generation"] = result->expected_output_generation_;
   result->context_["detector_identity"] = result->detector_identity_;
@@ -221,7 +235,14 @@ absl::StatusOr<bool> PlayerFrameScan::GateFrame(GstBuffer* buffer) {
   const auto pair = hm::stitching_frame_pair(frame);
   if (!pair || !GST_CLOCK_TIME_IS_VALID(pair->timeline_pts))
     return error("stitcher did not preserve the synchronized raw camera pair");
-  return timing_.Select(pair->timeline_pts);
+  if (!pair->left.source_uri || !pair->right.source_uri || !GST_CLOCK_TIME_IS_VALID(pair->left.source_pts) ||
+      !GST_CLOCK_TIME_IS_VALID(pair->right.source_pts))
+    return error("scan gate lost the physical source positions");
+  const PlayerFrameScanPairPosition position{
+      {{pair->left.source_uri, pair->left.source_pts}, {pair->right.source_uri, pair->right.source_pts}}};
+  const bool boundary = session_ && session_->second_pass && session_->physical_anchor &&
+      PlayerFrameScanReachedAnchor(position, *session_->physical_anchor);
+  return timing_.Select(pair->timeline_pts, boundary);
 }
 
 absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
@@ -237,10 +258,6 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
   const auto* mask = hm::UserApplicationPayload::get_payload<hm::fieldmask::FieldMaskPayload>(frame);
   if (output->generation() != expected_output_generation_ || output->hugin_generation() != initial_generation_)
     return error("baseline geometry changed during the scan");
-  if (elapsed_ns >= settings_.duration_ns)
-    return timing_.Observe(pair->timeline_pts);
-  if (observations_.size() >= settings_.maximum_observations)
-    return error("observation limit exceeded");
   if (runtime_detector_identity_.empty()) {
     // Engine construction during preroll is expected. Bind the actual loaded
     // engine only after inference, then require these same bytes at shutdown.
@@ -268,6 +285,12 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
   } else if (context_["rink_mask_revision"] != mask->revision()) {
     return error("rink-mask authority changed during the scan");
   }
+  // Even an immediate physical boundary must validate the loaded detector and
+  // mask before the second pass can finish with no new samples.
+  if (timing_.AtBoundary(pair->timeline_pts))
+    return timing_.Observe(pair->timeline_pts);
+  if (observations_.size() + (session_ ? session_->observations.size() : 0) >= settings_.maximum_observations)
+    return error("observation limit exceeded");
   if (!overlap_) {
     HM_ASSIGN_OR_RETURN(
         overlap_,
@@ -284,6 +307,12 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
     return error("analysis geometry differs from overlap maps");
   stitching::PlayerFramePairIdentity identity;
   HM_ASSIGN_OR_RETURN(identity, pair_identity(*pair));
+  if (session_) {
+    identity.timeline_pts_ns = session_->elapsed_before_pass() + elapsed_ns;
+    if (!session_->second_pass && !session_->physical_anchor)
+      session_->physical_anchor = PlayerFrameScanPairPosition{
+          {{pair->left.source_uri, pair->left.source_pts}, {pair->right.source_uri, pair->right.source_pts}}};
+  }
   for (const auto& camera : identity.cameras) {
     if (std::none_of(
             sources_.begin(), sources_.end(), [&](const auto& source) { return source.path == camera.path; })) {
@@ -313,7 +342,7 @@ absl::Status PlayerFrameScan::ObserveFrame(GstBuffer* buffer) {
   return timing_.Observe(pair->timeline_pts);
 }
 
-absl::Status PlayerFrameScan::Finish(const fs::path& report_path) {
+absl::Status PlayerFrameScan::Finish(const fs::path& report_path, bool continue_after_eos) {
   std::lock_guard<std::mutex> lock(mutex_);
   HM_RETURN_IF_ERROR(failure_);
   std::string current;
@@ -349,6 +378,36 @@ absl::Status PlayerFrameScan::Finish(const fs::path& report_path) {
     if (current_binding.path != source.path || current_binding.size != source.size ||
         current_binding.modification_time_ns != source.modification_time_ns)
       return error("source file changed before scan completion");
+  }
+  if (session_) {
+    if (!session_->second_pass && observations_.empty())
+      return error("the calibration reference did not yield a synchronized inferred anchor");
+    if (!session_->context.empty() && session_->context != context_)
+      return error("source, baseline, mask or detector identity changed across the scan wrap");
+    session_->context = context_;
+    for (const auto& source : sources_) {
+      const auto found = std::find_if(session_->sources.begin(), session_->sources.end(), [&](const auto& value) {
+        return value.path == source.path;
+      });
+      if (found == session_->sources.end())
+        session_->sources.push_back(source);
+      else if (found->size != source.size || found->modification_time_ns != source.modification_time_ns)
+        return error("camera recording changed across the scan wrap");
+    }
+    session_->observations.insert(
+        session_->observations.end(),
+        std::make_move_iterator(observations_.begin()),
+        std::make_move_iterator(observations_.end()));
+    if (continue_after_eos)
+      return absl::OkStatus();
+    observations_ = std::move(session_->observations);
+    sources_ = session_->sources;
+    for (const auto& source : sources_) {
+      stitching::PlayerFrameSourceBinding checked;
+      HM_ASSIGN_OR_RETURN(checked, stitching::BindPlayerFrameSource(source.path));
+      if (checked.size != source.size || checked.modification_time_ns != source.modification_time_ns)
+        return error("camera recording changed before wrapped selection publication");
+    }
   }
   stitching::PlayerFrameSelectionReport report;
   if (observations_.empty()) {

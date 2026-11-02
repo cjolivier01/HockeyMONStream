@@ -48,7 +48,7 @@ Native checkpoints remain periodic (normally every 120 frames, plus initializati
 
 ## Consumers
 
-Highlights defaults to the database matching the selected archive's numeric suffix: `my-game-tracking_output-with-audio-2.mp4` uses `my-game_telemetry-2.db`. It accepts older database names for that same generation when the new name is absent. Choose a database explicitly when the archive uses a custom name; run/archive binding remains explicit.
+Highlights defaults to the database matching the selected archive's numeric suffix: `my-game-program_8k_output-with-audio-2.mp4` uses `my-game_telemetry-2.db`. It accepts older database names for that same generation when the new name is absent. Choose a database explicitly when the archive uses a custom name; run/archive binding remains explicit.
 
 Camera experiments read the database directly, select a run, query the checkpoint before the requested in point, and replay exact native inputs to reconstruct full state. Trials clone that state. Preview hardware-decodes original camera chapters and stitches on the GPU, or uses an uncropped proportionally scaled archive. Preserve the historical source configuration and stitching maps; media/time binding is still explicit. A 16K-wide canvas is never required to be encoded for this workflow.
 

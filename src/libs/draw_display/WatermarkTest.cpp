@@ -2,6 +2,7 @@
 #include "hstream/src/libs/draw_display/AnalyticsOverlayAtlas.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -68,6 +69,22 @@ int main() {
     const auto& command = commands.data()[index];
     if (command.x0 < 0 || command.y0 < 0 || command.x1 > 1600 || command.y1 > 900) {
       std::cerr << "Scaled preview watermark escaped the frame\n";
+      return 1;
+    }
+  }
+  // caha-golden-bears: a small preview of this panorama needs glyphs larger
+  // than 512 source units, while still drawing only 48 output pixels tall.
+  CommandList panorama_commands(64, 64);
+  const float preview_scale = std::min(21636.0F / 1280, 11479.0F / 680);
+  if (!hm::draw_display::AppendWatermark(&panorama_commands, 21636, 11479, preview_scale) ||
+      panorama_commands.size() != 17 || panorama_commands.rejected()) {
+    std::cerr << "Large panorama preview watermark was rejected\n";
+    return 1;
+  }
+  for (size_t index = 0; index < panorama_commands.size(); ++index) {
+    const auto& glyph = panorama_commands.data()[index];
+    if (std::abs((glyph.y1 - glyph.y0) / preview_scale - 48.0F) > .01F) {
+      std::cerr << "Panorama watermark changed its output-pixel size\n";
       return 1;
     }
   }

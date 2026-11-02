@@ -122,7 +122,7 @@ six-file publication behavior.
 
 The game files are independent copies, not links back to working storage. Their
 suffix is taken from the finalized
-`<game-id>-tracking_output-with-audio-N.mp4` (or the stitched archive when
+`<game-id>-program_8k_output-with-audio-N.mp4` (or the stitched archive when
 only that archive is saved), even when the working telemetry generation used
 a different suffix. New game-directory archives start at `-1`. Their number is
 one greater than the highest existing tracking video, stitched video, CSV,

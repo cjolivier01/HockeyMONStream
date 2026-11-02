@@ -5,6 +5,8 @@
 #include <cmath>
 #include <iostream>
 #include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "yaml-cpp/yaml.h"
 
 int main() {
@@ -90,6 +92,56 @@ int main() {
   expect(
       cancelled.ok() && absl::IsCancelled(cancelled->front().left(output)) && !std::filesystem::exists(output),
       "Cancellation must prevent extraction and publication");
+  config["stitching"]["stitch_frame_time"] = "-00:00:01";
+  const auto right_video = game / "right-camera.mp4";
+  std::filesystem::copy_file(video, right_video);
+  config["game"]["videos"]["right"][0] = "right-camera.mp4";
+  PlayerFrameSelectionSettings selected_settings;
+  selected_settings.frame_count = 2;
+  PlayerFrameSelectionContext context{
+      {"source_context", *player_frame_source_context(config, 2000000000ULL)},
+      {"baseline_generation", "baseline"},
+      {"output_generation", "output"},
+      {"detector_identity", "detector"},
+      {"rink_mask_sha256", "mask"},
+      {"rink_mask_revision", "revision"},
+      {"fieldmask_settings", "settings"},
+      {"output_rotation_degrees", "0"},
+      {"decode_anchor_ns", "2000000000"},
+      {"scan_clock", "wrapped-elapsed-v1"},
+      {"scan_reference_ns", "-1000000000"},
+      {"scan_recording_duration_ns", "3000000000"},
+      {"scan_playback_start_ns", "520000000"}};
+  std::vector<PlayerFrameObservation> observations(2);
+  for (size_t index = 0; index < observations.size(); ++index) {
+    auto& sample = observations[index];
+    const uint64_t pts = index ? 520000000ULL : 2000000000ULL;
+    sample.pair.cameras = {{{video.string(), pts, 0, index}, {right_video.string(), pts + 1000000000ULL, 1, index}}};
+    sample.pair.timeline_pts_ns = index ? 1000000000ULL : 0;
+    sample.eligible_people = 1;
+    sample.quality = 1;
+    sample.coverage = {static_cast<uint16_t>(index)};
+    sample.size_band_counts = {1, 0, 0};
+  }
+  auto selected = SelectPlayerFrames(
+      selected_settings, observations, {*BindPlayerFrameSource(video), *BindPlayerFrameSource(right_video)}, context);
+  expect(selected.ok() && selected->plan.has_value(), "Select physical pairs on both sides of the wrap");
+  if (!selected.ok() || !selected->plan)
+    return 1;
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(*selected->plan);
+  auto exact = EndRelativeCalibrationInputs(game, config, 2, {});
+  expect(
+      exact.ok() && exact->at(0).left(game / "selected-tail.png").ok() &&
+          exact->at(1).left(game / "selected-wrap.png").ok() && std::abs(exact->at(1).source(0).seconds - .52) < 1e-9,
+      "Wrapped selection must extract its exact chosen PTS, not ordinary circular samples");
+  selected->plan->selected.front().pair.cameras[0].source_pts_ns += 1000000;
+  selected->plan->fingerprint = *PlayerFrameSelectionFingerprint(*selected->plan);
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(*selected->plan);
+  auto wrong = EndRelativeCalibrationInputs(game, config, 2, {});
+  expect(
+      wrong.ok() && !wrong->front().left(game / "wrong-selected.png").ok(),
+      "An unavailable exact selected PTS must not silently choose the next frame");
+  config["stitching"].remove("calibration_frame_selection");
   const auto shifted = game / "shifted.mp4";
   expect(
       hm::run_command(

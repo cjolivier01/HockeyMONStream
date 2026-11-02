@@ -435,6 +435,11 @@ int main(int argc, char** argv) {
         pub::Finalize(resume == "manifest" ? manifest : receipt);
       require(!fs::exists(manifest.parent_path()) && !fs::exists(changed_root), "only original workspace is cleaned");
       require(count(game, ".mp4") == 3 && count(game, ".db") == 1, "prepublication retry publishes once");
+      require(
+          fs::exists(game / "game-program_8k_output-with-audio-1.mp4") &&
+              fs::exists(game / "game-program_4k_output-with-audio-1.mp4") &&
+              fs::exists(game / "game_telemetry-1.db"),
+          "Program archives must publish their resolution names with the shared telemetry generation");
       require(pub::RunJob(game, changed_root, id, {"/bin/false"}) == 0, "completed binding remains idempotent");
     }
     {
