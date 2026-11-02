@@ -422,6 +422,7 @@ void exercise() {
   config["stitching"]["run_autooptimizer"] = choices.run_autooptimizer;
   hm::stitching::write_stitch_camera_selection(config, choices.camera);
   hm::stitching::write_stitch_projection_framing(config, choices.projection_framing);
+  hm::stitching::write_control_point_filtering(config, choices.control_point_filtering);
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "preview-generation";
   require(
       hm::stitching::reserve_stitching_backend_generation_in_config(config, "preview-generation", choices).ok(),

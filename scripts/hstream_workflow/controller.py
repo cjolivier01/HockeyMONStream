@@ -62,7 +62,15 @@ class Controller:
             "defaults": copy.deepcopy(self.defaults),
         }
 
-    def _native(self, directory, action, payload, *, runtime_checked=False):
+    def _native(
+        self,
+        directory,
+        action,
+        payload,
+        *,
+        runtime_checked=False,
+        control_descriptor=None
+    ):
         helper = self.config["profiles"][self.config["admission_profile"]]
         if not runtime_checked:
             preflight_runtime(helper)
@@ -79,6 +87,9 @@ class Controller:
                 ],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
+                # Keep the publication/admission barrier alive in the native
+                # helper if the controller dies before its response arrives.
+                pass_fds=() if control_descriptor is None else (control_descriptor,),
                 timeout=self.defaults["command_timeout_seconds"],
                 check=False,
             )
@@ -202,7 +213,10 @@ class Controller:
             self._ensure_owner(directory, plan)
         return self.status(workflow_id)
 
-    def _ensure_owner(self, directory, plan):
+    def _ensure_owner(self, directory, plan, control_descriptor=None):
+        if control_descriptor is None:
+            with locked(directory / "control-intent.lock") as descriptor:
+                return self._ensure_owner(directory, plan, descriptor)
         owner = read_json(directory / "owner.json")
         if owner["released"]:
             return owner
@@ -213,9 +227,30 @@ class Controller:
             "token": owner["token"],
             "workflow_directory": str(directory),
         }
+        state = read_json(directory / "state.json")
+        cancelled = state["cancel_requested"] or self._cancel_pending(directory, state)
+        if not owner["acquired"] and cancelled:
+            # Acquired=False also covers a committed claim with a lost response.
+            # Every acquire helper holds this same inherited lock, so none can
+            # still claim ownership after this inspection and cancellation.
+            current = self._native(
+                directory,
+                "inspect",
+                {"game": owner["game"]},
+                control_descriptor=control_descriptor,
+            ).get("owner")
+            if current is None or current.get("token") != owner["token"]:
+                self._save(directory, plan, graph.cancel(plan, state))
+                owner["released"] = True
+                write_json(directory / "owner.json", owner)
+                return owner
+            owner.update(acquired=True, record=current)
+            write_json(directory / "owner.json", owner)
         if not owner["acquired"]:
             try:
-                response = self._native(directory, "acquire", payload)
+                response = self._native(
+                    directory, "acquire", payload, control_descriptor=control_descriptor
+                )
             except NativeControlError as exc:
                 if exc.code == "conflict":
                     # Definite rejection must never become a deferred submission
@@ -233,7 +268,7 @@ class Controller:
             owner["record"] = response["owner"]
             owner["acquired"] = True
             write_json(directory / "owner.json", owner)
-        if not owner["bound"]:
+        if not owner["bound"] and not cancelled:
             keys = sorted(
                 {
                     stage["inputs"]["catalog_key"]
@@ -245,6 +280,7 @@ class Controller:
                 directory,
                 "bind",
                 {**payload, "workflow_id": plan["workflow_id"], "catalog_keys": keys},
+                control_descriptor=control_descriptor,
             )
             owner["bound"] = True
             write_json(directory / "owner.json", owner)
@@ -412,22 +448,25 @@ class Controller:
         directory, _ = self.registry.lookup(workflow_id)
         with locked(directory / "controller.lock"), locked(
             directory / "control-intent.lock"
-        ):
+        ) as descriptor:
             plan = read_json(directory / "plan.json")
             previous = read_json(directory / "state.json")
             require(
                 expected_epoch is None or expected_epoch == previous["epoch"],
                 "Stale workflow epoch",
             )
-            state = graph.retry(plan, previous, stages)
             owner = read_json(directory / "owner.json")
-            if owner["released"]:
-                owner.update(
-                    acquired=False, released=False, bound=False, token=str(uuid4())
-                )
-                write_json(directory / "owner.json", owner)
-            self._ensure_owner(directory, plan)
+            require(
+                owner["released"],
+                "Wait for confirmed game ownership release before retrying",
+            )
+            state = graph.retry(plan, previous, stages)
+            owner.update(
+                acquired=False, released=False, bound=False, token=str(uuid4())
+            )
+            write_json(directory / "owner.json", owner)
             self._save(directory, plan, state)
+            self._ensure_owner(directory, plan, descriptor)
         return self.status(workflow_id)
 
     def _request_cancellations(self, directory, state, scheduler=True):
@@ -653,6 +692,52 @@ class Controller:
         )
         return result
 
+    def _committed_adoption(self, directory, root, request, completion, owner):
+        path = root / "adoption-intent.json"
+        if not path.exists():
+            return None
+        intent = read_json(path)
+        require(
+            intent.get("schema") == 1
+            and intent.get("request_digest") == digest(request)
+            and intent.get("completion_digest") == digest(completion)
+            and intent.get("action") in {"adopt", "adopt-selection"},
+            "Adoption intent belongs to another verified completion",
+        )
+        payload, details = intent.get("payload"), intent.get("details")
+        require(
+            isinstance(payload, dict)
+            and all(
+                payload.get(key) == value
+                for key, value in {
+                    "game": owner["game"],
+                    "token": owner["token"],
+                    "workflow_id": request["workflow_id"],
+                    "workflow_directory": str(directory),
+                    "attempt_id": request["attempt_id"],
+                }.items()
+            )
+            and isinstance(details, dict)
+            and details.get("verified") is True
+            and details.get("stopped") is True
+            and details.get("cleanup_complete") is True
+            and isinstance(details.get("outputs"), dict)
+            and details["outputs"].get("workspace") == payload.get("workspace")
+            and details["outputs"].get("catalog_key") == payload.get("catalog_key"),
+            "Adoption intent lost its exact verified output binding",
+        )
+        with locked(directory / "control-intent.lock") as descriptor:
+            response = self._native(
+                directory,
+                "adoption-status",
+                {**payload, "adoption": intent["action"]},
+                control_descriptor=descriptor,
+            )
+            require(
+                type(response.get("adopted")) is bool, "Invalid native adoption status"
+            )
+            return copy.deepcopy(details) if response["adopted"] else None
+
     def _reconcile_attempt(self, directory, plan, state, stage, owner):
         node = state["nodes"][stage["id"]]
         attempt = node["attempts"][-1]
@@ -679,6 +764,25 @@ class Controller:
                 if attempt["backend"] == "slurm"
                 else local.lookup(root)
             )
+            if attempt["backend"] == "local" and observation["state"] == "REJECTED":
+                require(
+                    observation.get("attempt_id") == attempt["id"]
+                    and observation.get("stopped") is True
+                    and observation.get("cleanup_complete") is True,
+                    "Local launch rejection lacks exact shutdown proof",
+                )
+                state = self._apply_cancel(directory, plan, state)
+                state = graph.update_attempt(
+                    plan, state, stage["id"], attempt["id"], "failed", observation
+                )
+                self._save(directory, plan, state)
+                self.registry.release(
+                    plan["workflow_id"],
+                    attempt["id"],
+                    stopped=True,
+                    cleanup_complete=True,
+                )
+                return state
             complete = (
                 read_json(root / "completion.json")
                 if (root / "completion.json").exists()
@@ -711,6 +815,34 @@ class Controller:
                 # Cancellation requires shutdown proof, never usable success
                 # artifacts. A missing NFS result must not prevent explicit Stop.
                 self._verify_completion(request, complete, profile)
+                committed = self._committed_adoption(
+                    directory, root, request, complete, owner
+                )
+                if committed is not None:
+                    # Native adoption precedes any later Cancel even when its
+                    # response was lost. Restore that order before cancelling the
+                    # remaining graph; this never re-adopts or reads output files.
+                    cancelled = state["cancel_requested"]
+                    before_cancel = copy.deepcopy(state)
+                    before_cancel["cancel_requested"] = False
+                    state = graph.update_attempt(
+                        plan,
+                        before_cancel,
+                        stage["id"],
+                        attempt["id"],
+                        "succeeded",
+                        committed,
+                    )
+                    if cancelled:
+                        state = graph.cancel(plan, state)
+                    self._save(directory, plan, state)
+                    self.registry.release(
+                        plan["workflow_id"],
+                        attempt["id"],
+                        stopped=True,
+                        cleanup_complete=True,
+                    )
+                    return state
                 state = self._apply_cancel(directory, plan, state)
                 result, verification_error = None, None
                 outcome, details = "cancelled", {
@@ -751,7 +883,7 @@ class Controller:
                 # and runtime preflight stay outside this short bounded native
                 # commit. A cancel already committed always wins; a later one
                 # observes the terminal state published under this same lock.
-                with locked(directory / "control-intent.lock"):
+                with locked(directory / "control-intent.lock") as descriptor:
                     state = self._apply_cancel(directory, plan, state)
                     if state["cancel_requested"]:
                         outcome, details = "cancelled", {
@@ -762,27 +894,50 @@ class Controller:
                     elif adoption:
                         # Lost responses retain recovery for exact idempotent
                         # adoption; never assume the catalog write did not happen.
+                        action = (
+                            "adopt-selection"
+                            if result["outputs"].get("adoption") == "selection"
+                            else "adopt"
+                        )
+                        payload = {
+                            "game": owner["game"],
+                            "token": owner["token"],
+                            "workflow_id": plan["workflow_id"],
+                            "workflow_directory": str(directory),
+                            "attempt_id": attempt["id"],
+                            "catalog_key": result["outputs"]["catalog_key"],
+                            "workspace": result["outputs"]["workspace"],
+                            "require_ice_mask": bool(
+                                request["operation"] == "experiment-baseline"
+                                or request["inputs"].get("require_ice_mask", False)
+                            ),
+                        }
+                        intent = {
+                            "schema": 1,
+                            "request_digest": digest(request),
+                            "completion_digest": digest(complete),
+                            "action": action,
+                            "payload": payload,
+                            "details": {
+                                **details,
+                                "stopped": True,
+                                "cleanup_complete": True,
+                            },
+                        }
+                        intent_path = root / "adoption-intent.json"
+                        if intent_path.exists():
+                            require(
+                                read_json(intent_path) == intent,
+                                "Verified adoption intent changed",
+                            )
+                        else:
+                            write_json(intent_path, intent, exclusive=True)
                         self._native(
                             directory,
-                            (
-                                "adopt-selection"
-                                if result["outputs"].get("adoption") == "selection"
-                                else "adopt"
-                            ),
-                            {
-                                "game": owner["game"],
-                                "token": owner["token"],
-                                "workflow_id": plan["workflow_id"],
-                                "workflow_directory": str(directory),
-                                "attempt_id": attempt["id"],
-                                "catalog_key": result["outputs"]["catalog_key"],
-                                "workspace": result["outputs"]["workspace"],
-                                "require_ice_mask": bool(
-                                    request["operation"] == "experiment-baseline"
-                                    or request["inputs"].get("require_ice_mask", False)
-                                ),
-                            },
+                            action,
+                            payload,
                             runtime_checked=True,
+                            control_descriptor=descriptor,
                         )
                     details.update(
                         stopped=True,
@@ -925,12 +1080,8 @@ class Controller:
                 plan = validate_plan(read_json(directory / "plan.json"))
                 state = graph.refresh(plan, read_json(directory / "state.json"))
                 self._reconcile_reservations(directory, plan, state)
-                owner = read_json(directory / "owner.json")
-                if self._cancel_pending(directory, state) and not owner["acquired"]:
-                    state = self._save(directory, plan, graph.cancel(plan, state))
-                    owner["released"] = True
-                    write_json(directory / "owner.json", owner)
                 owner = self._ensure_owner(directory, plan)
+                state = graph.refresh(plan, read_json(directory / "state.json"))
                 if owner["released"]:
                     (directory / "controller-error.json").unlink(missing_ok=True)
                     self._save(directory, plan, state)
@@ -953,26 +1104,28 @@ class Controller:
                 if all(
                     node["state"] in graph.TERMINAL for node in state["nodes"].values()
                 ):
-                    current = self._native(
-                        directory, "inspect", {"game": owner["game"]}
-                    ).get("owner")
-                    if current is not None:
-                        require(
-                            current.get("token") == owner["token"],
-                            "Game ownership changed before release",
-                        )
-                        self._native(
-                            directory,
-                            "release",
-                            {
-                                "game": owner["game"],
-                                "token": owner["token"],
-                                "revision": current["revision"],
-                                "stopped_and_clean": True,
-                            },
-                        )
-                    owner["released"] = True
-                    write_json(directory / "owner.json", owner)
+                    with locked(directory / "control-intent.lock") as descriptor:
+                        current = self._native(
+                            directory, "inspect", {"game": owner["game"]}
+                        ).get("owner")
+                        if current is not None:
+                            require(
+                                current.get("token") == owner["token"],
+                                "Game ownership changed before release",
+                            )
+                            self._native(
+                                directory,
+                                "release",
+                                {
+                                    "game": owner["game"],
+                                    "token": owner["token"],
+                                    "revision": current["revision"],
+                                    "stopped_and_clean": True,
+                                },
+                                control_descriptor=descriptor,
+                            )
+                        owner["released"] = True
+                        write_json(directory / "owner.json", owner)
                 (directory / "controller-error.json").unlink(missing_ok=True)
                 return graph.snapshot(plan, state)
         except BlockingIOError:

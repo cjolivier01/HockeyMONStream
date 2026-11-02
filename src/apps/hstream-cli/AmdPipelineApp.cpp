@@ -701,6 +701,11 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
 } // namespace
 
 int main(int argc, char** argv) {
+  const auto child_proof = hm::game_operation::EnableIsolatedChildProof();
+  if (!child_proof.ok()) {
+    std::cerr << "hstream-cli cannot establish descendant cleanup proof: " << child_proof << '\n';
+    return 78;
+  }
   if (const auto* parent = std::getenv("HSTREAM_UI_PARENT_PID")) {
     char* end{};
     const auto expected = std::strtol(parent, &end, 10);
@@ -741,7 +746,11 @@ int main(int argc, char** argv) {
   int result = 0;
   std::filesystem::path owned_game;
   std::string owned_token;
+  int64_t cleanup_grace = 0, cleanup_poll = 0;
   try {
+    const auto baseline = Take(hm::baseline_config::load());
+    cleanup_grace = baseline.values["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000;
+    cleanup_poll = baseline.values["workflow"]["poll_interval_ms"].as<int64_t>();
     const auto args = Take(hm::program::ParseAmdPipelineOptions({argv, argv + argc}));
     if (args.sinks.count("RENDER")) {
       // P010 DMA-BUF import requires EGL. GStreamer's default X11 platform is
@@ -768,7 +777,8 @@ int main(int argc, char** argv) {
   }
   hm::diagnostics::Finish(result);
   if (!owned_token.empty()) {
-    const auto released = hm::game_operation::ReleaseLocal(owned_game, owned_token, true);
+    const auto retired = hm::game_operation::RetireIsolatedChildren(cleanup_grace, cleanup_poll);
+    const auto released = retired.ok() ? hm::game_operation::ReleaseLocal(owned_game, owned_token, true) : retired;
     if (!released.ok()) {
       std::cerr << released << '\n';
       result = result ? result : 1;

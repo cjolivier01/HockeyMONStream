@@ -84,6 +84,19 @@ Tests use two processes/windows and both start orders for main/INT8/workflow;
 simultaneous acquisition has one winner. Cover failed handoff, stale release,
 controller restart, remote recovery, cancellation and deletion while cleanup waits.
 
+Containment qualification requires a kernel-backed process boundary. Add the
+small Qt-free `hstream-process-guard` binary and a shared command-permit API.
+Dedicated CLIs enable subreaping before launching children. Qt main, archive,
+INT8 and experiment commands use individual guards; aggregate exact completed
+receipts before releasing the game. Preserve standard input/output, exit status,
+pause semantics and finish consent. A killed guard cannot certify cleanup.
+Test detached children that clear their environment or become nondumpable, a fork
+between enumeration and retirement, unrelated Qt children, replaced receipts,
+FailedToStart and forced-stop escalation. Package the guard on desktop and Jetson.
+Keep native admission/adoption locks inherited by helper processes across a
+controller crash; test lost acquisition response plus Stop and Retry, and actual
+process-limit exhaustion before local acceptance.
+
 ## 3. Native experiment task boundary and input materialization
 
 Extract reusable experiment execution from `WebJobMain.cpp` and

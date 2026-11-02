@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -61,12 +62,37 @@ void RegisterAuthorization(const std::filesystem::path& game, const std::string&
 void ForgetAuthorization(const std::filesystem::path& game, const std::string& token);
 std::string Authorization(const std::filesystem::path& game);
 
-// Local UI/CLI owners use a unique inherited capability to find helpers even
-// after they create a new POSIX session. Remote workflow retirement never uses
-// this local-only proof. Registration retains the owner's original ancestor
-// identities. An unreadable process is excluded only with pinned ancestry proof
-// through an unrelated process predating admission; orphans and uncertain
-// metadata stay reserved. A process without that registration has no proof.
+// Dedicated CLI processes call this before launching any child. At retirement,
+// the caller must have stopped its own launchers and child-status consumers.
+// This enables subreaping and permits reaping every child until kernel ECHILD.
+// Never use it in a shared Qt process: use per-command guards below instead.
+absl::Status EnableIsolatedChildProof();
+absl::Status RetireIsolatedChildren(int64_t grace_ms, int64_t poll_ms);
+
+// The UI fences new launches and routes every operation-owned command through
+// a guard. A registered authorization alone never proves descendant shutdown.
+absl::Status EnableSupervisedChildProof(const std::string& token);
+struct SupervisedCommand {
+  std::string id;
+  std::vector<std::string> arguments;
+};
+absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
+    const std::filesystem::path& game,
+    const std::string& token,
+    int64_t grace_ms,
+    int64_t poll_ms,
+    const std::vector<std::string>& command);
+absl::Status SupervisedCommandStarted(const std::string& token, const std::string& id);
+absl::Status SupervisedCommandFinished(const std::string& token, const std::string& id);
+absl::StatusOr<bool> SupervisedCommandStopped(const std::string& token, const std::string& id);
+// Only QProcess::FailedToStart (or an explicitly abandoned, never-started
+// command) may cancel a permit. A launched/crashed guard requires its receipt.
+absl::Status CancelUnlaunchedSupervisedCommand(const std::string& token, const std::string& id);
+// SIGKILL requests kill descendants, while preserving the guard and its proof.
+absl::Status SignalSupervisedCommand(const std::string& token, const std::string& id, int signal);
+
+// Proof is kernel ECHILD in a dedicated scope, or the exact guard receipts.
+// Process snapshots are never shutdown authority. Missing proof stays reserved.
 absl::StatusOr<bool> LocalChildrenStopped(const std::string& token);
 absl::Status SignalLocalChildren(const std::string& token, int signal);
 absl::Status ReleaseLocal(const std::filesystem::path& game, const std::string& token, bool cleanup_complete);

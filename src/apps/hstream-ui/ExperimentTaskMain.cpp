@@ -156,13 +156,15 @@ StoredStitchingExperiment find_row(const StitchingExperimentStore& store, const 
 }
 QJsonObject admission_command(const std::string& action, const QJsonObject& request) {
   const auto game = absolute_directory(request, "game");
-  if (action == "bind" || action == "adopt" || action == "adopt-selection") {
+  if (action == "bind" || action == "adopt" || action == "adopt-selection" || action == "adoption-status") {
     const auto token = identity(request, "token"), workflow = identity(request, "workflow_id");
     const auto directory = absolute_directory(request, "workflow_directory");
     require(directory == game / "_hockeymon/workflows" / workflow, "Invalid workflow directory");
     verify_owner(game, token, workflow);
     admission::RegisterAuthorization(game, token);
-    const auto store = take(OpenStitchingExperimentStore(game));
+    const auto store = action == "adoption-status"
+        ? StitchingExperimentStore{game / "_hockeymon/stitching-experiments", game}
+        : take(OpenStitchingExperimentStore(game));
     if (action == "bind") {
       require(request.value("catalog_keys").isArray(), "Workflow bind requires catalog keys");
       const auto keys = request.value("catalog_keys").toArray();
@@ -192,6 +194,22 @@ QJsonObject admission_command(const std::string& action, const QJsonObject& requ
     auto row = find_row(store, key);
     require(row.workflow_id == workflow && row.workflow_active, "Candidate is not owned by this workflow");
     const auto attempt = identity(request, "attempt_id");
+    if (action == "adoption-status") {
+      const auto adoption = RequiredString(request, "adoption", 32).toStdString();
+      require(adoption == "adopt" || adoption == "adopt-selection", "Invalid adoption status kind");
+      const bool selection = adoption == "adopt-selection";
+      const auto& saved = selection ? row.selection_workspace : row.result_workspace;
+      const auto& saved_attempt = selection ? row.selection_attempt_id : row.result_attempt_id;
+      if (!saved)
+        return {{"adopted", false}};
+      // The durable catalog is the commit acknowledgment. Recovery must not
+      // reopen output PNGs or attempt another mutation after cancellation.
+      require(
+          saved_attempt == attempt && request.value("workspace").isObject() &&
+              workspace_json(*saved) == request.value("workspace").toObject(),
+          "A different workflow result was already adopted");
+      return {{"adopted", true}};
+    }
     const auto result = workspace(request.value("workspace").toObject(), game, directory);
     const auto relative = result.game_directory.lexically_relative(directory / "attempts" / attempt);
     require(
@@ -493,7 +511,16 @@ int main(int argc, char** argv) {
                "experiment-reuse-selection",
                "experiment-complete"}},
           {"admission",
-           QJsonArray{"acquire", "inspect", "handoff", "bind", "adopt", "adopt-selection", "cancel", "release"}}};
+           QJsonArray{
+               "acquire",
+               "inspect",
+               "handoff",
+               "bind",
+               "adopt",
+               "adopt-selection",
+               "adoption-status",
+               "cancel",
+               "release"}}};
 #ifdef HSTREAM_USE_HIP
       result.insert("gpu_backend", "amd");
       result.insert("gpu_operations_supported", false);

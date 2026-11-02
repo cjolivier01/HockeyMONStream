@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/common/ProcessGuard.h"
 #include "yaml-cpp/yaml.h"
 
 namespace hm::game_operation {
@@ -29,25 +30,24 @@ constexpr size_t kMaximumOwnerBytes = 16384;
 constexpr const char* kOwner = "game-operation.yaml";
 std::mutex authorizations_mutex;
 std::map<std::string, std::string> authorizations;
-struct ProcessIdentity {
-  pid_t pid;
-  pid_t parent;
-  uint64_t started;
-  char state;
+struct CommandProof {
+  int descriptor{-1};
+  std::filesystem::path path;
+  std::string header;
+  bool launched{false};
+  bool exited{false};
+  bool complete{false};
+  ~CommandProof() {
+    if (descriptor >= 0)
+      ::close(descriptor);
+  }
 };
 struct LocalAdmission {
-  uint64_t started{0};
-  std::optional<std::vector<ProcessIdentity>> ancestors;
+  pid_t process_id{0};
+  bool supervised{false};
+  std::map<std::string, std::shared_ptr<CommandProof>> commands;
 };
-std::optional<std::vector<ProcessIdentity>> capture_ancestors();
 std::map<std::string, LocalAdmission> local_admissions;
-uint64_t boot_ticks() {
-  struct timespec now{};
-  const long rate = ::sysconf(_SC_CLK_TCK);
-  if (rate <= 0 || ::clock_gettime(CLOCK_BOOTTIME, &now) != 0)
-    return 0;
-  return uint64_t(now.tv_sec) * rate + uint64_t(now.tv_nsec) * rate / 1000000000ULL;
-}
 
 std::string key(const std::filesystem::path& game) {
   std::error_code error;
@@ -335,7 +335,7 @@ void RegisterAuthorization(const std::filesystem::path& game, const std::string&
   std::lock_guard<std::mutex> lock(authorizations_mutex);
   authorizations[key(game)] = token;
   if (!local_admissions.count(token))
-    local_admissions.emplace(token, LocalAdmission{boot_ticks(), capture_ancestors()});
+    local_admissions.emplace(token, LocalAdmission{::getpid(), false, {}});
 }
 
 void ForgetAuthorization(const std::filesystem::path& game, const std::string& token) {
@@ -359,334 +359,219 @@ std::string Authorization(const std::filesystem::path& game) {
   return inherited_game && inherited_token && key(inherited_game) == path ? inherited_token : "";
 }
 namespace {
-struct ProcessPins {
-  std::vector<int> descriptors;
-  ~ProcessPins() {
-    for (int fd : descriptors)
-      ::close(fd);
+absl::StatusOr<LocalAdmission*> local_admission(const std::string& token) {
+  const auto found = local_admissions.find(token);
+  if (found == local_admissions.end() || found->second.process_id != ::getpid())
+    return absl::FailedPreconditionError("No exact local game admission is registered");
+  return &found->second;
+}
+absl::StatusOr<std::shared_ptr<CommandProof>> command_proof(const std::string& token, const std::string& id) {
+  const auto admission = local_admission(token);
+  if (!admission.ok())
+    return admission.status();
+  const auto found = (*admission)->commands.find(id);
+  if (!(*admission)->supervised || found == (*admission)->commands.end())
+    return absl::FailedPreconditionError("No exact guarded command is registered");
+  return found->second;
+}
+absl::StatusOr<char> proof_state(CommandProof& proof) {
+  if (proof.complete)
+    return 'C';
+  const auto state = process_guard::ReadReceipt(proof.descriptor, proof.path, proof.header);
+  if (state.ok() && *state == 'C') {
+    // The exact kernel completion proof is immutable once observed. Retire its
+    // descriptor so large sequential experiment batches do not exhaust RLIMIT_NOFILE.
+    proof.complete = true;
+    ::close(proof.descriptor);
+    proof.descriptor = -1;
+    ::unlink(proof.path.c_str());
   }
-};
-
-absl::StatusOr<std::string> proc_file(pid_t pid, const char* name) {
-  const auto path = "/proc/" + std::to_string(pid) + "/" + name;
-  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (fd < 0)
-    return errno == ENOENT || errno == ESRCH ? absl::NotFoundError("Process exited") : io("Cannot inspect process");
-  struct Close {
-    int fd;
-    ~Close() {
-      ::close(fd);
-    }
-  } close{fd};
-  std::string result;
-  char buffer[4096];
-  for (;;) {
-    const auto count = ::read(fd, buffer, sizeof(buffer));
-    if (count < 0 && errno == EINTR)
-      continue;
-    if (count < 0)
-      return io("Cannot read process identity");
-    if (!count)
-      return result;
-    result.append(buffer, count);
-    if (result.size() > 65536)
-      return absl::ResourceExhaustedError("Process metadata exceeds ownership bound");
-  }
-}
-
-absl::StatusOr<ProcessIdentity> process_identity(pid_t pid) {
-  const auto value = proc_file(pid, "stat");
-  if (!value.ok())
-    return value.status();
-  const auto end_name = value->rfind(')');
-  if (end_name == std::string::npos)
-    return absl::UnavailableError("Invalid process identity");
-  std::istringstream fields(value->substr(end_name + 2));
-  ProcessIdentity result{pid, 0, 0, 0};
-  std::string field;
-  for (int index = 3; index <= 22; ++index) {
-    if (!(fields >> field))
-      return absl::UnavailableError("Incomplete process identity");
-    if (index == 3)
-      result.state = field.front();
-    if (index == 4)
-      result.parent = static_cast<pid_t>(std::stol(field));
-    if (index == 22)
-      result.started = std::stoull(field);
-  }
-  return result;
-}
-
-absl::StatusOr<bool> same_user(pid_t pid) {
-  const auto value = proc_file(pid, "status");
-  if (!value.ok())
-    return value.status();
-  std::istringstream lines(*value);
-  std::string line;
-  while (std::getline(lines, line)) {
-    if (line.rfind("Uid:", 0) != 0)
-      continue;
-    std::istringstream fields(line.substr(4));
-    bool matches = false;
-    for (int index = 0; index < 4; ++index) {
-      uint64_t uid;
-      if (!(fields >> uid))
-        return absl::UnavailableError("Invalid process credentials");
-      matches |= uid == ::geteuid();
-    }
-    return matches;
-  }
-  return absl::UnavailableError("Process credentials are unavailable");
-}
-
-bool same_identity(const ProcessIdentity& left, const ProcessIdentity& right) {
-  return left.pid == right.pid && left.started == right.started;
-}
-
-#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-absl::StatusOr<bool> process_exited(int descriptor) {
-  struct pollfd watched{descriptor, POLLIN, 0};
-  int result;
-  do {
-    result = ::poll(&watched, 1, 0);
-  } while (result < 0 && errno == EINTR);
-  if (result < 0)
-    return io("Cannot inspect pinned process liveness");
-  if (watched.revents & (POLLERR | POLLNVAL))
-    return absl::UnavailableError("Pinned process liveness is unavailable");
-  return (watched.revents & (POLLIN | POLLHUP)) != 0;
-}
-
-absl::StatusOr<ProcessIdentity> pin_process(pid_t pid, ProcessPins& pins) {
-  const int fd = ::syscall(SYS_pidfd_open, pid, 0);
-  if (fd < 0)
-    return io("Cannot pin process ancestry");
-  pins.descriptors.push_back(fd);
-  const auto identity = process_identity(pid);
-  if (!identity.ok())
-    return identity.status();
-  const auto exited = process_exited(fd);
-  if (!exited.ok())
-    return exited.status();
-  if (*exited)
-    return absl::UnavailableError("Process ancestry changed while pinning");
-  return identity;
-}
-
-bool stable_chain(const std::vector<ProcessIdentity>& chain, const ProcessPins& pins) {
-  if (chain.size() != pins.descriptors.size())
-    return false;
-  for (size_t index = 0; index < chain.size(); ++index) {
-    const auto current = process_identity(chain[index].pid);
-    const auto exited = process_exited(pins.descriptors[index]);
-    if (!current.ok() || !same_identity(*current, chain[index]) || current->parent != chain[index].parent ||
-        !exited.ok() || *exited)
-      return false;
-  }
-  return true;
-}
-#endif
-
-std::optional<std::vector<ProcessIdentity>> capture_ancestors() {
-#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-  try {
-    ProcessPins pins;
-    std::vector<ProcessIdentity> chain;
-    pid_t pid = ::getpid();
-    for (size_t depth = 0; depth < 128 && pid > 0; ++depth) {
-      const auto current = pin_process(pid, pins);
-      if (!current.ok() || (!chain.empty() && current->started > chain.back().started))
-        return std::nullopt;
-      chain.push_back(*current);
-      pid = current->parent;
-    }
-    if (pid != 0 || !stable_chain(chain, pins))
-      return std::nullopt;
-    return chain;
-  } catch (const std::exception&) {
-    return std::nullopt;
-  }
-#else
-  return std::nullopt;
-#endif
-}
-
-bool proven_unrelated(const ProcessIdentity& candidate, const LocalAdmission& admission) {
-#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-  if (!admission.ancestors || admission.ancestors->empty())
-    return false;
-  try {
-    ProcessPins pins;
-    std::vector<ProcessIdentity> chain;
-    pid_t pid = candidate.pid;
-    for (size_t depth = 0; depth < 128 && pid > 1; ++depth) {
-      const auto current = pin_process(pid, pins);
-      if (!current.ok() || (chain.empty() && !same_identity(*current, candidate)) ||
-          (!chain.empty() && current->started > chain.back().started))
-        return false;
-      chain.push_back(*current);
-      if (std::any_of(admission.ancestors->begin(), admission.ancestors->end(), [&](const auto& ancestor) {
-            return same_identity(ancestor, *current);
-          }))
-        return false;
-      if (current->started < admission.started)
-        return stable_chain(chain, pins);
-      pid = current->parent;
-    }
-  } catch (const std::exception&) {
-    return false;
-  }
-#endif
-  // Orphans, original ancestors/subreapers and uncertain traversals may still
-  // contain an owned detached helper. They cannot provide exclusion evidence.
-  return false;
-}
-
-absl::Status inspect_children(const std::string& token, ProcessPins& pins) {
-  if (!identity(token))
-    return absl::InvalidArgumentError("Missing process capability");
-#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
-  try {
-    LocalAdmission admission;
-    {
-      std::lock_guard<std::mutex> lock(authorizations_mutex);
-      const auto found = local_admissions.find(token);
-      if (found != local_admissions.end())
-        admission = found->second;
-    }
-    if (!admission.started)
-      return absl::FailedPreconditionError("No local process admission epoch is available");
-    const std::string expected = "HSTREAM_GAME_OPERATION_TOKEN=" + token;
-    bool saw_self = false;
-    for (const auto& entry : std::filesystem::directory_iterator("/proc")) {
-      const std::string name = entry.path().filename().string();
-      if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos)
-        continue;
-      const auto pid = static_cast<pid_t>(std::stol(name));
-      if (pid == ::getpid()) {
-        saw_self = true;
-        continue;
-      }
-      // Unrelated preexisting processes cannot have inherited this newly
-      // created capability. Their /proc environments may legitimately be
-      // unreadable (for example setuid desktop services).
-      const auto identity = process_identity(pid);
-      if (!identity.ok()) {
-        if (absl::IsNotFound(identity.status()))
-          continue;
-        return identity.status();
-      }
-      if (identity->started < admission.started || identity->state == 'Z' || identity->state == 'X')
-        continue;
-      const auto eligible = same_user(pid);
-      if (!eligible.ok()) {
-        if (absl::IsNotFound(eligible.status()))
-          continue;
-        return eligible.status();
-      }
-      if (!*eligible)
-        continue;
-      const int pin = ::syscall(SYS_pidfd_open, pid, 0);
-      if (pin < 0) {
-        if (errno == ESRCH)
-          continue;
-        return io("Cannot pin process identity");
-      }
-      struct Close {
-        int fd;
-        ~Close() {
-          if (fd >= 0)
-            ::close(fd);
-        }
-      } pinned{pin};
-      const auto current = process_identity(pid);
-      if (!current.ok() || !same_identity(*current, *identity)) {
-        const auto exited = process_exited(pin);
-        if (exited.ok() && *exited)
-          continue;
-        return absl::UnavailableError("Process identity changed before ownership inspection");
-      }
-      const int env = ::open((entry.path() / "environ").c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-      if (env < 0) {
-        const int access_error = errno;
-        const auto exited = process_exited(pin);
-        if (exited.ok() && *exited)
-          continue;
-        // Exit can race the first stat read. Zombies have released their files
-        // and GPU resources, but their environ is unreadable until reaped.
-        const auto final = process_identity(pid);
-        if (final.ok() && same_identity(*final, *identity) && (final->state == 'Z' || final->state == 'X'))
-          continue;
-        if ((access_error == EACCES || access_error == EPERM) && proven_unrelated(*identity, admission))
-          continue;
-        errno = access_error;
-        return io(("Cannot prove local helper ownership for process " + std::to_string(pid)).c_str());
-      }
-      Close environment{env};
-      std::string contents;
-      char buffer[4096];
-      while (true) {
-        const ssize_t count = ::read(env, buffer, sizeof(buffer));
-        if (count < 0 && errno == EINTR)
-          continue;
-        if (count < 0)
-          return io("Cannot read local helper ownership");
-        if (!count)
-          break;
-        contents.append(buffer, count);
-        if (contents.size() > 1024 * 1024)
-          return absl::ResourceExhaustedError("Process environment exceeds ownership bound");
-      }
-      const auto exited = process_exited(pin);
-      if (!exited.ok())
-        return exited.status();
-      if (*exited)
-        continue;
-      bool owned = false;
-      for (size_t offset = 0; offset < contents.size();) {
-        const size_t end = contents.find('\0', offset);
-        if (contents.substr(offset, end == std::string::npos ? end : end - offset) == expected)
-          owned = true;
-        if (end == std::string::npos)
-          break;
-        offset = end + 1;
-      }
-      if (owned) {
-        pins.descriptors.push_back(pin);
-        pinned.fd = -1;
-      }
-    }
-    if (!saw_self)
-      return absl::UnavailableError("Local process inventory is incomplete");
-    return absl::OkStatus();
-  } catch (const std::exception& error) {
-    return absl::UnavailableError("Cannot enumerate local helpers: " + std::string(error.what()));
-  }
-#else
-  return absl::UnimplementedError("Local game ownership requires Linux pidfd support");
-#endif
+  if (state.ok() && *state != 'C' && proof.exited)
+    return absl::FailedPreconditionError("Supervisor exited without descendant cleanup proof; game needs recovery");
+  return state;
 }
 } // namespace
 
-absl::StatusOr<bool> LocalChildrenStopped(const std::string& token) {
-  ProcessPins pins;
-  auto status = inspect_children(token, pins);
-  if (!status.ok())
-    return status;
-  return pins.descriptors.empty();
+absl::Status EnableIsolatedChildProof() {
+  return process_guard::Enable();
 }
-absl::Status SignalLocalChildren(const std::string& token, int signal) {
-  ProcessPins pins;
-  auto status = inspect_children(token, pins);
-  if (!status.ok())
-    return status;
-#if defined(SYS_pidfd_send_signal)
-  for (int fd : pins.descriptors)
-    if (::syscall(SYS_pidfd_send_signal, fd, signal, nullptr, 0) != 0 && errno != ESRCH)
-      return io("Cannot signal owned helper");
-#endif
+
+absl::Status RetireIsolatedChildren(int64_t grace_ms, int64_t poll_ms) {
+  return process_guard::Retire(grace_ms, poll_ms);
+}
+
+absl::Status EnableSupervisedChildProof(const std::string& token) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto admission = local_admission(token);
+  if (!admission.ok())
+    return admission.status();
+  if (process_guard::Enabled())
+    return absl::FailedPreconditionError("Cannot mix isolated and shared process scopes");
+  (*admission)->supervised = true;
   return absl::OkStatus();
 }
+
+absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
+    const std::filesystem::path& game,
+    const std::string& token,
+    int64_t grace_ms,
+    int64_t poll_ms,
+    const std::vector<std::string>& command) {
+  if (command.empty() || command.front().empty() || grace_ms <= 0 || poll_ms <= 0 || poll_ms > grace_ms ||
+      grace_ms > 24 * 60 * 60 * 1000LL)
+    return absl::InvalidArgumentError("Invalid guarded command or explicit cleanup timing");
+  for (const auto& argument : command)
+    if (argument.find('\0') != std::string::npos)
+      return absl::InvalidArgumentError("Command contains NUL");
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto admission = local_admission(token);
+  if (!admission.ok())
+    return admission.status();
+  const auto allowed = authorizations.find(key(game));
+  if (!(*admission)->supervised || allowed == authorizations.end() || allowed->second != token)
+    return absl::FailedPreconditionError("Guarded command does not belong to this game admission");
+  const auto nonce = NewToken();
+  if (!nonce.ok())
+    return nonce.status();
+  auto proof = std::make_shared<CommandProof>();
+  proof->path = game_storage::StateDirectory(game) / (".game-operation-proof-" + *nonce);
+  proof->header = process_guard::ReceiptHeader(token, *nonce);
+  proof->descriptor = ::open(proof->path.c_str(), O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (proof->descriptor < 0)
+    return io("Cannot create guarded command permit");
+  const std::string contents = proof->header + "0P";
+  if (::write(proof->descriptor, contents.data(), contents.size()) != static_cast<ssize_t>(contents.size()) ||
+      ::fsync(proof->descriptor) != 0) {
+    const auto failed = io("Cannot persist guarded command permit");
+    ::unlink(proof->path.c_str());
+    return failed;
+  }
+  (*admission)->commands.emplace(*nonce, proof);
+  SupervisedCommand result{
+      *nonce,
+      {"--receipt",
+       proof->path.string(),
+       "--token",
+       token,
+       "--nonce",
+       *nonce,
+       "--parent-pid",
+       std::to_string(::getpid()),
+       "--grace-ms",
+       std::to_string(grace_ms),
+       "--poll-ms",
+       std::to_string(poll_ms),
+       "--"}};
+  result.arguments.insert(result.arguments.end(), command.begin(), command.end());
+  return result;
+}
+
+absl::Status SupervisedCommandStarted(const std::string& token, const std::string& id) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto proof = command_proof(token, id);
+  if (!proof.ok())
+    return proof.status();
+  (*proof)->launched = true;
+  return absl::OkStatus();
+}
+
+absl::Status SupervisedCommandFinished(const std::string& token, const std::string& id) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto proof = command_proof(token, id);
+  if (!proof.ok())
+    return proof.status();
+  (*proof)->exited = true;
+  return absl::OkStatus();
+}
+
+absl::StatusOr<bool> SupervisedCommandStopped(const std::string& token, const std::string& id) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto proof = command_proof(token, id);
+  if (!proof.ok())
+    return proof.status();
+  const auto state = proof_state(**proof);
+  if (!state.ok())
+    return state.status();
+  if (*state == 'F')
+    return absl::FailedPreconditionError("Process guard could not prove cleanup; game stays reserved");
+  return *state == 'C';
+}
+
+absl::Status CancelUnlaunchedSupervisedCommand(const std::string& token, const std::string& id) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto proof = command_proof(token, id);
+  if (!proof.ok())
+    return proof.status();
+  if ((*proof)->complete)
+    return absl::FailedPreconditionError("Completed guard is not an unlaunched command");
+  if (::flock((*proof)->descriptor, LOCK_EX | LOCK_NB) != 0)
+    return absl::FailedPreconditionError("A supervisor has consumed this command permit");
+  struct Unlock {
+    int descriptor;
+    ~Unlock() {
+      ::flock(descriptor, LOCK_UN);
+    }
+  } unlock{(*proof)->descriptor};
+  const auto state = process_guard::ReadReceipt((*proof)->descriptor, (*proof)->path, (*proof)->header);
+  if (!state.ok())
+    return state.status();
+  if ((*proof)->launched || *state != 'P')
+    return absl::FailedPreconditionError("Launched guard requires exact descendant completion proof");
+  if (::unlink((*proof)->path.c_str()) != 0)
+    return io("Cannot retire unlaunched guarded command");
+  local_admissions.at(token).commands.erase(id);
+  return absl::OkStatus();
+}
+
+absl::Status SignalSupervisedCommand(const std::string& token, const std::string& id, int signal) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto proof = command_proof(token, id);
+  if (proof.ok() && (*proof)->complete)
+    return absl::OkStatus();
+  return proof.ok() ? process_guard::RequestSignal((*proof)->descriptor, (*proof)->path, (*proof)->header, signal)
+                    : proof.status();
+}
+
+absl::StatusOr<bool> LocalChildrenStopped(const std::string& token) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto admission = local_admission(token);
+  if (!admission.ok())
+    return admission.status();
+  if (process_guard::Enabled())
+    return process_guard::Reap();
+  if (!(*admission)->supervised)
+    return absl::FailedPreconditionError("No kernel-backed local child scope is available; game stays reserved");
+  bool complete = true;
+  for (const auto& [id, proof] : (*admission)->commands) {
+    const auto state = proof_state(*proof);
+    if (!state.ok())
+      return state.status();
+    if (*state == 'F')
+      return absl::FailedPreconditionError("Process guard could not prove cleanup; game stays reserved");
+    complete &= *state == 'C';
+  }
+  return complete;
+}
+
+absl::Status SignalLocalChildren(const std::string& token, int signal) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto admission = local_admission(token);
+  if (!admission.ok())
+    return admission.status();
+  if (process_guard::Enabled())
+    return process_guard::Signal(signal);
+  if (!(*admission)->supervised)
+    return absl::FailedPreconditionError("No exact local child scope is available");
+  for (const auto& [id, proof] : (*admission)->commands) {
+    if (proof->complete)
+      continue;
+    const auto status = process_guard::RequestSignal(proof->descriptor, proof->path, proof->header, signal);
+    if (!status.ok())
+      return status;
+  }
+  return absl::OkStatus();
+}
+
 absl::Status ReleaseLocal(const std::filesystem::path& game, const std::string& token, bool cleanup_complete) {
   if (!cleanup_complete)
     return absl::FailedPreconditionError("Local cleanup is incomplete");
@@ -704,8 +589,16 @@ absl::Status ReleaseLocal(const std::filesystem::path& game, const std::string& 
   if (!*owner || (**owner).token != token)
     return absl::AbortedError("Local game owner changed");
   auto result = (*lock)->Release(token, (**owner).revision, true);
-  if (result.ok())
+  if (result.ok()) {
+    {
+      std::lock_guard<std::mutex> guard(authorizations_mutex);
+      const auto found = local_admissions.find(token);
+      if (found != local_admissions.end())
+        for (const auto& [id, proof] : found->second.commands)
+          ::unlink(proof->path.c_str());
+    }
     ForgetAuthorization(game, token);
+  }
   return result;
 }
 } // namespace hm::game_operation

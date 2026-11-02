@@ -40,7 +40,8 @@ nodes. Materialization does not construct or provision a matcher. Its verified
 PNG bundle remains available if the following solve fails. A failed or
 unavailable prerequisite blocks descendants, while unrelated candidates
 continue. Retry creates a new attempt and observation epoch, preserving verified
-successful prerequisites. Retry is available after all attempts have stopped.
+successful prerequisites. Retry is available after all attempts have stopped and
+recording ownership has been released.
 
 The recording has one durable operation owner. Main playback, INT8 preparation,
 local experiment operations and distributed workflows respect the same owner,
@@ -163,7 +164,12 @@ controller checks scheduler state or hashes an artifact. Worker supervision sees
 the attempt cancellation directly; queued Slurm allocations are cancelled by
 reconciliation. The final bounded native catalog commit and cancellation are
 serialized: a committed cancellation prevents adoption; a completed adoption is
-retained if cancellation arrives afterward. Cancellation needs exact shutdown and
+retained if cancellation arrives afterward. Before adoption, the controller records
+the exact verified attempt and outputs. If the response is lost, a read-only native
+catalog query recovers the committed result, including when Stop arrives afterward.
+This query does not reopen output artifacts or repeat adoption. A release helper
+inherits the same control barrier, so an orphan from an earlier controller cannot
+release ownership during a new retry. Cancellation needs exact shutdown and
 cleanup proof, but does not need successful output files to remain available.
 
 Export writes a sealed plan beside an executable launcher and does not submit:
@@ -219,8 +225,11 @@ a diagnostic append. Metadata and artifact verification also
 have protocol bounds. Local supervisors require the kernel to report that no
 children remain after reaping; an empty process-directory scan is not shutdown
 proof because a child can fork during the scan. Native ownership checks keep
-unreadable helpers fenced unless pinned ancestry proves they descend from an
-unrelated service that predates admission. A missing local supervisor cannot prove that escaped
+the CLI inside its own subreaper scope. Qt commands use the installed
+`hstream-process-guard` and exact token-bound completion receipts, so unrelated Qt
+children remain under their normal QProcess owners. Descendants that detach,
+clear their environment or become unreadable still belong to the guard's kernel
+scope. A missing local supervisor or killed guard cannot prove that escaped
 children died, so ambiguous local shutdown retains ownership and capacity.
 Restoring accounting, the expected deployment, storage or controller is safer
 than discarding durable recovery state.

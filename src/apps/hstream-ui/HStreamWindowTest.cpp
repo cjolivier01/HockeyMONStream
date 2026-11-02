@@ -1,8 +1,10 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/SupervisedProcess.h"
 
 #include "absl/cleanup/cleanup.h"
 
 #include "hstream/src/gst-plugins/gst-playtracker/PlayTrackerRuntimeConfig.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
@@ -179,6 +181,7 @@ struct HStreamWindowTestAccess {
     window.capture_complete_log_ = true;
     window.pipeline_stop_timeout_ms_ = 1000;
     window.pipeline_kill_timeout_ms_ = 1000;
+    window.baseline_config_["workflow"]["poll_interval_ms"] = 10;
     const QString child = R"PY(
 import signal, sys, time
 def interrupted(signum, frame):
@@ -201,7 +204,20 @@ while True:
         const QSignalBlocker blocker(window.render_video_toggle_);
         window.render_video_toggle_->setChecked(name == "preview-ready");
       }
-      window.pipeline_process_->start("python3", {"-u", "-c", child, name});
+      if (!window.beginGameOperation("pipeline"))
+        return false;
+      auto environment = QProcessEnvironment::systemEnvironment();
+      environment.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(window.operation_game_.string()));
+      environment.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(window.operation_token_));
+      window.pipeline_process_->setProcessEnvironment(environment);
+      window.pipeline_process_->setProgram("python3");
+      window.pipeline_process_->setArguments({"-u", "-c", child, name});
+      window.pipeline_uses_process_group_ = true;
+      if (!hm::ui::PrepareSupervisedProcess(
+               *window.pipeline_process_, window.operation_game_, window.operation_token_, 1000, 10, true)
+               .ok())
+        return false;
+      window.pipeline_process_->start();
       if (!window.pipeline_process_->waitForStarted(5000) ||
           !QTest::qWaitFor([&] { return window.completeLogText().contains("STOP_TEST ready"); }, 5000))
         return false;
@@ -228,11 +244,12 @@ while True:
           return false;
         window.pipeline_paused_ = true;
       }
-      window.stopPipeline();
+      window.stopPipeline(finish);
       const QString output = window.completeLogText();
       const bool killed = name == "ignore-finish";
       const bool ok = window.pipeline_process_->state() == QProcess::NotRunning &&
-          (killed ? window.pipeline_process_->exitStatus() == QProcess::CrashExit
+          (killed ? window.pipeline_process_->exitStatus() == QProcess::NormalExit &&
+                   window.pipeline_process_->exitCode() == 128 + SIGKILL
                   : window.pipeline_process_->exitStatus() == QProcess::NormalExit &&
                    window.pipeline_process_->exitCode() == 0) &&
           output.contains("STOP_TEST finish") == finish && output.contains("STOP_TEST interrupted") == !finish &&
@@ -254,6 +271,67 @@ while True:
 #else
     return true;
 #endif
+  }
+
+  static bool guardedFinalizerChecks() {
+    HStreamWindow window;
+    window.baseline_config_["workflow"]["poll_interval_ms"] = 10;
+    const QString game = window.game_id_edit_->text().trimmed();
+    const QString directory = window.gameDirectory(game);
+    for (const QString& output :
+         {QString("archive-file"), QString("archive-program-4k"), QString("archive-stitched")}) {
+      const QString source = QDir(directory).filePath("_hockeymon/guard-" + output + ".mkv");
+      QFile file(source);
+      if (!file.open(QIODevice::WriteOnly) || file.write("guarded archive contents") != 24)
+        return false;
+      file.close();
+      if (!window.beginGameOperation("pipeline"))
+        return false;
+      window.startArchiveFinalization(source, game, false, output == "archive-stitched", output);
+      if (!hm::ui::HasSupervisedProcess(*window.archive_finalize_process_) ||
+          !QTest::qWaitFor(
+              [&] { return window.outputStateText(output) == "SAVED" && window.operation_token_.empty(); }, 10000)) {
+        std::cerr << "Guarded finalizer failed for " << output.toStdString() << '\n' << window.logText().toStdString();
+        return false;
+      }
+      QFile completed(window.archive_finalize_target_path_);
+      if (!completed.open(QIODevice::ReadOnly) || completed.readAll() != "guarded archive contents" ||
+          QFileInfo::exists(source))
+        return false;
+    }
+    return true;
+  }
+
+  static bool killedPipelineGuardChecks() {
+    HStreamWindow window;
+    const QString game = "killed-pipeline-guard";
+    const QString directory = window.gameDirectory(game);
+    if (!QDir().mkpath(QDir(directory).filePath("_hockeymon")))
+      return false;
+    window.game_id_edit_->setText(game);
+    window.baseline_config_["workflow"]["poll_interval_ms"] = 10;
+    if (!window.beginGameOperation("pipeline"))
+      return false;
+    const auto token = window.operation_token_;
+    window.pipeline_process_->setProgram("/bin/sleep");
+    window.pipeline_process_->setArguments({"30"});
+    if (!hm::ui::PrepareSupervisedProcess(*window.pipeline_process_, window.operation_game_, token, 1000, 10, true)
+             .ok())
+      return false;
+    window.pipeline_process_->start();
+    if (!window.pipeline_process_->waitForStarted(5000))
+      return false;
+    const auto guard_pid = static_cast<pid_t>(window.pipeline_process_->processId());
+    if (!QTest::qWaitFor([&] { return ::getpgid(guard_pid) == guard_pid; }, 5000))
+      return false;
+    // Kill only this test's session; the missing guard receipt must still fence
+    // completion even when the command and every visible helper have exited.
+    ::kill(-guard_pid, SIGKILL);
+    if (!QTest::qWaitFor([&] { return window.pipeline_completion_proof_pending_; }, 5000))
+      return false;
+    const auto owner = hm::game_operation::Inspect(directory.toStdString());
+    return owner.ok() && owner->has_value() && (**owner).token == token && !window.save_preset_button_->isEnabled() &&
+        !window.start_button_->isEnabled() && window.pipeline_state_->text().startsWith("RECOVERY REQUIRED:");
   }
 
   static bool previewOverlayStartupChecks() {
@@ -3282,13 +3360,18 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   std::thread post_remove_writer([config, &post_remove_writer_ok] {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
-    if (!lock.ok())
+    if (!lock.ok()) {
+      std::cerr << "post-remove writer lock: " << lock.status() << '\n';
       return;
+    }
     YAML::Node latest = YAML::LoadFile(config.string());
     latest["hstream_ui"]["video_roles"]["right"].push_back("_hockeymon/hstream-ui/right/concurrent.mov");
     latest["concurrent"]["post_remove_keep"] = true;
-    post_remove_writer_ok =
-        hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(latest) + "\n").ok();
+    const auto published =
+        hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(latest) + "\n");
+    post_remove_writer_ok = published.ok();
+    if (!published.ok())
+      std::cerr << "post-remove writer publish: " << published << '\n';
   });
   ::setenv("HM_TEST_VIDEO_REMOVE_POST_TRANSACTION_DELAY_MS", "100", 1);
   ::setenv("HM_TEST_VIDEO_REMOVE_FAIL", "_hockeymon/hstream-ui/right/GX010002.MP4", 1);
@@ -3312,6 +3395,46 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           post_remove_state_ok,
           "Failed deletion rollback must preserve the original role before a serialized same-role append")) {
     return false;
+  }
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
+    if (!expect(lock.ok(), "Video-list snapshot fixture must acquire the config transaction"))
+      return false;
+    const YAML::Node before_refresh = YAML::LoadFile(config.string());
+    YAML::Node changed = YAML::Clone(before_refresh);
+    const QString retry_video = "_hockeymon/hstream-ui/right/snapshot-retry.mov";
+    changed["hstream_ui"]["video_roles"]["right"].push_back(retry_video.toStdString());
+    if (!expect(
+            hm::stitching::publish_game_config(config.parent_path().parent_path(), YAML::Dump(changed) + "\n").ok(),
+            "Video-list snapshot fixture must publish its updated role"))
+      return false;
+    const int original_count = list->count();
+    activate(create);
+    if (!expect(
+            list->count() == original_count && list_contains(list, "Right  _hockeymon/hstream-ui/right/GX010002.MP4") &&
+                !list_contains(list, retry_video),
+            "A busy snapshot must retain the displayed video roles until its transaction finishes"))
+      return false;
+    lock->reset();
+    QElapsedTimer retry_timer;
+    retry_timer.start();
+    while (!list_contains(list, retry_video) && retry_timer.elapsed() < 5000)
+      QTest::qWait(10);
+    if (!expect(
+            list_contains(list, "Right  " + retry_video),
+            "The deferred video-list snapshot must adopt the completed native role update"))
+      return false;
+    {
+      auto restore = hm::stitching::GameConfigTransactionLock::Acquire(config.parent_path().parent_path());
+      if (!expect(
+              restore.ok() &&
+                  hm::stitching::publish_game_config(
+                      config.parent_path().parent_path(), YAML::Dump(before_refresh) + "\n")
+                      .ok(),
+              "Video-list snapshot fixture must restore its original config"))
+        return false;
+    }
+    activate(create);
   }
   if (!select_list_item(list, "Right  _hockeymon/hstream-ui/right/GX010002.MP4")) {
     return false;
@@ -9091,8 +9214,8 @@ bool test_output_controls(HStreamWindow* window) {
 
   qputenv("HM_OUTPUT_WORK_DIR", output_root.path().toLocal8Bit());
   game_id_edit->setText("archive-label-refresh-test");
-  const QString alternate_path =
-      QDir(QDir(output_root.path()).filePath("archive-label-refresh-test")).filePath("program_8k_output-with-audio.mkv");
+  const QString alternate_path = QDir(QDir(output_root.path()).filePath("archive-label-refresh-test"))
+                                     .filePath("program_8k_output-with-audio.mkv");
   const bool path_refreshes_with_game = expect(
       archive_path->text().contains(alternate_path),
       "Archive path should refresh immediately when the game ID changes");
@@ -9224,8 +9347,8 @@ bool test_output_controls(HStreamWindow* window) {
     const QString resolved_log = resolved_source + ".log";
     const QString resolved_guard = resolved_log + ".hstream-pin";
     QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
-    const QStringList provisional_logs_before =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList provisional_logs_before = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QFile::remove(resolved_log);
     QFile::remove(resolved_guard);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", resolved_source.toLocal8Bit());
@@ -9241,8 +9364,8 @@ bool test_output_controls(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    const QStringList provisional_logs_running =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList provisional_logs_running = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString active_provisional_guard;
     struct stat active_provisional_guard_stat{};
     bool active_provisional_guard_pinned = false;
@@ -9263,8 +9386,8 @@ bool test_output_controls(HStreamWindow* window) {
     qunsetenv("HSTREAM_UI_TEST_RENAME_PATH_SOURCE_REPLACEMENT");
     qunsetenv("HSTREAM_UI_TEST_FORCE_RENAME_NOREPLACE_UNSUPPORTED");
     qunsetenv("HSTREAM_UI_TEST_ARCHIVE_PRIVATE_ENTRY_UNLINK_FAILURE");
-    const QStringList provisional_logs_after =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList provisional_logs_after = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     bool fallback_log_retained = false;
     bool foreign_source_retained = false;
     for (const QString& provisional_log : provisional_logs_after) {
@@ -9424,8 +9547,8 @@ bool test_output_controls(HStreamWindow* window) {
         QDir(cross_filesystem_root.path()).filePath("cross-filesystem-sync-failure.mkv");
     const QString cross_filesystem_sync_failure_log = cross_filesystem_sync_failure_source + ".log";
     QDir provisional_log_dir(QFileInfo(planned_path).absolutePath());
-    const QStringList provisional_logs_before =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList provisional_logs_before = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_sync_failure_source.toLocal8Bit());
     qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_SYNC_FAILURE", "1");
     activate(start);
@@ -9438,8 +9561,8 @@ bool test_output_controls(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    const QStringList provisional_logs_after =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList provisional_logs_after = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString fallback_log_text;
     for (const QString& provisional_log : provisional_logs_after) {
       if (provisional_logs_before.contains(provisional_log))
@@ -9458,8 +9581,8 @@ bool test_output_controls(HStreamWindow* window) {
     const QString cross_filesystem_copy_replacement_source =
         QDir(cross_filesystem_root.path()).filePath("cross-filesystem-copy-replacement.mkv");
     const QString cross_filesystem_copy_replacement_log = cross_filesystem_copy_replacement_source + ".log";
-    const QStringList replacement_provisional_logs_before =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList replacement_provisional_logs_before = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_copy_replacement_source.toLocal8Bit());
     qputenv("HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_COPY_REPLACEMENT", "1");
     activate(start);
@@ -9472,8 +9595,8 @@ bool test_output_controls(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    const QStringList replacement_provisional_logs_after =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList replacement_provisional_logs_after = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString replacement_fallback_log_text;
     for (const QString& provisional_log : replacement_provisional_logs_after) {
       if (replacement_provisional_logs_before.contains(provisional_log))
@@ -9496,8 +9619,8 @@ bool test_output_controls(HStreamWindow* window) {
     const QString cross_filesystem_reopen_failure_source =
         QDir(cross_filesystem_root.path()).filePath("cross-filesystem-reopen-failure.mkv");
     const QString cross_filesystem_reopen_failure_log = cross_filesystem_reopen_failure_source + ".log";
-    const QStringList reopen_provisional_logs_before =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList reopen_provisional_logs_before = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     qputenv("HSTREAM_UI_TEST_ARCHIVE_RESOLVED_PATH", cross_filesystem_reopen_failure_source.toLocal8Bit());
     qputenv(
         "HSTREAM_UI_TEST_ARCHIVE_CROSS_FILESYSTEM_REOPEN_FAILURE", cross_filesystem_reopen_failure_log.toLocal8Bit());
@@ -9511,8 +9634,8 @@ bool test_output_controls(HStreamWindow* window) {
       QApplication::processEvents();
       QTest::qWait(10);
     }
-    const QStringList reopen_provisional_logs_after =
-        provisional_log_dir.entryList({"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
+    const QStringList reopen_provisional_logs_after = provisional_log_dir.entryList(
+        {"program_8k_output-with-audio.hstream-run-ui-*.mkv.log"}, QDir::Files, QDir::Name);
     QString reopen_fallback_log_text;
     for (const QString& provisional_log : reopen_provisional_logs_after) {
       if (reopen_provisional_logs_before.contains(provisional_log))
@@ -14606,7 +14729,13 @@ bool test_control_point_filtering(const QString& source_game_directory) {
   config["stitching"].remove("control_point_filtering");
   config["hstream_ui"].remove("generated_control_point_filtering");
   config["hstream_ui"].remove("generated_stitching_backend_choices");
-  hm::stitching::ControlPointFiltering previous;
+  const auto baseline_path = find_test_baseline_yaml();
+  if (!expect(baseline_path.has_value(), "Could not locate the geometric-filtering baseline"))
+    return false;
+  const auto defaults = hm::stitching::read_control_point_filtering(YAML::LoadFile(baseline_path->string()));
+  if (!expect(defaults.ok(), "The baseline must declare the geometric-filtering defaults"))
+    return false;
+  auto previous = *defaults;
   for (const auto next :
        {hm::stitching::ControlPointFiltering{false, true},
         hm::stitching::ControlPointFiltering{false, false},
@@ -14630,7 +14759,7 @@ bool test_control_point_filtering(const QString& source_game_directory) {
     if (!expect(
             epipolar->isChecked() == previous.epipolar_ransac &&
                 homography->isChecked() == previous.homography_consistency && !advanced->isChecked(),
-            "Both filters default on, reload independently, and stay behind Advanced"))
+            "Filters follow baseline defaults, reload independently, and stay behind Advanced"))
       return false;
     epipolar->setChecked(next.epipolar_ransac);
     homography->setChecked(next.homography_consistency);
@@ -14653,7 +14782,8 @@ bool test_control_point_filtering(const QString& source_game_directory) {
       return false;
     reset->click();
     if (!expect(
-            epipolar->isChecked() && homography->isChecked(),
+            epipolar->isChecked() == defaults->epipolar_ransac &&
+                homography->isChecked() == defaults->homography_consistency,
             "Reset Controls must restore geometric filtering defaults when playback is stopped"))
       return false;
     previous = next;
@@ -20244,6 +20374,7 @@ bool test_stitching_still() {
   config["stitching"]["run_autooptimizer"] = choices.run_autooptimizer;
   hm::stitching::write_stitch_camera_selection(config, choices.camera);
   hm::stitching::write_stitch_projection_framing(config, choices.projection_framing);
+  hm::stitching::write_control_point_filtering(config, choices.control_point_filtering);
   config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "still-preview-a";
   if (!hm::stitching::reserve_stitching_backend_generation_in_config(config, "still-preview-a", choices).ok())
@@ -20641,17 +20772,20 @@ bool test_rink_map_with_late_render() {
     }
   });
   activate(start);
-  if (!expect(QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000),
+  if (!expect(
+          QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000),
           "Program must start with Render initially off") ||
-      !expect(HStreamWindowTestAccess::launchedArguments(&window).contains("--ui-preview-active=none") &&
-          HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_UI_PREVIEW_RINK_MAP") == "1",
+      !expect(
+          HStreamWindowTestAccess::launchedArguments(&window).contains("--ui-preview-active=none") &&
+              HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_UI_PREVIEW_RINK_MAP") == "1",
           "A dormant preview must prepare its selected mini-map before any editor is opened"))
     return false;
   const int launches = window.logText().count("pipeline command ");
   render->setChecked(true);
-  return expect(QTest::qWaitFor([&] { return window.logText().contains("GPU preview ready channel=program"); }, 5000) &&
-      window.logText().count("pipeline command ") == launches &&
-      HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_UI_PREVIEW_RINK_MAP") == "1",
+  return expect(
+      QTest::qWaitFor([&] { return window.logText().contains("GPU preview ready channel=program"); }, 5000) &&
+          window.logText().count("pipeline command ") == launches &&
+          HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_UI_PREVIEW_RINK_MAP") == "1",
       "Enabling Render must activate the same process with its mini-map already prepared");
 }
 
@@ -21390,6 +21524,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STILL_ONLY"))
+    return test_stitching_still() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_LATE_RENDER_RINK_MAP_ONLY"))
     return test_rink_map_with_late_render() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY")) {
@@ -21444,6 +21580,13 @@ int main(int argc, char** argv) {
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STOP_PROTOCOL_ONLY"))
     return 0;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GUARD_LIFECYCLE_ONLY")) {
+    if (!test_active_process_destruction() || !test_process_pause_protocol() || !test_paused_preview_command_order())
+      return 1;
+    return HStreamWindowTestAccess::guardedFinalizerChecks() && HStreamWindowTestAccess::killedPipelineGuardChecks()
+        ? 0
+        : 1;
+  }
   if (!HStreamWindowTestAccess::previewOverlayStartupChecks())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PREVIEW_OVERLAY_STARTUP_ONLY"))
@@ -21503,8 +21646,6 @@ int main(int argc, char** argv) {
     window.show();
     return test_output_controls(&window) ? 0 : 1;
   }
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STILL_ONLY"))
-    return test_stitching_still() ? 0 : 1;
   if (!test_stitching_still())
     return 1;
   if (!test_gpu_memory_profile())

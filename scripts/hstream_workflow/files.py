@@ -183,7 +183,7 @@ def locked(path, *, blocking=True):
             identity(info) == identity(os.stat(path, follow_symlinks=False)),
             "Workflow lock was replaced",
         )
-        yield
+        yield descriptor
     finally:
         os.close(descriptor)
 

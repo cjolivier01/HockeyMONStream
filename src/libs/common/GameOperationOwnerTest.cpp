@@ -1,11 +1,7 @@
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 
-#include <fcntl.h>
-#include <poll.h>
-#include <sys/prctl.h>
 #include <sys/wait.h>
-#include <time.h>
 #include <unistd.h>
 #include <cerrno>
 #include <filesystem>
@@ -45,200 +41,6 @@ void competing_process(const fs::path& game, const std::string& kind) {
       ::waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
       "second process bypassed active admission");
 }
-
-struct Pipe {
-  int descriptors[2];
-  Pipe() {
-    require(::pipe2(descriptors, O_CLOEXEC) == 0, "cannot create process fixture pipe");
-  }
-  ~Pipe() {
-    ::close(descriptors[0]);
-    ::close(descriptors[1]);
-  }
-  template <typename T>
-  void send(const T& value) const {
-    require(::write(descriptors[1], &value, sizeof(value)) == sizeof(value), "cannot signal process fixture");
-  }
-  template <typename T>
-  T receive() const {
-    struct pollfd ready{descriptors[0], POLLIN, 0};
-    int result;
-    do {
-      result = ::poll(&ready, 1, 5000);
-    } while (result < 0 && errno == EINTR);
-    require(result > 0 && (ready.revents & POLLIN), "process fixture did not become ready");
-    T value{};
-    require(::read(descriptors[0], &value, sizeof(value)) == sizeof(value), "cannot read process fixture");
-    return value;
-  }
-};
-
-struct Child {
-  pid_t pid;
-  ~Child() {
-    if (pid <= 0)
-      return;
-    ::kill(pid, SIGKILL);
-    while (::waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {
-    }
-  }
-  void reap() {
-    int status = 0;
-    require(
-        ::waitpid(pid, &status, 0) == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0, "process fixture failed");
-    pid = -1;
-  }
-};
-
-uint64_t current_ticks() {
-  struct timespec now{};
-  const long rate = ::sysconf(_SC_CLK_TCK);
-  require(rate > 0 && ::clock_gettime(CLOCK_BOOTTIME, &now) == 0, "cannot inspect process admission clock");
-  return uint64_t(now.tv_sec) * rate + uint64_t(now.tv_nsec) * rate / 1000000000ULL;
-}
-
-void next_tick() {
-  const auto before = current_ticks();
-  for (int retry = 0; retry < 1000; ++retry) {
-    if (current_ticks() > before)
-      return;
-    ::usleep(1000);
-  }
-  throw std::runtime_error("process admission clock did not advance");
-}
-
-[[noreturn]] void hidden_helper(const Pipe& ready, pid_t parent) {
-  try {
-    require(::prctl(PR_SET_PDEATHSIG, SIGKILL) == 0 && ::getppid() == parent, "cannot contain hidden process fixture");
-    require(::setsid() >= 0 && ::prctl(PR_SET_DUMPABLE, 0) == 0, "cannot hide process fixture environment");
-    ready.send(::getpid());
-    for (;;)
-      ::pause();
-  } catch (...) {
-    ::_exit(90);
-  }
-}
-
-void verify_hidden(pid_t pid) {
-  const int fd = ::open(("/proc/" + std::to_string(pid) + "/environ").c_str(), O_RDONLY | O_CLOEXEC);
-  const int error = errno;
-  if (fd >= 0)
-    ::close(fd);
-  require(fd < 0 && (error == EACCES || error == EPERM), "fixture must have an unreadable environment");
-}
-
-op::Owner claim_local(const fs::path& game) {
-  fs::create_directory(game);
-  auto owner = op::LocalOwner("pipeline", "hidden-helper", take(op::NewToken()));
-  auto lock = take(op::Lock::Acquire(game));
-  check(lock->Claim(owner));
-  return owner;
-}
-
-void hidden_service_test(const fs::path& game, bool preexisting) {
-  const auto owner = claim_local(game);
-  if (!preexisting) {
-    op::RegisterAuthorization(game, owner.token);
-    next_tick();
-  }
-  Pipe command, ready;
-  Child service{::fork()};
-  require(service.pid >= 0, "cannot fork unrelated service");
-  if (service.pid == 0) {
-    try {
-      ready.send(::getpid());
-      require(command.receive<char>() == 's', "invalid service fixture command");
-      const pid_t parent = ::getpid();
-      const pid_t helper = ::fork();
-      require(helper >= 0, "cannot fork hidden service helper");
-      if (helper == 0)
-        hidden_helper(ready, parent);
-      int status = 0;
-      require(::waitpid(helper, &status, 0) == helper && WIFSIGNALED(status), "service helper was not retired");
-      ::_exit(0);
-    } catch (...) {
-      ::_exit(91);
-    }
-  }
-  require(ready.receive<pid_t>() == service.pid, "wrong service identity");
-  next_tick();
-  // Re-registration must retain the original admission epoch and ancestors.
-  op::RegisterAuthorization(game, owner.token);
-  command.send('s');
-  Child helper{ready.receive<pid_t>()};
-  verify_hidden(helper.pid);
-  if (preexisting) {
-    require(take(op::LocalChildrenStopped(owner.token)), "unrelated older service cannot block cleanup");
-    check(op::SignalLocalChildren(owner.token, SIGKILL));
-    require(::kill(helper.pid, 0) == 0, "unrelated hidden helper must not receive an owned signal");
-    check(op::ReleaseLocal(game, owner.token, true));
-    require(!take(op::Inspect(game)), "unrelated hidden helper must permit owner release");
-  } else {
-    require(!op::LocalChildrenStopped(owner.token).ok(), "re-registration cannot exclude a possible owned helper");
-    require(!op::ReleaseLocal(game, owner.token, true).ok(), "unknown newer service must retain ownership");
-  }
-  require(::kill(helper.pid, SIGKILL) == 0, "cannot stop hidden service helper");
-  helper.pid = -1; // The service owns waitpid and must reap its child.
-  service.reap();
-  if (!preexisting)
-    check(op::ReleaseLocal(game, owner.token, true));
-}
-
-void hidden_owned_test(const fs::path& game, bool adopted) {
-  int original_subreaper = 0;
-  require(::prctl(PR_GET_CHILD_SUBREAPER, &original_subreaper) == 0, "cannot inspect subreaper setting");
-  struct RestoreSubreaper {
-    int value;
-    ~RestoreSubreaper() {
-      ::prctl(PR_SET_CHILD_SUBREAPER, value);
-    }
-  } restore{original_subreaper};
-  if (adopted)
-    require(::prctl(PR_SET_CHILD_SUBREAPER, 1) == 0, "cannot enable fixture subreaper");
-  const auto owner = claim_local(game);
-  op::RegisterAuthorization(game, owner.token);
-  Pipe ready, exit_intermediate;
-  const pid_t original_parent = ::getpid();
-  Child child{::fork()};
-  require(child.pid >= 0, "cannot fork hidden owned helper");
-  if (child.pid == 0) {
-    if (!adopted)
-      hidden_helper(ready, original_parent);
-    try {
-      const pid_t helper = ::fork();
-      require(helper >= 0, "cannot fork orphaned helper");
-      if (helper == 0) {
-        // It deliberately survives its intermediate parent to exercise the
-        // original subreaper path; the outer fixture will own and reap it.
-        require(::setsid() >= 0 && ::prctl(PR_SET_DUMPABLE, 0) == 0, "cannot hide orphan fixture");
-        ready.send(::getpid());
-        for (;;)
-          ::pause();
-      }
-      require(exit_intermediate.receive<char>() == 'x', "invalid intermediate fixture command");
-      ::_exit(0);
-    } catch (...) {
-      ::_exit(92);
-    }
-  }
-  const pid_t hidden = ready.receive<pid_t>();
-  Child orphan{adopted ? hidden : -1};
-  if (adopted) {
-    exit_intermediate.send('x');
-    child.reap();
-    siginfo_t status{};
-    require(
-        ::waitid(P_PID, hidden, &status, WEXITED | WNOHANG) == 0 && status.si_pid == 0,
-        "hidden helper must be adopted by the original subreaper");
-  }
-  verify_hidden(hidden);
-  require(!op::LocalChildrenStopped(owner.token).ok(), "hidden owned helper must leave cleanup uncertain");
-  require(!op::ReleaseLocal(game, owner.token, true).ok(), "hidden owned helper must retain game admission");
-  require(take(op::Inspect(game))->token == owner.token, "uncertain cleanup must retain exact owner");
-  require(::kill(hidden, SIGKILL) == 0 && ::waitpid(hidden, nullptr, 0) == hidden, "cannot retire hidden owned helper");
-  (adopted ? orphan : child).pid = -1;
-  check(op::ReleaseLocal(game, owner.token, true));
-}
 } // namespace
 
 int main() {
@@ -255,6 +57,7 @@ int main() {
     }
   } cleanup{root};
   try {
+    check(op::EnableIsolatedChildProof());
     for (const std::string kind : {"pipeline", "int8", "workflow"}) {
       const fs::path game = root / kind;
       fs::create_directory(game);
@@ -314,17 +117,13 @@ int main() {
       require(
           take(op::LocalChildrenStopped(owner.token)),
           "exited zombie has released resources and cannot block admission cleanup");
-      int status = 0;
       require(
-          ::waitpid(child, &status, 0) == child && WIFSIGNALED(status), "owned child must be signalled through pidfd");
+          ::waitpid(child, nullptr, WNOHANG) == -1 && errno == ECHILD,
+          "isolated kernel proof must reap the exited helper");
       require(take(op::LocalChildrenStopped(owner.token)), "reaped helper must permit confirmed cleanup");
       check(op::ReleaseLocal(game, owner.token, true));
       require(!take(op::Inspect(game)), "local release must clear the durable owner after child proof");
     }
-    hidden_service_test(root / "unrelated-hidden-child", true);
-    hidden_service_test(root / "newer-hidden-service", false);
-    hidden_owned_test(root / "owned-hidden-child", false);
-    hidden_owned_test(root / "orphaned-hidden-child", true);
     const fs::path game = root / "remote";
     fs::create_directory(game);
     auto owner = op::LocalOwner("workflow", "remote-workflow", take(op::NewToken()));

@@ -32,11 +32,33 @@ if a.admission:
    print(json.dumps({'error':'Another game operation owns this recording','code':'conflict'})); sys.exit(2)
   old=old or {'token':r['token'],'kind':r['kind'],'id':r['id'],'revision':1,'workflow_directory':r['workflow_directory']}
   owner.write_text(json.dumps(old))
+  if (game/'hold-acquire').exists():
+   (game/'acquire-ready').write_text(str(os.getpid()))
+   until=time.monotonic()+10
+   while not (game/'release-acquire').exists() and time.monotonic()<until: time.sleep(.01)
  elif a.admission=='cancel':
   old['cancel_requested']=True; old['revision']+=1; owner.write_text(json.dumps(old))
  elif a.admission=='release':
   assert old['token']==r['token'] and old['revision']==r['revision'] and r['stopped_and_clean']
+  if (game/'hold-release').exists():
+   (game/'release-ready').write_text(str(os.getpid()))
+   until=time.monotonic()+10
+   while not (game/'release-release').exists() and time.monotonic()<until: time.sleep(.01)
   owner.unlink(); old=None
+ elif a.admission in {'adopt','adopt-selection','adoption-status'}:
+  action=r.get('adoption',a.admission)
+  record=game/('_hockeymon/test-'+action+'.json')
+  exact={k:r[k] for k in ('workflow_id','attempt_id','catalog_key','workspace')}
+  if a.admission=='adoption-status':
+   accepted=json.loads(record.read_text()) if record.exists() else None
+   assert accepted is None or accepted==exact, 'A different result was already adopted'
+   print(json.dumps({'adopted':accepted is not None})); sys.exit(0)
+  if record.exists(): assert json.loads(record.read_text())==exact, 'A different result was already adopted'
+  else: record.write_text(json.dumps(exact))
+  if (game/'hold-adopt').exists():
+   (game/'adopt-ready').write_text(str(os.getpid()))
+   until=time.monotonic()+10
+   while not (game/'release-adopt').exists() and time.monotonic()<until: time.sleep(.01)
  print(json.dumps({'owner':old})); sys.exit(0)
 root=Path(r['root']); inputs=r['inputs']
 if inputs.get('detached'):
@@ -47,6 +69,7 @@ if inputs.get('fail'): print('fixture solver failed',flush=True); sys.exit(9)
 output=root/'output.txt'; output.write_text(r['stage_id'])
 result={key:r[key] for key in ('workflow_id','plan_digest','stage_id','attempt_id')}
 result.update(schema=1,status='unavailable' if inputs.get('unavailable') else 'succeeded',outputs={'workspace':str(output)},message='fixture completed',artifacts=[{'identity_schema':2,'storage_namespace':r['runtime']['storage_namespace'],'path':'output.txt','kind':'data','size':output.stat().st_size,'sha256':hashlib.sha256(output.read_bytes()).hexdigest()}])
+if inputs.get('catalog_key'): result['outputs'].update(catalog_key=inputs['catalog_key'],adoption=inputs.get('adoption','complete'))
 Path(r['result_path']).write_text(json.dumps(result))
 """
 
@@ -178,6 +201,132 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(self.controller.registry.read()["workflows"], {})
         self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
 
+    def test_cancel_reconciles_committed_acquire_with_lost_response(self):
+        native = self.controller._native
+
+        def lose_response(directory, action, payload, **kwargs):
+            result = native(directory, action, payload, **kwargs)
+            if action == "acquire":
+                raise OSError("response lost after claim")
+            return result
+
+        with patch.object(
+            self.controller, "_native", side_effect=lose_response
+        ), self.assertRaises(OSError):
+            self.controller.register(self.plan, self.game)
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        self.assertFalse(read_json(directory / "owner.json")["acquired"])
+        self.assertTrue((self.game / "_hockeymon/test-owner.json").exists())
+        self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+        result = self.wait()
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["owner_released"])
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        self.controller.retry(self.plan["workflow_id"], ["a", "b"], expected_epoch=0)
+        self.assertEqual(self.wait()["state"], "succeeded")
+
+    def test_cancel_waits_for_orphaned_native_acquire_helper(self):
+        (self.game / "hold-acquire").touch()
+        plan = self.root / "plan.json"
+        write_json(plan, self.plan)
+        parent = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).parent / "hstream-workflow"),
+                "submit",
+                "--registry",
+                str(self.registry),
+                "--plan",
+                str(plan),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        outcomes, failures = [], []
+        thread = None
+        try:
+            deadline = time.monotonic() + 5
+            while (
+                not (self.game / "acquire-ready").exists()
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            self.assertTrue((self.game / "acquire-ready").exists())
+            parent.kill()
+            parent.wait(timeout=5)
+            entered = threading.Event()
+
+            def cancel():
+                entered.set()
+                try:
+                    outcomes.append(
+                        self.controller.cancel(
+                            self.plan["workflow_id"], expected_epoch=0
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001 - retain thread failures
+                    failures.append(exc)
+
+            thread = threading.Thread(target=cancel)
+            thread.start()
+            self.assertTrue(entered.wait(2))
+            thread.join(0.1)
+            self.assertTrue(
+                thread.is_alive(), "Orphan helper lost the native admission barrier"
+            )
+            directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+            self.assertFalse((directory / "cancel-intent.json").exists())
+        finally:
+            (self.game / "release-acquire").touch()
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            if thread is not None:
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+        self.assertFalse(failures)
+        self.assertEqual(len(outcomes), 1)
+        result = self.wait()
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["owner_released"])
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+
+    def test_real_local_fork_rejection_releases_game_and_allows_retry(self):
+        self.controller.register(self.plan, self.game)
+        script = """
+import resource, sys
+from hstream_workflow.controller import Controller
+controller = Controller(sys.argv[1])
+before = resource.getrlimit(resource.RLIMIT_NPROC)
+try:
+ resource.setrlimit(resource.RLIMIT_NPROC, (0, before[1]))
+ controller.tick(sys.argv[2])
+finally:
+ resource.setrlimit(resource.RLIMIT_NPROC, before)
+"""
+        if os.geteuid() == 0:
+            self.controller.cancel(self.plan["workflow_id"])
+            self.wait()
+            self.skipTest("Root is exempt from RLIMIT_NPROC")
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(self.registry),
+                self.plan["workflow_id"],
+            ],
+            check=True,
+            env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)),
+        )
+        self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+        result = self.wait()
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["owner_released"])
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
+        self.controller.retry(self.plan["workflow_id"], ["a", "b"], expected_epoch=0)
+        self.assertEqual(self.wait()["state"], "succeeded")
+
     def test_registered_or_unreadable_state_never_claims_nonacceptance(self):
         self.controller.register(self.plan, self.game)
         self.controller.config["profiles"]["cpu"]["label"] = "changed"
@@ -191,9 +340,8 @@ class ControllerTest(unittest.TestCase):
         fresh["profiles"]["cpu"]["label"] = "changed"
         with patch.object(
             self.controller.registry, "read", side_effect=OSError("unavailable")
-        ):
-            with self.assertRaises(WorkflowError) as failure:
-                self.controller.register(fresh, self.game)
+        ), self.assertRaises(WorkflowError) as failure:
+            self.controller.register(fresh, self.game)
         self.assertNotIsInstance(failure.exception, SubmissionRejected)
 
     def test_cli_classifies_profile_and_configuration_rejection(self):
@@ -393,7 +541,7 @@ class ControllerTest(unittest.TestCase):
                 outcomes.append(
                     self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - retain thread failures
                 failures.append(exc)
 
         def adopting(directory, action, payload, **kwargs):
@@ -421,6 +569,179 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(result["state"], "succeeded")
         self.assertFalse(read_json(directory / "state.json")["cancel_requested"])
         self.assertFalse((directory / "cancel-intent.json").exists())
+
+    def test_cancel_reconciles_committed_adoption_after_lost_response(self):
+        for adoption, action in (
+            ("complete", "adopt"),
+            ("selection", "adopt-selection"),
+        ):
+            with self.subTest(adoption=adoption):
+                plan = copy.deepcopy(self.plan)
+                plan["workflow_id"] = str(uuid4())
+                plan["stages"] = [
+                    self.stage("a", catalog_key="candidate", adoption=adoption)
+                ]
+                self.controller.register(plan, self.game)
+                native = self.controller._native
+
+                def lost_response(
+                    directory,
+                    command,
+                    payload,
+                    *,
+                    _native=native,
+                    _action=action,
+                    **kwargs,
+                ):
+                    response = _native(directory, command, payload, **kwargs)
+                    if command == _action:
+                        raise OSError("Lost native adoption response after commit")
+                    return response
+
+                with patch.object(
+                    self.controller, "_native", side_effect=lost_response
+                ):
+                    deadline = time.monotonic() + 10
+                    while time.monotonic() < deadline:
+                        status = self.controller.tick(plan["workflow_id"])
+                        if status["state"] == "recovery":
+                            break
+                        time.sleep(0.02)
+                self.assertEqual(status["state"], "recovery")
+                directory, _ = self.controller.registry.lookup(plan["workflow_id"])
+                root = next((directory / "attempts").iterdir())
+                for name in ("native-result.json", "output.txt"):
+                    (root / name).unlink()
+                self.controller.cancel(plan["workflow_id"], expected_epoch=0)
+                with patch.object(self.controller, "_native", wraps=native) as calls:
+                    status = self.wait(plan["workflow_id"])
+                self.assertEqual(status["state"], "succeeded")
+                self.assertEqual(status["nodes"][0]["state"], "succeeded")
+                self.assertTrue(status["owner_released"])
+                self.assertFalse(
+                    any(
+                        call.args[1] in {"adopt", "adopt-selection"}
+                        for call in calls.call_args_list
+                    )
+                )
+                self.assertEqual(self.controller.registry.read()["reservations"], {})
+
+    def test_cancel_uncommitted_adoption_intent_without_output_artifacts(self):
+        self.plan["stages"] = [self.stage("a", catalog_key="candidate")]
+        self.controller.register(self.plan, self.game)
+        native = self.controller._native
+
+        def not_committed(directory, action, payload, **kwargs):
+            if action == "adopt":
+                raise OSError("Native helper did not accept adoption")
+            return native(directory, action, payload, **kwargs)
+
+        with patch.object(self.controller, "_native", side_effect=not_committed):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                status = self.controller.tick(self.plan["workflow_id"])
+                if status["state"] == "recovery":
+                    break
+                time.sleep(0.02)
+        self.assertEqual(status["state"], "recovery")
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        root = next((directory / "attempts").iterdir())
+        self.assertTrue((root / "adoption-intent.json").exists())
+        for name in ("native-result.json", "output.txt"):
+            (root / name).unlink()
+        self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+        self.assertEqual(self.wait()["state"], "cancelled")
+
+    def orphan_control(self, action, command):
+        (self.game / ("hold-" + action)).touch()
+        parent = subprocess.Popen(
+            [
+                sys.executable,
+                str(Path(__file__).parent / "hstream-workflow"),
+                command,
+                "--registry",
+                str(self.registry),
+                "--workflow",
+                self.plan["workflow_id"],
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 5
+        while (
+            not (self.game / (action + "-ready")).exists()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        self.assertTrue((self.game / (action + "-ready")).exists())
+        parent.kill()
+        parent.wait(timeout=5)
+        return self.game / ("release-" + action)
+
+    def test_cancel_waits_for_orphaned_adoption_and_retains_committed_result(self):
+        self.plan["stages"] = [self.stage("a", catalog_key="candidate")]
+        self.controller.register(self.plan, self.game)
+        self.controller.tick(self.plan["workflow_id"])
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        root = next((directory / "attempts").iterdir())
+        deadline = time.monotonic() + 5
+        while not (root / "completion.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue((root / "completion.json").exists())
+        release = self.orphan_control("adopt", "reconcile")
+        outcomes = []
+        thread = threading.Thread(
+            target=lambda: outcomes.append(
+                self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+            )
+        )
+        try:
+            thread.start()
+            thread.join(0.1)
+            self.assertTrue(thread.is_alive())
+            self.assertFalse((directory / "cancel-intent.json").exists())
+        finally:
+            release.touch()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(self.wait()["state"], "succeeded")
+
+    def test_retry_waits_for_orphaned_release_and_confirmed_ownership_retirement(self):
+        self.plan["stages"] = [self.stage("a", fail=True)]
+        self.controller.register(self.plan, self.game)
+        self.controller.tick(self.plan["workflow_id"])
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        root = next((directory / "attempts").iterdir())
+        deadline = time.monotonic() + 5
+        while not (root / "completion.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue((root / "completion.json").exists())
+        release = self.orphan_control("release", "reconcile")
+        errors = []
+
+        def retry():
+            try:
+                self.controller.retry(self.plan["workflow_id"], ["a"], expected_epoch=0)
+            except WorkflowError as exc:
+                errors.append(str(exc))
+
+        thread = threading.Thread(target=retry)
+        try:
+            thread.start()
+            thread.join(0.1)
+            self.assertTrue(thread.is_alive())
+            self.assertEqual(read_json(directory / "state.json")["epoch"], 0)
+        finally:
+            release.touch()
+            thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(
+            errors, ["Wait for confirmed game ownership release before retrying"]
+        )
+        self.assertTrue(self.wait()["owner_released"])
+        self.controller.retry(self.plan["workflow_id"], ["a"], expected_epoch=0)
+        self.wait()
 
     def test_old_epoch_cannot_cancel_or_retry_a_new_attempt(self):
         self.plan["stages"] = [self.stage("a", fail=True)]

@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/SupervisedProcess.h"
 #include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include <QtCore/QDir>
@@ -85,8 +86,6 @@ Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWi
   connect(&process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
       status_->setText("Could not start preparation: " + process_.errorString());
-      prepare_->setEnabled(true);
-      count_->setEnabled(true);
       finishWhenStopped(1, QProcess::CrashExit);
     }
   });
@@ -105,11 +104,8 @@ Int8PreparationDialog::~Int8PreparationDialog() {
     (void)hm::game_operation::SignalLocalChildren(operation_token_, SIGKILL);
   qApp->removeEventFilter(this);
   if (process_.state() != QProcess::NotRunning) {
-    process_.terminate();
-    if (!process_.waitForFinished(5000)) {
-      process_.kill();
-      process_.waitForFinished(1000);
-    }
+    (void)hm::ui::SignalSupervisedProcess(process_, SIGKILL);
+    process_.waitForFinished(5000);
   }
   if (!operation_token_.empty()) {
     (void)hm::game_operation::ReleaseLocal(operation_game_, operation_token_, process_.state() == QProcess::NotRunning);
@@ -166,6 +162,11 @@ void Int8PreparationDialog::start() {
     }
     operation_token_ = *token;
     hm::game_operation::RegisterAuthorization(operation_game_, operation_token_);
+    const auto proof = hm::game_operation::EnableSupervisedChildProof(operation_token_);
+    if (!proof.ok()) {
+      status_->setText(QString::fromStdString(proof.ToString()));
+      return;
+    }
   }
   env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
   env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
@@ -208,6 +209,13 @@ void Int8PreparationDialog::start() {
          request_.game_id,
          "--samples",
          QString::number(count_->value())});
+  }
+  const auto prepared = PrepareSupervisedProcess(
+      process_, operation_game_, operation_token_, shutdown_timeout_ms_, poll_interval_ms_, true);
+  if (!prepared.ok()) {
+    log_->appendPlainText(QString::fromStdString(prepared.ToString()));
+    finishWhenStopped(1, QProcess::CrashExit);
+    return;
   }
   process_.start();
 }
@@ -295,12 +303,11 @@ void Int8PreparationDialog::reject() {
   }
   if (!operation_token_.empty())
     (void)hm::game_operation::SignalLocalChildren(operation_token_, SIGTERM);
-  process_.terminate();
   QTimer::singleShot(shutdown_timeout_ms_, this, [this] {
     if (!operation_token_.empty())
       (void)hm::game_operation::SignalLocalChildren(operation_token_, SIGKILL);
     if (process_.state() != QProcess::NotRunning)
-      process_.kill();
+      (void)SignalSupervisedProcess(process_, SIGKILL);
   });
 }
 } // namespace hm::ui

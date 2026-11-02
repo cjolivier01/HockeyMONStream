@@ -9,6 +9,7 @@
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
+#include "src/apps/hstream-ui/SupervisedProcess.h"
 
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
@@ -483,12 +484,20 @@ bool signal_experiment_session(qint64 session_id, const QString& token, int sign
 }
 
 void interrupt_process(QProcess* process, qint64 session_id, const QString& token) {
+  if (process && hm::ui::HasSupervisedProcess(*process)) {
+    (void)hm::ui::SignalSupervisedProcess(*process, SIGINT);
+    return;
+  }
   const bool signalled = signal_experiment_session(session_id, token, SIGINT);
   if (!signalled && process && process->state() != QProcess::NotRunning)
     process->terminate();
 }
 
 void kill_process(QProcess* process, qint64 session_id, const QString& token) {
+  if (process && hm::ui::HasSupervisedProcess(*process)) {
+    (void)hm::ui::SignalSupervisedProcess(*process, SIGKILL);
+    return;
+  }
   (void)signal_experiment_session(session_id, token, SIGKILL);
   if (process && process->state() != QProcess::NotRunning)
     process->kill();
@@ -620,6 +629,7 @@ struct StitchingExperimentDialog::Impl {
   QTimeEdit* preview_start{nullptr};
   QSpinBox* preview_duration{nullptr};
   int scan_interval_ms{0};
+  int shutdown_timeout_ms{0};
   QComboBox* blend_mode{nullptr};
   QDoubleSpinBox* blend_feather{nullptr};
   QWidget* blend_feather_row{nullptr};
@@ -698,9 +708,21 @@ struct StitchingExperimentDialog::Impl {
     return QString::fromStdString((**owner).id);
   }
 
+  bool local_cleanup_unconfirmed() const {
+    if (local_operation_token.isEmpty())
+      return false;
+    const auto stopped = hm::game_operation::LocalChildrenStopped(local_operation_token.toStdString());
+    return !stopped.ok() || !*stopped;
+  }
+
   bool claim_local_operation() {
-    if (!local_operation_token.isEmpty())
+    if (!local_operation_token.isEmpty()) {
+      if (local_cleanup_unconfirmed()) {
+        show_status("Previous experiment cleanup has no verified supervisor receipt; retaining ownership.", true);
+        return false;
+      }
       return true;
+    }
     auto lock = hm::game_operation::Lock::Acquire(game_directory.toStdString(), false);
     if (!lock.ok()) {
       show_status(QString::fromStdString(lock.status().ToString()), true);
@@ -719,6 +741,11 @@ struct StitchingExperimentDialog::Impl {
     }
     local_operation_token = QString::fromStdString(*token);
     hm::game_operation::RegisterAuthorization(game_directory.toStdString(), *token);
+    const auto proof = hm::game_operation::EnableSupervisedChildProof(*token);
+    if (!proof.ok()) {
+      show_status(QString::fromStdString(proof.ToString()), true);
+      return false;
+    }
     environment.insert("HSTREAM_GAME_OPERATION_GAME", game_directory);
     environment.insert("HSTREAM_GAME_OPERATION_TOKEN", local_operation_token);
     operation_poll->start();
@@ -986,20 +1013,22 @@ struct StitchingExperimentDialog::Impl {
         row >= 0 && row < static_cast<int>(candidates.size()) && removable_candidate(candidates[row]);
     const bool remote = workflow && workflow->active();
     const bool workflow_busy = workflow && workflow->busy();
+    const bool cleanup_unconfirmed = local_cleanup_unconfirmed();
     const bool active_batch = batch_active || remote || workflow_busy;
     if (auto* matrix = dialog->findChild<QScrollArea*>("stitchExperimentMatrixScroll")) {
       matrix->setMinimumHeight(remote ? 80 : 200);
       matrix->setMaximumHeight(remote ? 120 : 440);
     }
-    const bool editing_batch = store && store_error.isEmpty() && !workflow_busy && !remote && !active_batch &&
-        !preview_owned && !promoting && !stopping && !closing;
+    const bool editing_batch = store && store_error.isEmpty() && !cleanup_unconfirmed && !workflow_busy && !remote &&
+        !active_batch && !preview_owned && !promoting && !stopping && !closing;
     const auto queued_count =
         std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
     remove_from_batch->setEnabled(
-        store && !active_batch && !preview_owned && !promoting && !stopping && !closing && selected_removable);
+        store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
+        selected_removable);
     clear_batch->setEnabled(
-        store && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
+        store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
     start_batch->setEnabled(editing_batch && queued_count > 0);
     cancel->setEnabled((batch_active || remote) && !workflow_busy && !closing);
@@ -1007,8 +1036,8 @@ struct StitchingExperimentDialog::Impl {
     if (workflow)
       workflow->setEditingEnabled(editing_batch, queued_count > 0);
     preview->setEnabled(
-        selected && !candidates[row].main_calibration && !active_batch && !preview_owned && !promoting && !stopping &&
-        !closing);
+        selected && !cleanup_unconfirmed && !candidates[row].main_calibration && !active_batch && !preview_owned &&
+        !promoting && !stopping && !closing);
     stop_preview->setEnabled(previewing && !closing);
     apply->setEnabled(can_apply_selected() && !closing);
     inspect_frames->setEnabled(
@@ -1065,9 +1094,9 @@ struct StitchingExperimentDialog::Impl {
     const int row = table->currentRow();
     return row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete &&
         !candidates[row].main_calibration && candidates[row].workspace && !candidates[row].selection_reuse_blocked &&
-        !batch_active && !(workflow && (workflow->active() || workflow->busy())) && !promotion_worker &&
-        !preparation_worker && !preview_process && pending_group_shutdowns == 0 && !candidate_completion_pending &&
-        !preview_completion_pending;
+        !local_cleanup_unconfirmed() && !batch_active && !(workflow && (workflow->active() || workflow->busy())) &&
+        !promotion_worker && !preparation_worker && !preview_process && pending_group_shutdowns == 0 &&
+        !candidate_completion_pending && !preview_completion_pending;
   }
 
   StoredStitchingExperiment candidate_record(const Candidate& candidate, const std::string& state) const {
@@ -1839,16 +1868,27 @@ struct StitchingExperimentDialog::Impl {
     maybe_finish_close();
   }
 
+  bool cleanup_remains(bool calibration) const {
+    const QProcess* process = calibration ? calibration_process.get() : preview_process.get();
+    if (process && hm::ui::HasSupervisedProcess(*process)) {
+      const auto stopped = hm::ui::SupervisedProcessStopped(*process);
+      return !stopped.ok() || !*stopped;
+    }
+    return experiment_session_alive(
+        calibration ? calibration_process_group : preview_process_group,
+        calibration ? calibration_process_token : preview_process_token);
+  }
+
   void settle_finished_process(bool calibration) {
     std::optional<uint64_t>& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
     qint64& process_group = calibration ? calibration_process_group : preview_process_group;
     const QString& process_token = calibration ? calibration_process_token : preview_process_token;
     if (active.has_value()) {
-      if (!experiment_session_alive(process_group, process_token))
+      if (!cleanup_remains(calibration))
         finish_shutdown_ticket(calibration, *active);
       return;
     }
-    if (experiment_session_alive(process_group, process_token)) {
+    if (cleanup_remains(calibration)) {
       QProcess* process = calibration ? calibration_process.get() : preview_process.get();
       interrupt_process(process, process_group, process_token);
       schedule_forced_stop(calibration);
@@ -1867,7 +1907,7 @@ struct StitchingExperimentDialog::Impl {
     qint64& process_group = calibration ? calibration_process_group : preview_process_group;
     const QString& process_token = calibration ? calibration_process_token : preview_process_token;
     const bool process_running = process && process->state() != QProcess::NotRunning;
-    if (!process_running && !experiment_session_alive(process_group, process_token))
+    if (!process_running && !cleanup_remains(calibration))
       return;
     std::optional<uint64_t>& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
     if (active.has_value())
@@ -1898,7 +1938,7 @@ struct StitchingExperimentDialog::Impl {
     const auto& active = calibration ? calibration_shutdown_ticket : preview_shutdown_ticket;
     if (!active || *active != ticket)
       return;
-    const bool descendants_remain = group <= 0 || token.isEmpty() || experiment_session_alive(group, token);
+    const bool descendants_remain = cleanup_remains(calibration);
     if (descendants_remain && !calibration && !closing) {
       // SIGKILL delivery is not proof that GPU teardown or descendants have
       // finished. Keep the same owner and admission fence until they do.
@@ -2173,14 +2213,8 @@ struct StitchingExperimentDialog::Impl {
         args << "--stitching-calibration-with-ice-mask";
     }
     calibration_process->setProcessEnvironment(env);
-    bool uses_process_group = false;
-#ifdef Q_OS_UNIX
-    uses_process_group = true;
-    args.push_front(runner);
-    calibration_process->setProgram("/usr/bin/setsid");
-#else
+    const bool uses_process_group = true;
     calibration_process->setProgram(runner);
-#endif
     calibration_process->setArguments(args);
     QObject::connect(calibration_process.get(), &QProcess::started, dialog, [this, uses_process_group, generation]() {
       if (uses_process_group && generation == process_generation) {
@@ -2221,6 +2255,18 @@ struct StitchingExperimentDialog::Impl {
       calibration_process.reset();
       calibration_process_token.clear();
       launch_next_candidate();
+      return;
+    }
+    const auto supervised = hm::ui::PrepareSupervisedProcess(
+        *calibration_process,
+        game_directory.toStdString(),
+        local_operation_token.toStdString(),
+        shutdown_timeout_ms,
+        operation_poll->interval(),
+        true);
+    if (!supervised.ok()) {
+      finish_candidate(
+          candidate.row, generation, -1, QProcess::CrashExit, QString::fromStdString(supervised.ToString()));
       return;
     }
     calibration_process->start();
@@ -2962,14 +3008,8 @@ struct StitchingExperimentDialog::Impl {
          << QString("--time-limit=%1").arg(preview_duration->value())
          << QString("--ui-preview-windows=stitched:%1").arg(static_cast<qulonglong>(video->winId()))
          << "--ui-preview-active=stitched";
-    bool uses_process_group = false;
-#ifdef Q_OS_UNIX
-    uses_process_group = true;
-    args.push_front(runner);
-    preview_process->setProgram("/usr/bin/setsid");
-#else
+    const bool uses_process_group = true;
     preview_process->setProgram(runner);
-#endif
     preview_process->setArguments(args);
     QObject::connect(preview_process.get(), &QProcess::started, dialog, [this, uses_process_group]() {
       if (uses_process_group) {
@@ -3017,6 +3057,19 @@ struct StitchingExperimentDialog::Impl {
       preview_process_token.clear();
       preview_candidate_row = -1;
       update_controls();
+      return;
+    }
+    const auto supervised = hm::ui::PrepareSupervisedProcess(
+        *preview_process,
+        game_directory.toStdString(),
+        local_operation_token.toStdString(),
+        shutdown_timeout_ms,
+        operation_poll->interval(),
+        true);
+    if (!supervised.ok()) {
+      show_status(QString::fromStdString(supervised.ToString()), true);
+      preview_completion_pending = true;
+      settle_finished_process(false);
       return;
     }
     video->set_renderer_active(true);
@@ -3569,10 +3622,16 @@ struct StitchingExperimentDialog::Impl {
     const bool calibration_owned = (calibration_process && calibration_process->state() != QProcess::NotRunning) ||
         calibration_shutdown_ticket.has_value() ||
         experiment_session_alive(calibration_process_group, calibration_process_token);
+    for (QProcess* process : {preview_process.get(), calibration_process.get()})
+      if (process)
+        QObject::disconnect(process, nullptr, dialog, nullptr);
     if (preview_owned)
       kill_process(preview_process.get(), preview_process_group, preview_process_token);
     if (calibration_owned)
       kill_process(calibration_process.get(), calibration_process_group, calibration_process_token);
+    for (QProcess* process : {preview_process.get(), calibration_process.get()})
+      if (process && process->state() != QProcess::NotRunning && hm::ui::HasSupervisedProcess(*process))
+        process->waitForFinished(5000);
     const bool unverified_process =
         (preview_owned && preview_process_group <= 0) || (calibration_owned && calibration_process_group <= 0);
     if (session &&
@@ -3626,6 +3685,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     throw std::runtime_error(experiment_baseline.status().ToString());
   const auto experiment_defaults = ReadStitchingExperimentDefaults(experiment_baseline->values);
   s.scan_interval_ms = experiment_defaults.scan_interval_ms;
+  s.shutdown_timeout_ms = experiment_baseline->values["workflow"]["shutdown_timeout_seconds"].as<int>() * 1000;
   s.game_directory = game_directory;
   s.runner = runner;
   s.working_directory = working_directory;
@@ -3642,6 +3702,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.operation_poll->setInterval(experiment_baseline->values["workflow"]["poll_interval_ms"].as<int>());
   connect(s.operation_poll, &QTimer::timeout, this, [&s] {
     s.release_local_operation();
+    s.update_controls();
     s.maybe_finish_close();
   });
 

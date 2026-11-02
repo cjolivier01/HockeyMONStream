@@ -17,6 +17,7 @@
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/BackendPreview.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
+#include "src/apps/hstream-ui/SupervisedProcess.h"
 #ifndef HSTREAM_USE_HIP
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #endif
@@ -5439,10 +5440,19 @@ HStreamWindow::~HStreamWindow() {
   // child widgets lose their lifetime. Descendant dialogs own their processes.
   for (QProcess* process : findChildren<QProcess*>(QString(), Qt::FindDirectChildrenOnly))
     disconnect(process, nullptr, this, nullptr);
+  for (QProcess* process : {pipeline_process_, archive_finalize_process_}) {
+    if (process && process->state() != QProcess::NotRunning && hm::ui::HasSupervisedProcess(*process)) {
+      (void)hm::ui::SignalSupervisedProcess(*process, SIGKILL);
+      process->waitForFinished(5000);
+    }
+  }
   if (live_rotation_config_owner_) {
     if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
-      pipeline_process_->kill();
-      pipeline_process_->waitForFinished(-1);
+      if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+        (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGKILL);
+      else
+        pipeline_process_->kill();
+      pipeline_process_->waitForFinished(5000);
     }
     const auto status = live_rotation_config_owner_->Shutdown();
     if (!status.ok())
@@ -9624,9 +9634,36 @@ bool HStreamWindow::runStitchingClean(
   // must not complete or fail the archive run that has yet to start.
   clean_env.remove("HSTREAM_JOB_MANIFEST");
   clean_env.remove("HSTREAM_ARCHIVE_RUN_ID");
+  const bool own_admission = operation_token_.empty();
+  if (own_admission && !beginGameOperation("mutation"))
+    return false;
+  struct CleanAdmission {
+    std::function<void()> finish;
+    ~CleanAdmission() {
+      finish();
+    }
+  } clean_admission{[this, own_admission] {
+    if (own_admission)
+      releaseGameOperationIfStopped();
+  }};
+  clean_env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
+  clean_env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
   clean.setProcessEnvironment(clean_env);
   clean.setWorkingDirectory(working_dir);
-  clean.start(runner, clean_args);
+  clean.setProgram(runner);
+  clean.setArguments(clean_args);
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      clean,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      true);
+  if (!supervised.ok()) {
+    appendLog(QString::fromStdString(supervised.ToString()));
+    return false;
+  }
+  clean.start();
   if (!clean.waitForStarted(5000)) {
     appendLog(QString("failed to start stitching clean: %1").arg(clean.errorString()));
     return false;
@@ -9645,6 +9682,11 @@ bool HStreamWindow::runStitchingClean(
     for (const QString& line : output_text.split('\n')) {
       appendLog(line.trimmed());
     }
+  }
+  const auto stopped = hm::ui::SupervisedProcessStopped(clean);
+  if (!stopped.ok() || !*stopped) {
+    appendLog("Stitching cleanup has no verified shutdown receipt; retaining game ownership.");
+    return false;
   }
   if (clean.exitStatus() != QProcess::NormalExit || clean.exitCode() != 0) {
     appendLog(QString("stitching clean failed exit=%1").arg(clean.exitCode()));
@@ -11619,6 +11661,11 @@ bool HStreamWindow::beginGameOperation(const std::string& kind) {
   operation_token_ = *token;
   operation_retirement_started_ms_ = 0;
   hm::game_operation::RegisterAuthorization(game, *token);
+  const auto proof = hm::game_operation::EnableSupervisedChildProof(*token);
+  if (!proof.ok()) {
+    appendLog(QString::fromStdString(proof.ToString()));
+    return false;
+  }
   return true;
 }
 
@@ -12270,27 +12317,11 @@ void HStreamWindow::startPipeline() {
   env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
-#ifdef Q_OS_UNIX
-  const QString setsid = "/usr/bin/setsid";
   const bool test_without_setsid =
       !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() && qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BYPASS_SETSID");
-  if (QFileInfo::exists(setsid) && !test_without_setsid) {
-    QStringList wrapped_args;
-    wrapped_args << runner;
-    wrapped_args << args;
-    pipeline_process_->setProgram(setsid);
-    pipeline_process_->setArguments(wrapped_args);
-    pipeline_uses_process_group_ = true;
-  } else {
-    pipeline_process_->setProgram(runner);
-    pipeline_process_->setArguments(args);
-    pipeline_uses_process_group_ = false;
-  }
-#else
   pipeline_process_->setProgram(runner);
   pipeline_process_->setArguments(args);
-  pipeline_uses_process_group_ = false;
-#endif
+  pipeline_uses_process_group_ = !test_without_setsid;
   pipeline_paused_ = false;
   pipeline_cooperative_pause_ = false;
   pending_process_pause_generation_ = 0;
@@ -12331,6 +12362,19 @@ void HStreamWindow::startPipeline() {
   }
   appendLog(QString("pipeline command %1 %2").arg(runner, args.join(' ')));
   ++pipeline_run_generation_;
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      *pipeline_process_,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      pipeline_uses_process_group_);
+  if (!supervised.ok()) {
+    handlePipelineError(QProcess::FailedToStart);
+    appendLog(QString::fromStdString(supervised.ToString()));
+    preview_status_->setText("Pipeline supervisor unavailable");
+    return;
+  }
   pipeline_process_->start();
   updateRunControls();
 }
@@ -12512,7 +12556,9 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
       publish_partial && (active_hockeymon_program_ || finish_native_playback) && pipeline_process_->write("q\n") == 2;
   if (!cooperative_stop) {
 #ifdef Q_OS_UNIX
-    if (pid > 0)
+    if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+      (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGINT);
+    else if (pid > 0)
       ::kill(target, SIGINT);
     else
 #endif
@@ -12520,12 +12566,15 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
   }
   if (!pipeline_process_->waitForFinished(pipeline_stop_timeout_ms_)) {
     appendLog("pipeline did not exit after terminate; killing");
+    if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+      (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGKILL);
+    else {
 #ifdef Q_OS_UNIX
-    if (pid > 0 && pipeline_uses_process_group_) {
-      ::kill(target, SIGKILL);
-    }
+      if (pid > 0 && pipeline_uses_process_group_)
+        ::kill(target, SIGKILL);
 #endif
-    pipeline_process_->kill();
+      pipeline_process_->kill();
+    }
     if (!pipeline_process_->waitForFinished(pipeline_kill_timeout_ms_)) {
       appendLog("pipeline still running after kill");
     }
@@ -12589,6 +12638,24 @@ void HStreamWindow::handlePipelineStarted() {
 }
 
 void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
+  if (hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto stopped = hm::ui::SupervisedProcessStopped(*pipeline_process_);
+    if (!stopped.ok() || !*stopped) {
+      if (!pipeline_completion_proof_pending_) {
+        appendLog("Pipeline supervisor has no verified shutdown receipt; retaining game ownership and outputs.");
+        pipeline_completion_proof_pending_ = true;
+      }
+      const auto generation = pipeline_run_generation_;
+      QTimer::singleShot(
+          baseline_config_["workflow"]["poll_interval_ms"].as<int>(), this, [this, generation, exit_code, exit_status] {
+            if (generation == pipeline_run_generation_ && pipeline_process_->state() == QProcess::NotRunning)
+              handlePipelineFinished(exit_code, exit_status);
+          });
+      updateRunControls();
+      return;
+    }
+  }
+  pipeline_completion_proof_pending_ = false;
   hm::diagnostics::Breadcrumb(
       "pipeline",
       "finished code=" + std::to_string(exit_code) +
@@ -12896,6 +12963,14 @@ void HStreamWindow::updatePreviewTabResolution(const QString& channel, int width
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  if (error == QProcess::Crashed && hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto stopped = hm::ui::SupervisedProcessStopped(*pipeline_process_);
+    if (!stopped.ok() || !*stopped) {
+      appendLog("Pipeline supervisor exited without shutdown proof; completion remains fenced.");
+      updateRunControls();
+      return;
+    }
+  }
   hm::diagnostics::Breadcrumb("pipeline-error", std::to_string(static_cast<int>(error)));
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
@@ -15022,6 +15097,17 @@ void HStreamWindow::startArchiveFinalization(
       ::_exit(127);
   });
 #endif
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      *archive_finalize_process_,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      true);
+  if (!supervised.ok()) {
+    failArchiveFinalization(QString::fromStdString(supervised.ToString()));
+    return;
+  }
   archive_finalize_process_->start();
   updateRunControls();
 }
@@ -15304,11 +15390,38 @@ bool HStreamWindow::startArchiveDurabilitySync(const QString& path, ArchiveFinal
   archive_finalize_process_->setArguments({"-f", path});
 #endif
   archive_finalize_process_->setWorkingDirectory(QFileInfo(path).absolutePath());
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      *archive_finalize_process_,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      true);
+  if (!supervised.ok()) {
+    if (error)
+      *error = QString::fromStdString(supervised.ToString());
+    return false;
+  }
   archive_finalize_process_->start();
   return true;
 }
 
 void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status) {
+  if (hm::ui::HasSupervisedProcess(*archive_finalize_process_)) {
+    const auto stopped = hm::ui::SupervisedProcessStopped(*archive_finalize_process_);
+    if (!stopped.ok() || !*stopped) {
+      if (!archive_completion_proof_pending_) {
+        appendLog("Archive helper has no verified shutdown receipt; retaining publication ownership.");
+        archive_completion_proof_pending_ = true;
+      }
+      QTimer::singleShot(
+          baseline_config_["workflow"]["poll_interval_ms"].as<int>(), this, [this, exit_code, exit_status] {
+            finishArchiveFinalization(exit_code, exit_status);
+          });
+      return;
+    }
+  }
+  archive_completion_proof_pending_ = false;
   archive_finalize_error_output_ += QString::fromLocal8Bit(archive_finalize_process_->readAllStandardError());
   if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncRecovery) {
     QString failure_detail = archive_finalize_pending_failure_detail_;
@@ -18624,6 +18737,12 @@ void HStreamWindow::updateRunControls() {
       (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
     pipeline_state_->setText("STOPPED");
 
+  if (pipeline_completion_proof_pending_ || archive_completion_proof_pending_) {
+    external_operation = true;
+    if (pipeline_state_)
+      pipeline_state_->setText("RECOVERY REQUIRED: supervisor shutdown proof is unavailable");
+  }
+
   if (backend_mode_)
     backend_mode_->setText(hockeyMonProgram() ? "Backend: hm-cli (Python)" : "Backend: hstream-cli");
   updateScoreboardControls();
@@ -18673,8 +18792,9 @@ void HStreamWindow::updateRunControls() {
     playback_progress_->setVisible(running || terminal_result);
     updatePlaybackProgressPresentation();
   }
-  if (save_preset_button_)
-    save_preset_button_->setEnabled(!external_operation);
+  updatePresetDirtyState();
+  if (save_preset_button_ && external_operation)
+    save_preset_button_->setEnabled(false);
   if (auto* prepare = findChild<QPushButton*>("prepareRecordedInt8Button"))
     prepare->setEnabled(!external_operation && !running && !finalizing);
   if (start_button_) {
@@ -19804,7 +19924,21 @@ void HStreamWindow::updatePresetDirtyState() {
     }
   }
   const bool has_game = !game_id.isEmpty();
-  const bool can_save = dirty && (has_game || editing_defaults_);
+  bool blocked = pipeline_completion_proof_pending_ || archive_completion_proof_pending_;
+  if (!editing_defaults_ && has_game) {
+    const auto game = gameDirectory(game_id).toStdString();
+    if (std::filesystem::is_directory(game)) {
+      const auto owner = hm::game_operation::Inspect(game);
+      blocked |= !owner.ok() ||
+          (owner->has_value() && ((**owner).token != operation_token_ || operation_token_.empty()));
+    }
+    if (!operation_token_.empty() && !operation_starting_ &&
+        (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) && !isArchiveFinalizing()) {
+      const auto stopped = hm::game_operation::LocalChildrenStopped(operation_token_);
+      blocked |= !stopped.ok() || !*stopped;
+    }
+  }
+  const bool can_save = dirty && (has_game || editing_defaults_) && !blocked;
   if (save_preset_button_->isEnabled() != can_save)
     save_preset_button_->setEnabled(can_save);
   const QString description = editing_defaults_
@@ -21822,11 +21956,17 @@ bool HStreamWindow::addVideoFile(const QString& path) {
         QString("could not lock video import transaction: %1").arg(config_transaction.status().ToString().c_str()));
     return false;
   }
-  const auto inventory = qScopeGuard([&] {
+  // Inventory publication changes the recovery root too; finish it before a
+  // waiting config writer can synchronize that root's protocol marker.
+  const auto finish_transaction = [&] {
+    if (!*config_transaction)
+      return;
     const auto status = hm::game_storage::RefreshManifest(game_dir_path, "hstream-ui");
     if (!status.ok())
       appendLog(QString("could not update game inventory after video import: %1").arg(status.ToString().c_str()));
-  });
+    config_transaction->reset();
+  };
+  const auto inventory = qScopeGuard(finish_transaction);
 
   QString imported_relative_path;
   bool imported_path_created = false;
@@ -21848,7 +21988,7 @@ bool HStreamWindow::addVideoFile(const QString& path) {
     if (imported_path_created) {
       rollbackImportedVideoPath(imported_relative_path);
     }
-    config_transaction->reset();
+    finish_transaction();
     refreshVideoSets();
     return false;
   }
@@ -21859,7 +21999,7 @@ bool HStreamWindow::addVideoFile(const QString& path) {
       if (imported_path_created) {
         rollbackImportedVideoPath(imported_relative_path);
       }
-      config_transaction->reset();
+      finish_transaction();
       refreshVideoSets();
       return false;
     }
@@ -21867,7 +22007,7 @@ bool HStreamWindow::addVideoFile(const QString& path) {
       appendLog("video set added, but one or more unreferenced copied imports could not be cleaned");
     }
   }
-  config_transaction->reset();
+  finish_transaction();
   refreshVideoSets();
   applyCameraConfigurationDefaults(false);
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
@@ -21924,12 +22064,17 @@ void HStreamWindow::removeSelectedVideoSet() {
     video_set_list_->insertItem(row, item);
     return;
   }
-  const auto inventory = qScopeGuard([&] {
+  // Keep inventory publication inside the same config transaction as rollback.
+  const auto finish_transaction = [&] {
+    if (!*config_transaction)
+      return;
     const auto status =
         hm::game_storage::RefreshManifest(gameDirectory(game_id_edit_->text()).toStdString(), "hstream-ui");
     if (!status.ok())
       appendLog(QString("could not update game inventory after video removal: %1").arg(status.ToString().c_str()));
-  });
+    config_transaction->reset();
+  };
+  const auto inventory = qScopeGuard(finish_transaction);
 
   QByteArray removed_config;
   if (!removePrivateConfigForRole(
@@ -21947,7 +22092,7 @@ void HStreamWindow::removeSelectedVideoSet() {
       appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
     }
     video_set_list_->insertItem(row, item);
-    config_transaction->reset();
+    finish_transaction();
     refreshVideoSets();
     return;
   }
@@ -21958,7 +22103,7 @@ void HStreamWindow::removeSelectedVideoSet() {
 
   appendLog(QString("video set removed role=%1 path=%2").arg(role_label(role), relative_path));
   delete item;
-  config_transaction->reset();
+  finish_transaction();
   refreshVideoSets();
   applyCameraConfigurationDefaults(false);
 }
@@ -21967,8 +22112,8 @@ void HStreamWindow::refreshVideoSets() {
   if (!video_set_list_ || !game_id_edit_) {
     return;
   }
-  video_set_list_->clear();
   if (editing_defaults_) {
+    video_set_list_->clear();
     const auto path = hm::user_config::defaults_path();
     if (game_path_label_)
       game_path_label_->setText(path.ok() ? QString::fromStdString(path->string()) : QString());
@@ -21984,8 +22129,30 @@ void HStreamWindow::refreshVideoSets() {
     video_sets_path_label_->setText(dir);
   }
   if (game_id_edit_->text().isEmpty() || !QDir(dir).exists()) {
+    video_set_list_->clear();
     return;
   }
+
+  const fs::path config_path = fs::path(dir.toStdString()) / "_hockeymon/config.yaml";
+  auto loaded_config = load_desktop_game_config(config_path);
+  if (!loaded_config.ok() && absl::IsUnavailable(loaded_config.status())) {
+    // A pending writer does not change the roles already displayed for this
+    // game. Retry one snapshot at a time instead of rebuilding from filenames.
+    if (video_set_list_->property("gameDirectory").toString() != dir)
+      video_set_list_->clear();
+    auto* retry = findChild<QTimer*>("videoSetRefreshRetry", Qt::FindDirectChildrenOnly);
+    if (!retry) {
+      retry = new QTimer(this);
+      retry->setObjectName("videoSetRefreshRetry");
+      retry->setSingleShot(true);
+      connect(retry, &QTimer::timeout, this, [this] { refreshVideoSets(); });
+    }
+    if (!retry->isActive())
+      retry->start(baseline_config_["workflow"]["poll_interval_ms"].as<int>());
+    return;
+  }
+  video_set_list_->clear();
+  video_set_list_->setProperty("gameDirectory", dir);
 
   std::set<QString> seen;
   std::set<QString> configured_paths;
@@ -22030,8 +22197,6 @@ void HStreamWindow::refreshVideoSets() {
     }
   }
 
-  const fs::path config_path = fs::path(dir.toStdString()) / "_hockeymon/config.yaml";
-  auto loaded_config = load_desktop_game_config(config_path);
   if (!loaded_config.ok()) {
     appendLog(QString("could not list configured videos: %1").arg(loaded_config.status().ToString().c_str()));
   } else if (loaded_config->has_value()) {

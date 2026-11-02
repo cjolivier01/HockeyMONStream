@@ -180,6 +180,28 @@ success or safe-to-delete. A local executor uses an independently supervised
 process session with equivalent shutdown proof. UI destruction cannot kill the
 controller or release its lease.
 
+Local shutdown uses a dedicated subreaper scope, never absence in a process
+snapshot. The standalone task supervisor and CLI reap their own descendants until
+the kernel returns `ECHILD`. A shared Qt process instead starts each operation
+command through the Qt-free `hstream-process-guard`: a pinned, token/nonce-bound
+permit exists before launch, and its completion acknowledgment appears only after
+that guard reaches `ECHILD`. Qt keeps its normal QProcess ownership of the guard;
+it never globally reaps unrelated children. Stop escalation targets descendants
+while preserving the guard. Missing or replaced proof, a killed guard, or a child
+that cannot exit retains admission and capacity. FailedToStart may retire only a
+permit whose guard never launched.
+
+Native acquire, bind, adoption and release helpers inherit the controller's locked control
+descriptor. Their short commit barrier survives controller death, so cancellation
+cannot overtake an orphaned helper. A canceled uncertain acquisition is reconciled
+against the exact native token before recording release. Retry requires confirmed
+release before creating its new epoch. A durable verified adoption intent and an
+exact read-only catalog query recover committed results after a lost response;
+later cancellation preserves those successes without reopening their artifacts.
+Definite local fork
+rejection has a separate attempt-bound receipt; lack of a launch receipt alone is
+still ambiguous.
+
 Retry creates a new attempt and writable successor, retaining previous logs and
 receipts. Retry only after old attempts are proven stopped. Reuse valid prerequisite
 artifacts; do not rerun a scan because one solver failed. Retry of an unavailable or

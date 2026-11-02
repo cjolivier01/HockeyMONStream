@@ -122,9 +122,7 @@ std::optional<unsigned> configured_pipeline_gpu(const YAML::Node& effective_conf
 // Resolves the configured profile from the non-game baseline/user layers with
 // the runner's dashed/underscored alias precedence. An absent or entirely
 // non-scalar profile resolves to auto; invalid scalar values return an empty string.
-QString configured_gpu_memory_profile(
-    const YAML::Node& baseline_config,
-    const YAML::Node& user_config);
+QString configured_gpu_memory_profile(const YAML::Node& baseline_config, const YAML::Node& user_config);
 
 } // namespace hm::ui_internal
 
@@ -562,7 +560,9 @@ class HStreamWindow : public QMainWindow {
       bool original,
       const QString& game_dir) const;
   std::map<QString, double> readPlayerSizeControls(
-      const YAML::Node& game_config, bool inherited, QString* native_error = nullptr) const;
+      const YAML::Node& game_config,
+      bool inherited,
+      QString* native_error = nullptr) const;
   void loadSavedControlConfig(bool baseline_only = false);
   bool ensureSavedControlConfigLoaded();
   bool sendLiveCameraControl(const QString& id, double value);
@@ -787,6 +787,8 @@ class HStreamWindow : public QMainWindow {
   std::filesystem::path operation_game_;
   std::string operation_token_;
   bool operation_starting_{false};
+  bool pipeline_completion_proof_pending_{false};
+  bool archive_completion_proof_pending_{false};
   qint64 operation_retirement_started_ms_{0};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};

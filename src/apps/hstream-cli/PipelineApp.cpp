@@ -1281,6 +1281,10 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& cleanup_stac
     if (current->has_value()) {
       HM_RETURN_IF_ERROR((*admission)->Authorize(hm::game_operation::Authorization(game)));
     } else {
+      hm::baseline_config::BaselineConfig baseline;
+      HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
+      const auto cleanup_grace = baseline.values["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000;
+      const auto cleanup_poll = baseline.values["workflow"]["poll_interval_ms"].as<int64_t>();
       std::string token;
       HM_ASSIGN_OR_RETURN(token, hm::game_operation::NewToken());
       auto owner = hm::game_operation::LocalOwner(int8_sample_output_ ? "int8" : "pipeline", token, token);
@@ -1291,8 +1295,9 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& cleanup_stac
       // Registered before any pipeline work. CleanupStack runs this last,
       // after decoder, GPU and helper shutdown; a killed process leaves the
       // durable claim in recovery instead of relying on local PID guesses.
-      cleanup_stack.push([game, token] {
-        const auto released = hm::game_operation::ReleaseLocal(game, token, true);
+      cleanup_stack.push([game, token, cleanup_grace, cleanup_poll] {
+        const auto retired = hm::game_operation::RetireIsolatedChildren(cleanup_grace, cleanup_poll);
+        const auto released = retired.ok() ? hm::game_operation::ReleaseLocal(game, token, true) : retired;
         if (!released.ok())
           g_printerr("Game admission cleanup: %s\n", released.ToString().c_str());
         hm::game_operation::ForgetAuthorization(game, token);
@@ -10260,6 +10265,11 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
 //------------------------------------------------------------------------------
 #ifndef HSTREAM_PIPELINE_APPLICATION_LIBRARY
 int main(int argc, char* argv[]) {
+  const auto child_proof = hm::game_operation::EnableIsolatedChildProof();
+  if (!child_proof.ok()) {
+    g_printerr("hstream-cli cannot establish descendant cleanup proof: %s\n", child_proof.ToString().c_str());
+    return 78;
+  }
 #if defined(__linux__)
   if (const char* expected_parent_text = std::getenv("HSTREAM_UI_PARENT_PID")) {
     guint64 expected_parent = 0;

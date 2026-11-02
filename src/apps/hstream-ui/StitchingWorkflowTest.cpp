@@ -27,6 +27,7 @@
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QVBoxLayout>
 
+#include <csignal>
 #include <iostream>
 #include <stdexcept>
 
@@ -570,6 +571,59 @@ void dialogOwnership(const QString& root) {
   }
 }
 
+void killedExperimentGuard(const QString& root) {
+  const auto game = root + "/lost-guard-game";
+  QDir().mkpath(game + "/_hockeymon");
+  write(game + "/_hockeymon/config.yaml", "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n");
+  write(game + "/left.mp4", "left");
+  write(game + "/right.mp4", "right");
+  const auto runner = root + "/lost-guard-runner";
+  write(runner, "#!/bin/sh\nexec sleep 30\n");
+  QFile::setPermissions(runner, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  StitchingExperimentDialog dialog(
+      game,
+      runner,
+      root,
+      game + "/_hockeymon/config.yaml",
+      QProcessEnvironment::systemEnvironment(),
+      100,
+      1,
+      "00:00:00");
+  dialog.show();
+  auto* add = widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton");
+  auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
+  auto* cancel = widget<QPushButton>(dialog, "cancelStitchExperimentsButton");
+  add->click();
+  require(wait([&] { return start->isEnabled(); }), "Cannot prepare lost-guard experiment");
+  start->click();
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot inspect lost-guard experiment store");
+  int64_t process = 0;
+  require(
+      wait([&] {
+        auto catalog = LoadStitchingExperimentStore(*store);
+        if (catalog.ok() && !catalog->experiments.empty())
+          process = catalog->experiments.front().process_session_id;
+        return process > 0 && cancel->isEnabled();
+      }),
+      "Guard process ownership was not durably recorded");
+  const auto owned = hm::game_operation::Inspect(game.toStdString());
+  require(owned.ok() && owned->has_value(), "Lost-guard fixture has no game admission");
+  // This test owns the exact setsid session. Killing it also stops its sleep
+  // child, but cannot manufacture the supervisor's missing ECHILD receipt.
+  require(::kill(-static_cast<pid_t>(process), SIGKILL) == 0, "Cannot kill test-owned guard session");
+  require(wait([&] { return !cancel->isEnabled(); }, 10000), "Lost guard did not finish its fenced UI cleanup");
+  const auto retained = hm::game_operation::Inspect(game.toStdString());
+  require(
+      retained.ok() && retained->has_value() && (**retained).token == (**owned).token,
+      "Killed experiment guard released durable admission");
+  require(
+      !add->isEnabled() && !start->isEnabled() &&
+          !widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton")->isEnabled() &&
+          !widget<QPushButton>(dialog, "applyStitchExperimentButton")->isEnabled(),
+      "Missing experiment receipt permitted new work, removal or publication");
+}
+
 } // namespace
 int main(int argc, char** argv) {
   QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
@@ -588,6 +642,7 @@ int main(int argc, char** argv) {
     plans(store);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     dialogOwnership(temporary.path());
+    killedExperimentGuard(temporary.path());
     std::cout << "Workflow DAG, async UI, retry/log history, wheel routing, detach/reopen and cancellation passed\n";
     return 0;
   } catch (const std::exception& error) {

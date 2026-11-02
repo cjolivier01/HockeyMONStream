@@ -57,6 +57,8 @@ filegroup(
         "InputLensWidget.h",
         "Int8PreparationDialog.cpp",
         "Int8PreparationDialog.h",
+        "SupervisedProcess.cpp",
+        "SupervisedProcess.h",
         "CameraControlSpecs.h",
         "CameraExperimentDialog.cpp",
         "CameraExperimentDialog.h",
@@ -590,6 +592,24 @@ cc_test(
 )
 
 cc_library(
+    name = "supervised_process",
+    srcs = ["SupervisedProcess.cpp"],
+    hdrs = ["SupervisedProcess.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    data = ["//src/apps/hstream-process-guard:hstream-process-guard"],
+    deps = ["//src/libs/common:game_operation_owner", "@qt//:qt_core"],
+)
+
+cc_test(
+    name = "supervised_process_test",
+    srcs = ["SupervisedProcessTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":supervised_process", "//src/libs/common:game_operation_owner", "@qt//:qt_core"],
+)
+
+cc_library(
     name = "stitching_experiment_dialog",
     srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp", "StitchingWorkflow.cpp"],
     hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h", "StitchingExperimentDefaults.h", "StitchingWorkflow.h"],
@@ -597,6 +617,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":supervised_process",
         ":experiment_task_runtime",
         "//src/libs/common:game_operation_owner",
         "//src/libs/stitching:auto_input_lens",
@@ -919,6 +940,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":supervised_process",
         "//src/libs/common:game_operation_owner","//src/libs/common:game_storage",
         ":detector_options",
         ":runtime_options",
@@ -1116,12 +1138,14 @@ cc_test(
     },
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        ":supervised_process",
         ":archive_catalog",
         ":hstream_window",
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
         ":scoreboard_selection_dialog",
         "//src/gst-plugins/gst-playtracker:playtracker_runtime_config",
+        "//src/libs/common:game_operation_owner",
         "//src/libs/common:gpu_memory_profile",
         "//src/libs/publication",
         "//src/libs/stitching:canvas_constraint_check",
@@ -1140,7 +1164,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = ["//src/libs/common:game_operation_owner", "//src/libs/common:baseline_config", ":action_icons", ":value_control_wheel", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
+    deps = [":supervised_process", "//src/libs/common:game_operation_owner", "//src/libs/common:baseline_config", ":action_icons", ":value_control_wheel", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
 )
 
 cc_test(

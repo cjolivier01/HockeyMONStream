@@ -347,6 +347,13 @@ compute, and wait for confirmed cleanup before removing a deployment. Do not use
 `systemctl stop` as a substitute for workflow cancellation. Dagster services keep
 their normal cgroup shutdown behavior because they only observe native work.
 
+Install `hstream-process-guard` beside the native application binaries for local
+Qt operation scopes. The Debian packages include it on desktop and Jetson; source
+builds resolve the Bazel target or its runfiles. Its explicit timing arguments
+come from the resolved configuration. Never replace a missing guard with an
+uncontained command. A guard killed before writing its exact completion receipt
+leaves the corresponding game claim reserved for diagnosis.
+
 The opt-in `scripts/hstream_workflow_systemd_e2e.py` qualification creates one
 temporary CPU workflow and transient systemd unit. It verifies stop/start,
 restart and a killed dispatcher MainPID while the same attempt supervisor stays
