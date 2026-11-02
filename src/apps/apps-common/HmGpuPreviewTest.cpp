@@ -836,21 +836,23 @@ bool write_remap_pair(const fs::path& directory, const std::string& prefix, int 
 }
 
 bool make_rink_mask_fixture(const fs::path& root, std::string* output_generation) {
+  const fs::path state = root / "_hockeymon";
+  fs::create_directories(state);
   if (!output_generation)
     return false;
   for (const char* name : {
            "hm_project.pto",
            "autooptimiser_out.pto",
        }) {
-    std::ofstream(root / name, std::ios::binary) << "preview-rink-mask-reactivation-fixture\n";
+    std::ofstream(state / name, std::ios::binary) << "preview-rink-mask-reactivation-fixture\n";
   }
-  if (!write_mapping_tiff(root / "mapping_0000.tif", 64, 32, 0.0f) ||
-      !write_mapping_tiff(root / "mapping_0001.tif", 64, 32, 32.0f) ||
-      !write_remap_pair(root, "mapping_0000", 64, 32) || !write_remap_pair(root, "mapping_0001", 64, 32)) {
+  if (!write_mapping_tiff(state / "mapping_0000.tif", 64, 32, 0.0f) ||
+      !write_mapping_tiff(state / "mapping_0001.tif", 64, 32, 32.0f) ||
+      !write_remap_pair(state, "mapping_0000", 64, 32) || !write_remap_pair(state, "mapping_0001", 64, 32)) {
     std::cerr << "Could not write valid Hugin mapping TIFF fixtures\n";
     return false;
   }
-  if (!cv::imwrite((root / "seam_file.png").string(), cv::Mat(32, 96, CV_8U, cv::Scalar(255)))) {
+  if (!cv::imwrite((state / "seam_file.png").string(), cv::Mat(32, 96, CV_8U, cv::Scalar(255)))) {
     std::cerr << "Could not write valid seam PNG fixture\n";
     return false;
   }
@@ -870,7 +872,7 @@ bool make_rink_mask_fixture(const fs::path& root, std::string* output_generation
     std::cerr << "Could not create stitched-output fixture generation: " << generation.status() << '\n';
     return false;
   }
-  if (!cv::imwrite((root / "rink_mask_0.png").string(), cv::Mat(360, 640, CV_8UC1, cv::Scalar(255)))) {
+  if (!cv::imwrite((state / "rink_mask_0.png").string(), cv::Mat(360, 640, CV_8UC1, cv::Scalar(255)))) {
     std::cerr << "Could not write rink-mask reactivation PNG fixture\n";
     return false;
   }
@@ -879,7 +881,7 @@ bool make_rink_mask_fixture(const fs::path& root, std::string* output_generation
   // automatic one rather than the configured ice-mask frame.
   config["stitching"]["rink_mask_frame_time"] = "auto";
   config["rink"]["stitched_output_generation"] = *generation;
-  std::ofstream config_output(root / "config.yaml");
+  std::ofstream config_output(state / "config.yaml");
   config_output << config << '\n';
   if (!config_output) {
     std::cerr << "Could not write rink-mask reactivation config fixture\n";
@@ -997,7 +999,7 @@ bool run_rink_mask_reactivation_test(Window window) {
       "show-rink-mask",
       TRUE,
       "rink-mask-file",
-      (fixture.path() / "rink_mask_0.png").c_str(),
+      (fixture.path() / "_hockeymon/rink_mask_0.png").c_str(),
       nullptr);
   hm::gpu_preview::set_source_geometry(sink, 640, 360);
   hm::gpu_preview::set_isolation_active(gate, true, 17);
@@ -1033,6 +1035,19 @@ bool run_rink_mask_reactivation_test(Window window) {
                                 },
                                 std::chrono::seconds(10));
 
+  bool screenshot_saved = true;
+  if (const char* screenshot = std::getenv("HSTREAM_RINK_MASK_SCREENSHOT")) {
+    std::vector<std::uint8_t> pixels;
+    unsigned width = 0, height = 0;
+    std::string capture_error;
+    screenshot_saved = hm::gpu_preview::capture_presented_frame(sink, &pixels, &width, &height, &capture_error);
+    if (screenshot_saved) {
+      for (size_t pixel = 0; pixel + 3 < pixels.size(); pixel += 4)
+        std::swap(pixels[pixel], pixels[pixel + 2]);
+      screenshot_saved = cv::imwrite(screenshot, cv::Mat(height, width, CV_8UC4, pixels.data()));
+    }
+  }
+
   hm::gpu_preview::set_isolation_active(gate, false, 17);
   const bool quiesced = hm::gpu_preview::quiesce(sink, 17);
   const bool cache_cleared = hm::gpu_preview::renderer_rink_mask_cache_cleared_for_test(sink);
@@ -1052,7 +1067,8 @@ bool run_rink_mask_reactivation_test(Window window) {
     g_setenv("HSTREAM_CALIBRATION_INVALIDATION_ID", saved_invalidation.c_str(), TRUE);
   else
     g_unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
-  const bool passed = initially_loaded && rink_captured && rink_visible && quiesced && cache_cleared && reloaded;
+  const bool passed =
+      initially_loaded && rink_captured && rink_visible && quiesced && cache_cleared && reloaded && screenshot_saved;
   if (!passed) {
     std::cerr << "Rink mask did not reload after same-generation renderer quiesce/reactivation: initial="
               << initially_loaded << " captured=" << rink_captured << " visible=" << rink_visible
