@@ -19289,6 +19289,9 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
   if (!ensureGameDirectory()) {
     return false;
   }
+  // State capture inspects ownership while our mutation lock is held. Refresh
+  // again after every save lock is released so a durability retry stays enabled.
+  const auto refresh_save_state = qScopeGuard([this] { updatePresetDirtyState(); });
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
   std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;

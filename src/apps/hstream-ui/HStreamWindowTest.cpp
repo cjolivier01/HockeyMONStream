@@ -11458,17 +11458,24 @@ bool test_rink_leveling_save_retry(HStreamWindow* window) {
   pitch->setValue(-31);
   HStreamWindowTestAccess::stageTestLeveling(window, selected_revision);
   qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT", "1");
-  activate(save);
+  // Check the synchronous return before a later ownership poll can refresh Save.
+  save->click();
   qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_POST_COMMIT");
   const auto visible_config = YAML::LoadFile(config_path.string());
-  if (!expect(
-          visible_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>() == -31 &&
-              visible_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending" &&
-              RinkLevelingDialog::sourceRevision(window->gameDirectoryText()) != selected_revision && save->isEnabled(),
-          "Post-commit failure must expose the selected angles and preserve the durability retry"))
+  const double visible_pitch = visible_config["stitching"]["projection_framing"]["rotation_degrees"][1].as<double>();
+  const std::string visible_status = visible_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>();
+  bool visible_retry_ok = expect(
+      visible_pitch == -31, "Post-commit failure must expose the selected pitch; got " + std::to_string(visible_pitch));
+  visible_retry_ok &= expect(
+      visible_status == "pending", "Post-commit failure must leave calibration pending; got " + visible_status);
+  visible_retry_ok &= expect(
+      RinkLevelingDialog::sourceRevision(window->gameDirectoryText()) != selected_revision,
+      "Post-commit failure must expose a changed source revision");
+  visible_retry_ok &= expect(save->isEnabled(), "Post-commit failure must keep Save enabled for the durability retry");
+  if (!visible_retry_ok)
     return false;
   // Retry immediately, without reloading the game or opening the dialog again.
-  activate(save);
+  save->click();
   const auto retried_config = YAML::LoadFile(config_path.string());
   if (!expect(
           !save->isEnabled() &&
@@ -22033,7 +22040,8 @@ int main(int argc, char** argv) {
   if (rink_leveling_flow_only) {
     if (!test_window_title_tracks_selected_game(&window) || !test_cuda_oom_calibration_failure_analysis(&window) ||
         !test_game_setup(&window, source_root.path()) || !test_rink_leveling_response_protocol(&window) ||
-        !test_promoted_stitching_leveling(&window) || !test_calibration_progress_dialog(&window) ||
+        !test_promoted_stitching_leveling(&window) || !test_rink_leveling_save_retry(&window) ||
+        !test_calibration_progress_dialog(&window) ||
         !test_clean_stitching_calibration(&window)) {
       std::cerr << "focused rink-leveling flow tests failed\n";
       return 1;
