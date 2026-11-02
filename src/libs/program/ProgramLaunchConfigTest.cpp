@@ -105,6 +105,20 @@ int main(int argc, char** argv) {
     Check(
         result.ok() && result->camera["zoom-in-aggressiveness"].as<int>() == 29,
         "Native Defaults references must resolve beside defaults.yaml");
+    YAML::Node frozen_user;
+    frozen_user["schema"] = 1;
+    frozen_user["source_path"] = defaults_path.string();
+    frozen_user["values"] = YAML::LoadFile(defaults_path.string());
+    frozen_user["values"]["paths"]["game-root"] = game_root.string();
+    const auto frozen_path = fixture.root / "frozen-user.yaml";
+    Write(frozen_path, frozen_user);
+    Write(defaults_path, YAML::Load("rink: {camera: {zoom_in_aggressiveness: 97}}"));
+    setenv("HSTREAM_USER_CONFIG_SNAPSHOT", frozen_path.c_str(), 1);
+    result = load();
+    Check(
+        result.ok() && result->camera["zoom-in-aggressiveness"].as<int>() == 29,
+        "AMD frozen user tuning must ignore later edits and preserve relative native-reference provenance");
+    unsetenv("HSTREAM_USER_CONFIG_SNAPSHOT");
     Write(defaults_path, YAML::Load("{}"));
     result = load();
     Check(

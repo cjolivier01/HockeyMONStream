@@ -180,7 +180,43 @@ absl::Status link_configured_videos(
     const fs::path& source_game_directory,
     const fs::path& candidate_game_directory,
     std::set<fs::path>* linked,
-    bool allow_linked_inputs = false) {
+    bool allow_linked_inputs = false,
+    bool allow_frozen_absolute_aliases = false) {
+  const auto resolve = [&](const fs::path& configured) -> absl::StatusOr<fs::path> {
+    auto direct = allow_linked_inputs ? linked_workspace_source(source_game_directory, configured)
+                                      : normalized_source(source_game_directory, configured);
+    if (direct.ok() || !allow_frozen_absolute_aliases || !configured.is_absolute())
+      return direct;
+    // Exact snapshots retain their playlist spelling because selected-frame
+    // provenance binds it. A later snapshot may therefore still name the first
+    // workspace. Accept only an already-admitted alias to that same physical
+    // file in this source, never an arbitrary external recording.
+    std::error_code error;
+    const auto physical = fs::canonical(configured, error);
+    if (error || !fs::is_regular_file(physical, error) || error)
+      return direct.status();
+    std::optional<fs::path> admitted;
+    size_t entries = 0;
+    for (fs::recursive_directory_iterator it(source_game_directory), end; it != end; ++it) {
+      if (++entries > 20000)
+        return absl::ResourceExhaustedError("Workflow source has too many media aliases");
+      const auto relative = it->path().lexically_relative(source_game_directory);
+      if (*relative.begin() == "_hockeymon") {
+        it.disable_recursion_pending();
+        continue;
+      }
+      if (!is_video(it->path()) || !it->is_regular_file())
+        continue;
+      if (fs::canonical(it->path()) != physical)
+        continue;
+      if (admitted)
+        return absl::FailedPreconditionError("Frozen absolute playlist has ambiguous workspace aliases");
+      HM_ASSIGN_OR_RETURN(admitted, linked_workspace_source(source_game_directory, relative));
+    }
+    if (!admitted)
+      return absl::FailedPreconditionError("Frozen absolute playlist has no admitted workspace alias");
+    return *admitted;
+  };
   for (const std::pair<const char*, const char*> section :
        {std::make_pair("game", "videos"), std::make_pair("hstream_ui", "video_roles")}) {
     YAML::Node roles = config[section.first][section.second];
@@ -194,10 +230,7 @@ absl::Status link_configured_videos(
         if (!values[index].IsScalar())
           return absl::InvalidArgumentError("Experiment video roles must contain path strings");
         fs::path relative;
-        HM_ASSIGN_OR_RETURN(
-            relative,
-            allow_linked_inputs ? linked_workspace_source(source_game_directory, values[index].as<std::string>())
-                                : normalized_source(source_game_directory, values[index].as<std::string>()));
+        HM_ASSIGN_OR_RETURN(relative, resolve(values[index].as<std::string>()));
         if (!is_video(relative))
           return absl::InvalidArgumentError(
               "Configured experiment video is not a supported video file: " + relative.string());
@@ -1196,6 +1229,90 @@ static absl::Status validate_clone_source(const StitchingExperimentWorkspace& so
   return absl::OkStatus();
 }
 
+absl::StatusOr<StitchingExperimentWorkspace> SnapshotStitchingExperimentWorkspace(
+    const StitchingExperimentWorkspace& source,
+    const fs::path& destination_root) {
+  auto config_lock = hm::stitching::GameConfigTransactionLock::Acquire(source.game_directory);
+  if (!config_lock.ok())
+    return config_lock.status();
+  try {
+    YAML::Node config = YAML::LoadFile((source.game_directory / "_hockeymon/config.yaml").string());
+    HM_RETURN_IF_ERROR(validate_clone_source(source, config));
+    fs::create_directories(destination_root);
+    std::vector<hm::stitching::PinnedDirectory> ancestors;
+    HM_ASSIGN_OR_RETURN(ancestors, pin_workspace_ancestors(destination_root));
+    const auto& parent = ancestors.back();
+    const auto destination = parent.path() / source.game_id;
+    if (!fs::create_directory(destination))
+      return absl::AlreadyExistsError("Workflow successor workspace already exists");
+    auto pinned = parent.OpenChild(source.game_id, "workflow successor");
+    if (!pinned.ok())
+      return pinned.status();
+    if (!pinned->has_value())
+      return absl::AbortedError("Workflow successor disappeared");
+    struct Cleanup {
+      const hm::stitching::PinnedDirectory& parent;
+      const hm::stitching::PinnedDirectory& child;
+      std::string name;
+      bool retain{false};
+      ~Cleanup() {
+        if (!retain)
+          (void)hm::stitching::remove_pinned_directory(parent, name, child);
+      }
+    } cleanup{parent, **pinned, source.game_id};
+    HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(destination));
+    std::set<fs::path> linked;
+    HM_RETURN_IF_ERROR(link_configured_videos(config, source.game_directory, destination, &linked, true, true));
+    HM_RETURN_IF_ERROR(link_calibration_assets(source.game_directory, destination, linked, true));
+    const auto state = source.game_directory / "_hockeymon";
+    size_t entries = 0;
+    uint64_t bytes = 0;
+    for (fs::recursive_directory_iterator it(state), end; it != end; ++it) {
+      if (++entries > 20000)
+        return absl::ResourceExhaustedError("Workflow snapshot has too many entries");
+      const auto relative = it->path().lexically_relative(state);
+      const auto name = it->path().filename().string();
+      if (name == "stitching-experiments" || name == "workflows") {
+        it.disable_recursion_pending();
+        continue;
+      }
+      // Never copy another process's locks, ownership or incomplete publication.
+      if (name.empty() || name.front() == '.' || name == "game-operation.yaml") {
+        if (it->is_directory())
+          it.disable_recursion_pending();
+        continue;
+      }
+      const auto type = it->symlink_status().type();
+      const auto target = destination / "_hockeymon" / relative;
+      if (type == fs::file_type::directory) {
+        fs::create_directory(target);
+      } else if (type == fs::file_type::regular) {
+        const uint64_t size = it->file_size();
+        if (size > 16ULL * 1024 * 1024 * 1024 - bytes)
+          return absl::ResourceExhaustedError("Workflow snapshot exceeds its aggregate size bound");
+        bytes += size;
+        // Inventory is regenerated from the new private tree and media aliases.
+        if (name == "manifest.json")
+          continue;
+        HM_RETURN_IF_ERROR(hm::stitching::snapshot_regular_file_for_rollback(it->path(), target, false, size));
+      } else {
+        return absl::FailedPreconditionError("Workflow snapshot contains a symlink or special private file");
+      }
+    }
+    HM_RETURN_IF_ERROR(hm::game_storage::RefreshManifest(destination, "workflow-snapshot"));
+    HM_RETURN_IF_ERROR(sync_workspace_directory_tree(**pinned));
+    for (auto ancestor = ancestors.rbegin(); ancestor != ancestors.rend(); ++ancestor)
+      HM_RETURN_IF_ERROR(sync_workspace_directory(*ancestor));
+    cleanup.retain = true;
+    auto result = source;
+    result.root = destination_root;
+    result.game_directory = destination_root / source.game_id;
+    return result;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError("Cannot snapshot experiment workspace: " + std::string(error.what()));
+  }
+}
+
 absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentEditableCopy(
     const StitchingExperimentWorkspace& source,
     const fs::path& experiment_root,
@@ -1424,6 +1541,11 @@ absl::Status CompleteStitchingExperimentWorkspace(
     // Calibration-only runners leave UI completion persistence to their owner.
     // Leaving this pending makes the next preview clean and regenerate its maps.
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
+    const auto mask_status = calibration["rink_mask_status"].as<std::string>("");
+    if (calibration["status"].as<std::string>("") == "complete" &&
+        (mask_status == "complete" || (!require_ice_mask && mask_status == "omitted")) && !calibration["stale_from"] &&
+        !calibration["artifacts_invalidated"])
+      return absl::OkStatus(); // Replayed adoption must not rewrite sealed result bytes or discard a completed mask.
     calibration["status"] = "complete";
     calibration["rink_mask_status"] = require_ice_mask ? "complete" : "omitted";
     calibration.remove("stale_from");

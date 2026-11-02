@@ -303,12 +303,16 @@ class GameConfigLock final {
   static absl::StatusOr<std::unique_ptr<GameConfigLock>> Acquire(const std::filesystem::path& game_dir);
 
   // Returns Unavailable instead of waiting when another config transaction is active.
-  static absl::StatusOr<std::unique_ptr<GameConfigLock>> TryAcquire(const std::filesystem::path& game_dir);
+  static absl::StatusOr<std::unique_ptr<GameConfigLock>> TryAcquire(
+      const std::filesystem::path& game_dir,
+      bool advisory_read = false);
 
  private:
-  explicit GameConfigLock(int descriptor) : descriptor_(descriptor) {}
+  struct Admission;
+  GameConfigLock(int descriptor, std::unique_ptr<Admission> admission);
 
   int descriptor_{-1};
+  std::unique_ptr<Admission> admission_;
 };
 
 // Acquires the config lock followed by the rink-publication lock and recovers

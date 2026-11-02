@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 
 #include <fcntl.h>
@@ -260,8 +261,50 @@ StitchingExperimentSettings parse_settings(const YAML::Node& node) {
   return settings;
 }
 
+void validate_workflow_result_path(const StitchingExperimentStore& store, const StoredStitchingExperiment& record) {
+  require(record.workflow_id.empty() == record.workflow_directory.empty(), "Incomplete workflow ownership");
+  if (record.workflow_id.empty()) {
+    require(
+        !record.workflow_active && !record.result_workspace && record.result_attempt_id.empty() &&
+            !record.selection_workspace && record.selection_attempt_id.empty(),
+        "Unowned workflow result");
+    return;
+  }
+  require(
+      safe_component(record.workflow_id) &&
+          record.workflow_directory == store.game_directory / "_hockeymon/workflows" / record.workflow_id,
+      "Invalid workflow directory");
+  require(
+      record.process_session_id == 0 && record.process_token.empty(),
+      "Workflow ownership cannot use local PID recovery");
+  const auto validate_reference = [&](const std::optional<StitchingExperimentWorkspace>& saved,
+                                      const std::string& attempt_id) {
+    if (!saved) {
+      require(attempt_id.empty(), "Missing adopted workflow result");
+      return;
+    }
+    const auto& result = *saved;
+    require(
+        safe_component(attempt_id) && result.root == result.game_directory.parent_path() &&
+            result.game_id == result.game_directory.filename() && safe_component(result.invalidation_id) &&
+            same_settings(result.settings, record.workspace.settings),
+        "Invalid workflow result descriptor");
+    const auto attempt = record.workflow_directory / "attempts" / attempt_id;
+    const auto relative = result.game_directory.lexically_relative(attempt);
+    require(
+        result.game_directory.is_absolute() && result.game_directory == result.game_directory.lexically_normal() &&
+            !relative.empty() && !relative.is_absolute() && *relative.begin() != "..",
+        "Result escapes its workflow attempt");
+    for (const auto& component : relative)
+      require(safe_component(component.string()), "Unsafe result component");
+  };
+  validate_reference(record.result_workspace, record.result_attempt_id);
+  validate_reference(record.selection_workspace, record.selection_attempt_id);
+}
+
 void validate_record(const StitchingExperimentStore& store, const StoredStitchingExperiment& record) {
   (void)path_key(store, record.workspace.game_directory);
+  validate_workflow_result_path(store, record);
   require(
       record.workspace.root == record.workspace.game_directory.parent_path() &&
           record.workspace.game_id == record.workspace.game_directory.filename().string(),
@@ -311,7 +354,8 @@ void validate_record(const StitchingExperimentStore& store, const StoredStitchin
            record.source_config_revision.find_first_not_of("0123456789abcdef") == std::string::npos),
       "Invalid experiment source config revision");
   require(
-      (record.state != "running" && record.state != "scan") || !record.process_token.empty(),
+      (record.state != "running" && record.state != "scan") || !record.process_token.empty() ||
+          !record.workflow_id.empty(),
       "Running experiments require a persisted process token");
   require(
       record.state != "complete" || !record.artifact_generation_id.empty(),
@@ -334,6 +378,21 @@ YAML::Node record_yaml(const StitchingExperimentStore& store, const StoredStitch
   node["process_session"] = record.process_session_id;
   node["process_token"] = record.process_token;
   node["reservation_token"] = record.reservation_token;
+  if (!record.workflow_id.empty()) {
+    node["workflow_id"] = record.workflow_id;
+    node["workflow_active"] = record.workflow_active;
+    node["workflow_directory"] = record.workflow_directory.string();
+    if (record.result_workspace) {
+      node["result_attempt_id"] = record.result_attempt_id;
+      node["result_workspace"]["game_directory"] = record.result_workspace->game_directory.string();
+      node["result_workspace"]["owner"] = record.result_workspace->invalidation_id;
+    }
+    if (record.selection_workspace) {
+      node["selection_attempt_id"] = record.selection_attempt_id;
+      node["selection_workspace"]["game_directory"] = record.selection_workspace->game_directory.string();
+      node["selection_workspace"]["owner"] = record.selection_workspace->invalidation_id;
+    }
+  }
   node["sequence"] = record.sequence;
   node["baseline_sequence"] = record.baseline_sequence;
   node["selection_owner_sequence"] = record.selection_owner_sequence;
@@ -361,6 +420,13 @@ StoredStitchingExperiment parse_record(const StitchingExperimentStore& store, co
        "process_session",
        "process_token",
        "reservation_token",
+       "workflow_id",
+       "workflow_active",
+       "workflow_directory",
+       "result_attempt_id",
+       "result_workspace",
+       "selection_attempt_id",
+       "selection_workspace",
        "sequence",
        "baseline_sequence",
        "selection_owner_sequence",
@@ -386,6 +452,36 @@ StoredStitchingExperiment parse_record(const StitchingExperimentStore& store, co
   record.process_session_id = static_cast<int64_t>(session);
   record.process_token = string_value(node["process_token"], 160, true);
   record.reservation_token = string_value(node["reservation_token"], 160, true);
+  if (node["workflow_id"]) {
+    record.workflow_id = string_value(node["workflow_id"], 160);
+    record.workflow_active = node["workflow_active"].as<bool>();
+    record.workflow_directory = string_value(node["workflow_directory"], 4096);
+    if (node["result_workspace"]) {
+      keys(node["result_workspace"], {"game_directory", "owner"});
+      record.result_attempt_id = string_value(node["result_attempt_id"], 160);
+      auto result = record.workspace;
+      result.game_directory = string_value(node["result_workspace"]["game_directory"], 4096);
+      result.root = result.game_directory.parent_path();
+      result.game_id = result.game_directory.filename().string();
+      result.invalidation_id = string_value(node["result_workspace"]["owner"], 255);
+      record.result_workspace = result;
+    }
+    if (node["selection_workspace"]) {
+      keys(node["selection_workspace"], {"game_directory", "owner"});
+      record.selection_attempt_id = string_value(node["selection_attempt_id"], 160);
+      auto result = record.workspace;
+      result.game_directory = string_value(node["selection_workspace"]["game_directory"], 4096);
+      result.root = result.game_directory.parent_path();
+      result.game_id = result.game_directory.filename().string();
+      result.invalidation_id = string_value(node["selection_workspace"]["owner"], 255);
+      record.selection_workspace = result;
+    }
+  } else {
+    require(
+        !node["workflow_directory"] && !node["workflow_active"] && !node["result_workspace"] &&
+            !node["result_attempt_id"] && !node["selection_workspace"] && !node["selection_attempt_id"],
+        "Result fields require workflow ownership");
+  }
   const auto sequence = [&](const char* key) {
     const uint64_t value = uint_value(node[key]);
     require(value <= std::numeric_limits<int>::max(), "Experiment queue sequence overflows");
@@ -413,8 +509,15 @@ absl::StatusOr<hm::stitching::PinnedDirectory> open_workspace(
     const StoreLock& lock,
     const StitchingExperimentStore& store,
     const fs::path& path) {
-  const auto key = fs::path(path_key(store, path));
-  auto current = hm::stitching::PinnedDirectory::Open(lock.directory.path(), "experiment store");
+  const auto workflow_root = store.game_directory / "_hockeymon/workflows";
+  const auto workflow_relative = path.lexically_relative(workflow_root);
+  const bool workflow =
+      !workflow_relative.empty() && !workflow_relative.is_absolute() && *workflow_relative.begin() != "..";
+  const auto key = workflow ? workflow_relative : fs::path(path_key(store, path));
+  for (const auto& component : key)
+    require(safe_component(component.string()), "Invalid workspace component");
+  auto current =
+      hm::stitching::PinnedDirectory::Open(workflow ? workflow_root : lock.directory.path(), "experiment store");
   if (!current.ok())
     return current.status();
   for (const auto& component : key) {
@@ -790,6 +893,9 @@ absl::Status MarkStitchingExperimentProcessStopped(
     StoredStitchingExperiment& experiment,
     const std::string& failure) {
   try {
+    auto admission = hm::game_operation::Mutation(store.game_directory);
+    if (!admission.ok())
+      return admission.status();
     auto lock = acquire(store);
     if (!lock.ok())
       return lock.status();
@@ -804,6 +910,9 @@ absl::Status MarkStitchingExperimentProcessStopped(
         found->workspace.invalidation_id != experiment.workspace.invalidation_id ||
         found->process_session_id != experiment.process_session_id || found->process_token != experiment.process_token)
       return absl::AbortedError("Saved experiment process ownership changed before shutdown reconciliation");
+    require(
+        found->workflow_id.empty() && experiment.workflow_id.empty(),
+        "Remote workflow ownership cannot be retired using local PID proof");
     // Process death is independent of calibration validity. Never require a
     // readable config merely to make an explicitly discarded cache removable.
     found->state = found->state == "complete" ? "complete" : "failed";
@@ -826,6 +935,9 @@ absl::Status SaveStitchingExperiment(
     bool publish_selection,
     const std::string& authoritative_main_fingerprint) {
   try {
+    auto admission = hm::game_operation::Mutation(store.game_directory);
+    if (!admission.ok())
+      return admission.status();
     validate_record(store, experiment);
     auto lock = acquire(store);
     if (!lock.ok())
@@ -833,7 +945,8 @@ absl::Status SaveStitchingExperiment(
     Index index;
     HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
     YAML::Node config;
-    HM_ASSIGN_OR_RETURN(config, validate_workspace_config(**lock, store, experiment.workspace));
+    HM_ASSIGN_OR_RETURN(
+        config, validate_workspace_config(**lock, store, ResolvedStitchingExperimentWorkspace(experiment)));
     if (!experiment.selection_fingerprint.empty()) {
       hm::stitching::PlayerFrameSelectionPlan plan;
       HM_ASSIGN_OR_RETURN(plan, selected_plan(config));
@@ -876,6 +989,35 @@ absl::Status SaveStitchingExperiment(
           found->selection_fingerprint.empty() || found->selection_fingerprint == experiment.selection_fingerprint,
           "A frozen experiment row cannot replace or remove its selected frames");
     }
+    if (!experiment.workflow_id.empty()) {
+      const auto owner = (*admission)->Read();
+      if (!owner.ok())
+        return owner.status();
+      require(
+          owner->has_value() && (**owner).kind == "workflow" && (**owner).id == experiment.workflow_id &&
+              (**owner).workflow_directory == experiment.workflow_directory,
+          "Only the durable workflow supervisor may update its experiment row");
+      require(
+          !experiment.workflow_active || !(**owner).cancel_requested,
+          "Cancelled workflows cannot bind or adopt experiment results");
+    }
+    if (found != index.catalog.experiments.end() && !found->workflow_id.empty()) {
+      require(
+          found->workflow_id == experiment.workflow_id && found->workflow_directory == experiment.workflow_directory,
+          "Experiment workflow ownership cannot be replaced");
+      if (found->result_workspace)
+        require(
+            experiment.result_workspace && found->result_attempt_id == experiment.result_attempt_id &&
+                found->result_workspace->game_directory == experiment.result_workspace->game_directory &&
+                found->result_workspace->invalidation_id == experiment.result_workspace->invalidation_id,
+            "An adopted experiment result cannot be replaced");
+    }
+    if (found != index.catalog.experiments.end() && found->selection_workspace)
+      require(
+          experiment.selection_workspace && found->selection_attempt_id == experiment.selection_attempt_id &&
+              found->selection_workspace->game_directory == experiment.selection_workspace->game_directory &&
+              found->selection_workspace->invalidation_id == experiment.selection_workspace->invalidation_id,
+          "Adopted selected frames cannot be replaced");
     bool main_authority = false;
     if (publish_selection) {
       require(
@@ -964,6 +1106,9 @@ absl::StatusOr<std::optional<StoredStitchingExperiment>> ReserveStitchingExperim
     const StitchingExperimentWorkspace& owner_workspace,
     const std::string& reservation_token) {
   try {
+    auto admission = hm::game_operation::Mutation(store.game_directory);
+    if (!admission.ok())
+      return admission.status();
     require(
         frame_count > 0 && frame_count <= static_cast<int>(hm::stitching::kPlayerFrameMaximumPairs) &&
             owner_workspace.settings.frame_count == frame_count && anchor(owner_workspace.settings) == anchor_ns,
@@ -997,7 +1142,7 @@ absl::StatusOr<std::optional<StoredStitchingExperiment>> ReserveStitchingExperim
         return absl::FailedPreconditionError("Saved selected-frame owner has unconfirmed process ownership");
       if (anchor(found->workspace.settings) != anchor_ns)
         return absl::FailedPreconditionError("This frame count already fixes a different reference time");
-      auto owner_config = validate_workspace_config(**lock, store, found->workspace);
+      auto owner_config = validate_workspace_config(**lock, store, ResolvedStitchingExperimentWorkspace(*found));
       if (!owner_config.ok())
         return owner_config.status();
       hm::stitching::PlayerFrameSelectionPlan plan;
@@ -1029,6 +1174,9 @@ absl::Status ReleaseStitchingExperimentFrameCount(
     const StitchingExperimentWorkspace& owner_workspace,
     const std::string& reservation_token) {
   try {
+    auto admission = hm::game_operation::Mutation(store.game_directory);
+    if (!admission.ok())
+      return admission.status();
     auto lock = acquire(store);
     if (!lock.ok())
       return lock.status();
@@ -1049,6 +1197,9 @@ absl::Status ReleaseStitchingExperimentFrameCount(
 
 absl::Status DiscardStitchingExperimentStore(const StitchingExperimentStore& store) {
   try {
+    auto admission = hm::game_operation::Mutation(store.game_directory);
+    if (!admission.ok())
+      return admission.status();
     auto lock = acquire(store, true, false, true);
     if (!lock.ok())
       return lock.status();
@@ -1057,7 +1208,7 @@ absl::Status DiscardStitchingExperimentStore(const StitchingExperimentStore& sto
       HM_ASSIGN_OR_RETURN(index, read_index(**lock, store));
       for (const auto& record : index.catalog.experiments) {
         if (record.state == "running" || record.state == "scan" || record.state == "quarantined" ||
-            record.process_session_id != 0 || !record.process_token.empty())
+            record.process_session_id != 0 || !record.process_token.empty() || record.workflow_active)
           return absl::FailedPreconditionError(
               "Confirm every experiment runner has stopped before discarding its retained data");
       }
@@ -1091,6 +1242,9 @@ absl::Status RemoveStitchingExperiments(
     const std::vector<std::string>& workspace_keys,
     bool allow_completed) {
   try {
+    auto admission = hm::game_operation::Mutation(store.game_directory);
+    if (!admission.ok())
+      return admission.status();
     require(
         !workspace_keys.empty() && workspace_keys.size() <= kMaximumStoredStitchingExperiments,
         "Experiment removal requires a bounded set of rows");
@@ -1113,7 +1267,7 @@ absl::Status RemoveStitchingExperiments(
       require(
           (record.state == "queued" || record.state == "failed" || record.state == "frozen" ||
            record.state == "complete") &&
-              record.process_session_id == 0 && record.process_token.empty(),
+              record.process_session_id == 0 && record.process_token.empty() && !record.workflow_active,
           "Only stopped experiments may be removed individually");
       require(
           record.state != "complete" || allow_completed,

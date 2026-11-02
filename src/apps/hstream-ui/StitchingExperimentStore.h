@@ -31,6 +31,15 @@ struct StoredStitchingExperiment {
   int64_t process_session_id{0};
   std::string process_token;
   std::string reservation_token;
+  // Remote ownership survives disappearance of every local PID. Only the
+  // workflow supervisor can reconcile it after verified backend retirement.
+  std::string workflow_id;
+  bool workflow_active{false};
+  std::filesystem::path workflow_directory;
+  std::string result_attempt_id;
+  std::optional<StitchingExperimentWorkspace> result_workspace;
+  std::string selection_attempt_id;
+  std::optional<StitchingExperimentWorkspace> selection_workspace;
   // Queue/dependency sequence numbers are local to workspace.root (session).
   int sequence{0};
   int baseline_sequence{0};
@@ -48,6 +57,12 @@ struct StoredStitchingExperiment {
   // fail rather than overwriting another dialog's more recent row state.
   uint64_t revision{0};
 };
+
+inline const StitchingExperimentWorkspace& ResolvedStitchingExperimentWorkspace(const StoredStitchingExperiment& row) {
+  return row.result_workspace   ? *row.result_workspace
+      : row.selection_workspace ? *row.selection_workspace
+                                : row.workspace;
+}
 
 struct StitchingExperimentCatalog {
   std::vector<StoredStitchingExperiment> experiments;

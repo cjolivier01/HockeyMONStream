@@ -4,6 +4,7 @@
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtWidgets/QDialog>
+#include <filesystem>
 
 class QLabel;
 class QPlainTextEdit;
@@ -45,6 +46,11 @@ class Int8PreparationDialog : public QDialog {
  private:
   void start();
   void readOutput();
+  void finishWhenStopped(int code, QProcess::ExitStatus status);
+  std::filesystem::path operation_game_;
+  std::string operation_token_;
+  qint64 retirement_started_ms_{0};
+  int poll_interval_ms_{0}, shutdown_timeout_ms_{0};
   Int8PreparationRequest request_;
   QProcess process_;
   QByteArray output_;

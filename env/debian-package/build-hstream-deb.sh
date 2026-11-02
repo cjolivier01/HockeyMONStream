@@ -76,7 +76,7 @@ python3 scripts/sync_stream_contract.py --hstream-root . \
   --config-checksums dist/web-contract/configs.sha256
 
 make HOST_CUDA_FLAGS="--config=${BAZEL_DEB_CONFIG}" \
-  hstream-job hstream-cli hstream-calibration-export hstream-model-prepare hstream-model-infer hstream-assets hstream-ui hstream-web-job yolo-custom-lib hstream-gst-plugins
+  hstream-job hstream-cli hstream-calibration-export hstream-model-prepare hstream-model-infer hstream-assets hstream-ui hstream-web-job hstream-experiment-task yolo-custom-lib hstream-gst-plugins
 
 VIDEOPREP_PLUGIN="${BUILD_DIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
 CUDA_NEEDED="$(patchelf --print-needed "${VIDEOPREP_PLUGIN}" | grep -E '^lib(cudart|npp[^.]*)[.]so[.]' || true)"

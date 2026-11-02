@@ -1290,6 +1290,67 @@ int main() {
   }
 
   bool ok = true;
+  {
+    auto absolute = YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string());
+    const auto previous = YAML::Dump(absolute);
+    for (const char* role : {"left", "right"}) {
+      auto chapters = absolute["game"]["videos"][role];
+      for (size_t index = 0; index < chapters.size(); ++index)
+        chapters[index] = (workspace->game_directory / chapters[index].as<std::string>()).string();
+    }
+    const auto original = YAML::Dump(absolute);
+    ok &= expect(
+        write(workspace->game_directory / "_hockeymon/config.yaml", original), "write absolute playlist fixture");
+    auto first = SnapshotStitchingExperimentWorkspace(*workspace, root / "absolute-first");
+    ok &= expect(first.ok(), "first snapshot accepts admitted absolute playlist");
+    if (first.ok()) {
+      auto second = SnapshotStitchingExperimentWorkspace(*first, root / "absolute-second");
+      ok &= expect(second.ok(), "second snapshot resolves frozen absolute playlist through source aliases");
+      if (second.ok()) {
+        std::ifstream file(second->game_directory / "_hockeymon/config.yaml");
+        const std::string copied{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        ok &= expect(
+            copied == original &&
+                fs::canonical(second->game_directory / "cam1/left.mp4") == fs::canonical(game / "cam1/left.mp4"),
+            "serial snapshot preserves exact frozen config and physical media identity");
+      }
+      fs::create_symlink(fs::canonical(game / "cam1/left.mp4"), first->game_directory / "duplicate.mp4");
+      ok &= expect(
+          !SnapshotStitchingExperimentWorkspace(*first, root / "absolute-ambiguous").ok(),
+          "snapshot rejects ambiguous aliases for a frozen absolute playlist");
+      fs::remove(first->game_directory / "duplicate.mp4");
+      ok &= expect(write(root / "unadmitted.mp4", "unadmitted source"), "write external source fixture");
+      absolute["game"]["videos"]["left"][0] = (root / "unadmitted.mp4").string();
+      ok &= expect(
+          write(first->game_directory / "_hockeymon/config.yaml", YAML::Dump(absolute)), "write unadmitted playlist");
+      ok &= expect(
+          !SnapshotStitchingExperimentWorkspace(*first, root / "absolute-unadmitted").ok(),
+          "snapshot rejects external files without an existing admitted source alias");
+    }
+    ok &= expect(
+        write(workspace->game_directory / "_hockeymon/config.yaml", previous), "restore relative playlist fixture");
+  }
+  const auto successor = SnapshotStitchingExperimentWorkspace(*workspace, root / "workflow-successor");
+  ok &= expect(successor.ok(), "workflow attempt must snapshot the pending candidate into a private successor");
+  if (!successor.ok())
+    std::cerr << successor.status() << '\n';
+  else {
+    ok &= expect(
+        successor->invalidation_id == workspace->invalidation_id &&
+            successor->game_directory != workspace->game_directory,
+        "workflow successor must preserve generation without sharing writable workspace");
+    ok &= expect(
+        fs::is_symlink(successor->game_directory / "cam1/left.mp4"), "successor source must stay linked read-only");
+    ok &= expect(
+        write(successor->game_directory / "_hockeymon/config.yaml", "private: successor\n"),
+        "successor config edit failed");
+    const auto original = YAML::LoadFile((workspace->game_directory / "_hockeymon/config.yaml").string());
+    ok &= expect(
+        original["hstream_ui"]["stitching_calibration"]["invalidation_id"].as<std::string>() ==
+            workspace->invalidation_id,
+        "editing successor must not mutate predecessor configuration");
+  }
+
   ok &= private_input_inventory(root);
   ok &= expect(experiment_generated_backend_choices(root), "experiment generated choices must restore saved intent");
   ok &= expect(experiment_resolutions(root), "experiment image sizes must persist and promote independently");

@@ -2406,6 +2406,21 @@ int main() {
           !hm::get_node(with_defaults.game_private_config(), "stitching.calibration_frame_count").has_value() &&
           (*default_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:09",
       "UI defaults must overlay baseline below game-private configuration");
+  YAML::Node frozen_user;
+  frozen_user["schema"] = 1;
+  frozen_user["source_path"] = defaults_path.string();
+  frozen_user["values"] = hm::user_config::load_snapshot()->values;
+  const fs::path frozen_user_path = root / "frozen-user.yaml";
+  std::ofstream(frozen_user_path) << frozen_user;
+  std::ofstream(defaults_path) << "stitching: {stitch_frame_time: '00:00:43'}\n";
+  ::setenv("HSTREAM_USER_CONFIG_SNAPSHOT", frozen_user_path.c_str(), 1);
+  hm::Configurator frozen_defaults("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+  const auto frozen_config = frozen_defaults.load_config();
+  ok &= expect(
+      frozen_config.ok() && (*frozen_config)["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:09" &&
+          (*frozen_config)["pipeline"]["defaults-only"].as<std::string>() == "yes",
+      "NVIDIA CLI and exporter configuration must use frozen user tuning after live Defaults change");
+  ::unsetenv("HSTREAM_USER_CONFIG_SNAPSHOT");
   std::ofstream(defaults_path) << "not: [valid\n";
   hm::Configurator invalid_defaults("layered", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
   ok &= expect(!invalid_defaults.load_config().ok(), "Malformed defaults must fail instead of silently falling back");

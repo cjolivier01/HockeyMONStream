@@ -1,4 +1,5 @@
 #include <QtCore/QFileInfo>
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "src/apps/hstream-ui/BackendPreview.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
@@ -41,6 +42,39 @@ bool waitFor(const std::function<bool()>& condition, int timeout_ms = 10000) {
 } // namespace
 
 struct HStreamWindowTestAccess {
+  static void checkGameOwnership(HStreamWindow& window, const QString& directory) {
+    const std::filesystem::path game(directory.toStdString());
+    auto owner = hm::game_operation::LocalOwner("workflow", "remote-test", "remote-test-token");
+    owner.workflow_directory = (game / "_hockeymon/workflows/remote-test").string();
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      require(lock.ok() && (*lock)->Claim(owner).ok(), "Remote workflow claims game before desktop launch");
+    }
+    window.updateRunControls();
+    require(
+        !window.start_button_->isEnabled() && !window.save_preset_button_->isEnabled() &&
+            !window.clean_stitching_button_->isEnabled() && window.stitching_experiments_button_->isEnabled() &&
+            window.pipeline_state_->text().contains("remote-test"),
+        "Remote ownership fences desktop mutations while experiment monitoring remains available");
+    window.start_button_->click();
+    require(window.pipeline_process_->state() == QProcess::NotRunning, "Disabled Play cannot bypass remote admission");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      require(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "Release remote test owner");
+    }
+    window.updateRunControls();
+    require(
+        window.start_button_->isEnabled() && window.save_preset_button_->isEnabled() &&
+            !window.pipeline_state_->text().startsWith("BUSY:"),
+        "Desktop resumes after confirmed workflow cleanup");
+    require(window.beginGameOperation("pipeline"), "Desktop obtains main game admission");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      require(lock.ok() && !(*lock)->Claim(owner).ok(), "Remote workflow cannot bypass an admitted desktop run");
+    }
+    window.releaseGameOperationIfStopped();
+    require(window.operation_token_.empty(), "Idle desktop admission releases after exact local proof");
+  }
   static void stopRealBackend(HStreamWindow& window) {
     window.stopPipeline();
   }
@@ -381,7 +415,7 @@ struct HStreamWindowTestAccess {
       }
       window.preview_tabs_->setCurrentIndex(1);
       if (completed_receipt)
-        window.stopPipeline();
+        window.stopPipeline(true);
       else
         window.pipeline_process_->write("@test-finish\n");
       require(
@@ -601,6 +635,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     HStreamWindow window(nullptr, {"hockeymon", "/bin/true"});
     window.openGame("game", false);
+    HStreamWindowTestAccess::checkGameOwnership(window, game);
     HStreamWindowTestAccess::check(window, game);
     const QString runner = root.filePath("backend.py");
     writeFile(runner, R"PY(import json, os, pathlib, shutil, sys

@@ -782,6 +782,12 @@ class HStreamWindow : public QMainWindow {
   std::vector<bool> normal_associated_controls_visible_;
   std::vector<QWidget*> focus_hidden_widgets_;
   QVBoxLayout* output_list_{nullptr};
+  bool beginGameOperation(const std::string& kind);
+  void releaseGameOperationIfStopped();
+  std::filesystem::path operation_game_;
+  std::string operation_token_;
+  bool operation_starting_{false};
+  qint64 operation_retirement_started_ms_{0};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};

@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Exercise the real native task/admission protocol without GPU allocation."""
+
+import tempfile, subprocess, json, os, pathlib, hashlib, shutil, sys
+
+temporary = tempfile.TemporaryDirectory(prefix="hstream-native-task-")
+root = pathlib.Path(temporary.name)
+game = root / "game"
+(game / "_hockeymon").mkdir(parents=True)
+(game / "left.mp4").write_text("left fixture")
+(game / "right.mp4").write_text("right fixture")
+(game / "_hockeymon/config.yaml").write_text(
+    "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n  stitching:\n    frame_offsets: {left: 0, right: 0}\n"
+)
+workflow = "workflow-native-test"
+directory = game / "_hockeymon/workflows" / workflow
+directory.mkdir(parents=True)
+binary = pathlib.Path(sys.argv[1]).resolve()
+capabilities = json.loads(
+    subprocess.check_output([str(binary), "--capabilities"], text=True)
+)
+expected_backend = sys.argv[2]
+assert capabilities["gpu_backend"] == expected_backend
+assert capabilities["gpu_operations_supported"] == (expected_backend == "nvidia")
+
+
+def call(action, data, expected=0):
+    p = root / (action + ".json")
+    p.write_text(json.dumps(data))
+    r = subprocess.run(
+        [str(binary), "--admission", action, "--request", str(p)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == expected, (r.returncode, r.stdout, r.stderr)
+    return json.loads(r.stdout)
+
+
+owner = call(
+    "acquire",
+    dict(
+        game=str(game),
+        kind="workflow",
+        id=workflow,
+        token="native-test-token",
+        workflow_directory=str(directory),
+    ),
+)
+assert (
+    call(
+        "acquire",
+        dict(
+            game=str(game),
+            kind="workflow",
+            id=workflow,
+            token="native-test-token",
+            workflow_directory=str(directory),
+        ),
+    )
+    == owner
+)
+assert (
+    call(
+        "acquire",
+        dict(
+            game=str(game),
+            kind="workflow",
+            id=workflow,
+            token="different-token",
+            workflow_directory=str(directory),
+        ),
+        1,
+    )["code"]
+    == "conflict"
+)
+attempt = directory / "attempts/attempt-create"
+attempt.mkdir(parents=True)
+request = dict(
+    schema=1,
+    workflow_id=workflow,
+    plan_digest="f" * 64,
+    stage_id="prepare",
+    attempt_id=attempt.name,
+    epoch=1,
+    operation="experiment-create",
+    root=str(attempt),
+    game=str(game),
+    inputs=dict(
+        settings=dict(control_points=30, frame_count=1, stitch_frame_time="00:00:00"),
+        sequence=1,
+    ),
+    runtime=dict(storage_namespace="test-storage"),
+    result_path=str(attempt / "native-result.json"),
+    owner=dict(game=str(game), token="native-test-token"),
+)
+p = attempt / "request.json"
+p.write_text(json.dumps(request))
+r = subprocess.run(
+    [str(binary), "--request", str(p)], capture_output=True, text=True, timeout=30
+)
+assert r.returncode == 0, (r.stdout, r.stderr)
+result = json.loads((attempt / "native-result.json").read_text())
+assert result["status"] == "succeeded"
+for art in result["artifacts"]:
+    data = (attempt / art["path"]).read_bytes()
+    assert art["sha256"] == hashlib.sha256(data).hexdigest() and art["size"] == len(
+        data
+    )
+assert (game / "_hockeymon/config.yaml").read_text().startswith("game:")
+assert not result["outputs"]["materialized"]
+if expected_backend == "amd":
+    unsupported = directory / "attempts/unsupported-gpu"
+    unsupported.mkdir()
+    gpu_request = dict(
+        request,
+        operation="experiment-materialize",
+        root=str(unsupported),
+        attempt_id=unsupported.name,
+        result_path=str(unsupported / "native-result.json"),
+        inputs={"workspace": result["outputs"]["workspace"]},
+    )
+    p = unsupported / "request.json"
+    p.write_text(json.dumps(gpu_request))
+    rejected = subprocess.run(
+        [str(binary), "--request", str(p)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=dict(os.environ, CUDA_VISIBLE_DEVICES="0"),
+    )
+    assert (
+        rejected.returncode != 0 and "AMD automatic calibration" in rejected.stdout
+    ), (rejected.stdout, rejected.stderr)
+    assert not (unsupported / "native-result.json").exists()
+# A prepare successor must retain identity while owning separate mutable files.
+second = directory / "attempts/attempt-snapshot"
+second.mkdir(parents=True)
+request.update(
+    root=str(second),
+    attempt_id=second.name,
+    stage_id="snapshot",
+    result_path=str(second / "native-result.json"),
+    inputs={"workspace": result["outputs"]["workspace"]},
+)
+p = second / "request.json"
+p.write_text(json.dumps(request))
+r = subprocess.run(
+    [str(binary), "--request", str(p)], capture_output=True, text=True, timeout=30
+)
+assert r.returncode == 0, (r.stdout, r.stderr)
+copy = json.loads((second / "native-result.json").read_text())["outputs"]["workspace"]
+assert copy["invalidation_id"] == result["outputs"]["workspace"]["invalidation_id"]
+assert copy["game_directory"] != result["outputs"]["workspace"]["game_directory"]
+original = (
+    pathlib.Path(result["outputs"]["workspace"]["game_directory"])
+    / "_hockeymon/config.yaml"
+)
+original_bytes = original.read_bytes()
+(pathlib.Path(copy["game_directory"]) / "_hockeymon/config.yaml").write_text(
+    "successor: modified\n"
+)
+assert original.read_bytes() == original_bytes
+# A descriptor cannot authorize a sibling workflow, path traversal or stale owner.
+request["inputs"]["workspace"]["game_directory"] = str(game)
+p.write_text(json.dumps(request))
+r = subprocess.run(
+    [str(binary), "--request", str(p)], capture_output=True, text=True, timeout=30
+)
+assert r.returncode != 0
+
+call("cancel", dict(game=str(game), token="native-test-token", revision=1))
+call(
+    "release",
+    dict(game=str(game), token="native-test-token", revision=2, stopped_and_clean=True),
+)
+assert call("inspect", dict(game=str(game)))["owner"] is None
+print(
+    "Admission conflict/idempotency, CPU prepare, portable artifacts and release passed"
+)

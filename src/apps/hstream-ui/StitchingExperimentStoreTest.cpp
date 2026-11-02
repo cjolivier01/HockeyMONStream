@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 
 namespace fs = std::filesystem;
@@ -134,6 +135,81 @@ void install_plan(StoredStitchingExperiment& record, const PlayerFrameSelectionP
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   write_file(path, YAML::Dump(config));
   record.selection_fingerprint = plan.fingerprint;
+}
+
+bool workflow_references(const fs::path& root) {
+  auto store = open_store(root / "workflow-references");
+  auto record = make_record(store, "session", 1);
+  bool ok = expect(SaveStitchingExperiment(store, record).ok(), "save original workflow candidate");
+  const auto original = record.workspace;
+  record.workflow_id = "workflow-test";
+  record.workflow_directory = store.game_directory / "_hockeymon/workflows" / record.workflow_id;
+  record.workflow_active = true;
+  fs::create_directories(record.workflow_directory);
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "workflow rows require durable admission");
+  auto owner = hm::game_operation::LocalOwner("workflow", record.workflow_id, "workflow-test-token");
+  owner.workflow_directory = record.workflow_directory.string();
+  {
+    auto admission = hm::game_operation::Lock::Acquire(store.game_directory);
+    if (!admission.ok())
+      throw std::runtime_error(admission.status().ToString());
+    ok &= expect((*admission)->Claim(owner).ok(), "claim workflow game");
+  }
+  hm::game_operation::RegisterAuthorization(store.game_directory, owner.token);
+  ok &= expect(SaveStitchingExperiment(store, record).ok(), "bind row to admitted workflow");
+  auto selected = record.workspace;
+  selected.root = record.workflow_directory / "attempts/materialize/workspace";
+  selected.game_directory = selected.root / selected.game_id;
+  write_file(
+      selected.game_directory / "_hockeymon/config.yaml",
+      read_file(original.game_directory / "_hockeymon/config.yaml"));
+  auto selected_record = record;
+  selected_record.workspace = selected;
+  install_plan(selected_record, make_plan(store.game_directory, 2));
+  record.selection_workspace = selected;
+  record.selection_attempt_id = "materialize";
+  record.selection_fingerprint = selected_record.selection_fingerprint;
+  record.state = "frozen";
+  ok &=
+      expect(SaveStitchingExperiment(store, record, true).ok(), "adopt retained selection under original catalog key");
+  record.state = "failed";
+  ok &= expect(SaveStitchingExperiment(store, record).ok(), "failed solve retains successful materialization");
+  const auto catalog = LoadStitchingExperimentStore(store);
+  ok &= expect(
+      catalog.ok() && catalog->experiments.size() == 1 &&
+          catalog->experiments.front().workspace.game_directory == original.game_directory &&
+          ResolvedStitchingExperimentWorkspace(catalog->experiments.front()).game_directory ==
+              selected.game_directory &&
+          catalog->selected_by_count.at(2) ==
+              original.game_directory.lexically_relative(store.directory).generic_string(),
+      "restored remote selection preserves immutable catalog identity and count reuse");
+  auto replaced = record;
+  replaced.selection_attempt_id = "another";
+  ok &= expect(!SaveStitchingExperiment(store, replaced).ok(), "adopted selection cannot be replaced");
+  ok &= expect(!DiscardStitchingExperimentStore(store).ok(), "active remote rows prevent discard");
+  {
+    auto admission = hm::game_operation::Lock::Acquire(store.game_directory);
+    ok &= expect(
+        admission.ok() && (*admission)->RequestCancel(owner.token, owner.revision).ok(),
+        "cancel uses the same game lock as adoption");
+  }
+  ok &= expect(!SaveStitchingExperiment(store, record).ok(), "cancellation fences subsequent active-row adoption");
+  record.workflow_active = false;
+  ok &= expect(
+      SaveStitchingExperiment(store, record).ok(), "cancelled supervisor may retire row without losing selection");
+  {
+    auto admission = hm::game_operation::Lock::Acquire(store.game_directory);
+    ok &= expect(
+        admission.ok() && (*admission)->Release(owner.token, owner.revision + 1, true).ok(),
+        "retired workflow releases exact admission revision");
+  }
+  hm::game_operation::ForgetAuthorization(store.game_directory, owner.token);
+  const auto restored = LoadStitchingExperimentStore(store);
+  ok &= expect(
+      restored.ok() && !restored->experiments.front().workflow_active &&
+          ResolvedStitchingExperimentWorkspace(restored->experiments.front()).game_directory == selected.game_directory,
+      "selection remains inspectable after workflow admission release");
+  return ok;
 }
 
 struct InterruptCleanup {
@@ -1039,6 +1115,7 @@ bool run(const fs::path& root) {
   ok &= deletion_recovery(root);
   ok &= failed_attempt_removal(root);
   ok &= completed_result_removal(root);
+  ok &= workflow_references(root);
   return ok;
 }
 

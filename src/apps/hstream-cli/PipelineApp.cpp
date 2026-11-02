@@ -1,5 +1,6 @@
 #include "OutputRinkMap.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/common/PacedPlaybackConfig.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
@@ -1268,7 +1269,38 @@ PipelineApplication::~PipelineApplication() {
 // (The following implementations are largely as provided in the original source.)
 //------------------------------------------------------------------------------
 
-absl::Status PipelineApplication::initializeInstances(CleanupStack& /*cleanup_stack*/) {
+absl::Status PipelineApplication::initializeInstances(CleanupStack& cleanup_stack) {
+  if (game_id_ && *game_id_) {
+    const auto game = hm::Configurator::get_game_dir(*game_id_);
+    auto admission = hm::game_operation::Lock::Acquire(game);
+    if (!admission.ok())
+      return admission.status();
+    auto current = (*admission)->Read();
+    if (!current.ok())
+      return current.status();
+    if (current->has_value()) {
+      HM_RETURN_IF_ERROR((*admission)->Authorize(hm::game_operation::Authorization(game)));
+    } else {
+      std::string token;
+      HM_ASSIGN_OR_RETURN(token, hm::game_operation::NewToken());
+      auto owner = hm::game_operation::LocalOwner(int8_sample_output_ ? "int8" : "pipeline", token, token);
+      HM_RETURN_IF_ERROR((*admission)->Claim(owner));
+      hm::game_operation::RegisterAuthorization(game, token);
+      ::setenv("HSTREAM_GAME_OPERATION_GAME", game.c_str(), 1);
+      ::setenv("HSTREAM_GAME_OPERATION_TOKEN", token.c_str(), 1);
+      // Registered before any pipeline work. CleanupStack runs this last,
+      // after decoder, GPU and helper shutdown; a killed process leaves the
+      // durable claim in recovery instead of relying on local PID guesses.
+      cleanup_stack.push([game, token] {
+        const auto released = hm::game_operation::ReleaseLocal(game, token, true);
+        if (!released.ok())
+          g_printerr("Game admission cleanup: %s\n", released.ToString().c_str());
+        hm::game_operation::ForgetAuthorization(game, token);
+        ::unsetenv("HSTREAM_GAME_OPERATION_GAME");
+        ::unsetenv("HSTREAM_GAME_OPERATION_TOKEN");
+      });
+    }
+  }
   // Section 1: Create and initialize each HmApp instance.
   int i = -1;
   while (cfg_files_[++i]) {
@@ -1448,6 +1480,9 @@ absl::Status PipelineApplication::configureInstances(
       if (stitching_player_scan_output_) {
         hm::pipeline_internal::configure_stitching_player_scan_pipeline(app_ctx->configurator().config()["pipeline"]);
       }
+      if (stitching_materialize_selected_frames_)
+        hm::pipeline_internal::configure_selected_frame_materialization_pipeline(
+            app_ctx->configurator().config()["pipeline"]);
       if (int8_sample_output_)
         hm::pipeline_internal::configure_int8_sampling_pipeline(app_ctx->configurator().config()["pipeline"]);
 
@@ -1539,6 +1574,9 @@ absl::Status PipelineApplication::configureInstances(
         hm::pipeline_internal::suppress_player_analytics(app_ctx->configurator().config()["pipeline"]);
       if (stitching_player_scan_output_)
         hm::pipeline_internal::configure_stitching_player_scan_pipeline(app_ctx->configurator().config()["pipeline"]);
+      if (stitching_materialize_selected_frames_)
+        hm::pipeline_internal::configure_selected_frame_materialization_pipeline(
+            app_ctx->configurator().config()["pipeline"]);
       if (int8_sample_output_) {
         if (app_ctx->configurator().stitching_calibration_required())
           return absl::FailedPreconditionError("Complete stitching calibration before preparing INT8 samples");
@@ -1552,7 +1590,7 @@ absl::Status PipelineApplication::configureInstances(
       // authorized declared asset. DeDoDe must be locally exported/provided
       // because its embedded LightGlue checkpoint has no redistribution grant;
       // AKAZE has no external model.
-      if (app_ctx->configurator().stitching_matcher_model_required()) {
+      if (!stitching_materialize_selected_frames_ && app_ctx->configurator().stitching_matcher_model_required()) {
         hm::stitching::ControlPointMatcher matcher;
         HM_ASSIGN_OR_RETURN(matcher, selected_stitching_matcher(app_ctx->configurator().config()));
         hm::onnx::ExecutionProvider provider;
@@ -3554,6 +3592,13 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        &stitching_calibration_with_ice_mask_,
        "Prepare the baseline rink mask during stitching-only calibration",
        nullptr},
+      {"stitching-materialize-selected-frames",
+       0,
+       0,
+       G_OPTION_ARG_NONE,
+       &stitching_materialize_selected_frames_,
+       "Capture and verify a frozen selected-frame bundle without solving calibration",
+       nullptr},
       {"stitching-player-scan-output",
        0,
        0,
@@ -3922,6 +3967,17 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     return absl::InternalError(error->message);
   }
 
+  if (stitching_materialize_selected_frames_) {
+    if (stitching_calibration_with_ice_mask_ || stitching_player_scan_output_ || int8_sample_output_ ||
+        force_reconfigure_ || clean_stitching_artifacts_ || clean_stitching_from_control_points_ ||
+        !ui_preview_window_ids_.empty() || encode_job_ || show_ || show_render_scale_ >= 0)
+      return absl::InvalidArgumentError(
+          "Frame materialization cannot run previews, publication, scans, masks or cleanup");
+    if (!clean_stitching_expected_invalidation_id_ || !*clean_stitching_expected_invalidation_id_)
+      return absl::InvalidArgumentError("Frame materialization requires --clean-expected-invalidation-id");
+    stitching_calibration_only_ = TRUE;
+  }
+
   if (int8_sample_output_) {
     global_cleanup_stack.push([this] {
       g_free(int8_sample_output_);
@@ -4162,7 +4218,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
 
   // Cleaning only removes generated game artifacts and must remain usable
   // offline, even when declared models are not installed.
-  if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_) {
+  if (!clean_stitching_artifacts_ && !clean_stitching_from_control_points_ && !stitching_materialize_selected_frames_) {
     emit_ui_startup("assets", "Checking pretrained assets");
     std::vector<fs::path> asset_configs;
     for (size_t index = 0, count = g_strv_length(cfg_files_); index < count; ++index)
@@ -4320,6 +4376,8 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
         clean_only_eligible_context_seen_ ? "Stitching clean-only action did not complete"
                                           : "No active hmstitcher configuration is eligible for cleaning");
   }
+  if (stitching_materialize_selected_frames_ && (!stitching_frames_materialized_ || cintr_))
+    return absl::FailedPreconditionError("Selected-frame materialization stopped without a verified complete bundle");
   return absl::OkStatus();
 }
 
@@ -8380,6 +8438,29 @@ gboolean PipelineApplication::handle_element_message(AppCtx* app_ctx, GstMessage
     remember_scoreboard_selection(
         app_ctx, GST_OBJECT(app_ctx->pipeline.common_elements.hmplaycropper_bin.playcropper), epoch ? epoch : "");
     g_free(epoch);
+    return TRUE;
+  }
+  if (structure && gst_structure_has_name(structure, "hstream-stitching-frames-materialized")) {
+    const auto active = stage_app_contexts_.find(current_stage_);
+    if (!stitching_materialize_selected_frames_ || !app_ctx || active == stage_app_contexts_.end() ||
+        std::none_of(
+            active->second.begin(),
+            active->second.end(),
+            [app_ctx](const auto& context) { return context.get() == app_ctx; }) ||
+        GST_MESSAGE_SRC(message) != GST_OBJECT(app_ctx->pipeline.hmstitcher_bin.elem_hmstitcher))
+      return TRUE;
+    const char* fingerprint = gst_structure_get_string(structure, "selection-fingerprint");
+    const char* invalidation = gst_structure_get_string(structure, "invalidation-id");
+    if (fingerprint && *fingerprint && invalidation &&
+        (*std::find_if(
+             active->second.begin(),
+             active->second.end(),
+             [app_ctx](const auto& context) { return context.get() == app_ctx; }))
+                ->configurator()
+                .active_stitching_invalidation_id() == invalidation) {
+      stitching_frames_materialized_ = true;
+      g_print("HSTREAM_MATERIALIZATION status=complete selection=%s\n", fingerprint);
+    }
     return TRUE;
   }
   if (!structure || !gst_structure_has_name(structure, "hstream-stitching-calibration-complete")) {

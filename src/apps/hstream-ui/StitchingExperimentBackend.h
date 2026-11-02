@@ -66,6 +66,13 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentEditableCo
     const std::filesystem::path& experiment_root,
     int sequence);
 
+// Private successor for a workflow attempt. Preserves the exact generation,
+// frozen inputs and maps; copies owned files and links only admitted source
+// media. The predecessor remains immutable and usable by parallel siblings.
+absl::StatusOr<StitchingExperimentWorkspace> SnapshotStitchingExperimentWorkspace(
+    const StitchingExperimentWorkspace& source,
+    const std::filesystem::path& destination_root);
+
 // Saves edited correspondences as a new candidate. The inspected source owner
 // and match snapshot must still agree; the original candidate is unchanged.
 absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWorkspace(

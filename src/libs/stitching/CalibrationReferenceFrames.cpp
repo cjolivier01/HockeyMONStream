@@ -169,13 +169,9 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
     size_t count,
     const std::function<bool()>& is_cancelled) {
   try {
-    const auto reference =
-        hm::stitch_frame_time_to_nanoseconds(config["stitching"]["stitch_frame_time"].as<std::string>());
     const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
     if (!ffmpeg)
       return absl::NotFoundError("End-relative calibration requires ffmpeg");
-    std::array<CameraRecordingWindow, 2> cameras;
-    HM_ASSIGN_OR_RETURN(cameras, RecordingWindows(game, config));
     std::vector<std::array<CalibrationFrameSource, 2>> planned;
     const auto selection = config["stitching"]["calibration_frame_selection"];
     const bool selected = selection && !selection.IsNull();
@@ -193,6 +189,13 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
              CalibrationFrameSource{pair[1].path, double(pair[1].source_pts_ns) / 1e9}});
       }
     } else {
+      // A frozen scan already owns exact physical pairs. Only ordinary
+      // sampling needs to resolve a reference and walk recording windows;
+      // compact game configs may omit a reference equal to the baseline.
+      const auto reference =
+          hm::stitch_frame_time_to_nanoseconds(config["stitching"]["stitch_frame_time"].as<std::string>());
+      std::array<CameraRecordingWindow, 2> cameras;
+      HM_ASSIGN_OR_RETURN(cameras, RecordingWindows(game, config));
       HM_ASSIGN_OR_RETURN(planned, PlanCalibrationReferenceFrames(cameras, reference, count));
     }
     std::vector<CalibrationFrameInput> inputs;

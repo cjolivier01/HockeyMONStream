@@ -18,6 +18,10 @@ inline constexpr char kOutputRootKey[] = "output-root";
 // overlay; HM_OUTPUT_WORK_DIR remains explicit whenever archive output is used.
 // HSTREAM_JOB_MANAGED_RUNTIME=1 makes all loads read-only: existing preferences
 // and Defaults retain their precedence, but a missing first-run file stays absent.
+// HSTREAM_USER_CONFIG_SNAPSHOT selects a pinned workflow YAML envelope with
+// schema: 1, source_path (original active tuning path or empty), and values (the
+// resolved user overlay). Every tuning reader uses that snapshot exclusively;
+// missing or malformed snapshots fail without consulting live preferences.
 absl::StatusOr<std::filesystem::path> file_path();
 // Legacy tuning is used only until defaults.yaml exists. Legacy paths remain
 // supported after opting into the Defaults editor.

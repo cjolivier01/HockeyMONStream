@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
@@ -5029,6 +5030,12 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
     }
   });
   buildUi();
+  auto* admission_poll = new QTimer(this);
+  admission_poll->setObjectName("gameOperationPoll");
+  admission_poll->setInterval(baseline_config_["workflow"]["poll_interval_ms"].as<int>());
+  connect(admission_poll, &QTimer::timeout, this, [this] { updateRunControls(); });
+  admission_poll->start();
+
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int) {
     if (backend_preview_ && backend_preview_directory_) {
       backend_preview_->setChannel(
@@ -5405,6 +5412,16 @@ void HStreamWindow::loadBaselineDefaults() {
 }
 
 HStreamWindow::~HStreamWindow() {
+  // The durable record remains authoritative if closing cannot prove shutdown.
+  struct ForgetAdmission {
+    HStreamWindow* window;
+    ~ForgetAdmission() {
+      window->releaseGameOperationIfStopped();
+      if (!window->operation_token_.empty())
+        hm::game_operation::ForgetAuthorization(window->operation_game_, window->operation_token_);
+    }
+  } forget_admission{this};
+
   qApp->removeEventFilter(this);
   // Normal closeEvent waits for playback and publication. If the window is
   // destroyed directly, QProcess still kills/reaps its child, but may emit
@@ -11563,9 +11580,73 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
   checkbox->second->setCheckState(mode == "1" ? Qt::Checked : mode == "0" ? Qt::Unchecked : Qt::PartiallyChecked);
 }
 
+bool HStreamWindow::beginGameOperation(const std::string& kind) {
+  const std::filesystem::path game =
+      std::filesystem::canonical(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
+  auto lock = hm::game_operation::Lock::Acquire(game, false);
+  if (!lock.ok()) {
+    appendLog(QString::fromStdString(lock.status().ToString()));
+    return false;
+  }
+  auto token = hm::game_operation::NewToken();
+  if (!token.ok()) {
+    appendLog(QString::fromStdString(token.status().ToString()));
+    return false;
+  }
+  auto owner = hm::game_operation::LocalOwner(kind, *token, *token);
+  const auto claimed = (*lock)->Claim(owner);
+  if (!claimed.ok()) {
+    appendLog(QString::fromStdString(claimed.ToString()));
+    return false;
+  }
+  operation_game_ = game;
+  operation_token_ = *token;
+  operation_retirement_started_ms_ = 0;
+  hm::game_operation::RegisterAuthorization(game, *token);
+  return true;
+}
+
+void HStreamWindow::releaseGameOperationIfStopped() {
+  if (operation_token_.empty() || operation_starting_ ||
+      (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
+      live_rotation_authorization_pending_)
+    return;
+  auto stopped = hm::game_operation::LocalChildrenStopped(operation_token_);
+  if (!stopped.ok())
+    return; // Keep the durable claim until proof is available.
+  if (!*stopped) {
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    if (!operation_retirement_started_ms_)
+      operation_retirement_started_ms_ = now;
+    const auto timeout = baseline_config_["workflow"]["shutdown_timeout_seconds"].as<qint64>() * 1000;
+    (void)hm::game_operation::SignalLocalChildren(
+        operation_token_, now - operation_retirement_started_ms_ >= timeout ? SIGKILL : SIGTERM);
+    return;
+  }
+  const auto released = hm::game_operation::ReleaseLocal(operation_game_, operation_token_, true);
+  if (released.ok()) {
+    operation_game_.clear();
+    operation_token_.clear();
+    operation_retirement_started_ms_ = 0;
+  }
+}
+
 void HStreamWindow::startPipeline() {
   if (deferred_play_requested_ || deferred_restart_requested_)
     return;
+  releaseGameOperationIfStopped();
+  if (!operation_token_.empty() || !ensureGameDirectory() || !beginGameOperation("pipeline"))
+    return;
+  operation_starting_ = true;
+  struct FinishAdmissionStart {
+    std::function<void()> finish;
+    ~FinishAdmissionStart() {
+      finish();
+    }
+  } finish_admission_start{[this] {
+    operation_starting_ = false;
+    releaseGameOperationIfStopped();
+  }};
   if (!resolveInitialProgramSources())
     return;
   const bool initial_single_source = initial_program_requires_stitching_ == false;
@@ -12169,6 +12250,8 @@ void HStreamWindow::startPipeline() {
     env.remove("HSTREAM_ARCHIVE_RUN_ID");
     env.insert("HM_OUTPUT_WORK_DIR", archive_output_work_dir(env, working_dir));
   }
+  env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
+  env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
 #ifdef Q_OS_UNIX
@@ -18503,6 +18586,28 @@ void HStreamWindow::updateStitchingStillPreview() {
 }
 
 void HStreamWindow::updateRunControls() {
+  releaseGameOperationIfStopped();
+  bool external_operation = false;
+  if (!editing_defaults_ && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
+    const auto game = gameDirectory(game_id_edit_->text().trimmed()).toStdString();
+    if (std::filesystem::is_directory(game)) {
+      const auto owner = hm::game_operation::Inspect(game);
+      external_operation =
+          !owner.ok() || (owner->has_value() && ((**owner).token != operation_token_ || operation_token_.empty()));
+      if (external_operation && pipeline_state_ &&
+          (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
+        pipeline_state_->setText(
+            owner.ok() && owner->has_value()
+                ? QString("BUSY: %1 %2")
+                      .arg(QString::fromStdString((**owner).kind), QString::fromStdString((**owner).id))
+                : "BUSY: checking game ownership");
+    }
+  }
+
+  if (!external_operation && pipeline_state_ && pipeline_state_->text().startsWith("BUSY:") &&
+      (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
+    pipeline_state_->setText("STOPPED");
+
   if (backend_mode_)
     backend_mode_->setText(hockeyMonProgram() ? "Backend: hm-cli (Python)" : "Backend: hstream-cli");
   updateScoreboardControls();
@@ -18520,7 +18625,8 @@ void HStreamWindow::updateRunControls() {
     ++scheduled_player_drawing_generation_;
   }
   const bool waiting_for_start = deferred_play_requested_ || deferred_restart_requested_;
-  const bool finalizing = isArchiveFinalizing() || waiting_for_start;
+  const bool finalizing =
+      isArchiveFinalizing() || waiting_for_start || external_operation || (!operation_token_.empty() && !running);
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
   if (archive_recovery_was_cleared) {
@@ -18551,6 +18657,10 @@ void HStreamWindow::updateRunControls() {
     playback_progress_->setVisible(running || terminal_result);
     updatePlaybackProgressPresentation();
   }
+  if (save_preset_button_)
+    save_preset_button_->setEnabled(!external_operation);
+  if (auto* prepare = findChild<QPushButton*>("prepareRecordedInt8Button"))
+    prepare->setEnabled(!external_operation && !running && !finalizing);
   if (start_button_) {
     start_button_->setEnabled(
         !editing_defaults_ && !running && !finalizing && !archive_recovery_blocked &&
@@ -18570,7 +18680,7 @@ void HStreamWindow::updateRunControls() {
     run_mode_selector_->setEnabled(!running && !finalizing);
   }
   if (stitching_experiments_button_)
-    stitching_experiments_button_->setEnabled(!editing_defaults_ && !running && !finalizing);
+    stitching_experiments_button_->setEnabled(!editing_defaults_ && !running && !isArchiveFinalizing());
 #ifndef HSTREAM_USE_HIP
   if (auto* camera_experiments = findChild<QPushButton*>("cameraExperimentsButton"))
     camera_experiments->setEnabled(!editing_defaults_);
