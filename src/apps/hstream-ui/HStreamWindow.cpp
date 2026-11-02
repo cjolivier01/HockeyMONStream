@@ -12128,7 +12128,9 @@ void HStreamWindow::startPipeline() {
   if (render_video && !active_run_is_calibration_ && show_rink_mask_toggle_ && show_rink_mask_toggle_->isChecked())
     preview_overlays << "rink";
   env.insert("HSTREAM_UI_PREVIEW_OVERLAYS", preview_overlays.join(','));
-  const bool request_rink_map = render_video && embedded_render && !active_run_is_calibration_ &&
+  // Dormant embedded previews can be enabled later without rebuilding the
+  // pipeline. Freeze their mini-map now, independently of initial visibility.
+  const bool request_rink_map = embedded_render && !active_run_is_calibration_ &&
       mappingBackend() == "nona" && rink_map_preview_check_ && rink_map_preview_check_->isChecked();
   rink_map_requested_generation_ = request_rink_map ? pipeline_run_generation_ + 1 : 0;
   env.insert("HSTREAM_UI_PREVIEW_RINK_MAP", request_rink_map ? "1" : "0");

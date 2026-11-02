@@ -20600,6 +20600,61 @@ bool test_stitch_rotation_export_inheritance() {
       "The reopened inherited-rotation test run must retire on ordinary Stop");
 }
 
+bool test_rink_map_with_late_render() {
+  if (QGuiApplication::platformName() != "xcb")
+    return expect(false, "Late Render mini-map regression requires the X11 embedded-preview path");
+  const QString game = "late-render-rink-map";
+  const fs::path state = fs::path(qgetenv("HM_GAME_DIR").toStdString()) / game.toStdString() / "_hockeymon";
+  fs::create_directories(state);
+  std::ofstream(state / "config.yaml") << "stitching: {mapping_backend: nona}\n";
+  const QByteArray original_completion = qgetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+  const QByteArray original_ready = qgetenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER");
+  qputenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER", "1");
+  qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
+  auto restore = absl::MakeCleanup([&] {
+    if (original_ready.isNull())
+      qunsetenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER");
+    else
+      qputenv("HSTREAM_UI_TEST_PREVIEW_READY_AFTER", original_ready);
+    if (original_completion.isNull())
+      qunsetenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION");
+    else
+      qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", original_completion);
+  });
+  HStreamWindow window;
+  window.openGame(game, false);
+  window.show();
+  auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
+  auto* mini_map = require_child<QCheckBox>(&window, "showRinkMiniMapCheck");
+  auto* telemetry = require_child<QCheckBox>(&window, "drivegptCsvCheck");
+  auto* start = require_child<QPushButton>(&window, "startPipelineButton");
+  auto* stop = require_child<QPushButton>(&window, "stopPipelineButton");
+  if (!render || !mini_map || !telemetry || !start || !stop)
+    return false;
+  telemetry->setChecked(false);
+  mini_map->setChecked(true);
+  render->setChecked(false);
+  auto cleanup = absl::MakeCleanup([&] {
+    if (!HStreamWindowTestAccess::pipelineRetired(&window)) {
+      stop->click();
+      QTest::qWaitFor([&] { return HStreamWindowTestAccess::pipelineRetired(&window); }, 5000);
+    }
+  });
+  activate(start);
+  if (!expect(QTest::qWaitFor([&] { return window.pipelineStateText() == "PLAYING"; }, 5000),
+          "Program must start with Render initially off") ||
+      !expect(HStreamWindowTestAccess::launchedArguments(&window).contains("--ui-preview-active=none") &&
+          HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_UI_PREVIEW_RINK_MAP") == "1",
+          "A dormant preview must prepare its selected mini-map before any editor is opened"))
+    return false;
+  const int launches = window.logText().count("pipeline command ");
+  render->setChecked(true);
+  return expect(QTest::qWaitFor([&] { return window.logText().contains("GPU preview ready channel=program"); }, 5000) &&
+      window.logText().count("pipeline command ") == launches &&
+      HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_UI_PREVIEW_RINK_MAP") == "1",
+      "Enabling Render must activate the same process with its mini-map already prepared");
+}
+
 bool test_realtime_playback_selection() {
   HStreamWindow window;
   auto* render = require_child<QCheckBox>(&window, "renderVideoCheck");
@@ -21335,6 +21390,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_LATE_RENDER_RINK_MAP_ONLY"))
+    return test_rink_map_with_late_render() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY")) {
     HStreamWindow window;
     window.show();
