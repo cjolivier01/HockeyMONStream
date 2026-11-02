@@ -497,6 +497,19 @@ absl::StatusOr<bool> SupervisedCommandStopped(const std::string& token, const st
   return *state == 'C';
 }
 
+absl::StatusOr<bool> SupervisedCommandPaused(const std::string& token, const std::string& id) {
+  std::lock_guard<std::mutex> lock(authorizations_mutex);
+  const auto proof = command_proof(token, id);
+  if (!proof.ok())
+    return proof.status();
+  const auto state = proof_state(**proof);
+  if (!state.ok())
+    return state.status();
+  if (*state == 'F')
+    return absl::FailedPreconditionError("Process guard could not prove cleanup; game stays reserved");
+  return *state == 'S';
+}
+
 absl::Status CancelUnlaunchedSupervisedCommand(const std::string& token, const std::string& id) {
   std::lock_guard<std::mutex> lock(authorizations_mutex);
   const auto proof = command_proof(token, id);

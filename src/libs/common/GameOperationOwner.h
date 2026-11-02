@@ -85,6 +85,7 @@ absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
 absl::Status SupervisedCommandStarted(const std::string& token, const std::string& id);
 absl::Status SupervisedCommandFinished(const std::string& token, const std::string& id);
 absl::StatusOr<bool> SupervisedCommandStopped(const std::string& token, const std::string& id);
+absl::StatusOr<bool> SupervisedCommandPaused(const std::string& token, const std::string& id);
 // Only QProcess::FailedToStart (or an explicitly abandoned, never-started
 // command) may cancel a permit. A launched/crashed guard requires its receipt.
 absl::Status CancelUnlaunchedSupervisedCommand(const std::string& token, const std::string& id);

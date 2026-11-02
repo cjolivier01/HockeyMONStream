@@ -186,8 +186,11 @@ the kernel returns `ECHILD`. A shared Qt process instead starts each operation
 command through the Qt-free `hstream-process-guard`: a pinned, token/nonce-bound
 permit exists before launch, and its completion acknowledgment appears only after
 that guard reaches `ECHILD`. Qt keeps its normal QProcess ownership of the guard;
-it never globally reaps unrelated children. Stop escalation targets descendants
-while preserving the guard. Missing or replaced proof, a killed guard, or a child
+it never globally reaps unrelated children. Native Pause requests travel through
+the permit to the guard, which stops a separate worker process group and confirms
+the stopped worker before Qt reports Pause. The guard stays runnable throughout.
+Stop escalation targets descendants while preserving the guard. Missing or
+replaced proof, a killed guard, or a child
 that cannot exit retains admission and capacity. FailedToStart may retire only a
 permit whose guard never launched.
 

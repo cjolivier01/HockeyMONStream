@@ -137,6 +137,8 @@ class Controller:
 
     def _register(self, plan, game):
         plan = validate_plan(plan)
+        if any(stage["kind"].startswith("experiment-") for stage in plan["stages"]):
+            self._user_config_snapshot(plan)
         game = validate_game(self.config, game)
         for key, profile in plan["profiles"].items():
             validate_profile(profile)
@@ -504,24 +506,31 @@ class Controller:
             return [Controller._resolve(child, state) for child in value]
         return value
 
+    @staticmethod
+    def _user_config_snapshot(plan):
+        snapshot = plan["runtime_identity"].get("user_config_snapshot")
+        require(
+            isinstance(snapshot, dict)
+            and snapshot.get("schema") == 1
+            and isinstance(snapshot.get("values"), dict)
+            and isinstance(snapshot.get("source_path"), str),
+            "Native experiment workflows need a frozen user configuration snapshot",
+        )
+        return copy.deepcopy(snapshot)
+
     def _admit(self, directory, plan, state, stage, owner):
         state = self._apply_cancel(directory, plan, state)
         if state["cancel_requested"]:
             return self._save(directory, plan, state)
         profile = plan["profiles"][stage["profile_id"]]
-        attempt_id = str(uuid4())
-        root = attempt_directory(directory, attempt_id)
         runtime = copy.deepcopy(profile["runtime"])
         if stage["kind"].startswith("experiment-"):
-            snapshot = plan["runtime_identity"].get("user_config_snapshot")
-            require(
-                isinstance(snapshot, dict)
-                and snapshot.get("schema") == 1
-                and isinstance(snapshot.get("values"), dict)
-                and isinstance(snapshot.get("source_path"), str),
-                "Native experiment workflows need a frozen user configuration snapshot",
-            )
-            runtime["user_config_snapshot"] = copy.deepcopy(snapshot)
+            runtime["user_config_snapshot"] = self._user_config_snapshot(plan)
+        # A permanently invalid legacy plan or missing prerequisite must not
+        # allocate an empty attempt directory on every controller poll.
+        inputs = self._resolve(stage["inputs"], state)
+        attempt_id = str(uuid4())
+        root = attempt_directory(directory, attempt_id)
         request = {
             "schema": 1,
             "workflow_id": plan["workflow_id"],
@@ -532,7 +541,7 @@ class Controller:
             "operation": stage["kind"],
             "root": str(root),
             "game": owner["game"],
-            "inputs": self._resolve(stage["inputs"], state),
+            "inputs": inputs,
             "runtime": runtime,
             "result_path": str(root / "native-result.json"),
             "owner": {"game": owner["game"], "token": owner["token"]},

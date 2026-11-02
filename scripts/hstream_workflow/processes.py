@@ -8,6 +8,38 @@ from pathlib import Path
 
 from .schema import require
 
+_libc = ctypes.CDLL(None, use_errno=True)
+
+
+def pidfd_open(pid):
+    if hasattr(os, "pidfd_open"):
+        return os.pidfd_open(pid)
+    function = getattr(_libc, "pidfd_open", None)
+    require(
+        function is not None, "Task descendant signaling requires Linux pidfd support"
+    )
+    function.argtypes = [ctypes.c_int, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    descriptor = function(pid, 0)
+    if descriptor < 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+    return descriptor
+
+
+def pidfd_send_signal(descriptor, number):
+    if hasattr(signal, "pidfd_send_signal"):
+        return signal.pidfd_send_signal(descriptor, number)
+    function = getattr(_libc, "pidfd_send_signal", None)
+    require(
+        function is not None, "Task descendant signaling requires Linux pidfd support"
+    )
+    function.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+    if function(descriptor, number, None, 0) < 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
 
 def host_identity():
     return {
@@ -42,9 +74,15 @@ def same_process(saved):
 
 
 def become_subreaper():
-    libc = ctypes.CDLL(None, use_errno=True)
+    # Check the running kernel and interpreter/libc boundary before launching
+    # work. Some Python builds omit pidfd wrappers despite system support.
+    descriptor = pidfd_open(os.getpid())
+    try:
+        pidfd_send_signal(descriptor, 0)
+    finally:
+        os.close(descriptor)
     require(
-        libc.prctl(36, 1, 0, 0, 0) == 0, "Cannot establish task descendant ownership"
+        _libc.prctl(36, 1, 0, 0, 0) == 0, "Cannot establish task descendant ownership"
     )
 
 
@@ -69,12 +107,28 @@ def descendants():
 
 def signal_descendants(number):
     for pid, saved in descendants().items():
-        current = process_identity(pid)
-        if current is not None and current["start_time"] == saved["start_time"]:
-            try:
-                os.kill(pid, number)
-            except ProcessLookupError:
-                continue
+        # Direct children remain ours until reaped. Detached grandchildren
+        # become direct children when their parent exits; later passes retire
+        # them. Pin before checking identity so PID reuse cannot redirect a kill.
+        if saved["parent"] != os.getpid():
+            continue
+        try:
+            descriptor = pidfd_open(pid)
+        except ProcessLookupError:
+            continue
+        try:
+            current = process_identity(pid)
+            if (
+                current is not None
+                and current["start_time"] == saved["start_time"]
+                and current["parent"] == os.getpid()
+            ):
+                try:
+                    pidfd_send_signal(descriptor, number)
+                except ProcessLookupError:
+                    pass
+        finally:
+            os.close(descriptor)
 
 
 def reap():

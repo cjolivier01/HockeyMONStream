@@ -251,6 +251,7 @@ class HStreamWindow : public QMainWindow {
   bool handleHighBitDepthOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
   bool resumeProcessPause(quint64 generation);
+  void completeProcessPause(quint64 generation);
   bool handleProcessPauseOutput(const QString& line);
   bool handlePlaybackSeekOutput(const QString& line);
   void setPlaybackStartupStage(const QString& stage, const QString& detail);

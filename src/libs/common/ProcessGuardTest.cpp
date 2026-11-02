@@ -5,9 +5,11 @@
 #include <signal.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -28,6 +30,16 @@ template <typename T>
 T take(absl::StatusOr<T> value) {
   check(value.status());
   return std::move(*value);
+}
+template <typename Condition>
+void eventually(Condition condition, const char* message) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    if (condition())
+      return;
+    ::poll(nullptr, 0, 10);
+  } while (std::chrono::steady_clock::now() < deadline);
+  throw std::runtime_error(message);
 }
 struct Pipe {
   int descriptors[2];
@@ -70,8 +82,23 @@ struct Child {
     pid = -1;
     return status;
   }
+  int wait_bounded() {
+    int status = 0;
+    eventually(
+        [&] {
+          pid_t result;
+          do {
+            result = ::waitpid(pid, &status, WNOHANG);
+          } while (result < 0 && errno == EINTR);
+          require(result >= 0, "cannot reap bounded fixture");
+          return result == pid;
+        },
+        "guard did not retire paused descendants within five seconds");
+    pid = -1;
+    return status;
+  }
 };
-Child launch(const std::string& executable, const std::vector<std::string>& args) {
+Child launch(const std::string& executable, const std::vector<std::string>& args, bool new_session = false) {
   std::vector<char*> argv{const_cast<char*>(executable.c_str())};
   for (const auto& argument : args)
     argv.push_back(const_cast<char*>(argument.c_str()));
@@ -79,6 +106,8 @@ Child launch(const std::string& executable, const std::vector<std::string>& args
   const pid_t pid = ::fork();
   require(pid >= 0, "cannot fork fixture");
   if (!pid) {
+    if (new_session && ::setsid() < 0)
+      ::_exit(126);
     ::execv(executable.c_str(), argv.data());
     ::_exit(127);
   }
@@ -107,14 +136,34 @@ struct Admission {
   }
 };
 volatile sig_atomic_t signalled = 0;
+int resume_receipt = -1;
+int resume_output = -1;
+off_t resume_state_offset = 0;
 void signal_fixture(int) {
   signalled = 1;
+}
+void resumed_fixture(int) {
+  char state = '?';
+  if (::pread(resume_receipt, &state, 1, resume_state_offset) != 1)
+    state = '!';
+  if (::write(resume_output, &state, 1) != 1)
+    ::_exit(126);
 }
 
 int worker(int argc, char** argv) {
   const int output = std::stoi(argv[2]);
   const pid_t own = ::getpid();
   ::signal(SIGTERM, signal_fixture);
+  if (argc > 3 && std::string(argv[1]) == "--worker-wait") {
+    resume_receipt = ::open(argv[3], O_RDONLY);
+    struct stat metadata{};
+    require(
+        resume_receipt >= 0 && ::fstat(resume_receipt, &metadata) == 0 && metadata.st_size > 0,
+        "cannot open fixture receipt for Resume ordering check");
+    resume_output = output;
+    resume_state_offset = metadata.st_size - 1;
+    ::signal(SIGCONT, resumed_fixture);
+  }
   require(::write(output, &own, sizeof(own)) == sizeof(own), "worker ready failed");
   if (std::string(argv[1]) == "--worker-wait") {
     for (;;)
@@ -133,6 +182,93 @@ int worker(int argc, char** argv) {
       ::pause();
   }
   return 0; // The new detached child is adopted while the guard retires root.
+}
+
+char process_state(pid_t pid) {
+  std::ifstream input("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  require(bool(std::getline(input, line)), "fixture process disappeared before pause verification");
+  const auto end = line.rfind(')');
+  require(end != std::string::npos && end + 2 < line.size(), "invalid fixture process state");
+  return line[end + 2];
+}
+
+void paused_retirement(
+    const fs::path& root,
+    const std::string& guard,
+    const std::string& self,
+    bool parent_death,
+    bool during_pause = false) {
+  Admission admission(
+      root /
+      (during_pause       ? "pause-parent-death"
+           : parent_death ? "paused-parent-death"
+                          : "paused-force-cancel"));
+  Pipe worker_ready, guard_ready;
+  auto command = admission.prepare({self, "--worker-wait", std::to_string(worker_ready.descriptors[1])});
+  command.arguments.push_back(command.arguments[1]);
+  Child launching_parent;
+  auto process = [&]() -> Child {
+    if (!parent_death)
+      return launch(guard, command.arguments, true);
+    launching_parent.pid = ::fork();
+    require(launching_parent.pid >= 0, "cannot fork guard launching parent");
+    if (!launching_parent.pid) {
+      auto arguments = command.arguments;
+      for (size_t index = 0; index + 1 < arguments.size(); ++index)
+        if (arguments[index] == "--parent-pid")
+          arguments[index + 1] = std::to_string(::getpid());
+      auto supervisor = launch(guard, arguments, true);
+      guard_ready.send(supervisor.pid);
+      for (;;)
+        ::pause();
+    }
+    return Child{guard_ready.receive<pid_t>()};
+  }();
+  check(op::SupervisedCommandStarted(admission.owner.token, command.id));
+  Child survivor{worker_ready.receive<pid_t>()};
+  require(
+      ::getpgid(survivor.pid) == survivor.pid && ::getpgid(process.pid) != survivor.pid,
+      "guard must remain outside the worker pause group");
+  check(op::SignalSupervisedCommand(admission.owner.token, command.id, SIGSTOP));
+  if (!during_pause) {
+    eventually(
+        [&] { return take(op::SupervisedCommandPaused(admission.owner.token, command.id)); },
+        "guard did not acknowledge worker pause");
+    require(process_state(survivor.pid) == 'T', "guard acknowledged a worker that was not stopped");
+    for (int index = 0; index < 10; ++index) {
+      require(process_state(process.pid) != 'T', "worker pause must never stop the guard");
+      require(process_state(survivor.pid) == 'T', "worker must remain paused");
+      ::poll(nullptr, 0, 10);
+    }
+    if (!parent_death) {
+      check(op::SignalSupervisedCommand(admission.owner.token, command.id, SIGCONT));
+      require(worker_ready.receive<char>() == 'R', "worker Resume cannot observe stale Pause acknowledgement");
+      eventually(
+          [&] {
+            return !take(op::SupervisedCommandPaused(admission.owner.token, command.id)) &&
+                process_state(survivor.pid) != 'T';
+          },
+          "guard did not resume paused worker");
+      check(op::SignalSupervisedCommand(admission.owner.token, command.id, SIGSTOP));
+      eventually(
+          [&] { return take(op::SupervisedCommandPaused(admission.owner.token, command.id)); },
+          "guard did not acknowledge repeated worker pause");
+    }
+  }
+  require(!take(op::SupervisedCommandStopped(admission.owner.token, command.id)), "paused work cannot prove cleanup");
+  if (parent_death) {
+    require(::kill(launching_parent.pid, SIGKILL) == 0, "cannot kill guard launching parent");
+    require(WIFSIGNALED(launching_parent.wait_bounded()), "guard launching parent must have been killed");
+  } else
+    check(op::SignalSupervisedCommand(admission.owner.token, command.id, SIGKILL));
+  const int status = process.wait_bounded();
+  require(WIFEXITED(status) && WEXITSTATUS(status) == 128 + SIGKILL, "guard must report paused worker termination");
+  require(::kill(survivor.pid, 0) == -1 && errno == ESRCH, "guard must reap paused worker before completion");
+  survivor.pid = -1;
+  check(op::SupervisedCommandFinished(admission.owner.token, command.id));
+  require(take(op::SupervisedCommandStopped(admission.owner.token, command.id)), "paused retirement proof missing");
+  admission.release();
 }
 } // namespace
 
@@ -256,6 +392,44 @@ int main(int argc, char** argv) {
       require(
           !op::ReleaseLocal(admission.game, admission.owner.token, true).ok(),
           "proof path replacement must retain claim");
+    }
+    paused_retirement(root, guard, self, true);
+    paused_retirement(root, guard, self, false);
+    // Parent death can race the request itself; no UI-side SIGCONT is needed
+    // to make cancellation visible while the guard applies worker SIGSTOP.
+    paused_retirement(root, guard, self, true, true);
+    {
+      Admission admission(root / "old-receipt-version");
+      const auto command = admission.prepare({"/bin/true"});
+      // A separately packaged guard/UI revision cannot silently accept Pause
+      // with the old protocol that did not isolate worker process groups.
+      std::fstream receipt(command.arguments[1], std::ios::in | std::ios::out | std::ios::binary);
+      const std::string old_header = "hstream-process-guard-v1\n";
+      receipt.write(old_header.data(), old_header.size());
+      receipt.close();
+      auto process = launch(guard, command.arguments);
+      check(op::SupervisedCommandStarted(admission.owner.token, command.id));
+      const int status = process.wait_bounded();
+      require(WIFEXITED(status) && WEXITSTATUS(status) == 125, "Old receipt version must fail before worker launch");
+      require(!op::LocalChildrenStopped(admission.owner.token).ok(), "Old receipt cannot authorize cleanup");
+    }
+    {
+      Admission admission(root / "pause-after-cancel");
+      const auto command = admission.prepare({"/bin/false"});
+      check(op::SignalSupervisedCommand(admission.owner.token, command.id, SIGINT));
+      require(
+          !op::SignalSupervisedCommand(admission.owner.token, command.id, SIGSTOP).ok(),
+          "Pause must not replace queued cancellation");
+      require(
+          !op::SignalSupervisedCommand(admission.owner.token, command.id, SIGCONT).ok(),
+          "Resume must not replace queued cancellation");
+      auto process = launch(guard, command.arguments);
+      check(op::SupervisedCommandStarted(admission.owner.token, command.id));
+      const int status = process.wait_bounded();
+      require(
+          WIFEXITED(status) && WEXITSTATUS(status) == 128 + SIGINT,
+          "Pause/Resume must preserve startup cancellation without launching work");
+      admission.release();
     }
     {
       Admission admission(root / "many-sequential-commands");

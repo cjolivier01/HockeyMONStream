@@ -165,7 +165,7 @@ absl::Status Retire(int64_t grace_ms, int64_t poll_ms) {
 }
 
 std::string ReceiptHeader(const std::string& token, const std::string& nonce) {
-  return "hstream-process-guard-v1\n" + token + "\n" + nonce + "\n";
+  return "hstream-process-guard-v2\n" + token + "\n" + nonce + "\n";
 }
 
 absl::StatusOr<char> ReadReceipt(int descriptor, const std::filesystem::path& path, const std::string& header) {
@@ -181,8 +181,8 @@ absl::StatusOr<char> ReadReceipt(int descriptor, const std::filesystem::path& pa
     count = ::pread(descriptor, contents.data(), contents.size(), 0);
   } while (count < 0 && errno == EINTR);
   if (count != static_cast<ssize_t>(contents.size()) || contents.compare(0, header.size(), header) != 0 ||
-      std::string("0TIK").find(contents[header.size()]) == std::string::npos ||
-      std::string("PRCF").find(contents.back()) == std::string::npos)
+      std::string("0TIKSU").find(contents[header.size()]) == std::string::npos ||
+      std::string("PRSCF").find(contents.back()) == std::string::npos)
     return absl::FailedPreconditionError("Invalid process guard receipt; cleanup needs recovery");
   return contents.back();
 }
@@ -195,12 +195,19 @@ absl::Status RequestSignal(int descriptor, const std::filesystem::path& path, co
     return absl::OkStatus();
   if (*state == 'F')
     return absl::FailedPreconditionError("Process guard could not prove cleanup");
-  const char request = number == SIGKILL ? 'K' : number == SIGINT ? 'I' : number == SIGTERM ? 'T' : '\0';
+  const char request = number == SIGKILL ? 'K'
+      : number == SIGINT                 ? 'I'
+      : number == SIGTERM                ? 'T'
+      : number == SIGSTOP                ? 'S'
+      : number == SIGCONT                ? 'U'
+                                         : '\0';
   if (!request)
     return absl::InvalidArgumentError("Unsupported process guard signal");
   char previous = 0;
   if (::pread(descriptor, &previous, 1, header.size()) != 1)
     return error("Cannot inspect process guard request");
+  if ((request == 'S' || request == 'U') && (previous == 'T' || previous == 'I' || previous == 'K'))
+    return absl::FailedPreconditionError("Cancelled command cannot be paused or resumed");
   if (previous == 'K')
     return absl::OkStatus();
   return write_byte(descriptor, header.size(), request);
@@ -237,7 +244,7 @@ absl::StatusOr<int> Run(
   char initial_request = 0;
   if (::pread(record.value, &initial_request, 1, header.size()) != 1)
     return error("Cannot inspect process guard startup cancellation");
-  if (initial_request != '0') {
+  if (initial_request == 'T' || initial_request == 'I' || initial_request == 'K') {
     const auto completed = write_byte(record.value, header.size() + 1, 'C');
     if (!completed.ok())
       return completed;
@@ -275,6 +282,10 @@ absl::StatusOr<int> Run(
   }
   if (!root) {
     ::close(record.value);
+    // Pause targets only this group. The guard must stay runnable even when
+    // its launching parent dies while it is applying the pause request.
+    if (::setpgid(0, 0) != 0)
+      ::_exit(127);
     for (const int number : {SIGINT, SIGTERM, SIGHUP})
       ::signal(number, SIG_DFL);
     ::execvp(arguments.front(), arguments.data());
@@ -282,6 +293,16 @@ absl::StatusOr<int> Run(
   }
   int root_status = 0;
   bool root_finished = false;
+  bool root_stopped = false;
+  bool pause_sent = false;
+  bool paused = false;
+  const auto signal_group = [root](int number) -> absl::StatusOr<bool> {
+    if (::kill(-root, number) == 0)
+      return true;
+    if (errno == ESRCH)
+      return false;
+    return error("Cannot signal guarded worker group");
+  };
   using Clock = std::chrono::steady_clock;
   std::optional<Clock::time_point> retirement;
   int requested = 0;
@@ -289,8 +310,13 @@ absl::StatusOr<int> Run(
     bool no_children = false;
     for (;;) {
       int status = 0;
-      const pid_t child = ::waitpid(-1, &status, WNOHANG);
+      const pid_t child = ::waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED);
       if (child > 0) {
+        if (WIFSTOPPED(status) || WIFCONTINUED(status)) {
+          if (child == root)
+            root_stopped = WIFSTOPPED(status);
+          continue;
+        }
         if (child == root) {
           root_status = status;
           root_finished = true;
@@ -324,6 +350,44 @@ absl::StatusOr<int> Run(
       requested = SIGTERM;
     if ((root_finished || requested) && !retirement)
       retirement = Clock::now();
+    if (!retirement && control == 'S') {
+      if (!pause_sent) {
+        const auto sent = signal_group(SIGSTOP);
+        if (!sent.ok())
+          return sent.status();
+        pause_sent = *sent;
+      }
+      // Publish Pause only after waitpid confirms the worker stopped. This
+      // acknowledgement is separate from final descendant shutdown proof.
+      if (pause_sent && root_stopped && !paused) {
+        const auto acknowledged = write_byte(record.value, header.size() + 1, 'S');
+        if (!acknowledged.ok())
+          return acknowledged;
+        paused = true;
+      }
+    } else if (pause_sent || root_stopped) {
+      if (paused) {
+        // Retire the old Pause proof before the worker can acknowledge Resume
+        // and let its caller submit another Pause generation.
+        const auto acknowledged = write_byte(record.value, header.size() + 1, 'R');
+        if (!acknowledged.ok())
+          return acknowledged;
+        paused = false;
+      }
+      if (root_finished) {
+        // Reaping root releases its PID; its former group number could now
+        // identify unrelated work. Adopted children remain safe pidfd targets.
+        const auto resumed = Signal(SIGCONT);
+        if (!resumed.ok())
+          return resumed;
+      } else {
+        const auto resumed = signal_group(SIGCONT);
+        if (!resumed.ok())
+          return resumed.status();
+      }
+      pause_sent = false;
+      root_stopped = false;
+    }
     if (retirement) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - *retirement).count();
       const int number = requested == SIGKILL || elapsed >= grace_ms ? SIGKILL : requested ? requested : SIGTERM;

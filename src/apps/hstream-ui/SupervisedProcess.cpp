@@ -119,6 +119,12 @@ absl::StatusOr<bool> SupervisedProcessStopped(const QProcess& process) {
                : absl::StatusOr<bool>(absl::FailedPreconditionError("Process has no supervised command permit"));
 }
 
+absl::StatusOr<bool> SupervisedProcessPaused(const QProcess& process) {
+  const auto* saved = command(process);
+  return saved ? game_operation::SupervisedCommandPaused(saved->token, saved->id)
+               : absl::StatusOr<bool>(absl::FailedPreconditionError("Process has no supervised command permit"));
+}
+
 bool HasSupervisedProcess(const QProcess& process) {
   return command(process) != nullptr;
 }

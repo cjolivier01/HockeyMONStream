@@ -27,6 +27,7 @@
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QVBoxLayout>
 
+#include <unistd.h>
 #include <csignal>
 #include <iostream>
 #include <stdexcept>
@@ -609,11 +610,23 @@ void killedExperimentGuard(const QString& root) {
       "Guard process ownership was not durably recorded");
   const auto owned = hm::game_operation::Inspect(game.toStdString());
   require(owned.ok() && owned->has_value(), "Lost-guard fixture has no game admission");
-  // This test owns the exact setsid session. Killing it also stops its sleep
-  // child, but cannot manufacture the supervisor's missing ECHILD receipt.
+  QFile children(QString("/proc/%1/task/%1/children").arg(process));
+  pid_t worker = 0;
+  require(
+      wait([&] {
+        if (!children.open(QIODevice::ReadOnly))
+          return false;
+        worker = static_cast<pid_t>(children.readAll().trimmed().toLongLong());
+        children.close();
+        return worker > 0 && ::getpgid(worker) == worker;
+      }),
+      "Cannot identify exact test-owned worker group");
+  // The guard stays outside the worker group. Killing only the guard must
+  // retain admission; stopping its exact worker cannot replace missing proof.
   require(::kill(-static_cast<pid_t>(process), SIGKILL) == 0, "Cannot kill test-owned guard session");
   require(wait([&] { return !cancel->isEnabled(); }, 10000), "Lost guard did not finish its fenced UI cleanup");
   const auto retained = hm::game_operation::Inspect(game.toStdString());
+  require(::kill(-worker, SIGKILL) == 0, "Cannot stop exact lost-guard worker group");
   require(
       retained.ok() && retained->has_value() && (**retained).token == (**owned).token,
       "Killed experiment guard released durable admission");

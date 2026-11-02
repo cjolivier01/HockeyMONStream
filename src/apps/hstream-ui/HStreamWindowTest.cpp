@@ -199,7 +199,7 @@ while True:
     if not line:
         time.sleep(.01)
 )PY";
-    const auto exercise = [&](const QString& name, bool finish, bool paused = false) {
+    const auto exercise = [&](const QString& name, bool finish, bool paused = false, bool pending_pause = false) {
       {
         const QSignalBlocker blocker(window.render_video_toggle_);
         window.render_video_toggle_->setChecked(name == "preview-ready");
@@ -236,13 +236,42 @@ while True:
       if (name == "closed-input")
         window.pipeline_process_->closeWriteChannel();
       if (paused) {
-        const qint64 pid = window.pipeline_process_->processId();
-        if (::kill(static_cast<pid_t>(pid), SIGSTOP) != 0 || !QTest::qWaitFor([&] {
-              QFile status(QString("/proc/%1/status").arg(pid));
-              return status.open(QIODevice::ReadOnly) && status.readAll().contains("T (stopped)");
+        if (!hm::ui::SignalSupervisedProcess(*window.pipeline_process_, SIGSTOP).ok() || !QTest::qWaitFor([&] {
+              const auto stopped = hm::ui::SupervisedProcessPaused(*window.pipeline_process_);
+              return stopped.ok() && *stopped;
             }))
           return false;
         window.pipeline_paused_ = true;
+      }
+      if (pending_pause) {
+        const auto guard = static_cast<pid_t>(window.pipeline_process_->processId());
+        if (::kill(guard, SIGSTOP) != 0 || !QTest::qWaitFor([&] {
+              QFile status(QString("/proc/%1/status").arg(guard));
+              return status.open(QIODevice::ReadOnly) && status.readAll().contains("T (stopped)");
+            }))
+          return false;
+        const auto generation = ++window.process_pause_generation_;
+        window.pending_process_pause_generation_ = generation;
+        window.handleProcessPauseOutput(QString("HSTREAM_PROCESS_PAUSE status=prepared generation=%1").arg(generation));
+        if (::kill(guard, SIGCONT) != 0)
+          return false;
+        // Let the guard stop the worker without delivering Qt's pending
+        // acknowledgement timer. Stop must still resume it before writing q.
+        QElapsedTimer wait;
+        wait.start();
+        bool worker_stopped = false;
+        while (wait.elapsed() < 5000) {
+          const auto stopped = hm::ui::SupervisedProcessPaused(*window.pipeline_process_);
+          if (!stopped.ok())
+            return false;
+          if (*stopped) {
+            worker_stopped = true;
+            break;
+          }
+          QThread::msleep(5);
+        }
+        if (!worker_stopped || window.pipeline_paused_ || window.pending_process_pause_generation_ != generation)
+          return false;
       }
       window.stopPipeline(finish);
       const QString output = window.completeLogText();
@@ -253,7 +282,8 @@ while True:
                   : window.pipeline_process_->exitStatus() == QProcess::NormalExit &&
                    window.pipeline_process_->exitCode() == 0) &&
           output.contains("STOP_TEST finish") == finish && output.contains("STOP_TEST interrupted") == !finish &&
-          (!paused || output.contains("STOP_TEST continued"));
+          (!(paused || pending_pause) || output.contains("STOP_TEST continued")) &&
+          (!pending_pause || window.operation_token_.empty());
       if (!ok)
         std::cerr << "Stop protocol failed for " << name.toStdString() << '\n' << output.toStdString();
       window.log_->clear();
@@ -262,7 +292,8 @@ while True:
     };
     if (!exercise("preview-ready", true) || !exercise("render-off-archive", true) ||
         !exercise("stitched-playback", true) || !exercise("paused-render-off-archive", true, true) ||
-        !exercise("startup", false) || !exercise("calibration", false) || !exercise("one-pass-calibration", false) ||
+        !exercise("pause-pending-render-off-archive", true, false, true) || !exercise("startup", false) ||
+        !exercise("calibration", false) || !exercise("one-pass-calibration", false) ||
         !exercise("calibration-restart", false) || !exercise("seek-reconstruction", false) ||
         !exercise("seek-recovery", false) || !exercise("closed-input", false) || !exercise("python-preparation", true))
       return false;
@@ -324,14 +355,113 @@ while True:
     const auto guard_pid = static_cast<pid_t>(window.pipeline_process_->processId());
     if (!QTest::qWaitFor([&] { return ::getpgid(guard_pid) == guard_pid; }, 5000))
       return false;
-    // Kill only this test's session; the missing guard receipt must still fence
-    // completion even when the command and every visible helper have exited.
+    QFile children(QString("/proc/%1/task/%1/children").arg(guard_pid));
+    pid_t worker_pid = 0;
+    if (!QTest::qWaitFor([&] {
+          if (!children.open(QIODevice::ReadOnly))
+            return false;
+          worker_pid = static_cast<pid_t>(children.readAll().trimmed().toLongLong());
+          children.close();
+          return worker_pid > 0 && ::getpgid(worker_pid) == worker_pid;
+        }))
+      return false;
+    // Killing the guard alone must retain admission. Then stop the exact
+    // test-owned worker group; its disappearance cannot replace the receipt.
     ::kill(-guard_pid, SIGKILL);
     if (!QTest::qWaitFor([&] { return window.pipeline_completion_proof_pending_; }, 5000))
       return false;
+    ::kill(-worker_pid, SIGKILL);
     const auto owner = hm::game_operation::Inspect(directory.toStdString());
     return owner.ok() && owner->has_value() && (**owner).token == token && !window.save_preset_button_->isEnabled() &&
         !window.start_button_->isEnabled() && window.pipeline_state_->text().startsWith("RECOVERY REQUIRED:");
+  }
+
+  static bool pausedGuardDestructionChecks() {
+#ifdef Q_OS_UNIX
+    const auto stopped = [](pid_t pid) {
+      QFile status(QString("/proc/%1/status").arg(pid));
+      return status.open(QIODevice::ReadOnly) && status.readAll().contains("T (stopped)");
+    };
+    for (const bool stop_guard : {false, true}) {
+      auto window = std::make_unique<HStreamWindow>();
+      const QString game = stop_guard ? "stopped-guard-destruction" : "paused-guard-destruction";
+      const auto directory = std::filesystem::path(window->gameDirectory(game).toStdString());
+      std::filesystem::create_directories(directory / "_hockeymon");
+      window->game_id_edit_->setText(game);
+      window->capture_complete_log_ = true;
+      window->pipeline_uses_process_group_ = true;
+      window->baseline_config_["workflow"]["poll_interval_ms"] = 10;
+      if (!window->beginGameOperation("pipeline"))
+        return false;
+      QProcess* process = window->pipeline_process_;
+      process->setProgram("python3");
+      process->setArguments({"-u", "-c", R"PY(
+import os, sys
+print('GUARDED_PAUSE_WORKER %d' % os.getpid(), flush=True)
+for line in sys.stdin:
+    command, _, generation = line.strip().partition(' ')
+    if command == '@process-pause':
+        print('GUARDED_PREPARE_ACK', flush=True)
+        print('HSTREAM_PROCESS_PAUSE status=prepared generation=' + generation, flush=True)
+    if command == '@process-resume':
+        print('HSTREAM_PROCESS_PAUSE status=resumed generation=' + generation, flush=True)
+)PY"});
+      if (!hm::ui::PrepareSupervisedProcess(*process, directory, window->operation_token_, 1000, 10, true).ok())
+        return false;
+      process->start();
+      if (!process->waitForStarted(5000) ||
+          !QTest::qWaitFor([&] { return window->completeLogText().contains("GUARDED_PAUSE_WORKER "); }, 5000))
+        return false;
+      const auto match = QRegularExpression("GUARDED_PAUSE_WORKER ([0-9]+)").match(window->completeLogText());
+      const auto worker_pid = static_cast<pid_t>(match.captured(1).toLongLong());
+      const auto guard_pid = static_cast<pid_t>(process->processId());
+      // Hold the guard temporarily to prove prepared runtime output alone
+      // cannot report Pause before the guard confirms the worker has stopped.
+      if (::kill(guard_pid, SIGSTOP) != 0 || !QTest::qWaitFor([&] { return stopped(guard_pid); }))
+        return false;
+      window->pauseOrResumePipeline();
+      if (!QTest::qWaitFor([&] {
+            return window->pending_process_pause_generation_ &&
+                window->completeLogText().contains("GUARDED_PREPARE_ACK");
+          }) ||
+          window->pipeline_paused_ || stopped(worker_pid)) {
+        std::cerr << "Native Pause must await the guard's stopped-worker receipt\n";
+        return false;
+      }
+      if (::kill(guard_pid, SIGCONT) != 0)
+        return false;
+      if (!QTest::qWaitFor(
+              [&] {
+                return window->pipeline_paused_ && stopped(worker_pid) && ::kill(guard_pid, 0) == 0 &&
+                    !stopped(guard_pid);
+              },
+              5000)) {
+        std::cerr << "Native Pause must stop workers while its guard remains responsive\n";
+        return false;
+      }
+      window->pauseOrResumePipeline();
+      if (!QTest::qWaitFor([&] {
+            return !window->pipeline_paused_ && !window->pending_process_resume_generation_ && !stopped(worker_pid);
+          })) {
+        std::cerr << "Native Resume must release worker pause and receive the runtime acknowledgement\n";
+        return false;
+      }
+      window->pauseOrResumePipeline();
+      if (!QTest::qWaitFor([&] { return window->pipeline_paused_ && stopped(worker_pid) && !stopped(guard_pid); }))
+        return false;
+      // Also cover a guard stopped by an older native pause or an external
+      // signal. Destruction must wake it before requesting descendant cleanup.
+      if (stop_guard && (::kill(guard_pid, SIGSTOP) != 0 || !QTest::qWaitFor([&] { return stopped(guard_pid); })))
+        return false;
+      window.reset();
+      const auto owner = hm::game_operation::Inspect(directory);
+      if (::kill(guard_pid, 0) == 0 || ::kill(worker_pid, 0) == 0 || !owner.ok() || owner->has_value()) {
+        std::cerr << "Destroying paused playback must reap its guard and workers before releasing the game\n";
+        return false;
+      }
+    }
+#endif
+    return true;
   }
 
   static bool previewOverlayStartupChecks() {
@@ -1808,12 +1938,32 @@ T* require_child(HStreamWindow* window, const char* name) {
   return child;
 }
 
-void activate(QAbstractButton* button) {
+void activate(QAbstractButton* button, bool confirm_stop = true) {
+  // Ordinary fixture Stop clicks choose the safe default. Tests that inspect
+  // publication consent install their own handler and opt out explicitly.
+  QTimer stop_confirmation;
+  if (confirm_stop && button->objectName() == "stopPipelineButton") {
+    QObject::connect(&stop_confirmation, &QTimer::timeout, [&] {
+      auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+      if (!dialog || dialog->objectName() != "stopPublicationDialog")
+        return;
+      for (auto* choice : dialog->buttons()) {
+        if (dialog->buttonRole(choice) == QMessageBox::NoRole) {
+          stop_confirmation.stop();
+          choice->click();
+          break;
+        }
+      }
+    });
+    stop_confirmation.start(10);
+  }
   const bool was_enabled = button->isEnabled();
   button->click();
   QApplication::processEvents();
   if (was_enabled && button->objectName() == "pausePipelineButton") {
-    for (int i = 0; i < 100 && !button->isEnabled(); ++i) {
+    // Native Pause now waits for the guard's kernel stopped acknowledgement,
+    // which can require two configured polling intervals after preparation.
+    for (int i = 0; i < 500 && !button->isEnabled(); ++i) {
       QTest::qWait(10);
     }
   }
@@ -15011,6 +15161,10 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   if (!calibration_ok)
     return false;
   activate(calibration_ok);
+  if (!expect(
+          create->isEnabled() && clean->isEnabled(),
+          "Rejected calibration startup must immediately restore Load and Clean after releasing admission"))
+    return false;
   set_calibration_time(reference, QTime(0, 0, 7));
   frames->setValue(3);
   if (!expect(
@@ -15085,9 +15239,12 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   for (const QString& run_mode : {QString("program"), QString("stitch-calibration")}) {
     mode->setCurrentIndex(mode->findData(run_mode));
     const auto args = HStreamWindowTestAccess::standaloneArguments(&window);
+    const bool independent_times = args.contains("--start-time=00:15:00") &&
+        args.contains("--stitch-frame-time=00:00:07") && args.contains("--options=stitching.sync_method=auto");
+    if (!independent_times)
+      std::cerr << "Standalone " << run_mode.toStdString() << " arguments: " << args.join(' ').toStdString() << '\n';
     if (!expect(
-            args.contains("--start-time=00:15:00") && args.contains("--stitch-frame-time=00:00:07") &&
-                args.contains("--options=stitching.sync_method=auto"),
+            independent_times,
             "Standalone jobs must carry independent playback/reference times and UI gyro fallback selection"))
       return false;
   }
@@ -15166,7 +15323,29 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
           window.logText().contains("stdin:@seek-relative 10000000000"),
           "The stitching preview seek button must send a seek to the backend");
     }
-    activate(stop);
+    QTimer stop_confirmation;
+    bool saw_publication_confirmation = false;
+    QObject::connect(&stop_confirmation, &QTimer::timeout, [&]() {
+      auto* dialog = window.findChild<QMessageBox*>("stopPublicationDialog");
+      if (!dialog || !dialog->isVisible())
+        return;
+      stop_confirmation.stop();
+      for (auto* button : dialog->buttons()) {
+        if (dialog->buttonRole(button) == QMessageBox::NoRole) {
+          saw_publication_confirmation = true;
+          button->click();
+          return;
+        }
+      }
+      dialog->reject();
+    });
+    if (selection == 3)
+      stop_confirmation.start(10);
+    activate(stop, false);
+    stop_confirmation.stop();
+    ok &= expect(
+        selection != 3 || saw_publication_confirmation,
+        "Stopping a stitched archive must ask before publishing its partial outputs");
     for (int i = 0; i < 200 && window.pipelineStateText() != "STOPPED"; ++i)
       QTest::qWait(10);
   }
@@ -15352,6 +15531,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   if (!source_baseline.has_value())
     return expect(false, "Could not locate bundled baseline.yaml for user-default fixture");
   YAML::Node baseline = YAML::LoadFile(source_baseline->string());
+  // These fake runs exercise configuration inheritance, not publication. Keep
+  // the isolated baseline consistent with the suite's no-output runner setup.
+  baseline["hstream_ui"]["drivegpt_database"]["enabled"] = false;
   baseline["hstream_ui"]["playback_start_time"] = "01:02:03.456";
   baseline["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
   baseline["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1234;
@@ -21203,7 +21385,7 @@ bool test_active_process_destruction() {
       return false;
 #endif
   }
-  return true;
+  return HStreamWindowTestAccess::pausedGuardDestructionChecks();
 }
 
 int main(int argc, char** argv) {

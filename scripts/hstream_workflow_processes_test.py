@@ -22,6 +22,67 @@ class ProcessesTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_exit_after_identity_check_cannot_redirect_cancellation(self):
+        self.isolated("""
+            import os, signal, subprocess
+            from unittest.mock import patch
+            from hstream_workflow import processes
+
+            processes.become_subreaper()
+            target = subprocess.Popen(['sleep', '60'])
+            unrelated = subprocess.Popen(['sleep', '60'])
+            original_send = processes.pidfd_send_signal
+            target_pin = processes.pidfd_open(target.pid)
+            unrelated_pin = processes.pidfd_open(unrelated.pid)
+            sends = []
+            saved = processes.process_identity(target.pid)
+            def exit_before_send(descriptor, number):
+                # Reap after the final identity read. Numeric PID ownership has
+                # ended, but this descriptor must still refer to the dead task.
+                original_send(target_pin, signal.SIGKILL)
+                target.wait(timeout=5)
+                sends.append(descriptor)
+                original_send(descriptor, number)
+            try:
+                with patch.object(processes, 'descendants', return_value={target.pid: saved}), \\
+                     patch.object(processes, 'pidfd_send_signal', side_effect=exit_before_send), \\
+                     patch.object(os, 'kill', side_effect=AssertionError('Unpinned signal')):
+                    processes.signal_descendants(signal.SIGTERM)
+                assert len(sends) == 1
+                assert unrelated.poll() is None, 'Unrelated work received cancellation'
+                try:
+                    os.fstat(sends[0])
+                    raise AssertionError('Cancellation leaked its process descriptor')
+                except OSError:
+                    pass
+            finally:
+                for child, descriptor in ((target, target_pin), (unrelated, unrelated_pin)):
+                    if child.poll() is None:
+                        original_send(descriptor, signal.SIGKILL)
+                    child.wait(timeout=5)
+                    os.close(descriptor)
+            """)
+
+    def test_reused_identity_after_pin_is_not_signalled(self):
+        from unittest.mock import patch
+
+        from hstream_workflow import processes
+
+        saved = {"pid": 123, "parent": os.getpid(), "start_time": 1}
+        with (
+            patch.object(processes, "descendants", return_value={123: saved}),
+            patch.object(processes, "pidfd_open", return_value=42) as pin,
+            patch.object(
+                processes, "process_identity", return_value=dict(saved, start_time=2)
+            ),
+            patch.object(processes, "pidfd_send_signal") as send,
+            patch.object(processes.os, "close") as close,
+        ):
+            processes.signal_descendants(15)
+        pin.assert_called_once_with(123)
+        send.assert_not_called()
+        close.assert_called_once_with(42)
+
     def test_child_forking_after_proc_listing_cannot_hide_its_detached_child(self):
         self.isolated(r"""
             import os

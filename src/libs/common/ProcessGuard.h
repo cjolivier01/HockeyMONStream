@@ -18,6 +18,7 @@ absl::Status Retire(int64_t grace_ms, int64_t poll_ms);
 
 std::string ReceiptHeader(const std::string& token, const std::string& nonce);
 absl::StatusOr<char> ReadReceipt(int descriptor, const std::filesystem::path& path, const std::string& header);
+// SIGSTOP/SIGCONT affect the worker group only; the guard remains responsive.
 absl::Status RequestSignal(int descriptor, const std::filesystem::path& path, const std::string& header, int number);
 
 // The command inherits stdin/stdout/stderr unchanged. Completion is recorded

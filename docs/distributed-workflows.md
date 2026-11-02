@@ -229,8 +229,10 @@ the CLI inside its own subreaper scope. Qt commands use the installed
 `hstream-process-guard` and exact token-bound completion receipts, so unrelated Qt
 children remain under their normal QProcess owners. Descendants that detach,
 clear their environment or become unreadable still belong to the guard's kernel
-scope. A missing local supervisor or killed guard cannot prove that escaped
-children died, so ambiguous local shutdown retains ownership and capacity.
+scope. Native Pause asks the guard to stop its separate worker process group and
+waits for acknowledgment. The guard remains responsive to parent death and
+cancellation throughout. A missing local supervisor or killed guard cannot prove
+that escaped children died, so ambiguous local shutdown retains ownership and capacity.
 Restoring accounting, the expected deployment, storage or controller is safer
 than discarding durable recovery state.
 

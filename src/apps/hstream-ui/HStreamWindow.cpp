@@ -5442,6 +5442,13 @@ HStreamWindow::~HStreamWindow() {
     disconnect(process, nullptr, this, nullptr);
   for (QProcess* process : {pipeline_process_, archive_finalize_process_}) {
     if (process && process->state() != QProcess::NotRunning && hm::ui::HasSupervisedProcess(*process)) {
+#ifdef Q_OS_UNIX
+      // A previous or externally requested native pause may have stopped the
+      // guard itself. It must run to read the kill request and reap workers.
+      const auto pid = static_cast<pid_t>(process->processId());
+      if (pid > 0)
+        (void)::kill(pid, SIGCONT);
+#endif
       (void)hm::ui::SignalSupervisedProcess(*process, SIGKILL);
       process->waitForFinished(5000);
     }
@@ -11697,9 +11704,23 @@ void HStreamWindow::releaseGameOperationIfStopped() {
 void HStreamWindow::startPipeline() {
   if (deferred_play_requested_ || deferred_restart_requested_)
     return;
+  const auto show_startup_error = [this](const QString& detail) {
+    pipeline_state_->setText("STOPPED");
+    resetPlaybackProgress(true);
+    setPlaybackProgressState(PlaybackProgressState::kError, detail);
+  };
   releaseGameOperationIfStopped();
-  if (!operation_token_.empty() || !ensureGameDirectory() || !beginGameOperation("pipeline"))
+  if (!operation_token_.empty())
     return;
+  if (!ensureGameDirectory()) {
+    show_startup_error("The selected game directory could not be prepared");
+    updateRunControls();
+    return;
+  }
+  if (!beginGameOperation("pipeline")) {
+    updateRunControls();
+    return;
+  }
   operation_starting_ = true;
   struct FinishAdmissionStart {
     std::function<void()> finish;
@@ -11709,6 +11730,9 @@ void HStreamWindow::startPipeline() {
   } finish_admission_start{[this] {
     operation_starting_ = false;
     releaseGameOperationIfStopped();
+    // Startup errors update controls while admission is still held. Refresh
+    // after retirement so a rejected Play immediately permits Load and Clean.
+    updateRunControls();
   }};
   if (!resolveInitialProgramSources())
     return;
@@ -11801,11 +11825,6 @@ void HStreamWindow::startPipeline() {
   scoreboard_reselect_waiting_ = false;
   resetPlaybackProgress(true);
   setPlaybackStartupStage("ui", "Preparing the game directory and saved configuration");
-  const auto show_startup_error = [this](const QString& detail) {
-    pipeline_state_->setText("STOPPED");
-    resetPlaybackProgress(true);
-    setPlaybackProgressState(PlaybackProgressState::kError, detail);
-  };
   clearPreviewFrames();
   if (!ensureGameDirectory()) {
     show_startup_error("The selected game directory could not be prepared");
@@ -12425,7 +12444,8 @@ void HStreamWindow::pauseOrResumePipeline() {
     return;
   }
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
-  if (!pipeline_cooperative_pause_ && ::kill(target, SIGCONT) != 0) {
+  if (!pipeline_cooperative_pause_ && !hm::ui::HasSupervisedProcess(*pipeline_process_) &&
+      ::kill(target, SIGCONT) != 0) {
     appendLog("failed to signal pipeline process for pause/resume");
     return;
   }
@@ -12521,6 +12541,7 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
   }
   appendLog("pipeline stop requested");
   clearDeferredPreviewCommands();
+  const bool resume_for_stop = pipeline_paused_ || pending_process_pause_generation_ != 0;
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = true;
@@ -12533,8 +12554,13 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
-  if (pipeline_paused_ && pid > 0) {
-    ::kill(target, SIGCONT);
+  // The guard can already have stopped the worker while Qt is still waiting
+  // for its Pause acknowledgement. Resume before queuing a graceful finish.
+  if (resume_for_stop && pid > 0) {
+    if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+      (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGCONT);
+    else
+      ::kill(target, SIGCONT);
     pipeline_paused_ = false;
     pipeline_cooperative_pause_ = false;
   }
@@ -13247,6 +13273,13 @@ bool HStreamWindow::handleHighBitDepthOutput(const QString& line) {
 }
 
 bool HStreamWindow::resumeProcessPause(quint64 generation) {
+  if (pipeline_process_ && hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto resumed = hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGCONT);
+    if (!resumed.ok()) {
+      appendLog("could not resume the supervised pipeline; stopping playback");
+      return false;
+    }
+  }
   const QByteArray command = QString("@process-resume %1\n").arg(generation).toUtf8();
   if (!pipeline_process_ || pipeline_process_->write(command) != command.size()) {
     appendLog("could not restore pipeline stall monitoring; stopping playback");
@@ -13261,6 +13294,33 @@ bool HStreamWindow::resumeProcessPause(quint64 generation) {
     }
   });
   return true;
+}
+
+void HStreamWindow::completeProcessPause(quint64 generation) {
+  if (!generation || generation != pending_process_pause_generation_ || pipeline_stop_requested_ ||
+      !pipeline_process_ || pipeline_process_->state() != QProcess::Running)
+    return;
+  if (!pipeline_cooperative_pause_ && hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto paused = hm::ui::SupervisedProcessPaused(*pipeline_process_);
+    if (!paused.ok()) {
+      appendLog("could not verify the supervised pipeline pause; stopping playback");
+      stopPipeline();
+      return;
+    }
+    if (!*paused) {
+      QTimer::singleShot(10, this, [this, generation] { completeProcessPause(generation); });
+      return;
+    }
+  }
+  pending_process_pause_generation_ = 0;
+  pipeline_paused_ = true;
+  pipeline_state_->setText("PAUSED");
+  preview_status_->setText("Pipeline paused");
+  appendLog("pipeline paused");
+  updateRunControls();
+  // Cooperative backends keep reading commands while paused. Native pauses
+  // retain mutations until the matching runtime Resume acknowledgement.
+  flushDeferredPreviewCommands();
 }
 
 bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
@@ -13284,12 +13344,16 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
       !pipeline_process_ || pipeline_process_->state() != QProcess::Running) {
     return true;
   }
-  pending_process_pause_generation_ = 0;
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
   pipeline_cooperative_pause_ = active_hockeymon_program_ && match.captured(3) == "cooperative";
-  if (pid <= 0 || (!pipeline_cooperative_pause_ && ::kill(target, SIGSTOP) != 0)) {
+  const bool supervised = hm::ui::HasSupervisedProcess(*pipeline_process_);
+  const bool paused = pid > 0 &&
+      (pipeline_cooperative_pause_ ||
+       (supervised ? hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGSTOP).ok() : ::kill(target, SIGSTOP) == 0));
+  if (!paused) {
+    pending_process_pause_generation_ = 0;
     if (!resumeProcessPause(generation)) {
       stopPipeline();
       return true;
@@ -13298,14 +13362,7 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
     updateRunControls();
     return true;
   }
-  pipeline_paused_ = true;
-  pipeline_state_->setText("PAUSED");
-  preview_status_->setText("Pipeline paused");
-  appendLog("pipeline paused");
-  updateRunControls();
-  // A cooperative backend keeps reading commands while paused. Native pauses
-  // instead retain these requests until the matching Resume acknowledgement.
-  flushDeferredPreviewCommands();
+  completeProcessPause(generation);
 #endif
   return true;
 }

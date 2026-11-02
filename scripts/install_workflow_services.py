@@ -346,6 +346,15 @@ def render_unit(
     *,
     independent_attempts=False,
 ):
+    directory = absolute(directory)
+    if (
+        directory != directory.strip()
+        or directory.endswith("\\")
+        or any(ord(character) < 32 or ord(character) == 127 for character in directory)
+    ):
+        raise InstallError(
+            "Working directory cannot contain controls or ambiguous trailing whitespace/backslash"
+        )
     lines = [
         "[Unit]",
         f"Description={description}",
@@ -356,7 +365,9 @@ def render_unit(
         "Type=simple",
         f"User={identity['user']}",
         f"Group={identity['gid']}",
-        f"WorkingDirectory={unit_argument(directory)}",
+        # Unlike ExecStart, WorkingDirectory consumes one literal path. Quotes
+        # become filename characters and make an absolute path look relative.
+        f"WorkingDirectory={directory}",
         "UMask=0077",
         "Restart=on-failure",
         "RestartSec=5",
@@ -1106,13 +1117,89 @@ class Installer:
         # Disable newly enabled units while their installed unit files still
         # exist, so an unsuccessful install cannot reappear at the next boot.
         for service, was_active in journal["active"].items():
-            for action in (["stop"] if not was_active else []) + (
-                ["disable"] if not journal["enabled"][service] else []
-            ):
-                try:
-                    self.run(["systemctl", action, service])
-                except InstallError as error:
-                    errors.append(str(error))
+            try:
+                current = self.run(
+                    [
+                        "systemctl",
+                        "show",
+                        "--property=LoadState",
+                        "--property=ActiveState",
+                        "--property=UnitFileState",
+                        service,
+                    ]
+                ).stdout
+                status = dict(
+                    line.split("=", 1) for line in current.splitlines() if "=" in line
+                )
+                if not {"LoadState", "ActiveState", "UnitFileState"} <= set(status):
+                    raise InstallError(
+                        f"Cannot inspect rollback service state: {service}"
+                    )
+                if (
+                    status["LoadState"]
+                    not in {
+                        "stub",
+                        "loaded",
+                        "not-found",
+                        "bad-setting",
+                        "error",
+                        "merged",
+                        "masked",
+                    }
+                    or status["ActiveState"]
+                    not in {
+                        "active",
+                        "reloading",
+                        "inactive",
+                        "failed",
+                        "activating",
+                        "deactivating",
+                        "maintenance",
+                        "refreshing",
+                    }
+                    or status["UnitFileState"]
+                    not in {
+                        "",
+                        "enabled",
+                        "enabled-runtime",
+                        "linked",
+                        "linked-runtime",
+                        "alias",
+                        "masked",
+                        "masked-runtime",
+                        "static",
+                        "disabled",
+                        "indirect",
+                        "generated",
+                        "transient",
+                        "bad",
+                    }
+                ):
+                    raise InstallError(f"Unknown rollback service state: {service}")
+                # Validation can fail before systemd has loaded a new unit. A
+                # resumed rollback may also have already removed its unit file.
+                # Neither case needs a stop/disable command on a nonexistent or
+                # invalid inactive service, but unknown state still fails closed.
+                actions = []
+                if not was_active and status["ActiveState"] not in {
+                    "inactive",
+                    "failed",
+                }:
+                    actions.append("stop")
+                if not journal["enabled"][service] and status["UnitFileState"] in {
+                    "enabled",
+                    "enabled-runtime",
+                    "linked",
+                    "linked-runtime",
+                }:
+                    actions.append("disable")
+                for action in actions:
+                    try:
+                        self.run(["systemctl", action, service])
+                    except InstallError as error:
+                        errors.append(str(error))
+            except InstallError as error:
+                errors.append(str(error))
         for path, entry in journal["files"].items():
             try:
                 target = self.path(path)
@@ -1153,7 +1240,7 @@ class Installer:
             errors.append(str(error))
         if errors:
             raise InstallError(
-                f"rollback FAILED; inspect protected backup: {transaction}"
+                f"rollback FAILED ({'; '.join(errors)}); inspect protected backup: {transaction}"
             )
         self.atomic(transaction / "rolled-back", b"restored\n")
         (self.state / "pending.json").unlink(missing_ok=True)
@@ -1333,9 +1420,11 @@ class Installer:
             try:
                 self.rollback(transaction, journal)
             except InstallError as rollback_error:
-                raise InstallError(f"Activation failed; {rollback_error}") from error
+                raise InstallError(
+                    f"Activation failed ({error}); {rollback_error}"
+                ) from error
             raise InstallError(
-                f"Activation failed; previous files and service activity restored: {transaction}"
+                f"Activation failed ({error}); previous files and service activity restored: {transaction}"
             ) from error
         # Retirement is an external scheduler mutation. Once a healthy worker
         # is committed, an ambiguous stop response must never roll that worker

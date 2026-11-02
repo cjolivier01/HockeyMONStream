@@ -201,6 +201,36 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(self.controller.registry.read()["workflows"], {})
         self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
 
+    def test_missing_experiment_snapshot_is_rejected_before_admission(self):
+        self.profile["capabilities"].append("experiment-solve")
+        self.plan["stages"][0]["kind"] = "experiment-solve"
+        with self.assertRaisesRegex(SubmissionRejected, "frozen user configuration"):
+            self.controller.register(self.plan, self.game)
+        self.assertEqual(self.controller.registry.read()["workflows"], {})
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
+        self.assertFalse((self.game / "_hockeymon").exists())
+
+    def test_legacy_missing_snapshot_does_not_allocate_on_repeated_polls(self):
+        self.profile["capabilities"].append("experiment-solve")
+        self.controller.config["profiles"]["cpu"]["capabilities"].append(
+            "experiment-solve"
+        )
+        self.plan["stages"][0]["kind"] = "experiment-solve"
+        # Reproduce a plan accepted by the earlier controller. Admission still
+        # fails closed, but cancellation must release it without leaked attempts.
+        with patch.object(self.controller, "_user_config_snapshot", return_value={}):
+            self.controller.register(self.plan, self.game)
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        for _ in range(3):
+            with self.assertRaisesRegex(WorkflowError, "frozen user configuration"):
+                self.controller.tick(self.plan["workflow_id"])
+        self.assertFalse((directory / "attempts").exists())
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
+        self.controller.cancel(self.plan["workflow_id"])
+        result = self.wait()
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["owner_released"])
+
     def test_cancel_reconciles_committed_acquire_with_lost_response(self):
         native = self.controller._native
 

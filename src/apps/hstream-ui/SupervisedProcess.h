@@ -25,6 +25,7 @@ absl::Status PrepareSupervisedProcess(
 // SIGKILL therefore still permits the guard to reap to ECHILD and publish proof.
 absl::Status SignalSupervisedProcess(QProcess& process, int signal);
 absl::StatusOr<bool> SupervisedProcessStopped(const QProcess& process);
+absl::StatusOr<bool> SupervisedProcessPaused(const QProcess& process);
 bool HasSupervisedProcess(const QProcess& process);
 
 } // namespace hm::ui

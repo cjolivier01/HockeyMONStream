@@ -71,6 +71,10 @@ pid_t child(const QString& path) {
     return 0;
   return file.readAll().toInt();
 }
+bool stopped(pid_t pid) {
+  QFile status(QString("/proc/%1/status").arg(pid));
+  return status.open(QIODevice::ReadOnly) && status.readAll().contains("T (stopped)");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -78,6 +82,53 @@ int main(int argc, char** argv) {
   QTemporaryDir root;
   try {
     require(root.isValid(), "Cannot create test root");
+    for (const bool new_session : {false, true}) {
+      const std::filesystem::path game = root.path().toStdString() + (new_session ? "/pause-session" : "/pause-child");
+      const auto token = claim(game);
+      const QString marker = QString::fromStdString(game.string()) + "/worker";
+      QProcess process;
+      configure(process, game, token);
+      process.setProgram("/usr/bin/python3");
+      process.setArguments(
+          {"-c", "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(30)", marker});
+      require(
+          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, new_session).ok(),
+          "Cannot prepare pause fixture");
+      process.start();
+      require(wait([&] { return child(marker) > 0; }), "Pause worker did not launch");
+      const auto worker = child(marker);
+      const auto guard = static_cast<pid_t>(process.processId());
+      require(::getpgid(worker) == worker && ::getpgid(guard) != worker, "Worker pause group includes the guard");
+      require(hm::ui::SignalSupervisedProcess(process, SIGSTOP).ok(), "Cannot request worker Pause");
+      require(
+          wait([&] {
+            const auto paused = hm::ui::SupervisedProcessPaused(process);
+            return paused.ok() && *paused;
+          }) &&
+              stopped(worker) && !stopped(guard),
+          "Pause was acknowledged without a stopped worker and responsive guard");
+      require(hm::ui::SignalSupervisedProcess(process, SIGCONT).ok(), "Cannot request worker Resume");
+      require(
+          wait([&] {
+            const auto paused = hm::ui::SupervisedProcessPaused(process);
+            return paused.ok() && !*paused && !stopped(worker);
+          }),
+          "Resume did not release worker group");
+      require(hm::ui::SignalSupervisedProcess(process, SIGSTOP).ok(), "Cannot repeat worker Pause");
+      require(
+          wait([&] {
+            const auto paused = hm::ui::SupervisedProcessPaused(process);
+            return paused.ok() && *paused;
+          }),
+          "Repeated Pause was not acknowledged");
+      require(hm::ui::SignalSupervisedProcess(process, SIGKILL).ok(), "Cannot cancel paused worker");
+      require(wait([&] { return process.state() == QProcess::NotRunning; }), "Paused cancellation did not finish");
+      require(
+          process.exitStatus() == QProcess::NormalExit && process.exitCode() == 128 + SIGKILL &&
+              ::kill(worker, 0) == -1 && errno == ESRCH,
+          "Paused cancellation did not reap exact worker");
+      require(hm::game_operation::ReleaseLocal(game, token, true).ok(), "Paused cancellation lacks cleanup proof");
+    }
     {
       const std::filesystem::path game = root.path().toStdString() + "/normal";
       const auto token = claim(game);
