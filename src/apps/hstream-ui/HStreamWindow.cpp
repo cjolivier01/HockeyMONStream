@@ -4961,11 +4961,25 @@ QString hm::ui_internal::development_runtime_root_for_application(const QString&
   if (!execroot.cdUp() || !execroot.cdUp() || !execroot.cdUp())
     return {};
   const QString canonical_source_directory = QFileInfo(execroot.filePath("src")).canonicalFilePath();
-  if (canonical_source_directory.isEmpty())
+  if (!canonical_source_directory.isEmpty()) {
+    const QDir source_root = QFileInfo(canonical_source_directory).dir();
+    if (QFileInfo(source_root.filePath("WORKSPACE.bazel")).isFile() &&
+        QFileInfo(source_root.filePath("configs")).isDir())
+      return source_root.absolutePath();
+  }
+  // Other Bazel commands can remove the execroot's source links. This UI's
+  // runfiles retain its executable and source configs even when bazel-bin has
+  // moved to another build configuration.
+  const QDir runfiles(resolved_application + ".runfiles/kstream");
+  if (QFileInfo(runfiles.filePath("src/apps/hstream-ui/hstream-ui")).canonicalFilePath() != resolved_application)
     return {};
-  const QDir source_root = QFileInfo(canonical_source_directory).dir();
-  const QFileInfo workspace_marker(source_root.filePath("WORKSPACE.bazel"));
-  if (workspace_marker.isFile() && QFileInfo(source_root.filePath("configs")).isDir())
+  const QFileInfo baseline(QFileInfo(runfiles.filePath("configs/baseline.yaml")).canonicalFilePath());
+  QDir source_root = baseline.absoluteDir();
+  if (!baseline.isFile() || baseline.fileName() != "baseline.yaml" || source_root.dirName() != "configs" ||
+      !source_root.cdUp() || !QFileInfo(source_root.filePath("WORKSPACE.bazel")).isFile())
+    return {};
+  if (QFileInfo(runfiles.filePath("configs/ds_hockey_app_config.yaml")).canonicalFilePath() ==
+      source_root.filePath("configs/ds_hockey_app_config.yaml"))
     return source_root.absolutePath();
   return {};
 }

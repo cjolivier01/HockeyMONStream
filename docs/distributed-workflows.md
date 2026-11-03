@@ -189,6 +189,11 @@ profiles to bypass the check. Admitted workers retain their original supervisor.
 Desktop command failures are retained in the process diagnostic log as well as
 displayed in the dialog.
 
+A Bazel-built desktop locates its checkout from the matching output tree. If a
+later Bazel command removes the temporary source links, the desktop uses its own
+executable-bound runfiles and source configuration links. It does not depend on
+the current directory or the latest `bazel-bin` link to locate the workflow client.
+
 ## CLI and exported launchers
 
 The package installs `hstream-workflow` and, on supported desktop targets,

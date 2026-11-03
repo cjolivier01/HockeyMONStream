@@ -1902,6 +1902,58 @@ bool test_matching_development_runtime_selection() {
   if (!selected_ok)
     return false;
 
+  const fs::path runfiles = application.string() + ".runfiles/kstream";
+  const fs::path runfiles_application = runfiles / "src/apps/hstream-ui/hstream-ui";
+  const fs::path unrelated_workspace = fs::path(temporary_root.path().toStdString()) / "unrelated-workspace";
+  fs::create_directories(runfiles_application.parent_path(), error);
+  fs::create_directories(runfiles / "configs", error);
+  fs::create_directories(unrelated_workspace / "configs", error);
+  if (error)
+    return expect(false, "Could not create the retained runfiles layout: " + error.message());
+  std::ofstream(unrelated_workspace / "WORKSPACE.bazel") << "workspace(name = \"unrelated\")\n";
+  std::ofstream(unrelated_workspace / "configs/baseline.yaml") << "{}\n";
+  for (const char* name : {"baseline.yaml", "ds_hockey_app_config.yaml"}) {
+    std::ofstream(workspace_root / "configs" / name) << "{}\n";
+    fs::create_symlink(workspace_root / "configs" / name, runfiles / "configs" / name, error);
+    if (error)
+      return expect(false, "Could not retain a source config in runfiles: " + error.message());
+  }
+  fs::create_symlink(application, runfiles_application, error);
+  if (error)
+    return expect(false, "Could not bind the runfiles executable: " + error.message());
+  fs::create_symlink(workspace_root / "WORKSPACE.bazel", execution_root / "WORKSPACE.bazel", error);
+  if (error)
+    return expect(false, "Could not create the transient workspace link: " + error.message());
+  fs::remove(execution_root / "WORKSPACE.bazel", error);
+  fs::remove(execution_root / "src", error);
+  if (error)
+    return expect(false, "Could not remove transient execroot source links: " + error.message());
+  const auto runtime_root = [&] {
+    return hm::ui_internal::development_runtime_root_for_application(QString::fromStdString(application.string()));
+  };
+  if (!expect(
+          runtime_root() == QString::fromStdString(workspace_root.string()),
+          "This UI's own runfiles must recover its source checkout after Bazel removes src and WORKSPACE links"))
+    return false;
+  fs::remove(runfiles / "configs/baseline.yaml", error);
+  fs::create_symlink(unrelated_workspace / "configs/baseline.yaml", runfiles / "configs/baseline.yaml", error);
+  if (error ||
+      !expect(
+          runtime_root().isEmpty(),
+          "Runfiles configs from different checkouts must not select an unrelated workflow launcher"))
+    return false;
+  fs::remove(runfiles / "configs/baseline.yaml", error);
+  fs::create_symlink(workspace_root / "configs/baseline.yaml", runfiles / "configs/baseline.yaml", error);
+  fs::remove(runfiles_application, error);
+  fs::create_symlink(unrelated_runner, runfiles_application, error);
+  if (error ||
+      !expect(runtime_root().isEmpty(), "Another executable's runfiles must not authorize this UI's source checkout"))
+    return false;
+  fs::remove(runfiles_application, error);
+  fs::create_symlink(application, runfiles_application, error);
+  if (error)
+    return expect(false, "Could not restore this UI's runfiles binding: " + error.message());
+
   const QString selected_runtime_error = hm::ui_internal::missing_development_runtime_artifact(selected_bazel_bin);
   if (!expect(selected_runtime_error.isEmpty(), "A complete matching Bazel runtime must pass validation"))
     return false;
