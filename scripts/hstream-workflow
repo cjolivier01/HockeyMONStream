@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+"""Installed offline workflow launcher."""
+
+from hstream_workflow.cli import main
+
+raise SystemExit(main())

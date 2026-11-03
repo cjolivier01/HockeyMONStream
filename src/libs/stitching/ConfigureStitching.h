@@ -36,7 +36,8 @@ absl::Status configure_stitching(
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
     size_t max_output_width = 0,
-    const std::string& captured_frame_selection_fingerprint = {});
+    const std::string& captured_frame_selection_fingerprint = {},
+    bool materialize_selected_frames_only = false);
 
 absl::Status configure_stitching(
     const std::string& game_dir,
@@ -44,6 +45,7 @@ absl::Status configure_stitching(
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
     size_t max_output_width = 0,
-    const std::string& captured_frame_selection_fingerprint = {});
+    const std::string& captured_frame_selection_fingerprint = {},
+    bool materialize_selected_frames_only = false);
 
 } // namespace hm::stitching

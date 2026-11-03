@@ -1,5 +1,7 @@
 # Documentation
 
+- [Distributed experiment workflows](distributed-workflows.md)
+- [Slurm and Dagster deployment](workflow-deployment.md)
 - [IMU synchronization for GoPro and Insta360 recordings](imu-synchronization.md)
 
 This repository can generate API documentation from the source code using Doxygen.

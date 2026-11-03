@@ -4,6 +4,8 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -18,6 +20,81 @@ namespace hm::user_config {
 namespace {
 
 namespace fs = std::filesystem;
+
+bool same_file(const struct stat& left, const struct stat& right) {
+  return left.st_dev == right.st_dev && left.st_ino == right.st_ino && left.st_size == right.st_size &&
+      left.st_mtim.tv_sec == right.st_mtim.tv_sec && left.st_mtim.tv_nsec == right.st_mtim.tv_nsec &&
+      left.st_ctim.tv_sec == right.st_ctim.tv_sec && left.st_ctim.tv_nsec == right.st_ctim.tv_nsec;
+}
+
+bool bounded_yaml(const YAML::Node& value, size_t depth, size_t& remaining) {
+  if (depth > 64 || remaining == 0)
+    return false;
+  --remaining;
+  if (value.IsMap()) {
+    std::set<std::string> keys;
+    for (const auto& entry : value) {
+      if (!entry.first.IsScalar() || !keys.insert(entry.first.Scalar()).second ||
+          !bounded_yaml(entry.second, depth + 1, remaining))
+        return false;
+    }
+  } else if (value.IsSequence()) {
+    for (const auto& entry : value)
+      if (!bounded_yaml(entry, depth + 1, remaining))
+        return false;
+  }
+  return true;
+}
+
+absl::StatusOr<std::optional<Snapshot>> frozen_snapshot() {
+  const char* supplied = std::getenv("HSTREAM_USER_CONFIG_SNAPSHOT");
+  if (!supplied)
+    return std::optional<Snapshot>();
+  const fs::path path(supplied);
+  if (!path.is_absolute() || path.lexically_normal() != path)
+    return absl::InvalidArgumentError("HSTREAM_USER_CONFIG_SNAPSHOT must name an absolute normalized file");
+  const int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0)
+    return absl::InvalidArgumentError(absl::StrCat("Cannot open frozen user configuration: ", std::strerror(errno)));
+  struct Close {
+    int fd;
+    ~Close() {
+      ::close(fd);
+    }
+  } close{fd};
+  struct stat before{}, after{}, named{};
+  constexpr size_t kMaximumSnapshotBytes = 4 * 1024 * 1024;
+  if (::fstat(fd, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size < 0 ||
+      static_cast<uint64_t>(before.st_size) > kMaximumSnapshotBytes)
+    return absl::InvalidArgumentError("Frozen user configuration must be a regular file of at most 4 MiB");
+  std::string contents(static_cast<size_t>(before.st_size), '\0');
+  size_t consumed = 0;
+  while (consumed < contents.size()) {
+    const auto count = ::read(fd, contents.data() + consumed, contents.size() - consumed);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return absl::InvalidArgumentError("Frozen user configuration changed while reading");
+    consumed += static_cast<size_t>(count);
+  }
+  if (::fstat(fd, &after) != 0 || ::lstat(path.c_str(), &named) != 0 || !same_file(before, after) ||
+      !same_file(after, named) || !S_ISREG(named.st_mode))
+    return absl::InvalidArgumentError("Frozen user configuration changed while reading");
+  try {
+    const auto document = YAML::Load(contents);
+    size_t remaining = 100000;
+    if (!document.IsMap() || document.size() != 3 || !bounded_yaml(document, 0, remaining) ||
+        !document["schema"].IsScalar() || document["schema"].as<int>() != 1 || !document["source_path"].IsScalar() ||
+        !document["values"].IsMap())
+      return absl::InvalidArgumentError("Invalid frozen user configuration envelope");
+    const fs::path source(document["source_path"].as<std::string>());
+    if (!source.empty() && (!source.is_absolute() || source.lexically_normal() != source))
+      return absl::InvalidArgumentError("Frozen user configuration provenance must be absolute or empty");
+    return std::optional<Snapshot>(Snapshot{YAML::Clone(document["values"]), source});
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(absl::StrCat("Invalid frozen user configuration: ", error.what()));
+  }
+}
 
 absl::Status sync_directory(const fs::path& directory) {
   const int fd = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -168,6 +245,11 @@ absl::StatusOr<fs::path> file_path() {
 
 namespace {
 absl::StatusOr<YAML::Node> load_preferences(bool create) {
+  auto frozen = frozen_snapshot();
+  if (!frozen.ok())
+    return frozen.status();
+  if (*frozen)
+    return (**frozen).values;
   // Managed launchers own runtime scratch, not the execution user's settings.
   // Apply this here so every reader, including both Program backends and the
   // publication supervisor, keeps the same read-only preference policy.
@@ -223,6 +305,11 @@ absl::StatusOr<fs::path> defaults_path() {
 }
 
 absl::StatusOr<fs::path> active_file_path() {
+  auto frozen = frozen_snapshot();
+  if (!frozen.ok())
+    return frozen.status();
+  if (*frozen)
+    return (**frozen).path;
   auto path = defaults_path();
   if (!path.ok())
     return path.status();
@@ -236,6 +323,11 @@ absl::StatusOr<fs::path> active_file_path() {
 }
 
 absl::StatusOr<YAML::Node> load_defaults() {
+  auto frozen = frozen_snapshot();
+  if (!frozen.ok())
+    return frozen.status();
+  if (*frozen)
+    return (**frozen).values;
   auto path = defaults_path();
   if (!path.ok()) {
     const char* game_root = std::getenv("HM_GAME_DIR");
@@ -277,6 +369,11 @@ YAML::Node overlay_defaults(const YAML::Node& lower, const YAML::Node& upper) {
 
 namespace {
 absl::StatusOr<Snapshot> load_snapshot_impl(bool create) {
+  auto frozen = frozen_snapshot();
+  if (!frozen.ok())
+    return frozen.status();
+  if (*frozen)
+    return **frozen;
   auto preferences = load_preferences(create);
   if (!preferences.ok())
     return preferences.status();

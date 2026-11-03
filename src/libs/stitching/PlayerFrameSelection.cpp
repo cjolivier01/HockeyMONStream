@@ -781,8 +781,19 @@ absl::StatusOr<bool> PlayerFrameReplaySelector::Observe(const PlayerFramePairIde
     ++next_;
     return true;
   }
-  if (next_ == 0)
-    return absl::FailedPreconditionError("Player-selection replay did not begin at the exact scanned anchor pair");
+  if (next_ == 0) {
+    const auto describe = [](const PlayerFramePairIdentity& pair) {
+      std::ostringstream result;
+      result << "timeline=" << pair.timeline_pts_ns;
+      for (const auto& camera : pair.cameras)
+        result << " {source=" << camera.path << ", pts=" << camera.source_pts_ns << ", id=" << camera.source_id
+               << ", sequence=" << camera.sequence << '}';
+      return result.str();
+    };
+    return absl::FailedPreconditionError(
+        "Player-selection replay did not begin at the exact scanned anchor pair: expected " + describe(expected) +
+        ", actual " + describe(actual));
+  }
   if (actual.timeline_pts_ns >= expected.timeline_pts_ns)
     return absl::FailedPreconditionError("Player-selection replay skipped or mismatched a selected source pair");
   return false;

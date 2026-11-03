@@ -66,6 +66,13 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateStitchingExperimentEditableCo
     const std::filesystem::path& experiment_root,
     int sequence);
 
+// Private successor for a workflow attempt. Preserves the exact generation,
+// frozen inputs and maps; copies owned files and links only admitted source
+// media. The predecessor remains immutable and usable by parallel siblings.
+absl::StatusOr<StitchingExperimentWorkspace> SnapshotStitchingExperimentWorkspace(
+    const StitchingExperimentWorkspace& source,
+    const std::filesystem::path& destination_root);
+
 // Saves edited correspondences as a new candidate. The inspected source owner
 // and match snapshot must still agree; the original candidate is unchanged.
 absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWorkspace(
@@ -80,13 +87,15 @@ absl::StatusOr<StitchingExperimentWorkspace> CreateEditedStitchingExperimentWork
 // and malformed plans are errors; this query does not require source media.
 absl::StatusOr<std::string> ReusableStitchingExperimentSelectionFingerprint(
     const std::filesystem::path& game_directory,
-    const StitchingExperimentSettings& settings);
+    const StitchingExperimentSettings& settings,
+    bool advisory_read = false);
 
 // Describes the current main calibration for read-only inspection/preview.
 // An uncalibrated game with no frozen plan returns no row.
 absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperimentWorkspace(
     const std::filesystem::path& game_directory,
-    const StitchingExperimentSettings& displayed_settings);
+    const StitchingExperimentSettings& displayed_settings,
+    bool advisory_read = false);
 
 // After the runner and its helpers stop, validates the generation and durably
 // marks the private calibration complete before offering preview or promotion.

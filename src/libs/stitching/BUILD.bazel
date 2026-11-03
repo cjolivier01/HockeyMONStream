@@ -117,6 +117,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:game_operation_owner",
     "//src/libs/common:game_storage",
     ":player_frame_input_store",
     ":player_frame_selection",
@@ -1058,4 +1059,11 @@ cc_library(
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ],
+)
+
+cc_test(
+    name = "selected_frame_materialization_test",
+    srcs = ["SelectedFrameMaterializationTest.cpp"],
+    deps = [":stitching_core", ":game_config", ":auto_input_lens", ":player_frame_input_store", ":player_frame_selection",
+        "//src/libs/common:baseline_config", "@opencv_linux//:opencv", "@yaml-cpp"],
 )

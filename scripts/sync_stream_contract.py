@@ -1193,6 +1193,17 @@ def generate(root, *, native_revision=None, include_revision=True):
         "calibration_stages": calibration_stages(root),
         "highlight_defaults": {"base_name": highlight_base_name},
         "stitching_experiments": baseline["hstream_ui"]["stitching_experiments"],
+        "workflow_defaults": {
+            key: baseline["workflow"][key]
+            for key in (
+                "max_parallel",
+                "poll_interval_ms",
+                "command_timeout_seconds",
+                "shutdown_timeout_seconds",
+                "observer_timeout_seconds",
+                "metadata_resources",
+            )
+        },
         "stitching_camera_profiles": baseline["stitching"]["camera_configs"],
         "stitching_input_cameras": baseline["stitching"]["input_cameras"],
         "stitching_input_start_times": baseline["stitching"]["input_start_times"],
@@ -1281,6 +1292,21 @@ def generate(root, *, native_revision=None, include_revision=True):
     }
 
 
+def sync_workflow_kernel(root, destination, *, check):
+    for name in ("schema.py", "graph.py"):
+        expected = (root / "scripts/hstream_workflow" / name).read_bytes()
+        target = destination / name
+        if check:
+            if not target.is_file() or target.read_bytes() != expected:
+                raise SystemExit(
+                    "Native workflow kernel changed. Regenerate and review "
+                    + str(target)
+                )
+        else:
+            destination.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(expected)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hstream-root", type=Path, required=True)
@@ -1302,6 +1328,10 @@ def main():
     destination = args.output or (
         Path(__file__).resolve().parents[1] / "django_app/stream/native_contract.json"
     )
+    if args.output is None:
+        sync_workflow_kernel(
+            args.hstream_root, destination.parent / "workflow_kernel", check=args.check
+        )
     document = generate(args.hstream_root, native_revision=args.native_revision)
     if args.check:
         previous = json.loads(destination.read_text())

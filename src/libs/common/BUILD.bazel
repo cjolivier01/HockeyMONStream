@@ -597,3 +597,35 @@ cc_test(
     srcs = ["GameStorageTest.cpp"],
     deps = [":game_storage", "@yaml-cpp"],
 )
+
+cc_library(
+    name = "game_operation_owner",
+    srcs = ["GameOperationOwner.cpp"],
+    hdrs = ["GameOperationOwner.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":game_storage", ":process_guard", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_library(
+    name = "process_guard",
+    srcs = ["ProcessGuard.cpp"],
+    hdrs = ["ProcessGuard.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "game_operation_owner_test",
+    srcs = ["GameOperationOwnerTest.cpp"],
+    deps = [":game_operation_owner", ":game_storage"],
+)
+
+cc_test(
+    name = "process_guard_test",
+    srcs = ["ProcessGuardTest.cpp"],
+    args = ["$(location //src/apps/hstream-process-guard:hstream-process-guard)"],
+    data = ["//src/apps/hstream-process-guard:hstream-process-guard"],
+    deps = [":game_operation_owner"],
+)

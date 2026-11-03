@@ -134,6 +134,42 @@ int main() {
       exact.ok() && exact->at(0).left(game / "selected-tail.png").ok() &&
           exact->at(1).left(game / "selected-wrap.png").ok() && std::abs(exact->at(1).source(0).seconds - .52) < 1e-9,
       "Wrapped selection must extract its exact chosen PTS, not ordinary circular samples");
+  {
+    // Configurator omits a reference equal to the baseline from the private
+    // config. A successful forward scan still uses wrapped-elapsed identities.
+    auto compact = YAML::Clone(config);
+    compact["stitching"].remove("stitch_frame_time");
+    auto compact_plan = *selected->plan;
+    compact_plan.context["decode_anchor_ns"] = "0";
+    compact_plan.context["scan_reference_ns"] = "0";
+    compact_plan.context["scan_playback_start_ns"] = "0";
+    compact_plan.context["source_context"] = *player_frame_source_context(compact, 0);
+    for (size_t index = 0; index < compact_plan.selected.size(); ++index) {
+      auto& pair = compact_plan.selected[index].pair;
+      pair.timeline_pts_ns = index * kPlayerFrameSecond;
+      pair.cameras[0].source_pts_ns = index * kPlayerFrameSecond;
+      pair.cameras[1].source_pts_ns = (index + 1) * kPlayerFrameSecond;
+    }
+    compact_plan.fingerprint = *PlayerFrameSelectionFingerprint(compact_plan);
+    compact["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(compact_plan);
+    const auto retained = EndRelativeCalibrationInputs(game, compact, 2, {});
+    expect(retained.ok(), "Selected input planning accepts an omitted default reference time");
+    if (retained.ok())
+      for (size_t index = 0; index < retained->size(); ++index) {
+        const auto prefix = "compact-" + std::to_string(index);
+        const auto left = retained->at(index).left(game / (prefix + "-left.png"));
+        const auto right = retained->at(index).right(game / (prefix + "-right.png"));
+        expect(
+            left.ok() && right.ok() && retained->at(index).source(0).seconds == double(index) &&
+                retained->at(index).source(1).seconds == double(index + 1),
+            "Compact selection materializes the exact saved physical pairs from both cameras");
+      }
+    expect(!compact["stitching"]["stitch_frame_time"], "Materialization must not mutate frozen source config");
+    compact["game"]["stitching"]["frame_offsets"]["right"] = 0;
+    expect(
+        !EndRelativeCalibrationInputs(game, compact, 2, {}).ok(),
+        "Omitted default reference does not permit changed synchronization");
+  }
   selected->plan->selected.front().pair.cameras[0].source_pts_ns += 1000000;
   selected->plan->fingerprint = *PlayerFrameSelectionFingerprint(*selected->plan);
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(*selected->plan);

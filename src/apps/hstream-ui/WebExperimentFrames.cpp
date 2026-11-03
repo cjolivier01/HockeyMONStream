@@ -66,6 +66,8 @@ StitchingExperimentPlayerSelection ScanExperimentFrames(
     } else {
       arguments.push_back("--start-time=" + candidate.settings.stitch_frame_time);
     }
+    if (!request.workflow.isEmpty())
+      arguments.push_back("--gpu-id=0");
     document["hstream_ui"]["job"]["arguments"] = arguments;
     check(hm::stitching::publish_game_config(baseline.game_directory, YAML::Dump(document)));
   }

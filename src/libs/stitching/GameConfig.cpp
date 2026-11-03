@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
@@ -2077,6 +2078,13 @@ absl::Status ValidateStitchProjectionFraming(
   return absl::OkStatus();
 }
 
+struct GameConfigLock::Admission {
+  std::unique_ptr<hm::game_operation::Lock> lock;
+};
+
+GameConfigLock::GameConfigLock(int descriptor, std::unique_ptr<Admission> admission)
+    : descriptor_(descriptor), admission_(std::move(admission)) {}
+
 GameConfigLock::~GameConfigLock() {
   if (descriptor_ >= 0) {
     ::flock(descriptor_, LOCK_UN);
@@ -2129,7 +2137,7 @@ absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransaction
 
 absl::StatusOr<std::unique_ptr<GameConfigTransactionLock>> GameConfigTransactionLock::TryAcquireSnapshot(
     const fs::path& game_dir) {
-  auto config = GameConfigLock::TryAcquire(game_dir);
+  auto config = GameConfigLock::TryAcquire(game_dir, /*advisory_read=*/true);
   if (!config.ok())
     return config.status();
   auto rink = lock_rink_transactions(hm::game_storage::StateDirectory(game_dir), /*wait=*/false);
@@ -2151,6 +2159,11 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Cannot lock config outside an existing game directory: " + game_dir.string());
+  auto authorization = hm::game_operation::Mutation(game_dir);
+  if (!authorization.ok())
+    return authorization.status();
+  auto admission = std::make_unique<Admission>();
+  admission->lock = std::move(*authorization);
   HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_dir));
   const fs::path path = hm::game_storage::StateDirectory(game_dir) / ".hstream-config.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
@@ -2161,13 +2174,21 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::Acquire(const fs
     ::close(descriptor);
     return absl::InternalError("Unable to lock game config: " + message);
   }
-  return std::unique_ptr<GameConfigLock>(new GameConfigLock(descriptor));
+  return std::unique_ptr<GameConfigLock>(new GameConfigLock(descriptor, std::move(admission)));
 }
 
-absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::TryAcquire(const fs::path& game_dir) {
+absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::TryAcquire(
+    const fs::path& game_dir,
+    bool advisory_read) {
   std::error_code error;
   if (!fs::is_directory(game_dir, error) || error)
     return absl::NotFoundError("Cannot lock config outside an existing game directory: " + game_dir.string());
+  auto authorization = advisory_read ? hm::game_operation::Lock::Acquire(game_dir, false)
+                                     : hm::game_operation::Mutation(game_dir, false);
+  if (!authorization.ok())
+    return authorization.status();
+  auto admission = std::make_unique<Admission>();
+  admission->lock = std::move(*authorization);
   HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(game_dir));
   const fs::path path = hm::game_storage::StateDirectory(game_dir) / ".hstream-config.lock";
   const int descriptor = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
@@ -2181,7 +2202,7 @@ absl::StatusOr<std::unique_ptr<GameConfigLock>> GameConfigLock::TryAcquire(const
       return absl::UnavailableError("Game config is being updated");
     return absl::InternalError("Unable to lock game config: " + message);
   }
-  return std::unique_ptr<GameConfigLock>(new GameConfigLock(descriptor));
+  return std::unique_ptr<GameConfigLock>(new GameConfigLock(descriptor, std::move(admission)));
 }
 
 absl::Status publish_game_config(const fs::path& game_dir, const std::string& contents) {
@@ -2416,10 +2437,11 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
   return removed;
 }
 
-absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& config_path) {
+absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& config_path, bool advisory_read) {
   if (config_path.filename() != "config.yaml" || config_path.parent_path().filename() != "_hockeymon")
     return absl::InvalidArgumentError("Game config must be _hockeymon/config.yaml");
-  auto lock = GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
+  auto lock = advisory_read ? GameConfigTransactionLock::TryAcquireSnapshot(config_path.parent_path().parent_path())
+                            : GameConfigTransactionLock::Acquire(config_path.parent_path().parent_path());
   if (!lock.ok())
     return lock.status();
   std::error_code error;
@@ -2435,7 +2457,7 @@ absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const fs::path& 
     const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
     const YAML::Node selection =
         stitching && stitching.IsMap() ? stitching["calibration_frame_selection"] : YAML::Node();
-    if (selection && !selection.IsNull()) {
+    if (!advisory_read && selection && !selection.IsNull()) {
       const auto parsed = ParsePlayerFrameSelectionPlan(selection);
       if (!parsed.ok() &&
           parsed.status().message().find("plan fingerprint does not match its contents") != std::string::npos) {

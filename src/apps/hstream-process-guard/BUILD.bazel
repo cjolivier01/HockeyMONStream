@@ -1,0 +1,6 @@
+cc_binary(
+    name = "hstream-process-guard",
+    srcs = ["main.cpp"],
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/common:process_guard"],
+)

@@ -138,6 +138,7 @@ fi
 # ---------- verify artifacts ----------
 HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 HSTREAM_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-job/hstream-job"
+HSTREAM_PROCESS_GUARD="${TOPDIR}/bazel-bin/src/apps/hstream-process-guard/hstream-process-guard"
 HSTREAM_FINALIZE="${TOPDIR}/bazel-bin/src/apps/hstream-finalize/hstream-finalize"
 HSTREAM_CALIBRATION_EXPORT="${TOPDIR}/bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export"
 HSTREAM_PREPARED_MODEL_VALIDATE="${TOPDIR}/bazel-bin/src/apps/hstream-prepared-model-validate/hstream-prepared-model-validate"
@@ -147,6 +148,7 @@ HSTREAM_ASSETS="${TOPDIR}/bazel-bin/src/apps/hstream-assets/hstream-assets"
 HSTREAM_PLAYER_MODEL_BUILDER="${TOPDIR}/bazel-bin/src/apps/player-model-builder/player-model-builder"
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
 HSTREAM_WEB_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-web-job"
+HSTREAM_EXPERIMENT_TASK="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-experiment-task"
 HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so"
@@ -161,6 +163,10 @@ if [[ ! -f "${HSTREAM_CLI}" ]]; then
 fi
 if [[ ! -f "${HSTREAM_JOB}" ]]; then
   echo "ERROR: ${HSTREAM_JOB} not found. Run make hstream-job first." >&2
+  exit 1
+fi
+if [[ ! -f "${HSTREAM_PROCESS_GUARD}" ]]; then
+  echo "ERROR: ${HSTREAM_PROCESS_GUARD} not found. Run make hstream-process-guard first." >&2
   exit 1
 fi
 if [[ ! -f "${HSTREAM_FINALIZE}" ]]; then
@@ -197,6 +203,10 @@ if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_UI}" ]]; then
 fi
 if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_WEB_JOB}" ]]; then
   echo "ERROR: ${HSTREAM_WEB_JOB} not found. Run 'make hstream-web-job' first." >&2
+  exit 1
+fi
+if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_EXPERIMENT_TASK}" ]]; then
+  echo "ERROR: ${HSTREAM_EXPERIMENT_TASK} not found. Build hstream-experiment-task for the target platform first." >&2
   exit 1
 fi
 if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
@@ -388,6 +398,9 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-cli")
 cp "${HSTREAM_JOB}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-job"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-job"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-job")
+cp "${HSTREAM_PROCESS_GUARD}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-process-guard"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-process-guard"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-process-guard")
 cp "${HSTREAM_FINALIZE}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize")
@@ -410,6 +423,9 @@ cp "${HSTREAM_PLAYER_MODEL_BUILDER}" "${STAGING}${INSTALL_PREFIX}/bin/player-mod
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/player-model-builder"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/player-model-builder")
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  cp "${HSTREAM_EXPERIMENT_TASK}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
+  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
+  package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task")
   cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
@@ -1127,6 +1143,14 @@ POSTINST
 chmod 0755 "${STAGING}/DEBIAN/postinst"
 
 # ---------- package-owned command wrappers ----------
+install -d -m 0755 "${STAGING}${INSTALL_PREFIX}/scripts/hstream_workflow"
+install -m 0644 "${TOPDIR}/scripts/hstream_workflow/"*.py "${STAGING}${INSTALL_PREFIX}/scripts/hstream_workflow/"
+install -m 0755 "${TOPDIR}/scripts/hstream-workflow" "${STAGING}${INSTALL_PREFIX}/scripts/hstream-workflow"
+install -m 0755 "${TOPDIR}/scripts/install_workflow_services.py" "${STAGING}${INSTALL_PREFIX}/scripts/install_workflow_services.py"
+ln -s "${INSTALL_PREFIX}/scripts/hstream-workflow" "${STAGING}/usr/bin/hstream-workflow"
+if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+  ln -s "${INSTALL_PREFIX}/bin/hstream-experiment-task" "${STAGING}/usr/bin/hstream-experiment-task"
+fi
 for int8_helper in prepare_recording_int8.py quantize_detector_onnx.py benchmark_model_precision.py; do
   install -m 0755 "${TOPDIR}/scripts/${int8_helper}" "${STAGING}${INSTALL_PREFIX}/scripts/${int8_helper}"
 done
@@ -1136,6 +1160,7 @@ install -m 0755 \
 
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hstream-job" "${STAGING}/usr/bin/hstream-job"
+ln -s "${INSTALL_PREFIX}/bin/hstream-process-guard" "${STAGING}/usr/bin/hstream-process-guard"
 ln -s "${INSTALL_PREFIX}/bin/hstream-finalize" "${STAGING}/usr/bin/hstream-finalize"
 ln -s "${INSTALL_PREFIX}/bin/hstream-calibration-export" "${STAGING}/usr/bin/hstream-calibration-export"
 ln -s "${INSTALL_PREFIX}/bin/hstream-prepared-model-validate" "${STAGING}/usr/bin/hstream-prepared-model-validate"
@@ -1486,6 +1511,8 @@ unexpected_python_file="$(find "${STAGING}${INSTALL_PREFIX}" -type f \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/prepare_recording_int8.py" \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/quantize_detector_onnx.py" \
   ! -path "${STAGING}${INSTALL_PREFIX}/scripts/benchmark_model_precision.py" \
+  ! -path "${STAGING}${INSTALL_PREFIX}/scripts/install_workflow_services.py" \
+  ! -path "${STAGING}${INSTALL_PREFIX}/scripts/hstream_workflow/*.py" \
   -print -quit)"
 if [[ -n "${unexpected_python_file}" ]]; then
   echo "ERROR: an unexpected Python runtime file entered the HStream package: ${unexpected_python_file}" >&2

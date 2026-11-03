@@ -22,6 +22,7 @@
 #include "hstream/src/gst-plugins/gst-rink-map/RinkMapOverlay.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigPath.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
 #include "hstream/src/libs/common/UserConfig.h"
@@ -126,7 +127,7 @@ hm::gpu::VaVideoReaderConfig Reader(
       launch.amd.operation_timeout_ns,
       launch.amd.cancellation_poll_ns};
 }
-void Run(const hm::program::AmdPipelineOptions& args) {
+void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& owned_game, std::string& owned_token) {
   hm::publication::ValidatePipelineStart(false);
   const bool encoding = args.sinks.count("ENCODE_FILE") || args.sinks.count("ENCODE_PROGRAM_4K_FILE");
   Require(hm::publication::EnvironmentManifest().empty() || encoding, "Managed Program runs require an archive sink");
@@ -136,6 +137,22 @@ void Run(const hm::program::AmdPipelineOptions& args) {
           args.game,
           args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
           args.options));
+  {
+    auto admission = Take(hm::game_operation::Lock::Acquire(launch.game));
+    const auto current = Take(admission->Read());
+    if (current) {
+      Status(admission->Authorize(hm::game_operation::Authorization(launch.game)));
+    } else {
+      const auto token = Take(hm::game_operation::NewToken());
+      auto owner = hm::game_operation::LocalOwner("pipeline", token, token);
+      Status(admission->Claim(owner));
+      owned_game = launch.game;
+      owned_token = token;
+      hm::game_operation::RegisterAuthorization(owned_game, owned_token);
+      ::setenv("HSTREAM_GAME_OPERATION_GAME", owned_game.c_str(), 1);
+      ::setenv("HSTREAM_GAME_OPERATION_TOKEN", owned_token.c_str(), 1);
+    }
+  }
   auto initial_overlays = Take(hm::pipeline_internal::ReadPreviewOverlaySelection(launch.configuration.values));
   if (const auto* value = std::getenv("HSTREAM_UI_PREVIEW_OVERLAYS")) {
     initial_overlays = {};
@@ -684,6 +701,11 @@ void Run(const hm::program::AmdPipelineOptions& args) {
 } // namespace
 
 int main(int argc, char** argv) {
+  const auto child_proof = hm::game_operation::EnableIsolatedChildProof();
+  if (!child_proof.ok()) {
+    std::cerr << "hstream-cli cannot establish descendant cleanup proof: " << child_proof << '\n';
+    return 78;
+  }
   if (const auto* parent = std::getenv("HSTREAM_UI_PARENT_PID")) {
     char* end{};
     const auto expected = std::strtol(parent, &end, 10);
@@ -722,7 +744,13 @@ int main(int argc, char** argv) {
   if (!hm::diagnostics::Directory().empty())
     g_printerr("HStream diagnostics: %s\n", hm::diagnostics::Directory().c_str());
   int result = 0;
+  std::filesystem::path owned_game;
+  std::string owned_token;
+  int64_t cleanup_grace = 0, cleanup_poll = 0;
   try {
+    const auto baseline = Take(hm::baseline_config::load());
+    cleanup_grace = baseline.values["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000;
+    cleanup_poll = baseline.values["workflow"]["poll_interval_ms"].as<int64_t>();
     const auto args = Take(hm::program::ParseAmdPipelineOptions({argv, argv + argc}));
     if (args.sinks.count("RENDER")) {
       // P010 DMA-BUF import requires EGL. GStreamer's default X11 platform is
@@ -736,7 +764,7 @@ int main(int argc, char** argv) {
     }
     XInitThreads();
     gst_init(&argc, &argv);
-    Run(args);
+    Run(args, owned_game, owned_token);
   } catch (const std::exception& error) {
     hm::diagnostics::Log("amd-error", error.what());
     std::cerr << "hstream-cli: " << error.what() << '\n';
@@ -748,5 +776,14 @@ int main(int argc, char** argv) {
     }
   }
   hm::diagnostics::Finish(result);
+  if (!owned_token.empty()) {
+    const auto retired = hm::game_operation::RetireIsolatedChildren(cleanup_grace, cleanup_poll);
+    const auto released = retired.ok() ? hm::game_operation::ReleaseLocal(owned_game, owned_token, true) : retired;
+    if (!released.ok()) {
+      std::cerr << released << '\n';
+      result = result ? result : 1;
+    }
+    hm::game_operation::ForgetAuthorization(owned_game, owned_token);
+  }
   return result;
 }

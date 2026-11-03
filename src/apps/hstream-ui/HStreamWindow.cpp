@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
@@ -16,6 +17,7 @@
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/BackendPreview.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
+#include "src/apps/hstream-ui/SupervisedProcess.h"
 #ifndef HSTREAM_USE_HIP
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
 #endif
@@ -169,6 +171,15 @@
 namespace fs = std::filesystem;
 
 namespace {
+
+absl::StatusOr<std::optional<YAML::Node>> load_desktop_game_config(const fs::path& path) {
+  const auto owner = hm::game_operation::Inspect(path.parent_path().parent_path());
+  if (!owner.ok())
+    return owner.status();
+  // Retain ordinary transaction recovery when idle. An owning operation alone
+  // may recover its state; another desktop window only takes advisory snapshots.
+  return hm::stitching::load_game_config_file(path, /*advisory_read=*/owner->has_value());
+}
 
 QString ui_settings_path() {
   return QDir(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation))
@@ -4950,11 +4961,25 @@ QString hm::ui_internal::development_runtime_root_for_application(const QString&
   if (!execroot.cdUp() || !execroot.cdUp() || !execroot.cdUp())
     return {};
   const QString canonical_source_directory = QFileInfo(execroot.filePath("src")).canonicalFilePath();
-  if (canonical_source_directory.isEmpty())
+  if (!canonical_source_directory.isEmpty()) {
+    const QDir source_root = QFileInfo(canonical_source_directory).dir();
+    if (QFileInfo(source_root.filePath("WORKSPACE.bazel")).isFile() &&
+        QFileInfo(source_root.filePath("configs")).isDir())
+      return source_root.absolutePath();
+  }
+  // Other Bazel commands can remove the execroot's source links. This UI's
+  // runfiles retain its executable and source configs even when bazel-bin has
+  // moved to another build configuration.
+  const QDir runfiles(resolved_application + ".runfiles/kstream");
+  if (QFileInfo(runfiles.filePath("src/apps/hstream-ui/hstream-ui")).canonicalFilePath() != resolved_application)
     return {};
-  const QDir source_root = QFileInfo(canonical_source_directory).dir();
-  const QFileInfo workspace_marker(source_root.filePath("WORKSPACE.bazel"));
-  if (workspace_marker.isFile() && QFileInfo(source_root.filePath("configs")).isDir())
+  const QFileInfo baseline(QFileInfo(runfiles.filePath("configs/baseline.yaml")).canonicalFilePath());
+  QDir source_root = baseline.absoluteDir();
+  if (!baseline.isFile() || baseline.fileName() != "baseline.yaml" || source_root.dirName() != "configs" ||
+      !source_root.cdUp() || !QFileInfo(source_root.filePath("WORKSPACE.bazel")).isFile())
+    return {};
+  if (QFileInfo(runfiles.filePath("configs/ds_hockey_app_config.yaml")).canonicalFilePath() ==
+      source_root.filePath("configs/ds_hockey_app_config.yaml"))
     return source_root.absolutePath();
   return {};
 }
@@ -5029,6 +5054,12 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
     }
   });
   buildUi();
+  auto* admission_poll = new QTimer(this);
+  admission_poll->setObjectName("gameOperationPoll");
+  admission_poll->setInterval(baseline_config_["workflow"]["poll_interval_ms"].as<int>());
+  connect(admission_poll, &QTimer::timeout, this, [this] { updateRunControls(); });
+  admission_poll->start();
+
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int) {
     if (backend_preview_ && backend_preview_directory_) {
       backend_preview_->setChannel(
@@ -5405,6 +5436,16 @@ void HStreamWindow::loadBaselineDefaults() {
 }
 
 HStreamWindow::~HStreamWindow() {
+  // The durable record remains authoritative if closing cannot prove shutdown.
+  struct ForgetAdmission {
+    HStreamWindow* window;
+    ~ForgetAdmission() {
+      window->releaseGameOperationIfStopped();
+      if (!window->operation_token_.empty())
+        hm::game_operation::ForgetAuthorization(window->operation_game_, window->operation_token_);
+    }
+  } forget_admission{this};
+
   qApp->removeEventFilter(this);
   // Normal closeEvent waits for playback and publication. If the window is
   // destroyed directly, QProcess still kills/reaps its child, but may emit
@@ -5413,18 +5454,37 @@ HStreamWindow::~HStreamWindow() {
   // child widgets lose their lifetime. Descendant dialogs own their processes.
   for (QProcess* process : findChildren<QProcess*>(QString(), Qt::FindDirectChildrenOnly))
     disconnect(process, nullptr, this, nullptr);
+  for (QProcess* process : {pipeline_process_, archive_finalize_process_}) {
+    if (process && process->state() != QProcess::NotRunning && hm::ui::HasSupervisedProcess(*process)) {
+#ifdef Q_OS_UNIX
+      // A previous or externally requested native pause may have stopped the
+      // guard itself. It must run to read the kill request and reap workers.
+      const auto pid = static_cast<pid_t>(process->processId());
+      if (pid > 0)
+        (void)::kill(pid, SIGCONT);
+#endif
+      (void)hm::ui::SignalSupervisedProcess(*process, SIGKILL);
+      process->waitForFinished(5000);
+    }
+  }
   if (live_rotation_config_owner_) {
     if (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) {
-      pipeline_process_->kill();
-      pipeline_process_->waitForFinished(-1);
+      if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+        (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGKILL);
+      else
+        pipeline_process_->kill();
+      pipeline_process_->waitForFinished(5000);
     }
     const auto status = live_rotation_config_owner_->Shutdown();
     if (!status.ok())
       qWarning("live rotation cleanup failed: %s", status.ToString().c_str());
   }
+  const bool abandoned_completion = static_cast<bool>(pending_pipeline_completion_);
+  pending_pipeline_completion_ = {};
+  refreshFinishedGameInventory();
   if (telemetry_publication_worker_)
     telemetry_publication_worker_->wait();
-  finishArchiveJobLog();
+  finishArchiveJobLog(!abandoned_completion);
   releaseArchiveFinalizeSource(false);
   releaseArchiveFinalizerOwnership(false);
 }
@@ -5482,7 +5542,7 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
       return;
     }
   }
-  if (live_rotation_authorization_pending_) {
+  if (live_rotation_authorization_pending_ || pending_pipeline_completion_) {
     appendLog("window close deferred while live rotation config I/O finishes");
     close_waiting_for_live_rotation_authorization_ = true;
     event->ignore();
@@ -6427,7 +6487,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       "Generate stitching candidates, replay one moving passage across their seams, and use the selected maps "
       "without recalibrating.");
   connect(stitching_experiments_button_, &QPushButton::clicked, this, [this]() {
-    if (!ensureSavedControlConfigLoaded())
+    const auto selected_game = fs::path(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
+    const auto owner = hm::game_operation::Inspect(selected_game);
+    std::error_code owner_error;
+    const auto canonical_game = fs::canonical(selected_game, owner_error);
+    const bool monitoring = owner.ok() && owner->has_value() && (**owner).kind == "workflow" && !owner_error &&
+        (**owner).workflow_directory == (canonical_game / "_hockeymon/workflows" / (**owner).id).string();
+    if (!monitoring && !ensureSavedControlConfigLoaded())
       return;
     if (auto* existing = findChild<QDialog*>("stitchingExperimentDialog")) {
       existing->show();
@@ -6442,12 +6508,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     }
     const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
     const QString game_directory = gameDirectory(game_id);
-    if (game_id.isEmpty() || !QFileInfo::exists(QDir(game_directory).filePath("_hockeymon/config.yaml"))) {
+    if (game_id.isEmpty() ||
+        (!monitoring && !QFileInfo::exists(QDir(game_directory).filePath("_hockeymon/config.yaml")))) {
       QMessageBox::information(
           this, "Stitching Experiments", "Select a saved game with two camera videos before experimenting.");
       return;
     }
-    if (save_preset_button_ && save_preset_button_->isEnabled()) {
+    if (!monitoring && save_preset_button_ && save_preset_button_->isEnabled()) {
       QMessageBox::information(
           this,
           "Stitching Experiments",
@@ -6455,7 +6522,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       return;
     }
     const QString runner = nativeRunnerPath();
-    if (QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
+    if (!monitoring && QFileInfo(runner).isAbsolute() && !QFileInfo::exists(runner)) {
       QMessageBox::warning(this, "Stitching Experiments", "The hstream-cli runner is unavailable: " + runner);
       return;
     }
@@ -6464,7 +6531,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       env.insert("HM_CONFIG_ROOT", baseline_config_root_);
     const QString working_directory = pipelineWorkingDirectory();
     const QString runtime_error =
-        configure_pipeline_runtime_environment(env, working_directory, development_bazel_bin_);
+        monitoring ? QString() : configure_pipeline_runtime_environment(env, working_directory, development_bazel_bin_);
     if (!runtime_error.isEmpty()) {
       QMessageBox::warning(this, "Stitching Experiments", runtime_error);
       return;
@@ -8707,7 +8774,7 @@ void HStreamWindow::changeInputCameraOptics(size_t index, bool refresh) {
     if (key != source)
       camera.frozen = true;
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
-  auto saved = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
+  auto saved = load_desktop_game_config(game / "_hockeymon/config.yaml");
   if (!saved.ok()) {
     camera_configuration_combo_->setProperty("autoInputLensFrozen", was_frozen);
     updateInputCameraTabs(camera_optics_result_);
@@ -8752,7 +8819,7 @@ void HStreamWindow::applyCameraConfigurationDefaults(bool reset_defaults) {
   YAML::Node effective = YAML::Clone(baseline_config_);
   const fs::path game(gameDirectory(game_id_edit_->text()).toStdString());
   auto saved = editing_defaults_ ? absl::StatusOr<std::optional<YAML::Node>>(std::optional<YAML::Node>{})
-                                 : hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml");
+                                 : load_desktop_game_config(game / "_hockeymon/config.yaml");
   if (saved.ok() && saved->has_value())
     effective = merge_yaml_maps(effective, **saved);
   effective["stitching"].remove("auto_input_lens_frozen");
@@ -9591,9 +9658,36 @@ bool HStreamWindow::runStitchingClean(
   // must not complete or fail the archive run that has yet to start.
   clean_env.remove("HSTREAM_JOB_MANIFEST");
   clean_env.remove("HSTREAM_ARCHIVE_RUN_ID");
+  const bool own_admission = operation_token_.empty();
+  if (own_admission && !beginGameOperation("mutation"))
+    return false;
+  struct CleanAdmission {
+    std::function<void()> finish;
+    ~CleanAdmission() {
+      finish();
+    }
+  } clean_admission{[this, own_admission] {
+    if (own_admission)
+      releaseGameOperationIfStopped();
+  }};
+  clean_env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
+  clean_env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
   clean.setProcessEnvironment(clean_env);
   clean.setWorkingDirectory(working_dir);
-  clean.start(runner, clean_args);
+  clean.setProgram(runner);
+  clean.setArguments(clean_args);
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      clean,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      true);
+  if (!supervised.ok()) {
+    appendLog(QString::fromStdString(supervised.ToString()));
+    return false;
+  }
+  clean.start();
   if (!clean.waitForStarted(5000)) {
     appendLog(QString("failed to start stitching clean: %1").arg(clean.errorString()));
     return false;
@@ -9612,6 +9706,11 @@ bool HStreamWindow::runStitchingClean(
     for (const QString& line : output_text.split('\n')) {
       appendLog(line.trimmed());
     }
+  }
+  const auto stopped = hm::ui::SupervisedProcessStopped(clean);
+  if (!stopped.ok() || !*stopped) {
+    appendLog("Stitching cleanup has no verified shutdown receipt; retaining game ownership.");
+    return false;
   }
   if (clean.exitStatus() != QProcess::NormalExit || clean.exitCode() != 0) {
     appendLog(QString("stitching clean failed exit=%1").arg(clean.exitCode()));
@@ -11563,9 +11662,95 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
   checkbox->second->setCheckState(mode == "1" ? Qt::Checked : mode == "0" ? Qt::Unchecked : Qt::PartiallyChecked);
 }
 
+bool HStreamWindow::beginGameOperation(const std::string& kind) {
+  const std::filesystem::path game =
+      std::filesystem::canonical(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
+  auto lock = hm::game_operation::Lock::Acquire(game, false);
+  if (!lock.ok()) {
+    appendLog(QString::fromStdString(lock.status().ToString()));
+    return false;
+  }
+  auto token = hm::game_operation::NewToken();
+  if (!token.ok()) {
+    appendLog(QString::fromStdString(token.status().ToString()));
+    return false;
+  }
+  auto owner = hm::game_operation::LocalOwner(kind, *token, *token);
+  const auto claimed = (*lock)->Claim(owner);
+  if (!claimed.ok()) {
+    appendLog(QString::fromStdString(claimed.ToString()));
+    return false;
+  }
+  operation_game_ = game;
+  operation_token_ = *token;
+  operation_retirement_started_ms_ = 0;
+  hm::game_operation::RegisterAuthorization(game, *token);
+  const auto proof = hm::game_operation::EnableSupervisedChildProof(*token);
+  if (!proof.ok()) {
+    appendLog(QString::fromStdString(proof.ToString()));
+    return false;
+  }
+  return true;
+}
+
+void HStreamWindow::releaseGameOperationIfStopped() {
+  if (operation_token_.empty() || operation_starting_ ||
+      (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
+      live_rotation_authorization_pending_)
+    return;
+  auto stopped = hm::game_operation::LocalChildrenStopped(operation_token_);
+  if (!stopped.ok())
+    return; // Keep the durable claim until proof is available.
+  if (!*stopped) {
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    if (!operation_retirement_started_ms_)
+      operation_retirement_started_ms_ = now;
+    const auto timeout = baseline_config_["workflow"]["shutdown_timeout_seconds"].as<qint64>() * 1000;
+    (void)hm::game_operation::SignalLocalChildren(
+        operation_token_, now - operation_retirement_started_ms_ >= timeout ? SIGKILL : SIGTERM);
+    return;
+  }
+  const auto released = hm::game_operation::ReleaseLocal(operation_game_, operation_token_, true);
+  if (released.ok()) {
+    operation_game_.clear();
+    operation_token_.clear();
+    operation_retirement_started_ms_ = 0;
+  }
+}
+
 void HStreamWindow::startPipeline() {
   if (deferred_play_requested_ || deferred_restart_requested_)
     return;
+  const auto show_startup_error = [this](const QString& detail) {
+    pipeline_state_->setText("STOPPED");
+    resetPlaybackProgress(true);
+    setPlaybackProgressState(PlaybackProgressState::kError, detail);
+  };
+  releaseGameOperationIfStopped();
+  if (!operation_token_.empty())
+    return;
+  if (!ensureGameDirectory()) {
+    show_startup_error("The selected game directory could not be prepared");
+    updateRunControls();
+    return;
+  }
+  if (!beginGameOperation("pipeline")) {
+    updateRunControls();
+    return;
+  }
+  operation_starting_ = true;
+  struct FinishAdmissionStart {
+    std::function<void()> finish;
+    ~FinishAdmissionStart() {
+      finish();
+    }
+  } finish_admission_start{[this] {
+    operation_starting_ = false;
+    releaseGameOperationIfStopped();
+    // Startup errors update controls while admission is still held. Refresh
+    // after retirement so a rejected Play immediately permits Load and Clean.
+    updateRunControls();
+  }};
   if (!resolveInitialProgramSources())
     return;
   const bool initial_single_source = initial_program_requires_stitching_ == false;
@@ -11590,7 +11775,7 @@ void HStreamWindow::startPipeline() {
       return;
     }
   }
-  if (live_rotation_authorization_pending_) {
+  if (live_rotation_authorization_pending_ || pending_pipeline_completion_) {
     appendLog("pipeline start deferred while live rotation config I/O finishes");
     return;
   }
@@ -11657,11 +11842,6 @@ void HStreamWindow::startPipeline() {
   scoreboard_reselect_waiting_ = false;
   resetPlaybackProgress(true);
   setPlaybackStartupStage("ui", "Preparing the game directory and saved configuration");
-  const auto show_startup_error = [this](const QString& detail) {
-    pipeline_state_->setText("STOPPED");
-    resetPlaybackProgress(true);
-    setPlaybackProgressState(PlaybackProgressState::kError, detail);
-  };
   clearPreviewFrames();
   if (!ensureGameDirectory()) {
     show_startup_error("The selected game directory could not be prepared");
@@ -12169,29 +12349,15 @@ void HStreamWindow::startPipeline() {
     env.remove("HSTREAM_ARCHIVE_RUN_ID");
     env.insert("HM_OUTPUT_WORK_DIR", archive_output_work_dir(env, working_dir));
   }
+  env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
+  env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
-#ifdef Q_OS_UNIX
-  const QString setsid = "/usr/bin/setsid";
   const bool test_without_setsid =
       !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() && qEnvironmentVariableIsSet("HSTREAM_UI_TEST_BYPASS_SETSID");
-  if (QFileInfo::exists(setsid) && !test_without_setsid) {
-    QStringList wrapped_args;
-    wrapped_args << runner;
-    wrapped_args << args;
-    pipeline_process_->setProgram(setsid);
-    pipeline_process_->setArguments(wrapped_args);
-    pipeline_uses_process_group_ = true;
-  } else {
-    pipeline_process_->setProgram(runner);
-    pipeline_process_->setArguments(args);
-    pipeline_uses_process_group_ = false;
-  }
-#else
   pipeline_process_->setProgram(runner);
   pipeline_process_->setArguments(args);
-  pipeline_uses_process_group_ = false;
-#endif
+  pipeline_uses_process_group_ = !test_without_setsid;
   pipeline_paused_ = false;
   pipeline_cooperative_pause_ = false;
   pending_process_pause_generation_ = 0;
@@ -12232,6 +12398,19 @@ void HStreamWindow::startPipeline() {
   }
   appendLog(QString("pipeline command %1 %2").arg(runner, args.join(' ')));
   ++pipeline_run_generation_;
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      *pipeline_process_,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      pipeline_uses_process_group_);
+  if (!supervised.ok()) {
+    handlePipelineError(QProcess::FailedToStart);
+    appendLog(QString::fromStdString(supervised.ToString()));
+    preview_status_->setText("Pipeline supervisor unavailable");
+    return;
+  }
   pipeline_process_->start();
   updateRunControls();
 }
@@ -12282,7 +12461,8 @@ void HStreamWindow::pauseOrResumePipeline() {
     return;
   }
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
-  if (!pipeline_cooperative_pause_ && ::kill(target, SIGCONT) != 0) {
+  if (!pipeline_cooperative_pause_ && !hm::ui::HasSupervisedProcess(*pipeline_process_) &&
+      ::kill(target, SIGCONT) != 0) {
     appendLog("failed to signal pipeline process for pause/resume");
     return;
   }
@@ -12318,7 +12498,11 @@ void HStreamWindow::pauseOrResumePipeline() {
 }
 
 void HStreamWindow::confirmStopPipeline() {
-  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || pipeline_stop_requested_)
+  if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) {
+    stopPipeline();
+    return;
+  }
+  if (pipeline_stop_requested_)
     return;
   const auto generation = pipeline_run_generation_;
   const bool has_outputs = active_run_telemetry_requested_ || !active_archive_output_path_.isEmpty() ||
@@ -12378,6 +12562,7 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
   }
   appendLog("pipeline stop requested");
   clearDeferredPreviewCommands();
+  const bool resume_for_stop = pipeline_paused_ || pending_process_pause_generation_ != 0;
   pending_process_pause_generation_ = 0;
   pending_process_resume_generation_ = 0;
   pipeline_stop_requested_ = true;
@@ -12390,8 +12575,13 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
-  if (pipeline_paused_ && pid > 0) {
-    ::kill(target, SIGCONT);
+  // The guard can already have stopped the worker while Qt is still waiting
+  // for its Pause acknowledgement. Resume before queuing a graceful finish.
+  if (resume_for_stop && pid > 0) {
+    if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+      (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGCONT);
+    else
+      ::kill(target, SIGCONT);
     pipeline_paused_ = false;
     pipeline_cooperative_pause_ = false;
   }
@@ -12413,7 +12603,9 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
       publish_partial && (active_hockeymon_program_ || finish_native_playback) && pipeline_process_->write("q\n") == 2;
   if (!cooperative_stop) {
 #ifdef Q_OS_UNIX
-    if (pid > 0)
+    if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+      (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGINT);
+    else if (pid > 0)
       ::kill(target, SIGINT);
     else
 #endif
@@ -12421,12 +12613,15 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
   }
   if (!pipeline_process_->waitForFinished(pipeline_stop_timeout_ms_)) {
     appendLog("pipeline did not exit after terminate; killing");
+    if (hm::ui::HasSupervisedProcess(*pipeline_process_))
+      (void)hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGKILL);
+    else {
 #ifdef Q_OS_UNIX
-    if (pid > 0 && pipeline_uses_process_group_) {
-      ::kill(target, SIGKILL);
-    }
+      if (pid > 0 && pipeline_uses_process_group_)
+        ::kill(target, SIGKILL);
 #endif
-    pipeline_process_->kill();
+      pipeline_process_->kill();
+    }
     if (!pipeline_process_->waitForFinished(pipeline_kill_timeout_ms_)) {
       appendLog("pipeline still running after kill");
     }
@@ -12490,6 +12685,24 @@ void HStreamWindow::handlePipelineStarted() {
 }
 
 void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status) {
+  if (hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto stopped = hm::ui::SupervisedProcessStopped(*pipeline_process_);
+    if (!stopped.ok() || !*stopped) {
+      if (!pipeline_completion_proof_pending_) {
+        appendLog("Pipeline supervisor has no verified shutdown receipt; retaining game ownership and outputs.");
+        pipeline_completion_proof_pending_ = true;
+      }
+      const auto generation = pipeline_run_generation_;
+      QTimer::singleShot(
+          baseline_config_["workflow"]["poll_interval_ms"].as<int>(), this, [this, generation, exit_code, exit_status] {
+            if (generation == pipeline_run_generation_ && pipeline_process_->state() == QProcess::NotRunning)
+              handlePipelineFinished(exit_code, exit_status);
+          });
+      updateRunControls();
+      return;
+    }
+  }
+  pipeline_completion_proof_pending_ = false;
   hm::diagnostics::Breadcrumb(
       "pipeline",
       "finished code=" + std::to_string(exit_code) +
@@ -12641,10 +12854,11 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   }
   last_playtracker_runtime_snapshot_.clear();
   if (!active_run_game_id_.isEmpty()) {
-    const auto inventory =
-        hm::game_storage::RefreshManifest(gameDirectory(active_run_game_id_).toStdString(), "hstream-ui");
-    if (!inventory.ok())
-      appendLog(QString("could not update game inventory after playback: %1").arg(inventory.ToString().c_str()));
+    // Inventory publication changes the recovery root's directory timestamp.
+    // Wait for every rotation transaction before touching that root again.
+    pending_finished_game_inventory_directory_ = gameDirectory(active_run_game_id_);
+    if (!live_rotation_config_owner_ || !live_rotation_config_owner_->pending())
+      refreshFinishedGameInventory();
   }
   calibration_pending_ = false;
   calibration_waiting_for_playback_restart_ = false;
@@ -12703,6 +12917,27 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_stitched_archive_initial_size_ = -1;
   active_program_4k_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
+  const auto complete = [this,
+                         archive_completed,
+                         completed_successfully,
+                         archive_game_id,
+                         retain_archive_log_guard_for_recovery] {
+    finishPipelinePublication(
+        archive_completed, completed_successfully, archive_game_id, retain_archive_log_guard_for_recovery);
+  };
+  if (live_rotation_config_owner_ && live_rotation_config_owner_->pending()) {
+    pending_pipeline_completion_ = complete;
+    updateRunControls();
+    return;
+  }
+  complete();
+}
+
+void HStreamWindow::finishPipelinePublication(
+    bool archive_completed,
+    bool completed_successfully,
+    const QString& archive_game_id,
+    bool retain_archive_log_guard_for_recovery) {
   if (pending_archive_finalizations_.empty() && !managed_archive_manifest_.isEmpty()) {
     if (archive_completed) {
       // Telemetry-only runs have no archive queue. Require the same successful
@@ -12797,6 +13032,14 @@ void HStreamWindow::updatePreviewTabResolution(const QString& channel, int width
 }
 
 void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
+  if (error == QProcess::Crashed && hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto stopped = hm::ui::SupervisedProcessStopped(*pipeline_process_);
+    if (!stopped.ok() || !*stopped) {
+      appendLog("Pipeline supervisor exited without shutdown proof; completion remains fenced.");
+      updateRunControls();
+      return;
+    }
+  }
   hm::diagnostics::Breadcrumb("pipeline-error", std::to_string(static_cast<int>(error)));
   ++scheduled_rotation_control_generation_;
   scheduled_rotation_controls_.clear();
@@ -13073,6 +13316,13 @@ bool HStreamWindow::handleHighBitDepthOutput(const QString& line) {
 }
 
 bool HStreamWindow::resumeProcessPause(quint64 generation) {
+  if (pipeline_process_ && hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto resumed = hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGCONT);
+    if (!resumed.ok()) {
+      appendLog("could not resume the supervised pipeline; stopping playback");
+      return false;
+    }
+  }
   const QByteArray command = QString("@process-resume %1\n").arg(generation).toUtf8();
   if (!pipeline_process_ || pipeline_process_->write(command) != command.size()) {
     appendLog("could not restore pipeline stall monitoring; stopping playback");
@@ -13087,6 +13337,33 @@ bool HStreamWindow::resumeProcessPause(quint64 generation) {
     }
   });
   return true;
+}
+
+void HStreamWindow::completeProcessPause(quint64 generation) {
+  if (!generation || generation != pending_process_pause_generation_ || pipeline_stop_requested_ ||
+      !pipeline_process_ || pipeline_process_->state() != QProcess::Running)
+    return;
+  if (!pipeline_cooperative_pause_ && hm::ui::HasSupervisedProcess(*pipeline_process_)) {
+    const auto paused = hm::ui::SupervisedProcessPaused(*pipeline_process_);
+    if (!paused.ok()) {
+      appendLog("could not verify the supervised pipeline pause; stopping playback");
+      stopPipeline();
+      return;
+    }
+    if (!*paused) {
+      QTimer::singleShot(10, this, [this, generation] { completeProcessPause(generation); });
+      return;
+    }
+  }
+  pending_process_pause_generation_ = 0;
+  pipeline_paused_ = true;
+  pipeline_state_->setText("PAUSED");
+  preview_status_->setText("Pipeline paused");
+  appendLog("pipeline paused");
+  updateRunControls();
+  // Cooperative backends keep reading commands while paused. Native pauses
+  // retain mutations until the matching runtime Resume acknowledgement.
+  flushDeferredPreviewCommands();
 }
 
 bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
@@ -13110,12 +13387,16 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
       !pipeline_process_ || pipeline_process_->state() != QProcess::Running) {
     return true;
   }
-  pending_process_pause_generation_ = 0;
 #ifdef Q_OS_UNIX
   const qint64 pid = pipeline_process_->processId();
   const pid_t target = pipeline_uses_process_group_ ? -static_cast<pid_t>(pid) : static_cast<pid_t>(pid);
   pipeline_cooperative_pause_ = active_hockeymon_program_ && match.captured(3) == "cooperative";
-  if (pid <= 0 || (!pipeline_cooperative_pause_ && ::kill(target, SIGSTOP) != 0)) {
+  const bool supervised = hm::ui::HasSupervisedProcess(*pipeline_process_);
+  const bool paused = pid > 0 &&
+      (pipeline_cooperative_pause_ ||
+       (supervised ? hm::ui::SignalSupervisedProcess(*pipeline_process_, SIGSTOP).ok() : ::kill(target, SIGSTOP) == 0));
+  if (!paused) {
+    pending_process_pause_generation_ = 0;
     if (!resumeProcessPause(generation)) {
       stopPipeline();
       return true;
@@ -13124,14 +13405,7 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
     updateRunControls();
     return true;
   }
-  pipeline_paused_ = true;
-  pipeline_state_->setText("PAUSED");
-  preview_status_->setText("Pipeline paused");
-  appendLog("pipeline paused");
-  updateRunControls();
-  // A cooperative backend keeps reading commands while paused. Native pauses
-  // instead retain these requests until the matching Resume acknowledgement.
-  flushDeferredPreviewCommands();
+  completeProcessPause(generation);
 #endif
   return true;
 }
@@ -14411,7 +14685,7 @@ void HStreamWindow::finishArchiveJobLogAfterFinalizationFailure() {
 
 bool HStreamWindow::isArchiveFinalizing() const {
   return (archive_finalize_process_ && archive_finalize_process_->state() != QProcess::NotRunning) ||
-      !pending_archive_finalizations_.empty() || telemetry_publication_worker_;
+      !pending_archive_finalizations_.empty() || telemetry_publication_worker_ || pending_pipeline_completion_;
 }
 
 void HStreamWindow::updateArchiveOutputPathLabel() {
@@ -14923,6 +15197,17 @@ void HStreamWindow::startArchiveFinalization(
       ::_exit(127);
   });
 #endif
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      *archive_finalize_process_,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      true);
+  if (!supervised.ok()) {
+    failArchiveFinalization(QString::fromStdString(supervised.ToString()));
+    return;
+  }
   archive_finalize_process_->start();
   updateRunControls();
 }
@@ -15093,6 +15378,8 @@ void HStreamWindow::showManagedArchiveFinalizationFailure(
 }
 
 void HStreamWindow::startNextArchiveFinalization() {
+  if (pending_pipeline_completion_ || (live_rotation_config_owner_ && live_rotation_config_owner_->pending()))
+    return;
   if (!managed_archive_manifest_.isEmpty() && !telemetry_publication_worker_) {
     try {
       if (hm::publication::PipelineCompleted(managed_archive_manifest_.toStdString())) {
@@ -15205,11 +15492,38 @@ bool HStreamWindow::startArchiveDurabilitySync(const QString& path, ArchiveFinal
   archive_finalize_process_->setArguments({"-f", path});
 #endif
   archive_finalize_process_->setWorkingDirectory(QFileInfo(path).absolutePath());
+  const auto supervised = hm::ui::PrepareSupervisedProcess(
+      *archive_finalize_process_,
+      operation_game_,
+      operation_token_,
+      baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
+      baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
+      true);
+  if (!supervised.ok()) {
+    if (error)
+      *error = QString::fromStdString(supervised.ToString());
+    return false;
+  }
   archive_finalize_process_->start();
   return true;
 }
 
 void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatus exit_status) {
+  if (hm::ui::HasSupervisedProcess(*archive_finalize_process_)) {
+    const auto stopped = hm::ui::SupervisedProcessStopped(*archive_finalize_process_);
+    if (!stopped.ok() || !*stopped) {
+      if (!archive_completion_proof_pending_) {
+        appendLog("Archive helper has no verified shutdown receipt; retaining publication ownership.");
+        archive_completion_proof_pending_ = true;
+      }
+      QTimer::singleShot(
+          baseline_config_["workflow"]["poll_interval_ms"].as<int>(), this, [this, exit_code, exit_status] {
+            finishArchiveFinalization(exit_code, exit_status);
+          });
+      return;
+    }
+  }
+  archive_completion_proof_pending_ = false;
   archive_finalize_error_output_ += QString::fromLocal8Bit(archive_finalize_process_->readAllStandardError());
   if (archive_finalize_stage_ == ArchiveFinalizeStage::kSyncRecovery) {
     QString failure_detail = archive_finalize_pending_failure_detail_;
@@ -18503,6 +18817,34 @@ void HStreamWindow::updateStitchingStillPreview() {
 }
 
 void HStreamWindow::updateRunControls() {
+  releaseGameOperationIfStopped();
+  bool external_operation = false;
+  if (!editing_defaults_ && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
+    const auto game = gameDirectory(game_id_edit_->text().trimmed()).toStdString();
+    if (std::filesystem::is_directory(game)) {
+      const auto owner = hm::game_operation::Inspect(game);
+      external_operation =
+          !owner.ok() || (owner->has_value() && ((**owner).token != operation_token_ || operation_token_.empty()));
+      if (external_operation && pipeline_state_ &&
+          (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
+        pipeline_state_->setText(
+            owner.ok() && owner->has_value()
+                ? QString("BUSY: %1 %2")
+                      .arg(QString::fromStdString((**owner).kind), QString::fromStdString((**owner).id))
+                : "BUSY: checking game ownership");
+    }
+  }
+
+  if (!external_operation && pipeline_state_ && pipeline_state_->text().startsWith("BUSY:") &&
+      (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
+    pipeline_state_->setText("STOPPED");
+
+  if (pipeline_completion_proof_pending_ || archive_completion_proof_pending_) {
+    external_operation = true;
+    if (pipeline_state_)
+      pipeline_state_->setText("RECOVERY REQUIRED: supervisor shutdown proof is unavailable");
+  }
+
   if (backend_mode_)
     backend_mode_->setText(hockeyMonProgram() ? "Backend: hm-cli (Python)" : "Backend: hstream-cli");
   updateScoreboardControls();
@@ -18520,7 +18862,8 @@ void HStreamWindow::updateRunControls() {
     ++scheduled_player_drawing_generation_;
   }
   const bool waiting_for_start = deferred_play_requested_ || deferred_restart_requested_;
-  const bool finalizing = isArchiveFinalizing() || waiting_for_start;
+  const bool finalizing =
+      isArchiveFinalizing() || waiting_for_start || external_operation || (!operation_token_.empty() && !running);
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
   if (archive_recovery_was_cleared) {
@@ -18551,6 +18894,11 @@ void HStreamWindow::updateRunControls() {
     playback_progress_->setVisible(running || terminal_result);
     updatePlaybackProgressPresentation();
   }
+  updatePresetDirtyState();
+  if (save_preset_button_ && external_operation)
+    save_preset_button_->setEnabled(false);
+  if (auto* prepare = findChild<QPushButton*>("prepareRecordedInt8Button"))
+    prepare->setEnabled(!external_operation && !running && !finalizing);
   if (start_button_) {
     start_button_->setEnabled(
         !editing_defaults_ && !running && !finalizing && !archive_recovery_blocked &&
@@ -18570,7 +18918,7 @@ void HStreamWindow::updateRunControls() {
     run_mode_selector_->setEnabled(!running && !finalizing);
   }
   if (stitching_experiments_button_)
-    stitching_experiments_button_->setEnabled(!editing_defaults_ && !running && !finalizing);
+    stitching_experiments_button_->setEnabled(!editing_defaults_ && !running && !isArchiveFinalizing());
 #ifndef HSTREAM_USE_HIP
   if (auto* camera_experiments = findChild<QPushButton*>("cameraExperimentsButton"))
     camera_experiments->setEnabled(!editing_defaults_);
@@ -18955,6 +19303,9 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
   if (!ensureGameDirectory()) {
     return false;
   }
+  // State capture inspects ownership while our mutation lock is held. Refresh
+  // again after every save lock is released so a durability retry stays enabled.
+  const auto refresh_save_state = qScopeGuard([this] { updatePresetDirtyState(); });
   const fs::path config_path = fs::path(gameDirectory(game_id_edit_->text()).toStdString()) / "_hockeymon/config.yaml";
   const int selected_max_output_width = stitchingMaxOutputWidth();
   std::optional<hm::ui_internal::LockedStitchingCanvasConstraintCheck> width_constraint_check;
@@ -19678,7 +20029,21 @@ void HStreamWindow::updatePresetDirtyState() {
     }
   }
   const bool has_game = !game_id.isEmpty();
-  const bool can_save = dirty && (has_game || editing_defaults_);
+  bool blocked = pipeline_completion_proof_pending_ || archive_completion_proof_pending_;
+  if (!editing_defaults_ && has_game) {
+    const auto game = gameDirectory(game_id).toStdString();
+    if (std::filesystem::is_directory(game)) {
+      const auto owner = hm::game_operation::Inspect(game);
+      blocked |= !owner.ok() ||
+          (owner->has_value() && ((**owner).token != operation_token_ || operation_token_.empty()));
+    }
+    if (!operation_token_.empty() && !operation_starting_ &&
+        (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning) && !isArchiveFinalizing()) {
+      const auto stopped = hm::game_operation::LocalChildrenStopped(operation_token_);
+      blocked |= !stopped.ok() || !*stopped;
+    }
+  }
+  const bool can_save = dirty && (has_game || editing_defaults_) && !blocked;
   if (save_preset_button_->isEnabled() != can_save)
     save_preset_button_->setEnabled(can_save);
   const QString description = editing_defaults_
@@ -20014,7 +20379,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     if (baseline_only)
       return std::optional<YAML::Node>{};
     if (!editing_defaults_)
-      return hm::stitching::load_game_config_file(config_path);
+      return load_desktop_game_config(config_path);
     auto defaults = hm::user_config::load_defaults();
     if (!defaults.ok())
       return defaults.status();
@@ -21696,11 +22061,17 @@ bool HStreamWindow::addVideoFile(const QString& path) {
         QString("could not lock video import transaction: %1").arg(config_transaction.status().ToString().c_str()));
     return false;
   }
-  const auto inventory = qScopeGuard([&] {
+  // Inventory publication changes the recovery root too; finish it before a
+  // waiting config writer can synchronize that root's protocol marker.
+  const auto finish_transaction = [&] {
+    if (!*config_transaction)
+      return;
     const auto status = hm::game_storage::RefreshManifest(game_dir_path, "hstream-ui");
     if (!status.ok())
       appendLog(QString("could not update game inventory after video import: %1").arg(status.ToString().c_str()));
-  });
+    config_transaction->reset();
+  };
+  const auto inventory = qScopeGuard(finish_transaction);
 
   QString imported_relative_path;
   bool imported_path_created = false;
@@ -21722,7 +22093,7 @@ bool HStreamWindow::addVideoFile(const QString& path) {
     if (imported_path_created) {
       rollbackImportedVideoPath(imported_relative_path);
     }
-    config_transaction->reset();
+    finish_transaction();
     refreshVideoSets();
     return false;
   }
@@ -21733,7 +22104,7 @@ bool HStreamWindow::addVideoFile(const QString& path) {
       if (imported_path_created) {
         rollbackImportedVideoPath(imported_relative_path);
       }
-      config_transaction->reset();
+      finish_transaction();
       refreshVideoSets();
       return false;
     }
@@ -21741,7 +22112,7 @@ bool HStreamWindow::addVideoFile(const QString& path) {
       appendLog("video set added, but one or more unreferenced copied imports could not be cleaned");
     }
   }
-  config_transaction->reset();
+  finish_transaction();
   refreshVideoSets();
   applyCameraConfigurationDefaults(false);
   appendLog(QString("video set added role=%1 path=%2").arg(role_label(role), imported_relative_path));
@@ -21798,12 +22169,17 @@ void HStreamWindow::removeSelectedVideoSet() {
     video_set_list_->insertItem(row, item);
     return;
   }
-  const auto inventory = qScopeGuard([&] {
+  // Keep inventory publication inside the same config transaction as rollback.
+  const auto finish_transaction = [&] {
+    if (!*config_transaction)
+      return;
     const auto status =
         hm::game_storage::RefreshManifest(gameDirectory(game_id_edit_->text()).toStdString(), "hstream-ui");
     if (!status.ok())
       appendLog(QString("could not update game inventory after video removal: %1").arg(status.ToString().c_str()));
-  });
+    config_transaction->reset();
+  };
+  const auto inventory = qScopeGuard(finish_transaction);
 
   QByteArray removed_config;
   if (!removePrivateConfigForRole(
@@ -21821,7 +22197,7 @@ void HStreamWindow::removeSelectedVideoSet() {
       appendLog(QString("failed to restore private config after remove failure %1").arg(config_file));
     }
     video_set_list_->insertItem(row, item);
-    config_transaction->reset();
+    finish_transaction();
     refreshVideoSets();
     return;
   }
@@ -21832,7 +22208,7 @@ void HStreamWindow::removeSelectedVideoSet() {
 
   appendLog(QString("video set removed role=%1 path=%2").arg(role_label(role), relative_path));
   delete item;
-  config_transaction->reset();
+  finish_transaction();
   refreshVideoSets();
   applyCameraConfigurationDefaults(false);
 }
@@ -21841,8 +22217,8 @@ void HStreamWindow::refreshVideoSets() {
   if (!video_set_list_ || !game_id_edit_) {
     return;
   }
-  video_set_list_->clear();
   if (editing_defaults_) {
+    video_set_list_->clear();
     const auto path = hm::user_config::defaults_path();
     if (game_path_label_)
       game_path_label_->setText(path.ok() ? QString::fromStdString(path->string()) : QString());
@@ -21858,8 +22234,30 @@ void HStreamWindow::refreshVideoSets() {
     video_sets_path_label_->setText(dir);
   }
   if (game_id_edit_->text().isEmpty() || !QDir(dir).exists()) {
+    video_set_list_->clear();
     return;
   }
+
+  const fs::path config_path = fs::path(dir.toStdString()) / "_hockeymon/config.yaml";
+  auto loaded_config = load_desktop_game_config(config_path);
+  if (!loaded_config.ok() && absl::IsUnavailable(loaded_config.status())) {
+    // A pending writer does not change the roles already displayed for this
+    // game. Retry one snapshot at a time instead of rebuilding from filenames.
+    if (video_set_list_->property("gameDirectory").toString() != dir)
+      video_set_list_->clear();
+    auto* retry = findChild<QTimer*>("videoSetRefreshRetry", Qt::FindDirectChildrenOnly);
+    if (!retry) {
+      retry = new QTimer(this);
+      retry->setObjectName("videoSetRefreshRetry");
+      retry->setSingleShot(true);
+      connect(retry, &QTimer::timeout, this, [this] { refreshVideoSets(); });
+    }
+    if (!retry->isActive())
+      retry->start(baseline_config_["workflow"]["poll_interval_ms"].as<int>());
+    return;
+  }
+  video_set_list_->clear();
+  video_set_list_->setProperty("gameDirectory", dir);
 
   std::set<QString> seen;
   std::set<QString> configured_paths;
@@ -21904,8 +22302,6 @@ void HStreamWindow::refreshVideoSets() {
     }
   }
 
-  const fs::path config_path = fs::path(dir.toStdString()) / "_hockeymon/config.yaml";
-  auto loaded_config = hm::stitching::load_game_config_file(config_path);
   if (!loaded_config.ok()) {
     appendLog(QString("could not list configured videos: %1").arg(loaded_config.status().ToString().c_str()));
   } else if (loaded_config->has_value()) {
@@ -23489,6 +23885,13 @@ void HStreamWindow::pollLiveRotationConfigOwner() {
   live_rotation_config_owner_->Poll();
   if (live_rotation_config_owner_->pending())
     return;
+  refreshFinishedGameInventory();
+  if (pending_pipeline_completion_) {
+    auto complete = std::exchange(pending_pipeline_completion_, {});
+    complete();
+  }
+  if (live_rotation_config_owner_->pending())
+    return;
   live_rotation_authorization_pending_ = false;
   updateRunControls();
   flushScheduledRuntimeControls();
@@ -23500,6 +23903,15 @@ void HStreamWindow::pollLiveRotationConfigOwner() {
   } else {
     maybeStartDeferredRestart();
   }
+}
+
+void HStreamWindow::refreshFinishedGameInventory() {
+  if (pending_finished_game_inventory_directory_.isEmpty())
+    return;
+  const auto directory = std::exchange(pending_finished_game_inventory_directory_, QString());
+  const auto inventory = hm::game_storage::RefreshManifest(directory.toStdString(), "hstream-ui");
+  if (!inventory.ok())
+    appendLog(QString("could not update game inventory after playback: %1").arg(inventory.ToString().c_str()));
 }
 
 void HStreamWindow::rollbackLiveRotationAuthorization(

@@ -33,6 +33,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 
 HSTREAM_CLI_DEPS = [
     "//src/libs/common:game_storage",
+    "//src/libs/common:game_operation_owner",
     "//src/apps/apps-common:preview_capture_receipt",
     "//src/libs/tracking:camera_seek_state",
     "//src/libs/common:paced_playback",
@@ -211,7 +212,7 @@ cc_binary(
             "//src/libs/program:scoreboard_config", "//src/libs/program:runtime_control",
             "//src/libs/program:audio_config", "//src/libs/media:audio_playlist",
             "//src/libs/program:va_program_sink", "//src/libs/gpu/vaapi:va_stereo_video",
-            "//src/libs/common:baseline_config", "//src/libs/common:config_path", "//src/libs/common:game_storage",
+            "//src/libs/common:baseline_config", "//src/libs/common:config_path", "//src/libs/common:game_storage", "//src/libs/common:game_operation_owner",
             "//src/libs/common:process_diagnostics", "//src/libs/common:utils_base",
             "//src/libs/stitching:stitching_algorithms",
         ],

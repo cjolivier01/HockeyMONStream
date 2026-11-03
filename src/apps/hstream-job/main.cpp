@@ -324,7 +324,8 @@ int main(int argc, char** argv) {
       telemetry_only = validate_interactive_publication(job_args, capture_telemetry);
     }
     args.insert(args.end(), job_args.begin(), job_args.end());
-    if (std::find(job_args.begin(), job_args.end(), "--stitching-calibration-only") != job_args.end()) {
+    if (std::find(job_args.begin(), job_args.end(), "--stitching-calibration-only") != job_args.end() ||
+        std::find(job_args.begin(), job_args.end(), "--stitching-materialize-selected-frames") != job_args.end()) {
       args.push_back("--options=hstream_ui.job.capture_telemetry=false");
     } else if (job && job.IsMap() && job["capture_telemetry"].IsDefined()) {
       args.push_back(
