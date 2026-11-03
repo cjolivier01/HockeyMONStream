@@ -35,6 +35,7 @@
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QScopedValueRollback>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
@@ -46,7 +47,9 @@
 #include <QtGui/QMouseEvent>
 #include <QtGui/QPainter>
 #include <QtGui/QResizeEvent>
+#include <QtGui/QShortcut>
 #include <QtGui/QTextCursor>
+#include <QtGui/QTextDocument>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -63,6 +66,8 @@
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QTabBar>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QToolButton>
@@ -641,6 +646,9 @@ struct StitchingExperimentDialog::Impl {
   QPushButton* stop_preview{nullptr};
   PreviewFocusButton* expand_preview{nullptr};
   QSplitter* splitter{nullptr};
+  QTabWidget* view_tabs{nullptr};
+  bool select_attached_workflow{true};
+  bool restoring_candidates{false};
   std::vector<QWidget*> preview_focus_siblings;
   QList<int> normal_splitter_sizes;
   bool preview_focused{false};
@@ -780,6 +788,11 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void workflow_snapshot(const QJsonObject& snapshot) {
+    if (select_attached_workflow && workflow && !workflow->workflowId().isEmpty()) {
+      select_attached_workflow = false;
+      if (workflow->active())
+        view_tabs->setCurrentIndex(1);
+    }
     if (!store || batch_active || calibration_process || preview_process || preparation_worker || promotion_worker)
       return;
     batch_started = true;
@@ -847,6 +860,8 @@ struct StitchingExperimentDialog::Impl {
     if (exporting)
       workflow->exportBatch(*store, *catalog);
     else {
+      select_attached_workflow = false;
+      view_tabs->setCurrentIndex(1);
       const int row = table->currentRow();
       workflow->selectCandidate(
           row >= 0 && row < static_cast<int>(candidates.size()) ? candidate_key(candidates[row]) : QString());
@@ -1046,6 +1061,9 @@ struct StitchingExperimentDialog::Impl {
     table->setEnabled((!active_batch || remote) && !preview_owned && !promoting && !stopping && !closing);
     if (workflow)
       workflow->setEditingEnabled(editing_batch, queued_count > 0);
+    const bool managed_view = workflow && !workflow->workflowId().isEmpty();
+    log->setVisible(!managed_view || !log->document()->isEmpty());
+    log->setMaximumHeight(managed_view ? 130 : QWIDGETSIZE_MAX);
     preview->setEnabled(
         selected && !cleanup_unconfirmed && !candidates[row].main_calibration && !active_batch && !preview_owned &&
         !promoting && !stopping && !closing);
@@ -1412,6 +1430,7 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void restore_persistent_store(const StitchingExperimentSettings& displayed_settings) {
+    const QScopedValueRollback<bool> restoring(restoring_candidates, true);
     const auto owned = owned_workflow();
     if (!owned.ok()) {
       store_error = QString::fromStdString(owned.status().ToString());
@@ -2900,6 +2919,8 @@ struct StitchingExperimentDialog::Impl {
     batch_started = true;
     session->setAutoRemove(false);
     batch_active = true;
+    select_attached_workflow = false;
+    view_tabs->setCurrentIndex(1);
     running_candidate = -1;
     batch_only_row = only_row;
     cancelling = false;
@@ -2960,6 +2981,7 @@ struct StitchingExperimentDialog::Impl {
     if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidates[row].complete ||
         candidates[row].main_calibration || preparation_worker)
       return;
+    view_tabs->setCurrentIndex(0);
     if (!claim_local_operation())
       return;
     if (!validated) {
@@ -4180,9 +4202,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.store_error = QString::fromStdString(workflow_game.status().ToString());
   } else if (workflow_game->has_value())
     hm::experiment::merge_settings(workflow_settings, **workflow_game);
-  s.workflow =
-      new StitchingWorkflow(game_directory, working_directory, environment, workflow_settings, candidate_panel);
-  candidate_layout->addWidget(s.workflow, 3);
+  auto* workflow_panel = new QWidget();
+  workflow_panel->setObjectName("stitchExperimentWorkflowPanel");
+  auto* workflow_layout = new QVBoxLayout(workflow_panel);
+  workflow_layout->setContentsMargins(0, 0, 0, 0);
+  s.workflow = new StitchingWorkflow(game_directory, working_directory, environment, workflow_settings, workflow_panel);
+  workflow_layout->addWidget(s.workflow);
   s.table = new QTableWidget(0, 10);
   s.table->setAlternatingRowColors(true);
   s.table->setStyleSheet("QTableWidget { background: white; alternate-background-color: #f0f0f0; color: #161616; }");
@@ -4336,7 +4361,21 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   preview_actions->addWidget(s.preview);
   preview_actions->addWidget(s.stop_preview);
   preview_layout->addLayout(preview_actions);
-  splitter->addWidget(preview_panel);
+  s.view_tabs = new QTabWidget();
+  s.view_tabs->setObjectName("stitchExperimentViewTabs");
+  s.view_tabs->addTab(preview_panel, tab_icon("Stitched preview"), "Stitched preview");
+  s.view_tabs->addTab(workflow_panel, tab_icon("Workflow"), "Workflow");
+  splitter->addWidget(s.view_tabs);
+  connect(s.view_tabs, &QTabWidget::currentChanged, this, [&s](int index) {
+    // A deliberate tab choice must survive later workflow polling. Keep both
+    // live surfaces and their state; changing tabs never controls playback.
+    s.select_attached_workflow = false;
+    if (index == 1)
+      s.set_preview_focus(false);
+    else
+      s.workflow->restoreMonitor();
+  });
+  connect(s.view_tabs->tabBar(), &QTabBar::tabBarClicked, this, [&s](int) { s.select_attached_workflow = false; });
   splitter->setStretchFactor(0, 2);
   splitter->setStretchFactor(1, 3);
   splitter->setSizes({520, 760});
@@ -4359,8 +4398,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   root->addWidget(s.progress);
   root->addWidget(s.status);
   root->addWidget(s.cache_location);
-  root->addWidget(s.log);
-  s.preview_focus_siblings = {intro, candidate_panel, s.log};
+  workflow_layout->addWidget(s.log, 1);
+  connect(s.log, &QPlainTextEdit::textChanged, this, [&s] {
+    const bool managed_view = s.workflow && !s.workflow->workflowId().isEmpty();
+    s.log->setVisible(!managed_view || !s.log->document()->isEmpty());
+  });
+  s.preview_focus_siblings = {intro, candidate_panel};
   auto* bottom = new QHBoxLayout();
   s.apply = new QPushButton(action_icon(ActionIcon::Apply), "Use selected in main Program");
   s.apply->setObjectName("applyStitchExperimentButton");
@@ -4372,7 +4415,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   close->setObjectName("closeStitchExperimentButton");
   bottom->addWidget(s.apply);
   bottom->addWidget(s.inspect_frames);
-  bottom->addWidget(s.view_runner_log);
+  workflow_layout->addWidget(s.view_runner_log);
   bottom->addStretch(1);
   bottom->addWidget(close);
   root->addLayout(bottom);
@@ -4390,13 +4433,29 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.show_status("Cancelling batch…");
     s.stop_calibration_process();
   });
-  connect(s.table, &QTableWidget::itemSelectionChanged, this, [&s]() {
+  const auto select_ready_preview = [&s]() {
+    const int row = s.table->currentRow();
+    if (row >= 0 && row < static_cast<int>(s.candidates.size()) && s.candidates[row].complete &&
+        !s.candidates[row].selection_reuse_blocked) {
+      if (!s.restoring_candidates)
+        s.select_attached_workflow = false;
+      s.view_tabs->setCurrentIndex(0);
+    }
+  };
+  connect(s.table, &QTableWidget::itemSelectionChanged, this, [&s, select_ready_preview]() {
     const int row = s.table->currentRow();
     if (s.workflow)
       s.workflow->selectCandidate(
           row >= 0 && row < static_cast<int>(s.candidates.size()) ? s.candidate_key(s.candidates[row]) : QString());
     s.update_controls();
+    select_ready_preview();
   });
+  // Clicking the already-selected ready row is also an explicit preview choice.
+  connect(s.table, &QTableWidget::cellClicked, this, [select_ready_preview](int, int) { select_ready_preview(); });
+  connect(s.table, &QTableWidget::cellActivated, this, [select_ready_preview](int, int) { select_ready_preview(); });
+  auto* select_ready = new QShortcut(QKeySequence(Qt::Key_Space), s.table);
+  select_ready->setContext(Qt::WidgetShortcut);
+  connect(select_ready, &QShortcut::activated, this, select_ready_preview);
   connect(s.table, &QTableWidget::cellDoubleClicked, this, [&s](int, int) { s.start_preview(); });
   connect(s.preview, &QPushButton::clicked, this, [&s]() { s.start_preview(); });
   connect(s.stop_preview, &QPushButton::clicked, this, [&s]() {

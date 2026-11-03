@@ -41,6 +41,7 @@ class StitchingWorkflow : public QWidget {
   void attach(const QString& workflow_id);
   void selectCandidate(const QString& catalog_key);
   void showLog();
+  void restoreMonitor();
   std::function<void()> changed;
   std::function<void(const QJsonObject&)> snapshotChanged;
   std::function<void(const QString&, bool)> message;

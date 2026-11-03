@@ -12,6 +12,7 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtCore/QUuid>
+#include <QtGui/QMouseEvent>
 #include <QtGui/QRegion>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
@@ -26,6 +27,8 @@
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QTabBar>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
 #include <QtWidgets/QVBoxLayout>
 
@@ -614,6 +617,18 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   delete pane;
 }
 void dialogOwnership(const QString& root) {
+  const auto status_calls = [&] {
+    QFile calls(root + "/calls");
+    require(calls.open(QIODevice::ReadOnly), "Cannot inspect workflow polling");
+    return calls.readAll().count("status\n");
+  };
+  const auto retain_preview_tab = [&](StitchingExperimentDialog& current) {
+    auto* tabs = widget<QTabWidget>(current, "stitchExperimentViewTabs");
+    tabs->setCurrentIndex(0);
+    const int initial_calls = status_calls();
+    require(wait([&] { return status_calls() >= initial_calls + 3; }), "Workflow did not continue polling");
+    require(tabs->currentIndex() == 0, "Workflow polling repeatedly stole the selected preview tab");
+  };
   const auto game = root + "/dialog-game";
   QDir().mkpath(game + "/_hockeymon");
   write(
@@ -631,6 +646,7 @@ void dialogOwnership(const QString& root) {
   StitchingExperimentDialog dialog(
       game, runner, root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
+  auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
   auto* rows = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
   auto* add = widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton");
   auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
@@ -650,6 +666,7 @@ void dialogOwnership(const QString& root) {
   add->click();
   require(wait([&] { return start->isEnabled(); }), "Preparing candidate did not complete");
   start->click();
+  require(tabs->currentIndex() == 1, "Local batch start did not open its Workflow tab");
   require(
       wait([&] {
         auto value = hm::game_operation::Inspect(game.toStdString());
@@ -677,7 +694,9 @@ void dialogOwnership(const QString& root) {
   auto* profile = widget<QComboBox>(dialog, "stitchWorkflowProfile");
   require(wait([&] { return profile->count() == 2; }), "Dialog did not load execution profiles");
   profile->setCurrentIndex(1);
+  tabs->setCurrentIndex(0);
   start->click();
+  require(tabs->currentIndex() == 1, "Distributed batch start did not open its Workflow tab");
   require(
       wait([&] { return widget<QComboBox>(dialog, "stitchWorkflowStage")->count() > 4 && cancel->isEnabled(); }),
       "Dialog did not submit a dependency graph");
@@ -687,7 +706,51 @@ void dialogOwnership(const QString& root) {
   require(
       rows->isEnabled() && widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")->isEnabled(),
       "Running workflow blocked stage inspection");
+  auto* stage_control = widget<QComboBox>(dialog, "stitchWorkflowStage");
+  stage_control->setCurrentIndex(0);
+  const auto selected_stage = stage_control->currentData();
+  auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
+  const WId target = video->winId();
+  retain_preview_tab(dialog);
+  require(
+      stage_control->currentData() == selected_stage && video->winId() == target,
+      "Polling another tab lost workflow stage selection or replaced the preview target");
+  for (const int index : {0, 1}) {
+    tabs->setCurrentIndex(index);
+    for (const auto modifiers : {Qt::NoModifier, Qt::ControlModifier}) {
+      QWheelEvent wheel(
+          QPointF(4, 4),
+          QPointF(tabs->tabBar()->mapToGlobal(QPoint(4, 4))),
+          QPoint(0, -20),
+          QPoint(0, -120),
+          Qt::NoButton,
+          modifiers,
+          Qt::NoScrollPhase,
+          false);
+      QApplication::sendEvent(tabs->tabBar(), &wheel);
+      require(tabs->currentIndex() == index, "Wheel input changed the experiment view tab");
+    }
+  }
   auto* dialog_graph = widget<QScrollArea>(dialog, "stitchWorkflowGraphScroll");
+  widget<QPushButton>(dialog, "expandStitchWorkflowButton")->click();
+  require(wait([&] { return dialog_graph->window() != &dialog; }), "Workflow did not open its expanded monitor");
+  tabs->setCurrentIndex(0);
+  require(
+      wait([&] {
+        return !dialog.findChild<QDialog*>("stitchWorkflowExpandedWindow") && dialog_graph->window() == &dialog;
+      }),
+      "Changing to preview left a detached workflow monitor open");
+  tabs->setCurrentIndex(1);
+  require(stage_control->currentData() == selected_stage, "Restoring Workflow lost the inspected stage");
+  auto* raw_log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
+  require(raw_log->toPlainText().isEmpty() && raw_log->isHidden(), "Empty local output must not crowd managed stages");
+  require(
+      wait([&] { return dialog_graph->viewport()->height() >= 180; }),
+      "Managed Workflow did not use the empty process log's space for its graph");
+  raw_log->appendPlainText("Retained local runner output");
+  require(wait([&] { return raw_log->isVisible(); }), "Managed Workflow hid nonempty local runner output");
+  raw_log->clear();
+  require(wait([&] { return raw_log->isHidden(); }), "Clearing managed local output did not restore graph space");
   const QSize initial_size = dialog.size();
   const int initial_graph_height = dialog_graph->viewport()->height();
   dialog.resize(initial_size.width(), initial_size.height() + 400);
@@ -760,6 +823,10 @@ void dialogOwnership(const QString& root) {
         }),
         "Durable owner did not restore monitoring before catalog binding or with unreadable retained data");
     require(
+        widget<QTabWidget>(reopened, "stitchExperimentViewTabs")->currentIndex() == 1,
+        "Attaching an active workflow must open its Workflow tab");
+    retain_preview_tab(reopened);
+    require(
         !widget<QPushButton>(reopened, "addStitchExperimentsToBatchButton")->isEnabled() &&
             !widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->isEnabled(),
         "Unbound workflow monitoring permitted a conflicting batch");
@@ -783,12 +850,28 @@ void dialogOwnership(const QString& root) {
     StitchingExperimentDialog reopened(
         game, runner, root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
     reopened.show();
+    auto* reopened_tabs = widget<QTabWidget>(reopened, "stitchExperimentViewTabs");
+    const QPoint preview_tab = reopened_tabs->tabBar()->tabRect(0).center();
+    for (const auto event : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+      QMouseEvent click(
+          event,
+          preview_tab,
+          reopened_tabs->tabBar()->mapToGlobal(preview_tab),
+          Qt::LeftButton,
+          event == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton,
+          Qt::NoModifier);
+      QApplication::sendEvent(reopened_tabs->tabBar(), &click);
+    }
     require(
         wait([&] {
           return widget<QComboBox>(reopened, "stitchWorkflowStage")->count() > 4 &&
               widget<QPushButton>(reopened, "cancelStitchExperimentsButton")->isEnabled();
         }),
         "Workflow-owned game did not reopen and attach to running stages");
+    require(
+        reopened_tabs->currentIndex() == 0,
+        "First workflow status overrode the user's Preview choice during attachment");
+    retain_preview_tab(reopened);
     const auto owner = hm::game_operation::Inspect(store->game_directory);
     require(
         owner.ok() && owner->has_value() && (**owner).id == id && (**owner).revision == remote.revision,

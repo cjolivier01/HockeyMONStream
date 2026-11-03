@@ -113,6 +113,8 @@ inline constexpr auto kTabIconSpecs = std::array{
     TabIconSpec{"Right camera", ActionIcon::Camera}, TabIconSpec{"Preview", ActionIcon::Play},
     TabIconSpec{"Legacy", ActionIcon::Document},     TabIconSpec{"Optics", ActionIcon::Camera},
     TabIconSpec{"Panorama", ActionIcon::Stitching},  TabIconSpec{"Input", ActionIcon::Previous},
+    TabIconSpec{"Stitched preview", ActionIcon::Stitching},
+    TabIconSpec{"Workflow", ActionIcon::Network},
 };
 
 QIcon tab_icon(const QString& label);

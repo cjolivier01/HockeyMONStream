@@ -21,6 +21,18 @@ In the workflow graph, running nodes have a blue fill, completed/reused nodes
 green, and failed/recovery nodes red. Selection has a separate outline and keeps
 the state color; text labels remain visible.
 
+The right side has **Stitched preview** and **Workflow** tabs. Preview holds the
+video, passage and blend settings, Play and Stop. Workflow holds execution
+profiles, parallelism, the dependency graph, attempt details and runner output.
+The candidate matrix and queue remain visible beside either tab. Starting a
+batch selects Workflow; selecting a ready candidate selects Stitched preview,
+including clicking a row that is already selected. Reopening an active workflow
+initially selects Workflow. Polling preserves subsequent tab choices.
+
+Switching tabs preserves playback, inputs and stage/attempt selection. It
+restores an expanded preview or workflow to the tab layout without stopping
+work. A local sequential batch reports progress and output in Workflow too.
+
 ### What Save Preset stores
 
 For a desktop game, **Save Preset** writes `_hockeymon/config.yaml`: the displayed

@@ -51,7 +51,9 @@
 #include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QToolButton>
 
 #if QT_CONFIG(xcb)
@@ -271,6 +273,26 @@ void check_external_preview(StitchingExperimentDialog& dialog) {
 }
 
 void exercise_layout(StitchingExperimentDialog& dialog) {
+  auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
+  auto* preview_panel = widget<QWidget>(dialog, "stitchExperimentPreviewPanel");
+  auto* workflow_panel = widget<QWidget>(dialog, "stitchExperimentWorkflowPanel");
+  require(
+      tabs->count() == 2 && tabs->widget(0) == preview_panel && tabs->widget(1) == workflow_panel &&
+          tabs->tabText(0) == "Stitched preview" && tabs->tabText(1) == "Workflow" && tabs->currentIndex() == 0,
+      "Experiments must open with distinct Stitched preview and Workflow tabs");
+  for (const auto& [index, icon] : {std::pair{0, ActionIcon::Stitching}, std::pair{1, ActionIcon::Network}})
+    require(
+        !tabs->tabIcon(index).isNull() &&
+            tabs->tabIcon(index).pixmap(18, 18).toImage() == action_icon(icon).pixmap(18, 18).toImage(),
+        "Experiment tab must retain its shared semantic icon");
+  require(
+      workflow_panel->isAncestorOf(widget<QComboBox>(dialog, "stitchWorkflowProfile")) &&
+          workflow_panel->isAncestorOf(widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")) &&
+          workflow_panel->isAncestorOf(widget<QPlainTextEdit>(dialog, "stitchExperimentLog")) &&
+          !widget<QPlainTextEdit>(dialog, "stitchExperimentLog")->isVisible(),
+      "Workflow controls and raw runner output must belong to the Workflow tab");
+  for (const char* name : {"stitchExperimentStatus", "stitchExperimentCacheLocation"})
+    require(!tabs->isAncestorOf(widget<QWidget>(dialog, name)), "Shared status must remain outside both tabs");
   require(dialog.windowType() == Qt::Window, "Owned experiments must use a maximizable native window type");
   require(
       dialog.parentWidget() && dialog.windowModality() == Qt::WindowModal,
@@ -331,6 +353,49 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   QCoreApplication::processEvents();
   require(candidate_panel->isVisible() && video->winId() == original_target, "Button must restore the same target");
   check_idle_preview(dialog);
+  auto* control_points = widget<QLineEdit>(dialog, "stitchExperimentControlPoints");
+  auto* start_time = widget<QTimeEdit>(dialog, "stitchExperimentPreviewStart");
+  auto* duration = widget<QSpinBox>(dialog, "stitchExperimentPreviewDuration");
+  const QString original_control_points = control_points->text();
+  const QTime original_start_time = start_time->time();
+  const int original_duration = duration->value();
+  control_points->setText("111,222");
+  start_time->setTime(QTime(0, 0, 7, 250));
+  duration->setValue(17);
+  expand->click();
+  tabs->setCurrentIndex(1);
+  QCoreApplication::processEvents();
+  require(
+      candidate_panel->isVisible() && workflow_panel->isVisible() && !preview_panel->isVisible() &&
+          widget<QPlainTextEdit>(dialog, "stitchExperimentLog")->isVisible() &&
+          expand->accessibleName() == "Maximize preview",
+      "Opening Workflow must restore preview focus and show its diagnostics");
+  require(
+      candidate_panel->isAncestorOf(control_points) &&
+          candidate_panel->isAncestorOf(widget<QTableWidget>(dialog, "stitchExperimentCandidates")) &&
+          widget<QLabel>(dialog, "stitchExperimentStatus")->isVisible(),
+      "Candidate inputs, queue and status must remain available beside Workflow");
+  auto* local_log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
+  require(
+      local_log->height() > workflow_panel->height() / 2 &&
+          widget<QComboBox>(dialog, "stitchWorkflowProfile")->mapTo(workflow_panel, QPoint()).y() < 30 &&
+          widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")->isVisible(),
+      "Current runner output must use available Workflow space below its execution controls");
+  if (!screenshot_dir.isEmpty())
+    require(dialog.grab().save(screenshot_dir + "/stitch-layout-workflow.png"), "Cannot capture Workflow tab");
+  tabs->setCurrentIndex(0);
+  QCoreApplication::processEvents();
+  require(
+      candidate_panel->isVisible() && splitter->sizes() == normal_splitter_sizes && video->winId() == original_target &&
+          control_points->text() == "111,222" && start_time->time() == QTime(0, 0, 7, 250) && duration->value() == 17,
+      "Changing experiment tabs must preserve drafts, split geometry and the native video target");
+  require(
+      !widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton")->isEnabled(),
+      "Changing experiment tabs must not start playback");
+  check_preview_layout(dialog);
+  control_points->setText(original_control_points);
+  start_time->setTime(original_start_time);
+  duration->setValue(original_duration);
   const QRect normal_geometry = dialog.geometry();
   auto* maximize = widget<QToolButton>(dialog, "maximizeStitchExperimentWindowButton");
   maximize->click();
@@ -2648,14 +2713,74 @@ void exercise_completed_workflow_preview(const QString& game, const QString& roo
         "Cannot release completed workflow fixture");
   }
   hm::game_operation::ForgetAuthorization(store->game_directory, owner.token);
+  const QString workflow_state = working + "/state.json";
+  const QString status_requested = working + "/status-requested";
+  const QString status_release = working + "/status-release";
+  environment.insert("HSTREAM_TEST_WORKFLOW_STATE", workflow_state);
+  environment.insert("HSTREAM_TEST_STATUS_REQUESTED", status_requested);
+  environment.insert("HSTREAM_TEST_STATUS_RELEASE", status_release);
   write(
       working + "/scripts/hstream-workflow",
       "#!/bin/sh\ncase \"$1\" in\nprofiles) echo '{\"profiles\":[]}' ;;\n"
-      "status) echo '{\"workflow_id\":\"preview-workflow\",\"state\":\"succeeded\",\"owner_released\":true,\"epoch\":0,\"nodes\":[]}' ;;\nesac\n");
+      "status) touch \"$HSTREAM_TEST_STATUS_REQUESTED\"\n"
+      "while [ ! -f \"$HSTREAM_TEST_STATUS_RELEASE\" ]; do sleep 0.01; done\n"
+      "cat \"$HSTREAM_TEST_WORKFLOW_STATE\" ;;\nesac\n");
   require(
       QFile::setPermissions(
           working + "/scripts/hstream-workflow", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
       "Cannot prepare completed workflow observer");
+  write(workflow_state, R"({"workflow_id":"preview-workflow","state":"running","epoch":0,"nodes":[]})");
+  for (const QString gesture : {"untouched", "click", "keyboard"}) {
+    QFile::remove(status_requested);
+    QFile::remove(status_release);
+    bool received_snapshot = false;
+    StitchingExperimentDialog dialog(
+        game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
+    auto* rows = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    auto* workflow = dynamic_cast<StitchingWorkflow*>(widget<QWidget>(dialog, "stitchingWorkflowPane"));
+    require(workflow != nullptr, "Missing typed workflow monitor");
+    const auto update_snapshot = workflow->snapshotChanged;
+    workflow->snapshotChanged = [&, update_snapshot](const QJsonObject& snapshot) {
+      update_snapshot(snapshot);
+      received_snapshot = true;
+    };
+    require(
+        wait_until([&] { return QFile::exists(status_requested); }, 5000) && !received_snapshot &&
+            tabs->currentIndex() == 0 && rows->rowCount() == 1 && rows->item(0, 5)->text() == "Ready",
+        "Ready candidate must be available on initial Preview while workflow attachment is pending");
+    if (gesture == "click") {
+      const QPoint ready_row = rows->visualItemRect(rows->item(0, 0)).center();
+      for (const auto event : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+        QMouseEvent click(
+            event,
+            ready_row,
+            rows->viewport()->mapToGlobal(ready_row),
+            Qt::LeftButton,
+            event == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton,
+            Qt::NoModifier);
+        QApplication::sendEvent(rows->viewport(), &click);
+      }
+    } else if (gesture == "keyboard") {
+      rows->setCurrentCell(-1, -1);
+      rows->clearSelection();
+      QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+      QApplication::sendEvent(rows, &down);
+      require(rows->currentRow() == 0 && !rows->selectedItems().isEmpty(), "Keyboard did not select the ready row");
+    }
+    require(tabs->currentIndex() == 0, "Ready candidate interaction unexpectedly left Preview");
+    write(status_release, "release");
+    require(wait_until([&] { return received_snapshot; }, 5000), "Delayed workflow attachment did not complete");
+    require(
+        tabs->currentIndex() == (gesture == "untouched" ? 1 : 0),
+        "Initial workflow attachment must respect an explicit ready-row choice, but otherwise select Workflow");
+    require(!QFile::exists(started), "Selecting a ready candidate during attachment started playback");
+    workflow->snapshotChanged = update_snapshot;
+  }
+  write(
+      workflow_state,
+      R"({"workflow_id":"preview-workflow","state":"succeeded","owner_released":true,"epoch":0,"nodes":[]})");
   for (int exit_code : {0, 7, -1}) {
     QFile::remove(started);
     QFile::remove(release);
@@ -2760,7 +2885,9 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   add_options(dialog);
   auto* remove = widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton");
+  auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
   widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+  require(tabs->currentIndex() == 1, "Starting a local batch must open Workflow");
   require(!remove->isEnabled(), "Removal must be disabled during batch execution");
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
   require(
@@ -2769,7 +2896,38 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   require(
       table->rowCount() == 2 && table->item(0, 5)->text() == "Ready" && table->item(1, 5)->text() == "Ready",
       "Synthetic candidates must complete before testing removal and promotion failure");
+  require(tabs->currentIndex() == 1, "Batch completion must not steal the chosen Workflow tab");
+  table->selectRow(1);
+  tabs->setCurrentIndex(1);
   table->selectRow(0);
+  require(tabs->currentIndex() == 0, "Selecting a different ready candidate must open Stitched preview");
+  tabs->setCurrentIndex(1);
+  const QPoint ready_row = table->visualItemRect(table->item(0, 0)).center();
+  for (const auto event : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+    QMouseEvent click(
+        event,
+        ready_row,
+        table->viewport()->mapToGlobal(ready_row),
+        Qt::LeftButton,
+        event == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(table->viewport(), &click);
+  }
+  require(tabs->currentIndex() == 0, "Clicking the selected ready candidate must open Stitched preview");
+  for (const auto key : {Qt::Key_Return, Qt::Key_Space}) {
+    tabs->setCurrentIndex(1);
+    dialog.activateWindow();
+    table->setFocus();
+    QCoreApplication::processEvents();
+    require(table->hasFocus() && table->currentRow() == 0, "Ready row must retain keyboard focus and selection");
+    for (const auto event : {QEvent::KeyPress, QEvent::KeyRelease}) {
+      QKeyEvent activate(event, key, Qt::NoModifier);
+      QApplication::sendEvent(table, &activate);
+    }
+    require(
+        tabs->currentIndex() == 0 && !QFile::exists(preview_started),
+        "Return and Space on the selected ready row must open Preview without starting playback");
+  }
   require(remove->isEnabled(), "Completed results must be removable after a batch");
   auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
   const WId target = video->winId();
@@ -2803,6 +2961,25 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
         "Preview fixture did not start");
     require(video->winId() == target, "Starting a preview must preserve its native target");
     require(!remove->isEnabled(), "Removal must be disabled during playback");
+    const auto owner_before_tabs = hm::game_operation::Inspect(store->game_directory);
+    const auto running_before_tabs = LoadStitchingExperimentStore(*store);
+    require(
+        owner_before_tabs.ok() && owner_before_tabs->has_value() && running_before_tabs.ok(),
+        "Cannot inspect live preview ownership before changing tabs");
+    tabs->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+    require(stop->isEnabled() && preview_owned(), "Opening Workflow must leave the preview running");
+    tabs->setCurrentIndex(0);
+    QCoreApplication::processEvents();
+    const auto owner_after_tabs = hm::game_operation::Inspect(store->game_directory);
+    const auto running_after_tabs = LoadStitchingExperimentStore(*store);
+    require(
+        owner_after_tabs.ok() && owner_after_tabs->has_value() && running_after_tabs.ok() &&
+            (**owner_after_tabs).token == (**owner_before_tabs).token &&
+            running_after_tabs->experiments.front().process_session_id ==
+                running_before_tabs->experiments.front().process_session_id &&
+            video->winId() == target && stop->isEnabled(),
+        "Changing tabs during playback must preserve the exact process owner and native target");
     check_external_preview(dialog);
     if (exit_code < 0) {
       auto* focus = widget<QToolButton>(dialog, "maximizeStitchExperimentButton");

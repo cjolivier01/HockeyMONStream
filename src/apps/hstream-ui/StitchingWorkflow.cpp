@@ -1133,6 +1133,10 @@ StitchingWorkflow::~StitchingWorkflow() {
 bool StitchingWorkflow::selected() const {
   return !impl_->profile->currentData().toString().isEmpty();
 }
+void StitchingWorkflow::restoreMonitor() {
+  if (impl_->monitor_dialog)
+    impl_->monitor_dialog->close();
+}
 bool StitchingWorkflow::active() const {
   return !impl_->workflow.isEmpty() &&
       (!terminal(impl_->snapshot.value("state").toString()) ||
