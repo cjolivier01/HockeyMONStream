@@ -12964,9 +12964,20 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   game_id->setText(durability_retry_game_id);
+  // The saved-still reader can briefly own the game's metadata lock while the
+  // game changes. Wait for the normal admission refresh before clicking Load.
+  if (!expect(
+          QTest::qWaitFor([&] { return create->isEnabled(); }, 5000),
+          "Returning to a game should restore Load after its metadata read finishes")) {
+    return false;
+  }
   activate(create);
   if (!expect(
-          max_speed_x->value() == 451 && save->isEnabled() && save->toolTip().contains("Retry saving"),
+          QTest::qWaitFor(
+              [&] {
+                return max_speed_x->value() == 451 && save->isEnabled() && save->toolTip().contains("Retry saving");
+              },
+              5000),
           "Returning to a game should restore its pending durability retry requirement")) {
     return false;
   }
