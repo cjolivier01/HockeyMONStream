@@ -34,17 +34,17 @@ first entry is the default and the one Reset Controls restores.
 
 | Model | Network | Inference size | Classes | Prefix |
 | --- | --- | --- | --- | --- |
-| Default | YOLOv8-m | 1984x736 | 80 (COCO) | `config_infer_yolov8_hockey` |
+| Default | YOLOv8-m | 1984x736 | 1 (person) | `config_infer_yolov8_hockey` |
 | Distilled | YOLOv8-s | 1408x544 | 1 (person) | `config_infer_yolov8s_hockey` |
+| Hockey roles | YOLOv8-m | 1984x736 | 3 (person/goalie/official) | `config_infer_yolov8m_hockey_roles` |
 
 The distilled model is a YOLOv8-m to YOLOv8-s knowledge distillation trained at
 1408x544, exported by `scripts/export_hm_yolov8_onnx.py`. It is roughly a
 quarter of the default's detector cost, at some accuracy.
 
-**The two models are not drop-in equivalents.** They differ in inference
-resolution *and* label space: the default emits any of the 80 COCO classes, the
-distilled network only ever emits person. Nothing filters on class id today
-(`person_class_id` is -1), so both feed the play tracker, but revalidate
+The default and distilled models differ in inference resolution and capacity;
+both emit only person. The optional hockey-roles model uses three classes and
+role-aware tracking controls. Revalidate
 tracking and the oversized-player thresholds on any game switched between them
 rather than assuming the tuning carries over.
 
@@ -200,7 +200,7 @@ Evaluate accuracy on separate frames/games before choosing INT8 for production.
 TensorRT 9/10 supports the BF16 builder flag on Ampere and later GPUs:
 
 ```sh
-MODEL="$HOME/.cache/hstream/models/hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
+MODEL="$HOME/.cache/hstream/models/hm_crowdhuman_yolov8_m_1984_736_epoch90-4b701af53e11cd79.onnx"
 bazel-bin/src/apps/int8-calib-builder/int8-calib-builder \
   --precision=bf16 --onnx="$MODEL" \
   --engine="${MODEL}_b2_gpu0_{gpu}_bf16.engine" --batch-size=2 --min-batch-size=1

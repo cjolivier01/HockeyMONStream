@@ -1,7 +1,9 @@
-# Epoch-10 hockey roles detector
+# Hockey roles detector
 
-Select **Hockey roles — epoch 10 (YOLOv8-m, 1408x544)** in the detector menu.
-The existing default stays selected unless changed. This checkpoint was initialized
+Select **Hockey roles — mixed iter 487500 (YOLOv8-m, 1984x736)** in the detector menu.
+The default detector is the newer single-class CrowdHuman epoch-90 checkpoint
+at the same resolution.
+The role model is optional and stays unselected unless changed. This checkpoint was initialized
 from COCO and trained with CrowdHuman and gray-background hockey images. Its classes
 are `0: person`, `1: goalie`, `2: official`.
 
@@ -9,8 +11,8 @@ The checkpoint, dynamic-batch ONNX, labels, and provenance are published at
 https://github.com/cjolivier01/HockeyMONStream/releases/tag/pretrained-assets-v1 .
 The four `config_infer_yolov8m_hockey_roles` precision variants pin the same ONNX and
 label SHA-256 values. FP32/FP16 run directly; BF16/INT8 use the existing preparation
-workflow. The ONNX takes RGB/255 at 1408×544 and returns decoded xyxy, confidence,
-and class index; batch sizes 1 and 2 were compared against the epoch-10 checkpoint.
+workflow. The ONNX takes RGB/255 at 1984×736 and returns decoded xyxy, confidence,
+and class index; batch sizes 1 and 2 are compared against the iter-487500 checkpoint.
 
 Under Program tracking, **Ignore referees for play tracking** and **Ignore goalies
 for play tracking** independently exclude those roles from camera subjects. Both
@@ -26,5 +28,5 @@ hockey roles. NVIDIA and HockeyMON accept live role-filter changes through their
 existing frame-owner controls; AMD retains its existing limitation on live camera
 tuning and consumes the settings at launch. No video readback is added.
 
-An epoch checkpoint's validation score does not establish accuracy on every rink.
+A checkpoint's validation score does not establish accuracy on every rink.
 Review the role labels on the actual game before relying on role-based framing.

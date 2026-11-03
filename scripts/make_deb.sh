@@ -596,7 +596,7 @@ done
 # The hockey YOLO checkpoint likewise has no recorded redistribution grant.
 # Keep the source-checkout and installed configs on the same writable per-user
 # download target for the nonredistributable hockey YOLO checkpoint.
-hockey_yolo_model="hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
+hockey_yolo_model="hm_crowdhuman_yolov8_m_1984_736_epoch90-4b701af53e11cd79.onnx"
 sed -i \
   "s#onnx-file: ../pretrained/deepstream/yolov8/${hockey_yolo_model}#onnx-file: \$HOME/.cache/hstream/models/${hockey_yolo_model}#g" \
   "${STAGING}${INSTALL_PREFIX}/configs/config_infer_yolov8_hockey.yaml"
