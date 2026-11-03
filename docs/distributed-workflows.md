@@ -111,6 +111,45 @@ its executor, limits and device inventory. `limits` contains explicit
 `concurrency` and `per_user` bounds. The workflow's own concurrency is a further
 bound, not another pool allocation.
 
+Profile IDs are configuration keys, separate from Slurm's GRES strings. IDs use
+letters, digits, underscores, dots and hyphens; a colon belongs in `resources.gres`,
+not the profile ID. For example:
+
+| Profile ID shown in the UI | `resources.gres` | Eligible hardware |
+| --- | --- | --- |
+| `gpu` | `gpu:1` | Any GPU on the profile's qualified nodes |
+| `gpu-rtx4090` | `gpu:rtx4090:1` | Qualified RTX4090 nodes |
+| `nvidia-rtx5090` | `gpu:rtx5090:1` | Qualified RTX5090 nodes |
+| `gpu-v100` | `gpu:v100:1` | V100 nodes, after runtime qualification |
+
+These are operator choices, not compiled defaults. Configure them in the
+registry's `config.json` and deploy the matching manifest. An untyped `gpu:1`
+request still needs an explicit partition and node list: it must not select an
+incompatible backend, architecture or userspace runtime. All nodes in a profile
+use the same pinned runtime. If profiles overlap, give them the same `pool` and
+limits so switching profiles cannot bypass the shared concurrency cap. Preserve
+an existing pool name while admitted workflows still reference it.
+
+Choose a typed profile when the recording needs hardware-specific codec support.
+RTX4090 qualification uses 8-bit H.264; its decoder rejected the H.264 High 10
+fixture that passed on RTX5090. The generic profile does not inspect media and
+route unsupported codec profiles automatically. Use `nvidia-rtx5090` for those
+High 10 recordings; this limitation does not imply that all 10-bit codecs fail.
+
+Slurm must advertise the same typed GRES in its node definition and `gres.conf`;
+adding a profile alone does not configure the scheduler. Reopen Stitching
+Experiments to reload installed profiles. Select **Execution profile**, set
+**Parallel stages**, add candidates to the batch and start or export it. The web
+dispatcher uses its own operator profile configuration and needs the same
+qualified definitions; updating a standalone registry does not deploy a web
+service configuration.
+
+The current V100 on `ripper` advertises `gpu:v100:1`, but its DeepStream 9.1
+`nvvideoconvert` fails the NV12-to-NVMM-RGBA path used by frame materialization.
+It is excluded from the generic profile, and `gpu-v100` is not enabled. A
+successful allocation or `--capabilities` response is insufficient evidence to
+enable it; first qualify a compatible runtime with actual stitching stages.
+
 `runtime` identifies `backend` (`nvidia`, `amd`, or metadata-only `cpu`),
 `architecture` (`x86_64` or `aarch64`), `storage_namespace`, and an absolute-path
 `files` map of SHA256 digests. Pin the task executable, exporter, CLI, baseline,
