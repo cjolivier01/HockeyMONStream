@@ -11,12 +11,11 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-
 DEFAULT_CHECKPOINT_URL = (
-    "https://github.com/cjolivier01/HockeyMOM/releases/download/v0.0.1/"
-    "hm_crowdhuman_e85_yolov8_m_1984_736.pth"
+    "https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/"
+    "hm_crowdhuman_yolov8_m_1984_736_epoch90-47e63395bb36353e.pth"
 )
-DEFAULT_ONNX_NAME = "hm_crowdhuman_e85_yolov8_m_1984_736_dynamic_b1-b2_1984x736.onnx"
+DEFAULT_ONNX_NAME = "hm_crowdhuman_yolov8_m_1984_736_epoch90-4b701af53e11cd79.onnx"
 
 
 def _repo_root() -> Path:
@@ -28,7 +27,10 @@ def _default_hm_root() -> Path:
 
 
 def _default_config() -> Path:
-    return _default_hm_root() / "openmm/configs/hm/hm_crowdhuman_yolov8_m_1984_736.py"
+    return (
+        _default_hm_root()
+        / "openmm/configs/hm/hm_crowdhuman_yolov8_m_1984_736_person.py"
+    )
 
 
 def _default_output() -> Path:
@@ -45,13 +47,19 @@ def _prepend_openmm_paths(hm_root: Path) -> None:
 
 def _download(url: str, path: Path, timeout: float) -> None:
     _ensure_parent_dir(path)
-    request = urllib.request.Request(url, headers={"User-Agent": "hstream-yolov8-export"})
-    tmp_fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "hstream-yolov8-export"}
+    )
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
     os.close(tmp_fd)
     tmp_path = Path(tmp_name)
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response, tmp_path.open("wb") as output:
+        with urllib.request.urlopen(
+            request, timeout=timeout
+        ) as response, tmp_path.open("wb") as output:
             while True:
                 chunk = response.read(1024 * 1024)
                 if not chunk:
@@ -74,7 +82,9 @@ def _ensure_parent_dir(path: Path) -> None:
     uid = os.getuid()
     gid = os.getgid()
     subprocess.run(["sudo", "mkdir", "-p", str(real_parent)], check=True)
-    subprocess.run(["sudo", "chown", "-R", f"{uid}:{gid}", str(real_parent)], check=True)
+    subprocess.run(
+        ["sudo", "chown", "-R", f"{uid}:{gid}", str(real_parent)], check=True
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -101,16 +111,46 @@ def _student_state_dict(checkpoint: Path):
     state = blob.get("state_dict", blob) if isinstance(blob, dict) else blob
     if not any(key.startswith("student.") for key in state):
         return None
-    return {key[len("student."):]: value for key, value in state.items() if key.startswith("student.")}
+    return {
+        key[len("student.") :]: value
+        for key, value in state.items()
+        if key.startswith("student.")
+    }
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--hm-root", type=Path, default=_default_hm_root(), help="Sibling hm checkout root")
-    parser.add_argument("--config", type=Path, default=_default_config(), help="MMYOLO detector config")
-    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT_URL, help="Checkpoint path or URL")
-    parser.add_argument("--output", type=Path, default=_default_output(), help="Output ONNX path")
-    parser.add_argument("--size", type=int, nargs=2, metavar=("HEIGHT", "WIDTH"), default=(736, 1984))
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog="""Examples:
+  # Default one-class epoch-90 CrowdHuman model:
+  scripts/export_hm_yolov8_onnx.py
+
+  # Three-class person/goalie/official model:
+  scripts/export_hm_yolov8_onnx.py \\
+    --config ../hm/openmm/configs/hm/hm_hockey_tracking_yolov8_m_1984_736.py \\
+    --checkpoint ../hm/openmm/work_dirs/hm_hockey_tracking_yolov8_m_1984_736_gray_coco_steps/iter_487500.pth \\
+    --output pretrained/deepstream/yolov8/hm_hockey_roles_yolov8_m_1984_736_iter487500.onnx
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--hm-root",
+        type=Path,
+        default=_default_hm_root(),
+        help="Sibling hm checkout root",
+    )
+    parser.add_argument(
+        "--config", type=Path, default=_default_config(), help="MMYOLO detector config"
+    )
+    parser.add_argument(
+        "--checkpoint", default=DEFAULT_CHECKPOINT_URL, help="Checkpoint path or URL"
+    )
+    parser.add_argument(
+        "--output", type=Path, default=_default_output(), help="Output ONNX path"
+    )
+    parser.add_argument(
+        "--size", type=int, nargs=2, metavar=("HEIGHT", "WIDTH"), default=(736, 1984)
+    )
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--opset", type=int, default=17)
@@ -132,8 +172,8 @@ def main() -> int:
     hm_root = args.hm_root.resolve()
     _prepend_openmm_paths(hm_root)
 
-    import torch
     import onnx
+    import torch
     from mmdet.apis import init_detector
 
     class DeepStreamYOLOv8(torch.nn.Module):
@@ -143,19 +183,26 @@ def main() -> int:
             self.head = detector.bbox_head
 
         def forward(self, images: torch.Tensor) -> torch.Tensor:
-            cls_scores, bbox_preds = self.detector(images, data_samples=None, mode="tensor")
+            cls_scores, bbox_preds = self.detector(
+                images, data_samples=None, mode="tensor"
+            )
             featmap_sizes = [cls_score.shape[2:] for cls_score in cls_scores]
             priors = self.head.prior_generator.grid_priors(
-                featmap_sizes, dtype=bbox_preds[0].dtype, device=bbox_preds[0].device)
+                featmap_sizes, dtype=bbox_preds[0].dtype, device=bbox_preds[0].device
+            )
 
             flatten_priors = torch.cat(priors)
             flatten_strides = []
             for stride, prior in zip(self.head.featmap_strides, priors):
-                flatten_strides.append(flatten_priors.new_full((prior.shape[0],), stride))
+                flatten_strides.append(
+                    flatten_priors.new_full((prior.shape[0],), stride)
+                )
             flatten_stride = torch.cat(flatten_strides)
 
             flatten_cls_scores = [
-                cls_score.permute(0, 2, 3, 1).reshape(images.shape[0], -1, self.head.num_classes)
+                cls_score.permute(0, 2, 3, 1).reshape(
+                    images.shape[0], -1, self.head.num_classes
+                )
                 for cls_score in cls_scores
             ]
             flatten_bbox_preds = [
@@ -165,7 +212,9 @@ def main() -> int:
 
             scores = torch.cat(flatten_cls_scores, dim=1).sigmoid()
             bboxes = torch.cat(flatten_bbox_preds, dim=1)
-            bboxes = self.head.bbox_coder.decode(flatten_priors[None], bboxes, flatten_stride)
+            bboxes = self.head.bbox_coder.decode(
+                flatten_priors[None], bboxes, flatten_stride
+            )
             max_scores, labels = torch.max(scores, dim=-1, keepdim=True)
             return torch.cat((bboxes, max_scores, labels.to(bboxes.dtype)), dim=-1)
 
@@ -202,7 +251,8 @@ def main() -> int:
         dynamic_axes=dynamic_axes,
         opset_version=args.opset,
         do_constant_folding=True,
-        dynamo=False)
+        dynamo=False,
+    )
 
     model = onnx.load(output)
     # Only the batch axis is dynamic. Newer torch exporters leave the anchor count symbolic,
