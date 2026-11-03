@@ -178,6 +178,17 @@ its native-reference provenance into the plan. Attempts read that snapshot,
 so later Defaults edits do not change sibling tasks. Queued candidate workspaces
 also retain their frozen experiment settings and manual matches.
 
+Desktop and command-line clients may run from a different checkout than the
+installed controller. Registry commands resolve the controller pinned by the
+admission profile, verify its launcher and Python package against every profile,
+then run that installed command. This also applies to export and monitoring;
+there is no separate host or launcher setting to synchronize. Missing, changed
+or conflicting controller pins stop before submission. Repair the operator
+registry or restore its installed release; do not add checkout paths to frozen
+profiles to bypass the check. Admitted workers retain their original supervisor.
+Desktop command failures are retained in the process diagnostic log as well as
+displayed in the dialog.
+
 ## CLI and exported launchers
 
 The package installs `hstream-workflow` and, on supported desktop targets,

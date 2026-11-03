@@ -80,6 +80,18 @@ py_test(
 )
 
 py_test(
+    name = "workflow_dispatch_test",
+    size = "medium",
+    srcs = [
+        "hstream_workflow_dispatch_test.py",
+        "hstream_workflow_controller_test.py",
+    ],
+    main = "hstream_workflow_dispatch_test.py",
+    data = ["hstream-workflow"],
+    deps = [":workflow_library"],
+)
+
+py_test(
     name = "side_by_side_video_test",
     size = "small",
     srcs = ["side_by_side_video.py", "side_by_side_video_test.py"],

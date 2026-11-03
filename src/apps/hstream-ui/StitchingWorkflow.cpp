@@ -6,6 +6,7 @@
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
+#include <QtCore/QDebug>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonArray>
@@ -465,6 +466,9 @@ struct StitchingWorkflow::Impl {
         value = QJsonDocument::fromJson(*error).object();
       if (process->error() == QProcess::FailedToStart)
         value.insert("client_not_started", true);
+      if (!failure.isEmpty())
+        qWarning().noquote() << "Workflow command failed:" << process->program() << process->arguments().value(0)
+                             << failure;
       done(value, failure);
       process->deleteLater();
     };
