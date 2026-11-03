@@ -65,4 +65,9 @@ def dispatch(registry, argv):
     if launcher != current:
         # Keep the same PID, arguments, streams and exit status: the desktop
         # must still be able to stop a command when its deadline expires.
-        os.execv(str(launcher), [str(launcher), *argv])
+        # Client Python search paths (including Bazel's safe-path environment)
+        # must not shadow the selected package and route back into this client.
+        environment = dict(os.environ)
+        for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSAFEPATH"):
+            environment.pop(key, None)
+        os.execve(str(launcher), [str(launcher), *argv], environment)

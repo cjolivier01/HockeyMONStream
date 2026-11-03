@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -109,6 +110,21 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(error["workflow_id"], self.fixture.plan["workflow_id"])
         self.assertEqual(self.fixture.controller.registry.read()["workflows"], {})
         self.assertFalse((self.fixture.game / "_hockeymon/test-owner.json").exists())
+
+    def test_client_python_path_cannot_shadow_installed_package(self):
+        with patch.dict(
+            os.environ,
+            {
+                "PYTHONPATH": str(self.client),
+                "PYTHONHOME": sys.prefix,
+                "PYTHONSAFEPATH": "1",
+            },
+        ):
+            profiles = self.call("profiles")
+        self.assertEqual(
+            profiles["profiles"][0]["runtime"]["files"],
+            self.fixture.profile["runtime"]["files"],
+        )
 
     def test_missing_and_extra_modules_are_rejected(self):
         path = self.installed / "hstream_workflow/schema.py"
