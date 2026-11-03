@@ -7,10 +7,13 @@ temporary = tempfile.TemporaryDirectory(prefix="hstream-native-task-")
 root = pathlib.Path(temporary.name)
 game = root / "game"
 (game / "_hockeymon").mkdir(parents=True)
-(game / "left.mp4").write_text("left fixture")
-(game / "right.mp4").write_text("right fixture")
+# A fresh Auto game has not saved Left/Right roles yet. Each workflow successor
+# must retain its discoverable chapters before orientation can establish them.
+media = ["GX010106.MP4", "GX020106.MP4", "GX010107.MP4", "GX020107.MP4"]
+for name in media:
+    (game / name).write_text(name + " fixture")
 (game / "_hockeymon/config.yaml").write_text(
-    "game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\n  stitching:\n    frame_offsets: {left: 0, right: 0}\n"
+    "game:\n  stitching:\n    frame_offsets: {left: 0, right: 0}\n"
 )
 workflow = "workflow-native-test"
 directory = game / "_hockeymon/workflows" / workflow
@@ -109,6 +112,9 @@ for art in result["artifacts"]:
     )
 assert (game / "_hockeymon/config.yaml").read_text().startswith("game:")
 assert not result["outputs"]["materialized"]
+for name in media:
+    alias = pathlib.Path(result["outputs"]["workspace"]["game_directory"]) / name
+    assert alias.is_symlink() and alias.resolve() == game / name
 if expected_backend == "amd":
     unsupported = directory / "attempts/unsupported-gpu"
     unsupported.mkdir()
@@ -152,6 +158,9 @@ assert r.returncode == 0, (r.stdout, r.stderr)
 copy = json.loads((second / "native-result.json").read_text())["outputs"]["workspace"]
 assert copy["invalidation_id"] == result["outputs"]["workspace"]["invalidation_id"]
 assert copy["game_directory"] != result["outputs"]["workspace"]["game_directory"]
+for name in media:
+    alias = pathlib.Path(copy["game_directory"]) / name
+    assert alias.is_symlink() and alias.resolve() == game / name
 original = (
     pathlib.Path(result["outputs"]["workspace"]["game_directory"])
     / "_hockeymon/config.yaml"

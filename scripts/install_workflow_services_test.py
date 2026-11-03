@@ -16,6 +16,7 @@ from unittest import mock
 from install_workflow_services import (
     Installer,
     InstallError,
+    MAX_CONFIG_BYTES,
     read_regular,
     render_unit,
     unit_argument,
@@ -93,6 +94,19 @@ class HostCommands:
 
 
 class InstallerTest(unittest.TestCase):
+    def test_multi_profile_registry_size_matches_controller_limit(self):
+        from hstream_workflow.schema import MAX_PLAN_BYTES
+
+        self.assertEqual(MAX_CONFIG_BYTES, MAX_PLAN_BYTES)
+        source = self.root / "inputs/large-registry.json"
+        contents = b" " * (5 * 1024 * 1024)
+        source.write_bytes(contents)
+        self.assertEqual(read_regular(source), contents)
+        with source.open("wb") as output:
+            output.truncate(MAX_CONFIG_BYTES + 1)
+        with self.assertRaises(InstallError):
+            read_regular(source)
+
     def test_only_dispatcher_units_preserve_independent_attempts(self):
         identity = {"user": "worker", "gid": 1001}
         for independent in (False, True):

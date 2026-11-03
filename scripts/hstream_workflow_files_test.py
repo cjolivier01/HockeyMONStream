@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from hstream_workflow.bounded_log import SEGMENT_BYTES, Capture
 from hstream_workflow.files import file_digest, read_json, read_tail
-from hstream_workflow.schema import WorkflowError
+from hstream_workflow.schema import MAX_PLAN_BYTES, WorkflowError, canonical
 
 
 class FilesTest(unittest.TestCase):
@@ -31,6 +31,19 @@ class FilesTest(unittest.TestCase):
             result,
             {"size": 15, "sha256": hashlib.sha256(b"native evidence").hexdigest()},
         )
+
+    def test_multi_profile_documents_fit_but_oversized_documents_fail(self):
+        # Portable runtimes repeated across qualified nodes exceed the former
+        # 4 MiB catalog limit. Serialization and file reads share the same cap.
+        value = {"runtime_pins": "x" * (5 * 1024 * 1024)}
+        self.path.write_bytes(canonical(value))
+        self.assertEqual(read_json(self.path), value)
+        with self.assertRaisesRegex(WorkflowError, "byte bound"):
+            canonical({"runtime_pins": "x" * MAX_PLAN_BYTES})
+        with self.path.open("wb") as output:
+            output.truncate(MAX_PLAN_BYTES + 1)
+        with self.assertRaises(WorkflowError):
+            read_json(self.path)
 
     def test_ancestor_and_final_symlinks_are_rejected(self):
         link = self.root / "alias"

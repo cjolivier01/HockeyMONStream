@@ -11,7 +11,9 @@ from pathlib import Path
 from uuid import UUID
 
 MAX_STAGES = 256
-MAX_PLAN_BYTES = 4 * 1024 * 1024
+# A qualified multi-profile catalog repeats the pinned runtime per compute node.
+# Keep one bounded document size for catalogs, plans and controller responses.
+MAX_PLAN_BYTES = 8 * 1024 * 1024
 MAX_ATTEMPTS = 64
 IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")

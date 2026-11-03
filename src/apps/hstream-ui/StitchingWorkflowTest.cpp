@@ -17,6 +17,7 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
@@ -80,6 +81,7 @@ QJsonObject profiles() {
       {"resources", QJsonObject{{"gpus", 0}}}};
   QJsonObject gpu{
       {"id", "gpu"},
+      {"label", "RTX4090 / RTX5090"},
       {"executor", "slurm"},
       {"capabilities", operations},
       {"runtime", QJsonObject{{"storage_namespace", "test"}}},
@@ -128,6 +130,11 @@ void plans(const StitchingExperimentStore& store) {
   const auto owner_solve = stage(*plan, "experiment-run", "candidate-2");
   const auto sibling_solve = stage(*plan, "experiment-run", "candidate-3");
   const auto ordinary = stage(*plan, "experiment-run", "candidate-4");
+  require(base.value("label") == "Initial calibration · #1", "Initial calibration label is unclear");
+  require(scan.value("label") == "Find player-rich frames · #2", "Player search label is unclear");
+  require(materialize.value("label") == "Extract selected frames · #2", "Frame extraction label is unclear");
+  require(owner_solve.value("label") == "Calibrate · 100 CP · #2", "Calibration omitted its control-point limit");
+  require(sibling_selection.value("label") == "Use shared frames (CPU) · #3", "Shared frame copy label is unclear");
   require(scan.value("dependencies").toArray().contains(base.value("id")), "Scan did not wait for baseline");
   require(materialize.value("dependencies").toArray().contains(scan.value("id")), "Frames did not wait for scan");
   require(
@@ -155,7 +162,7 @@ void plans(const StitchingExperimentStore& store) {
           stage(*retained_queue, "experiment-create", "candidate-4")
               .value("label")
               .toString()
-              .startsWith("Prepare retained frames") &&
+              .startsWith("Set up retained frames (CPU)") &&
           retained_queue->value("stages").toArray().size() == plan->value("stages").toArray().size() &&
           stage(*retained_queue, "experiment-run", "candidate-4") == ordinary &&
           stage(*retained_queue, "experiment-scan", "candidate-4").isEmpty(),
@@ -193,7 +200,7 @@ void plans(const StitchingExperimentStore& store) {
       "Old workflow candidate was re-admitted instead of explicitly retried");
   const auto retained = stage(*plan, "experiment-create", "candidate-2");
   require(
-      retained.value("label").toString().startsWith("Prepare retained frames") &&
+      retained.value("label").toString().startsWith("Set up retained frames (CPU)") &&
           !retained.value("inputs").toObject().contains("catalog_key"),
       "Retained input source acquired new catalog ownership");
   rows.experiments[1].selection_workspace.reset();
@@ -243,6 +250,29 @@ elif operation=='log': value=dict(text=option('--stage')+' '+option('--attempt')
 else: raise SystemExit(9)
 print(json.dumps(value))
 )PY";
+void profileResponseBounds(const QString& root, YAML::Node baseline) {
+  baseline["workflow"]["registry"] = root.toStdString();
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", root);
+  for (const int megabytes : {6, 9}) {
+    auto catalog = profiles();
+    catalog.insert("fixture_padding", QString(megabytes * 1024 * 1024, 'x'));
+    write(root + "/profiles.json", QJsonDocument(catalog).toJson(QJsonDocument::Compact));
+    StitchingWorkflow pane(root + "/game", root, environment, baseline, nullptr);
+    bool rejected = false;
+    pane.message = [&](const QString&, bool error) { rejected = error; };
+    auto* selector = widget<QComboBox>(pane, "stitchWorkflowProfile");
+    if (megabytes < 8) {
+      require(wait([&] { return selector->count() == 2 || rejected; }), "Large profile catalog did not finish loading");
+      require(!rejected && selector->count() == 2, "Valid profile catalog between 4 and 8 MiB was rejected");
+    } else {
+      require(wait([&] { return rejected; }), "Profile catalog above 8 MiB was not rejected");
+      require(selector->count() == 1 && !selector->isEnabled(), "Oversized profile catalog enabled managed execution");
+    }
+  }
+  write(root + "/profiles.json", QJsonDocument(profiles()).toJson());
+}
+
 void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node baseline) {
   QDir().mkpath(root + "/scripts");
   write(root + "/scripts/hstream-workflow", kController);
@@ -273,6 +303,7 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(wait([&] { return profiles_control->count() == 2; }), "Profiles were not loaded asynchronously");
   require(!pane->selected(), "Managed execution silently replaced Current runner");
   profiles_control->setCurrentIndex(1);
+  require(profiles_control->currentText() == "RTX4090 / RTX5090 (slurm)", "Profile ignored its readable label");
   auto* parallel = widget<QSpinBox>(*pane, "stitchWorkflowParallel");
   parallel->setValue(3);
   int ticks = 0;
@@ -358,6 +389,87 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(stages->isEnabled() && stages->count() > 4, "Running stage selection is disabled");
   auto* graph_scroll = widget<QScrollArea>(*pane, "stitchWorkflowGraphScroll");
   auto* monitor_scroll = widget<QScrollArea>(*pane, "stitchWorkflowMonitorScroll");
+  const auto graph_nodes = submitted.value("stages").toArray();
+  auto* graph = widget<QWidget>(*pane, "stitchWorkflowGraph");
+  const auto check_graph = [&] {
+    require(graph_scroll->horizontalScrollBar()->maximum() == 0, "Workflow still requires horizontal traversal");
+    const auto buttons = graph->findChildren<QPushButton*>();
+    require(buttons.size() == graph_nodes.size(), "Responsive graph lost a diagnostic stage");
+    for (const auto& value : graph_nodes) {
+      const auto node = value.toObject();
+      auto* button = widget<QPushButton>(*graph, qPrintable("stitchWorkflowNode_" + node.value("id").toString()));
+      require(
+          button->geometry().left() >= 0 && button->geometry().right() < graph->width(),
+          "Workflow stage extends beyond the pane");
+      require(
+          button->toolTip().contains("Prerequisites:") && button->toolTip().contains("Used by:"),
+          "Workflow stage tooltip lost dependency explanations");
+      for (const auto& dependency : node.value("dependencies").toArray()) {
+        auto* parent = widget<QPushButton>(*graph, qPrintable("stitchWorkflowNode_" + dependency.toString()));
+        require(parent->geometry().bottom() < button->geometry().top(), "Dependency no longer flows top to bottom");
+      }
+      for (auto* peer : buttons)
+        require(peer == button || !peer->geometry().intersects(button->geometry()), "Responsive stages overlap");
+    }
+  };
+  require(wait([&] { return graph_scroll->horizontalScrollBar()->maximum() == 0; }), "Graph did not fit its pane");
+  check_graph();
+  const auto shared = stage(submitted, "experiment-materialize", "candidate-2");
+  auto* shared_button = widget<QPushButton>(*graph, qPrintable("stitchWorkflowNode_" + shared.value("id").toString()));
+  shared_button->click();
+  require(
+      stages->currentData().toString() == shared.value("id").toString(),
+      "Clicking shared frames did not select its diagnostic stage");
+  const auto description = widget<QPlainTextEdit>(*pane, "stitchWorkflowDetails")->toPlainText();
+  require(
+      description.contains("Find player-rich frames") && description.contains("Use shared frames (CPU)") &&
+          description.contains("Calibrate · 100 CP"),
+      "Shared parent details did not explain its fan-out");
+  auto legacy = read(root + "/state.json");
+  auto legacy_nodes = legacy.value("nodes").toArray();
+  for (int index = 0; index < legacy_nodes.size(); ++index) {
+    auto node = legacy_nodes[index].toObject();
+    if (node.value("id") == shared.value("id")) {
+      node.insert("label", "Materialize · 27");
+      legacy_nodes[index] = node;
+    }
+  }
+  legacy.insert("nodes", legacy_nodes);
+  write(root + "/state.json", QJsonDocument(legacy).toJson());
+  require(
+      wait([&] { return stages->currentText().startsWith("Extract selected frames · #27"); }),
+      "A sealed legacy plan still displays internal stage jargon");
+  require(read(root + "/state.json") == legacy, "Display relabeling modified the sealed snapshot");
+  auto* expand = widget<QPushButton>(*pane, "expandStitchWorkflowButton");
+  expand->click();
+  auto* expanded = widget<QDialog>(*pane, "stitchWorkflowExpandedWindow");
+  require(
+      wait([&] { return expanded->isVisible() && graph_scroll->viewport()->width() > 800; }),
+      "Expand workflow did not provide a wide live monitor");
+  require(
+      expanded->windowFlags().testFlag(Qt::WindowMaximizeButtonHint) && expanded->isSizeGripEnabled(),
+      "Expanded workflow cannot maximize or resize");
+  check_graph();
+  require(stages->currentData().toString() == shared.value("id").toString(), "Expanding workflow lost stage selection");
+  const int expanded_height = graph_scroll->viewport()->height();
+  expanded->resize(expanded->width(), expanded->height() + 150);
+  require(
+      wait([&] { return graph_scroll->viewport()->height() >= expanded_height + 100; }),
+      "Expanded workflow did not give extra height to the graph");
+  const auto expanded_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_EXPANDED_SCREENSHOT");
+  if (!expanded_screenshot.isEmpty())
+    require(expanded->grab().save(expanded_screenshot), "Could not capture expanded workflow");
+  expand->click();
+  require(
+      wait([&] { return !pane->findChild<QDialog*>("stitchWorkflowExpandedWindow"); }),
+      "Restore workflow left its detached window open");
+  require(
+      stages->currentData().toString() == shared.value("id").toString() && graph_scroll->window() == &shell,
+      "Restore workflow lost selection or detached the monitor");
+  expand->click();
+  widget<QDialog>(*pane, "stitchWorkflowExpandedWindow")->close();
+  require(wait([&] { return graph_scroll->window() == &shell; }), "Closing expanded workflow did not restore it");
+  stages->setCurrentIndex(0);
   require(
       wait([&] { return graph_scroll->viewport()->height() > 150; }), "Workflow graph left spare pane space unused");
   const int graph_height = graph_scroll->viewport()->height();
@@ -365,7 +477,9 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(
       wait([&] { return graph_scroll->viewport()->height() >= graph_height + 150; }),
       "Growing the workflow pane did not grow the graph viewport");
-  shell.resize(700, 350);
+  shell.resize(460, 350);
+  require(wait([&] { return graph_scroll->viewport()->width() < 450; }), "Graph did not shrink with the pane");
+  check_graph();
   auto* retry_control = widget<QPushButton>(*pane, "retryStitchWorkflowStageButton");
   require(
       wait([&] { return monitor_scroll->verticalScrollBar()->maximum() > 0; }), "Small monitor cannot scroll controls");
@@ -519,7 +633,7 @@ void dialogOwnership(const QString& root) {
       wait([&] { return widget<QComboBox>(dialog, "stitchWorkflowStage")->count() > 4 && cancel->isEnabled(); }),
       "Dialog did not submit a dependency graph");
   require(
-      widget<QComboBox>(dialog, "stitchWorkflowStage")->currentText().startsWith("Solve"),
+      widget<QComboBox>(dialog, "stitchWorkflowStage")->currentText().startsWith("Calibrate"),
       "Selected row did not select its solve stage");
   require(
       rows->isEnabled() && widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")->isEnabled(),
@@ -724,6 +838,7 @@ int main(int argc, char** argv) {
     store.directory = store.game_directory / "_hockeymon/stitching-experiments";
     plans(store);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
+    profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));
     dialogOwnership(temporary.path());
     killedExperimentGuard(temporary.path());
     std::cout << "Workflow DAG, async UI, retry/log history, wheel routing, detach/reopen and cancellation passed\n";

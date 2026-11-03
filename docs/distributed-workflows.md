@@ -26,33 +26,59 @@ runtime cleanup have stopped. The desktop and browser use the same graph states
 and preserve successful siblings when a different solve fails.
 
 ```mermaid
-flowchart LR
-    B[Baseline and ice mask] --> S[Player-frame scan]
-    S --> M[Materialize selected PNGs]
-    M --> A[Candidate A solve]
-    M --> C[Clone selection into candidate B]
-    C --> D[Candidate B solve]
-    E[Ordinary candidate C] --> F[Candidate C solve]
+flowchart TD
+    P[Set up experiment files - CPU] --> B[Initial calibration]
+    B --> S[Find player-rich frames]
+    S --> M[Extract selected frames]
+    M --> A[Calibrate - 200 CP]
+    M --> C[Use shared frames - CPU]
+    C --> D[Calibrate - 500 CP]
+    M --> E[Use shared frames - CPU]
+    E --> F[Calibrate - 1500 CP]
 ```
 
 Each executable stage is a graph node. A candidate can therefore span several
-nodes. Materialization does not construct or provision a matcher. Its verified
-PNG bundle remains available if the following solve fails. A failed or
+nodes. **Set up experiment files (CPU)** preserves the candidate's input files
+and frozen settings on the controller; running it on `ripper` does not allocate
+that host's GPU. **Initial calibration** finds the camera alignment and rink
+mask needed to recognize players. **Find player-rich frames** searches the video
+once for candidates with matching selection settings. **Extract selected frames**
+writes those selected source-frame pairs to reusable PNGs; it does not run the
+matcher. **Use shared frames (CPU)** copies that verified selection into each
+dependent candidate. **Calibrate** runs the matcher and calibration with that
+candidate's control-point budget.
+
+Initial calibration precedes player search because the search needs its rink
+mask. The extraction node is the common prerequisite for the dependent
+calibrations, including experiments with different control-point budgets. Its
+verified PNG bundle remains available if a following calibration fails. A failed or
 unavailable prerequisite blocks descendants, while unrelated candidates
 continue. Retry creates a new attempt and observation epoch, preserving verified
 successful prerequisites. Retry is available after all attempts have stopped and
 recording ownership has been released.
 
+The desktop and browser show the graph from top to bottom, wrapping sibling
+nodes to fit the available width. Select a node to see its named prerequisites,
+dependents, allocation and attempts. The **Expand workflow** icon gives the
+monitor the available window area; Restore or closing the expanded monitor
+returns to the experiment controls without stopping the workflow.
+
+New batches default to three parallel stages, from `workflow.max_parallel` in
+the baseline. This is an HStream concurrency limit; Dagster only observes it.
+The installed GPU pool must also allow at least three concurrent allocations,
+and Slurm must have enough available resources. Dependencies still run in order.
+Previously admitted batches retain their frozen limits and runtime.
+
 When candidates already have materialized saved player frames, no new baseline,
 scan or materialization node is needed. Preparation copies verified inputs into
 each candidate's private workspace; it does not search the video again. The
-desktop graph labels this step `Prepare retained frames`; browser candidate
+desktop graph labels this step `Set up retained frames (CPU)`; browser candidate
 preparation finishes before the distributed batch starts.
 Candidates with the same selection fingerprint use the same selected frame pairs,
 even when their control-point budgets differ. A running solve keeps the
 `Player-rich (saved)` label while ownership still prevents conflicting actions.
 
-For a failed stage, select its Solve node and attempt in the workflow pane. The
+For a failed stage, select its node and attempt in the workflow pane. The
 reason includes scheduler status and a bounded tail of the native task log when
 available; the Logs control shows the longer attempt log. A successful frame
 selection remains reusable when a later calibration solve fails.
@@ -74,7 +100,7 @@ owned by the executing user and must not be writable by another user. Its
 {
   "schema": 1,
   "defaults": {
-    "max_parallel": 1,
+    "max_parallel": 3,
     "poll_interval_ms": 1000,
     "command_timeout_seconds": 30,
     "shutdown_timeout_seconds": 30,
@@ -129,9 +155,10 @@ Profile IDs are configuration keys, separate from Slurm's GRES strings. IDs use
 letters, digits, underscores, dots and hyphens; a colon belongs in `resources.gres`,
 not the profile ID. For example:
 
-| Profile ID shown in the UI | `resources.gres` | Eligible hardware |
+| Profile ID | `resources.gres` | Eligible hardware |
 | --- | --- | --- |
 | `gpu` | `gpu:1` | Any GPU on the profile's qualified nodes |
+| `gpu-rtx` (label `gpu:rtx`) | `gpu:1` | Qualified RTX4090 and RTX5090 nodes only |
 | `gpu-rtx4090` | `gpu:rtx4090:1` | Qualified RTX4090 nodes |
 | `nvidia-rtx5090` | `gpu:rtx5090:1` | Qualified RTX5090 nodes |
 | `gpu-v100` | `gpu:v100:1` | V100 nodes, after runtime qualification |
@@ -143,6 +170,20 @@ incompatible backend, architecture or userspace runtime. All nodes in a profile
 use the same pinned runtime. If profiles overlap, give them the same `pool` and
 limits so switching profiles cannot bypass the shared concurrency cap. Preserve
 an existing pool name while admitted workflows still reference it.
+
+`gpu:rtx` is the aggregate profile's display label, not a new Slurm GRES type.
+Slurm's typed names match exactly: `gpu:rtx` does not select existing
+`gpu:rtx4090` and `gpu:rtx5090` devices. For the aggregate, use `gpu:1` with the
+explicit qualified RTX members (currently `meshy`, `mini` and `monster`) and
+exclude `ripper`. Keep the typed profiles for selecting one model. A label such
+as `gpu:rtx · RTX4090 / RTX5090` makes the membership visible in both UIs.
+All overlapping GPU profiles must share the same pool and limits; set both
+`concurrency` and `per_user` to at least three to permit a three-stage batch.
+
+Workflow documents and installed registry catalogs have an 8 MiB bound. A
+portable deployment's pinned runtime appears under every qualified node, so
+adding aliases can increase the catalog substantially. Validate the complete
+catalog through the installer and both UI clients before activation.
 
 Choose a typed profile when the recording needs hardware-specific codec support.
 RTX4090 qualification uses 8-bit H.264; its decoder rejected the H.264 High 10
@@ -191,6 +232,8 @@ silently use the replacement. The UI freezes the active user configuration and
 its native-reference provenance into the plan. Attempts read that snapshot,
 so later Defaults edits do not change sibling tasks. Queued candidate workspaces
 also retain their frozen experiment settings and manual matches.
+Successor snapshots preserve discovered camera aliases before Auto orientation
+has saved Left/Right playlists; an input-free snapshot fails during preparation.
 
 Desktop and command-line clients may run from a different checkout than the
 installed controller. Registry commands resolve the controller pinned by the
