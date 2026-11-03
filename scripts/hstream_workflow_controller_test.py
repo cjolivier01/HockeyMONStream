@@ -65,7 +65,7 @@ if inputs.get('detached'):
  child=subprocess.Popen([sys.executable,'-c','import os,time; os.setsid(); time.sleep(120)'])
  (root/'detached.pid').write_text(str(child.pid))
 time.sleep(inputs.get('delay',0))
-if inputs.get('fail'): print('fixture solver failed',flush=True); sys.exit(9)
+if inputs.get('fail'): print(inputs.get('failure_message','fixture solver failed'),flush=True); sys.exit(9)
 output=root/'output.txt'; output.write_text(r['stage_id'])
 result={key:r[key] for key in ('workflow_id','plan_digest','stage_id','attempt_id')}
 result.update(schema=1,status='unavailable' if inputs.get('unavailable') else 'succeeded',outputs={'workspace':str(output)},message='fixture completed',artifacts=[{'identity_schema':2,'storage_namespace':r['runtime']['storage_namespace'],'path':'output.txt','kind':'data','size':output.stat().st_size,'sha256':hashlib.sha256(output.read_bytes()).hexdigest()}])
@@ -413,6 +413,9 @@ finally:
         self.assertEqual(
             [node["state"] for node in result["nodes"]], ["failed", "succeeded"]
         )
+        self.assertIn(
+            "Task log (tail):\nfixture solver failed", result["nodes"][0]["reason"]
+        )
         retained = result["nodes"][1]["result"]
         self.controller.retry(self.plan["workflow_id"], ["a"])
         result = self.wait()
@@ -429,6 +432,34 @@ finally:
         self.assertEqual(
             len(self.controller.events(self.plan["workflow_id"], "a")["events"]), count
         )
+
+    def test_failure_diagnostic_is_bounded_and_keeps_final_native_error(self):
+        self.plan["stages"] = [
+            self.stage(
+                "a", fail=True,
+                failure_message="x" * 20000 + "\nHugin artifact changed while being published",
+            )
+        ]
+        self.controller.register(self.plan, self.game)
+        result = self.wait()
+        self.assertEqual(result["state"], "failed")
+        self.assertIn(
+            "Hugin artifact changed while being published", result["nodes"][0]["reason"]
+        )
+        self.assertLess(len(result["nodes"][0]["reason"]), 8192)
+        self.assertTrue(result["owner_released"])
+
+    def test_unreadable_failure_log_does_not_hold_verified_cleanup(self):
+        self.plan["stages"] = [self.stage("a", fail=True)]
+        self.controller.register(self.plan, self.game)
+        with patch(
+            "hstream_workflow.controller.read_tail", side_effect=OSError("Log unavailable")
+        ):
+            result = self.wait()
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["nodes"][0]["reason"], "Native task did not succeed")
+        self.assertTrue(result["owner_released"])
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
 
     def test_stop_retires_detached_descendant_and_prevents_dependents(self):
         self.plan["stages"] = [

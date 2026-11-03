@@ -76,6 +76,8 @@ absl::Status publish_stitch_file_atomically(const std::filesystem::path& path, c
 class PreparedStitchGenerationPublication {
  public:
   ~PreparedStitchGenerationPublication();
+  // Abandon publication and release every file pin before rollback removes staged artifacts.
+  void Reset();
   PreparedStitchGenerationPublication(PreparedStitchGenerationPublication&& other) noexcept;
   PreparedStitchGenerationPublication& operator=(PreparedStitchGenerationPublication&& other) noexcept;
   PreparedStitchGenerationPublication(const PreparedStitchGenerationPublication&) = delete;

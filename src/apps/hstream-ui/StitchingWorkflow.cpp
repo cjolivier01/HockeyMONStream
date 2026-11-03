@@ -251,8 +251,10 @@ absl::StatusOr<QJsonObject> BuildStitchingWorkflowPlan(
           : phase == "create"          ? "Prepare"
           : phase == "reuse-selection" ? "Selection"
                                        : phase;
-      if (phase == "create" && !row.selection_fingerprint.empty() &&
-          (row.selection_workspace || row.result_workspace || row.state == "complete"))
+      if (phase == "create" &&
+          (!row.saved_selection_fingerprint.empty() ||
+           (!row.selection_fingerprint.empty() &&
+            (row.selection_workspace || row.result_workspace || row.state == "complete"))))
         label = "Prepare retained frames";
       if (!label.isEmpty())
         label[0] = label[0].toUpper();

@@ -1510,6 +1510,9 @@ PreparedStitchGenerationPublication::PreparedStitchGenerationPublication(std::un
     : impl_(std::move(impl)) {}
 
 PreparedStitchGenerationPublication::~PreparedStitchGenerationPublication() = default;
+void PreparedStitchGenerationPublication::Reset() {
+  impl_.reset();
+}
 PreparedStitchGenerationPublication::PreparedStitchGenerationPublication(
     PreparedStitchGenerationPublication&& other) noexcept = default;
 PreparedStitchGenerationPublication& PreparedStitchGenerationPublication::operator=(
@@ -1810,14 +1813,40 @@ absl::Status record_published_stitch_generation_artifact(
     return absl::OkStatus();
   if (artifact->descriptor < 0)
     return absl::AbortedError("Optional Hugin artifact appeared during publication: " + name);
+  const fs::path path = game_dir / name;
+  // Resolve the final name before sampling the old descriptor. On NFS, that
+  // lookup refreshes inode attributes invalidated by the rename. Keep a pin
+  // opened through the final dentry instead of retaining the staged dentry.
+  const int published_descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (published_descriptor < 0) {
+    return absl::AbortedError("Unable to pin published Hugin artifact: " + path.string() + ": " + std::strerror(errno));
+  }
+  PinnedStitchArtifact published_artifact(name, published_descriptor, {});
   struct stat pinned{};
   struct stat published{};
-  if (::fstat(artifact->descriptor, &pinned) != 0 || ::lstat((game_dir / name).c_str(), &published) != 0 ||
-      !S_ISREG(published.st_mode) || !stitch_file_metadata_matches_without_ctime(artifact->metadata, pinned) ||
-      !stitch_stat_matches(pinned, published)) {
-    return absl::AbortedError("Hugin artifact changed while being published: " + (game_dir / name).string());
+  struct stat named{};
+  const bool pinned_read = ::fstat(artifact->descriptor, &pinned) == 0;
+  const bool published_read = ::fstat(published_descriptor, &published) == 0;
+  const bool named_read = ::lstat(path.c_str(), &named) == 0;
+  if (!pinned_read || !published_read || !named_read || !S_ISREG(published.st_mode) || !S_ISREG(named.st_mode) ||
+      !stitch_file_metadata_matches_without_ctime(artifact->metadata, pinned) ||
+      !stitch_stat_matches(pinned, published) || !stitch_stat_matches(published, named)) {
+    const auto describe = [](const struct stat& metadata, bool available = true) {
+      if (!available)
+        return std::string("unavailable");
+      std::ostringstream value;
+      value << "dev=" << metadata.st_dev << ",ino=" << metadata.st_ino << ",size=" << metadata.st_size
+            << ",mtime=" << metadata.st_mtim.tv_sec << ':' << metadata.st_mtim.tv_nsec
+            << ",ctime=" << metadata.st_ctim.tv_sec << ':' << metadata.st_ctim.tv_nsec;
+      return value.str();
+    };
+    return absl::AbortedError(
+        "Hugin artifact changed while being published: " + path.string() + " (expected " +
+        describe(artifact->metadata) + "; staged pin " + describe(pinned, pinned_read) + "; final pin " +
+        describe(published, published_read) + "; final name " + describe(named, named_read) + ")");
   }
-  artifact->metadata = pinned;
+  published_artifact.metadata = published;
+  *artifact = std::move(published_artifact);
   return absl::OkStatus();
 }
 

@@ -203,6 +203,72 @@ std::string read_text_file(const std::filesystem::path& path) {
   return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+bool test_publication_file_pins(const std::filesystem::path& root, const std::filesystem::path& source) {
+  namespace fs = std::filesystem;
+  using namespace hm::stitching;
+  bool ok = true;
+  for (const std::string scenario : {"rename", "symlink", "replacement", "write"}) {
+    const fs::path game = root / ("publication-pin-" + scenario);
+    const fs::path staging = saved_state(game) / "staging";
+    fs::create_directory(staging);
+    for (const std::string& name : stitch_artifact_names()) {
+      if (name != kStitchGenerationArtifact && fs::exists(saved_state(source) / name))
+        fs::copy_file(saved_state(source) / name, staging / name);
+    }
+    auto prepared = prepare_stitch_generation_publication(staging, game);
+    ok &= expect(prepared.ok(), "publication pin fixture must prepare a complete generation");
+    if (!prepared.ok())
+      continue;
+    const std::string name = "mapping_0000.tif";
+    const fs::path published = saved_state(game) / name;
+    ok &= expect(
+        validate_prepared_stitch_generation_artifact(*prepared, staging, name).ok(),
+        "staged artifact must match its preparation pin");
+    fs::rename(staging / name, published);
+    if (scenario == "symlink" || scenario == "replacement") {
+      fs::rename(published, staging / "original.tif");
+      if (scenario == "symlink") {
+        fs::create_symlink(staging / "original.tif", published);
+      } else {
+        fs::copy_file(staging / "original.tif", published);
+        fs::last_write_time(published, fs::last_write_time(staging / "original.tif"));
+      }
+    } else if (scenario == "write") {
+      std::ofstream(published, std::ios::app) << "changed";
+    }
+    const auto recorded = record_published_stitch_generation_artifact(*prepared, game, name);
+    ok &= expect(
+        scenario == "rename" ? recorded.ok() : absl::IsAborted(recorded),
+        "publication must accept its renamed inode and reject symlinks, same-byte replacements, and changed payloads");
+    if ((scenario == "rename") != recorded.ok())
+      std::cerr << "Publication pin scenario " << scenario << ": " << recorded << '\n';
+    prepared->Reset();
+    fs::remove_all(game);
+  }
+  return ok;
+}
+
+bool test_partial_publication_rollback(const std::filesystem::path& root, const std::filesystem::path& source) {
+  namespace fs = std::filesystem;
+  const fs::path game = root / "partial-publication-rollback";
+  std::ofstream(saved_state(game) / "config.yaml") << "unrelated: preserved\n";
+  ::setenv("HM_TEST_STITCH_FAIL_AFTER_PUBLISH", "mapping_0000.tif", 1);
+  const auto result = hm::stitching::HuginProject::PromoteArtifacts(source, game);
+  ::unsetenv("HM_TEST_STITCH_FAIL_AFTER_PUBLISH");
+  bool clean = true;
+  for (const auto& entry : fs::directory_iterator(saved_state(game)))
+    clean &= entry.path().filename().string().rfind("hstream-stitch-", 0) != 0;
+  for (const std::string& name : hm::stitching::stitch_artifact_names())
+    clean &= !fs::exists(saved_state(game) / name);
+  const bool ok = expect(
+      absl::IsInternal(result) && result.message() == "Injected stitch failure after publishing mapping_0000.tif" &&
+          clean && read_text_file(saved_state(game) / "config.yaml") == "unrelated: preserved\n",
+      "partial publication must release staged pins and finish rollback immediately, including on NFS");
+  if (!ok)
+    std::cerr << "Partial publication rollback: " << result << '\n';
+  return ok;
+}
+
 std::string generation_stat_identity(const std::filesystem::path& directory, bool portable) {
   static constexpr std::array<const char*, 10> names = {
       "hm_project.pto",
@@ -1630,6 +1696,8 @@ int main(int argc, char** argv) {
               read_binary_file(saved_state(promoted_game) / "panorama.tif"),
       "experiment promotion must republish validated maps and seam under a fresh generation without rerendering");
 
+  ok &= test_publication_file_pins(root, root / "game");
+  ok &= test_partial_publication_rollback(root, root / "game");
   ok &= test_reframe_publication(root);
 
   const std::string config_before_failed_selection = read_text_file(saved_state(promoted_game) / "config.yaml");

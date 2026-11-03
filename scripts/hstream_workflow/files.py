@@ -130,6 +130,20 @@ def read_json(path, maximum=MAX_PLAN_BYTES):
     return value
 
 
+def read_tail(path, maximum):
+    """Read a bounded tail of a stopped task's log with stable file identity."""
+    with _pinned_file(path) as (descriptor, before):
+        os.lseek(descriptor, max(0, before.st_size - maximum), os.SEEK_SET)
+        chunks, size = [], 0
+        while size < maximum:
+            chunk = os.read(descriptor, maximum - size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+        return b"".join(chunks)
+
+
 def sync_directory(path):
     descriptor = os.open(
         path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW

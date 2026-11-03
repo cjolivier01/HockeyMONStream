@@ -17,6 +17,7 @@ from .files import (
     locked,
     private_directory,
     read_json,
+    read_tail,
     write_json,
 )
 from .processes import host_identity, process_identity, same_process
@@ -864,7 +865,15 @@ class Controller:
                                 observation["state"] == "COMPLETED"
                                 and observation.get("exit_code") == "0:0",
                                 "Slurm did not complete successfully: "
-                                + observation["state"],
+                                + observation["state"]
+                                + " (exit "
+                                + str(observation.get("exit_code", "unknown"))
+                                + ")"
+                                + (
+                                    ": " + str(complete["error"])
+                                    if complete.get("error")
+                                    else ""
+                                ),
                             )
                         result = self._verify_result(root, request, complete, profile)
                         outcome = result["status"]
@@ -879,6 +888,22 @@ class Controller:
                         verification_error = exc
                     except ValueError as exc:
                         outcome, details = "failed", {"reason": str(exc)[:8192]}
+                        # Diagnostics are advisory and must never grant success
+                        # or hold up release after verified shutdown/cleanup.
+                        # Keep the actual native failure beside scheduler status
+                        # so both UI monitors can explain a failed stage.
+                        try:
+                            tail = read_tail(root / "task.log", 4096).decode(
+                                "utf-8", errors="replace"
+                            ).strip()
+                            if tail:
+                                details["reason"] = (
+                                    details["reason"][:2048]
+                                    + "\nTask log (tail):\n"
+                                    + tail
+                                )
+                        except (OSError, ValueError):
+                            pass
                 adoption = bool(
                     result is not None
                     and outcome == "succeeded"

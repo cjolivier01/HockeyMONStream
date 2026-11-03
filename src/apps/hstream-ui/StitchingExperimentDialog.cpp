@@ -959,7 +959,15 @@ struct StitchingExperimentDialog::Impl {
         (candidate.stored && !candidate.stored->selection_fingerprint.empty());
     const bool scan_planned =
         candidate.baseline_sequence != 0 || (candidate.stored && !candidate.stored->baseline_workspace_key.empty());
-    if (candidate.selection_reuse_blocked || (candidate.main_calibration && !candidate.failure.isEmpty())) {
+    const bool workflow_owned = candidate.stored && candidate.stored->workflow_active;
+    // The reuse fence also covers ordinary workflow ownership. That lock does
+    // not invalidate saved inputs; unverified failures and local process intent
+    // still retain the unavailable warning. Admission continues using the fence.
+    const bool workflow_lock_only = workflow_owned && candidate.stored->process_token.empty() &&
+        candidate.stored->process_session_id == 0 && candidate.stored->failure.empty() &&
+        candidate.stored->state != "failed" && candidate.stored->state != "quarantined";
+    if ((candidate.selection_reuse_blocked && !workflow_lock_only) ||
+        (candidate.main_calibration && !candidate.failure.isEmpty())) {
       return {
           frozen || scan_planned ? "Player-rich (unavailable)" : "Unconfirmed",
           "Saved frame inputs or process ownership could not be verified. See this candidate's status."};
@@ -967,12 +975,15 @@ struct StitchingExperimentDialog::Impl {
     if (frozen) {
       return {
           "Player-rich (saved)",
-          "Uses this candidate's frozen player-rich frame selection, including its reference pair. "
-          "Changing the checkbox does not replace saved frames."};
+          QString(
+              "This saved frame selection is retained for this candidate; no new player scan is needed. "
+              "Changing the checkbox does not replace saved frames.") +
+              (workflow_owned ? " The active workflow owns this candidate until its stages and cleanup finish." : "")};
     }
     if (scan_planned || candidate.selection_owner_sequence != 0) {
       return {
-          !candidate.queued && !candidate.failure.isEmpty() ? "Player-rich (unavailable)" : "Player-rich (pending)",
+          !candidate.queued && !candidate.failure.isEmpty() && !workflow_lock_only ? "Player-rich (unavailable)"
+                                                                                   : "Player-rich (pending)",
           "This candidate requests a player-rich selection from its baseline scan or shared frame owner, "
           "but no selection has been frozen in this candidate yet."};
     }

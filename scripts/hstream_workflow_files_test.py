@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hstream_workflow.bounded_log import SEGMENT_BYTES, Capture
-from hstream_workflow.files import file_digest, read_json
+from hstream_workflow.files import file_digest, read_json, read_tail
 from hstream_workflow.schema import WorkflowError
 
 
@@ -92,6 +92,41 @@ class FilesTest(unittest.TestCase):
         self.assertTrue(
             (self.root / "task.log").read_bytes().endswith(b"final native diagnostic\n")
         )
+
+    def test_stopped_log_tail_is_bounded_and_rejects_symlinks_and_pipes(self):
+        self.path.write_bytes(b"x" * 10000 + b"failure")
+        self.assertEqual(read_tail(self.path, 7), b"failure")
+        alias = self.directory / "alias"
+        alias.symlink_to(self.path)
+        with self.assertRaises(OSError):
+            read_tail(alias, 7)
+        pipe = self.directory / "pipe"
+        os.mkfifo(pipe)
+        with self.assertRaises(WorkflowError):
+            read_tail(pipe, 7)
+
+    def test_stopped_log_replacement_is_rejected(self):
+        original = os.read
+
+        def replace(descriptor, count):
+            contents = original(descriptor, count)
+            self.path.rename(self.directory / "old")
+            self.path.write_bytes(b"replacement")
+            return contents
+
+        with patch(
+            "hstream_workflow.files.os.read", side_effect=replace
+        ), self.assertRaises(WorkflowError):
+            read_tail(self.path, 7)
+
+    def test_stopped_log_tail_handles_short_reads(self):
+        self.path.write_bytes(b"x" * 10000 + b"failure")
+        original = os.read
+        with patch(
+            "hstream_workflow.files.os.read",
+            side_effect=lambda descriptor, count: original(descriptor, min(count, 2)),
+        ):
+            self.assertEqual(read_tail(self.path, 7), b"failure")
 
 
 if __name__ == "__main__":

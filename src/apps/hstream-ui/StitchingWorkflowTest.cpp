@@ -147,6 +147,19 @@ void plans(const StitchingExperimentStore& store) {
   require(
       plan->value("runtime_identity").toObject().value("user_config_snapshot").isObject(),
       "User defaults were not frozen");
+  rows.experiments[3].saved_selection_fingerprint = std::string(64, 'b');
+  rows.experiments[3].selection_fingerprint = rows.experiments[3].saved_selection_fingerprint;
+  const auto retained_queue = BuildStitchingWorkflowPlan(store, rows, profiles(), "gpu", 3, id);
+  require(
+      retained_queue.ok() &&
+          stage(*retained_queue, "experiment-create", "candidate-4")
+              .value("label")
+              .toString()
+              .startsWith("Prepare retained frames") &&
+          retained_queue->value("stages").toArray().size() == plan->value("stages").toArray().size() &&
+          stage(*retained_queue, "experiment-run", "candidate-4") == ordinary &&
+          stage(*retained_queue, "experiment-scan", "candidate-4").isEmpty(),
+      "Queued saved frames must be labeled retained without changing the solve plan or adding a scan");
   rows.experiments[0].state = "complete";
   rows.experiments[1].selection_fingerprint = "frozen";
   plan = BuildStitchingWorkflowPlan(store, rows, profiles(), "gpu", 3, id);

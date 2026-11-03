@@ -43,6 +43,20 @@ continue. Retry creates a new attempt and observation epoch, preserving verified
 successful prerequisites. Retry is available after all attempts have stopped and
 recording ownership has been released.
 
+When candidates already have materialized saved player frames, no new baseline,
+scan or materialization node is needed. Preparation copies verified inputs into
+each candidate's private workspace; it does not search the video again. The
+desktop graph labels this step `Prepare retained frames`; browser candidate
+preparation finishes before the distributed batch starts.
+Candidates with the same selection fingerprint use the same selected frame pairs,
+even when their control-point budgets differ. A running solve keeps the
+`Player-rich (saved)` label while ownership still prevents conflicting actions.
+
+For a failed stage, select its Solve node and attempt in the workflow pane. The
+reason includes scheduler status and a bounded tail of the native task log when
+available; the Logs control shows the longer attempt log. A successful frame
+selection remains reusable when a later calibration solve fails.
+
 The recording has one durable operation owner. Main playback, INT8 preparation,
 local experiment operations and distributed workflows respect the same owner,
 including across independent desktop processes and window closure. Releasing a
