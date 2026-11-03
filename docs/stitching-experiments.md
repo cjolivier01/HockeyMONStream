@@ -3,6 +3,48 @@
 The desktop UI's **Stitching experiments…** tool compares multiple stitching calibrations against the same game and
 the same moving playback passage. It runs only while the main pipeline is stopped.
 
+For a fresh recording, including one whose `_hockeymon` directory was removed,
+open **Stitching experiments…** directly. The desktop checks for two camera
+sources and initializes `_hockeymon/config.yaml` from the displayed settings.
+The application log records that first save. A prior **Save Preset** click is
+unnecessary. Once a preset exists, pending main-window edits still need an
+explicit save before opening experiments, so opening the tool cannot silently
+replace saved settings or invalidate a previous calibration.
+
+In the browser, **Current recording · displayed settings** prepares candidates
+from the selected uploads and the main form without requiring a previous
+calibration or writing the project's saved preset. Choosing a completed source
+instead uses that run's retained inputs. Each admitted candidate freezes its
+inputs; later main-window or Defaults edits cannot alter it.
+
+In the workflow graph, running nodes have a blue fill, completed/reused nodes
+green, and failed/recovery nodes red. Selection has a separate outline and keeps
+the state color; text labels remain visible.
+
+### What Save Preset stores
+
+For a desktop game, **Save Preset** writes `_hockeymon/config.yaml`: the displayed
+processing choices, recording-specific camera metadata and calibration
+bookkeeping, plus a standalone export recipe under `hstream_ui.job`. It does
+not run calibration. The `arguments` list is read by `hstream-job` when exporting
+a script; its `--options` are generated from the controls, rather than being an
+independent set of UI defaults.
+
+Shipped defaults belong in `configs/baseline.yaml`. Effective game settings also
+inherit the user Defaults overlay, so a value equal to the shipped baseline may
+still be a necessary game override when user Defaults differ. Recorded camera
+optics, paired calibration frame counts and frozen experiment/run inputs retain
+their values even when those values happen to match today's defaults.
+
+Desktop game saving currently retains additional resolved stitching values and
+CLI options. Not every duplicate is required for provenance. It is not yet a
+pure difference file; removing equal values indiscriminately would change the
+export recipe and calibration identities. The Defaults editor and browser
+project presets already store differences from their inherited settings;
+browser run configs are separate resolved snapshots. A future desktop save
+format can separate reusable overrides from calibration state and generate
+export arguments at export time, while preserving existing recipes and runs.
+
 Desktop action icons use consistent colors: green for apply/play/add, red for stop/cancel/delete, blue for
 navigation and inspection, and distinct colors for camera/stitching tools. Disabled icons retain their hue at
 reduced opacity. Standard dialog icons, native navigation/spin arrows, and table/tree indicators follow the same policy.

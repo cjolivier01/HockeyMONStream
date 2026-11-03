@@ -131,6 +131,7 @@
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
+#include "hstream/src/libs/stitching/VideoDiscovery.h"
 #include "hstream/src/libs/tracking/PlayTrackerRuntimeControls.h"
 
 #include <QtCore/QUuid>
@@ -5076,8 +5077,7 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
 
 void HStreamWindow::openGame(const QString& game_id, bool play, bool calibration_only) {
   if (!game_id.isEmpty()) {
-    if (sanitized_game_id(game_id) != game_id ||
-        !QFileInfo::exists(QDir(gameDirectory(game_id)).filePath("_hockeymon/config.yaml")))
+    if (sanitized_game_id(game_id) != game_id || !QFileInfo(gameDirectory(game_id)).isDir())
       throw std::runtime_error("The requested game must name an existing game under the selected game root");
     selectGame(game_id);
   }
@@ -6485,7 +6485,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitching_experiments_button_->setObjectName("stitchingExperimentsButton");
   stitching_experiments_button_->setToolTip(
       "Generate stitching candidates, replay one moving passage across their seams, and use the selected maps "
-      "without recalibrating.");
+      "without recalibrating. On first use, save the displayed settings for this recording automatically.");
   connect(stitching_experiments_button_, &QPushButton::clicked, this, [this]() {
     const auto selected_game = fs::path(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
     const auto owner = hm::game_operation::Inspect(selected_game);
@@ -6508,13 +6508,31 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     }
     const QString game_id = game_id_edit_ ? game_id_edit_->text().trimmed() : QString();
     const QString game_directory = gameDirectory(game_id);
-    if (game_id.isEmpty() ||
-        (!monitoring && !QFileInfo::exists(QDir(game_directory).filePath("_hockeymon/config.yaml")))) {
+    if (game_id.isEmpty() || !QFileInfo(game_directory).isDir()) {
       QMessageBox::information(
-          this, "Stitching Experiments", "Select a saved game with two camera videos before experimenting.");
+          this, "Stitching Experiments", "Select an existing recording in Game before opening Stitching Experiments.");
       return;
     }
-    if (!monitoring && save_preset_button_ && save_preset_button_->isEnabled()) {
+    const bool initialize_preset =
+        !monitoring && !QFileInfo::exists(QDir(game_directory).filePath("_hockeymon/config.yaml"));
+    if (initialize_preset) {
+      // Discovery groups chapters by camera. Two chapters from one camera do
+      // not make a stereo recording, and opening an empty game should not save it.
+      const auto videos = hm::stitching::get_available_videos(game_directory.toStdString());
+      const auto cameras = videos.ok()
+          ? std::count_if(
+                videos->begin(),
+                videos->end(),
+                [](const auto& item) { return item.first != "stitched" && !item.second.empty(); })
+          : 0;
+      if (cameras != 2) {
+        QMessageBox::information(
+            this,
+            "Stitching Experiments",
+            "This recording needs two source cameras. Add their videos in Video Sets before opening Stitching Experiments.");
+        return;
+      }
+    } else if (!monitoring && save_preset_button_ && save_preset_button_->isEnabled()) {
       QMessageBox::information(
           this,
           "Stitching Experiments",
@@ -6535,6 +6553,21 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     if (!runtime_error.isEmpty()) {
       QMessageBox::warning(this, "Stitching Experiments", runtime_error);
       return;
+    }
+    if (initialize_preset) {
+      QString error;
+      if (!savePreset(false, &error, /*initialize_only=*/true)) {
+        QMessageBox::warning(
+            this,
+            "Stitching Experiments",
+            error.isEmpty()
+                ? "Could not save this recording's settings. See the application log for the cause, then try again."
+                : error);
+        return;
+      }
+      appendLog(
+          "Initialized _hockeymon/config.yaml from the displayed settings for Stitching Experiments. "
+          "Save Preset stores later changes for this recording.");
     }
     auto selection_applied = std::make_shared<bool>(false);
     auto* dialog = new StitchingExperimentDialog(
@@ -19288,7 +19321,7 @@ bool HStreamWindow::saveDefaultsPreset() {
   return true;
 }
 
-bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validation_error) {
+bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validation_error, bool initialize_only) {
   if (!parse_calibration_reference(stitchFrameTime())) {
     const QString error = "Reference frame must be [-]HH:MM:SS[.mmm], within 24 hours. Negative zero has no frame.";
     if (validation_error)
@@ -19329,6 +19362,14 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
   YAML::Node config;
   const auto load_locked_config = [&]() {
     config = YAML::Node();
+    if (initialize_only && fs::symlink_status(config_path).type() != fs::file_type::not_found) {
+      const QString error =
+          "This recording's settings were saved by another operation. Reload the game before opening Stitching Experiments.";
+      if (validation_error)
+        *validation_error = error;
+      appendLog(error);
+      return false;
+    }
     if (fs::exists(config_path)) {
       try {
         config = YAML::LoadFile(config_path.string());
@@ -20048,7 +20089,9 @@ void HStreamWindow::updatePresetDirtyState() {
     save_preset_button_->setEnabled(can_save);
   const QString description = editing_defaults_
       ? "Save these settings to ~/.config/hstream-ui/defaults.yaml for games to inherit."
-      : !has_game      ? "Select or create a game before saving camera-control changes."
+      : !has_game ? "Select or create a game before saving camera-control changes."
+      : !QFileInfo::exists(QDir(gameDirectory(game_id)).filePath("_hockeymon/config.yaml"))
+      ? "Create this recording's _hockeymon/config.yaml from the displayed settings, including camera metadata and export options. Stitching Experiments also does this on first use."
       : retry_required ? "Retry saving the current preset because its last durability check failed."
       : dirty          ? "Save the changed stitching and camera controls into this game's config.yaml for future runs."
                        : "No stitching or camera-control changes need saving. Adjust a control to enable Save Preset.";

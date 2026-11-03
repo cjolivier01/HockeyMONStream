@@ -819,6 +819,9 @@ for line in sys.stdin:
   static void reloadSavedControls(HStreamWindow* window) {
     window->loadSavedControlConfig();
   }
+  static bool initializeExperimentPreset(HStreamWindow* window, QString* error) {
+    return window->savePreset(false, error, /*initialize_only=*/true);
+  }
   static void preparedInt8(HStreamWindow* window, const QString& engine) {
     window->prepared_int8_engine_ = engine;
     window->prepared_int8_manifest_ = engine + ".json";
@@ -14867,6 +14870,97 @@ bool test_control_point_limit_precedence() {
   return expect(points->value() == 1500, "Removing both overrides must restore the baseline control-point limit");
 }
 
+bool test_fresh_stitching_experiments() {
+  for (const QString scenario : {QString("fresh"), QString("one-camera"), QString("save-failure")}) {
+    const QString game_name = "experiment-first-open-" + scenario;
+    const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
+    if (!QDir().mkpath(game_directory) || !write_fake_video(game_directory + "/GX010001.MP4") ||
+        !write_fake_video(game_directory + (scenario == "one-camera" ? "/GX020001.MP4" : "/GX010002.MP4")))
+      return false;
+    HStreamWindow window;
+    if (!HStreamWindowTestAccess::useMatchingDevelopmentRuntime(&window))
+      return false;
+    window.resize(1440, 1000);
+    window.show();
+    auto* selector = require_child<QComboBox>(&window, "gameSelector");
+    auto* experiments = require_child<QPushButton>(&window, "stitchingExperimentsButton");
+    auto* cp = require_child<QSpinBox>(&window, "controlPointsSpin");
+    if (!selector || !experiments || !cp)
+      return false;
+    if (scenario == "fresh")
+      window.openGame(game_name, false, false);
+    else
+      selector->setCurrentIndex(selector->findText(game_name));
+    const QString config_path = game_directory + "/_hockeymon/config.yaml";
+    if (!expect(!QFileInfo::exists(config_path), "Fresh experiment fixture must have no saved preset"))
+      return false;
+    cp->setValue(350);
+    QString message;
+    QTimer dismiss_messages;
+    QObject::connect(&dismiss_messages, &QTimer::timeout, [&]() {
+      if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+        message = box->text();
+        box->accept();
+      }
+    });
+    dismiss_messages.start(10);
+    if (scenario == "save-failure")
+      qputenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH", "1");
+    activate(experiments);
+    qunsetenv("HSTREAM_UI_TEST_FAIL_PRESET_CONFIG_PUBLISH");
+    auto* dialog = window.findChild<QDialog*>("stitchingExperimentDialog");
+    if (scenario != "fresh") {
+      if (!expect(
+              !dialog && !QFileInfo::exists(config_path) &&
+                  message.contains(scenario == "one-camera" ? "two source cameras" : "Could not save"),
+              "Missing camera or failed save must explain the cause without opening experiments"))
+        return false;
+      continue;
+    }
+    if (!expect(
+            dialog && message.isEmpty() && QFileInfo::exists(config_path),
+            "Opening experiments must initialize a fresh recording without a manual Save Preset")) {
+      std::cerr << message.toStdString() << '\n' << window.logText().toStdString() << '\n';
+      return false;
+    }
+    QFile saved_file(config_path);
+    if (!saved_file.open(QIODevice::ReadOnly))
+      return false;
+    const auto saved = saved_file.readAll();
+    saved_file.close();
+    const auto config = YAML::Load(saved.toStdString());
+    if (!expect(
+            config["hstream_ui"]["stitching_calibration"]["control_points"].as<int>() == 350 &&
+                window.logText().contains("Initialized _hockeymon/config.yaml"),
+            "Initialization must save displayed settings and explain what was saved") ||
+        !capture_widget_artifact(dialog, "fresh-experiments-after.png"))
+      return false;
+    QPointer<QDialog> closed(dialog);
+    dialog->close();
+    if (!expect(
+            QTest::qWaitFor([&] { return closed.isNull(); }, 5000),
+            "Closing the experiment dialog must retire it before reopening"))
+      return false;
+    cp->setValue(520);
+    message.clear();
+    activate(experiments);
+    if (!expect(
+            !window.findChild<QDialog*>("stitchingExperimentDialog") && message.contains("Save the current preset"),
+            "Opening an existing game must not silently save unrelated pending edits"))
+      return false;
+    QString race_error;
+    if (!expect(
+            !HStreamWindowTestAccess::initializeExperimentPreset(&window, &race_error) &&
+                race_error.contains("saved by another operation"),
+            "First-use initialization must reject an existing config under the publication lock"))
+      return false;
+    if (!saved_file.open(QIODevice::ReadOnly) ||
+        !expect(saved_file.readAll() == saved, "Existing settings must remain byte-for-byte unchanged"))
+      return false;
+  }
+  return true;
+}
+
 bool test_preset_reload_with_missing_tracker() {
   const QString game_name = "saved-preset-missing-tracker";
   const QString game_directory = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_name);
@@ -21913,6 +22007,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FRESH_EXPERIMENTS_ONLY"))
+    return test_fresh_stitching_experiments() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ROTATION_FINISH_ONLY"))
     return HStreamWindowTestAccess::finishedArchiveWaitsForRotationChecks() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_STILL_ONLY"))
@@ -22153,7 +22249,7 @@ int main(int argc, char** argv) {
       !(test_control_point_resolution(window.gameDirectoryText()) &&
         test_control_point_filtering(window.gameDirectoryText())) ||
       !test_control_point_limit_precedence() || !test_preset_reload_with_missing_tracker() ||
-      !test_stitching_iteration_controls(window.gameDirectoryText()))
+      !test_fresh_stitching_experiments() || !test_stitching_iteration_controls(window.gameDirectoryText()))
     return 1;
   if (!test_nonzero_user_stitch_frame_default(window.gameDirectoryText())) {
     std::cerr << "test_nonzero_user_stitch_frame_default failed\n";

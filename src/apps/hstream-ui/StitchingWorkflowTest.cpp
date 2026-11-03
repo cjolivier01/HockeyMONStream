@@ -414,6 +414,55 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   };
   require(wait([&] { return graph_scroll->horizontalScrollBar()->maximum() == 0; }), "Graph did not fit its pane");
   check_graph();
+  const auto original_state = read(root + "/state.json");
+  const auto original_palette = QApplication::palette();
+  const auto first_id = graph_nodes[0].toObject().value("id").toString();
+  const auto first_button = [&] { return widget<QPushButton>(*graph, qPrintable("stitchWorkflowNode_" + first_id)); };
+  for (const bool dark : {false, true}) {
+    auto colors = original_palette;
+    colors.setColor(QPalette::Button, dark ? QColor("#242a32") : QColor("#eeeeee"));
+    colors.setColor(QPalette::ButtonText, dark ? Qt::white : Qt::black);
+    QApplication::setPalette(colors);
+    for (const auto& [status, fill] : std::vector<std::pair<QString, QColor>>{
+             {"running", QColor("#1f67a4")},
+             {"succeeded", QColor("#215c3c")},
+             {"reused", QColor("#215c3c")},
+             {"failed", QColor("#8e343d")},
+             {"recovery", QColor("#8e343d")},
+             {"waiting", colors.color(QPalette::Button)}}) {
+      auto snapshot = original_state;
+      auto entries = snapshot.value("nodes").toArray();
+      auto entry = entries[0].toObject();
+      entry.insert("state", status);
+      entries[0] = entry;
+      snapshot.insert("nodes", entries);
+      write(root + "/state.json", QJsonDocument(snapshot).toJson());
+      require(
+          wait([&] { return first_button()->accessibleName().endsWith(" · " + status); }),
+          "Graph did not announce the updated stage state");
+      for (const bool selected : {false, true}) {
+        stages->setCurrentIndex(selected ? 0 : 1);
+        auto* button = first_button();
+        const auto image = button->grab().toImage();
+        require(image.pixelColor(12, 7) == fill, "Stage color is missing, stale, or hidden by selection/theme");
+        require(button->isChecked() == selected, "State color lost the independent selection marker");
+        require(!button->icon().isNull() && button->text().endsWith(status), "State color hid the icon or status text");
+        if (status != "waiting") {
+          require(button->palette().color(QPalette::ButtonText) == Qt::white, "Colored stage lost readable text");
+          if (selected) {
+            bool marked = false;
+            for (int x = 6; x < image.width() - 6; ++x)
+              marked |= image.pixelColor(x, 1) == QColor("#ffd166");
+            require(marked, "Selected colored stage has no visible selection border");
+          }
+        }
+      }
+    }
+  }
+  QApplication::setPalette(original_palette);
+  write(root + "/state.json", QJsonDocument(original_state).toJson());
+  require(
+      wait([&] { return first_button()->accessibleName().endsWith(" · running"); }), "Running state was not restored");
   const auto shared = stage(submitted, "experiment-materialize", "candidate-2");
   auto* shared_button = widget<QPushButton>(*graph, qPrintable("stitchWorkflowNode_" + shared.value("id").toString()));
   shared_button->click();

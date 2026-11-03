@@ -985,6 +985,7 @@ cc_library(
         "//src/libs/stitching:stitching_algorithms",
         "//src/libs/stitching:stitching_reframe",
         "//src/libs/stitching:stitching_calibration_controls",
+        "//src/libs/stitching:video_discovery",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ] + select({
