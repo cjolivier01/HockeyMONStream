@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Filesystem regression tests for optional Plex publication."""
+"""Filesystem regression tests for Plex publication and obsolete-export cleanup."""
 import os
 from pathlib import Path
 import subprocess
@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 
-from find_obsolete_mp4s import find_obsolete_mp4s, symlink_plex_programs
+from find_obsolete_mp4s import cleanup_targets, find_obsolete_mp4s, remove_obsolete, symlink_plex_programs
 
 
 class PlexLinksTest(unittest.TestCase):
@@ -25,6 +25,12 @@ class PlexLinksTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
         return path
+
+    def run_cli(self, *args, check=True):
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        return subprocess.run([sys.executable, str(script), str(self.root), *args],
+                              env={**os.environ, 'HOME': str(self.home)},
+                              check=check, capture_output=True, text=True)
 
     def test_game_named_database_generations_and_legacy_recordings(self):
         legacy = self.video('game/hstream_telemetry-2.db')
@@ -95,24 +101,19 @@ class PlexLinksTest(unittest.TestCase):
 
     def test_published_program_is_not_a_cleanup_candidate(self):
         chosen = self.video('game/program_4k_output-2.mp4')
+        sidecar = self.video('game/program_4k_output-2.mp4.hstream-archive.json')
         self.video('game/stitched_output-3.mp4')
-        script = Path(__file__).with_name('find_obsolete_mp4s.py')
-        command = [sys.executable, str(script), str(self.root)]
-        ordinary = subprocess.run(command, check=True, capture_output=True, text=True)
+        ordinary = self.run_cli()
         self.assertIn(str(chosen.relative_to(self.root)), ordinary.stdout)
-        published = subprocess.run(command + ['--symlink-plex', '--plex-dir', str(self.plex)],
-                                   check=True, capture_output=True, text=True)
-        self.assertEqual(published.stdout, '')
+        published = self.run_cli('--symlink-plex', '--plex-dir', str(self.plex), '--clean')
+        self.assertIn('removed 0 files', published.stderr)
         self.assertEqual((self.plex / 'game.mp4').resolve(), chosen)
+        self.assertTrue(sidecar.is_file(), 'a published export must keep its origin')
 
     def test_cli_opt_in_default_override_and_missing_directory(self):
         chosen = self.video('game/tracking_output-2.mp4')
         obsolete = self.video('game/tracking_output-1.mp4')
-        script = Path(__file__).with_name('find_obsolete_mp4s.py')
-        def run(*args):
-            return subprocess.run([sys.executable, str(script), str(self.root), *args],
-                                  env={**os.environ, 'HOME': str(self.home)},
-                                  check=True, capture_output=True, text=True)
+        run = self.run_cli
         self.assertEqual(run().stdout, str(obsolete.relative_to(self.root)) + '\n')
         self.assertEqual(list(self.plex.iterdir()), [])
         self.assertEqual(run('--symlink-plex').stdout, str(obsolete.relative_to(self.root)) + '\n')
@@ -126,6 +127,173 @@ class PlexLinksTest(unittest.TestCase):
         self.assertFalse(missing.exists())
         missing.touch()
         self.assertIn('Skipping Plex links', run('--symlink-plex', '--plex-dir', str(missing)).stderr)
+
+    def test_an_obsolete_archive_takes_its_origin_sidecar(self):
+        self.video('game/program_4k_output-2.mp4')
+        kept = self.video('game/program_4k_output-2.mp4.hstream-archive.json')
+        self.video('game/program_4k_output-1.mp4')
+        self.video('game/program_4k_output-1.mp4.hstream-archive.json')
+        # The video is listed first: an interrupt there leaves an orphan the
+        # sweep catches next run, where the reverse strands a live export.
+        self.assertEqual(self.run_cli().stdout.split(),
+                         ['game/program_4k_output-1.mp4',
+                          'game/program_4k_output-1.mp4.hstream-archive.json'])
+        self.assertTrue(kept.is_file())
+
+    def test_the_newest_telemetry_survives_a_video_only_run(self):
+        # The later run published video without DriveGPT, so its generation
+        # runs ahead of every database and there is no newer one to keep.
+        self.video('game/game-program_8k_output-with-audio-1.mp4')
+        self.video('game/game-program_8k_output-with-audio-2.mp4')
+        kept = self.video('game/game_telemetry-1.db')
+        self.run_cli('--clean')
+        self.assertTrue(kept.is_file(), 'a game must not be left with no telemetry at all')
+        older = self.video('game/game_telemetry-0.db')
+        self.run_cli('--clean')
+        self.assertTrue(kept.is_file() and not older.exists(), 'superseded telemetry still goes')
+
+    def test_a_file_named_only_like_a_sidecar_is_ignored(self):
+        self.video('game/tracking_output-1.mp4')
+        stray = self.video('game/.hstream-archive.json')
+        self.run_cli('--clean')
+        self.assertTrue(stray.is_file())
+
+    def test_a_sidecar_whose_export_is_already_gone_is_swept(self):
+        self.video('game/program_4k_output-2.mp4')
+        orphan = self.video('game/program_4k_output-1.mp4.hstream-archive.json')
+        self.video('game/notes.json')
+        self.assertEqual(self.run_cli().stdout.split(), [str(orphan.relative_to(self.root))])
+        self.run_cli('--clean')
+        self.assertFalse(orphan.exists())
+
+    def test_orphans_are_listed_in_order_with_everything_else(self):
+        self.video('game/program_4k_output-2.mp4')
+        self.video('game/program_4k_output-1.mp4.hstream-archive.json')
+        self.video('game/tracking_output-2.mp4')
+        self.video('game/tracking_output-1.mp4')
+        # The orphan sorts before the obsolete video, not after everything.
+        self.assertEqual(self.run_cli().stdout.split(),
+                         ['game/program_4k_output-1.mp4.hstream-archive.json',
+                          'game/tracking_output-1.mp4'])
+
+    def test_an_export_on_a_detached_volume_keeps_its_sidecar(self):
+        self.video('game/program_4k_output-2.mp4')
+        offline = self.root / 'game/program_4k_output-3.mp4'
+        offline.symlink_to(self.home / 'detached-volume/program_4k_output-3.mp4')
+        sidecar = self.video('game/program_4k_output-3.mp4.hstream-archive.json')
+        self.assertEqual(self.run_cli('--clean').stderr.splitlines()[-1], 'removed 0 files')
+        self.assertTrue(sidecar.is_file(), 'an export that is away is not an export that is gone')
+        self.assertTrue(offline.is_symlink())
+
+    def test_a_missing_plex_destination_cannot_sweep(self):
+        chosen = self.video('game/program_4k_output-3.mp4')
+        sidecar = self.video('game/program_4k_output-3.mp4.hstream-archive.json')
+        self.video('game/stitched_output-9.mp4')
+        unmounted = self.home / 'nas/Plex'
+        failed = self.run_cli('--clean', '--symlink-plex', '--plex-dir', str(unmounted), check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn('--plex-dir is not an existing directory', failed.stderr)
+        self.assertTrue(chosen.is_file() and sidecar.is_file())
+
+    def test_clean_and_dry_run_cannot_be_combined(self):
+        failed = self.run_cli('--clean', '--dry-run', check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn('not allowed with argument', failed.stderr)
+
+    def test_a_dry_run_previews_the_published_sweep_without_publishing(self):
+        self.video('game/stitched_output-9.mp4')
+        chosen = self.video('game/program_4k_output-3.mp4')
+        self.video('game/program_4k_output-3.mp4.hstream-archive.json')
+        # write_job_scripts only looks at directories holding a game config.
+        self.video('game/_hockeymon/config.yaml')
+        dry = self.run_cli('--dry-run', '--symlink-plex', '--plex-dir', str(self.plex), '--write-jobs')
+        self.assertEqual(list(self.plex.iterdir()), [], 'a dry run must not rewrite the library')
+        self.assertNotIn('job script', dry.stderr, 'a dry run must not write job scripts')
+        self.assertNotIn('hstream-job', dry.stderr, 'a dry run must not run hstream-job')
+        # What --clean --symlink-plex would really do, not what it would do
+        # without the sparing that publication performs.
+        self.assertIn('would remove 0 files', dry.stderr)
+        self.assertTrue(chosen.is_file())
+
+    def test_a_game_plex_could_not_publish_cannot_be_swept(self):
+        chosen = self.video('game/program_4k_output-3.mp4')
+        sidecar = self.video('game/program_4k_output-3.mp4.hstream-archive.json')
+        self.video('game/stitched_output-9.mp4')
+        # Somebody dropped a real file where this game's link belongs, so
+        # publication skips the game and spares nothing.
+        (self.plex / 'game.mp4').touch()
+        failed = self.run_cli('--clean', '--symlink-plex', '--plex-dir', str(self.plex), check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn('cannot sweep games that were not published: game', failed.stderr)
+        self.assertTrue(chosen.is_file() and sidecar.is_file())
+
+    def test_a_video_that_cannot_be_removed_keeps_its_sidecar(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        sidecar = self.video('game/tracking_output-1.mp4.hstream-archive.json')
+        targets = cleanup_targets(self.root, set(), False)
+        self.assertEqual(targets, [(obsolete, sidecar)])
+        # Another process got there first, so the unlink raises and the pair
+        # must not be split: the sidecar is the surviving export's origin.
+        obsolete.unlink()
+        self.assertEqual(remove_obsolete(targets, self.root, False, False), 1)
+        self.assertTrue(sidecar.is_file(), 'a video that did not go keeps its origin')
+
+    def test_a_plex_published_export_keeps_its_sidecar(self):
+        # The stitched export carries the newest generation, so the 4K is an
+        # obsolete companion by version, yet it is the only thing Plex links.
+        self.video('game/stitched_output-9.mp4')
+        chosen = self.video('game/program_4k_output-3.mp4')
+        sidecar = self.video('game/program_4k_output-3.mp4.hstream-archive.json')
+        self.run_cli('--clean', '--symlink-plex', '--plex-dir', str(self.plex))
+        self.assertEqual((self.plex / 'game.mp4').resolve(), chosen)
+        self.assertTrue(chosen.is_file() and sidecar.is_file())
+
+    def test_dry_run_reports_on_stderr_what_clean_would_delete(self):
+        current = self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        sidecar = self.video('game/tracking_output-1.mp4.hstream-archive.json')
+        dry = self.run_cli('--dry-run')
+        # Nothing on stdout: piping a dry run into rm must remove nothing.
+        self.assertEqual(dry.stdout, '')
+        self.assertIn('would remove game/tracking_output-1.mp4\n', dry.stderr)
+        self.assertIn('would remove game/tracking_output-1.mp4.hstream-archive.json\n', dry.stderr)
+        self.assertIn('would remove 2 files\n', dry.stderr)
+        self.assertTrue(obsolete.is_file() and sidecar.is_file())
+        cleaned = self.run_cli('--clean')
+        self.assertIn('removed game/tracking_output-1.mp4\n', cleaned.stderr)
+        self.assertIn('removed 2 files\n', cleaned.stderr)
+        self.assertFalse(obsolete.exists() or sidecar.exists())
+        self.assertTrue(current.is_file())
+        self.assertIn('removed 0 files\n', self.run_cli('--clean').stderr)
+
+    def test_a_symlink_named_like_an_older_export_is_left_alone(self):
+        current = self.video('game/tracking_output-2.mp4')
+        link = self.root / 'game/tracking_output-1.mp4'
+        link.symlink_to(current)
+        sidecar = self.video('game/tracking_output-1.mp4.hstream-archive.json')
+        listed = self.run_cli()
+        self.assertIn('Skipping symlink: game/tracking_output-1.mp4', listed.stderr)
+        self.assertEqual(listed.stdout, '', 'a pipe into rm must not take the link either')
+        self.run_cli('--clean')
+        self.assertTrue(link.is_symlink() and current.is_file())
+        self.assertTrue(sidecar.is_file(), 'a spared link must keep its sidecar')
+
+    def test_a_failed_removal_is_reported_in_the_exit_code(self):
+        self.video('game/tracking_output-2.mp4')
+        self.video('game/tracking_output-1.mp4')
+        game = self.root / 'game'
+        game.chmod(0o500)
+        self.addCleanup(game.chmod, 0o700)
+        failed = self.run_cli('--clean', check=False)
+        self.assertEqual(failed.returncode, 1)
+        self.assertIn('Could not remove game/tracking_output-1.mp4', failed.stderr)
+
+    def test_a_mistyped_root_is_an_error_not_an_empty_sweep(self):
+        self.root = self.home / 'Vidoes'
+        failed = self.run_cli('--clean', check=False)
+        self.assertEqual(failed.returncode, 2)
+        self.assertIn('not a directory', failed.stderr)
 
 
 if __name__ == '__main__':
