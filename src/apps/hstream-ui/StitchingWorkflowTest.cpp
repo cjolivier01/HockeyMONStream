@@ -12,6 +12,7 @@
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtCore/QUuid>
+#include <QtGui/QRegion>
 #include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -281,6 +282,10 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       profiles_control->currentIndex() == old_profile && outer->verticalScrollBar()->value() > 0,
       "Workflow profile wheel changed value or failed to scroll pane");
   outer->verticalScrollBar()->setValue(0);
+  // The oversized container above exists only to exercise wheel routing.
+  // Return to the available viewport for monitoring and resize checks.
+  content->setMinimumHeight(0);
+  content_layout->setAlignment(Qt::Alignment{});
   bool exported = false;
   QString export_message;
   pane->message = [&](const QString& message, bool error) {
@@ -338,6 +343,28 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   auto* stages = widget<QComboBox>(*pane, "stitchWorkflowStage");
   auto* attempts = widget<QComboBox>(*pane, "stitchWorkflowAttempt");
   require(stages->isEnabled() && stages->count() > 4, "Running stage selection is disabled");
+  auto* graph_scroll = widget<QScrollArea>(*pane, "stitchWorkflowGraphScroll");
+  auto* monitor_scroll = widget<QScrollArea>(*pane, "stitchWorkflowMonitorScroll");
+  require(
+      wait([&] { return graph_scroll->viewport()->height() > 150; }), "Workflow graph left spare pane space unused");
+  const int graph_height = graph_scroll->viewport()->height();
+  shell.resize(700, 850);
+  require(
+      wait([&] { return graph_scroll->viewport()->height() >= graph_height + 150; }),
+      "Growing the workflow pane did not grow the graph viewport");
+  shell.resize(700, 350);
+  auto* retry_control = widget<QPushButton>(*pane, "retryStitchWorkflowStageButton");
+  require(
+      wait([&] { return monitor_scroll->verticalScrollBar()->maximum() > 0; }), "Small monitor cannot scroll controls");
+  monitor_scroll->ensureWidgetVisible(retry_control);
+  require(
+      wait([&] {
+        return monitor_scroll->viewport()->rect().contains(
+            QRect(retry_control->mapTo(monitor_scroll->viewport(), QPoint()), retry_control->size()));
+      }),
+      "Small workflow pane left its retry control unreachable");
+  shell.resize(700, 650);
+  monitor_scroll->verticalScrollBar()->setValue(0);
   pane->showLog();
   require(
       wait([&] {
@@ -484,6 +511,36 @@ void dialogOwnership(const QString& root) {
   require(
       rows->isEnabled() && widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")->isEnabled(),
       "Running workflow blocked stage inspection");
+  auto* dialog_graph = widget<QScrollArea>(dialog, "stitchWorkflowGraphScroll");
+  const QSize initial_size = dialog.size();
+  const int initial_graph_height = dialog_graph->viewport()->height();
+  dialog.resize(initial_size.width(), initial_size.height() + 400);
+  const bool graph_grew = wait([&] { return dialog_graph->viewport()->height() >= initial_graph_height + 50; });
+  std::cout << "Dialog height " << initial_size.height() << " -> " << dialog.height() << "; workflow graph "
+            << initial_graph_height << " -> " << dialog_graph->viewport()->height() << '\n';
+  const auto large_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_DIALOG_SCREENSHOT");
+  if (!large_screenshot.isEmpty())
+    require(dialog.grab().save(large_screenshot + ".large.png"), "Could not capture enlarged workflow dialog");
+  require(graph_grew, "Resizing Stitching Experiments did not allocate more space to its workflow graph");
+  const int enlarged_graph_height = dialog_graph->viewport()->height();
+  dialog.resize(initial_size);
+  require(
+      wait([&] { return dialog_graph->viewport()->height() < enlarged_graph_height; }),
+      "Restoring the dialog size did not restore its workflow viewport");
+  dialog.resize(960, 680);
+  QApplication::processEvents();
+  auto* dialog_monitor = widget<QScrollArea>(dialog, "stitchWorkflowMonitorScroll");
+  auto* dialog_retry = widget<QPushButton>(dialog, "retryStitchWorkflowStageButton");
+  dialog_monitor->ensureWidgetVisible(dialog_retry);
+  require(
+      wait([&] { return QRegion(dialog_retry->rect()).subtracted(dialog_retry->visibleRegion()).isEmpty(); }),
+      "The smallest experiment dialog clipped its workflow retry control");
+  const int compact_monitor_height = dialog_monitor->height();
+  dialog.resize(initial_size);
+  require(
+      wait([&] { return dialog_monitor->height() > compact_monitor_height; }),
+      "Restoring the normal dialog size did not expand its workflow monitor");
+  dialog_monitor->verticalScrollBar()->setValue(0);
   const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_DIALOG_SCREENSHOT");
   if (!screenshot.isEmpty())
     require(dialog.grab().save(screenshot), "Could not capture distributed experiment dialog");

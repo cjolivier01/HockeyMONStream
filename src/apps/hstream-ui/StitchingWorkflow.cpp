@@ -407,6 +407,10 @@ struct StitchingWorkflow::Impl {
   uint64_t request_generation{0};
   bool log_pending{false};
   QPointer<QPlainTextEdit> log_view;
+  void showMonitor(bool visible) {
+    monitor->setVisible(visible);
+    owner->setSizePolicy(QSizePolicy::Preferred, visible ? QSizePolicy::Expanding : QSizePolicy::Maximum);
+  }
   QJsonObject selectedNode() const {
     for (const auto& value : snapshot.value("nodes").toArray())
       if (value.toObject().value("id").toString() == stage->currentData().toString())
@@ -605,7 +609,7 @@ struct StitchingWorkflow::Impl {
         index = 0;
       stage->setCurrentIndex(index);
     }
-    monitor->show();
+    showMonitor(true);
     summary->setText(
         "Workflow " + workflow + " · " + snapshot.value("state").toString() +
         (terminal(snapshot.value("state").toString()) && snapshot.contains("owner_released") &&
@@ -690,7 +694,7 @@ struct StitchingWorkflow::Impl {
     if (!exporting) {
       workflow = id;
       snapshot = {{"workflow_id", id}, {"state", "submitting"}, {"epoch", 0}, {"nodes", QJsonArray{}}};
-      monitor->show();
+      showMonitor(true);
       summary->setText("Submitting workflow " + id);
       // The controller can accept the request before its response is lost. Keep
       // observing this exact ID even when submission or the first status fails.
@@ -714,7 +718,7 @@ struct StitchingWorkflow::Impl {
             poll->stop();
             workflow.clear();
             snapshot = {};
-            monitor->hide();
+            showMonitor(false);
           } else
             refresh();
         }
@@ -777,13 +781,11 @@ StitchingWorkflow::StitchingWorkflow(
   layout->addLayout(controls);
   s.monitor = new QGroupBox("Workflow", this);
   s.monitor->setObjectName("stitchWorkflowMonitor");
-  s.monitor->setMaximumHeight(290);
   auto* monitor_outer = new QVBoxLayout(s.monitor);
   auto* monitor_scroll = new QScrollArea(s.monitor);
   monitor_scroll->setObjectName("stitchWorkflowMonitorScroll");
   monitor_scroll->setWidgetResizable(true);
   monitor_scroll->setMinimumHeight(100);
-  monitor_scroll->setMaximumHeight(260);
   auto* monitor_content = new QWidget(monitor_scroll);
   auto* monitor = new QVBoxLayout(monitor_content);
   monitor_scroll->setWidget(monitor_content);
@@ -796,10 +798,9 @@ StitchingWorkflow::StitchingWorkflow(
   scroll->setObjectName("stitchWorkflowGraphScroll");
   scroll->setWidgetResizable(true);
   scroll->setMinimumHeight(100);
-  scroll->setMaximumHeight(150);
   s.graph = new StageGraph(scroll);
   scroll->setWidget(s.graph);
-  monitor->addWidget(scroll);
+  monitor->addWidget(scroll, 1);
   auto* selectors = new QFormLayout();
   s.stage = new QComboBox(s.monitor);
   s.stage->setObjectName("stitchWorkflowStage");
@@ -822,7 +823,7 @@ StitchingWorkflow::StitchingWorkflow(
   actions->addWidget(s.retry);
   actions->addWidget(s.observer);
   monitor->addLayout(actions);
-  layout->addWidget(s.monitor);
+  layout->addWidget(s.monitor, 1);
   s.monitor->hide();
   s.poll = new QTimer(this);
   s.poll->setInterval(configuration["poll_interval_ms"].as<int>());
@@ -969,7 +970,7 @@ void StitchingWorkflow::attach(const QString& id) {
   impl_->workflow = id;
   impl_->snapshot = {};
   impl_->restore_controls = true;
-  impl_->monitor->show();
+  impl_->showMonitor(true);
   impl_->poll->start();
   impl_->refresh();
 }

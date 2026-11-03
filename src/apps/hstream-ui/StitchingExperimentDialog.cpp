@@ -4144,6 +4144,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   candidate_panel->setObjectName("stitchExperimentCandidatePanel");
   auto* candidate_layout = new QVBoxLayout(candidate_panel);
   candidate_layout->setContentsMargins(0, 0, 0, 0);
+  candidate_layout->setSizeConstraint(QLayout::SetMinimumSize);
   auto* matrix_scroll = new QScrollArea();
   matrix_scroll->setObjectName("stitchExperimentMatrixScroll");
   matrix_scroll->setWidgetResizable(true);
@@ -4170,7 +4171,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     hm::experiment::merge_settings(workflow_settings, **workflow_game);
   s.workflow =
       new StitchingWorkflow(game_directory, working_directory, environment, workflow_settings, candidate_panel);
-  candidate_layout->addWidget(s.workflow);
+  candidate_layout->addWidget(s.workflow, 3);
   s.table = new QTableWidget(0, 10);
   s.table->setAlternatingRowColors(true);
   s.table->setStyleSheet("QTableWidget { background: white; alternate-background-color: #f0f0f0; color: #161616; }");
