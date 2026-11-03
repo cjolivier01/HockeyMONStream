@@ -6,6 +6,9 @@ at the same resolution.
 The role model is optional and stays unselected unless changed. This checkpoint was initialized
 from COCO and trained with CrowdHuman and gray-background hockey images. Its classes
 are `0: person`, `1: goalie`, `2: official`.
+Iteration 487500 is the selected balanced checkpoint: CrowdHuman mAP is 0.530 and
+hockey mAP is 0.823. Iteration 225000 has the absolute highest hockey mAP by
+0.001, but its CrowdHuman mAP is lower at 0.527.
 
 The checkpoint, dynamic-batch ONNX, labels, and provenance are published at
 https://github.com/cjolivier01/HockeyMONStream/releases/tag/pretrained-assets-v1 .

@@ -2,7 +2,7 @@ person-roles: {goalie: 1, referee: 2}
 
 pretrained-assets:
   - property: onnx-file
-    # Checkpoint redistribution is blocked pending a model-rights record.
+    # Release-hosted; keep out of binary packages and download into the user cache.
     redistributable: false
     url: https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/hm_hockey_roles_yolov8_m_1984_736_iter487500-c11f239899cef757.onnx
     sha256: c11f239899cef7579746e6b59b2c48a3feed7a8d34a51b7e3fd14db03e6dabcd
@@ -17,7 +17,7 @@ property:
   gpu-id: 0
   net-scale-factor: 0.0039215697906911373
   model-color-format: 0
-  # Epoch 10: COCO initialized, CrowdHuman + gray hockey; person/goalie/official.
+  # Iter 487500: COCO initialized, CrowdHuman + gray hockey; person/goalie/official.
   onnx-file: $HOME/.cache/hstream/models/hm_hockey_roles_yolov8_m_1984_736_iter487500-c11f239899cef757.onnx
   # Unlike the BF16 config, nothing has to be built offline: DeepStream's nvinfer
   # builds this from the ONNX on first run and caches it. Do not commit the engine.
