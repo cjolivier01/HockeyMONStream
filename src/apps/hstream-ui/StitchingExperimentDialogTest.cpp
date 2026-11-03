@@ -1577,14 +1577,16 @@ void exercise_queued_source_change(const QString& game, const QString& root, boo
     });
   }
   widget<QPushButton>(reopened, "addStitchExperimentsToBatchButton")->click();
-  require(
-      wait_until(
-          [&] {
-            return during_copy ? status->text().startsWith("Could not persist the queued candidates:")
-                               : status->text().contains("different or unverified source settings");
-          },
-          10000),
-      "Changed source settings must fail clearly before joining an unfinished selection");
+  const bool source_change_rejected = wait_until(
+      [&] {
+        return during_copy ? status->text().startsWith("Could not persist the queued candidates:")
+                           : status->text().contains("different or unverified source settings");
+      },
+      10000);
+  if (!source_change_rejected)
+    std::cerr << "Queued source change (during copy=" << during_copy << ", copied=" << changed_during_copy
+              << ", rows=" << table->rowCount() << "): " << status->text().toStdString() << '\n';
+  require(source_change_rejected, "Changed source settings must fail clearly before joining an unfinished selection");
   const auto store = OpenStitchingExperimentStore(game.toStdString());
   require(store.ok(), "Cannot inspect source-change fixture store");
   const auto catalog = LoadStitchingExperimentStore(*store);
@@ -3631,8 +3633,9 @@ int main(int argc, char** argv) {
     } else {
       QTemporaryDir fixture;
       require(fixture.isValid(), "Cannot create test workspace");
-      // Bazel deliberately omits HOME; explicit game storage permits an empty
-      // user overlay without creating or changing the developer's settings.
+      // Direct runs must be as isolated as Bazel: real user defaults can enable
+      // a controller that the temporary fixture does not provide.
+      qputenv("HOME", fixture.path().toLocal8Bit());
       qputenv("HM_GAME_DIR", fixture.path().toLocal8Bit());
       const auto make_game = [&](const char* name) {
         const QString game = fixture.path() + "/" + name;
@@ -3675,6 +3678,12 @@ int main(int argc, char** argv) {
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_WORKFLOW_SELECTION_ONLY") != 0) {
         exercise_workflow_frame_selection(make_game("workflow-selection"), fixture.path());
         std::cout << "Stitching workflow saved-frame status checks passed\n";
+        return 0;
+      }
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_SOURCE_CHANGE_ONLY") != 0) {
+        exercise_queued_source_change(make_game("queued-source-change"), fixture.path(), false);
+        exercise_queued_source_change(make_game("queued-source-copy-race"), fixture.path(), true);
+        std::cout << "Stitching experiment source-change checks passed\n";
         return 0;
       }
       exercise_frame_navigation(fixture.path());
