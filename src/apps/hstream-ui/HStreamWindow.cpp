@@ -21963,6 +21963,10 @@ void HStreamWindow::refreshGames() {
   }
   const QFileInfoList dirs = root.entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
   for (const QFileInfo& dir : dirs) {
+    // A game root that is itself a game carries one of these. It sorts first,
+    // so it would be selected on open, and every action on it now fails.
+    if (dir.fileName() == "_hockeymon")
+      continue;
     game_selector_->addItem(dir.fileName());
   }
 
