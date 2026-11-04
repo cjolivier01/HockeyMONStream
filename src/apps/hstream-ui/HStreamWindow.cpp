@@ -22047,6 +22047,11 @@ void HStreamWindow::refreshGames() {
       continue;
     game_selector_->addItem(dir.fileName());
   }
+  // Explicitly selected hidden games are valid, although ordinary discovery
+  // leaves hidden directories out of the game list.
+  const QString remembered = rememberedGame();
+  if (!remembered.isEmpty() && game_selector_->findText(remembered) < 0)
+    game_selector_->addItem(remembered);
 
   if (!current.isEmpty()) {
     int index = -1;
@@ -22062,7 +22067,6 @@ void HStreamWindow::refreshGames() {
   } else if (editing_defaults_ || game_selector_->count() == 1) {
     selectDefaults();
   } else if (game_selector_->count() > 1) {
-    const QString remembered = rememberedGame();
     int selected = 1;
     for (int i = 1; i < game_selector_->count(); ++i) {
       if (!remembered.isEmpty() && game_selector_->itemText(i) == remembered) {
@@ -22100,12 +22104,20 @@ void HStreamWindow::selectGame(const QString& game_id) {
   game_id_edit_->setText(sanitized_game_id(game_id));
   if (game_selector_) {
     const QSignalBlocker blocker(game_selector_);
+    const QString selected = game_id_edit_->text();
+    int index = -1;
     for (int i = 1; i < game_selector_->count(); ++i) {
-      if (game_selector_->itemText(i) == game_id_edit_->text()) {
-        game_selector_->setCurrentIndex(i);
+      if (game_selector_->itemText(i) == selected) {
+        index = i;
         break;
       }
     }
+    if (index < 0 && !selected.isEmpty() && selected != "_hockeymon" && QFileInfo(gameDirectory(selected)).isDir()) {
+      index = game_selector_->count();
+      game_selector_->addItem(selected);
+    }
+    if (index >= 0)
+      game_selector_->setCurrentIndex(index);
   }
   if (game_path_label_) {
     game_path_label_->setText(gameDirectory(game_id_edit_->text()));

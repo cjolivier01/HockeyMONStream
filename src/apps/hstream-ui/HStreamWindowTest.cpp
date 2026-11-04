@@ -3498,6 +3498,56 @@ bool test_game_selection_history() {
     if (!check_game(&restored, empty, "new-game"))
       return false;
   }
+  for (const QString& root : {first, fixtures.filePath("hidden-only")}) {
+    if (!QDir().mkpath(root + "/.unrelated") || (root == first && !QDir().mkpath(root + "/.game")))
+      return false;
+    qputenv("HM_GAME_DIR", root.toLocal8Bit());
+    const int expected_entries = root == first ? 4 : 2;
+    {
+      HStreamWindow selected;
+      selected.show();
+      auto* selector = selected.findChild<QComboBox*>("gameSelector");
+      if (!expect(
+              selector->findText(".game") < 0 && selector->findText(".unrelated") < 0,
+              "Ordinary game discovery must leave unselected hidden directories out of the list"))
+        return false;
+      if (root == first) {
+        if (!check_game(&selected, first, "alpha", 300))
+          return false;
+        selected.openGame(".game", false, false);
+      } else {
+        if (!expect(
+                selected.gameIdText().isEmpty() && selector->currentText() == "Defaults" && selector->count() == 1,
+                "A root containing only unselected hidden directories must begin at Defaults"))
+          return false;
+        selected.findChild<QLineEdit*>("gameIdEdit")->setText(".game");
+        activate(selected.findChild<QPushButton*>("createGameButton"));
+      }
+      if (!check_game(&selected, root, ".game") ||
+          !expect(remembered(root) == ".game", "Explicitly selecting or creating a hidden game must remember it"))
+        return false;
+      activate(selected.findChild<QPushButton*>("refreshGamesButton"));
+      if (!check_game(&selected, root, ".game") ||
+          !expect(
+              selector->count() == expected_entries && selector->findText(".unrelated") < 0,
+              "Refresh must retain only the selected hidden game without duplicates or unrelated hidden entries"))
+        return false;
+      selector->setCurrentIndex(0);
+      activate(selected.findChild<QPushButton*>("refreshGamesButton"));
+      if (!expect(
+              selected.gameIdText().isEmpty() && selector->currentText() == "Defaults" && remembered(root) == ".game",
+              "Defaults and Refresh must preserve hidden-game history without leaving Defaults") ||
+          !check_idle(&selected))
+        return false;
+    }
+    HStreamWindow restored;
+    auto* selector = restored.findChild<QComboBox*>("gameSelector");
+    if (!check_game(&restored, root, ".game") ||
+        !expect(
+            selector->count() == expected_entries && selector->findText(".unrelated") < 0,
+            "Startup must restore the remembered hidden game without discovering unrelated hidden directories"))
+      return false;
+  }
   return true;
 }
 
