@@ -37,6 +37,15 @@ arguments and then executes the matching native runner, retaining native preview
 ownership. Later calibration runs use the native runner directly.
 `--help` does not require a display server.
 
+The desktop remembers the last valid game separately for each game root in
+`$XDG_CONFIG_HOME/hstream-ui/settings.ini` (normally
+`~/.config/hstream-ui/settings.ini`). Root identities use canonical paths, so
+aliases of the same directory share a selection. Startup and Change root restore
+that game when it still exists; otherwise the existing game-list fallback applies.
+An explicit `--game-id` takes precedence and becomes the remembered selection.
+Selecting Defaults does not erase it. This navigation state does not write a
+game preset or start playback; automatic playback still requires `--play`.
+
 The shared launcher uses `~/.config/hstream-ui/defaults.yaml` when present.
 Only storage paths survive from the legacy user file; an empty defaults document
 resets tuning to the baseline. Game settings override this user layer. Python

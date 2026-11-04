@@ -30,6 +30,7 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QPointer>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
@@ -3305,6 +3306,196 @@ bool test_path_preferences() {
     if (!expect(
             QDir(empty + "/new-game").exists() && !QDir(second + "/new-game").exists(),
             "New games must be created under the selected root"))
+      return false;
+  }
+  return true;
+}
+
+bool test_game_selection_history() {
+  QTemporaryDir fixtures;
+  QTemporaryDir preferences;
+  if (!fixtures.isValid() || !preferences.isValid())
+    return false;
+  const QByteArray previous_root = qgetenv("HM_GAME_DIR");
+  const QByteArray previous_config = qgetenv("XDG_CONFIG_HOME");
+  absl::Cleanup restore = [&] {
+    qputenv("HM_GAME_DIR", previous_root);
+    qputenv("XDG_CONFIG_HOME", previous_config);
+  };
+  qputenv("XDG_CONFIG_HOME", preferences.path().toLocal8Bit());
+  const QString first = fixtures.filePath("first");
+  const QString second = fixtures.filePath("second");
+  const QString empty = fixtures.filePath("empty");
+  const QString alias = fixtures.filePath("first-alias");
+  const QString settings_path = preferences.filePath("hstream-ui/settings.ini");
+  std::vector<std::pair<QString, QByteArray>> configs;
+  for (const auto& root : {first, second}) {
+    int points = root == first ? 300 : 600;
+    for (const auto& game : QStringList{"alpha", "shared", root == first ? "zeta" : "omega"}) {
+      const QString path = root + "/" + game + "/_hockeymon/config.yaml";
+      const QByteArray bytes =
+          QString("hstream_ui:\n  stitching_calibration:\n    control_points: %1\n").arg(points).toUtf8();
+      if (!QDir().mkpath(QFileInfo(path).absolutePath()))
+        return false;
+      QFile config(path);
+      if (!config.open(QIODevice::WriteOnly) || config.write(bytes) != bytes.size())
+        return false;
+      configs.emplace_back(path, bytes);
+      points += 50;
+    }
+  }
+  if (!QDir().mkpath(empty) || !QDir().mkpath(first + "/_hockeymon") || !QFile::link(first, alias))
+    return false;
+  const auto history_key = [](const QString& root) {
+    return "selection/last-game/" + QString::fromLatin1(QUrl::toPercentEncoding(QFileInfo(root).canonicalFilePath()));
+  };
+  const auto remembered = [&](const QString& root) {
+    QSettings settings(settings_path, QSettings::IniFormat);
+    settings.sync();
+    return settings.value(history_key(root)).toString();
+  };
+  const auto seed_history = [&](const QString& root, const QString& game) {
+    QSettings settings(settings_path, QSettings::IniFormat);
+    settings.setValue(history_key(root), game);
+    settings.sync();
+    return expect(settings.status() == QSettings::NoError, "Could not seed isolated game history");
+  };
+  const auto choose_root = [](HStreamWindow* window, const QString& root) {
+    return with_path_dialog(window->findChild<QPushButton*>("browseGameRootButton"), [&](QFileDialog* dialog) {
+      return accept_path_dialog(dialog, QFileInfo(root).absolutePath(), {QFileInfo(root).fileName()});
+    });
+  };
+  const auto check_idle = [](HStreamWindow* window) {
+    QTest::qWait(20);
+    return expect(
+        HStreamWindowTestAccess::pipelineRetired(window) && !HStreamWindowTestAccess::pipelineStartPending(window) &&
+            HStreamWindowTestAccess::pipelineRunGeneration(window) == 0 &&
+            HStreamWindowTestAccess::launchedArguments(window).isEmpty(),
+        "Restoring or selecting a game must not launch or schedule playback");
+  };
+  const auto check_game = [&](HStreamWindow* window, const QString& root, const QString& game, int points = 0) {
+    return expect(
+               window->gameIdText() == game && window->findChild<QComboBox*>("gameSelector")->currentText() == game &&
+                   QFileInfo(window->gameDirectoryText()).canonicalFilePath() ==
+                       QFileInfo(root + "/" + game).canonicalFilePath() &&
+                   (!points || window->findChild<QSpinBox*>("controlPointsSpin")->value() == points),
+               "History must select " + (root + "/" + game).toStdString() + " and load that recording's controls") &&
+        check_idle(window);
+  };
+  const auto select_game = [](HStreamWindow* window, const QString& game) {
+    auto* selector = window->findChild<QComboBox*>("gameSelector");
+    const int index = selector->findText(game);
+    if (!expect(index > 0, "Fixture game must be present in the selector"))
+      return false;
+    selector->setCurrentIndex(index);
+    return true;
+  };
+  qputenv("HM_GAME_DIR", first.toLocal8Bit());
+  {
+    HStreamWindow window;
+    window.show();
+    if (!check_game(&window, first, "alpha", 300) || !select_game(&window, "zeta") || !choose_root(&window, second) ||
+        !check_game(&window, second, "alpha", 600) || !select_game(&window, "shared") || !choose_root(&window, first) ||
+        !check_game(&window, first, "zeta", 400) || !select_game(&window, "shared") ||
+        !check_game(&window, first, "shared", 350) || !choose_root(&window, second) ||
+        !check_game(&window, second, "shared", 650) || !select_game(&window, "omega"))
+      return false;
+    window.findChild<QComboBox*>("gameSelector")->setCurrentIndex(0);
+    if (!expect(
+            window.gameIdText().isEmpty() && remembered(second) == "omega",
+            "Defaults must preserve the root's last valid game") ||
+        !choose_root(&window, first) || !check_game(&window, first, "shared", 350) || !select_game(&window, "zeta"))
+      return false;
+    auto* edit = window.findChild<QLineEdit*>("gameIdEdit");
+    edit->setText("shared");
+    if (!expect(remembered(first) == "zeta", "Typing alone must not replace the remembered game"))
+      return false;
+    QMetaObject::invokeMethod(edit, "editingFinished");
+    if (!expect(remembered(first) == "shared", "Committing an existing typed game must remember it"))
+      return false;
+    edit->setText("not-created");
+    QMetaObject::invokeMethod(edit, "editingFinished");
+    if (!expect(
+            remembered(first) == "shared" && !QFileInfo(first + "/not-created").exists(),
+            "Committing a nonexistent game must not persist or create it"))
+      return false;
+    window.openGame("zeta", false, false);
+    if (!check_game(&window, first, "zeta", 400))
+      return false;
+  }
+  {
+    HStreamWindow restored;
+    restored.resize(1440, 1000);
+    restored.show();
+    if (!check_game(&restored, first, "zeta", 400) || !capture_widget_artifact(&restored, "restored-game-native.png"))
+      return false;
+    restored.openGame("shared", false, false);
+    if (!check_game(&restored, first, "shared", 350) ||
+        !expect(remembered(first) == "shared", "Explicit --game-id must override and update remembered selection"))
+      return false;
+  }
+  {
+    HStreamWindow overridden;
+    if (!check_game(&overridden, first, "shared", 350))
+      return false;
+  }
+  qputenv("HM_GAME_DIR", second.toLocal8Bit());
+  {
+    HStreamWindow restored;
+    if (!check_game(&restored, second, "omega", 700))
+      return false;
+  }
+  qputenv("HM_GAME_DIR", (alias + "/./").toLocal8Bit());
+  {
+    HStreamWindow restored;
+    if (!check_game(&restored, first, "shared", 350) || !select_game(&restored, "zeta") ||
+        !expect(remembered(first) == "zeta", "Alias and canonical roots must share one selection history"))
+      return false;
+  }
+  for (const auto& [path, bytes] : configs) {
+    QFile config(path);
+    if (!expect(
+            config.open(QIODevice::ReadOnly) && config.readAll() == bytes,
+            "Selection history must not modify game config: " + path.toStdString()))
+      return false;
+  }
+  if (!expect(QFileInfo(settings_path).isFile(), "Game history must use XDG_CONFIG_HOME/hstream-ui/settings.ini") ||
+      !QDir(first + "/zeta").removeRecursively())
+    return false;
+  qputenv("HM_GAME_DIR", first.toLocal8Bit());
+  {
+    HStreamWindow stale;
+    if (!check_game(&stale, first, "alpha", 300))
+      return false;
+  }
+  for (const QString invalid : {"../second/shared", "_hockeymon", "missing"}) {
+    if (!seed_history(first, invalid))
+      return false;
+    HStreamWindow rejected;
+    if (!check_game(&rejected, first, "alpha", 300))
+      return false;
+  }
+  if (!seed_history(empty, "missing"))
+    return false;
+  qputenv("HM_GAME_DIR", empty.toLocal8Bit());
+  {
+    HStreamWindow created;
+    created.show();
+    if (!expect(
+            created.gameIdText().isEmpty() &&
+                created.findChild<QComboBox*>("gameSelector")->currentText() == "Defaults",
+            "An empty root with stale history must select Defaults") ||
+        !check_idle(&created))
+      return false;
+    created.findChild<QLineEdit*>("gameIdEdit")->setText("new-game");
+    activate(created.findChild<QPushButton*>("createGameButton"));
+    if (!check_game(&created, empty, "new-game") ||
+        !expect(remembered(empty) == "new-game", "Creating a game must persist the completed selection"))
+      return false;
+  }
+  {
+    HStreamWindow restored;
+    if (!check_game(&restored, empty, "new-game"))
       return false;
   }
   return true;
@@ -22012,6 +22203,8 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GAME_HISTORY_ONLY"))
+    return test_game_selection_history() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FRESH_EXPERIMENTS_ONLY"))
     return test_fresh_stitching_experiments() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ROTATION_FINISH_ONLY"))
@@ -22091,7 +22284,7 @@ int main(int argc, char** argv) {
     QGuiApplication::sync();
     return test_preview_remap_geometry(&window) ? 0 : 1;
   }
-  if (!test_path_preferences())
+  if (!test_path_preferences() || !test_game_selection_history())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PATHS_ONLY"))
     return 0;
