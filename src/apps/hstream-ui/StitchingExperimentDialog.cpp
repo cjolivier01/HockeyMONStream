@@ -2308,7 +2308,8 @@ struct StitchingExperimentDialog::Impl {
         local_operation_token.toStdString(),
         shutdown_timeout_ms,
         operation_poll->interval(),
-        true);
+        true,
+        source->workspace->game_directory);
     if (!supervised.ok()) {
       finish_candidate(
           candidate.row, generation, -1, QProcess::CrashExit, QString::fromStdString(supervised.ToString()));
@@ -3113,7 +3114,8 @@ struct StitchingExperimentDialog::Impl {
         local_operation_token.toStdString(),
         shutdown_timeout_ms,
         operation_poll->interval(),
-        true);
+        true,
+        candidate.workspace->game_directory);
     if (!supervised.ok()) {
       show_status(QString::fromStdString(supervised.ToString()), true);
       preview_completion_pending = true;
@@ -3166,8 +3168,10 @@ struct StitchingExperimentDialog::Impl {
       maybe_finish_close();
     });
     QObject::connect(worker, &QThread::finished, worker, &QObject::deleteLater);
-    worker->start();
+    // Retire our optional still reader before the worker takes its nonblocking
+    // source snapshot; an advisory image read must not make selection fail.
     update_controls();
+    worker->start();
   }
 
   void show_selected_runner_log() {

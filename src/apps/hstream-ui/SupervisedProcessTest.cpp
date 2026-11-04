@@ -51,6 +51,19 @@ void configure(QProcess& process, const std::filesystem::path& game, const std::
   environment.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(token));
   process.setProcessEnvironment(environment);
 }
+void check_workspace(const QProcess& process, const std::filesystem::path& game) {
+  auto owner = hm::game_operation::Inspect(game);
+  require(owner.ok() && owner->has_value(), "Command workspace was not reserved before launch");
+  const auto environment = process.processEnvironment();
+  require(
+      environment.value("HSTREAM_GAME_OPERATION_GAME").toStdString() == game.string() &&
+          environment.value("HSTREAM_GAME_OPERATION_TOKEN").toStdString() == (**owner).token,
+      "Child did not inherit the exact private workspace admission");
+}
+void check_released(const std::filesystem::path& game) {
+  const auto owner = hm::game_operation::Inspect(game);
+  require(owner.ok() && !owner->has_value(), "Verified command left a private workspace owner behind");
+}
 const QString kDetached = R"PY(import ctypes,os,signal,sys,time
 r,w=os.pipe()
 pid=os.fork()
@@ -85,6 +98,8 @@ int main(int argc, char** argv) {
     for (const bool new_session : {false, true}) {
       const std::filesystem::path game = root.path().toStdString() + (new_session ? "/pause-session" : "/pause-child");
       const auto token = claim(game);
+      const auto workspace = game / "candidate";
+      std::filesystem::create_directory(workspace);
       const QString marker = QString::fromStdString(game.string()) + "/worker";
       QProcess process;
       configure(process, game, token);
@@ -92,8 +107,9 @@ int main(int argc, char** argv) {
       process.setArguments(
           {"-c", "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(30)", marker});
       require(
-          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, new_session).ok(),
+          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, new_session, workspace).ok(),
           "Cannot prepare pause fixture");
+      check_workspace(process, workspace);
       process.start();
       require(wait([&] { return child(marker) > 0; }), "Pause worker did not launch");
       const auto worker = child(marker);
@@ -128,10 +144,13 @@ int main(int argc, char** argv) {
               ::kill(worker, 0) == -1 && errno == ESRCH,
           "Paused cancellation did not reap exact worker");
       require(hm::game_operation::ReleaseLocal(game, token, true).ok(), "Paused cancellation lacks cleanup proof");
+      check_released(workspace);
     }
     {
       const std::filesystem::path game = root.path().toStdString() + "/normal";
       const auto token = claim(game);
+      const auto workspace = game / "candidate";
+      std::filesystem::create_directory(workspace);
       const QString marker = root.path() + "/detached-pid";
       QProcess unrelated;
       unrelated.start("/bin/sh", {"-c", "sleep 2; exit 23"});
@@ -141,7 +160,9 @@ int main(int argc, char** argv) {
       process.setProgram("/usr/bin/python3");
       process.setArguments({"-c", kDetached, marker});
       require(
-          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, true).ok(), "Cannot prepare guarded command");
+          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, true, workspace).ok(),
+          "Cannot prepare guarded command");
+      check_workspace(process, workspace);
       process.start();
       require(wait([&] { return child(marker) > 0; }), "Detached nondumpable helper did not launch");
       const pid_t pid = child(marker);
@@ -149,6 +170,7 @@ int main(int argc, char** argv) {
       require(
           proof.ok() && !*proof && !hm::game_operation::ReleaseLocal(game, token, true).ok(),
           "Pending command released admission with a live detached child");
+      check_workspace(process, workspace);
       require(wait([&] { return process.state() == QProcess::NotRunning; }), "Guard did not reap its descendants");
       require(
           process.exitStatus() == QProcess::NormalExit && process.exitCode() == 7 &&
@@ -157,6 +179,7 @@ int main(int argc, char** argv) {
       require(::kill(pid, 0) != 0 && errno == ESRCH, "Guard published completion before descendant reap");
       require(unrelated.state() == QProcess::Running, "Guard stole an unrelated Qt process");
       require(hm::game_operation::ReleaseLocal(game, token, true).ok(), "Verified command could not release admission");
+      check_released(workspace);
       require(
           wait([&] { return unrelated.state() == QProcess::NotRunning; }) && unrelated.exitCode() == 23,
           "Unrelated QProcess lost its exact completion status");
@@ -164,17 +187,23 @@ int main(int argc, char** argv) {
     {
       const std::filesystem::path game = root.path().toStdString() + "/unlaunched";
       const auto token = claim(game);
+      const auto workspace = game / "candidate";
+      std::filesystem::create_directory(workspace);
       QProcess process;
       configure(process, game, token);
       process.setProgram("/bin/true");
       require(
-          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, true).ok(),
+          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, true, workspace).ok(),
           "Cannot prepare unlaunched command");
+      check_workspace(process, workspace);
       process.setProgram(root.path() + "/missing-supervisor");
       process.start();
       require(
           wait([&] { return process.error() == QProcess::FailedToStart && process.state() == QProcess::NotRunning; }),
           "Missing supervisor did not report FailedToStart");
+      const auto stopped = hm::ui::SupervisedProcessStopped(process);
+      require(stopped.ok() && *stopped, "FailedToStart completion disappeared before the dialog could observe it");
+      check_released(workspace);
       require(
           hm::game_operation::ReleaseLocal(game, token, true).ok(),
           "FailedToStart did not retire only its unlaunched permit");
@@ -182,13 +211,15 @@ int main(int argc, char** argv) {
     {
       const std::filesystem::path game = root.path().toStdString() + "/lost-proof";
       const auto token = claim(game);
+      const auto workspace = game / "candidate";
+      std::filesystem::create_directory(workspace);
       const QString marker = root.path() + "/lost-proof-pid";
       QProcess process;
       configure(process, game, token);
       process.setProgram("/usr/bin/python3");
       process.setArguments({"-c", kDetached, marker});
       require(
-          hm::ui::PrepareSupervisedProcess(process, game, token, 60000, 10, true).ok(),
+          hm::ui::PrepareSupervisedProcess(process, game, token, 60000, 10, true, workspace).ok(),
           "Cannot prepare lost-proof command");
       process.start();
       require(wait([&] { return child(marker) > 0; }), "Lost-proof helper did not launch");
@@ -199,11 +230,71 @@ int main(int argc, char** argv) {
       require(
           !proof.ok() && !hm::game_operation::ReleaseLocal(game, token, true).ok(),
           "Killed guard supplied false descendant shutdown authority");
+      check_workspace(process, workspace);
       // The deliberately orphaned test child is stopped explicitly. Its dead
       // PID is still not a replacement for the lost supervisor receipt.
       require(::kill(pid, SIGKILL) == 0 || errno == ESRCH, "Cannot stop owned lost-proof test child");
       require(!hm::game_operation::ReleaseLocal(game, token, true).ok(), "Dead helper replaced missing command proof");
+      check_workspace(process, workspace);
       hm::game_operation::ForgetAuthorization(game, token);
+    }
+    {
+      const std::filesystem::path game = root.path().toStdString() + "/changed-workspace-owner";
+      const auto token = claim(game);
+      const auto workspace = game / "candidate";
+      std::filesystem::create_directory(workspace);
+      QProcess process;
+      configure(process, game, token);
+      process.setProgram("/bin/true");
+      require(
+          hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, true, workspace).ok(),
+          "Cannot prepare replacement-owner fixture");
+      hm::game_operation::Owner replacement;
+      {
+        auto lock = hm::game_operation::Lock::Acquire(workspace);
+        require(lock.ok(), "Cannot lock private workspace");
+        auto owner = (*lock)->Read();
+        require(owner.ok() && owner->has_value(), "Workspace owner disappeared");
+        replacement = **owner;
+        replacement.token = "successor-token";
+        require(
+            (*lock)->Handoff(replacement, (**owner).token, (**owner).revision).ok(),
+            "Cannot stage replacement-owner fixture");
+      }
+      process.start();
+      require(wait([&] { return process.state() == QProcess::NotRunning; }), "Replacement fixture did not finish");
+      require(
+          !hm::ui::SupervisedProcessStopped(process).ok() && !hm::game_operation::ReleaseLocal(game, token, true).ok(),
+          "Command cleanup released a replacement workspace owner");
+      auto retained = hm::game_operation::Inspect(workspace);
+      require(
+          retained.ok() && retained->has_value() && (**retained).token == replacement.token,
+          "Command cleanup removed the replacement owner");
+      hm::game_operation::ForgetAuthorization(game, token);
+    }
+    {
+      const std::filesystem::path game = root.path().toStdString() + "/busy-workspace";
+      const auto token = claim(game);
+      const auto workspace = game / "candidate";
+      std::filesystem::create_directory(workspace);
+      auto existing = hm::game_operation::LocalOwner("pipeline", "other-operation", "other-token");
+      {
+        auto lock = hm::game_operation::Lock::Acquire(workspace);
+        require(lock.ok() && (*lock)->Claim(existing).ok(), "Cannot reserve busy workspace fixture");
+      }
+      QProcess process;
+      configure(process, game, token);
+      process.setProgram("/bin/true");
+      require(
+          !hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, true, workspace).ok(),
+          "Preparation replaced another workspace owner");
+      require(
+          hm::game_operation::ReleaseLocal(game, token, true).ok(),
+          "Failed preparation left an unlaunched command permit");
+      const auto retained = hm::game_operation::Inspect(workspace);
+      require(
+          retained.ok() && retained->has_value() && (**retained).token == existing.token,
+          "Failed preparation removed another workspace owner");
     }
     std::cout
         << "Qt command receipts preserve detached-child proof, unrelated QProcess status, FailedToStart and killed-guard fencing\n";

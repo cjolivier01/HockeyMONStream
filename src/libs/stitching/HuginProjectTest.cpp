@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -25,6 +26,7 @@
 
 #include <fcntl.h>
 #include <opencv2/imgcodecs.hpp>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <tiffio.h>
@@ -933,6 +935,79 @@ bool test_reframe_publication(const std::filesystem::path& root) {
 
 } // namespace
 
+bool test_readonly_source_promotion(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  namespace operation = hm::game_operation;
+  using hm::stitching::HuginProject;
+  const fs::path source = root / "owned-promotion-source";
+  const fs::path destination = root / "owned-promotion-destination";
+  fs::create_directories(source);
+  fs::create_directories(destination);
+  std::ofstream(saved_state(source) / "config.yaml") << "{}\n";
+  std::ofstream(saved_state(destination) / "config.yaml") << "{}\n";
+  if (!expect(HuginProject::PromoteArtifacts(root / "game", source).ok(), "source snapshot fixture must publish"))
+    return false;
+  const fs::path seam_path = saved_state(source) / "seam_file.png";
+  const cv::Mat seam = cv::imread(seam_path.string(), cv::IMREAD_GRAYSCALE);
+  if (!expect(!seam.empty() && seam.cols > 2 && seam.rows > 2, "source snapshot seam must permit a positioned crop"))
+    return false;
+  if (!cv::imwrite(seam_path.string(), seam(cv::Rect(1, 1, seam.cols - 2, seam.rows - 2))) ||
+      !add_png_pixel_offset(seam_path, 1, 1))
+    return false;
+  auto owner = operation::LocalOwner("pipeline", "retained-preview", "retained-preview-token");
+  {
+    auto lock = operation::Lock::Acquire(source);
+    if (!expect(lock.ok() && (*lock)->Claim(owner).ok(), "source preview owner fixture must be retained"))
+      return false;
+  }
+  const auto owner_bytes = read_binary_file(saved_state(source) / "game-operation.yaml");
+  const auto seam_bytes = read_binary_file(seam_path);
+  const auto seam_time = fs::last_write_time(seam_path);
+  const auto config_bytes = read_binary_file(saved_state(source) / "config.yaml");
+  auto promoted = HuginProject::PromoteArtifactsAndConfig(source, destination, [&]() -> absl::StatusOr<std::string> {
+    return read_text_file(saved_state(source) / "config.yaml");
+  });
+  if (!expect(
+          promoted.ok() && cv::imread((saved_state(destination) / "seam_file.png").string()).size() == seam.size() &&
+              read_binary_file(seam_path) == seam_bytes && fs::last_write_time(seam_path) == seam_time &&
+              read_binary_file(saved_state(source) / "game-operation.yaml") == owner_bytes &&
+              read_binary_file(saved_state(source) / "config.yaml") == config_bytes,
+          "promotion must normalize only its staging copy while preserving the source owner, config and seam"))
+    return false;
+  const auto destination_generation = read_binary_file(saved_state(destination) / "stitching_generation_id");
+  for (const char* marker : {".hstream-stitch-recovery-pending", ".hstream-rink-recovery-pending"}) {
+    const auto pending = saved_state(source) / marker;
+    std::ofstream(pending).close();
+    const auto rejected = HuginProject::PromoteArtifacts(source, destination);
+    if (!expect(
+            absl::IsUnavailable(rejected) && fs::exists(pending) &&
+                read_binary_file(saved_state(destination) / "stitching_generation_id") == destination_generation,
+            "source journals must block promotion without being recovered or changing the destination"))
+      return false;
+    fs::remove(pending);
+  }
+  for (const auto& game : {source, destination}) {
+    const int writer = ::open((saved_state(game) / ".hstream-stitch.lock").c_str(), O_RDWR | O_CLOEXEC);
+    if (!expect(writer >= 0 && ::flock(writer, LOCK_EX | LOCK_NB) == 0, "writer fixture must lock artifacts"))
+      return false;
+    const auto busy = HuginProject::PromoteArtifacts(source, destination);
+    ::close(writer);
+    if (!expect(absl::IsUnavailable(busy), "an active publication must reject promotion without waiting"))
+      return false;
+  }
+  {
+    auto lock = operation::Lock::Acquire(destination);
+    auto destination_owner = operation::LocalOwner("pipeline", "destination-run", "destination-token");
+    if (!expect(lock.ok() && (*lock)->Claim(destination_owner).ok(), "destination owner fixture must be reserved"))
+      return false;
+  }
+  return expect(
+      !HuginProject::PromoteArtifacts(source, destination).ok() &&
+          read_binary_file(saved_state(destination) / "stitching_generation_id") == destination_generation &&
+          read_binary_file(saved_state(source) / "game-operation.yaml") == owner_bytes,
+      "read-only source access must never bypass destination ownership");
+}
+
 int main(int argc, char** argv) {
   if (argc == 2 && std::string(argv[1]) == "--native-enblend-fixture")
     return write_native_enblend_fixture() ? 0 : 1;
@@ -1697,6 +1772,7 @@ int main(int argc, char** argv) {
       "experiment promotion must republish validated maps and seam under a fresh generation without rerendering");
 
   ok &= test_publication_file_pins(root, root / "game");
+  ok &= test_readonly_source_promotion(root);
   ok &= test_partial_publication_rollback(root, root / "game");
   ok &= test_reframe_publication(root);
 

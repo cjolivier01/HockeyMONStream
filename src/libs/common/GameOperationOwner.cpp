@@ -37,6 +37,8 @@ struct CommandProof {
   bool launched{false};
   bool exited{false};
   bool complete{false};
+  std::filesystem::path command_game;
+  std::optional<Owner> command_owner;
   ~CommandProof() {
     if (descriptor >= 0)
       ::close(descriptor);
@@ -374,11 +376,27 @@ absl::StatusOr<std::shared_ptr<CommandProof>> command_proof(const std::string& t
     return absl::FailedPreconditionError("No exact guarded command is registered");
   return found->second;
 }
+absl::Status release_command_game(CommandProof& proof) {
+  if (!proof.command_owner)
+    return absl::OkStatus();
+  auto lock = Lock::Acquire(proof.command_game, false);
+  if (!lock.ok())
+    return lock.status();
+  const auto released = (*lock)->Release(proof.command_owner->token, proof.command_owner->revision, true);
+  if (released.ok())
+    proof.command_owner.reset();
+  return released;
+}
 absl::StatusOr<char> proof_state(CommandProof& proof) {
   if (proof.complete)
     return 'C';
   const auto state = process_guard::ReadReceipt(proof.descriptor, proof.path, proof.header);
   if (state.ok() && *state == 'C') {
+    // The CLI inherited this claim, so even forced startup cancellation cannot
+    // leave a separate pipeline owner behind in the candidate workspace.
+    const auto released = release_command_game(proof);
+    if (!released.ok())
+      return released;
     // The exact kernel completion proof is immutable once observed. Retire its
     // descriptor so large sequential experiment batches do not exhaust RLIMIT_NOFILE.
     proof.complete = true;
@@ -416,7 +434,8 @@ absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
     const std::string& token,
     int64_t grace_ms,
     int64_t poll_ms,
-    const std::vector<std::string>& command) {
+    const std::vector<std::string>& command,
+    const std::filesystem::path& command_game) {
   if (command.empty() || command.front().empty() || grace_ms <= 0 || poll_ms <= 0 || poll_ms > grace_ms ||
       grace_ms > 24 * 60 * 60 * 1000LL)
     return absl::InvalidArgumentError("Invalid guarded command or explicit cleanup timing");
@@ -446,6 +465,21 @@ absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
     ::unlink(proof->path.c_str());
     return failed;
   }
+  if (!command_game.empty() && key(command_game) != key(game)) {
+    proof->command_game = key(command_game);
+    auto workspace = Lock::Acquire(proof->command_game, false);
+    if (!workspace.ok()) {
+      ::unlink(proof->path.c_str());
+      return workspace.status();
+    }
+    auto owner = LocalOwner("pipeline", *nonce, *nonce);
+    const auto claimed = (*workspace)->Claim(owner);
+    if (!claimed.ok()) {
+      ::unlink(proof->path.c_str());
+      return claimed;
+    }
+    proof->command_owner = std::move(owner);
+  }
   (*admission)->commands.emplace(*nonce, proof);
   SupervisedCommand result{
       *nonce,
@@ -461,7 +495,9 @@ absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
        std::to_string(grace_ms),
        "--poll-ms",
        std::to_string(poll_ms),
-       "--"}};
+       "--"},
+      proof->command_game,
+      proof->command_owner ? proof->command_owner->token : std::string()};
   result.arguments.insert(result.arguments.end(), command.begin(), command.end());
   return result;
 }
@@ -522,7 +558,8 @@ absl::Status CancelUnlaunchedSupervisedCommand(const std::string& token, const s
   struct Unlock {
     int descriptor;
     ~Unlock() {
-      ::flock(descriptor, LOCK_UN);
+      if (descriptor >= 0)
+        ::flock(descriptor, LOCK_UN);
     }
   } unlock{(*proof)->descriptor};
   const auto state = process_guard::ReadReceipt((*proof)->descriptor, (*proof)->path, (*proof)->header);
@@ -530,9 +567,18 @@ absl::Status CancelUnlaunchedSupervisedCommand(const std::string& token, const s
     return state.status();
   if ((*proof)->launched || *state != 'P')
     return absl::FailedPreconditionError("Launched guard requires exact descendant completion proof");
+  const auto released = release_command_game(**proof);
+  if (!released.ok())
+    return released;
   if (::unlink((*proof)->path.c_str()) != 0)
     return io("Cannot retire unlaunched guarded command");
-  local_admissions.at(token).commands.erase(id);
+  // Keep completion queryable until the outer admission retires. Qt's error
+  // handlers can ask again after the FailedToStart callback has returned.
+  (*proof)->complete = true;
+  ::flock(unlock.descriptor, LOCK_UN);
+  unlock.descriptor = -1;
+  ::close((*proof)->descriptor);
+  (*proof)->descriptor = -1;
   return absl::OkStatus();
 }
 

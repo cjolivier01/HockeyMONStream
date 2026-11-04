@@ -546,6 +546,7 @@ cc_test(
   name = "hugin_project_test",
   srcs = ["HuginProjectTest.cpp"],
   deps = [
+    "//src/libs/common:game_operation_owner",
     ":game_config",
     ":hugin_project",
     ":player_frame_selection",

@@ -96,6 +96,21 @@ local experiment operations and distributed workflows respect the same owner,
 including across independent desktop processes and window closure. Releasing a
 GPU allocation alone does not release recording ownership before cleanup.
 
+Local experiment previews and calibration commands also reserve the actual
+candidate workspace under their command supervisor. The CLI inherits that
+workspace's authorization; verified descendant cleanup releases both scopes,
+including after a forced stop during startup. A failed launch retires its
+unconsumed reservation. Missing supervisor proof or a replaced owner retains
+the reservation for recovery.
+
+**Use selected in main Program** reads a locked snapshot of the completed
+candidate and copies it into the main game's publication transaction. It does
+not rewrite the candidate or clear its ownership record. This permits selecting
+an intact published result left with an old preview owner, while an active
+writer or unfinished source transaction still blocks selection. Seam
+normalization happens only in the destination's staging copy. The main game's
+ownership checks still apply.
+
 ## Standalone configuration
 
 `configs/baseline.yaml` owns the shipped `workflow` defaults. Set

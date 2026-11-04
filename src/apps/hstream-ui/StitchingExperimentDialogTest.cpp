@@ -26,6 +26,7 @@
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QSaveFile>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
@@ -63,6 +64,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <csignal>
 #include <cstddef>
 #include <functional>
 #include <iostream>
@@ -70,7 +72,10 @@
 #include <utility>
 #include <vector>
 
+#include <tiffio.h>
+
 #ifdef Q_OS_LINUX
+#include <poll.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 #endif
@@ -2643,29 +2648,148 @@ void exercise_workflow_frame_selection(const QString& game, const QString& root)
       "Completion must release controls without changing the saved-frame policy");
 }
 
+#ifdef Q_OS_LINUX
+int owned_preview_child(const QString& game) {
+  const std::filesystem::path directory = game.toStdString();
+  require(hm::game_operation::EnableIsolatedChildProof().ok(), "Cannot isolate preview fixture child");
+  hm::game_operation::Owner owner;
+  bool independent = false;
+  {
+    auto lock = hm::game_operation::Lock::Acquire(directory);
+    require(lock.ok(), "Cannot acquire candidate admission");
+    const auto current = (*lock)->Read();
+    require(current.ok(), "Cannot inspect candidate admission");
+    if (current->has_value()) {
+      require(
+          (*lock)->Authorize(hm::game_operation::Authorization(directory)).ok(),
+          "Candidate preview did not inherit its exact workspace authorization");
+      owner = **current;
+    } else {
+      const auto token = hm::game_operation::NewToken();
+      require(token.ok(), "Cannot create candidate pipeline token");
+      owner = hm::game_operation::LocalOwner("pipeline", *token, *token);
+      require((*lock)->Claim(owner).ok(), "Cannot claim candidate pipeline");
+      hm::game_operation::RegisterAuthorization(directory, owner.token);
+      independent = true;
+    }
+  }
+  const QString mode = qEnvironmentVariable("HSTREAM_TEST_PREVIEW_MODE");
+  if (mode == "forced-stop") {
+    std::signal(SIGINT, SIG_IGN);
+    std::signal(SIGTERM, SIG_IGN);
+  }
+  const QString started = qEnvironmentVariable("HSTREAM_TEST_PREVIEW_STARTED");
+  const QString release = qEnvironmentVariable("HSTREAM_TEST_PREVIEW_RELEASE");
+  const int sequence =
+      QFile::exists(started) ? QJsonDocument::fromJson(read(started)).object()["sequence"].toInt() + 1 : 1;
+  const QJsonObject observation{
+      {"sequence", sequence},
+      {"game", game},
+      {"owner_token", QString::fromStdString(owner.token)},
+      {"independent", independent},
+      {"phase", mode == "startup-stop" ? "startup" : "playing"}};
+  QSaveFile marker(started);
+  const QByteArray bytes = QJsonDocument(observation).toJson();
+  require(
+      marker.open(QIODevice::WriteOnly) && marker.write(bytes) == bytes.size() && marker.commit(),
+      "Cannot publish candidate admission marker");
+  int exit_code = 2;
+  for (int attempt = 0; attempt < 6000; ++attempt) {
+    if (QFile::exists(release)) {
+      bool valid = false;
+      const int requested = QString::fromUtf8(read(release)).trimmed().toInt(&valid);
+      if (valid) {
+        QFile::remove(release);
+        exit_code = requested;
+        break;
+      }
+    }
+    if (mode != "startup-stop" && mode != "forced-stop") {
+      pollfd input{STDIN_FILENO, POLLIN, 0};
+      char command = 0;
+      if (::poll(&input, 1, 0) > 0 && (input.revents & POLLIN) && ::read(STDIN_FILENO, &command, 1) == 1 &&
+          command == 'q') {
+        exit_code = 0;
+        break;
+      }
+    }
+    ::usleep(10000);
+  }
+  // This is the CLI's former independent-owner path. A forced startup exit
+  // skips it, so only an owning outer supervisor can safely retire the claim.
+  if (independent) {
+    require(hm::game_operation::RetireIsolatedChildren(100, 10).ok(), "Cannot retire preview fixture descendants");
+    require(hm::game_operation::ReleaseLocal(directory, owner.token, true).ok(), "Cannot release candidate pipeline");
+  }
+  return exit_code;
+}
+#endif
+
 void exercise_completed_workflow_preview(const QString& game, const QString& root) {
   const QString working = root + "/workflow-preview-fixture";
+  const QString screenshots = qEnvironmentVariable("HSTREAM_TEST_SCREENSHOT_DIR");
+  require(screenshots.isEmpty() || QDir().mkpath(screenshots), "Cannot prepare preview ownership screenshots");
   require(QDir().mkpath(working + "/scripts"), "Cannot create workflow preview fixture");
+  write(working + "/scripts/hstream-workflow", "#!/bin/sh\necho '{\"profiles\":[]}'\n");
+  require(
+      QFile::setPermissions(
+          working + "/scripts/hstream-workflow", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot isolate the initial workflow profile request");
   auto main_config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
   main_config["workflow"]["registry"] = working.toStdString();
   main_config["workflow"]["poll_interval_ms"] = 100;
   write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(main_config)));
-  const QString fixtures = root + "/synthetic-artifacts";
+  const QString fixtures = working + "/artifacts";
+  require(QDir().mkpath(fixtures), "Cannot create promotable preview artifacts");
+  cv::Mat map_x(8, 8, CV_16UC1), map_y(8, 8, CV_16UC1);
+  for (int row = 0; row < 8; ++row)
+    for (int column = 0; column < 8; ++column) {
+      map_x.at<uint16_t>(row, column) = column;
+      map_y.at<uint16_t>(row, column) = row;
+    }
+  for (const char* prefix : {"mapping_0000", "mapping_0001"}) {
+    const QString path = fixtures + "/" + prefix + ".tif";
+    require(cv::imwrite(path.toStdString(), cv::Mat(8, 8, CV_8UC3, cv::Scalar(1, 2, 3))), "Cannot write remap pixels");
+    TIFF* tiff = TIFFOpen(path.toStdString().c_str(), "r+");
+    require(tiff != nullptr, "Cannot open remap placement");
+    TIFFSetField(tiff, TIFFTAG_XRESOLUTION, 1.0f);
+    TIFFSetField(tiff, TIFFTAG_YRESOLUTION, 1.0f);
+    TIFFSetField(tiff, TIFFTAG_XPOSITION, 0.0f);
+    TIFFSetField(tiff, TIFFTAG_YPOSITION, 0.0f);
+    const bool saved = TIFFRewriteDirectory(tiff);
+    TIFFClose(tiff);
+    require(
+        saved && cv::imwrite((fixtures + "/" + prefix + "_x.tif").toStdString(), map_x) &&
+            cv::imwrite((fixtures + "/" + prefix + "_y.tif").toStdString(), map_y),
+        "Cannot write valid remap geometry");
+  }
+  for (const char* name : {"left.png", "right.png"})
+    require(
+        cv::imwrite((fixtures + "/" + name).toStdString(), cv::Mat(8, 8, CV_8UC1, cv::Scalar(255))),
+        "Cannot write preview input");
+  cv::Mat seam(8, 8, CV_8UC1, cv::Scalar(0));
+  seam.colRange(4, 8).setTo(cv::Scalar(255));
+  require(cv::imwrite((fixtures + "/seam_file.png").toStdString(), seam), "Cannot write the two-camera seam");
+  for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"})
+    write(fixtures + "/" + name, "p f19 w8 h8 v180\ni w8 h8 f0 v108 y-25\ni w8 h8 f0 v108 y25\n");
+  write(
+      fixtures + "/stitching_canvas_provenance",
+      "version=2\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=8\nsource-canvas-height=8\n"
+      "canvas-width=8\ncanvas-height=8\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n");
   const QString started = working + "/started";
   const QString release = working + "/release";
   const QString runner = working + "/runner";
   write(
       runner,
       "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
-      "touch \"$HSTREAM_TEST_PREVIEW_STARTED\"\n"
-      "while [ ! -f \"$HSTREAM_TEST_PREVIEW_RELEASE\" ]; do sleep 0.05; done\n"
-      "exit \"$(cat \"$HSTREAM_TEST_PREVIEW_RELEASE\")\";;\nesac\n"
+      "exec \"$HSTREAM_TEST_BINARY\" --owned-preview-child \"$HM_GAME_DIR/$2\";;\nesac\n"
       "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/_hockeymon/\"\n");
   require(
       QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
       "Cannot prepare workflow preview runner");
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_TEST_ARTIFACTS", fixtures);
+  environment.insert("HSTREAM_TEST_BINARY", QCoreApplication::applicationFilePath());
   environment.insert("HSTREAM_TEST_PREVIEW_STARTED", started);
   environment.insert("HSTREAM_TEST_PREVIEW_RELEASE", release);
   {
@@ -2781,22 +2905,49 @@ void exercise_completed_workflow_preview(const QString& game, const QString& roo
   write(
       workflow_state,
       R"({"workflow_id":"preview-workflow","state":"succeeded","owner_released":true,"epoch":0,"nodes":[]})");
-  for (int exit_code : {0, 7, -1}) {
+  const auto workspace_unowned = [&] {
+    const auto current = hm::game_operation::Inspect(result.game_directory);
+    if (absl::IsUnavailable(current.status()))
+      return false;
+    require(current.ok(), "Cannot inspect result workspace admission");
+    return !current->has_value();
+  };
+  const auto main_unowned = [&] {
+    const auto current = hm::game_operation::Inspect(store->game_directory);
+    if (absl::IsUnavailable(current.status()))
+      return false;
+    require(current.ok(), "Cannot inspect main game admission");
+    return !current->has_value();
+  };
+  const auto original_main_config = read(game + "/_hockeymon/config.yaml");
+  const auto original_result_config =
+      read(QString::fromStdString((result.game_directory / "_hockeymon/config.yaml").string()));
+  for (const QString scenario : {"startup-stop", "normal", "failure", "forced-stop", "replay"}) {
     QFile::remove(started);
     QFile::remove(release);
+    environment.insert("HSTREAM_TEST_PREVIEW_MODE", scenario);
     StitchingExperimentDialog dialog(
         game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
     dialog.show();
     widget<QTableWidget>(dialog, "stitchExperimentCandidates")->selectRow(0);
-    widget<QCheckBox>(dialog, "stitchExperimentLoop")->setChecked(false);
+    widget<QCheckBox>(dialog, "stitchExperimentLoop")->setChecked(scenario == "replay");
     auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
     auto* stop = widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton");
+    auto* apply = widget<QPushButton>(dialog, "applyStitchExperimentButton");
     require(
         wait_until([&] { return play->isEnabled(); }, 10000),
         "Completed workflow did not enable preview after reattach");
+    AdmissionOwnershipObserver ownership([&] { return !workspace_unowned(); });
+    play->installEventFilter(&ownership);
+    apply->installEventFilter(&ownership);
     play->click();
     require(
-        wait_until([&] { return QFile::exists(started) && stop->isEnabled(); }, 10000),
+        wait_until(
+            [&] {
+              return QFile::exists(started) &&
+                  QJsonDocument::fromJson(read(started)).object()["sequence"].toInt() == 1 && stop->isEnabled();
+            },
+            10000),
         "Completed workflow preview failed to acquire separate local ownership");
     require(
         wait_until(
@@ -2808,18 +2959,47 @@ void exercise_completed_workflow_preview(const QString& game, const QString& roo
         "Started preview did not persist its process session");
     const auto running = LoadStitchingExperimentStore(*store);
     const auto admission = hm::game_operation::Inspect(store->game_directory);
+    const auto candidate_admission = hm::game_operation::Inspect(result.game_directory);
+    const auto child = QJsonDocument::fromJson(read(started)).object();
     require(
         running.ok() && running->experiments.front().process_session_id > 0 &&
             !running->experiments.front().process_token.empty() && admission.ok() && admission->has_value() &&
-            (**admission).kind == "experiment",
-        "Completed workflow preview has no durable local process owner");
-    if (exit_code < 0)
+            (**admission).kind == "experiment" && candidate_admission.ok() && candidate_admission->has_value() &&
+            QString::fromStdString((**candidate_admission).token) == child["owner_token"].toString() &&
+            QFileInfo(child["game"].toString()).canonicalFilePath() ==
+                QFileInfo(QString::fromStdString(result.game_directory.string())).canonicalFilePath(),
+        "Completed workflow preview must own both main and the actual result workspace");
+    if (scenario == "replay") {
+      write(release, "0");
+      require(
+          wait_until(
+              [&] {
+                return QJsonDocument::fromJson(read(started)).object()["sequence"].toInt() == 2 && stop->isEnabled();
+              },
+              10000),
+          "Preview loop did not start a second admitted result-workspace run");
+      const auto replay_owner = hm::game_operation::Inspect(result.game_directory);
+      require(
+          replay_owner.ok() && replay_owner->has_value() && (**replay_owner).token != (**candidate_admission).token,
+          "Replay must retire the prior candidate claim before admitting its next command");
+    }
+    if (scenario == "startup-stop" || scenario == "forced-stop" || scenario == "replay")
       stop->click();
     else
-      write(release, QByteArray::number(exit_code));
+      write(release, scenario == "failure" ? "7" : "0");
+    if (scenario == "startup-stop" || scenario == "forced-stop")
+      require(
+          !apply->isEnabled() && !workspace_unowned(),
+          "Stop must not release candidate admission before cleanup proof");
     require(
-        wait_until([&] { return play->isEnabled(); }, 10000),
-        "Completed workflow preview did not retire local ownership");
+        wait_until(
+            [&] { return play->isEnabled() && apply->isEnabled() && workspace_unowned() && main_unowned(); }, 10000),
+        "Completed workflow preview did not retire both main and candidate ownership after cleanup");
+    require(
+        !ownership.admitted_before_release,
+        "Preview or promotion became available while the candidate workspace still had an admission owner");
+    if (scenario == "startup-stop" && !screenshots.isEmpty())
+      require(dialog.grab().save(screenshots + "/stopped-preview-ready.png"), "Cannot capture the stopped preview");
     catalog = LoadStitchingExperimentStore(*store);
     require(
         catalog.ok() && catalog->experiments.front().process_session_id == 0 &&
@@ -2829,6 +3009,62 @@ void exercise_completed_workflow_preview(const QString& game, const QString& roo
             catalog->experiments.front().artifact_generation_id == record.artifact_generation_id &&
             catalog->experiments.front().result_workspace->game_directory == result.game_directory,
         "Preview success, failure or Stop changed the completed workflow result");
+    require(
+        read(game + "/_hockeymon/config.yaml") == original_main_config &&
+            read(QString::fromStdString((result.game_directory / "_hockeymon/config.yaml").string())) ==
+                original_result_config,
+        "Preview cleanup must preserve both selected and candidate configuration");
+  }
+  for (const bool stale_owner : {false, true}) {
+    bool promoted = false;
+    bool screenshot_saved = true;
+    StitchingExperimentDialog dialog(
+        game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00", nullptr, [&] {
+          promoted = true;
+          if (stale_owner && !screenshots.isEmpty())
+            screenshot_saved = dialog.grab().save(screenshots + "/stale-owner-promotion-succeeded.png");
+        });
+    dialog.show();
+    auto* rows = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    rows->selectRow(rows->rowCount() - 1);
+    auto* apply = widget<QPushButton>(dialog, "applyStitchExperimentButton");
+    require(
+        wait_until([&] { return apply->isEnabled(); }, 10000), "Stopped preview did not permit subsequent promotion");
+    const QString source_state = QString::fromStdString((result.game_directory / "_hockeymon").string());
+    QByteArray retained_owner;
+    const QByteArray retained_config = read(source_state + "/config.yaml");
+    const QByteArray retained_seam = read(source_state + "/seam_file.png");
+    if (stale_owner) {
+      auto orphan = hm::game_operation::LocalOwner("pipeline", "startup-preview", "orphaned-preview-token");
+      orphan.process_id = 2147483647;
+      {
+        auto lock = hm::game_operation::Lock::Acquire(result.game_directory);
+        require(lock.ok() && (*lock)->Claim(orphan).ok(), "Cannot model the retained candidate owner after Ready");
+      }
+      retained_owner = read(source_state + "/game-operation.yaml");
+      require(
+          hm::game_operation::Authorization(result.game_directory).empty(),
+          "Recovery fixture must not authorize the orphaned candidate owner");
+    }
+    apply->click();
+    const bool completed = wait_until([&] { return promoted && !dialog.isVisible(); }, 10000);
+    if (!completed)
+      std::cerr << widget<QLabel>(dialog, "stitchExperimentStatus")->text().toStdString() << '\n'
+                << widget<QPlainTextEdit>(dialog, "stitchExperimentLog")->toPlainText().toStdString() << '\n';
+    require(
+        completed && screenshot_saved && dialog.result() == QDialog::Accepted && (stale_owner || workspace_unowned()) &&
+            main_unowned(),
+        "Use selected must publish the completed workflow result after preview cleanup and release admission");
+    require(
+        read(source_state + "/config.yaml") == retained_config &&
+            read(source_state + "/seam_file.png") == retained_seam &&
+            (!stale_owner || read(source_state + "/game-operation.yaml") == retained_owner),
+        "Recovery promotion must preserve the source owner, configuration and published artifacts");
+    const auto promoted_config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
+    require(
+        promoted_config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
+            read(game + "/_hockeymon/autooptimiser_out.pto") == read(fixtures + "/autooptimiser_out.pto"),
+        "Successful Use selected must publish the candidate's calibration and maps to main");
   }
 }
 
@@ -3762,6 +3998,14 @@ void exercise(
 
 int main(int argc, char** argv) {
 #ifdef Q_OS_LINUX
+  if (argc == 3 && QString::fromLocal8Bit(argv[1]) == "--owned-preview-child") {
+    try {
+      return owned_preview_child(QString::fromLocal8Bit(argv[2]));
+    } catch (const std::exception& error) {
+      std::cerr << "Preview admission fixture: " << error.what() << '\n';
+      return 2;
+    }
+  }
   if (argc == 4 && QString::fromLocal8Bit(argv[1]) == "--preview-cleanup-child") {
     // Model a descendant whose ownership cannot be inspected until cleanup
     // finishes. A separate process keeps this permission change out of Qt.
@@ -3822,6 +4066,11 @@ int main(int argc, char** argv) {
         write(game + "/right.mp4", "right");
         return game;
       };
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_PREVIEW_OWNERSHIP_ONLY") != 0) {
+        exercise_completed_workflow_preview(make_game("workflow-preview"), fixture.path());
+        std::cout << "Stitching workflow preview admission and promotion checks passed\n";
+        return 0;
+      }
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_LAYOUT_ONLY") != 0) {
         QMainWindow main_window;
         main_window.setWindowTitle("Stitching experiment test owner");
