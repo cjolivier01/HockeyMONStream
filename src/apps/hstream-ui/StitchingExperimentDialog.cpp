@@ -4507,7 +4507,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   });
   const auto select_ready_preview = [&s]() {
     const int row = s.table->currentRow();
-    if (row >= 0 && row < static_cast<int>(s.candidates.size()) && s.candidates[row].complete &&
+    if (!s.close_after_workflow && row >= 0 && row < static_cast<int>(s.candidates.size()) && s.candidates[row].complete &&
         !s.candidates[row].selection_reuse_blocked) {
       if (!s.restoring_candidates)
         s.select_attached_workflow = false;
@@ -4553,7 +4553,14 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.workflow->snapshotChanged = [&s](const QJsonObject& value) {
     s.workflow_snapshot(value);
     if (s.close_after_workflow && s.close_cancel_sent && s.workflow->active()) {
-      const auto error = value.value("cancel_error").toObject().value("error").toString();
+      auto error = value.value("cancel_error").toObject().value("error").toString();
+      if (error.isEmpty())
+        error = value.value("controller_error").toObject().value("error").toString();
+      if (error.isEmpty() && value.contains("controller_online") && !value.value("controller_online").toBool()) {
+        error = value.value("controller_warning").toObject().value("error").toString();
+        if (error.isEmpty())
+          error = "The workflow controller is unavailable. Restore it before retrying cancellation.";
+      }
       if (!error.isEmpty() || value.value("state").toString() == "recovery")
         s.workflow_close_failed(error.isEmpty() ? "Workflow cleanup requires recovery. Review its logs." : error);
     }

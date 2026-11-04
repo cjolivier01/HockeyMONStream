@@ -804,6 +804,8 @@ void dialogCancelLifecycle(
         "status-unavailable",
         "cleanup-recovery",
         "cleanup-error",
+        "controller-error",
+        "controller-offline",
         "button"}) {
     require(!owner.findChild<QDialog*>("stitchingExperimentDialog"), "Reopen found a previously closing dialog");
     if (reopen_count) {
@@ -873,28 +875,49 @@ void dialogCancelLifecycle(
       closeWorkflow(*dialog, route, true);
     }
     int expected_cancellations = cancellations + (retry ? 2 : 1);
+    // The controller writes its state before the response arrives. Inject
+    // post-cancellation failures only after the command callback completes.
     require(
         wait([&] {
-          return controllerCalls(root, "cancel") == expected_cancellations &&
+          return !workflow->busy() && controllerCalls(root, "cancel") == expected_cancellations &&
               read(root + "/state.json").value("cancel_requested").toBool();
         }),
         "Confirmed close did not request workflow cancellation");
-    if (scenario == "status-unavailable" || scenario == "cleanup-recovery" || scenario == "cleanup-error") {
+    if (scenario == "status-unavailable" || scenario == "cleanup-recovery" || scenario == "cleanup-error" ||
+        scenario == "controller-error" || scenario == "controller-offline") {
+      QString expected_error;
       if (scenario == "status-unavailable")
         write(root + "/status-unavailable", "2");
       else {
         auto stalled = read(root + "/state.json");
         if (scenario == "cleanup-recovery")
           stalled.insert("state", "recovery");
-        else
+        else if (scenario == "controller-error") {
+          expected_error = "Fixture controller could not reconcile ownership release";
+          stalled.insert("controller_error", QJsonObject{{"error", expected_error}});
+        } else if (scenario == "controller-offline") {
+          expected_error = "Fixture controller heartbeat unavailable";
+          stalled.insert("controller_online", false);
+          stalled.insert("controller_warning", QJsonObject{{"error", expected_error}});
+        } else
           stalled.insert("cancel_error", QJsonObject{{"error", "Fixture cleanup could not confirm resource release"}});
         write(root + "/state.json", QJsonDocument(stalled).toJson());
       }
+      const bool retry_available = wait([&] {
+        return widget<QPushButton>(*dialog, "closeStitchExperimentButton")->isEnabled() &&
+            widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled() &&
+            (expected_error.isEmpty() ||
+             widget<QLabel>(*dialog, "stitchExperimentStatus")->text().contains(expected_error));
+      });
+      if (!retry_available)
+        std::cerr << "Close recovery scenario " << scenario.toStdString() << ": "
+                  << widget<QLabel>(*dialog, "stitchExperimentStatus")->text().toStdString() << '\n'
+                  << "Close enabled=" << widget<QPushButton>(*dialog, "closeStitchExperimentButton")->isEnabled()
+                  << " Cancel enabled=" << widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled()
+                  << " Workflow busy=" << workflow->busy() << " active=" << workflow->active() << '\n'
+                  << QJsonDocument(read(root + "/state.json")).toJson(QJsonDocument::Compact).toStdString() << '\n';
       require(
-          wait([&] {
-            return widget<QPushButton>(*dialog, "closeStitchExperimentButton")->isEnabled() &&
-                widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled();
-          }),
+          retry_available,
           "Monitoring or cleanup failure stranded the pending close instead of allowing explicit cancellation retry");
       require(
           dialog->isVisible() && finished == 0 && controllerCalls(root, "cancel") == expected_cancellations,
@@ -903,6 +926,9 @@ void dialogCancelLifecycle(
       auto recovered = read(root + "/state.json");
       recovered.insert("state", "cancelled");
       recovered.remove("cancel_error");
+      recovered.remove("controller_error");
+      recovered.remove("controller_warning");
+      recovered.remove("controller_online");
       write(root + "/state.json", QJsonDocument(recovered).toJson());
       closeWorkflow(*dialog, route, true);
       ++expected_cancellations;
