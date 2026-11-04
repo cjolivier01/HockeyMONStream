@@ -114,9 +114,9 @@ class Controller:
         finally:
             request.unlink(missing_ok=True)
 
-    def register(self, plan, game):
+    def register(self, plan, game, *, defer_admission=False):
         try:
-            return self._register(plan, game)
+            return self._register(plan, game, defer_admission=defer_admission)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             workflow_id = plan.get("workflow_id") if isinstance(plan, dict) else None
             if not isinstance(workflow_id, str):
@@ -136,7 +136,7 @@ class Controller:
                 raise SubmissionRejected(str(exc), workflow_id) from exc
             raise
 
-    def _register(self, plan, game):
+    def _register(self, plan, game, *, defer_admission=False):
         plan = validate_plan(plan)
         if any(stage["kind"].startswith("experiment-") for stage in plan["stages"]):
             self._user_config_snapshot(plan)
@@ -211,9 +211,12 @@ class Controller:
                     "user": os.getuid(),
                 }
                 self.registry.write(ledger)
-        # Registration never starts a GPU task synchronously in the GUI command.
-        with locked(directory / "controller.lock"):
-            self._ensure_owner(directory, plan)
+        # The durable entry lets the service acquire and bind ownership before
+        # admitting any tasks. A GUI submit must not wait for native runtime
+        # verification or a service tick holding the reconciliation lock.
+        if not defer_admission:
+            with locked(directory / "controller.lock"):
+                self._ensure_owner(directory, plan)
         return self.status(workflow_id)
 
     def _ensure_owner(self, directory, plan, control_descriptor=None):
@@ -335,7 +338,10 @@ class Controller:
         pending = self._cancel_pending(directory, state)
         value = graph.snapshot(plan, graph.cancel(plan, state) if pending else state)
         value["revision"] = state["revision"]
-        value["owner_released"] = read_json(directory / "owner.json")["released"]
+        owner = read_json(directory / "owner.json")
+        value["owner_released"] = owner["released"]
+        if owner.get("rejection"):
+            value["controller_error"] = {"error": owner["rejection"]}
         value["limits"] = copy.deepcopy(plan["limits"])
         value["cancellation_pending"] = pending and not state["cancel_requested"]
         stages = {stage["id"]: stage for stage in plan["stages"]}
@@ -467,6 +473,7 @@ class Controller:
             owner.update(
                 acquired=False, released=False, bound=False, token=str(uuid4())
             )
+            owner.pop("rejection", None)
             write_json(directory / "owner.json", owner)
             self._save(directory, plan, state)
             self._ensure_owner(directory, plan, descriptor)

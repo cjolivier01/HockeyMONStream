@@ -130,7 +130,9 @@ def main(argv=None):
             require(
                 game is not None, "Specify --game-dir or a sealed source game_directory"
             )
-            result = controller.register(plan, game)
+            result = controller.register(
+                plan, game, defer_admission=args.command == "submit"
+            )
             if args.command == "run":
                 while True:
                     controller.tick(plan["workflow_id"])

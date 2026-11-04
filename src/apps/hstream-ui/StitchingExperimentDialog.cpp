@@ -4569,7 +4569,9 @@ StitchingExperimentDialog::StitchingExperimentDialog(
         s.workflow_close_failed(error.isEmpty() ? "Workflow cleanup requires recovery. Review its logs." : error);
     }
   };
-  s.workflow->message = [&s](const QString& value, bool error) {
+  s.workflow->message = [&s](const QString& value, bool error, const QString& replaces) {
+    if (!replaces.isEmpty() && s.status->text() != replaces)
+      return;
     if (error && s.close_after_workflow && s.close_cancel_sent)
       s.workflow_close_failed(value);
     else

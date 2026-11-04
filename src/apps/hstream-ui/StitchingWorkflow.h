@@ -44,7 +44,9 @@ class StitchingWorkflow : public QWidget {
   void restoreMonitor();
   std::function<void()> changed;
   std::function<void(const QJsonObject&)> snapshotChanged;
-  std::function<void(const QString&, bool)> message;
+  // A nonempty third argument replaces only that earlier notice, preserving
+  // newer messages from other dialog operations.
+  std::function<void(const QString&, bool, const QString&)> message;
   std::function<void()> exportRequested;
 
  private:

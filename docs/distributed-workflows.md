@@ -292,6 +292,22 @@ hstream-workflow retry --registry /srv/hockey/workflow-registry --workflow UUID 
 hstream-workflow serve --registry /srv/hockey/workflow-registry
 ```
 
+`submit` acknowledges the sealed plan and durable registry entry before native
+runtime verification or ownership acquisition. The controller service performs
+those steps and binds the candidate catalog before admitting any task. A queued
+response means the request is retained, not that resources have been acquired.
+An ownership conflict permanently cancels that request and remains visible in
+status; it cannot start later when the conflicting operation finishes. `run`
+retains foreground admission and supervision.
+
+The desktop continues observing the exact workflow ID if a submission reply is
+lost or times out. Its notice identifies the failed command and asks the user to
+wait while status is checked, rather than resubmit. A current status replaces
+only that temporary notice; unrelated errors remain visible. Finished jobs,
+cleanup still in progress, and actual controller failures stay distinct. The
+browser follows its authenticated session/revision and workflow identity fences
+for the same recovery behavior.
+
 Read the current epoch from `status` before Stop or Retry. A control from an older
 retry epoch is rejected. Cancellation intent is durable independently of the
 controller's reconciliation lock, so status and Stop remain usable while the

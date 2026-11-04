@@ -636,7 +636,7 @@ struct StitchingWorkflow::Impl {
   QPushButton* observer{nullptr};
   QTimer* poll{nullptr};
   QJsonObject profiles, snapshot;
-  QString workflow, selected_candidate;
+  QString workflow, selected_candidate, transient_notice;
   bool command_pending{false}, status_pending{false}, profiles_ready{false}, editing{true}, queued{false};
   bool restore_controls{false};
   int timeout_ms{0};
@@ -685,9 +685,51 @@ struct StitchingWorkflow::Impl {
         return value.toObject();
     return {};
   }
-  void notify(const QString& value, bool error = false) {
+  void notify(const QString& value, bool error = false, const QString& replaces = {}) {
+    transient_notice.clear();
     if (owner->message)
-      owner->message(value, error);
+      owner->message(value, error, replaces);
+  }
+  void notifyUnconfirmed(const QString& value) {
+    const auto previous = transient_notice;
+    notify(value, true, previous);
+    transient_notice = value;
+  }
+  bool currentSnapshot(const QJsonObject& value) const {
+    const auto epoch = value.value("epoch");
+    const auto revision = value.value("revision");
+    const auto state = value.value("state").toString();
+    return value.value("workflow_id").toString() == workflow && epoch.isDouble() && epoch.toInt(-1) >= 0 &&
+        revision.isDouble() && revision.toInt(-1) >= 0 && value.value("nodes").isArray() &&
+        (!value.contains("owner_released") || value.value("owner_released").isBool()) &&
+        (state == "queued" || state == "running" || state == "cancelling" || state == "recovery" || terminal(state)) &&
+        epoch.toInt() >= snapshot.value("epoch").toInt() && revision.toInt() >= snapshot.value("revision").toInt();
+  }
+  void resolveNotice() {
+    if (transient_notice.isEmpty())
+      return;
+    const auto previous = transient_notice;
+    const auto state = snapshot.value("state").toString();
+    QString value = "Workflow confirmed: " + state + ".";
+    bool error = state == "failed" || state == "recovery";
+    if (terminal(state) && !snapshot.value("owner_released").toBool())
+      value += " Waiting for resource cleanup.";
+    else if (state == "succeeded")
+      value += " Completed experiments are ready to preview or use in main Program.";
+    else if (error)
+      value += " Select the affected stage and open its log for details.";
+    else if (!terminal(state))
+      value = "Workflow status recovered. Follow current progress in the Workflow tab.";
+    for (const auto* key : {"controller_error", "cancel_error", "controller_warning"}) {
+      const auto detail = snapshot.value(key).toObject().value("error").toString();
+      if (!detail.isEmpty()) {
+        value += " " + detail;
+        error = true;
+      }
+    }
+    notify(value, error, previous);
+    if (terminal(state) && !snapshot.value("owner_released").toBool())
+      transient_notice = value;
   }
   void call(QStringList arguments, std::function<void(QJsonObject, QString)> done) {
     if (launcher.isEmpty() || registry.isEmpty()) {
@@ -700,21 +742,31 @@ struct StitchingWorkflow::Impl {
     process->setProcessChannelMode(QProcess::SeparateChannels);
     auto output = std::make_shared<QByteArray>();
     auto error = std::make_shared<QByteArray>();
+    auto termination = std::make_shared<QString>();
     auto finished = std::make_shared<bool>(false);
     auto* timer = new QTimer(process);
     timer->setSingleShot(true);
-    QObject::connect(timer, &QTimer::timeout, process, [process] { process->kill(); });
-    QObject::connect(process, &QProcess::readyReadStandardOutput, process, [process, output] {
+    QObject::connect(
+        timer, &QTimer::timeout, process, [process, termination, operation = arguments.front(), timeout = timeout_ms] {
+          *termination = QString("Workflow %1 command timed out after %2 seconds.").arg(operation).arg(timeout / 1000);
+          process->kill();
+        });
+    QObject::connect(process, &QProcess::readyReadStandardOutput, process, [process, output, termination] {
       output->append(process->readAllStandardOutput());
-      if (output->size() > kMaxWorkflowDocumentBytes)
+      if (output->size() > kMaxWorkflowDocumentBytes) {
+        *termination = "Workflow response exceeded its size limit.";
         process->kill();
+      }
     });
-    QObject::connect(process, &QProcess::readyReadStandardError, process, [process, error] {
+    QObject::connect(process, &QProcess::readyReadStandardError, process, [process, error, termination] {
       error->append(process->readAllStandardError());
-      if (error->size() > 1024 * 1024)
+      if (error->size() > 1024 * 1024) {
+        *termination = "Workflow error response exceeded its size limit.";
         process->kill();
+      }
     });
-    auto finish = [process, output, error, done = std::move(done), finished, timer](int code) {
+    auto finish = [process, output, error, termination, done = std::move(done), finished, timer](
+                      int code, QProcess::ExitStatus exit_status) {
       if (*finished)
         return;
       *finished = true;
@@ -723,15 +775,26 @@ struct StitchingWorkflow::Impl {
       error->append(process->readAllStandardError());
       QJsonParseError parse;
       const auto document = QJsonDocument::fromJson(*output, &parse);
-      QString failure;
-      if (code != 0 || parse.error != QJsonParseError::NoError || !document.isObject() ||
-          output->size() > kMaxWorkflowDocumentBytes) {
+      QString failure = *termination;
+      if (failure.isEmpty() &&
+          (code != 0 || exit_status != QProcess::NormalExit || parse.error != QJsonParseError::NoError ||
+           !document.isObject() || output->size() > kMaxWorkflowDocumentBytes)) {
         const auto error_document = QJsonDocument::fromJson(*error);
         failure = error_document.object().value("error").toString();
         if (failure.isEmpty())
           failure = QString::fromUtf8(error->left(8192));
-        if (failure.isEmpty())
-          failure = "The workflow command did not return a valid response; retained work may still be running";
+        if (failure.isEmpty()) {
+          if (process->error() == QProcess::FailedToStart)
+            failure = "Could not start the workflow command: " + process->errorString();
+          else if (exit_status == QProcess::CrashExit)
+            failure = "The workflow command stopped unexpectedly before returning a response.";
+          else if (code != 0)
+            failure = QString("The workflow command exited with code %1 without an error message.").arg(code);
+          else if (output->trimmed().isEmpty())
+            failure = "The workflow command returned an empty response.";
+          else
+            failure = "The workflow command returned an invalid response.";
+        }
       }
       auto value = document.object();
       if (!failure.isEmpty())
@@ -740,7 +803,8 @@ struct StitchingWorkflow::Impl {
         value.insert("client_not_started", true);
       if (!failure.isEmpty())
         qWarning().noquote() << "Workflow command failed:" << process->program() << process->arguments().value(0)
-                             << failure;
+                             << "exit=" << code << "status=" << exit_status << "stdout_bytes=" << output->size()
+                             << "stderr_bytes=" << error->size() << failure;
       done(value, failure);
       process->deleteLater();
     };
@@ -748,10 +812,10 @@ struct StitchingWorkflow::Impl {
         process,
         qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
         owner,
-        [finish](int code, QProcess::ExitStatus) { finish(code); });
+        [finish](int code, QProcess::ExitStatus status) { finish(code, status); });
     QObject::connect(process, &QProcess::errorOccurred, owner, [finish](QProcess::ProcessError error) {
       if (error == QProcess::FailedToStart)
-        finish(-1);
+        finish(-1, QProcess::NormalExit);
     });
     process->start(launcher, arguments);
     timer->start(timeout_ms);
@@ -846,7 +910,7 @@ struct StitchingWorkflow::Impl {
     restore_controls = false;
   }
   void render(QJsonObject value) {
-    if (value.value("workflow_id").toString() != workflow)
+    if (!currentSnapshot(value))
       return;
     snapshot = std::move(value);
     restoreAttachedControls();
@@ -890,6 +954,7 @@ struct StitchingWorkflow::Impl {
       owner->snapshotChanged(snapshot);
     if (owner->changed)
       owner->changed();
+    resolveNotice();
   }
   void refresh() {
     if (workflow.isEmpty() || status_pending || command_pending)
@@ -902,13 +967,17 @@ struct StitchingWorkflow::Impl {
         return;
       if (!error.isEmpty()) {
         summary->setText("Workflow " + workflow + " · monitoring unavailable: " + error);
-        notify("Workflow monitoring unavailable: " + error, true);
+        notifyUnconfirmed("Workflow status is temporarily unavailable: " + error + " Checking again automatically.");
+        return;
+      }
+      if (!currentSnapshot(result)) {
+        notifyUnconfirmed("Waiting for current status of this workflow. Do not start the batch again.");
         return;
       }
       if (retry_epoch >= 0) {
         if (result.value("workflow_id").toString() != workflow || !result.value("epoch").isDouble() ||
             result.value("epoch").toInt(-1) < retry_epoch) {
-          notify("Workflow retry admission is still unresolved; waiting for current status.", true);
+          notifyUnconfirmed("Workflow retry admission is still unresolved; waiting for current status.");
           return;
         }
         // The launcher execs the installed controller in the same PID. Retry
@@ -967,6 +1036,7 @@ struct StitchingWorkflow::Impl {
     }
     temporary->close();
     command_pending = true;
+    transient_notice.clear();
     ++request_generation;
     if (!exporting) {
       workflow = id;
@@ -988,22 +1058,32 @@ struct StitchingWorkflow::Impl {
     call(arguments, [this, temporary, exporting, id](QJsonObject result, QString error) {
       command_pending = false;
       if (!error.isEmpty()) {
-        notify(error, true);
-        if (!exporting) {
+        if (exporting)
+          notify(error, true);
+        else {
           if (result.value("client_not_started").toBool() ||
               (result.value("submission").toString() == "rejected" && result.value("workflow_id").toString() == id)) {
+            notify(error, true);
             poll->stop();
             workflow.clear();
             snapshot = {};
             showMonitor(false);
-          } else
+          } else {
+            notifyUnconfirmed(error + " Checking whether the batch started. Do not start it again.");
             refresh();
+          }
         }
       } else if (exporting)
         notify("Exported batch: " + result.value("script").toString());
       else {
-        render(result);
-        notify("Workflow submitted. Closing this dialog requires cancellation and resource cleanup.");
+        if (currentSnapshot(result)) {
+          render(result);
+          notify("Workflow submitted. Closing this dialog requires cancellation and resource cleanup.");
+        } else {
+          notifyUnconfirmed(
+              "Submission returned without current workflow status. Checking whether the batch started. Do not start it again.");
+          refresh();
+        }
       }
       controls();
       if (owner->changed)
@@ -1161,12 +1241,13 @@ StitchingWorkflow::StitchingWorkflow(
           if (!error.isEmpty()) {
             if (value.value("client_not_started").toBool())
               s.retry_epoch = -1;
-            s.notify(error, true);
-            if (s.retry_epoch >= 0)
+            if (s.retry_epoch >= 0) {
+              s.notifyUnconfirmed(error + " Checking the retained workflow before retrying again.");
               s.refresh();
+            } else
+              s.notify(error, true);
           } else if (
-              value.value("workflow_id").toString() == s.workflow && value.value("epoch").isDouble() &&
-              value.value("epoch").toInt(-1) > s.retry_epoch) {
+              s.currentSnapshot(value) && value.value("epoch").toInt(-1) > s.retry_epoch) {
             s.retry_epoch = -1;
             s.render(value);
           } else
@@ -1276,6 +1357,7 @@ void StitchingWorkflow::cancel(std::function<void(bool)> completed) {
 }
 void StitchingWorkflow::attach(const QString& id) {
   ++impl_->request_generation;
+  impl_->transient_notice.clear();
   impl_->workflow = id;
   impl_->snapshot = {};
   impl_->restore_controls = true;

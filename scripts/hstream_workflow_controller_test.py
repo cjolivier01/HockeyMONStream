@@ -193,6 +193,93 @@ class ControllerTest(unittest.TestCase):
         self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
         self.assertEqual(self.controller.registry.read()["reservations"], {})
 
+    def test_cli_submit_returns_durable_status_before_native_admission(self):
+        (self.game / "hold-acquire").touch()
+        plan = self.root / "plan.json"
+        write_json(plan, self.plan)
+        command = [
+            sys.executable,
+            str(Path(__file__).parent / "hstream-workflow"),
+            "submit",
+            "--registry",
+            str(self.registry),
+            "--plan",
+            str(plan),
+        ]
+        result = subprocess.run(
+            command, capture_output=True, text=True, check=True, timeout=5
+        )
+        status = json.loads(result.stdout)
+        self.assertEqual(status["workflow_id"], self.plan["workflow_id"])
+        self.assertFalse(status["owner_released"])
+        self.assertTrue(all(not node["attempts"] for node in status["nodes"]))
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        self.assertEqual(read_json(directory / "plan.json"), self.plan)
+        self.assertFalse(read_json(directory / "owner.json")["acquired"])
+        self.assertFalse((self.game / "acquire-ready").exists())
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
+        # Reattaching the same sealed request must also remain responsive while
+        # the service owns its reconciliation lock.
+        with locked(directory / "controller.lock"):
+            repeated = subprocess.run(
+                command, capture_output=True, text=True, check=True, timeout=5
+            )
+        self.assertEqual(
+            json.loads(repeated.stdout)["workflow_id"], status["workflow_id"]
+        )
+        (self.game / "release-acquire").touch()
+        self.controller = Controller(self.registry)
+        self.assertEqual(self.wait()["state"], "succeeded")
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+
+    def test_deferred_submission_cancelled_before_admission_never_claims_game(self):
+        self.controller.register(self.plan, self.game, defer_admission=True)
+        native = self.controller._native
+        actions = []
+
+        def record_native(directory, action, payload, **kwargs):
+            actions.append(action)
+            return native(directory, action, payload, **kwargs)
+
+        with patch.object(self.controller, "_native", side_effect=record_native):
+            self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+            result = self.wait()
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(result["owner_released"])
+        self.assertTrue(all(not node["attempts"] for node in result["nodes"]))
+        self.assertNotIn("acquire", actions)
+        self.assertNotIn("bind", actions)
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
+
+    def test_deferred_admission_conflict_stays_cancelled_after_owner_releases(self):
+        self.controller.register(self.plan, self.game)
+        rejected = copy.deepcopy(self.plan)
+        rejected["workflow_id"] = str(uuid4())
+        self.controller.register(rejected, self.game, defer_admission=True)
+        with self.assertRaisesRegex(WorkflowError, "Another game operation"):
+            self.controller.tick(rejected["workflow_id"])
+        rejected_status = self.controller.status(rejected["workflow_id"])
+        self.assertEqual(rejected_status["state"], "cancelled")
+        self.assertTrue(rejected_status["owner_released"])
+        self.assertIn(
+            "Another game operation", rejected_status["controller_error"]["error"]
+        )
+        self.wait()
+        result = self.controller.tick(rejected["workflow_id"])
+        self.assertEqual(result["state"], "cancelled")
+        self.assertTrue(all(not node["attempts"] for node in result["nodes"]))
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        # A later released-owner tick clears transient controller failures, but
+        # the durable admission rejection remains actionable until retry.
+        status = self.controller.status(rejected["workflow_id"])
+        self.assertIn("Another game operation", status["controller_error"]["error"])
+        self.controller.retry(rejected["workflow_id"], ["a", "b"], expected_epoch=0)
+        retried = self.wait(rejected["workflow_id"])
+        self.assertEqual(retried["state"], "succeeded")
+        self.assertNotIn("controller_error", retried)
+
     def test_profile_rejection_has_exact_unregistered_submission_identity(self):
         self.controller.config["profiles"]["cpu"]["label"] = "changed"
         with self.assertRaises(SubmissionRejected) as failure:
@@ -263,7 +350,7 @@ class ControllerTest(unittest.TestCase):
             [
                 sys.executable,
                 str(Path(__file__).parent / "hstream-workflow"),
-                "submit",
+                "run",
                 "--registry",
                 str(self.registry),
                 "--plan",
