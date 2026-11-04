@@ -3,6 +3,62 @@
 The desktop UI's **Stitching experiments…** tool compares multiple stitching calibrations against the same game and
 the same moving playback passage. It runs only while the main pipeline is stopped.
 
+For a fresh recording, including one whose `_hockeymon` directory was removed,
+open **Stitching experiments…** directly. The desktop checks for two camera
+sources and initializes `_hockeymon/config.yaml` from the displayed settings.
+The application log records that first save. A prior **Save Preset** click is
+unnecessary. Once a preset exists, pending main-window edits still need an
+explicit save before opening experiments, so opening the tool cannot silently
+replace saved settings or invalidate a previous calibration.
+
+In the browser, **Current recording · displayed settings** prepares candidates
+from the selected uploads and the main form without requiring a previous
+calibration or writing the project's saved preset. Choosing a completed source
+instead uses that run's retained inputs. Each admitted candidate freezes its
+inputs; later main-window or Defaults edits cannot alter it.
+
+In the workflow graph, running nodes show a spinning green fan, completed/reused
+nodes a green checkmark, and failed/recovery nodes a bold red X. Cards retain
+neutral backgrounds with blue, light green or red state borders. Selection keeps
+its existing outline, and status text remains visible. Hidden workflow tabs pause
+the fan animation.
+
+The right side has **Stitched preview** and **Workflow** tabs. Preview holds the
+video, passage and blend settings, Play and Stop. Workflow holds execution
+profiles, parallelism, the dependency graph, attempt details and runner output.
+The candidate matrix and queue remain visible beside either tab. Starting a
+batch selects Workflow; selecting a ready candidate selects Stitched preview,
+including clicking a row that is already selected. Reopening an active workflow
+initially selects Workflow. Polling preserves subsequent tab choices.
+
+Switching tabs preserves playback, inputs and stage/attempt selection. It
+restores an expanded preview or workflow to the tab layout without stopping
+work. A local sequential batch reports progress and output in Workflow too.
+
+### What Save Preset stores
+
+For a desktop game, **Save Preset** writes `_hockeymon/config.yaml`: the displayed
+processing choices, recording-specific camera metadata and calibration
+bookkeeping, plus a standalone export recipe under `hstream_ui.job`. It does
+not run calibration. The `arguments` list is read by `hstream-job` when exporting
+a script; its `--options` are generated from the controls, rather than being an
+independent set of UI defaults.
+
+Shipped defaults belong in `configs/baseline.yaml`. Effective game settings also
+inherit the user Defaults overlay, so a value equal to the shipped baseline may
+still be a necessary game override when user Defaults differ. Recorded camera
+optics, paired calibration frame counts and frozen experiment/run inputs retain
+their values even when those values happen to match today's defaults.
+
+Desktop game saving currently retains additional resolved stitching values and
+CLI options. Not every duplicate is required for provenance. It is not yet a
+pure difference file; removing equal values indiscriminately would change the
+export recipe and calibration identities. The Defaults editor and browser
+project presets already store differences from their inherited settings;
+browser run configs are separate resolved snapshots. A future desktop save
+format can separate reusable overrides from calibration state and generate
+export arguments at export time, while preserving existing recipes and runs.
+
 Desktop action icons use consistent colors: green for apply/play/add, red for stop/cancel/delete, blue for
 navigation and inspection, and distinct colors for camera/stitching tools. Disabled icons retain their hue at
 reduced opacity. Standard dialog icons, native navigation/spin arrows, and table/tree indicators follow the same policy.

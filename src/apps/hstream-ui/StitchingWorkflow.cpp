@@ -42,6 +42,8 @@
 #include <stdexcept>
 
 namespace {
+constexpr int kMaxWorkflowDocumentBytes = 8 * 1024 * 1024;
+
 QString text(const std::string& value) {
   return QString::fromStdString(value);
 }
@@ -91,25 +93,216 @@ bool unsuccessful(const QString& state) {
   return state == "failed" || state == "unavailable" || state == "blocked" || state == "cancelled";
 }
 
+QString stageLabel(const QJsonObject& node) {
+  const auto label = node.value("label").toString();
+  const auto kind = node.value("kind").toString();
+  const auto separator = label.indexOf(" · ");
+  const auto prefix = label.left(separator);
+  QString replacement;
+  if (kind == "experiment-create" && prefix == "Prepare")
+    replacement = "Set up experiment files (CPU)";
+  else if (kind == "experiment-create" && prefix == "Prepare retained frames")
+    replacement = "Set up retained frames (CPU)";
+  else if (kind == "experiment-baseline" && prefix == "Baseline")
+    replacement = "Initial calibration";
+  else if (kind == "experiment-scan" && prefix == "Scan")
+    replacement = "Find player-rich frames";
+  else if (kind == "experiment-materialize" && prefix == "Materialize")
+    replacement = "Extract selected frames";
+  else if (kind == "experiment-reuse-selection" && prefix == "Selection")
+    replacement = "Use shared frames (CPU)";
+  else if (kind == "experiment-run" && prefix == "Solve")
+    replacement = "Calibrate";
+  // Old sealed plans keep their original identities and labels on disk.
+  return replacement.isEmpty() ? label : replacement + (separator < 0 ? "" : " · #" + label.mid(separator + 3));
+}
+QString stagePurpose(const QJsonObject& node) {
+  const auto kind = node.value("kind").toString();
+  if (kind == "experiment-create")
+    return stageLabel(node).contains("retained frames")
+        ? "Set up private experiment files using the retained frame selection. CPU only; no new frame search."
+        : "Set up private experiment files and link the source videos. CPU only; no GPU is reserved.";
+  if (kind == "experiment-baseline")
+    return "Calibrate the cameras and create the rink mask needed to find player-rich frames.";
+  if (kind == "experiment-scan")
+    return "Find source frames with the most players inside the rink, using the initial calibration.";
+  if (kind == "experiment-materialize")
+    return "Extract the selected source-frame pairs once for all dependent calibrations.";
+  if (kind == "experiment-reuse-selection")
+    return "Copy the shared frame selection into this experiment. CPU only; no new frame search.";
+  if (kind == "experiment-run")
+    return "Calibrate this candidate using its selected frames and control-point limit.";
+  return {};
+}
+QString stageDescription(const QJsonObject& node, const QJsonArray& nodes) {
+  QStringList lines{stagePurpose(node)};
+  if (node.contains("resources")) {
+    const auto gpus = node.value("resources").toObject().value("gpus").toInt();
+    lines << (gpus == 0 ? "Allocation: CPU only (no GPU)." : QString("Allocation: %1 GPU(s).").arg(gpus));
+  }
+  QStringList prerequisites, dependents;
+  const auto dependencies = node.value("dependencies").toArray();
+  for (const auto& value : nodes) {
+    const auto other = value.toObject();
+    if (dependencies.contains(other.value("id")))
+      prerequisites << stageLabel(other);
+    if (other.value("dependencies").toArray().contains(node.value("id")))
+      dependents << stageLabel(other);
+  }
+  lines << "Prerequisites: " + (prerequisites.isEmpty() ? "None" : prerequisites.join(", "));
+  lines << "Used by: " + (dependents.isEmpty() ? "None" : dependents.join(", "));
+  return lines.join("\n");
+}
+
 class StageGraph final : public QWidget {
  public:
   explicit StageGraph(QWidget* parent) : QWidget(parent) {
     setObjectName("stitchWorkflowGraph");
+    setMinimumWidth(220);
+    // State uses an icon and the existing border; card backgrounds and text
+    // follow the theme. Keep these colors aligned with the browser.
+    setStyleSheet(
+        "QPushButton { background-color: palette(button); color: palette(button-text);"
+        " border: 2px solid palette(mid); border-radius: 4px; padding: 4px; }"
+        "QPushButton[workflowState='running'] { border-color: #68b8f0; }"
+        "QPushButton[workflowState='succeeded'], QPushButton[workflowState='reused']"
+        " { border-color: #71ba8c; }"
+        "QPushButton[workflowState='failed'], QPushButton[workflowState='recovery']"
+        " { border-color: #ec939b; }"
+        "QPushButton:checked { border-color: palette(button-text); }"
+        "QPushButton[workflowState='running']:checked, QPushButton[workflowState='succeeded']:checked,"
+        " QPushButton[workflowState='reused']:checked, QPushButton[workflowState='failed']:checked,"
+        " QPushButton[workflowState='recovery']:checked { border-color: #ffd166; }"
+        "QPushButton:focus { border-style: dashed; }");
+    animation_ = new QTimer(this);
+    animation_->setObjectName("stitchWorkflowAnimation");
+    animation_->setInterval(40);
+    QObject::connect(animation_, &QTimer::timeout, this, [this] {
+      angle_ = (angle_ + 12) % 360;
+      animateRunning();
+    });
   }
   std::function<void(const QString&)> selected;
   void showStages(const QJsonArray& nodes, const QString& current) {
-    QByteArray identity = QJsonDocument(nodes).toJson(QJsonDocument::Compact) + current.toUtf8();
+    const QByteArray identity = QJsonDocument(nodes).toJson(QJsonDocument::Compact) + current.toUtf8();
     if (identity == identity_)
       return;
     identity_ = identity;
+    nodes_ = nodes;
+    current_ = current;
     for (auto* button : buttons_)
       delete button;
     buttons_.clear();
-    edges_.clear();
+    running_.clear();
+    for (const auto& value : nodes_) {
+      const auto node = value.toObject();
+      const auto id = node.value("id").toString();
+      const auto state = node.value("state").toString();
+      const auto icon = state == "running"            ? ActionIcon::Running
+          : state == "succeeded" || state == "reused" ? ActionIcon::Succeeded
+          : state == "failed" || state == "recovery"  ? ActionIcon::Failed
+                                                      : ActionIcon::Inspect;
+      auto* button = new QPushButton(action_icon(icon), "", this);
+      button->setIconSize(QSize(20, 20));
+      if (state == "running")
+        running_.push_back(button);
+      button->setObjectName("stitchWorkflowNode_" + id);
+      button->setProperty("workflowState", node.value("state").toString());
+      button->setAccessibleName(stageLabel(node) + " · " + node.value("state").toString());
+      button->setToolTip(stageDescription(node, nodes_) + "\n" + node.value("reason").toString());
+      button->setCheckable(true);
+      button->setChecked(id == current);
+      button->show();
+      QObject::connect(button, &QPushButton::clicked, this, [this, id] {
+        if (selected)
+          selected(id);
+      });
+      buttons_.push_back(button);
+    }
+    layoutStages();
+    updateAnimation();
+  }
+
+ protected:
+  void showEvent(QShowEvent* event) override {
+    QWidget::showEvent(event);
+    updateAnimation();
+  }
+  void hideEvent(QHideEvent* event) override {
+    animation_->stop();
+    QWidget::hideEvent(event);
+  }
+  void resizeEvent(QResizeEvent* event) override {
+    QWidget::resizeEvent(event);
+    layoutStages();
+  }
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    for (const auto& edge : edges_) {
+      QColor color = palette().color(edge.selected ? QPalette::Highlight : QPalette::Text);
+      if (!edge.selected)
+        color.setAlpha(150);
+      painter.setPen(QPen(color, edge.selected ? 2.5 : 1.5));
+      painter.drawPath(edge.path);
+      painter.drawLine(edge.end, edge.end + QPointF(-4, -5));
+      painter.drawLine(edge.end, edge.end + QPointF(4, -5));
+    }
+  }
+
+ private:
+  void updateAnimation() {
+    if (isVisible() && !running_.empty()) {
+      animateRunning();
+      if (!animation_->isActive())
+        animation_->start();
+    } else {
+      animation_->stop();
+    }
+  }
+  void animateRunning() {
+    // Rotate only the small shared glyph; animation never rebuilds the graph,
+    // moves controls or touches preview frames. Hidden tabs stop the timer.
+    const auto ratio = devicePixelRatioF();
+    QPixmap frame(qRound(20 * ratio), qRound(20 * ratio));
+    frame.setDevicePixelRatio(ratio);
+    frame.fill(Qt::transparent);
+    QPainter painter(&frame);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.translate(10, 10);
+    painter.rotate(angle_);
+    painter.drawPixmap(QPointF(-10, -10), fan_.pixmap(QSize(20, 20), ratio));
+    painter.end();
+    QIcon icon;
+    for (auto mode : {QIcon::Normal, QIcon::Active, QIcon::Selected})
+      for (auto state : {QIcon::Off, QIcon::On})
+        icon.addPixmap(frame, mode, state);
+    QPixmap disabled = frame;
+    QPainter fade(&disabled);
+    fade.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+    fade.fillRect(disabled.rect(), QColor(255, 255, 255, 115));
+    fade.end();
+    for (auto state : {QIcon::Off, QIcon::On})
+      icon.addPixmap(disabled, QIcon::Disabled, state);
+    for (auto* button : running_)
+      button->setIcon(icon);
+  }
+  QTimer* animation_{nullptr};
+  QIcon fan_{action_icon(ActionIcon::Running)};
+  int angle_{0};
+  std::vector<QPushButton*> running_;
+  struct Edge {
+    QPainterPath path;
+    QPointF end;
+    bool selected;
+  };
+  void layoutStages() {
+    if (buttons_.empty())
+      return;
     std::map<QString, int> levels;
-    for (int pass = 0; pass < nodes.size(); ++pass) {
+    for (int pass = 0; pass < nodes_.size(); ++pass) {
       bool changed = false;
-      for (const auto& value : nodes) {
+      for (const auto& value : nodes_) {
         const auto node = value.toObject();
         const auto id = node.value("id").toString();
         if (levels.count(id))
@@ -117,7 +310,7 @@ class StageGraph final : public QWidget {
         bool ready = true;
         int level = 0;
         for (const auto& dependency : node.value("dependencies").toArray()) {
-          auto found = levels.find(dependency.toString());
+          const auto found = levels.find(dependency.toString());
           if (found == levels.end()) {
             ready = false;
             break;
@@ -132,67 +325,102 @@ class StageGraph final : public QWidget {
       if (!changed)
         break;
     }
-    std::map<int, int> rows;
+    // Place independent CPU setup just above its first consumer. This changes
+    // only presentation: every stage and its actual dependency edges remain.
+    for (const auto& value : nodes_) {
+      const auto node = value.toObject();
+      if (node.value("kind") != "experiment-create" || !node.value("dependencies").toArray().isEmpty())
+        continue;
+      int first = nodes_.size();
+      for (const auto& child : nodes_)
+        if (child.toObject().value("dependencies").toArray().contains(node.value("id")))
+          first = std::min(first, levels[child.toObject().value("id").toString()]);
+      if (first < nodes_.size())
+        levels[node.value("id").toString()] = std::max(0, first - 1);
+    }
+    std::map<int, std::vector<int>> peers;
+    for (int index = 0; index < nodes_.size(); ++index)
+      peers[levels[nodes_[index].toObject().value("id").toString()]].push_back(index);
+    const int available = std::max(180, width() - 40);
+    const int columns = std::max(1, (available + 20) / 200);
     std::map<QString, QRect> rectangles;
-    int width = 320, height = 50;
-    for (const auto& value : nodes) {
+    std::map<QString, int> level_top;
+    int top = 10;
+    for (const auto& [level, indices] : peers) {
+      const int group_top = top;
+      for (size_t first = 0; first < indices.size(); first += columns) {
+        const int count = std::min<size_t>(columns, indices.size() - first);
+        const int card_width = std::min(250, (available - (count - 1) * 20) / count);
+        const int left = (width() - (card_width * count + (count - 1) * 20)) / 2;
+        int row_height = 60;
+        for (int column = 0; column < count; ++column) {
+          const auto index = indices[first + column];
+          const auto node = nodes_[index].toObject();
+          auto* button = buttons_[index];
+          QStringList lines;
+          QString line;
+          for (const auto& word : stageLabel(node).split(' ')) {
+            const auto next = line.isEmpty() ? word : line + " " + word;
+            if (!line.isEmpty() && button->fontMetrics().horizontalAdvance(next) > card_width - 40) {
+              lines << line;
+              line = word;
+            } else {
+              line = next;
+            }
+          }
+          lines << line << node.value("state").toString();
+          button->setText(lines.join("\n"));
+          row_height = std::max(row_height, int(lines.size()) * button->fontMetrics().lineSpacing() + 18);
+          const QRect bounds(left + column * (card_width + 20), top, card_width, row_height);
+          rectangles[node.value("id").toString()] = bounds;
+          level_top[node.value("id").toString()] = group_top;
+        }
+        for (int column = 0; column < count; ++column) {
+          const auto index = indices[first + column];
+          auto& bounds = rectangles[nodes_[index].toObject().value("id").toString()];
+          bounds.setHeight(row_height);
+          buttons_[index]->setGeometry(bounds);
+        }
+        top += row_height + 28;
+      }
+    }
+    edges_.clear();
+    for (const auto& value : nodes_) {
       const auto node = value.toObject();
       const auto id = node.value("id").toString();
-      const QRect bounds(12 + levels[id] * 206, 10 + rows[levels[id]]++ * 65, 182, 51);
-      rectangles[id] = bounds;
-      auto* button = new QPushButton(
-          action_icon(ActionIcon::Inspect),
-          node.value("label").toString() + "\n" + node.value("state").toString(),
-          this);
-      button->setObjectName("stitchWorkflowNode_" + id);
-      button->setAccessibleName(button->text());
-      button->setToolTip(node.value("reason").toString());
-      button->setCheckable(true);
-      button->setChecked(id == current);
-      button->setGeometry(bounds);
-      button->show();
-      QObject::connect(button, &QPushButton::clicked, this, [this, id] {
-        if (selected)
-          selected(id);
-      });
-      buttons_.push_back(button);
-      width = std::max(width, bounds.right() + 12);
-      height = std::max(height, bounds.bottom() + 10);
+      const auto target = rectangles.at(id);
+      for (const auto& dependency : node.value("dependencies").toArray()) {
+        const auto parent = dependency.toString();
+        if (!rectangles.count(parent))
+          continue;
+        const auto source = rectangles.at(parent);
+        const QPointF start(source.center().x(), source.bottom() + 1);
+        const QPointF end(target.center().x(), target.top() - 1);
+        QPainterPath path(start);
+        if (target.top() > level_top[id] || levels[id] > levels[parent] + 1) {
+          // Wrapped peers and skipped levels use an outside gutter, never a
+          // line through an unrelated stage button.
+          const int gutter = start.x() < width() / 2 ? 8 : width() - 8;
+          path.lineTo(start.x(), source.bottom() + 10);
+          path.lineTo(gutter, source.bottom() + 10);
+          path.lineTo(gutter, target.top() - 12);
+          path.lineTo(end.x(), target.top() - 12);
+          path.lineTo(end);
+        } else {
+          const qreal middle = (start.y() + end.y()) / 2;
+          path.cubicTo(start.x(), middle, end.x(), middle, end.x(), end.y());
+        }
+        edges_.push_back({path, end, id == current_ || parent == current_});
+      }
     }
-    for (const auto& value : nodes) {
-      const auto node = value.toObject();
-      for (const auto& dependency : node.value("dependencies").toArray())
-        if (rectangles.count(dependency.toString()))
-          edges_.emplace_back(
-              rectangles[dependency.toString()].right() + 1,
-              rectangles[dependency.toString()].center().y(),
-              rectangles[node.value("id").toString()].left() - 1,
-              rectangles[node.value("id").toString()].center().y());
-    }
-    setMinimumSize(width, height);
-    resize(width, height);
+    setMinimumHeight(top - 18);
     update();
   }
-
- protected:
-  void paintEvent(QPaintEvent*) override {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.setPen(QPen(palette().color(QPalette::Text), 1.5));
-    for (const auto& edge : edges_) {
-      QPainterPath path(edge.p1());
-      const qreal middle = (edge.x1() + edge.x2()) / 2;
-      path.cubicTo(middle, edge.y1(), middle, edge.y2(), edge.x2(), edge.y2());
-      painter.drawPath(path);
-      painter.drawLine(edge.p2(), edge.p2() + QPointF(-5, -4));
-      painter.drawLine(edge.p2(), edge.p2() + QPointF(-5, 4));
-    }
-  }
-
- private:
   QByteArray identity_;
+  QJsonArray nodes_;
+  QString current_;
   std::vector<QPushButton*> buttons_;
-  std::vector<QLineF> edges_;
+  std::vector<Edge> edges_;
 };
 } // namespace
 
@@ -247,22 +475,25 @@ absl::StatusOr<QJsonObject> BuildStitchingWorkflowPlan(
       for (const auto& dependency : dependencies)
         if (!parents.contains(dependency))
           parents.append(dependency);
-      QString label = phase == "run"   ? "Solve"
-          : phase == "create"          ? "Prepare"
-          : phase == "reuse-selection" ? "Selection"
+      QString label = phase == "run"   ? "Calibrate · " + QString::number(row.workspace.settings.control_points) + " CP"
+          : phase == "create"          ? "Set up experiment files (CPU)"
+          : phase == "baseline"        ? "Initial calibration"
+          : phase == "scan"            ? "Find player-rich frames"
+          : phase == "materialize"     ? "Extract selected frames"
+          : phase == "reuse-selection" ? "Use shared frames (CPU)"
                                        : phase;
       if (phase == "create" &&
           (!row.saved_selection_fingerprint.empty() ||
            (!row.selection_fingerprint.empty() &&
             (row.selection_workspace || row.result_workspace || row.state == "complete"))))
-        label = "Prepare retained frames";
+        label = "Set up retained frames (CPU)";
       if (!label.isEmpty())
         label[0] = label[0].toUpper();
       stages.append(
           QJsonObject{
               {"id", id},
               {"kind", operation},
-              {"label", label + " · " + QString::number(row.sequence)},
+              {"label", label + " · #" + QString::number(row.sequence)},
               {"candidate_id", key},
               {"dependencies", parents},
               {"inputs", inputs},
@@ -367,9 +598,7 @@ absl::StatusOr<QJsonObject> BuildStitchingWorkflowPlan(
     runtime_identity.insert(
         "user_config_snapshot",
         QJsonObject{{"schema", 1}, {"source_path", text(user->path.string())}, {"values", jsonValue(user->values)}});
-    if (QJsonDocument(runtime_identity).toJson(QJsonDocument::Compact).size() > 4 * 1024 * 1024)
-      throw std::runtime_error("Frozen user configuration exceeds the workflow byte limit");
-    return QJsonObject{
+    const QJsonObject plan{
         {"schema", 1},
         {"workflow_id", workflow_id},
         {"kind", "stitching-experiments"},
@@ -380,6 +609,9 @@ absl::StatusOr<QJsonObject> BuildStitchingWorkflowPlan(
         {"profiles", profiles},
         {"limits", QJsonObject{{"max_parallel", maximum}}},
         {"stages", stages}};
+    if (QJsonDocument(plan).toJson(QJsonDocument::Compact).size() > kMaxWorkflowDocumentBytes)
+      throw std::runtime_error("Workflow plan exceeds the workflow byte limit");
+    return plan;
   } catch (const std::exception& error) {
     return absl::FailedPreconditionError(error.what());
   }
@@ -393,6 +625,8 @@ struct StitchingWorkflow::Impl {
   QSpinBox* parallel{nullptr};
   QPushButton* export_batch{nullptr};
   QGroupBox* monitor{nullptr};
+  QPointer<QDialog> monitor_dialog;
+  QPushButton* expand_monitor{nullptr};
   QLabel* summary{nullptr};
   StageGraph* graph{nullptr};
   QComboBox* stage{nullptr};
@@ -411,7 +645,38 @@ struct StitchingWorkflow::Impl {
   QPointer<QPlainTextEdit> log_view;
   void showMonitor(bool visible) {
     monitor->setVisible(visible);
-    owner->setSizePolicy(QSizePolicy::Preferred, visible ? QSizePolicy::Expanding : QSizePolicy::Maximum);
+    owner->setSizePolicy(
+        QSizePolicy::Preferred, visible && !monitor_dialog ? QSizePolicy::Expanding : QSizePolicy::Maximum);
+  }
+  void expandMonitor() {
+    if (monitor_dialog) {
+      monitor_dialog->close();
+      return;
+    }
+    auto* dialog = new QDialog(owner, Qt::Window | Qt::WindowMaximizeButtonHint | Qt::WindowCloseButtonHint);
+    dialog->setObjectName("stitchWorkflowExpandedWindow");
+    dialog->setWindowTitle("Experiment workflow");
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setSizeGripEnabled(true);
+    monitor_dialog = dialog;
+    owner->layout()->removeWidget(monitor);
+    auto* layout = new QVBoxLayout(dialog);
+    layout->addWidget(monitor);
+    expand_monitor->setIcon(action_icon(ActionIcon::Restore));
+    expand_monitor->setToolTip("Restore workflow to the experiment window");
+    expand_monitor->setAccessibleName("Restore workflow");
+    owner->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    QObject::connect(dialog, &QDialog::finished, owner, [this, dialog] {
+      dialog->layout()->removeWidget(monitor);
+      owner->layout()->addWidget(monitor);
+      monitor_dialog.clear();
+      expand_monitor->setIcon(action_icon(ActionIcon::Expand));
+      expand_monitor->setToolTip("Expand workflow");
+      expand_monitor->setAccessibleName("Expand workflow");
+      showMonitor(true);
+    });
+    dialog->resize(std::max(900, owner->window()->width()), std::max(650, owner->window()->height()));
+    dialog->show();
   }
   QJsonObject selectedNode() const {
     for (const auto& value : snapshot.value("nodes").toArray())
@@ -440,7 +705,7 @@ struct StitchingWorkflow::Impl {
     QObject::connect(timer, &QTimer::timeout, process, [process] { process->kill(); });
     QObject::connect(process, &QProcess::readyReadStandardOutput, process, [process, output] {
       output->append(process->readAllStandardOutput());
-      if (output->size() > 4 * 1024 * 1024)
+      if (output->size() > kMaxWorkflowDocumentBytes)
         process->kill();
     });
     QObject::connect(process, &QProcess::readyReadStandardError, process, [process, error] {
@@ -459,7 +724,7 @@ struct StitchingWorkflow::Impl {
       const auto document = QJsonDocument::fromJson(*output, &parse);
       QString failure;
       if (code != 0 || parse.error != QJsonParseError::NoError || !document.isObject() ||
-          output->size() > 4 * 1024 * 1024) {
+          output->size() > kMaxWorkflowDocumentBytes) {
         const auto error_document = QJsonDocument::fromJson(*error);
         failure = error_document.object().value("error").toString();
         if (failure.isEmpty())
@@ -508,11 +773,9 @@ struct StitchingWorkflow::Impl {
       if (value.toObject().value("id").toString() == selected_attempt)
         saved = value.toObject();
     const auto fields = saved.value("details").toObject();
-    QStringList dependencies;
-    for (const auto& dependency : node.value("dependencies").toArray())
-      dependencies << dependency.toString();
-    QString value = "State: " + node.value("state").toString() + "\n" + node.value("reason").toString() +
-        "\nPrerequisites: " + (dependencies.isEmpty() ? "None" : dependencies.join(", "));
+    QString value = stageLabel(node) + "\n" + stageDescription(node, snapshot.value("nodes").toArray()) +
+        "\nState: " + node.value("state").toString() + "\n" + node.value("reason").toString() +
+        "\nStage ID: " + node.value("id").toString();
     if (!saved.isEmpty()) {
       value += "\nAttempt: " + saved.value("id").toString() + " (epoch " +
           QString::number(saved.value("epoch").toInt()) + ")";
@@ -592,8 +855,7 @@ struct StitchingWorkflow::Impl {
       stage->clear();
       for (const auto& node : snapshot.value("nodes").toArray()) {
         const auto row = node.toObject();
-        stage->addItem(
-            row.value("label").toString() + " · " + row.value("state").toString(), row.value("id").toString());
+        stage->addItem(stageLabel(row) + " · " + row.value("state").toString(), row.value("id").toString());
       }
       int index = stage->findData(current);
       if (index < 0 && !selected_candidate.isEmpty()) {
@@ -768,6 +1030,8 @@ StitchingWorkflow::StitchingWorkflow(
   auto* controls = new QFormLayout();
   s.profile = new QComboBox(this);
   s.profile->setObjectName("stitchWorkflowProfile");
+  s.profile->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+  s.profile->setMinimumContentsLength(12);
   s.profile->addItem("Current runner", "");
   s.parallel = new QSpinBox(this);
   s.parallel->setObjectName("stitchWorkflowParallel");
@@ -795,17 +1059,28 @@ StitchingWorkflow::StitchingWorkflow(
   s.summary = new QLabel(s.monitor);
   s.summary->setWordWrap(true);
   s.summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  monitor->addWidget(s.summary);
+  auto* summary_row = new QHBoxLayout();
+  summary_row->addWidget(s.summary, 1);
+  s.expand_monitor = new QPushButton(action_icon(ActionIcon::Expand), "", s.monitor);
+  s.expand_monitor->setObjectName("expandStitchWorkflowButton");
+  s.expand_monitor->setToolTip("Expand workflow");
+  s.expand_monitor->setAccessibleName("Expand workflow");
+  summary_row->addWidget(s.expand_monitor);
+  monitor->addLayout(summary_row);
+  connect(s.expand_monitor, &QPushButton::clicked, this, [&s] { s.expandMonitor(); });
   auto* scroll = new QScrollArea(s.monitor);
   scroll->setObjectName("stitchWorkflowGraphScroll");
   scroll->setWidgetResizable(true);
   scroll->setMinimumHeight(100);
   s.graph = new StageGraph(scroll);
+  s.graph->setToolTip("Arrows show prerequisites. Shared frame steps run once for matching experiments.");
   scroll->setWidget(s.graph);
   monitor->addWidget(scroll, 1);
   auto* selectors = new QFormLayout();
   s.stage = new QComboBox(s.monitor);
   s.stage->setObjectName("stitchWorkflowStage");
+  s.stage->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+  s.stage->setMinimumContentsLength(12);
   s.attempt = new QComboBox(s.monitor);
   s.attempt->setObjectName("stitchWorkflowAttempt");
   selectors->addRow("Stage", s.stage);
@@ -894,7 +1169,8 @@ StitchingWorkflow::StitchingWorkflow(
           if (!capabilities.contains("experiment-run"))
             continue;
           const auto id = object.value("id").toString();
-          s.profile->addItem(id + " (" + object.value("executor").toString() + ")", id);
+          const auto label = object.value("label").toString();
+          s.profile->addItem((label.isEmpty() ? id : label) + " (" + object.value("executor").toString() + ")", id);
         }
         s.profiles_ready = true;
         s.restoreAttachedControls();
@@ -921,6 +1197,10 @@ StitchingWorkflow::~StitchingWorkflow() {
 }
 bool StitchingWorkflow::selected() const {
   return !impl_->profile->currentData().toString().isEmpty();
+}
+void StitchingWorkflow::restoreMonitor() {
+  if (impl_->monitor_dialog)
+    impl_->monitor_dialog->close();
 }
 bool StitchingWorkflow::active() const {
   return !impl_->workflow.isEmpty() &&

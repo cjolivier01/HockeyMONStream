@@ -246,7 +246,8 @@ absl::Status link_configured_videos(
 absl::Status link_auto_videos(
     const fs::path& source_game_directory,
     const fs::path& candidate_game_directory,
-    std::set<fs::path>* linked) {
+    std::set<fs::path>* linked,
+    bool allow_linked_inputs = false) {
   const std::regex camera_directory(R"(^cam[0-9]+$)", std::regex::icase);
   std::vector<fs::path> directories{source_game_directory};
   std::error_code error;
@@ -268,7 +269,10 @@ absl::Status link_auto_videos(
         continue;
       }
       fs::path relative;
-      HM_ASSIGN_OR_RETURN(relative, normalized_source(source_game_directory, entry.path()));
+      HM_ASSIGN_OR_RETURN(
+          relative,
+          allow_linked_inputs ? linked_workspace_source(source_game_directory, entry.path())
+                              : normalized_source(source_game_directory, entry.path()));
       if (!is_video(relative))
         return absl::InvalidArgumentError(
             "Auto-discovered experiment video resolves to a non-video file: " + entry.path().string());
@@ -1117,8 +1121,8 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     std::set<fs::path> linked;
     HM_RETURN_IF_ERROR(
         link_configured_videos(config, source_game_directory, workspace_path, &linked, allow_linked_inputs));
-    if (!allow_linked_inputs)
-      HM_RETURN_IF_ERROR(link_auto_videos(source_game_directory, workspace_path, &linked));
+    if (!allow_linked_inputs || linked.empty())
+      HM_RETURN_IF_ERROR(link_auto_videos(source_game_directory, workspace_path, &linked, allow_linked_inputs));
     if (linked.size() < 2)
       return absl::FailedPreconditionError("Stitching experiments require at least two camera videos");
     HM_RETURN_IF_ERROR(link_calibration_assets(source_game_directory, workspace_path, linked, allow_linked_inputs));
@@ -1267,6 +1271,12 @@ absl::StatusOr<StitchingExperimentWorkspace> SnapshotStitchingExperimentWorkspac
     HM_RETURN_IF_ERROR(hm::game_storage::EnsureStateDirectory(destination));
     std::set<fs::path> linked;
     HM_RETURN_IF_ERROR(link_configured_videos(config, source.game_directory, destination, &linked, true, true));
+    // Fresh Auto candidates have no saved Left/Right playlist until orientation
+    // runs. Preserve their admitted camera aliases through every task snapshot.
+    if (linked.empty())
+      HM_RETURN_IF_ERROR(link_auto_videos(source.game_directory, destination, &linked, true));
+    if (linked.size() < 2)
+      return absl::FailedPreconditionError("Workflow snapshot requires at least two camera videos");
     HM_RETURN_IF_ERROR(link_calibration_assets(source.game_directory, destination, linked, true));
     const auto state = source.game_directory / "_hockeymon";
     size_t entries = 0;

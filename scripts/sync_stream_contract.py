@@ -1284,6 +1284,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "src/apps/hstream-ui/HighlightsDialog.cpp",
                 "src/apps/hstream-ui/HighlightItemEditor.cpp",
                 "src/apps/hstream-ui/StitchingExperimentDialog.cpp",
+                "src/apps/hstream-ui/StitchingWorkflow.cpp",
                 "src/apps/hstream-ui/BackendOptions.cpp",
                 "src/apps/hstream-ui/ActionIcons.cpp",
                 "src/apps/hstream-ui/ActionIcons.h",

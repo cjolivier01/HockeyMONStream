@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 namespace {
 void require_colored(const QImage& image, const QString& context) {
@@ -78,6 +80,23 @@ int main(int argc, char** argv) {
     const QImage inspect = action_icon(ActionIcon::Inspect).pixmap(16, 16).toImage();
     if (detection == players || detection == inspect || players == inspect)
       throw std::runtime_error("Detection and Players tabs need distinct artwork instead of the generic Inspect icon");
+    const QImage running = action_icon(ActionIcon::Running).pixmap(20, 20).toImage();
+    const QImage succeeded = action_icon(ActionIcon::Succeeded).pixmap(20, 20).toImage();
+    const QImage failed = action_icon(ActionIcon::Failed).pixmap(20, 20).toImage();
+    if (running == succeeded || running == failed || succeeded == failed)
+      throw std::runtime_error("Running, completed and failed stages need distinct fan, check and X artwork");
+    for (const auto& [glyph, expected] : std::vector<std::pair<QImage, QColor>>{
+             {running, QColor("#229954")}, {succeeded, QColor("#229954")}, {failed, QColor("#d64545")}}) {
+      int opaque_color = 0;
+      for (int y = 0; y < glyph.height(); ++y)
+        for (int x = 0; x < glyph.width(); ++x) {
+          const auto pixel = glyph.pixelColor(x, y);
+          opaque_color += pixel.alpha() > 200 && pixel.red() == expected.red() && pixel.green() == expected.green() &&
+              pixel.blue() == expected.blue();
+        }
+      if (opaque_color < 5)
+        throw std::runtime_error("Workflow status artwork must retain its green or red color at displayed size");
+    }
     install_button_icon_style();
     QStyle* installed = application.style();
     install_button_icon_style();

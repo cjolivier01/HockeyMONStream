@@ -25,7 +25,8 @@ import uuid
 from pathlib import Path
 
 SUPPORTED_DAGSTER = "1.13.26"
-MAX_CONFIG_BYTES = 4 * 1024 * 1024
+# Matches hstream_workflow.schema.MAX_PLAN_BYTES, including multi-node catalogs.
+MAX_CONFIG_BYTES = 8 * 1024 * 1024
 SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 SLURM_FILES = {"slurm.conf", "gres.conf", "cgroup.conf", "slurmdbd.conf"}
 
