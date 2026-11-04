@@ -250,6 +250,10 @@ elif operation=='status':
   unavailable.write_text(str(int(unavailable.read_text())-1)); print('Workflow registration temporarily unavailable',file=sys.stderr); raise SystemExit(1)
  value=json.loads((root/'state.json').read_text())
 elif operation in ('cancel','retry'):
+ if operation=='retry':
+  while (root/'hold-retry').exists(): time.sleep(.01)
+  if (root/'reject-retry').exists():
+   print('Retry rejected by fixture controller',file=sys.stderr); raise SystemExit(1)
  value=json.loads((root/'state.json').read_text()); assert int(option('--epoch'))==value['epoch']
  if operation=='cancel':
   if (root/'reject-cancel').exists():
@@ -257,12 +261,15 @@ elif operation in ('cancel','retry'):
   value['state']='cancelled'; value['cancel_requested']=True; value['owner_released']=not (root/'hold-owner-release').exists()
   for node in value['nodes']: node['state']='cancelled'
  else:
-  value['epoch']+=1; value['state']='running'
+  value['epoch']+=1; value['state']='running'; value['owner_released']=False; value.pop('cancel_requested',None)
   node=next(n for n in value['nodes'] if n['id']==option('--stage')); node['state']='running'
   node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
  (root/'state.json').write_text(json.dumps(value))
  if operation=='cancel' and (root/'lose-cancel-response').exists():
   print('Cancellation response unavailable',file=sys.stderr); raise SystemExit(1)
+ if operation=='retry' and (root/'lose-retry-response').exists():
+  if (root/'retry-status-unavailable').exists(): (root/'status-unavailable').write_text('1000')
+  print('Retry response unavailable',file=sys.stderr); raise SystemExit(1)
 elif operation=='log': value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
 else: raise SystemExit(9)
 print(json.dumps(value))
@@ -1055,6 +1062,145 @@ void dialogCloseDuringSubmission(const QString& root) {
   QFile::remove(root + "/status-unavailable");
 }
 
+void dialogCloseDuringRetry(const QString& root) {
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", root);
+  const QString launcher = root + "/scripts/hstream-workflow";
+  const auto launcher_permissions = QFile::permissions(launcher);
+  QMainWindow owner;
+  owner.resize(800, 600);
+  owner.show();
+  for (const QString scenario :
+       {"accepted", "lost-response", "lost-response-status-unavailable", "rejected", "launch-failure"}) {
+    const bool accepted = scenario != "rejected" && scenario != "launch-failure";
+    const bool launch_failure = scenario == "launch-failure";
+    for (const QString flag :
+         {"hold-retry", "reject-retry", "lose-retry-response", "retry-status-unavailable", "status-unavailable"})
+      QFile::remove(root + "/" + flag);
+    const QString game = root + "/close-during-retry-" + scenario;
+    QDir().mkpath(game + "/_hockeymon");
+    write(
+        game + "/_hockeymon/config.yaml",
+        ("game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\nworkflow:\n  registry: " + root +
+         "\n  poll_interval_ms: 100\n")
+            .toUtf8());
+    write(game + "/left.mp4", "left");
+    write(game + "/right.mp4", "right");
+    QPointer<StitchingExperimentDialog> dialog = new StitchingExperimentDialog(
+        game, "/bin/false", root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00", &owner);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->show();
+    auto* profile = widget<QComboBox>(*dialog, "stitchWorkflowProfile");
+    auto* start = widget<QPushButton>(*dialog, "startStitchExperimentBatchButton");
+    auto* retry = widget<QPushButton>(*dialog, "retryStitchWorkflowStageButton");
+    auto* stage = widget<QComboBox>(*dialog, "stitchWorkflowStage");
+    auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(*dialog, "stitchingWorkflowPane"));
+    widget<QPushButton>(*dialog, "addStitchExperimentsToBatchButton")->click();
+    require(wait([&] { return start->isEnabled() && profile->count() == 2; }), "Retry-close fixture did not prepare");
+    profile->setCurrentIndex(1);
+    start->click();
+    require(
+        wait([&] { return !workflow->busy() && workflow->active() && stage->count() > 0; }),
+        "Retry-close fixture did not submit its initial workflow");
+    const int submissions = controllerCalls(root, "submit");
+    auto terminal = read(root + "/state.json");
+    terminal.insert("state", "failed");
+    terminal.insert("owner_released", true);
+    auto nodes = terminal.value("nodes").toArray();
+    auto failed = nodes[0].toObject();
+    failed.insert("state", "failed");
+    nodes[0] = failed;
+    terminal.insert("nodes", nodes);
+    write(root + "/state.json", QJsonDocument(terminal).toJson());
+    stage->setCurrentIndex(0);
+    require(
+        wait([&] { return retry->isEnabled() && !workflow->active(); }),
+        "Released terminal epoch did not enable Retry");
+    const int previous_epoch = terminal.value("epoch").toInt();
+    const int retries = controllerCalls(root, "retry");
+    const int cancellations = controllerCalls(root, "cancel");
+    write(root + "/hold-owner-release", "held");
+    write(root + "/hold-retry", "held");
+    if (scenario.startsWith("lost-response"))
+      write(root + "/lose-retry-response", "fixture");
+    if (scenario == "lost-response-status-unavailable")
+      write(root + "/retry-status-unavailable", "fixture");
+    if (scenario == "rejected")
+      write(root + "/reject-retry", "fixture");
+    if (launch_failure)
+      require(
+          QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner),
+          "Cannot prevent the Retry client from starting");
+    retry->click();
+    if (!launch_failure)
+      require(
+          wait([&] { return workflow->busy() && controllerCalls(root, "retry") == retries + 1; }),
+          "Retry request was not held in flight");
+    closeWorkflow(*dialog, "button", true, workflow->active() || workflow->busy());
+    if (!launch_failure) {
+      QElapsedTimer held;
+      held.start();
+      require(wait([&] { return held.elapsed() >= 150; }), "Pending Retry observation stalled");
+      require(
+          dialog && dialog->isVisible() && QApplication::activeModalWidget() == dialog &&
+              controllerCalls(root, "cancel") == cancellations &&
+              read(root + "/state.json").value("epoch").toInt() == previous_epoch,
+          "Close used the previous epoch's release or cancelled before Retry resolved");
+    }
+    const int status_before_resolution = controllerCalls(root, "status");
+    QFile::remove(root + "/hold-retry");
+    if (scenario == "lost-response-status-unavailable") {
+      require(
+          wait([&] { return !dialog || controllerCalls(root, "status") >= status_before_resolution + 2; }),
+          "Lost Retry response did not reconcile through fresh status requests");
+      require(
+          dialog && dialog->isVisible() && QApplication::activeModalWidget() == dialog &&
+              controllerCalls(root, "cancel") == cancellations &&
+              read(root + "/state.json").value("epoch").toInt() == previous_epoch + 1 &&
+              !read(root + "/state.json").value("owner_released").toBool(),
+          "Uncertain Retry closed from the prior release or cancelled a stale epoch while status was unavailable");
+      QFile::remove(root + "/status-unavailable");
+    }
+    if (accepted) {
+      require(
+          wait([&] {
+            return !dialog ||
+                (!workflow->busy() && controllerCalls(root, "cancel") == cancellations + 1 &&
+                 read(root + "/state.json").value("cancel_requested").toBool());
+          }),
+          "Close did not cancel the accepted Retry after response or status reconciliation");
+      require(dialog && dialog->isVisible(), "Accepted Retry closed using the previous epoch's release");
+      terminal = read(root + "/state.json");
+      require(
+          terminal.value("epoch").toInt() == previous_epoch + 1 && !terminal.value("owner_released").toBool(),
+          "Retry cancellation did not retain the new epoch's cleanup ownership");
+      const int cancellation_polls = controllerCalls(root, "status");
+      require(
+          wait([&] { return controllerCalls(root, "status") >= cancellation_polls + 2; }) && dialog->isVisible(),
+          "Retry cancellation closed before explicit owner release");
+      terminal.insert("owner_released", true);
+      write(root + "/state.json", QJsonDocument(terminal).toJson());
+    }
+    waitForDeleted(dialog);
+    require(QFile::setPermissions(launcher, launcher_permissions), "Cannot restore the fixture controller");
+    require(
+        controllerCalls(root, "submit") == submissions &&
+            controllerCalls(root, "retry") == retries + (launch_failure ? 0 : 1) &&
+            controllerCalls(root, "cancel") == cancellations + (accepted ? 1 : 0) &&
+            read(root + "/state.json").value("epoch").toInt() == previous_epoch + (accepted ? 1 : 0),
+        "Retry-close duplicated a request, cancelled an unaccepted Retry or lost its new epoch");
+    require(
+        scenario != "rejected" || controllerCalls(root, "status") > status_before_resolution,
+        "Rejected Retry closed without a fresh status response confirming the prior epoch still owns no work");
+    require(!QApplication::activeModalWidget(), "Resolved Retry kept the main window modal-blocked");
+    QFile::remove(root + "/hold-owner-release");
+  }
+  for (const QString flag :
+       {"hold-retry", "reject-retry", "lose-retry-response", "retry-status-unavailable", "status-unavailable"})
+    QFile::remove(root + "/" + flag);
+}
+
 void dialogOwnership(const QString& root) {
   const auto status_calls = [&] {
     QFile calls(root + "/calls");
@@ -1414,6 +1560,7 @@ int main(int argc, char** argv) {
     profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));
     dialogOwnership(temporary.path());
     dialogCloseDuringSubmission(temporary.path());
+    dialogCloseDuringRetry(temporary.path());
     killedExperimentGuard(temporary.path());
     std::cout
         << "Workflow DAG, async UI, retry/log history, wheel routing, close confirmation and verified cancellation passed\n";

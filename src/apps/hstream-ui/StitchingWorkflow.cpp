@@ -641,6 +641,7 @@ struct StitchingWorkflow::Impl {
   bool restore_controls{false};
   int timeout_ms{0};
   uint64_t request_generation{0};
+  int retry_epoch{-1};
   bool log_pending{false};
   QPointer<QPlainTextEdit> log_view;
   void showMonitor(bool visible) {
@@ -904,6 +905,18 @@ struct StitchingWorkflow::Impl {
         notify("Workflow monitoring unavailable: " + error, true);
         return;
       }
+      if (retry_epoch >= 0) {
+        if (result.value("workflow_id").toString() != workflow || !result.value("epoch").isDouble() ||
+            result.value("epoch").toInt(-1) < retry_epoch) {
+          notify("Workflow retry admission is still unresolved; waiting for current status.", true);
+          return;
+        }
+        // The launcher execs the installed controller in the same PID. Retry
+        // writes its epoch synchronously before launching any helpers. This
+        // read began after that process exited; an unchanged released epoch
+        // therefore proves rejection, while a new epoch proves acceptance.
+        retry_epoch = -1;
+      }
       render(std::move(result));
     });
   }
@@ -1131,7 +1144,10 @@ StitchingWorkflow::StitchingWorkflow(
       return;
     s.command_pending = true;
     ++s.request_generation;
+    s.retry_epoch = s.snapshot.value("epoch").toInt();
     s.controls();
+    if (s.owner->changed)
+      s.owner->changed();
     s.call(
         {"retry",
          "--workflow",
@@ -1142,10 +1158,19 @@ StitchingWorkflow::StitchingWorkflow(
          QString::number(s.snapshot.value("epoch").toInt())},
         [&s](QJsonObject value, QString error) {
           s.command_pending = false;
-          if (!error.isEmpty())
+          if (!error.isEmpty()) {
+            if (value.value("client_not_started").toBool())
+              s.retry_epoch = -1;
             s.notify(error, true);
-          else
+            if (s.retry_epoch >= 0)
+              s.refresh();
+          } else if (
+              value.value("workflow_id").toString() == s.workflow && value.value("epoch").isDouble() &&
+              value.value("epoch").toInt(-1) > s.retry_epoch) {
+            s.retry_epoch = -1;
             s.render(value);
+          } else
+            s.refresh();
           s.controls();
           if (s.owner->changed)
             s.owner->changed();
@@ -1204,10 +1229,11 @@ void StitchingWorkflow::restoreMonitor() {
 }
 bool StitchingWorkflow::active() const {
   return !impl_->workflow.isEmpty() &&
-      (!terminal(impl_->snapshot.value("state").toString()) || !impl_->snapshot.value("owner_released").toBool());
+      (impl_->retry_epoch >= 0 || !terminal(impl_->snapshot.value("state").toString()) ||
+       !impl_->snapshot.value("owner_released").toBool());
 }
 bool StitchingWorkflow::busy() const {
-  return impl_->command_pending;
+  return impl_->command_pending || impl_->retry_epoch >= 0;
 }
 bool StitchingWorkflow::hasSelection() const {
   return !impl_->selectedNode().isEmpty();
@@ -1228,7 +1254,7 @@ void StitchingWorkflow::exportBatch(const StitchingExperimentStore& store, const
 }
 void StitchingWorkflow::cancel(std::function<void(bool)> completed) {
   auto& s = *impl_;
-  if (!active() || s.command_pending)
+  if (!active() || busy())
     return;
   s.command_pending = true;
   ++s.request_generation;
