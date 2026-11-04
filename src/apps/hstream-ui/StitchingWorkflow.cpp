@@ -728,7 +728,9 @@ struct StitchingWorkflow::Impl {
       }
     }
     notify(value, error, previous);
-    if (terminal(state) && !snapshot.value("owner_released").toBool())
+    if ((terminal(state) && !snapshot.value("owner_released").toBool()) ||
+        snapshot.contains("controller_error") || snapshot.contains("cancel_error") ||
+        snapshot.contains("controller_warning"))
       transient_notice = value;
   }
   void call(QStringList arguments, std::function<void(QJsonObject, QString)> done) {

@@ -774,6 +774,10 @@ void dialogSubmissionRecovery(const QString& root) {
         "wrong-workflow",
         "older-status",
         "failed",
+        "controller-warning",
+        "controller-error",
+        "cancel-error",
+        "controller-warning-unrelated",
         "cleanup",
         "unrelated-error",
         "rejected",
@@ -901,6 +905,20 @@ void dialogSubmissionRecovery(const QString& root) {
       set_state(current, "failed", true);
     else if (scenario == "empty")
       set_state(current, "queued", false);
+    const QString controller_key = scenario.startsWith("controller-warning") ? "controller_warning"
+        : scenario == "controller-error" || scenario == "failed"             ? "controller_error"
+        : scenario == "cancel-error"                                         ? "cancel_error"
+                                                                             : "";
+    const QString controller_detail = controller_key == "controller_warning" ? "Controller heartbeat is unavailable."
+        : controller_key == "cancel_error" ? "Cancellation could not confirm ownership."
+                                           : "Controller could not reconcile its state.";
+    if (!controller_key.isEmpty()) {
+      current.insert(controller_key, QJsonObject{{"error", controller_detail}});
+      if (controller_key == "controller_warning") {
+        set_state(current, "queued", false);
+        current.insert("controller_online", false);
+      }
+    }
     if (scenario == "older-status") {
       current.insert("epoch", 2);
       current.insert("revision", 5);
@@ -970,10 +988,40 @@ void dialogSubmissionRecovery(const QString& root) {
             }),
             "Verified cleanup release left its earlier waiting message visible");
       }
-    } else
+    } else if (!controller_key.isEmpty())
+      require(
+          is_error() && status->text().startsWith("Workflow status recovered.") &&
+              status->text().contains(controller_detail) && workflow->active(),
+          "Recovered controller diagnostics were not shown as errors in the actual dialog");
+    else
       require(
           !is_error() && status->text().startsWith("Workflow status recovered.") && workflow->active(),
           "Recovered queued or running work left a stale red submission warning");
+    if (!controller_key.isEmpty()) {
+      require(
+          is_error() && status->text().contains(controller_detail), "Recovery dropped an active controller diagnostic");
+      if (scenario == "controller-warning-unrelated")
+        workflow->message(unrelated, true, {});
+      current.remove(controller_key);
+      current.remove("controller_online");
+      current.insert("revision", current.value("revision").toInt() + 1);
+      publishSnapshot(fixture + "/state.json", current);
+      require(wait([&] { return observed == current; }), "Healthy status after a controller diagnostic did not arrive");
+      if (scenario == "controller-warning-unrelated")
+        require(
+            status->text() == unrelated && is_error(),
+            "Clearing a controller diagnostic overwrote a newer unrelated dialog error");
+      else if (scenario == "failed")
+        require(
+            is_error() && status->text().startsWith("Workflow confirmed: failed.") &&
+                !status->text().contains(controller_detail),
+            "A cleared controller diagnostic concealed terminal failure or retained its obsolete detail");
+      else
+        require(
+            !is_error() && status->text().startsWith("Workflow status recovered.") &&
+                !status->text().contains(controller_detail),
+            "Healthy controller status left its previous red recovered notice visible");
+    }
     if (scenario == "older-status") {
       for (const bool older_epoch : {true, false}) {
         auto stale = current;
