@@ -37,7 +37,7 @@ class StitchingWorkflow : public QWidget {
   void setEditingEnabled(bool enabled, bool queued);
   void start(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);
   void exportBatch(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);
-  void cancel();
+  void cancel(std::function<void(bool)> completed = {});
   void attach(const QString& workflow_id);
   void selectCandidate(const QString& catalog_key);
   void showLog();

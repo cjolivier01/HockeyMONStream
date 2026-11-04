@@ -655,6 +655,7 @@ struct StitchingExperimentDialog::Impl {
   QPushButton* apply{nullptr};
   QPushButton* inspect_frames{nullptr};
   QPushButton* view_runner_log{nullptr};
+  QPushButton* close_button{nullptr};
   QLabel* status{nullptr};
   QLabel* cache_location{nullptr};
   QProgressBar* progress{nullptr};
@@ -685,6 +686,8 @@ struct StitchingExperimentDialog::Impl {
   bool stopping_preview{false};
   bool closing{false};
   bool close_prompt_active{false};
+  bool close_after_workflow{false};
+  bool close_cancel_sent{false};
   bool results_applied{false};
   bool candidate_completion_pending{false};
   bool preview_completion_pending{false};
@@ -1031,7 +1034,8 @@ struct StitchingExperimentDialog::Impl {
     // released its workspace. Keep admissions closed through that interval.
     const bool preview_owned = preview_process || preview_completion_pending || preview_shutdown_ticket.has_value();
     const bool promoting = promotion_worker != nullptr || preparation_worker != nullptr;
-    const bool stopping = pending_group_shutdowns > 0 || candidate_completion_pending || preview_completion_pending;
+    const bool stopping = close_after_workflow || pending_group_shutdowns > 0 || candidate_completion_pending ||
+        preview_completion_pending;
     const int row = table->currentRow();
     const bool selected = row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete &&
         !candidates[row].selection_reuse_blocked;
@@ -1057,7 +1061,10 @@ struct StitchingExperimentDialog::Impl {
         store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
     start_batch->setEnabled(editing_batch && queued_count > 0);
-    cancel->setEnabled((batch_active || remote) && !workflow_busy && !closing);
+    cancel->setEnabled((batch_active || remote) && !workflow_busy && !closing && !close_after_workflow);
+    close_button->setText(close_after_workflow ? "Waiting for cleanup…" : "Close");
+    close_button->setEnabled(!closing && !close_after_workflow);
+    view_tabs->setTabEnabled(0, !closing && !close_after_workflow);
     table->setEnabled((!active_batch || remote) && !preview_owned && !promoting && !stopping && !closing);
     if (workflow)
       workflow->setEditingEnabled(editing_batch, queued_count > 0);
@@ -1997,19 +2004,27 @@ struct StitchingExperimentDialog::Impl {
     schedule_forced_stop(/*calibration=*/true);
   }
 
-  void maybe_finish_close() {
+  bool ready_to_close() const {
     if (!closing)
-      return;
+      return false;
     const bool calibrating = calibration_process && calibration_process->state() != QProcess::NotRunning;
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
-    if (calibrating || previewing || promotion_worker || preparation_worker || pending_group_shutdowns > 0 ||
-        candidate_completion_pending || preview_completion_pending || close_completion_scheduled)
-      return;
-    if (!release_local_operation())
+    if ((workflow && (workflow->active() || workflow->busy())) || calibrating || previewing || promotion_worker ||
+        preparation_worker || pending_group_shutdowns > 0 || candidate_completion_pending || preview_completion_pending)
+      return false;
+    return true;
+  }
+
+  void maybe_finish_close() {
+    if (!ready_to_close() || close_completion_scheduled || !release_local_operation())
       return;
     close_completion_scheduled = true;
     const int result = pending_dialog_result;
-    QTimer::singleShot(0, dialog, [this, result]() { dialog->QDialog::done(result); });
+    QTimer::singleShot(0, dialog, [this, result]() {
+      close_completion_scheduled = false;
+      if (ready_to_close() && release_local_operation())
+        dialog->QDialog::done(result);
+    });
   }
 
   void finish_candidate(
@@ -3590,13 +3605,69 @@ struct StitchingExperimentDialog::Impl {
     maybe_finish_close();
   }
 
-  void request_close(int result) {
-    if (closing || close_prompt_active)
+  void continue_workflow_close() {
+    if (!close_after_workflow || !workflow || workflow->busy())
       return;
-    if (workflow && workflow->active() && !preparation_worker && !promotion_worker && !calibration_process &&
-        !preview_process) {
-      closing = true;
-      dialog->QDialog::done(result);
+    if (!workflow->active()) {
+      close_after_workflow = false;
+      shutdown();
+      return;
+    }
+    if (close_cancel_sent)
+      return;
+    close_cancel_sent = true;
+    workflow->cancel([this](bool confirmed) {
+      if (!confirmed) {
+        close_after_workflow = false;
+        close_cancel_sent = false;
+        // Keep the controller's error visible. A later Close or Cancel batch
+        // can retry without treating a lost response as released ownership.
+      }
+      update_controls();
+      continue_workflow_close();
+    });
+  }
+
+  void workflow_close_failed(const QString& error) {
+    close_after_workflow = false;
+    close_cancel_sent = false;
+    show_status(error + " Workflow cleanup is not confirmed; the window stays open. Close can retry.", true);
+    update_controls();
+  }
+
+  void request_close(int result) {
+    if (closing || close_prompt_active || close_after_workflow)
+      return;
+    if (workflow && (workflow->active() || workflow->busy())) {
+      close_prompt_active = true;
+      QMessageBox prompt(
+          QMessageBox::Question,
+          "Cancel workflow and close?",
+          "Closing Stitching Experiments will cancel queued and running workflow jobs.",
+          QMessageBox::NoButton,
+          dialog);
+      prompt.setObjectName("stitchExperimentWorkflowCloseGuard");
+      prompt.setInformativeText(
+          "This window stays open until cancellation and cleanup release its resources. Completed results are kept.");
+      auto* stop = prompt.addButton("Cancel workflow and close", QMessageBox::DestructiveRole);
+      auto* keep = prompt.addButton("Keep workflow running", QMessageBox::RejectRole);
+      stop->setIcon(action_icon(ActionIcon::Cancel));
+      keep->setIcon(action_icon(ActionIcon::Play));
+      stop->setObjectName("stitchExperimentCloseWorkflowCancel");
+      keep->setObjectName("stitchExperimentCloseWorkflowKeep");
+      prompt.setDefaultButton(keep);
+      prompt.setEscapeButton(keep);
+      prompt.exec();
+      close_prompt_active = false;
+      if (prompt.clickedButton() != stop)
+        return;
+      pending_dialog_result = result;
+      close_after_workflow = true;
+      close_cancel_sent = false;
+      view_tabs->setCurrentIndex(1);
+      show_status("Waiting for workflow cancellation and cleanup before closing…");
+      update_controls();
+      continue_workflow_close();
       return;
     }
     if (promotion_worker) {
@@ -4412,6 +4483,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.view_runner_log = new QPushButton(action_icon(ActionIcon::Document), "View runner log");
   s.view_runner_log->setObjectName("viewStitchExperimentRunnerLogButton");
   auto* close = new QPushButton(action_icon(ActionIcon::Close), "Close");
+  s.close_button = close;
   close->setObjectName("closeStitchExperimentButton");
   bottom->addWidget(s.apply);
   bottom->addWidget(s.inspect_frames);
@@ -4473,9 +4545,25 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     else
       s.show_selected_runner_log();
   });
-  s.workflow->changed = [&s] { s.update_controls(); };
-  s.workflow->snapshotChanged = [&s](const QJsonObject& value) { s.workflow_snapshot(value); };
-  s.workflow->message = [&s](const QString& value, bool error) { s.show_status(value, error); };
+  s.workflow->changed = [&s] {
+    s.update_controls();
+    s.continue_workflow_close();
+    s.maybe_finish_close();
+  };
+  s.workflow->snapshotChanged = [&s](const QJsonObject& value) {
+    s.workflow_snapshot(value);
+    if (s.close_after_workflow && s.close_cancel_sent && s.workflow->active()) {
+      const auto error = value.value("cancel_error").toObject().value("error").toString();
+      if (!error.isEmpty() || value.value("state").toString() == "recovery")
+        s.workflow_close_failed(error.isEmpty() ? "Workflow cleanup requires recovery. Review its logs." : error);
+    }
+  };
+  s.workflow->message = [&s](const QString& value, bool error) {
+    if (error && s.close_after_workflow && s.close_cancel_sent)
+      s.workflow_close_failed(value);
+    else
+      s.show_status(value, error);
+  };
   s.workflow->exportRequested = [&s] { s.submit_workflow(true); };
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });
   s.restore_persistent_store(s.initial_settings);

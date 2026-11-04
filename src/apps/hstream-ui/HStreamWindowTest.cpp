@@ -14936,10 +14936,13 @@ bool test_fresh_stitching_experiments() {
         !capture_widget_artifact(dialog, "fresh-experiments-after.png"))
       return false;
     QPointer<QDialog> closed(dialog);
-    dialog->close();
+    if (!expect(
+            !window.close() && window.isVisible(),
+            "Main-window Close must route through the experiment dialog instead of destroying its workflow owner"))
+      return false;
     if (!expect(
             QTest::qWaitFor([&] { return closed.isNull(); }, 5000),
-            "Closing the experiment dialog must retire it before reopening"))
+            "Forwarded experiment Close must retire the child before the main window can exit"))
       return false;
     cp->setValue(520);
     message.clear();
@@ -14956,6 +14959,8 @@ bool test_fresh_stitching_experiments() {
       return false;
     if (!saved_file.open(QIODevice::ReadOnly) ||
         !expect(saved_file.readAll() == saved, "Existing settings must remain byte-for-byte unchanged"))
+      return false;
+    if (!expect(window.close() && !window.isVisible(), "Main-window Close must work after experiment cleanup retires"))
       return false;
   }
   return true;

@@ -19,11 +19,19 @@ experiment target merely because its CLI cross-build succeeds.
 
 With no resource profile selected, the existing local serial workflow remains
 available. A configured profile exposes concurrency, dependencies, stage and
-attempt details, logs, Stop, Retry and Export. Closing a submitted workflow's
-pane detaches; reopening the recording reattaches to durable state. Stop is an
-explicit cancellation request, and remains pending until descendants and private
-runtime cleanup have stopped. The desktop and browser use the same graph states
+attempt details, logs, Stop, Retry and Export. Closing Stitching Experiments with
+an active workflow asks whether to **Cancel workflow and close** or **Keep
+workflow running**. Keeping it running leaves the dialog open. Confirming keeps
+the monitor visible until cancellation and private runtime cleanup release its
+resources; completed results stay saved. Errors and unconfirmed cleanup keep the
+window open, with logs and an explicit retry available. A terminal job status
+alone does not authorize closing. The desktop and browser use the same graph states
 and preserve successful siblings when a different solve fails.
+
+Unexpected application termination or browser-tab closure cannot prove that
+remote jobs stopped. Durable recording ownership remains in place; reopening
+the recording restores the monitor so the workflow can be cancelled and cleaned
+up. Normal dialog close never releases that owner itself.
 
 ```mermaid
 flowchart TD

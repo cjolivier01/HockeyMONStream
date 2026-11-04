@@ -5529,6 +5529,13 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
   if (!event) {
     return;
   }
+  if (auto* experiments = findChild<QDialog*>("stitchingExperimentDialog")) {
+    // Parent destruction must not bypass the experiment window's cancellation
+    // and cleanup gate. A later main-window close can exit once it has retired.
+    event->ignore();
+    experiments->close();
+    return;
+  }
   deferred_play_requested_ = false;
   deferred_restart_requested_ = false;
   deferred_restart_game_id_.clear();

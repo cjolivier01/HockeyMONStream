@@ -762,8 +762,8 @@ struct StitchingWorkflow::Impl {
         editing && queued && owner->selected() && profiles_ready && !command_pending && !owner->active());
     const auto node = selectedNode();
     retry->setEnabled(
-        !command_pending && !owner->active() && !workflow.isEmpty() && terminal(snapshot.value("state").toString()) &&
-        unsuccessful(node.value("state").toString()));
+        editing && !command_pending && !owner->active() && !workflow.isEmpty() &&
+        terminal(snapshot.value("state").toString()) && unsuccessful(node.value("state").toString()));
   }
   void renderDetails() {
     const auto node = selectedNode();
@@ -876,8 +876,7 @@ struct StitchingWorkflow::Impl {
     showMonitor(true);
     summary->setText(
         "Workflow " + workflow + " · " + snapshot.value("state").toString() +
-        (terminal(snapshot.value("state").toString()) && snapshot.contains("owner_released") &&
-                 !snapshot.value("owner_released").toBool()
+        (terminal(snapshot.value("state").toString()) && !snapshot.value("owner_released").toBool()
              ? " · waiting for game ownership release"
              : ""));
     const auto observer_value = snapshot.value("observer").toObject();
@@ -902,6 +901,7 @@ struct StitchingWorkflow::Impl {
         return;
       if (!error.isEmpty()) {
         summary->setText("Workflow " + workflow + " · monitoring unavailable: " + error);
+        notify("Workflow monitoring unavailable: " + error, true);
         return;
       }
       render(std::move(result));
@@ -990,7 +990,7 @@ struct StitchingWorkflow::Impl {
         notify("Exported batch: " + result.value("script").toString());
       else {
         render(result);
-        notify("Workflow submitted. Closing this dialog detaches; Cancel batch stops its jobs.");
+        notify("Workflow submitted. Closing this dialog requires cancellation and resource cleanup.");
       }
       controls();
       if (owner->changed)
@@ -1204,8 +1204,7 @@ void StitchingWorkflow::restoreMonitor() {
 }
 bool StitchingWorkflow::active() const {
   return !impl_->workflow.isEmpty() &&
-      (!terminal(impl_->snapshot.value("state").toString()) ||
-       (impl_->snapshot.contains("owner_released") && !impl_->snapshot.value("owner_released").toBool()));
+      (!terminal(impl_->snapshot.value("state").toString()) || !impl_->snapshot.value("owner_released").toBool());
 }
 bool StitchingWorkflow::busy() const {
   return impl_->command_pending;
@@ -1227,7 +1226,7 @@ void StitchingWorkflow::start(const StitchingExperimentStore& store, const Stitc
 void StitchingWorkflow::exportBatch(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog) {
   impl_->submitPlan(store, catalog, true);
 }
-void StitchingWorkflow::cancel() {
+void StitchingWorkflow::cancel(std::function<void(bool)> completed) {
   auto& s = *impl_;
   if (!active() || s.command_pending)
     return;
@@ -1236,13 +1235,15 @@ void StitchingWorkflow::cancel() {
   s.controls();
   s.call(
       {"cancel", "--workflow", s.workflow, "--epoch", QString::number(s.snapshot.value("epoch").toInt())},
-      [&s](QJsonObject value, QString error) {
+      [&s, completed = std::move(completed)](QJsonObject value, QString error) {
         s.command_pending = false;
         if (!error.isEmpty())
           s.notify(error, true);
         else
           s.render(value);
         s.controls();
+        if (completed)
+          completed(error.isEmpty());
         if (s.owner->changed)
           s.owner->changed();
       });

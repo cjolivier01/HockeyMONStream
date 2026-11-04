@@ -290,8 +290,9 @@ another tab/project mutation remains prohibited until confirmed cleanup.
 Both interfaces offer the same profile/concurrency controls, dependency graph,
 selected-stage details, bounded live/retained logs, attempt history, retry and Stop.
 Show dependency waiting separately from Slurm resource waiting. Selecting nodes or
-reading logs remains possible while work runs. Closing the view detaches; an
-explicit Stop cancels. Reopen restores state and completed candidates. Each action
+reading logs remains possible while work runs. Closing Stitching Experiments asks
+to cancel and waits for verified cleanup; keeping work running leaves the dialog
+open. Reopen restores state and completed candidates after an unexpected exit. Each action
 has the existing native icon; new controls inherit the application-wide wheel guard.
 Do not show an invented percentage for unmeasured phases.
 
