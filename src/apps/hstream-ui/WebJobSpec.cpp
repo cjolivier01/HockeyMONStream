@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonParseError>
@@ -114,6 +115,7 @@ QJsonObject Capabilities() {
       "experiment-recover",
       "experiment-run",
       "experiment-scan",
+      "experiment-materialize",
       "experiment-reuse-selection",
       "experiment-inspect",
       "experiment-complete",
@@ -135,6 +137,8 @@ QJsonObject Capabilities() {
            "camera-optics-read-v1",
            "experiment-optics-filtering-v1",
            "experiment-player-scan-wrap-v1",
+           "experiment-materialization-v1",
+           "workflow-portable-artifacts-v2",
            "match-editor-v1",
            "rink-editor-v1",
            "scoreboard-preview-v1",
@@ -182,6 +186,18 @@ Request LoadRequest(const fs::path& filename) {
       !document.contains("authorized_media") || document.value("authorized_media").isArray(),
       "Invalid media authorization");
   request.authorized_media = document.value("authorized_media").toArray();
+  if (document.contains("workflow")) {
+    require(document.value("workflow").isObject(), "Workflow binding must be an object");
+    request.workflow = document.value("workflow").toObject();
+    require(request.workflow.size() == 5, "Workflow binding requires exact attempt fields");
+    for (const auto* key : {"workflow_id", "stage_id", "attempt_id", "storage_namespace"}) {
+      const auto value = RequiredString(request.workflow, key, 160).toStdString();
+      require(std::regex_match(value, std::regex("[A-Za-z0-9_.:-]{1,160}")), "Invalid workflow binding identity");
+    }
+    require(
+        std::regex_match(RequiredString(request.workflow, "plan_digest", 64).toStdString(), std::regex("[a-f0-9]{64}")),
+        "Invalid workflow plan digest");
+  }
   return request;
 }
 std::string Relative(const Request& request, const fs::path& path) {
@@ -197,9 +213,49 @@ QJsonObject Artifact(const Request& request, const fs::path& path, const QString
       "Artifact must be a nonempty regular file");
   const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   require(fd >= 0, "Cannot open artifact for synchronization");
+  struct Close {
+    int fd;
+    ~Close() {
+      ::close(fd);
+    }
+  } close{fd};
+  struct stat pinned{};
+  require(
+      ::fstat(fd, &pinned) == 0 && pinned.st_dev == info.st_dev && pinned.st_ino == info.st_ino &&
+          pinned.st_size == info.st_size,
+      "Artifact changed before synchronization");
   const int result = ::fsync(fd);
-  ::close(fd);
   require(result == 0, "Cannot synchronize artifact");
+  if (!request.workflow.isEmpty()) {
+    QCryptographicHash hash(QCryptographicHash::Sha256);
+    char buffer[1024 * 1024];
+    off_t remaining = pinned.st_size;
+    while (remaining > 0) {
+      const ssize_t count = ::read(fd, buffer, std::min<off_t>(remaining, sizeof(buffer)));
+      if (count < 0 && errno == EINTR)
+        continue;
+      require(count > 0, "Artifact changed while hashing");
+      hash.addData(buffer, count);
+      remaining -= count;
+    }
+    struct stat after{}, named{};
+    const auto same = [](const struct stat& a, const struct stat& b) {
+      return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
+          a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
+          a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
+    };
+    require(
+        ::fstat(fd, &after) == 0 && ::lstat(path.c_str(), &named) == 0 && same(pinned, after) && same(after, named),
+        "Artifact changed while publishing its portable identity");
+    require(pinned.st_size <= 9007199254740991LL, "Artifact size exceeds exact JSON integer range");
+    return {
+        {"identity_schema", 2},
+        {"storage_namespace", request.workflow.value("storage_namespace")},
+        {"path", QString::fromStdString(relative)},
+        {"kind", kind},
+        {"size", double(pinned.st_size)},
+        {"sha256", QString::fromLatin1(hash.result().toHex())}};
+  }
   // Identity integers are decimal strings: nanosecond timestamps exceed JSON's
   // exact double range. Consumers must compare integer values, never floats.
   return {

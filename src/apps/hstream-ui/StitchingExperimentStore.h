@@ -31,6 +31,15 @@ struct StoredStitchingExperiment {
   int64_t process_session_id{0};
   std::string process_token;
   std::string reservation_token;
+  // Remote ownership survives disappearance of every local PID. Only the
+  // workflow supervisor can reconcile it after verified backend retirement.
+  std::string workflow_id;
+  bool workflow_active{false};
+  std::filesystem::path workflow_directory;
+  std::string result_attempt_id;
+  std::optional<StitchingExperimentWorkspace> result_workspace;
+  std::string selection_attempt_id;
+  std::optional<StitchingExperimentWorkspace> selection_workspace;
   // Queue/dependency sequence numbers are local to workspace.root (session).
   int sequence{0};
   int baseline_sequence{0};
@@ -48,6 +57,12 @@ struct StoredStitchingExperiment {
   // fail rather than overwriting another dialog's more recent row state.
   uint64_t revision{0};
 };
+
+inline const StitchingExperimentWorkspace& ResolvedStitchingExperimentWorkspace(const StoredStitchingExperiment& row) {
+  return row.result_workspace   ? *row.result_workspace
+      : row.selection_workspace ? *row.selection_workspace
+                                : row.workspace;
+}
 
 struct StitchingExperimentCatalog {
   std::vector<StoredStitchingExperiment> experiments;
@@ -73,6 +88,17 @@ absl::Status SaveStitchingExperiment(
     StoredStitchingExperiment& experiment,
     bool publish_selection = false,
     const std::string& authoritative_main_fingerprint = {});
+
+// Preview ownership is separate from immutable distributed adoption. Only the
+// exact local experiment supervisor may change these two process fields on an
+// inactive, completed workflow row. Stopped requires exact shutdown proof from
+// that supervisor; scientific state, result references and history are retained.
+absl::Status RecordStitchingExperimentPreview(
+    const StitchingExperimentStore& store,
+    StoredStitchingExperiment& experiment,
+    int64_t process_session_id,
+    const std::string& process_token,
+    bool stopped = false);
 
 // The caller must prove this exact persisted process session/token has stopped.
 // Reconciles only process intent and failure status through revision CAS; retains

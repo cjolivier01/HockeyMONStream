@@ -246,6 +246,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::mutex process_mu_;
   size_t process_pass_{0};
   bool configure_only_{false};
+  bool materialize_selected_frames_only_{false};
   bool one_pass_mode_{false};
   bool calibrate_field_mask_{true};
   bool force_scoreboard_config_{false};

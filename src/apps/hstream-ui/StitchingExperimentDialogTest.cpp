@@ -3,8 +3,10 @@
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentStore.h"
+#include "src/apps/hstream-ui/StitchingWorkflow.h"
 
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -19,6 +21,8 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
+#include <QtCore/QJsonArray>
+#include <QtCore/QJsonDocument>
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
 #include <QtCore/QRegularExpression>
@@ -47,7 +51,9 @@
 #include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QSpinBox>
 #include <QtWidgets/QSplitter>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QTimeEdit>
 #include <QtWidgets/QToolButton>
 
 #if QT_CONFIG(xcb)
@@ -267,6 +273,26 @@ void check_external_preview(StitchingExperimentDialog& dialog) {
 }
 
 void exercise_layout(StitchingExperimentDialog& dialog) {
+  auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
+  auto* preview_panel = widget<QWidget>(dialog, "stitchExperimentPreviewPanel");
+  auto* workflow_panel = widget<QWidget>(dialog, "stitchExperimentWorkflowPanel");
+  require(
+      tabs->count() == 2 && tabs->widget(0) == preview_panel && tabs->widget(1) == workflow_panel &&
+          tabs->tabText(0) == "Stitched preview" && tabs->tabText(1) == "Workflow" && tabs->currentIndex() == 0,
+      "Experiments must open with distinct Stitched preview and Workflow tabs");
+  for (const auto& [index, icon] : {std::pair{0, ActionIcon::Stitching}, std::pair{1, ActionIcon::Network}})
+    require(
+        !tabs->tabIcon(index).isNull() &&
+            tabs->tabIcon(index).pixmap(18, 18).toImage() == action_icon(icon).pixmap(18, 18).toImage(),
+        "Experiment tab must retain its shared semantic icon");
+  require(
+      workflow_panel->isAncestorOf(widget<QComboBox>(dialog, "stitchWorkflowProfile")) &&
+          workflow_panel->isAncestorOf(widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")) &&
+          workflow_panel->isAncestorOf(widget<QPlainTextEdit>(dialog, "stitchExperimentLog")) &&
+          !widget<QPlainTextEdit>(dialog, "stitchExperimentLog")->isVisible(),
+      "Workflow controls and raw runner output must belong to the Workflow tab");
+  for (const char* name : {"stitchExperimentStatus", "stitchExperimentCacheLocation"})
+    require(!tabs->isAncestorOf(widget<QWidget>(dialog, name)), "Shared status must remain outside both tabs");
   require(dialog.windowType() == Qt::Window, "Owned experiments must use a maximizable native window type");
   require(
       dialog.parentWidget() && dialog.windowModality() == Qt::WindowModal,
@@ -327,6 +353,49 @@ void exercise_layout(StitchingExperimentDialog& dialog) {
   QCoreApplication::processEvents();
   require(candidate_panel->isVisible() && video->winId() == original_target, "Button must restore the same target");
   check_idle_preview(dialog);
+  auto* control_points = widget<QLineEdit>(dialog, "stitchExperimentControlPoints");
+  auto* start_time = widget<QTimeEdit>(dialog, "stitchExperimentPreviewStart");
+  auto* duration = widget<QSpinBox>(dialog, "stitchExperimentPreviewDuration");
+  const QString original_control_points = control_points->text();
+  const QTime original_start_time = start_time->time();
+  const int original_duration = duration->value();
+  control_points->setText("111,222");
+  start_time->setTime(QTime(0, 0, 7, 250));
+  duration->setValue(17);
+  expand->click();
+  tabs->setCurrentIndex(1);
+  QCoreApplication::processEvents();
+  require(
+      candidate_panel->isVisible() && workflow_panel->isVisible() && !preview_panel->isVisible() &&
+          widget<QPlainTextEdit>(dialog, "stitchExperimentLog")->isVisible() &&
+          expand->accessibleName() == "Maximize preview",
+      "Opening Workflow must restore preview focus and show its diagnostics");
+  require(
+      candidate_panel->isAncestorOf(control_points) &&
+          candidate_panel->isAncestorOf(widget<QTableWidget>(dialog, "stitchExperimentCandidates")) &&
+          widget<QLabel>(dialog, "stitchExperimentStatus")->isVisible(),
+      "Candidate inputs, queue and status must remain available beside Workflow");
+  auto* local_log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
+  require(
+      local_log->height() > workflow_panel->height() / 2 &&
+          widget<QComboBox>(dialog, "stitchWorkflowProfile")->mapTo(workflow_panel, QPoint()).y() < 30 &&
+          widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton")->isVisible(),
+      "Current runner output must use available Workflow space below its execution controls");
+  if (!screenshot_dir.isEmpty())
+    require(dialog.grab().save(screenshot_dir + "/stitch-layout-workflow.png"), "Cannot capture Workflow tab");
+  tabs->setCurrentIndex(0);
+  QCoreApplication::processEvents();
+  require(
+      candidate_panel->isVisible() && splitter->sizes() == normal_splitter_sizes && video->winId() == original_target &&
+          control_points->text() == "111,222" && start_time->time() == QTime(0, 0, 7, 250) && duration->value() == 17,
+      "Changing experiment tabs must preserve drafts, split geometry and the native video target");
+  require(
+      !widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton")->isEnabled(),
+      "Changing experiment tabs must not start playback");
+  check_preview_layout(dialog);
+  control_points->setText(original_control_points);
+  start_time->setTime(original_start_time);
+  duration->setValue(original_duration);
   const QRect normal_geometry = dialog.geometry();
   auto* maximize = widget<QToolButton>(dialog, "maximizeStitchExperimentWindowButton");
   maximize->click();
@@ -1573,14 +1642,16 @@ void exercise_queued_source_change(const QString& game, const QString& root, boo
     });
   }
   widget<QPushButton>(reopened, "addStitchExperimentsToBatchButton")->click();
-  require(
-      wait_until(
-          [&] {
-            return during_copy ? status->text().startsWith("Could not persist the queued candidates:")
-                               : status->text().contains("different or unverified source settings");
-          },
-          10000),
-      "Changed source settings must fail clearly before joining an unfinished selection");
+  const bool source_change_rejected = wait_until(
+      [&] {
+        return during_copy ? status->text().startsWith("Could not persist the queued candidates:")
+                           : status->text().contains("different or unverified source settings");
+      },
+      10000);
+  if (!source_change_rejected)
+    std::cerr << "Queued source change (during copy=" << during_copy << ", copied=" << changed_during_copy
+              << ", rows=" << table->rowCount() << "): " << status->text().toStdString() << '\n';
+  require(source_change_rejected, "Changed source settings must fail clearly before joining an unfinished selection");
   const auto store = OpenStitchingExperimentStore(game.toStdString());
   require(store.ok(), "Cannot inspect source-change fixture store");
   const auto catalog = LoadStitchingExperimentStore(*store);
@@ -1718,7 +1789,8 @@ void exercise_frozen_selection_recovery(const QString& game, const QString& root
   if (scenario == "corrupt" || scenario == "malformed" || scenario == "unconfirmed") {
     require(
         table->item(1, 5)->text().contains("Unavailable") && recovered->selected_by_count.empty() &&
-            recovered->experiments[1].selection_fingerprint.empty(),
+            recovered->experiments[1].selection_fingerprint.empty() &&
+            table->item(1, 6)->text() == "Player-rich (unavailable)",
         "Malformed plans and unconfirmed processes must remain unavailable without publishing a selection");
     const auto conflicting = ReserveStitchingExperimentFrameCount(
         fixture.store, 2, 0, fixture.baseline.workspace, "conflicting-recovery-reservation");
@@ -2378,6 +2450,388 @@ void exercise_saved_selection(const QString& game, const QString& root) {
   write(game + "/_hockeymon/config.yaml", original);
 }
 
+void exercise_workflow_frame_selection(const QString& game, const QString& root) {
+  using namespace hm::stitching;
+  const QString working = root + "/workflow-selection-fixture";
+  auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
+  const auto plan = selected_plan_fixture(game, config);
+  config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
+  std::vector<std::array<std::filesystem::path, 2>> images(plan.selected.size());
+  for (size_t pair = 0; pair < images.size(); ++pair) {
+    for (size_t camera = 0; camera < 2; ++camera) {
+      images[pair][camera] = (game + QString("/selected-%1-%2.png").arg(pair).arg(camera)).toStdString();
+      require(
+          cv::imwrite(images[pair][camera].string(), cv::Mat(12, 16, CV_8UC3, cv::Scalar(pair, camera, 30))),
+          "Cannot write workflow saved-frame fixture");
+    }
+  }
+  require(PublishPlayerFrameInputs(game.toStdString(), plan, images).ok(), "Cannot retain workflow frame inputs");
+  config["stitching"]["calibration_frame_inputs_fingerprint"] = plan.fingerprint;
+  config["workflow"]["registry"] = working.toStdString();
+  config["workflow"]["poll_interval_ms"] = 100;
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  write(
+      working + "/scripts/hstream-workflow",
+      "#!/bin/sh\ncase \"$1\" in\nprofiles) echo '{\"profiles\":[]}' ;;\n"
+      "status) cat \"$HSTREAM_TEST_WORKFLOW_SNAPSHOT\" ;;\nesac\n");
+  require(
+      QFile::setPermissions(
+          working + "/scripts/hstream-workflow", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot prepare workflow selection observer");
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_WORKFLOW_SNAPSHOT", working + "/state.json");
+  StitchingExperimentDialog dialog(
+      game, "/bin/false", working, game + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
+  dialog.show();
+  add_options(dialog);
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  require(
+      table->rowCount() == 2 && table->item(1, 6)->text() == "Player-rich (saved)",
+      "Queued saved selection must be labeled before workflow admission");
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open workflow selection fixture");
+  const auto catalog = LoadStitchingExperimentStore(*store);
+  require(catalog.ok() && catalog->experiments.size() == 1, "Missing workflow selection fixture");
+  auto record = catalog->experiments.front();
+  require(
+      record.saved_selection_fingerprint == plan.fingerprint && record.selection_fingerprint == plan.fingerprint,
+      "Workflow selection fixture must retain the exact saved plan");
+  record.workflow_id = "selection-workflow";
+  record.workflow_directory = store->game_directory / "_hockeymon/workflows" / record.workflow_id;
+  record.workflow_active = true;
+  record.state = "running";
+  require(
+      wait_until(
+          [&] {
+            const auto current = hm::game_operation::Inspect(store->game_directory);
+            return current.ok() && !current->has_value();
+          },
+          5000),
+      "Queued workspace preparation did not release its local owner");
+  auto owner = hm::game_operation::LocalOwner("workflow", record.workflow_id, "selection-workflow-token");
+  owner.workflow_directory = record.workflow_directory.string();
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(lock.ok() && (*lock)->Claim(owner).ok(), "Cannot claim workflow selection fixture");
+  }
+  hm::game_operation::RegisterAuthorization(store->game_directory, owner.token);
+  const QString key =
+      QString::fromStdString(record.workspace.game_directory.lexically_relative(store->directory).string());
+  const auto publish = [&](const QString& state, bool released = false) {
+    require(SaveStitchingExperiment(*store, record).ok(), "Cannot update workflow selection fixture");
+    QJsonObject node{
+        {"id", "solve"},
+        {"kind", "experiment-run"},
+        {"label", "Solve · 1"},
+        {"candidate_id", key},
+        {"state", state},
+        {"reason", QString::fromStdString(record.failure)}};
+    write(
+        working + "/state.json",
+        QJsonDocument(
+            QJsonObject{
+                {"workflow_id", QString::fromStdString(record.workflow_id)},
+                {"state", released ? "succeeded" : "running"},
+                {"owner_released", released},
+                {"epoch", 0},
+                {"nodes", QJsonArray{node}}})
+            .toJson());
+  };
+  publish("running");
+  auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(dialog, "stitchingWorkflowPane"));
+  workflow->attach(QString::fromStdString(record.workflow_id));
+  require(wait_until([&] { return table->item(1, 5)->text() == "running"; }, 5000), "Workflow snapshot did not arrive");
+  const QString screenshot_dir = qEnvironmentVariable("HSTREAM_TEST_SCREENSHOT_DIR");
+  if (!screenshot_dir.isEmpty()) {
+    dialog.resize(1800, 1000);
+    widget<QSplitter>(dialog, "stitchExperimentSplitter")->setSizes({1000, 760});
+    QCoreApplication::processEvents();
+    table->scrollToItem(table->item(1, 6));
+    require(dialog.grab().save(screenshot_dir + "/qt-workflow-saved-frames.png"), "Cannot capture saved-frame status");
+  }
+  const auto check_locked = [&](StitchingExperimentDialog& observed) {
+    auto* rows = widget<QTableWidget>(observed, "stitchExperimentCandidates");
+    rows->selectRow(1);
+    require(
+        rows->item(1, 6)->text() == "Player-rich (saved)" &&
+            rows->item(1, 6)->toolTip().contains("no new player scan") &&
+            rows->item(1, 6)->toolTip().contains("active workflow owns"),
+        "Workflow ownership must preserve saved-frame status and explain its separate lock");
+    require(
+        widget<QPushButton>(observed, "inspectStitchExperimentFramesButton")->isEnabled() ==
+            record.selection_workspace.has_value(),
+        "Frame inspection must keep its existing adopted-input ownership fence");
+    for (const char* name :
+         {"addStitchExperimentsToBatchButton",
+          "startStitchExperimentBatchButton",
+          "removeStitchExperimentFromBatchButton",
+          "clearStitchExperimentBatchButton",
+          "previewStitchExperimentButton",
+          "applyStitchExperimentButton"})
+      require(
+          !widget<QPushButton>(observed, name)->isEnabled(),
+          "Saved-frame presentation must not unlock workflow actions");
+  };
+  check_locked(dialog);
+  {
+    StitchingExperimentDialog reopened(
+        game, "/bin/false", working, game + "/_hockeymon/config.yaml", environment, 100, 2, "00:00:00");
+    reopened.show();
+    check_locked(reopened);
+  }
+  record.failure = "Saved frame inputs could not be verified";
+  record.state = "failed";
+  publish("unavailable");
+  require(
+      wait_until(
+          [&] {
+            return table->item(1, 5)->text() == "unavailable" &&
+                table->item(1, 6)->text() == "Player-rich (unavailable)";
+          },
+          5000),
+      "Unverified workflow inputs must remain unavailable");
+  record.state = "quarantined";
+  record.failure.clear();
+  publish("blocked");
+  require(
+      wait_until(
+          [&] {
+            return table->item(1, 5)->text() == "blocked" && table->item(1, 6)->text() == "Player-rich (unavailable)";
+          },
+          5000),
+      "Quarantined inputs must remain unavailable even without failure text");
+  // An adopted input workspace is independent of a failed solve. Its retained
+  // selection remains valid while the owner supervises retry or cleanup.
+  auto selected = record.workspace;
+  selected.root = record.workflow_directory / "attempts/frames/workspace";
+  selected.game_directory = selected.root / selected.game_id;
+  std::filesystem::create_directories(selected.root);
+  std::filesystem::copy(
+      record.workspace.game_directory,
+      selected.game_directory,
+      std::filesystem::copy_options::recursive | std::filesystem::copy_options::copy_symlinks);
+  record.selection_workspace = selected;
+  record.selection_attempt_id = "frames";
+  record.state = "failed";
+  record.failure = "Solver failed after the saved frames were verified";
+  publish("failed");
+  require(
+      wait_until([&] { return table->item(1, 5)->text() == "failed"; }, 5000), "Failed solve snapshot did not arrive");
+  check_locked(dialog);
+  record.state = "complete";
+  record.artifact_generation_id = "fixture-solve-generation";
+  record.result_workspace = selected;
+  record.result_attempt_id = "frames";
+  record.workflow_active = false;
+  record.failure.clear();
+  publish("succeeded", true);
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(
+        lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(),
+        "Cannot release workflow selection fixture");
+  }
+  hm::game_operation::ForgetAuthorization(store->game_directory, owner.token);
+  require(
+      wait_until(
+          [&] {
+            return table->item(1, 5)->text() == "succeeded" && table->item(1, 6)->text() == "Player-rich (saved)" &&
+                !table->item(1, 6)->toolTip().contains("active workflow owns") &&
+                widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")->isEnabled();
+          },
+          5000),
+      "Completion must release controls without changing the saved-frame policy");
+}
+
+void exercise_completed_workflow_preview(const QString& game, const QString& root) {
+  const QString working = root + "/workflow-preview-fixture";
+  require(QDir().mkpath(working + "/scripts"), "Cannot create workflow preview fixture");
+  auto main_config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
+  main_config["workflow"]["registry"] = working.toStdString();
+  main_config["workflow"]["poll_interval_ms"] = 100;
+  write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(main_config)));
+  const QString fixtures = root + "/synthetic-artifacts";
+  const QString started = working + "/started";
+  const QString release = working + "/release";
+  const QString runner = working + "/runner";
+  write(
+      runner,
+      "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
+      "touch \"$HSTREAM_TEST_PREVIEW_STARTED\"\n"
+      "while [ ! -f \"$HSTREAM_TEST_PREVIEW_RELEASE\" ]; do sleep 0.05; done\n"
+      "exit \"$(cat \"$HSTREAM_TEST_PREVIEW_RELEASE\")\";;\nesac\n"
+      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/_hockeymon/\"\n");
+  require(
+      QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot prepare workflow preview runner");
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_ARTIFACTS", fixtures);
+  environment.insert("HSTREAM_TEST_PREVIEW_STARTED", started);
+  environment.insert("HSTREAM_TEST_PREVIEW_RELEASE", release);
+  {
+    StitchingExperimentDialog dialog(
+        game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    add_options(dialog);
+    widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+    require(
+        wait_until(
+            [&] { return widget<QLabel>(dialog, "stitchExperimentStatus")->text().startsWith("Batch complete."); },
+            10000),
+        "Completed-workflow preview fixture did not calibrate");
+  }
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open workflow preview store");
+  auto catalog = LoadStitchingExperimentStore(*store);
+  require(catalog.ok() && catalog->experiments.size() == 1, "Missing completed workflow preview fixture");
+  auto record = catalog->experiments.front();
+  record.workflow_id = "preview-workflow";
+  record.workflow_directory = store->game_directory / "_hockeymon/workflows" / record.workflow_id;
+  auto result = record.workspace;
+  result.root = record.workflow_directory / "attempts/solve/workspace";
+  result.game_directory = result.root / result.game_id;
+  std::filesystem::create_directories(result.root);
+  std::filesystem::copy(
+      record.workspace.game_directory,
+      result.game_directory,
+      std::filesystem::copy_options::recursive | std::filesystem::copy_options::copy_symlinks);
+  record.result_workspace = result;
+  record.result_attempt_id = "solve";
+  record.workflow_active = false;
+  auto owner = hm::game_operation::LocalOwner("workflow", record.workflow_id, "preview-workflow-token");
+  owner.workflow_directory = record.workflow_directory.string();
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(lock.ok() && (*lock)->Claim(owner).ok(), "Cannot claim completed workflow fixture");
+  }
+  hm::game_operation::RegisterAuthorization(store->game_directory, owner.token);
+  require(SaveStitchingExperiment(*store, record).ok(), "Cannot adopt completed workflow preview fixture");
+  {
+    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+    require(
+        lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(),
+        "Cannot release completed workflow fixture");
+  }
+  hm::game_operation::ForgetAuthorization(store->game_directory, owner.token);
+  const QString workflow_state = working + "/state.json";
+  const QString status_requested = working + "/status-requested";
+  const QString status_release = working + "/status-release";
+  environment.insert("HSTREAM_TEST_WORKFLOW_STATE", workflow_state);
+  environment.insert("HSTREAM_TEST_STATUS_REQUESTED", status_requested);
+  environment.insert("HSTREAM_TEST_STATUS_RELEASE", status_release);
+  write(
+      working + "/scripts/hstream-workflow",
+      "#!/bin/sh\ncase \"$1\" in\nprofiles) echo '{\"profiles\":[]}' ;;\n"
+      "status) touch \"$HSTREAM_TEST_STATUS_REQUESTED\"\n"
+      "while [ ! -f \"$HSTREAM_TEST_STATUS_RELEASE\" ]; do sleep 0.01; done\n"
+      "cat \"$HSTREAM_TEST_WORKFLOW_STATE\" ;;\nesac\n");
+  require(
+      QFile::setPermissions(
+          working + "/scripts/hstream-workflow", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot prepare completed workflow observer");
+  write(workflow_state, R"({"workflow_id":"preview-workflow","state":"running","epoch":0,"nodes":[]})");
+  for (const QString gesture : {"untouched", "click", "keyboard"}) {
+    QFile::remove(status_requested);
+    QFile::remove(status_release);
+    bool received_snapshot = false;
+    StitchingExperimentDialog dialog(
+        game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
+    auto* rows = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    auto* workflow = dynamic_cast<StitchingWorkflow*>(widget<QWidget>(dialog, "stitchingWorkflowPane"));
+    require(workflow != nullptr, "Missing typed workflow monitor");
+    const auto update_snapshot = workflow->snapshotChanged;
+    workflow->snapshotChanged = [&, update_snapshot](const QJsonObject& snapshot) {
+      update_snapshot(snapshot);
+      received_snapshot = true;
+    };
+    require(
+        wait_until([&] { return QFile::exists(status_requested); }, 5000) && !received_snapshot &&
+            tabs->currentIndex() == 0 && rows->rowCount() == 1 && rows->item(0, 5)->text() == "Ready",
+        "Ready candidate must be available on initial Preview while workflow attachment is pending");
+    if (gesture == "click") {
+      const QPoint ready_row = rows->visualItemRect(rows->item(0, 0)).center();
+      for (const auto event : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+        QMouseEvent click(
+            event,
+            ready_row,
+            rows->viewport()->mapToGlobal(ready_row),
+            Qt::LeftButton,
+            event == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton,
+            Qt::NoModifier);
+        QApplication::sendEvent(rows->viewport(), &click);
+      }
+    } else if (gesture == "keyboard") {
+      rows->setCurrentCell(-1, -1);
+      rows->clearSelection();
+      QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::NoModifier);
+      QApplication::sendEvent(rows, &down);
+      require(rows->currentRow() == 0 && !rows->selectedItems().isEmpty(), "Keyboard did not select the ready row");
+    }
+    require(tabs->currentIndex() == 0, "Ready candidate interaction unexpectedly left Preview");
+    write(status_release, "release");
+    require(wait_until([&] { return received_snapshot; }, 5000), "Delayed workflow attachment did not complete");
+    require(
+        tabs->currentIndex() == (gesture == "untouched" ? 1 : 0),
+        "Initial workflow attachment must respect an explicit ready-row choice, but otherwise select Workflow");
+    require(!QFile::exists(started), "Selecting a ready candidate during attachment started playback");
+    workflow->snapshotChanged = update_snapshot;
+  }
+  write(
+      workflow_state,
+      R"({"workflow_id":"preview-workflow","state":"succeeded","owner_released":true,"epoch":0,"nodes":[]})");
+  for (int exit_code : {0, 7, -1}) {
+    QFile::remove(started);
+    QFile::remove(release);
+    StitchingExperimentDialog dialog(
+        game, runner, working, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    widget<QTableWidget>(dialog, "stitchExperimentCandidates")->selectRow(0);
+    widget<QCheckBox>(dialog, "stitchExperimentLoop")->setChecked(false);
+    auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
+    auto* stop = widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton");
+    require(
+        wait_until([&] { return play->isEnabled(); }, 10000),
+        "Completed workflow did not enable preview after reattach");
+    play->click();
+    require(
+        wait_until([&] { return QFile::exists(started) && stop->isEnabled(); }, 10000),
+        "Completed workflow preview failed to acquire separate local ownership");
+    require(
+        wait_until(
+            [&] {
+              const auto current = LoadStitchingExperimentStore(*store);
+              return current.ok() && current->experiments.front().process_session_id > 0;
+            },
+            10000),
+        "Started preview did not persist its process session");
+    const auto running = LoadStitchingExperimentStore(*store);
+    const auto admission = hm::game_operation::Inspect(store->game_directory);
+    require(
+        running.ok() && running->experiments.front().process_session_id > 0 &&
+            !running->experiments.front().process_token.empty() && admission.ok() && admission->has_value() &&
+            (**admission).kind == "experiment",
+        "Completed workflow preview has no durable local process owner");
+    if (exit_code < 0)
+      stop->click();
+    else
+      write(release, QByteArray::number(exit_code));
+    require(
+        wait_until([&] { return play->isEnabled(); }, 10000),
+        "Completed workflow preview did not retire local ownership");
+    catalog = LoadStitchingExperimentStore(*store);
+    require(
+        catalog.ok() && catalog->experiments.front().process_session_id == 0 &&
+            catalog->experiments.front().process_token.empty() && catalog->experiments.front().state == "complete" &&
+            catalog->experiments.front().workflow_id == record.workflow_id &&
+            catalog->experiments.front().result_attempt_id == "solve" &&
+            catalog->experiments.front().artifact_generation_id == record.artifact_generation_id &&
+            catalog->experiments.front().result_workspace->game_directory == result.game_directory,
+        "Preview success, failure or Stop changed the completed workflow result");
+  }
+}
+
 void exercise_preview_and_promotion_failure(const QString& game, const QString& root) {
   const QString fixtures = root + "/synthetic-artifacts";
   require(QDir().mkpath(fixtures), "Cannot create synthetic artifacts");
@@ -2431,7 +2885,9 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150");
   add_options(dialog);
   auto* remove = widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton");
+  auto* tabs = widget<QTabWidget>(dialog, "stitchExperimentViewTabs");
   widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+  require(tabs->currentIndex() == 1, "Starting a local batch must open Workflow");
   require(!remove->isEnabled(), "Removal must be disabled during batch execution");
   auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
   require(
@@ -2440,7 +2896,38 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
   require(
       table->rowCount() == 2 && table->item(0, 5)->text() == "Ready" && table->item(1, 5)->text() == "Ready",
       "Synthetic candidates must complete before testing removal and promotion failure");
+  require(tabs->currentIndex() == 1, "Batch completion must not steal the chosen Workflow tab");
+  table->selectRow(1);
+  tabs->setCurrentIndex(1);
   table->selectRow(0);
+  require(tabs->currentIndex() == 0, "Selecting a different ready candidate must open Stitched preview");
+  tabs->setCurrentIndex(1);
+  const QPoint ready_row = table->visualItemRect(table->item(0, 0)).center();
+  for (const auto event : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+    QMouseEvent click(
+        event,
+        ready_row,
+        table->viewport()->mapToGlobal(ready_row),
+        Qt::LeftButton,
+        event == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton,
+        Qt::NoModifier);
+    QApplication::sendEvent(table->viewport(), &click);
+  }
+  require(tabs->currentIndex() == 0, "Clicking the selected ready candidate must open Stitched preview");
+  for (const auto key : {Qt::Key_Return, Qt::Key_Space}) {
+    tabs->setCurrentIndex(1);
+    dialog.activateWindow();
+    table->setFocus();
+    QCoreApplication::processEvents();
+    require(table->hasFocus() && table->currentRow() == 0, "Ready row must retain keyboard focus and selection");
+    for (const auto event : {QEvent::KeyPress, QEvent::KeyRelease}) {
+      QKeyEvent activate(event, key, Qt::NoModifier);
+      QApplication::sendEvent(table, &activate);
+    }
+    require(
+        tabs->currentIndex() == 0 && !QFile::exists(preview_started),
+        "Return and Space on the selected ready row must open Preview without starting playback");
+  }
   require(remove->isEnabled(), "Completed results must be removable after a batch");
   auto* video = widget<QWidget>(dialog, "stitchExperimentVideo");
   const WId target = video->winId();
@@ -2474,6 +2961,25 @@ void exercise_preview_and_promotion_failure(const QString& game, const QString& 
         "Preview fixture did not start");
     require(video->winId() == target, "Starting a preview must preserve its native target");
     require(!remove->isEnabled(), "Removal must be disabled during playback");
+    const auto owner_before_tabs = hm::game_operation::Inspect(store->game_directory);
+    const auto running_before_tabs = LoadStitchingExperimentStore(*store);
+    require(
+        owner_before_tabs.ok() && owner_before_tabs->has_value() && running_before_tabs.ok(),
+        "Cannot inspect live preview ownership before changing tabs");
+    tabs->setCurrentIndex(1);
+    QCoreApplication::processEvents();
+    require(stop->isEnabled() && preview_owned(), "Opening Workflow must leave the preview running");
+    tabs->setCurrentIndex(0);
+    QCoreApplication::processEvents();
+    const auto owner_after_tabs = hm::game_operation::Inspect(store->game_directory);
+    const auto running_after_tabs = LoadStitchingExperimentStore(*store);
+    require(
+        owner_after_tabs.ok() && owner_after_tabs->has_value() && running_after_tabs.ok() &&
+            (**owner_after_tabs).token == (**owner_before_tabs).token &&
+            running_after_tabs->experiments.front().process_session_id ==
+                running_before_tabs->experiments.front().process_session_id &&
+            video->winId() == target && stop->isEnabled(),
+        "Changing tabs during playback must preserve the exact process owner and native target");
     check_external_preview(dialog);
     if (exit_code < 0) {
       auto* focus = widget<QToolButton>(dialog, "maximizeStitchExperimentButton");
@@ -3304,8 +3810,9 @@ int main(int argc, char** argv) {
     } else {
       QTemporaryDir fixture;
       require(fixture.isValid(), "Cannot create test workspace");
-      // Bazel deliberately omits HOME; explicit game storage permits an empty
-      // user overlay without creating or changing the developer's settings.
+      // Direct runs must be as isolated as Bazel: real user defaults can enable
+      // a controller that the temporary fixture does not provide.
+      qputenv("HOME", fixture.path().toLocal8Bit());
       qputenv("HM_GAME_DIR", fixture.path().toLocal8Bit());
       const auto make_game = [&](const char* name) {
         const QString game = fixture.path() + "/" + name;
@@ -3340,8 +3847,20 @@ int main(int argc, char** argv) {
       }
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_BLEND_ONLY") != 0) {
         exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
+        exercise_completed_workflow_preview(make_game("workflow-preview"), fixture.path());
         exercise_blend_preview(make_game("blend-preview"), fixture.path());
         std::cout << "Stitching experiment blend checks passed\n";
+        return 0;
+      }
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_WORKFLOW_SELECTION_ONLY") != 0) {
+        exercise_workflow_frame_selection(make_game("workflow-selection"), fixture.path());
+        std::cout << "Stitching workflow saved-frame status checks passed\n";
+        return 0;
+      }
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_SOURCE_CHANGE_ONLY") != 0) {
+        exercise_queued_source_change(make_game("queued-source-change"), fixture.path(), false);
+        exercise_queued_source_change(make_game("queued-source-copy-race"), fixture.path(), true);
+        std::cout << "Stitching experiment source-change checks passed\n";
         return 0;
       }
       exercise_frame_navigation(fixture.path());
@@ -3374,6 +3893,8 @@ int main(int argc, char** argv) {
       exercise_saved_selection(make_game("saved"), fixture.path());
       exercise_match_save_retry(make_game("match-save-retry"), fixture.path());
       exercise_preview_and_promotion_failure(make_game("promotion"), fixture.path());
+      exercise_completed_workflow_preview(make_game("workflow-preview"), fixture.path());
+      exercise_workflow_frame_selection(make_game("workflow-selection"), fixture.path());
       exercise_blend_preview(make_game("blend-preview"), fixture.path());
       exercise_completed_dependency_removal(make_game("completed-dependencies"), fixture.path());
       exercise_stale_completed_removal(make_game("stale-completed"), fixture.path());

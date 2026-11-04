@@ -30,6 +30,9 @@
 #     visibility = ["//visibility:public"],
 # )
 exports_files([
+    "hstream-workflow",
+    "install_workflow_services.py",
+    "sync_workflow_kernel.py",
     "side_by_side_video.py",
     "prepare_recording_int8.py",
     "quantize_detector_onnx.py",
@@ -51,6 +54,42 @@ exports_files([
     "test_hstream_ui_e2e.sh",
     "test_uri_playlist_memory.py",
 ])
+
+py_library(
+    name = "workflow_library",
+    srcs = glob(["hstream_workflow/*.py"]),
+    imports = ["."],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "workflow_graph_test",
+    size = "small",
+    srcs = ["hstream_workflow_graph_test.py"],
+    main = "hstream_workflow_graph_test.py",
+    deps = [":workflow_library"],
+)
+
+py_test(
+    name = "workflow_controller_test",
+    size = "medium",
+    srcs = ["hstream_workflow_controller_test.py"],
+    main = "hstream_workflow_controller_test.py",
+    data = ["hstream-workflow"],
+    deps = [":workflow_library"],
+)
+
+py_test(
+    name = "workflow_dispatch_test",
+    size = "medium",
+    srcs = [
+        "hstream_workflow_dispatch_test.py",
+        "hstream_workflow_controller_test.py",
+    ],
+    main = "hstream_workflow_dispatch_test.py",
+    data = ["hstream-workflow"],
+    deps = [":workflow_library"],
+)
 
 py_test(
     name = "side_by_side_video_test",
@@ -204,4 +243,36 @@ py_test(
         "//configs:camera_lens_catalog",
     ],
     main = "convert_camera_lens_catalog_test.py",
+)
+
+py_test(
+    name = "workflow_slurm_test",
+    size = "small",
+    srcs = ["hstream_workflow_slurm_test.py"],
+    main = "hstream_workflow_slurm_test.py",
+    deps = [":workflow_library"],
+)
+
+py_test(
+    name = "workflow_files_test",
+    size = "small",
+    srcs = ["hstream_workflow_files_test.py"],
+    main = "hstream_workflow_files_test.py",
+    deps = [":workflow_library"],
+)
+
+py_test(
+    name = "workflow_processes_test",
+    size = "small",
+    srcs = ["hstream_workflow_processes_test.py"],
+    main = "hstream_workflow_processes_test.py",
+    deps = [":workflow_library"],
+)
+
+py_test(
+    name = "workflow_local_test",
+    size = "small",
+    srcs = ["hstream_workflow_local_test.py"],
+    main = "hstream_workflow_local_test.py",
+    deps = [":workflow_library"],
 )

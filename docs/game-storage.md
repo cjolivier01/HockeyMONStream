@@ -42,7 +42,14 @@ or introduce automatic eviction.
 `StatePath(game, relative)` helpers. Their game argument is always the logical
 recording root. `EnsureStateDirectory` creates and validates the owned child;
 it never migrates old state. A user-selected game-directory alias is supported,
-but `_hockeymon` itself must not be a symlink.
+but `_hockeymon` itself must not be a symlink. `EnsureStateDirectory` and
+`ConfineWorkDirectory` reject a game whose own last component is `_hockeymon`,
+so a caller that resolved the private directory and then passed it on cannot
+create a nested copy whose locks and journals no other process reads. Only the
+last component is checked: an experiment's candidate game legitimately lives
+under one. A game whose own directory is named `_hockeymon` is therefore not
+usable, which is the intended trade. The pure `StateDirectory`/`StatePath`
+helpers are unchanged and will still build a nested path for a reader.
 
 Normal stitching, GameConfig and HuginProject game APIs take the logical game
 root. Low-level artifact-copy primitives use explicitly flat artifact

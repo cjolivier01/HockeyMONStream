@@ -42,6 +42,17 @@ absl::Status Failure(const std::string& operation) {
   return absl::InternalError(operation + ": " + std::strerror(errno));
 }
 
+// True when path's last component is the private directory itself. A trailing
+// separator leaves filename() empty, so fall back to the parent's name.
+// Only the last component: a stitching experiment's candidate game really does
+// live at <game>/_hockeymon/stitching-experiments/sessions/<session>/<name>,
+// and rejecting any _hockeymon component would refuse its own state directory.
+bool NamesStateDirectory(const fs::path& path) {
+  const fs::path normalized = path.lexically_normal();
+  const fs::path name = normalized.filename();
+  return (name.empty() ? normalized.parent_path().filename() : name) == kDirectory;
+}
+
 bool Relative(const fs::path& path) {
   if (path.empty() || path.is_absolute())
     return false;
@@ -385,6 +396,12 @@ std::filesystem::path StatePath(const std::filesystem::path& game, const std::fi
 }
 
 absl::Status EnsureStateDirectory(const std::filesystem::path& game) {
+  // A caller that already resolved the private directory and then passed it on
+  // as the game would otherwise mkdir a second one inside it. Nothing reads the
+  // nested copy, so the locks and journals written there are silently private
+  // to that one call; refuse instead of leaving a stray directory behind.
+  if (NamesStateDirectory(game))
+    return absl::InvalidArgumentError("Expected a game root, not its own state directory: " + game.string());
   Descriptor root(::open(game.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
   if (root.fd < 0)
     return Failure("Open game directory");
@@ -399,6 +416,11 @@ absl::Status RefreshManifest(const std::filesystem::path& game, const std::strin
 }
 
 absl::StatusOr<fs::path> ConfineWorkDirectory(const fs::path& game, const fs::path& requested) {
+  // Checked up front rather than only through EnsureStateDirectory below: a
+  // request that resolves outside the game returns before reaching it, so a
+  // caller with the wrong game would otherwise be told it is fine.
+  if (NamesStateDirectory(game))
+    return absl::InvalidArgumentError("Expected a game root, not its own state directory: " + game.string());
   if (game.empty())
     return requested;
   const auto requested_relative =

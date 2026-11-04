@@ -303,12 +303,16 @@ class GameConfigLock final {
   static absl::StatusOr<std::unique_ptr<GameConfigLock>> Acquire(const std::filesystem::path& game_dir);
 
   // Returns Unavailable instead of waiting when another config transaction is active.
-  static absl::StatusOr<std::unique_ptr<GameConfigLock>> TryAcquire(const std::filesystem::path& game_dir);
+  static absl::StatusOr<std::unique_ptr<GameConfigLock>> TryAcquire(
+      const std::filesystem::path& game_dir,
+      bool advisory_read = false);
 
  private:
-  explicit GameConfigLock(int descriptor) : descriptor_(descriptor) {}
+  struct Admission;
+  GameConfigLock(int descriptor, std::unique_ptr<Admission> admission);
 
   int descriptor_{-1};
+  std::unique_ptr<Admission> admission_;
 };
 
 // Acquires the config lock followed by the rink-publication lock and recovers
@@ -357,7 +361,11 @@ absl::StatusOr<size_t> publish_game_config_without_rink_masks(
 
 // Loads game/_hockeymon/config.yaml while holding the config/rink transaction
 // lock. Other locations are rejected; a missing file is an empty optional node.
-absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(const std::filesystem::path& config_path);
+// Advisory readers never recover or rewrite calibration state and may inspect a
+// workflow-owned game. A pending transaction returns Unavailable.
+absl::StatusOr<std::optional<YAML::Node>> load_game_config_file(
+    const std::filesystem::path& config_path,
+    bool advisory_read = false);
 
 // Requires the supplied document to contain the expected pending stitching
 // invalidation. Callers use this while holding GameConfigTransactionLock so

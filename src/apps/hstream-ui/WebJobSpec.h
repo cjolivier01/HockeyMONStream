@@ -18,6 +18,9 @@ struct Request {
   // Operator-controlled runtime paths, supplied by the worker, never by a browser.
   QJsonObject runtime;
   QJsonArray authorized_media;
+  // Present only for a supervisor-admitted distributed attempt. Legacy local
+  // requests and receipts retain their exact inode-based identity contract.
+  QJsonObject workflow;
 };
 Request LoadRequest(const std::filesystem::path& path);
 std::filesystem::path Contained(const std::filesystem::path& root, const QString& relative, bool must_exist = true);

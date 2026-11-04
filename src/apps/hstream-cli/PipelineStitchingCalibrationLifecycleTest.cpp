@@ -627,7 +627,8 @@ bool write_saved_stitch_time_invalidation(
     calibration["stale_from"] = "input";
     calibration["artifacts_invalidated"] = false;
     calibration["invalidation_id"] = invalidation_id;
-    return hm::stitching::publish_game_config(path.parent_path(), YAML::Dump(config) + "\n").ok();
+    // path is <game>/_hockeymon/config.yaml, so the game is two levels up.
+    return hm::stitching::publish_game_config(path.parent_path().parent_path(), YAML::Dump(config) + "\n").ok();
   } catch (const YAML::Exception&) {
     return false;
   }
@@ -642,9 +643,12 @@ bool write_rink_mask_invalidation(const fs::path& path, const std::string& inval
     calibration["artifacts_invalidated"] = true;
     calibration["invalidation_id"] = invalidation_id;
     std::error_code error;
-    for (const auto& entry : fs::directory_iterator(path.parent_path(), error)) {
-      if (error)
-        return false;
+    // The masks sit beside this config inside the private directory, so this
+    // scan keeps the single parent while the publication below takes two.
+    fs::directory_iterator masks(path.parent_path(), error);
+    if (error)
+      return false;
+    for (const auto& entry : masks) {
       const std::string name = entry.path().filename().string();
       if (name.rfind("rink_mask_", 0) == 0 && entry.path().extension() == ".png") {
         fs::remove(entry.path(), error);
@@ -652,7 +656,7 @@ bool write_rink_mask_invalidation(const fs::path& path, const std::string& inval
           return false;
       }
     }
-    return hm::stitching::publish_game_config(path.parent_path(), YAML::Dump(config) + "\n").ok();
+    return hm::stitching::publish_game_config(path.parent_path().parent_path(), YAML::Dump(config) + "\n").ok();
   } catch (const YAML::Exception&) {
     return false;
   }
@@ -660,9 +664,13 @@ bool write_rink_mask_invalidation(const fs::path& path, const std::string& inval
 
 bool remove_rink_masks(const fs::path& game_dir) {
   std::error_code error;
-  for (const auto& entry : fs::directory_iterator(game_dir, error)) {
-    if (error)
-      return false;
+  // Masks live in the private directory, so scanning the game root matched
+  // nothing and every "must remove the saved rink mask" check passed on an
+  // untouched mask.
+  fs::directory_iterator entries(game_dir / "_hockeymon", error);
+  if (error)
+    return false;
+  for (const auto& entry : entries) {
     const std::string name = entry.path().filename().string();
     if (name.rfind("rink_mask_", 0) == 0 && entry.path().extension() == ".png") {
       fs::remove(entry.path(), error);
@@ -742,6 +750,10 @@ int main(int argc, char** argv) {
   const fs::path plugin_directory = fs::path(argv[2]).parent_path();
   fs::create_directories(game / "cam1");
   fs::create_directories(game / "cam2");
+  // write_game_config uses a bare ofstream, which will not create the private
+  // directory its config moved into. Without this every call to it failed and
+  // the scenarios that depend on a game config never ran.
+  fs::create_directories(game / "_hockeymon");
   ok &= expect(write_pipeline_config(pipeline_config), "pipeline config must be written");
   ok &= expect(
       write_configure_only_pipeline_config(configure_only_pipeline_config),
@@ -2085,6 +2097,7 @@ int main(int argc, char** argv) {
   if (!ok) {
     periodic_recreation.DumpOutput("periodic recreation");
     initial.DumpOutput("initial calibration");
+    ordinary_uri.DumpOutput("unsupported ordinary URI calibration");
     configure_only_invalid_seam.DumpOutput("configure-only invalid-seam validation");
     one_pass_invalid_seam.DumpOutput("one-pass invalid-seam validation");
     partial_eos.DumpOutput("partial-EOS calibration");

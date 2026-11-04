@@ -1,4 +1,5 @@
 #include "Int8PreparationDialog.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
@@ -50,6 +51,8 @@ int main(int argc, char** argv) {
       !QFile::setPermissions(assets, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
     return 1;
   auto environment = QProcessEnvironment::systemEnvironment();
+  QDir().mkpath(root.filePath("game"));
+  environment.insert("HM_GAME_DIR", root.path());
   environment.insert("HSTREAM_INT8_PREPARER", script);
   environment.insert("HSTREAM_INT8_BUILDER", assets);
   environment.insert("HSTREAM_INT8_PYTHON", "/bin/sh");
@@ -115,11 +118,37 @@ int main(int argc, char** argv) {
   if (!write(script, "exec sleep 60\n"))
     return 1;
   {
+    const std::filesystem::path game(root.filePath("game").toStdString());
+    auto owner = hm::game_operation::LocalOwner("workflow", "int8-conflict", "int8-conflict-token");
+    owner.workflow_directory = (game / "_hockeymon/workflows/int8-conflict").string();
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      ok &= check(lock.ok() && (*lock)->Claim(owner).ok(), "workflow claims game before INT8");
+    }
+    hm::ui::Int8PreparationDialog dialog(request);
+    dialog.findChild<QPushButton*>("int8PrepareButton")->click();
+    const auto current = hm::game_operation::Inspect(game);
+    ok &= check(
+        current.ok() && current->has_value() && (**current).token == owner.token &&
+            dialog.findChild<QLabel*>("int8PreparationStatus")->text().contains("ALREADY_EXISTS"),
+        "INT8 cannot launch while a remote workflow owns the game");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      ok &=
+          check(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "release workflow INT8 fixture");
+    }
+  }
+  {
     hm::ui::Int8PreparationDialog dialog(request);
     bool rejected = false;
     QObject::connect(&dialog, &QDialog::rejected, [&] { rejected = true; });
     dialog.findChild<QPushButton*>("int8PrepareButton")->click();
     QTest::qWait(100);
+    {
+      auto lock = hm::game_operation::Lock::Acquire(root.filePath("game").toStdString());
+      auto competing = hm::game_operation::LocalOwner("workflow", "late-workflow", "late-workflow-token");
+      ok &= check(lock.ok() && !(*lock)->Claim(competing).ok(), "workflow cannot bypass running INT8 admission");
+    }
     dialog.reject();
     dialog.reject();
     ok &= check(

@@ -31,6 +31,37 @@ int main() {
   ok &= cleared.ok() && !cleared->values["runtime"];
   std::ofstream(defaults) << "runtime: [\n";
   ok &= !hm::user_config::load_snapshot().ok();
+  const fs::path frozen = root / "frozen.yaml";
+  YAML::Node envelope;
+  envelope["schema"] = 1;
+  envelope["source_path"] = active->path.string();
+  envelope["values"] = active->values;
+  std::ofstream(frozen) << envelope;
+  ::setenv("HSTREAM_USER_CONFIG_SNAPSHOT", frozen.c_str(), 1);
+  const auto frozen_read = hm::user_config::load_snapshot();
+  const auto frozen_create = hm::user_config::load_snapshot_or_create();
+  const auto frozen_defaults = hm::user_config::load_defaults();
+  const auto frozen_preferences = hm::user_config::load_preferences_or_create();
+  const auto frozen_path = hm::user_config::active_file_path();
+  ok &= frozen_read.ok() && frozen_create.ok() && frozen_defaults.ok() && frozen_preferences.ok() && frozen_path.ok() &&
+      *frozen_path == defaults && frozen_read->path == defaults &&
+      YAML::Dump(frozen_read->values) == YAML::Dump(active->values) &&
+      YAML::Dump(frozen_create->values) == YAML::Dump(active->values) &&
+      YAML::Dump(*frozen_defaults) == YAML::Dump(active->values) &&
+      YAML::Dump(*frozen_preferences) == YAML::Dump(active->values);
+  fs::remove(legacy);
+  ok &= hm::user_config::load_or_create().ok() && !fs::exists(legacy);
+  envelope["source_path"] = "relative.yaml";
+  std::ofstream(frozen) << envelope;
+  ok &= !hm::user_config::load_snapshot().ok();
+  std::ofstream(frozen) << "schema: 1\nsource_path: ''\nvalues: &cycle {loop: *cycle}\n";
+  ok &= !hm::user_config::load_snapshot().ok();
+  fs::remove(frozen);
+  fs::create_symlink(defaults, frozen);
+  ok &= !hm::user_config::load_snapshot().ok();
+  fs::remove(frozen);
+  ok &= !hm::user_config::load_snapshot_or_create().ok() && !fs::exists(legacy);
+  ::unsetenv("HSTREAM_USER_CONFIG_SNAPSHOT");
   fs::remove_all(root);
   std::cout << (ok ? "PASS" : "FAIL")
             << ": read-only user config preserves overlay precedence without first-run writes\n";

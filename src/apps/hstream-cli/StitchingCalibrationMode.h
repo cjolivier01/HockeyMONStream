@@ -102,6 +102,15 @@ inline void configure_int8_sampling_pipeline(YAML::Node pipeline) {
   pipeline["ds-fieldmask"]["enable"] = 0;
 }
 
+inline void configure_selected_frame_materialization_pipeline(YAML::Node pipeline) {
+  configure_int8_sampling_pipeline(pipeline);
+  pipeline["hmstitcher"]["configure-only"] = 0;
+  pipeline["hmstitcher"]["one-pass-mode"] = 1;
+  pipeline["hmstitcher"]["private-properties"]["materialize-selected-frames-only"] = 1;
+  pipeline["hmstitcher"]["private-properties"]["calibrate-field-mask"] = 0;
+  pipeline.remove("ui-preview");
+}
+
 // A bounded preparation pass has no Program outputs, audio or previews. It
 // reuses the same GPU stitcher and paired-source pipeline as experiment scans.
 inline void configure_rink_mask_preparation_pipeline(YAML::Node pipeline, bool create_mask) {

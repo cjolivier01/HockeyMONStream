@@ -3173,7 +3173,8 @@ absl::Status create_control_points(
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width,
-    const std::string& captured_frame_selection_fingerprint) {
+    const std::string& captured_frame_selection_fingerprint,
+    bool materialize_selected_frames_only) {
   if (frame_pairs.empty()) {
     return absl::InvalidArgumentError("Stitching calibration requires at least one synchronized frame pair");
   }
@@ -3232,6 +3233,8 @@ absl::Status create_control_points(
   }
   if (backend_choices.calibration_frame_selection_fingerprint != captured_frame_selection_fingerprint)
     return absl::AbortedError("Calibration frame selection changed after frame capture began");
+  if (materialize_selected_frames_only && (!selected_plan || expected_invalidation_id.empty()))
+    return absl::FailedPreconditionError("Frame materialization requires a frozen selection and pending generation");
   if (!expected_invalidation_id.empty()) {
     YAML::Node config;
     try {
@@ -3365,6 +3368,16 @@ absl::Status create_control_points(
     } catch (const YAML::Exception& exception) {
       return absl::InvalidArgumentError("Cannot retain saved frame reference: " + std::string(exception.what()));
     }
+  }
+
+  if (materialize_selected_frames_only) {
+    auto retained = LoadPlayerFrameInputs(game_dir, *selected_plan);
+    if (!retained.ok())
+      return retained.status();
+    if (!retained->has_value() || (**retained).images.size() != frame_pairs.size())
+      return absl::FailedPreconditionError("Selected frame materialization did not publish the complete input bundle");
+    report_calibration_progress("materialize", "complete", "Selected calibration frames are ready");
+    return absl::OkStatus();
   }
 
   report_calibration_progress(
@@ -5667,16 +5680,18 @@ absl::Status reframe_stitching(
   return HuginProject::Reframe(game_dir, options);
 }
 
-
 absl::Status configure_stitching(
     const std::string& game_dir,
     const std::vector<CalibrationFrameInput>& frame_pairs,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width,
-    const std::string& captured_frame_selection_fingerprint) {
+    const std::string& captured_frame_selection_fingerprint,
+    bool materialize_selected_frames_only) {
   std::optional<YAML::Node> config;
   HM_ASSIGN_OR_RETURN(config, load_game_config_file(hm::game_storage::StateDirectory(game_dir) / "config.yaml"));
+  if (materialize_selected_frames_only && config && HasStitchingReframeIntent(*config))
+    return absl::FailedPreconditionError("Frame materialization cannot execute a pending view edit");
   if (config && HasStitchingReframeIntent(*config))
     return reframe_stitching(game_dir, expected_invalidation_id, is_cancelled, max_output_width);
   HM_RETURN_IF_ERROR(create_control_points(
@@ -5685,7 +5700,8 @@ absl::Status configure_stitching(
       expected_invalidation_id,
       is_cancelled,
       max_output_width,
-      captured_frame_selection_fingerprint));
+      captured_frame_selection_fingerprint,
+      materialize_selected_frames_only));
   return absl::OkStatus();
 }
 

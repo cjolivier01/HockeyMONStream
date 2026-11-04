@@ -106,7 +106,8 @@ absl::Status configure_stitching(
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width,
-    const std::string& captured_frame_selection_fingerprint) {
+    const std::string& captured_frame_selection_fingerprint,
+    bool materialize_selected_frames_only) {
   std::vector<CalibrationFrameInput> inputs;
   inputs.reserve(pairs.size());
   for (const auto& pair : pairs)
@@ -118,7 +119,13 @@ absl::Status configure_stitching(
          pair.left_image,
          pair.right_image});
   return configure_stitching(
-      game_dir, inputs, expected_invalidation_id, is_cancelled, max_output_width, captured_frame_selection_fingerprint);
+      game_dir,
+      inputs,
+      expected_invalidation_id,
+      is_cancelled,
+      max_output_width,
+      captured_frame_selection_fingerprint,
+      materialize_selected_frames_only);
 }
 
 absl::Status configure_stitching(
@@ -128,14 +135,16 @@ absl::Status configure_stitching(
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     size_t max_output_width,
-    const std::string& captured_frame_selection_fingerprint) {
+    const std::string& captured_frame_selection_fingerprint,
+    bool materialize_selected_frames_only) {
   return configure_stitching(
       game_dir,
       std::vector<StitchingCalibrationFramePair>{{left_surface, right_surface}},
       expected_invalidation_id,
       is_cancelled,
       max_output_width,
-      captured_frame_selection_fingerprint);
+      captured_frame_selection_fingerprint,
+      materialize_selected_frames_only);
 }
 
 } // namespace hm::stitching

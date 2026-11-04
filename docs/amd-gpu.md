@@ -55,6 +55,30 @@ invalidation and cleanup completion between Qt Play and the private web adapter.
 It changes no CUDA/HIP data path and adds no frame readback. Its CPU regressions
 do not qualify an AMD calibration run or enable the missing HIP/VA browser target;
 paired AMD/native workflow validation remains required on `ripper`.
+
+Distributed Stitching Experiments use a shared CPU workflow/task contract for
+immutable workspace preparation, portable artifact receipts, durable game
+admission and retained-result adoption. The task's `--capabilities` reports
+`gpu_backend` and `gpu_operations_supported`; ROCm builds reject baseline, player
+scan, selected-frame materialization and solve before launching GPU work. The
+NVIDIA decoder/materialization graph does not provide an AMD fallback. Qt and
+the browser must reject a GPU stage on a profile that lacks this capability.
+Program admission and frozen user-configuration loading are shared with AMD.
+CPU tests exercise both the NVIDIA Configurator and AMD ProgramLaunchConfig
+after live Defaults change, including relative native-file provenance; they do
+not qualify AMD calibration or distributed GPU execution. Jetson currently
+excludes the QtCore task target through its existing Qt compatibility constraint;
+cross-building the CLI/materialization path does not qualify a Jetson workflow
+worker. Standalone task packaging and hardware qualification remain required
+before enabling those profiles.
+The workflow change builds both the ROCm CLI and task on `ripper`. Six targeted
+tests pass there: game admission (including detached helpers and zombies), both
+user-configuration readers, Program launch configuration, CPU materialization,
+and the standalone task/admission contract. The task test verifies AMD capability
+reporting and rejects GPU stages before launch. Use Bazel's default sandbox on
+that host; local execution aliases VA headers to `/usr/include` and breaks GCC's
+`include_next` resolution.
+
 The shared reframe Auto-playlist regression passes with ROCm on `ripper`,
 including deferred discovery and legacy recovery. Full CLI/orientation builds
 in this checkout hit the existing CUDA/HIP header conflict in

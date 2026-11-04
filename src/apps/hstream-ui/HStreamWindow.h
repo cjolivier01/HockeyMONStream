@@ -122,9 +122,7 @@ std::optional<unsigned> configured_pipeline_gpu(const YAML::Node& effective_conf
 // Resolves the configured profile from the non-game baseline/user layers with
 // the runner's dashed/underscored alias precedence. An absent or entirely
 // non-scalar profile resolves to auto; invalid scalar values return an empty string.
-QString configured_gpu_memory_profile(
-    const YAML::Node& baseline_config,
-    const YAML::Node& user_config);
+QString configured_gpu_memory_profile(const YAML::Node& baseline_config, const YAML::Node& user_config);
 
 } // namespace hm::ui_internal
 
@@ -245,6 +243,11 @@ class HStreamWindow : public QMainWindow {
   void stopPipeline(bool publish_partial = false);
   void handlePipelineStarted();
   void handlePipelineFinished(int exit_code, QProcess::ExitStatus exit_status);
+  void finishPipelinePublication(
+      bool archive_completed,
+      bool completed_successfully,
+      const QString& archive_game_id,
+      bool retain_archive_log_guard_for_recovery);
   void handlePipelineError(QProcess::ProcessError error);
   void readPipelineOutput();
   void handlePipelineOutputLine(const QString& line, bool stderr_output);
@@ -253,6 +256,7 @@ class HStreamWindow : public QMainWindow {
   bool handleHighBitDepthOutput(const QString& line);
   bool handlePlaybackProgressOutput(const QString& line);
   bool resumeProcessPause(quint64 generation);
+  void completeProcessPause(quint64 generation);
   bool handleProcessPauseOutput(const QString& line);
   bool handlePlaybackSeekOutput(const QString& line);
   void setPlaybackStartupStage(const QString& stage, const QString& detail);
@@ -373,7 +377,10 @@ class HStreamWindow : public QMainWindow {
   void setPreviewFocusMode(bool focused, int tab_index);
   void restartStage();
   void maybeStartDeferredRestart();
-  bool savePreset(bool require_rink_framing_ready = false, QString* validation_error = nullptr);
+  bool savePreset(
+      bool require_rink_framing_ready = false,
+      QString* validation_error = nullptr,
+      bool initialize_only = false);
   QString controlConfigDirectory() const;
   bool saveDefaultsPreset();
   void selectDefaults();
@@ -562,7 +569,9 @@ class HStreamWindow : public QMainWindow {
       bool original,
       const QString& game_dir) const;
   std::map<QString, double> readPlayerSizeControls(
-      const YAML::Node& game_config, bool inherited, QString* native_error = nullptr) const;
+      const YAML::Node& game_config,
+      bool inherited,
+      QString* native_error = nullptr) const;
   void loadSavedControlConfig(bool baseline_only = false);
   bool ensureSavedControlConfigLoaded();
   bool sendLiveCameraControl(const QString& id, double value);
@@ -576,6 +585,7 @@ class HStreamWindow : public QMainWindow {
       const std::optional<LiveRotationAuthorization>& live_rotation_authorization);
   hm::stitching::LiveRotationConfigOwner& liveRotationConfigOwner();
   void pollLiveRotationConfigOwner();
+  void refreshFinishedGameInventory();
   void rollbackLiveRotationAuthorization(
       const LiveRotationAuthorization& authorization,
       const QString& reason,
@@ -782,6 +792,14 @@ class HStreamWindow : public QMainWindow {
   std::vector<bool> normal_associated_controls_visible_;
   std::vector<QWidget*> focus_hidden_widgets_;
   QVBoxLayout* output_list_{nullptr};
+  bool beginGameOperation(const std::string& kind);
+  void releaseGameOperationIfStopped();
+  std::filesystem::path operation_game_;
+  std::string operation_token_;
+  bool operation_starting_{false};
+  bool pipeline_completion_proof_pending_{false};
+  bool archive_completion_proof_pending_{false};
+  qint64 operation_retirement_started_ms_{0};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
@@ -1127,6 +1145,8 @@ class HStreamWindow : public QMainWindow {
   QString deferred_restart_game_id_;
   std::optional<LiveRotationAuthorization> active_live_rotation_authorization_;
   std::unique_ptr<hm::stitching::LiveRotationConfigOwner> live_rotation_config_owner_;
+  QString pending_finished_game_inventory_directory_;
+  std::function<void()> pending_pipeline_completion_;
   bool close_waiting_for_live_rotation_authorization_{false};
   bool scheduled_playtracker_controls_ready_{false};
   bool scheduled_playcropper_controls_ready_{false};

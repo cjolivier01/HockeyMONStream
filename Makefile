@@ -63,7 +63,7 @@ test-amd-driver-interop:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
 
 .PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
-	hstream-job hstream-finalize hstream-calibration-export hstream-model-prepare hstream-prepared-model-validate hstream-model-infer hstream-cli run-hstream-cli hstream-ui hstream-web-job run-hstream-ui \
+	hstream-job hstream-process-guard hstream-finalize hstream-calibration-export hstream-model-prepare hstream-prepared-model-validate hstream-model-infer hstream-cli run-hstream-cli hstream-ui hstream-web-job hstream-experiment-task hstream-workflow run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
 	deepstream-deb deepstream-deb-ubuntu24 deepstream-deb-ubuntu26
@@ -113,6 +113,9 @@ hstream-finalize:
 hstream-job:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-job:hstream-job
 
+hstream-process-guard:
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-process-guard:hstream-process-guard
+
 hstream-calibration-export:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-calibration-export:hstream-calibration-export
 
@@ -130,6 +133,12 @@ hstream-assets:
 
 hstream-ui:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-ui:hstream-ui
+
+hstream-experiment-task:
+	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-ui:hstream-experiment-task
+
+hstream-workflow: hstream-experiment-task
+	$(BAZEL) test --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //scripts:workflow_graph_test //scripts:workflow_controller_test //scripts:workflow_slurm_test //scripts:workflow_files_test //scripts:workflow_processes_test //scripts:workflow_local_test
 
 hstream-web-job:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-ui:hstream-web-job
@@ -260,6 +269,7 @@ print_targets:
 		'Apps' \
 		'----' \
 		'hstream-job   Build the standalone job script exporter.' \
+		'hstream-process-guard Build the local process-tree supervisor.' \
 		'hstream-finalize Build the headless publisher and cleanup supervisor.' \
 		'hstream-calibration-export Build the validated calibration snapshot helper.' \
 		'hstream-prepared-model-validate Validate private prepared model imports.' \
@@ -269,6 +279,8 @@ print_targets:
 		'run-hstream-cli  Run hstream-cli with the canonical hockey config (RENDER sink).' \
 		'hstream-ui    Build //src/apps/hstream-ui:hstream-ui.' \
 		'hstream-web-job Build the headless native web workflow adapter.' \
+		'hstream-experiment-task Build the standalone native workflow task adapter.' \
+		'hstream-workflow Build the task adapter and test the workflow controller.' \
 		'run-hstream-ui   Run the hstream-ui desktop control surface.' \
 		'video-player   Build //src/apps/video-player:video-player.' \
 		'run-video-player  Run video-player --help (smoke check).' \

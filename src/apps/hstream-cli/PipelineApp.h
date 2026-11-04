@@ -307,6 +307,8 @@ class PipelineApplication {
   gboolean headless_render_video_{FALSE};
   gboolean ui_preview_realtime_{FALSE};
   gboolean stitching_calibration_only_{FALSE};
+  gboolean stitching_materialize_selected_frames_{FALSE};
+  bool stitching_frames_materialized_{false};
   gboolean stitching_calibration_with_ice_mask_{FALSE};
   gchar* stitching_player_scan_output_{nullptr};
   gchar* stitching_player_scan_reference_{nullptr};

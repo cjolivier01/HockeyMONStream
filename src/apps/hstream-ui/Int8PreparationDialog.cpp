@@ -1,5 +1,10 @@
 #include "Int8PreparationDialog.h"
+#include <QtCore/QDateTime>
+#include <csignal>
+#include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/SupervisedProcess.h"
 #include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include <QtCore/QDir>
@@ -81,8 +86,7 @@ Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWi
   connect(&process_, &QProcess::errorOccurred, this, [this](QProcess::ProcessError error) {
     if (error == QProcess::FailedToStart) {
       status_->setText("Could not start preparation: " + process_.errorString());
-      prepare_->setEnabled(true);
-      count_->setEnabled(true);
+      finishWhenStopped(1, QProcess::CrashExit);
     }
   });
   connect(
@@ -91,32 +95,21 @@ Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWi
       this,
       [this](int code, QProcess::ExitStatus status) {
         readOutput();
-        if (cancelled_) {
-          QDialog::reject();
-          return;
-        }
-        const QFileInfo engine(engine_);
-        if (code == 0 && status == QProcess::NormalExit && engine.isFile() && engine.size() > 0 &&
-            QFileInfo(manifest_).isFile()) {
-          accept();
-        } else {
-          engine_.clear();
-          manifest_.clear();
-          status_->setText("Preparation failed. The previous detector remains selected; details are below.");
-          prepare_->setEnabled(true);
-          count_->setEnabled(true);
-        }
+        finishWhenStopped(code, status);
       });
 }
 
 Int8PreparationDialog::~Int8PreparationDialog() {
+  if (!operation_token_.empty())
+    (void)hm::game_operation::SignalLocalChildren(operation_token_, SIGKILL);
   qApp->removeEventFilter(this);
   if (process_.state() != QProcess::NotRunning) {
-    process_.terminate();
-    if (!process_.waitForFinished(5000)) {
-      process_.kill();
-      process_.waitForFinished(1000);
-    }
+    (void)hm::ui::SignalSupervisedProcess(process_, SIGKILL);
+    process_.waitForFinished(5000);
+  }
+  if (!operation_token_.empty()) {
+    (void)hm::game_operation::ReleaseLocal(operation_game_, operation_token_, process_.state() == QProcess::NotRunning);
+    hm::game_operation::ForgetAuthorization(operation_game_, operation_token_);
   }
 }
 
@@ -125,7 +118,7 @@ bool Int8PreparationDialog::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void Int8PreparationDialog::start() {
-  const auto& env = request_.environment;
+  auto env = request_.environment;
   const QString script = env.value(
       "HSTREAM_INT8_PREPARER", QDir(request_.working_directory).filePath("scripts/prepare_recording_int8.py"));
   const QString builder = env.value(
@@ -137,6 +130,47 @@ void Int8PreparationDialog::start() {
         "INT8 preparation tools are unavailable. Build the source-checkout preparation tools as described in docs/detection-precision.md.");
     return;
   }
+  if (!operation_token_.empty()) {
+    status_->setText("Previous preparation cleanup is still pending.");
+    return;
+  }
+  const auto baseline = hm::baseline_config::load();
+  if (!baseline.ok()) {
+    status_->setText(QString::fromStdString(baseline.status().ToString()));
+    return;
+  }
+  poll_interval_ms_ = baseline->values["workflow"]["poll_interval_ms"].as<int>();
+  shutdown_timeout_ms_ = baseline->values["workflow"]["shutdown_timeout_seconds"].as<int>() * 1000;
+  const auto root = env.value("HM_GAME_DIR");
+  if (root.isEmpty() || !QFileInfo(QDir(root).filePath(request_.game_id)).isDir()) {
+    status_->setText("INT8 preparation requires its exact game directory.");
+    return;
+  }
+  operation_game_ = std::filesystem::canonical(QDir(root).filePath(request_.game_id).toStdString());
+  {
+    auto lock = hm::game_operation::Lock::Acquire(operation_game_, false);
+    auto token = hm::game_operation::NewToken();
+    if (!lock.ok() || !token.ok()) {
+      status_->setText(QString::fromStdString(lock.ok() ? token.status().ToString() : lock.status().ToString()));
+      return;
+    }
+    auto owner = hm::game_operation::LocalOwner("int8", *token, *token);
+    const auto claimed = (*lock)->Claim(owner);
+    if (!claimed.ok()) {
+      status_->setText(QString::fromStdString(claimed.ToString()));
+      return;
+    }
+    operation_token_ = *token;
+    hm::game_operation::RegisterAuthorization(operation_game_, operation_token_);
+    const auto proof = hm::game_operation::EnableSupervisedChildProof(operation_token_);
+    if (!proof.ok()) {
+      status_->setText(QString::fromStdString(proof.ToString()));
+      return;
+    }
+  }
+  env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
+  env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
+  retirement_started_ms_ = 0;
   cancelled_ = false;
   engine_.clear();
   manifest_.clear();
@@ -176,7 +210,54 @@ void Int8PreparationDialog::start() {
          "--samples",
          QString::number(count_->value())});
   }
+  const auto prepared = PrepareSupervisedProcess(
+      process_, operation_game_, operation_token_, shutdown_timeout_ms_, poll_interval_ms_, true);
+  if (!prepared.ok()) {
+    log_->appendPlainText(QString::fromStdString(prepared.ToString()));
+    finishWhenStopped(1, QProcess::CrashExit);
+    return;
+  }
   process_.start();
+}
+
+void Int8PreparationDialog::finishWhenStopped(int code, QProcess::ExitStatus status) {
+  if (operation_token_.empty())
+    return;
+  const auto stopped = hm::game_operation::LocalChildrenStopped(operation_token_);
+  if (!stopped.ok() || !*stopped) {
+    if (!retirement_started_ms_)
+      retirement_started_ms_ = QDateTime::currentMSecsSinceEpoch();
+    if (stopped.ok())
+      (void)hm::game_operation::SignalLocalChildren(
+          operation_token_,
+          QDateTime::currentMSecsSinceEpoch() - retirement_started_ms_ >= shutdown_timeout_ms_ ? SIGKILL : SIGTERM);
+    status_->setText(
+        stopped.ok() ? "Waiting for preparation helpers to stop…"
+                     : "Preparation cleanup needs recovery: " + QString::fromStdString(stopped.status().ToString()));
+    QTimer::singleShot(poll_interval_ms_, this, [this, code, status] { finishWhenStopped(code, status); });
+    return;
+  }
+  const auto released = hm::game_operation::ReleaseLocal(operation_game_, operation_token_, true);
+  if (!released.ok()) {
+    status_->setText(QString::fromStdString(released.ToString()));
+    return;
+  }
+  operation_token_.clear();
+  if (cancelled_) {
+    QDialog::reject();
+    return;
+  }
+  const QFileInfo engine(engine_);
+  if (code == 0 && status == QProcess::NormalExit && engine.isFile() && engine.size() > 0 &&
+      QFileInfo(manifest_).isFile()) {
+    accept();
+  } else {
+    engine_.clear();
+    manifest_.clear();
+    status_->setText("Preparation failed. The previous detector remains selected; details are below.");
+    prepare_->setEnabled(true);
+    count_->setEnabled(true);
+  }
 }
 
 void Int8PreparationDialog::readOutput() {
@@ -210,16 +291,23 @@ bool Int8PreparationDialog::playWhenReady() const {
 void Int8PreparationDialog::reject() {
   if (cancelled_)
     return;
-  if (process_.state() == QProcess::NotRunning) {
+  if (process_.state() == QProcess::NotRunning && operation_token_.empty()) {
     QDialog::reject();
     return;
   }
   cancelled_ = true;
   status_->setText("Cancelling preparation…");
-  process_.terminate();
-  QTimer::singleShot(5000, this, [this] {
+  if (process_.state() == QProcess::NotRunning) {
+    finishWhenStopped(1, QProcess::CrashExit);
+    return;
+  }
+  if (!operation_token_.empty())
+    (void)hm::game_operation::SignalLocalChildren(operation_token_, SIGTERM);
+  QTimer::singleShot(shutdown_timeout_ms_, this, [this] {
+    if (!operation_token_.empty())
+      (void)hm::game_operation::SignalLocalChildren(operation_token_, SIGKILL);
     if (process_.state() != QProcess::NotRunning)
-      process_.kill();
+      (void)SignalSupervisedProcess(process_, SIGKILL);
   });
 }
 } // namespace hm::ui

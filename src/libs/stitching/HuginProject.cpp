@@ -1830,6 +1830,9 @@ absl::Status publish_artifacts(
   }
 
   auto rollback_error = [&](const std::string& message) {
+    // Unpublished artifacts are still pinned in staging. NFS cannot retire
+    // their silly-renamed entries until those handles close.
+    prepared_publication.Reset();
     const auto rollback_status = recover_stitch_transactions_locked(game_dir);
     if (!rollback_status.ok())
       return absl::InternalError(message + "; rollback also failed: " + std::string(rollback_status.message()));
@@ -1892,6 +1895,8 @@ absl::Status publish_artifacts(
     status = fsync_stitch_path(hm::game_storage::StateDirectory(game_dir) / name);
     if (!status.ok())
       return rollback_error(std::string(status.message()));
+    if (const char* failure = std::getenv("HM_TEST_STITCH_FAIL_AFTER_PUBLISH"); failure != nullptr && name == failure)
+      return rollback_error("Injected stitch failure after publishing " + name);
   }
   status = fsync_stitch_path(hm::game_storage::StateDirectory(game_dir), true);
   if (!status.ok())

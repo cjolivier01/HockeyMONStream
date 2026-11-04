@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/WebJobSpec.h"
 #include <QtCore/QCoreApplication>
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 #include <fstream>
 #include <iostream>
@@ -62,6 +64,31 @@ int main(int argc, char** argv) {
   require(artifact.value("path").toString() == "result.json", "Artifact path is not relative");
   require(artifact.value("size").toString().toLongLong() > 0, "Artifact bytes were not measured");
   require(artifact.value("mtime_ns").isString(), "Nanosecond identity would lose JSON precision");
+  auto distributed = request;
+  distributed.workflow = {
+      {"workflow_id", "workflow-one"},
+      {"stage_id", "stage-one"},
+      {"attempt_id", "attempt-one"},
+      {"plan_digest", QString(64, 'f')},
+      {"storage_namespace", "shared-games"}};
+  const auto portable = hm::web::Artifact(distributed, root / "result.json", "metadata");
+  QFile bytes(QString::fromStdString((root / "result.json").string()));
+  require(bytes.open(QIODevice::ReadOnly), "Cannot inspect portable fixture");
+  const auto digest = QCryptographicHash::hash(bytes.readAll(), QCryptographicHash::Sha256).toHex();
+  require(
+      portable.value("identity_schema").toInt() == 2 && portable.value("size").isDouble() &&
+          portable.value("storage_namespace").toString() == "shared-games" &&
+          portable.value("sha256").toString() == QString::fromLatin1(digest) && !portable.contains("inode"),
+      "Portable artifacts must bind bytes and namespace without host-local inode authority");
+  document.insert("schema", 1);
+  document.insert("workflow", distributed.workflow);
+  hm::web::WriteObject(request_path, document);
+  require(hm::web::LoadRequest(request_path).workflow == distributed.workflow, "Admitted workflow binding was lost");
+  auto invalid_binding = distributed.workflow;
+  invalid_binding.insert("plan_digest", "not-a-digest");
+  document.insert("workflow", invalid_binding);
+  hm::web::WriteObject(request_path, document);
+  rejected([&] { hm::web::LoadRequest(request_path); });
   fs::create_symlink(root / "result.json", root / "alias.json");
   rejected([&] { hm::web::Artifact(request, root / "alias.json", "metadata"); });
   std::ofstream(root / "empty").close();

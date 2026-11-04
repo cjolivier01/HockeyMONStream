@@ -858,11 +858,21 @@ absl::Status StitcherPriv::PreCapsInit(DSCustom_CreateParams* params) {
     HM_ASSIGN_OR_RETURN(
         saved_config, stitching::load_game_config_file(hm::game_storage::StatePath(config_file_, "config.yaml")));
   reframe_pending_ = saved_config && stitching::HasStitchingReframeIntent(*saved_config);
+  if (materialize_selected_frames_only_) {
+    if (!one_pass_mode_ || configure_only_ || reframe_pending_ || !saved_config || calibration_invalidation_id_.empty())
+      return absl::FailedPreconditionError("Selected-frame materialization requires a pending one-pass selection");
+    HM_RETURN_IF_ERROR(stitching::validate_pending_stitching_invalidation(*saved_config, calibration_invalidation_id_));
+    std::string fingerprint;
+    HM_ASSIGN_OR_RETURN(fingerprint, stitching::player_frame_selection_fingerprint(*saved_config));
+    if (fingerprint.empty())
+      return absl::FailedPreconditionError("Selected-frame materialization requires a frozen frame plan");
+  }
   if (reframe_pending_ && !one_pass_mode_ && !configure_only_)
     return absl::FailedPreconditionError("The saved view edit requires calibration before loading stitch maps");
   // The old generation remains published for rollback. Loading it under the
   // requested view could repair its seam or incorrectly skip the pending edit.
-  absl::Status status = reframe_pending_ ? absl::OkStatus() : ensure_stitcher_with_artifact_lock();
+  absl::Status status =
+      (reframe_pending_ || materialize_selected_frames_only_) ? absl::OkStatus() : ensure_stitcher_with_artifact_lock();
   if (!status.ok()) {
     if (one_pass_mode_ && !calibration_run_generation_.empty() && absl::IsNotFound(status)) {
       if (!logged_missing_masks_) {
@@ -927,7 +937,8 @@ absl::Status StitcherPriv::PostCapsInit(DSCustom_CreateParams* params) {
 }
 
 bool StitcherPriv::UsesRuntimeOutputSize() const {
-  return reframe_pending_ || (one_pass_mode_ && (!canvas_width_hint_ || !canvas_height_hint_));
+  return materialize_selected_frames_only_ || reframe_pending_ ||
+      (one_pass_mode_ && (!canvas_width_hint_ || !canvas_height_hint_));
 }
 
 guint StitcherPriv::GetOutputBatchSize(guint input_batch_size, guint configured_batch_size) const {
@@ -1287,7 +1298,7 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
     std::lock_guard<std::mutex> artifact_lock(process_calibration_artifact_mu);
     bool is_configured;
     HM_ASSIGN_OR_RETURN(is_configured, stitching::is_stitching_configured(config_file_, max_output_width_));
-    if (!is_configured) {
+    if (!is_configured || materialize_selected_frames_only_) {
       if (!one_pass_mode_) {
         return absl::FailedPreconditionError("Stitching is not configured");
       }
@@ -1332,7 +1343,8 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
             calibration_invalidation_id_,
             [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
             max_output_width_,
-            captured_frame_selection_fingerprint_);
+            captured_frame_selection_fingerprint_,
+            materialize_selected_frames_only_);
       } else {
         configure_status = stitching::configure_stitching(
             config_file_,
@@ -1340,7 +1352,8 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
             calibration_invalidation_id_,
             [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
             max_output_width_,
-            captured_frame_selection_fingerprint_);
+            captured_frame_selection_fingerprint_,
+            materialize_selected_frames_only_);
       }
       if (!configure_status.ok()) {
         std::cerr << configure_status << "\n" << std::flush;
@@ -1351,6 +1364,27 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
           return configure_status;
         }
         return report_calibration_failure(configure_status);
+      }
+      if (materialize_selected_frames_only_) {
+        release_captured_calibration_surfaces();
+        if (!owner_element_ ||
+            !gst_element_post_message(
+                owner_element_,
+                gst_message_new_element(
+                    GST_OBJECT(owner_element_),
+                    gst_structure_new(
+                        "hstream-stitching-frames-materialized",
+                        "selection-fingerprint",
+                        G_TYPE_STRING,
+                        captured_frame_selection_fingerprint_.c_str(),
+                        "invalidation-id",
+                        G_TYPE_STRING,
+                        calibration_invalidation_id_.c_str(),
+                        nullptr))))
+          return absl::InternalError("Cannot report selected-frame materialization");
+        if (!post_force_pipeline_eos(GST_ELEMENT(m_element)))
+          return absl::InternalError("Cannot stop selected-frame materialization");
+        return absl::CancelledError("Selected frames were materialized; output allocation is unnecessary");
       }
       {
         absl::MutexLock lk(&stitcher_mu_);
@@ -1628,6 +1662,9 @@ bool StitcherPriv::SetProperty(const Property& prop) {
     right_frame_offset_ns_ = std::atol(prop.value.c_str());
   } else if (prop.key == "configure-only") {
     configure_only_ = !!std::atol(prop.value.c_str());
+  } else if (prop.key == "materialize-selected-frames-only") {
+    if (caps_initialized_ || !parse_strict_bool(prop.value, materialize_selected_frames_only_))
+      return false;
   } else if (prop.key == "one-pass-mode") {
     one_pass_mode_ = !!std::atol(prop.value.c_str());
   } else if (prop.key == "calibrate-field-mask" || prop.key == "calibrate_field_mask") {
