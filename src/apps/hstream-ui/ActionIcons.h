@@ -40,6 +40,9 @@ enum class ActionIcon {
   NewFolder,
   Detection,
   Players,
+  Running,
+  Succeeded,
+  Failed,
   Count,
 };
 
@@ -89,6 +92,9 @@ inline constexpr auto kActionIconSpecs = std::array{
     ActionIconSpec{"newfolder", ActionIcon::NewFolder},
     ActionIconSpec{"detection", ActionIcon::Detection},
     ActionIconSpec{"players", ActionIcon::Players},
+    ActionIconSpec{"running", ActionIcon::Running},
+    ActionIconSpec{"succeeded", ActionIcon::Succeeded},
+    ActionIconSpec{"failed", ActionIcon::Failed},
 };
 static_assert(kActionIconSpecs.size() == static_cast<size_t>(ActionIcon::Count));
 

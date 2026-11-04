@@ -8,6 +8,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
+#include <QtCore/QPointer>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
@@ -426,13 +427,13 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
     colors.setColor(QPalette::Button, dark ? QColor("#242a32") : QColor("#eeeeee"));
     colors.setColor(QPalette::ButtonText, dark ? Qt::white : Qt::black);
     QApplication::setPalette(colors);
-    for (const auto& [status, fill] : std::vector<std::pair<QString, QColor>>{
-             {"running", QColor("#1f67a4")},
-             {"succeeded", QColor("#215c3c")},
-             {"reused", QColor("#215c3c")},
-             {"failed", QColor("#8e343d")},
-             {"recovery", QColor("#8e343d")},
-             {"waiting", colors.color(QPalette::Button)}}) {
+    for (const auto& [status, border] : std::vector<std::pair<QString, QColor>>{
+             {"running", QColor("#68b8f0")},
+             {"succeeded", QColor("#71ba8c")},
+             {"reused", QColor("#71ba8c")},
+             {"failed", QColor("#ec939b")},
+             {"recovery", QColor("#ec939b")},
+             {"waiting", colors.color(QPalette::Mid)}}) {
       auto snapshot = original_state;
       auto entries = snapshot.value("nodes").toArray();
       auto entry = entries[0].toObject();
@@ -447,22 +448,110 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
         stages->setCurrentIndex(selected ? 0 : 1);
         auto* button = first_button();
         const auto image = button->grab().toImage();
-        require(image.pixelColor(12, 7) == fill, "Stage color is missing, stale, or hidden by selection/theme");
-        require(button->isChecked() == selected, "State color lost the independent selection marker");
-        require(!button->icon().isNull() && button->text().endsWith(status), "State color hid the icon or status text");
+        require(
+            image.pixelColor(12, 7) == colors.color(QPalette::Button) &&
+                button->palette().color(QPalette::ButtonText) == colors.color(QPalette::ButtonText),
+            "State icon must preserve the theme's neutral node fill and readable text");
+        require(button->isChecked() == selected, "Status icon lost the independent selection marker");
+        require(!button->icon().isNull() && button->text().endsWith(status), "Status icon hid accessible state text");
         if (status != "waiting") {
-          require(button->palette().color(QPalette::ButtonText) == Qt::white, "Colored stage lost readable text");
-          if (selected) {
-            bool marked = false;
-            for (int x = 6; x < image.width() - 6; ++x)
-              marked |= image.pixelColor(x, 1) == QColor("#ffd166");
-            require(marked, "Selected colored stage has no visible selection border");
-          }
+          const QColor expected_border = selected ? QColor("#ffd166") : border;
+          bool marked = false;
+          for (int x = 6; x < image.width() - 6; ++x)
+            marked |= image.pixelColor(x, 1) == expected_border;
+          require(marked, "Status icon changed the existing state border or selection marker");
+          require(button->iconSize() == QSize(20, 20), "Workflow status glyph must be readable at 20 pixels");
+          const auto glyph = button->icon().pixmap(20, 20).toImage();
+          const QColor expected_color(status == "failed" || status == "recovery" ? "#d64545" : "#229954");
+          bool colored = false;
+          for (int y = 0; y < glyph.height(); ++y)
+            for (int x = 0; x < glyph.width(); ++x) {
+              const auto pixel = glyph.pixelColor(x, y);
+              colored |= pixel.alpha() > 200 && pixel.red() == expected_color.red() &&
+                  pixel.green() == expected_color.green() && pixel.blue() == expected_color.blue();
+            }
+          require(colored, "Workflow status glyph lost its green completion/running or red failure color");
         }
+        const auto screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_STATUS_SCREENSHOT_DIR");
+        if (selected && !screenshots.isEmpty())
+          require(
+              shell.grab().save(screenshots + "/" + (dark ? "dark-" : "light-") + status + ".png"),
+              "Could not capture themed workflow state");
       }
     }
   }
   QApplication::setPalette(original_palette);
+  write(root + "/state.json", QJsonDocument(original_state).toJson());
+  require(
+      wait([&] { return first_button()->accessibleName().endsWith(" · running"); }), "Running state was not restored");
+  stages->setCurrentIndex(0);
+  QApplication::processEvents();
+  graph_scroll->verticalScrollBar()->setValue(std::min(7, graph_scroll->verticalScrollBar()->maximum()));
+  const auto selected_stage = stages->currentData();
+  const auto selected_attempt = attempts->currentData();
+  const int scroll_position = graph_scroll->verticalScrollBar()->value();
+  const QSize graph_size = graph->size();
+  std::vector<std::pair<QPointer<QPushButton>, QRect>> node_geometry;
+  for (auto* button : graph->findChildren<QPushButton*>())
+    node_geometry.emplace_back(button, button->geometry());
+  const auto unchanged_graph = [&] {
+    require(
+        graph->size() == graph_size && graph_scroll->verticalScrollBar()->value() == scroll_position &&
+            stages->currentData() == selected_stage && attempts->currentData() == selected_attempt,
+        "Running animation changed graph dimensions, scrolling or diagnostic selection");
+    for (const auto& [button, geometry] : node_geometry)
+      require(button && button->geometry() == geometry, "Running animation rebuilt or moved a workflow node");
+  };
+  const auto observe_icon = [&](bool animated) {
+    const auto initial = first_button()->icon().pixmap(20, 20).toImage();
+    bool changed = false;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    require(
+        wait([&] {
+          unchanged_graph();
+          changed |= first_button()->icon().pixmap(20, 20).toImage() != initial;
+          return elapsed.elapsed() >= 400;
+        }),
+        "Workflow icon observation stalled");
+    require(changed == animated, "Running status must animate only while its graph is visible");
+  };
+  auto* animation = widget<QTimer>(*graph, "stitchWorkflowAnimation");
+  require(animation->isActive(), "Visible running workflow did not start its animation timer");
+  observe_icon(true);
+  graph->hide();
+  QApplication::processEvents();
+  require(!animation->isActive(), "Hidden workflow graph kept its animation timer active");
+  observe_icon(false);
+  graph->show();
+  QApplication::processEvents();
+  require(animation->isActive(), "Showing a running workflow did not resume its animation timer");
+  observe_icon(true);
+  graph_scroll->verticalScrollBar()->setValue(0);
+  for (const QString status : {"succeeded", "failed"}) {
+    auto snapshot = original_state;
+    auto entries = snapshot.value("nodes").toArray();
+    auto entry = entries[0].toObject();
+    entry.insert("state", status);
+    entries[0] = entry;
+    snapshot.insert("nodes", entries);
+    write(root + "/state.json", QJsonDocument(snapshot).toJson());
+    require(
+        wait([&] { return first_button()->accessibleName().endsWith(" · " + status); }),
+        "Terminal workflow icon did not arrive");
+    require(!animation->isActive(), "Workflow with only terminal or waiting stages kept animating");
+    const auto terminal_icon = first_button()->icon().pixmap(20, 20).toImage();
+    QElapsedTimer elapsed;
+    elapsed.start();
+    require(
+        wait([&] {
+          require(
+              first_button()->icon().pixmap(20, 20).toImage() == terminal_icon,
+              "Completed or failed workflow node kept animating");
+          return elapsed.elapsed() >= 400;
+        }),
+        "Terminal workflow icon observation stalled");
+  }
   write(root + "/state.json", QJsonDocument(original_state).toJson());
   require(
       wait([&] { return first_button()->accessibleName().endsWith(" · running"); }), "Running state was not restored");
@@ -502,6 +591,7 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       expanded->windowFlags().testFlag(Qt::WindowMaximizeButtonHint) && expanded->isSizeGripEnabled(),
       "Expanded workflow cannot maximize or resize");
   check_graph();
+  require(animation->isActive(), "Expanded workflow lost its running animation");
   require(stages->currentData().toString() == shared.value("id").toString(), "Expanding workflow lost stage selection");
   const int expanded_height = graph_scroll->viewport()->height();
   expanded->resize(expanded->width(), expanded->height() + 150);
@@ -628,6 +718,9 @@ void dialogOwnership(const QString& root) {
     const int initial_calls = status_calls();
     require(wait([&] { return status_calls() >= initial_calls + 3; }), "Workflow did not continue polling");
     require(tabs->currentIndex() == 0, "Workflow polling repeatedly stole the selected preview tab");
+    require(
+        !widget<QTimer>(current, "stitchWorkflowAnimation")->isActive(),
+        "Preview tab left the hidden workflow's animation timer active during polling");
   };
   const auto game = root + "/dialog-game";
   QDir().mkpath(game + "/_hockeymon");

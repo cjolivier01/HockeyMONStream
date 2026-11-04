@@ -159,21 +159,28 @@ class StageGraph final : public QWidget {
   explicit StageGraph(QWidget* parent) : QWidget(parent) {
     setObjectName("stitchWorkflowGraph");
     setMinimumWidth(220);
-    // State is a filled card; selection is a separate border and never hides
-    // whether a stage is running. Keep these colors aligned with the browser.
+    // State uses an icon and the existing border; card backgrounds and text
+    // follow the theme. Keep these colors aligned with the browser.
     setStyleSheet(
         "QPushButton { background-color: palette(button); color: palette(button-text);"
         " border: 2px solid palette(mid); border-radius: 4px; padding: 4px; }"
-        "QPushButton[workflowState='running'] { background-color: #1f67a4; color: #ffffff; border-color: #68b8f0; }"
+        "QPushButton[workflowState='running'] { border-color: #68b8f0; }"
         "QPushButton[workflowState='succeeded'], QPushButton[workflowState='reused']"
-        " { background-color: #215c3c; color: #ffffff; border-color: #71ba8c; }"
+        " { border-color: #71ba8c; }"
         "QPushButton[workflowState='failed'], QPushButton[workflowState='recovery']"
-        " { background-color: #8e343d; color: #ffffff; border-color: #ec939b; }"
+        " { border-color: #ec939b; }"
         "QPushButton:checked { border-color: palette(button-text); }"
         "QPushButton[workflowState='running']:checked, QPushButton[workflowState='succeeded']:checked,"
         " QPushButton[workflowState='reused']:checked, QPushButton[workflowState='failed']:checked,"
         " QPushButton[workflowState='recovery']:checked { border-color: #ffd166; }"
         "QPushButton:focus { border-style: dashed; }");
+    animation_ = new QTimer(this);
+    animation_->setObjectName("stitchWorkflowAnimation");
+    animation_->setInterval(40);
+    QObject::connect(animation_, &QTimer::timeout, this, [this] {
+      angle_ = (angle_ + 12) % 360;
+      animateRunning();
+    });
   }
   std::function<void(const QString&)> selected;
   void showStages(const QJsonArray& nodes, const QString& current) {
@@ -186,10 +193,19 @@ class StageGraph final : public QWidget {
     for (auto* button : buttons_)
       delete button;
     buttons_.clear();
+    running_.clear();
     for (const auto& value : nodes_) {
       const auto node = value.toObject();
       const auto id = node.value("id").toString();
-      auto* button = new QPushButton(action_icon(ActionIcon::Inspect), "", this);
+      const auto state = node.value("state").toString();
+      const auto icon = state == "running"            ? ActionIcon::Running
+          : state == "succeeded" || state == "reused" ? ActionIcon::Succeeded
+          : state == "failed" || state == "recovery"  ? ActionIcon::Failed
+                                                      : ActionIcon::Inspect;
+      auto* button = new QPushButton(action_icon(icon), "", this);
+      button->setIconSize(QSize(20, 20));
+      if (state == "running")
+        running_.push_back(button);
       button->setObjectName("stitchWorkflowNode_" + id);
       button->setProperty("workflowState", node.value("state").toString());
       button->setAccessibleName(stageLabel(node) + " · " + node.value("state").toString());
@@ -204,9 +220,18 @@ class StageGraph final : public QWidget {
       buttons_.push_back(button);
     }
     layoutStages();
+    updateAnimation();
   }
 
  protected:
+  void showEvent(QShowEvent* event) override {
+    QWidget::showEvent(event);
+    updateAnimation();
+  }
+  void hideEvent(QHideEvent* event) override {
+    animation_->stop();
+    QWidget::hideEvent(event);
+  }
   void resizeEvent(QResizeEvent* event) override {
     QWidget::resizeEvent(event);
     layoutStages();
@@ -226,6 +251,46 @@ class StageGraph final : public QWidget {
   }
 
  private:
+  void updateAnimation() {
+    if (isVisible() && !running_.empty()) {
+      animateRunning();
+      if (!animation_->isActive())
+        animation_->start();
+    } else {
+      animation_->stop();
+    }
+  }
+  void animateRunning() {
+    // Rotate only the small shared glyph; animation never rebuilds the graph,
+    // moves controls or touches preview frames. Hidden tabs stop the timer.
+    const auto ratio = devicePixelRatioF();
+    QPixmap frame(qRound(20 * ratio), qRound(20 * ratio));
+    frame.setDevicePixelRatio(ratio);
+    frame.fill(Qt::transparent);
+    QPainter painter(&frame);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.translate(10, 10);
+    painter.rotate(angle_);
+    painter.drawPixmap(QPointF(-10, -10), fan_.pixmap(QSize(20, 20), ratio));
+    painter.end();
+    QIcon icon;
+    for (auto mode : {QIcon::Normal, QIcon::Active, QIcon::Selected})
+      for (auto state : {QIcon::Off, QIcon::On})
+        icon.addPixmap(frame, mode, state);
+    QPixmap disabled = frame;
+    QPainter fade(&disabled);
+    fade.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+    fade.fillRect(disabled.rect(), QColor(255, 255, 255, 115));
+    fade.end();
+    for (auto state : {QIcon::Off, QIcon::On})
+      icon.addPixmap(disabled, QIcon::Disabled, state);
+    for (auto* button : running_)
+      button->setIcon(icon);
+  }
+  QTimer* animation_{nullptr};
+  QIcon fan_{action_icon(ActionIcon::Running)};
+  int angle_{0};
+  std::vector<QPushButton*> running_;
   struct Edge {
     QPainterPath path;
     QPointF end;

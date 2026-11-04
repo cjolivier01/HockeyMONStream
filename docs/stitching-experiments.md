@@ -17,9 +17,11 @@ calibration or writing the project's saved preset. Choosing a completed source
 instead uses that run's retained inputs. Each admitted candidate freezes its
 inputs; later main-window or Defaults edits cannot alter it.
 
-In the workflow graph, running nodes have a blue fill, completed/reused nodes
-green, and failed/recovery nodes red. Selection has a separate outline and keeps
-the state color; text labels remain visible.
+In the workflow graph, running nodes show a spinning green fan, completed/reused
+nodes a green checkmark, and failed/recovery nodes a bold red X. Cards retain
+neutral backgrounds with blue, light green or red state borders. Selection keeps
+its existing outline, and status text remains visible. Hidden workflow tabs pause
+the fan animation.
 
 The right side has **Stitched preview** and **Workflow** tabs. Preview holds the
 video, passage and blend settings, Play and Stop. Workflow holds execution

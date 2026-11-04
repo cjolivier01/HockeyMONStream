@@ -4,6 +4,7 @@
 #include <QtCore/QVariant>
 #include <QtGui/QImage>
 #include <QtGui/QPainter>
+#include <QtGui/QPainterPath>
 #include <QtGui/QPalette>
 #include <QtGui/QPixmap>
 #include <QtGui/QPolygonF>
@@ -222,14 +223,37 @@ QIcon drawn_icon(ActionIcon action) {
     QPainter p(&pixmap);
     p.setRenderHint(QPainter::Antialiasing);
     p.scale(size / 24.0, size / 24.0);
-    const QColor color = action == ActionIcon::Add                       ? QColor("#229954")
+    const QColor color = action == ActionIcon::Add || action == ActionIcon::Running || action == ActionIcon::Succeeded
+        ? QColor("#229954")
+        : action == ActionIcon::Failed                                   ? QColor("#d64545")
         : action == ActionIcon::Remove                                   ? QColor("#c48920")
         : action == ActionIcon::Camera || action == ActionIcon::Players  ? QColor("#9966dd")
         : action == ActionIcon::Stitching || action == ActionIcon::Level ? QColor("#159895")
         : action == ActionIcon::Crop                                     ? QColor("#c48920")
                                                                          : QColor("#2d7dd2");
     p.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    if (action == ActionIcon::Add || action == ActionIcon::Remove) {
+    if (action == ActionIcon::Running) {
+      p.setPen(Qt::NoPen);
+      p.setBrush(color);
+      p.translate(12, 12);
+      QPainterPath blade;
+      blade.moveTo(1, -2);
+      blade.cubicTo(0, -5, 1, -9, 4, -9);
+      blade.cubicTo(9, -9, 10, -3, 3, -1);
+      blade.closeSubpath();
+      for (int index = 0; index < 4; ++index) {
+        p.drawPath(blade);
+        p.rotate(90);
+      }
+      p.drawEllipse(QPointF(0, 0), 2, 2);
+    } else if (action == ActionIcon::Succeeded) {
+      p.setPen(QPen(color, 3.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+      p.drawPolyline(QPolygonF({{4, 12}, {10, 18}, {20, 5}}));
+    } else if (action == ActionIcon::Failed) {
+      p.setPen(QPen(color, 4.5, Qt::SolidLine, Qt::RoundCap));
+      p.drawLine(QPointF(5, 5), QPointF(19, 19));
+      p.drawLine(QPointF(19, 5), QPointF(5, 19));
+    } else if (action == ActionIcon::Add || action == ActionIcon::Remove) {
       p.drawLine(QPointF(4, 12), QPointF(20, 12));
       if (action == ActionIcon::Add)
         p.drawLine(QPointF(12, 4), QPointF(12, 20));
@@ -308,6 +332,9 @@ QIcon action_icon(ActionIcon action) {
     case ActionIcon::Level:
     case ActionIcon::ZoomIn:
     case ActionIcon::ZoomOut:
+    case ActionIcon::Running:
+    case ActionIcon::Succeeded:
+    case ActionIcon::Failed:
       return drawn_icon(action);
     default:
       break;
