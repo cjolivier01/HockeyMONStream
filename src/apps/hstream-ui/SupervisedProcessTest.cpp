@@ -184,8 +184,9 @@ int main(int argc, char** argv) {
           wait([&] { return unrelated.state() == QProcess::NotRunning; }) && unrelated.exitCode() == 23,
           "Unrelated QProcess lost its exact completion status");
     }
-    {
-      const std::filesystem::path game = root.path().toStdString() + "/unlaunched";
+    for (const bool busy_workspace : {false, true}) {
+      const std::filesystem::path game =
+          root.path().toStdString() + (busy_workspace ? "/unlaunched-busy" : "/unlaunched");
       const auto token = claim(game);
       const auto workspace = game / "candidate";
       std::filesystem::create_directory(workspace);
@@ -196,11 +197,24 @@ int main(int argc, char** argv) {
           hm::ui::PrepareSupervisedProcess(process, game, token, 500, 10, true, workspace).ok(),
           "Cannot prepare unlaunched command");
       check_workspace(process, workspace);
+      std::unique_ptr<hm::game_operation::Lock> reader;
+      if (busy_workspace) {
+        auto locked = hm::game_operation::Lock::Acquire(workspace);
+        require(locked.ok(), "Cannot hold candidate read lock during failed launch");
+        reader = std::move(*locked);
+      }
       process.setProgram(root.path() + "/missing-supervisor");
       process.start();
       require(
           wait([&] { return process.error() == QProcess::FailedToStart && process.state() == QProcess::NotRunning; }),
           "Missing supervisor did not report FailedToStart");
+      if (reader) {
+        require(
+            !hm::ui::SupervisedProcessStopped(process).ok() &&
+                !hm::game_operation::ReleaseLocal(game, token, true).ok(),
+            "Failed-launch cleanup must retain admission while candidate release is blocked");
+        reader.reset();
+      }
       const auto stopped = hm::ui::SupervisedProcessStopped(process);
       require(stopped.ok() && *stopped, "FailedToStart completion disappeared before the dialog could observe it");
       check_released(workspace);

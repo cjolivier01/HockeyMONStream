@@ -37,6 +37,7 @@ struct CommandProof {
   bool launched{false};
   bool exited{false};
   bool complete{false};
+  bool retiring_unlaunched{false};
   std::filesystem::path command_game;
   std::optional<Owner> command_owner;
   ~CommandProof() {
@@ -387,9 +388,47 @@ absl::Status release_command_game(CommandProof& proof) {
     proof.command_owner.reset();
   return released;
 }
+absl::Status retire_unlaunched_command(CommandProof& proof) {
+  if (proof.complete)
+    return absl::FailedPreconditionError("Completed guard is not an unlaunched command");
+  if (::flock(proof.descriptor, LOCK_EX | LOCK_NB) != 0)
+    return absl::FailedPreconditionError("A supervisor has consumed this command permit");
+  struct Unlock {
+    int descriptor;
+    ~Unlock() {
+      if (descriptor >= 0)
+        ::flock(descriptor, LOCK_UN);
+    }
+  } unlock{proof.descriptor};
+  const auto state = process_guard::ReadReceipt(proof.descriptor, proof.path, proof.header);
+  if (!state.ok())
+    return state.status();
+  if (proof.launched || *state != 'P')
+    return absl::FailedPreconditionError("Launched guard requires exact descendant completion proof");
+  // FailedToStart has established that this permit was never launched. Keep
+  // retrying its fenced retirement if a workspace reader briefly holds a lock.
+  proof.retiring_unlaunched = true;
+  const auto released = release_command_game(proof);
+  if (!released.ok())
+    return released;
+  if (::unlink(proof.path.c_str()) != 0)
+    return io("Cannot retire unlaunched guarded command");
+  proof.complete = true;
+  ::flock(unlock.descriptor, LOCK_UN);
+  unlock.descriptor = -1;
+  ::close(proof.descriptor);
+  proof.descriptor = -1;
+  return absl::OkStatus();
+}
 absl::StatusOr<char> proof_state(CommandProof& proof) {
   if (proof.complete)
     return 'C';
+  if (proof.retiring_unlaunched) {
+    const auto retired = retire_unlaunched_command(proof);
+    if (!retired.ok())
+      return retired;
+    return 'C';
+  }
   const auto state = process_guard::ReadReceipt(proof.descriptor, proof.path, proof.header);
   if (state.ok() && *state == 'C') {
     // The CLI inherited this claim, so even forced startup cancellation cannot
@@ -551,35 +590,9 @@ absl::Status CancelUnlaunchedSupervisedCommand(const std::string& token, const s
   const auto proof = command_proof(token, id);
   if (!proof.ok())
     return proof.status();
-  if ((*proof)->complete)
-    return absl::FailedPreconditionError("Completed guard is not an unlaunched command");
-  if (::flock((*proof)->descriptor, LOCK_EX | LOCK_NB) != 0)
-    return absl::FailedPreconditionError("A supervisor has consumed this command permit");
-  struct Unlock {
-    int descriptor;
-    ~Unlock() {
-      if (descriptor >= 0)
-        ::flock(descriptor, LOCK_UN);
-    }
-  } unlock{(*proof)->descriptor};
-  const auto state = process_guard::ReadReceipt((*proof)->descriptor, (*proof)->path, (*proof)->header);
-  if (!state.ok())
-    return state.status();
-  if ((*proof)->launched || *state != 'P')
-    return absl::FailedPreconditionError("Launched guard requires exact descendant completion proof");
-  const auto released = release_command_game(**proof);
-  if (!released.ok())
-    return released;
-  if (::unlink((*proof)->path.c_str()) != 0)
-    return io("Cannot retire unlaunched guarded command");
   // Keep completion queryable until the outer admission retires. Qt's error
   // handlers can ask again after the FailedToStart callback has returned.
-  (*proof)->complete = true;
-  ::flock(unlock.descriptor, LOCK_UN);
-  unlock.descriptor = -1;
-  ::close((*proof)->descriptor);
-  (*proof)->descriptor = -1;
-  return absl::OkStatus();
+  return retire_unlaunched_command(**proof);
 }
 
 absl::Status SignalSupervisedCommand(const std::string& token, const std::string& id, int signal) {
