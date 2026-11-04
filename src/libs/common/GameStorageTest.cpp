@@ -142,6 +142,26 @@ void Run(const fs::path& root) {
   for (int i = 0; i < 4; ++i)
     Check(bool(Find(inventory, "published-" + std::to_string(i) + ".mp4")), "lost concurrent publication");
 
+  // Passing the private directory on as the game used to mkdir a second one
+  // inside it and write that call's locks and journals where nothing reads them.
+  const auto nested = StateDirectory(game);
+  Check(
+      EnsureStateDirectory(nested).code() == absl::StatusCode::kInvalidArgument,
+      "a nested state root is a bad argument, not a missing one");
+  Check(!EnsureStateDirectory(nested.string() + "/").ok(), "reject a trailing separator");
+  Check(!RefreshManifest(nested, "test").ok(), "inventory must reject nested state root");
+  Check(!ConfineWorkDirectory(nested, nested / "work").ok(), "work must reject nested state root");
+  // An external request returns before the work root is ever created, so this
+  // one only fails if ConfineWorkDirectory checks the game itself.
+  Check(!ConfineWorkDirectory(nested, root / "external-work").ok(), "work must reject it for any request");
+  Check(!fs::exists(StatePath(game, "_hockeymon")), "a rejected game must leave no nested state");
+  // Experiment candidate games live below a private directory without being
+  // one, and must stay usable.
+  const auto candidate = StatePath(game, "stitching-experiments/sessions/session-a/demo-stitch-exp-1");
+  fs::create_directories(candidate);
+  Check(EnsureStateDirectory(candidate).ok(), "a game below private state is still a game");
+  Check(EnsureStateDirectory(game).ok(), "the game root itself still resolves");
+
   const auto linked = root / "linked-game";
   fs::create_directory(linked);
   fs::create_directory_symlink(root / "outside", StateDirectory(linked));

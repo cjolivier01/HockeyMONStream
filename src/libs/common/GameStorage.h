@@ -12,10 +12,14 @@ namespace hm::game_storage {
 // directory. These path helpers do no I/O and never read the former flat layout.
 std::filesystem::path StateDirectory(const std::filesystem::path& game);
 std::filesystem::path StatePath(const std::filesystem::path& game, const std::filesystem::path& relative);
+// Rejects a game that is itself a private state directory, so a caller that
+// resolved one and then passed it on cannot create a nested, unread copy. The
+// inventory calls below reach this check too, and fail the same way.
 absl::Status EnsureStateDirectory(const std::filesystem::path& game);
 
 // Explicit work-root settings may resolve inside a game (including through a
 // directory alias). Keep that work private too; external work remains external.
+// Rejects a state-directory game for the same reason EnsureStateDirectory does.
 absl::StatusOr<std::filesystem::path> ConfineWorkDirectory(
     const std::filesystem::path& game,
     const std::filesystem::path& requested);
