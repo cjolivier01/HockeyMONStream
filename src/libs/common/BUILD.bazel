@@ -607,16 +607,20 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
-cc_test(
-    name = "person_roles_test",
-    srcs = ["PersonRolesTest.cpp"],
-    deps = [":person_roles"],
+cc_library(
     name = "game_operation_owner",
     srcs = ["GameOperationOwner.cpp"],
     hdrs = ["GameOperationOwner.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [":game_storage", ":process_guard", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "person_roles_test",
+    srcs = ["PersonRolesTest.cpp"],
+    deps = [":person_roles"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(
