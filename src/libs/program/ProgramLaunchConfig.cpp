@@ -99,6 +99,14 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       return inference_file.status();
     result.inference_file = fs::canonical(*inference_file);
     result.inference = YAML::LoadFile(result.inference_file.string());
+    const auto tiling =
+        detection::ReadTileInferenceSettings(result.configuration.values["pipeline"]["primary-gie"]["tiled-inference"]);
+    if (!tiling.ok())
+      return tiling.status();
+    result.tiling = *tiling;
+    if (result.tiling && Rank(result.configuration.ranks, "pipeline.primary-gie.batch-size") >= 1 &&
+        result.configuration.values["pipeline"]["primary-gie"]["batch-size"].as<int>() != 2)
+      return absl::InvalidArgumentError("Two-tile inference requires primary-gie.batch-size=2");
     if (result.inference["person-roles"])
       result.camera["person-roles"] = YAML::Clone(result.inference["person-roles"]);
     if (!result.inference.IsMap() || !result.inference["property"].IsMap())

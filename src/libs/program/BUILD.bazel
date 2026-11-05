@@ -349,6 +349,7 @@ cc_library(
     hdrs = ["ProgramLaunchConfig.h"],
     include_prefix = "hstream/src/libs/program",
     deps = [
+        "//src/libs/detection:tile_inference_config",
     "//src/libs/common:game_storage",
         ":amd_program_settings", "//src/libs/common:config_layers",
         "//src/libs/common:baseline_config", "//src/libs/common:user_config",
@@ -378,7 +379,7 @@ cc_library(
     srcs = ["ProgramDetectorSettings.cpp"],
     hdrs = ["ProgramDetectorSettings.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["//src/libs/assets:asset_manager", "//src/libs/onnx:image_input", "@yaml-cpp"],
+    deps = ["//src/libs/assets:asset_manager", "//src/libs/onnx:image_input", "//src/libs/detection:tile_inference", "@yaml-cpp"],
 )
 
 cc_test(

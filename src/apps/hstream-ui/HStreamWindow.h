@@ -779,6 +779,8 @@ class HStreamWindow : public QMainWindow {
   bool gpu_memory_profile_user_selected_{false};
   QComboBox* detector_model_combo_{nullptr};
   QComboBox* detector_precision_combo_{nullptr};
+  QCheckBox* tiled_detection_check_{nullptr};
+  bool saved_tiled_detection_{false};
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;
   QString saved_detector_model_;
