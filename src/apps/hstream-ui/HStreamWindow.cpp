@@ -5003,6 +5003,9 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
   development_pipeline_runner_ = hm::ui_internal::matching_development_pipeline_runner(application_path);
   development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application_path);
   setWindowIcon(hm::ui_internal::application_icon());
+  // Preview windows can hold activation while the pointer is over the transport.
+  // Disabled seek controls must still explain why seeking is unavailable.
+  setAttribute(Qt::WA_AlwaysShowToolTips);
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   install_value_control_wheel_guard();
   qApp->installEventFilter(this);
@@ -13848,6 +13851,10 @@ void HStreamWindow::updatePlaybackSeekControls() {
     reason = "Waiting for the current seek to finish.";
   } else if (playback_seek_recovery_generation_ != 0) {
     reason = "The seek timed out; waiting for the backend reconstruction worker to return safely.";
+  } else if (pending_process_pause_generation_ != 0) {
+    reason = "Waiting for playback to pause before enabling seek.";
+  } else if (pending_process_resume_generation_ != 0) {
+    reason = "Waiting for playback to resume before enabling seek.";
   } else if (pipeline_paused_ && deferred_playback_seek_ns_.has_value()) {
     reason =
         "This position is queued and will be applied when playback resumes; choose another position to replace it.";
