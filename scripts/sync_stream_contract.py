@@ -602,7 +602,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 qt_control_id=spec["id"],
                 runtime_key=spec["runtime_key"],
                 divisor=spec["divisor"],
-                qt_order=list(specs).index(spec["id"]) + 3,
+                qt_order=list(specs).index(spec["id"]) + 5,
                 qt_slider=not (spec["minimum"] == 0 and spec["maximum"] == 1),
             )
             if kind != "boolean":
@@ -879,7 +879,7 @@ def generate(root, *, native_revision=None, include_revision=True):
             qt_control_id=identifier,
             qt_stage="program",
             qt_tab="Motion" if identifier.startswith("Max_") else "Tracking",
-            qt_order=list(specs).index(identifier) + 3,
+            qt_order=list(specs).index(identifier) + 5,
             qt_slider=spec["maximum"] != 1,
         )
         if spec["maximum"] == 1:
@@ -1057,6 +1057,18 @@ def generate(root, *, native_revision=None, include_revision=True):
         choice_labels=precision["choices"],
     )
     tracking_extras = {
+        "rink.tracking.cam_ignore_referees": (
+            "Ignore_Referees",
+            "Ignore referees for play tracking",
+            2,
+            None,
+        ),
+        "rink.tracking.cam_ignore_goalies": (
+            "Ignore_Goalies",
+            "Ignore goalies for play tracking",
+            3,
+            None,
+        ),
         "rink.tracking.cam_ignore_largest_count": (
             "Ignore_Largest_Count",
             "Ignore largest players (0 = off)",
@@ -1072,7 +1084,7 @@ def generate(root, *, native_revision=None, include_revision=True):
         "rink.tracking.cam_oversized_percent": (
             "Oversized_Player_Percent",
             "Larger than other players' average (%)",
-            2,
+            4,
             1.7976931348623157e308,
         ),
     }
