@@ -1261,6 +1261,8 @@ def generate(root, *, native_revision=None, include_revision=True):
             }
             for item in specs.values()
             if item["runtime_key"]
+            # Qt's role filters belong to Program, not Camera Experiments.
+            and item["id"] not in {"Ignore_Referees", "Ignore_Goalies"}
         ],
         "runtime_controls": baseline["hstream_ui"]["runtime_controls"],
         "preview_overlays": baseline["preview_overlays"],

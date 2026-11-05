@@ -61,6 +61,13 @@ is acknowledged. Stop retires pending acknowledgements in both the native and
 cooperative backend paths. This matches the browser's existing correlated
 PLAYING confirmation without changing its signaling or playback commands.
 
+Program's shared camera-control registry includes the referee and goalie filters
+for Qt and browser runtime batches. Reset Controls must publish their explicit
+boolean values together with motion changes; missing registry entries previously
+rejected the entire reset. Required defaults remain in the baseline. These role
+filters stay out of Camera Experiments because its recordings lack role metadata.
+Live AMD camera mutations remain a separate gap in `docs/amd-gpu.md`.
+
 External Qt timing diagnostics may read `hm::gpu_preview::presented_frame` from an
 exactly identified, unstripped executable. The existing getter returns only the last
 presented generation and PTS under the renderer mutex; it reads no pixels and
