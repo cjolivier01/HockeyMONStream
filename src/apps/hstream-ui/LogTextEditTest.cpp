@@ -38,8 +38,19 @@ int main(int argc, char** argv) {
     selection.setPosition(10);
     selection.setPosition(20, QTextCursor::KeepAnchor);
     log.setTextCursor(selection);
+    const QString selected_text = selection.selectedText();
+    require(!selected_text.isEmpty(), "Fixture needs a selection");
     log.setLogText(text, "first");
-    require(log.textCursor().selectedText() == selection.selectedText(), "Unchanged bounded log erased selection");
+    require(log.textCursor().selectedText() == selected_text, "Unchanged bounded log erased selection");
+    log.resize(400, 140);
+    pump();
+    log.setLogText(text, "first");
+    require(log.textCursor().selectedText() == selected_text, "Unchanged poll after resize erased selection");
+    log.hide();
+    log.show();
+    pump();
+    log.setLogText(text, "first");
+    require(log.textCursor().selectedText() == selected_text, "Unchanged poll after showing erased selection");
     log.verticalScrollBar()->setValue(log.verticalScrollBar()->maximum());
     for (int line = 0; line < 200; ++line)
       log.appendLogText(QString("New output %1").arg(line));

@@ -26,15 +26,8 @@ class LogTextEdit : public QPlainTextEdit {
   }
 
   void editLog(const std::function<void()>& edit, bool reset = false) {
-    const int vertical = verticalScrollBar()->value();
-    const int horizontal = horizontalScrollBar()->value();
-    QScopedValueRollback<bool> guard(updating_, true);
     snapshot_.reset();
-    if (reset)
-      follows_tail_ = true;
-    edit();
-    verticalScrollBar()->setValue(follows_tail_ ? verticalScrollBar()->maximum() : vertical);
-    horizontalScrollBar()->setValue(reset ? 0 : horizontal);
+    preserveViewport(edit, reset);
   }
 
   void setLogText(QString text, const QString& source) {
@@ -69,14 +62,25 @@ class LogTextEdit : public QPlainTextEdit {
   void showEvent(QShowEvent* event) override {
     // Showing an editor can scroll its editing cursor into view. That cursor
     // is unrelated to the reader's viewport, especially after hidden appends.
-    editLog([&] { QPlainTextEdit::showEvent(event); });
+    preserveViewport([&] { QPlainTextEdit::showEvent(event); });
   }
 
   void resizeEvent(QResizeEvent* event) override {
-    editLog([&] { QPlainTextEdit::resizeEvent(event); });
+    preserveViewport([&] { QPlainTextEdit::resizeEvent(event); });
   }
 
  private:
+  void preserveViewport(const std::function<void()>& change, bool reset = false) {
+    const int vertical = verticalScrollBar()->value();
+    const int horizontal = horizontalScrollBar()->value();
+    QScopedValueRollback<bool> guard(updating_, true);
+    if (reset)
+      follows_tail_ = true;
+    change();
+    verticalScrollBar()->setValue(follows_tail_ ? verticalScrollBar()->maximum() : vertical);
+    horizontalScrollBar()->setValue(reset ? 0 : horizontal);
+  }
+
   void scrollToTail() {
     if (!follows_tail_)
       return;
