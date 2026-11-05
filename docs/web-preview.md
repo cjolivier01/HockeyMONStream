@@ -52,6 +52,15 @@ keep their existing command handling. The browser already retains route and
 overlay edits until native PLAYING confirmation. CPU tests cover both command
 orderings; displayed-frame and A/V qualification remain separate.
 
+Qt also retains its PAUSED state and queued seek until that matching Resume
+acknowledgement. Sending SIGCONT or writing the command is not confirmation.
+The latest queued seek runs once after confirmation; progress-rate sampling
+resets after that seek completes, or immediately when no seek is queued. A
+cancelled, unacknowledged Pause does not reset progress when its rollback Resume
+is acknowledged. Stop retires pending acknowledgements in both the native and
+cooperative backend paths. This matches the browser's existing correlated
+PLAYING confirmation without changing its signaling or playback commands.
+
 External Qt timing diagnostics may read `hm::gpu_preview::presented_frame` from an
 exactly identified, unstripped executable. The existing getter returns only the last
 presented generation and PTS under the renderer mutex; it reads no pixels and

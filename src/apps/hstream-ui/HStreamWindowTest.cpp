@@ -1099,9 +1099,23 @@ for line in sys.stdin:
   static void toggleProcessPause(HStreamWindow* window) {
     window->pauseOrResumePipeline();
   }
-  static void reportProcessPause(HStreamWindow* window, const QString& status, quint64 generation) {
+  static void requestPlaybackSeek(HStreamWindow* window, qint64 target) {
+    window->requestPlaybackSeek(target);
+  }
+  static void stopProcess(HStreamWindow* window) {
+    window->stopPipeline();
+  }
+  static void reportPlaybackSeekApplied(HStreamWindow* window, quint64 generation, qint64 position) {
+    window->handlePlaybackSeekOutput(
+        QString("HSTREAM_SEEK status=ok generation=%1 position_ns=%2").arg(generation).arg(position));
+  }
+  static void reportProcessPause(
+      HStreamWindow* window, const QString& status, quint64 generation, bool cooperative = false) {
+    if (cooperative)
+      window->active_hockeymon_program_ = true;
     window->handleProcessPauseOutput(
-        QString("HSTREAM_PROCESS_PAUSE status=%1 generation=%2").arg(status).arg(generation));
+        QString("HSTREAM_PROCESS_PAUSE status=%1 generation=%2%3")
+            .arg(status).arg(generation).arg(cooperative ? " mode=cooperative" : ""));
   }
   static quint64 pendingProcessPause(HStreamWindow* window) {
     return window->pending_process_pause_generation_;
@@ -21742,15 +21756,33 @@ bool test_process_pause_protocol() {
   if (!expect(HStreamWindowTestAccess::processPaused(&window), "A matched prepare ACK must pause the runner"))
     return false;
   HStreamWindowTestAccess::toggleProcessPause(&window);
+  const quint64 reset_before_resume = HStreamWindowTestAccess::playbackResetGeneration(&window);
   HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation + 1);
+  const auto resume_screenshot = qEnvironmentVariable("HSTREAM_UI_TEST_RESUME_SCREENSHOT");
+  if (!resume_screenshot.isEmpty()) {
+    window.resize(1440, 900);
+    window.show();
+    QGuiApplication::sync();
+    if (!window.grab().save(resume_screenshot))
+      return false;
+  }
   if (!expect(
-          !HStreamWindowTestAccess::processPaused(&window) &&
-              HStreamWindowTestAccess::pendingProcessResume(&window) == generation,
-          "Resume must release SIGSTOP and retain its generation until a matching ACK"))
+          HStreamWindowTestAccess::processPaused(&window) && window.pipelineStateText() == "PAUSED" &&
+              HStreamWindowTestAccess::pendingProcessResume(&window) == generation &&
+              HStreamWindowTestAccess::playbackResetGeneration(&window) == reset_before_resume,
+          "Resume must retain PAUSED and progress until the matching native ACK"))
     return false;
   HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation);
   if (!expect(
-          !HStreamWindowTestAccess::pendingProcessResume(&window), "A matched resume ACK must complete the handshake"))
+          !HStreamWindowTestAccess::pendingProcessResume(&window) &&
+              !HStreamWindowTestAccess::processPaused(&window) && window.pipelineStateText() == "PLAYING" &&
+              HStreamWindowTestAccess::playbackResetGeneration(&window) == reset_before_resume + 1,
+          "A matched resume ACK must confirm PLAYING and reset progress once"))
+    return false;
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation);
+  if (!expect(
+          HStreamWindowTestAccess::playbackResetGeneration(&window) == reset_before_resume + 1,
+          "A duplicate Resume ACK must not reset progress again"))
     return false;
   HStreamWindowTestAccess::toggleProcessPause(&window);
   const quint64 missing = HStreamWindowTestAccess::pendingProcessPause(&window);
@@ -21772,6 +21804,37 @@ bool test_process_pause_protocol() {
           "Missing resume ACK must stop playback rather than disable stall monitoring")) {
     return false;
   }
+  const QString stopped_state = window.pipelineStateText();
+  HStreamWindowTestAccess::reportProcessPause(&window, "resumed", missing);
+  if (!expect(
+          window.pipelineStateText() == stopped_state &&
+              HStreamWindowTestAccess::playbackResetGeneration(&window) == reset_before_resume + 1,
+          "A Resume ACK after timeout and Stop must not revive playback or reset progress"))
+    return false;
+  for (bool cooperative : {false, true}) {
+    HStreamWindow stopped;
+    if (!HStreamWindowTestAccess::startStubPipelineProcess(&stopped))
+      return false;
+    auto stop_cleanup = absl::MakeCleanup([&] { HStreamWindowTestAccess::killStubPipelineProcess(&stopped); });
+    HStreamWindowTestAccess::toggleProcessPause(&stopped);
+    const auto pending = HStreamWindowTestAccess::pendingProcessPause(&stopped);
+    HStreamWindowTestAccess::reportProcessPause(&stopped, "prepared", pending, cooperative);
+    HStreamWindowTestAccess::toggleProcessPause(&stopped);
+    if (!expect(
+            HStreamWindowTestAccess::processPaused(&stopped) && stopped.pipelineStateText() == "PAUSED" &&
+                HStreamWindowTestAccess::pendingProcessResume(&stopped) == pending,
+            "Native and cooperative Resume must retain PAUSED while confirmation is pending"))
+      return false;
+    HStreamWindowTestAccess::stopProcess(&stopped);
+    const QString stop_state = stopped.pipelineStateText();
+    const auto reset_at_stop = HStreamWindowTestAccess::playbackResetGeneration(&stopped);
+    HStreamWindowTestAccess::reportProcessPause(&stopped, "resumed", pending, cooperative);
+    if (!expect(
+            stopped.pipelineStateText() == stop_state && !HStreamWindowTestAccess::pendingProcessResume(&stopped) &&
+                HStreamWindowTestAccess::playbackResetGeneration(&stopped) == reset_at_stop,
+            "Stop during native or cooperative Resume must retire its acknowledgement"))
+      return false;
+  }
 #endif
   return true;
 }
@@ -21783,6 +21846,7 @@ bool test_paused_preview_command_order() {
   if (!process)
     return false;
   auto cleanup = absl::MakeCleanup([&] { HStreamWindowTestAccess::killStubPipelineProcess(&window); });
+  HStreamWindowTestAccess::beginPendingPlaybackSeek(&window, 0);
   int checkpoint = 0;
   auto recorded = [&]() {
     const QByteArray marker = QString("checkpoint-%1\n").arg(++checkpoint).toUtf8();
@@ -21827,6 +21891,12 @@ bool test_paused_preview_command_order() {
           "Preview changes during pause preparation must not queue behind a pausing graph"))
     return false;
   HStreamWindowTestAccess::reportProcessPause(&window, "prepared", generation);
+  HStreamWindowTestAccess::requestPlaybackSeek(&window, 10'000'000'000LL);
+  HStreamWindowTestAccess::requestPlaybackSeek(&window, 20'000'000'000LL);
+  if (!expect(
+          HStreamWindowTestAccess::deferredPlaybackSeekNs(&window) == 20'000'000'000LL,
+          "Paused playback must retain the latest requested seek"))
+    return false;
   HStreamWindowTestAccess::previewRenderChoice(&window, false);
   HStreamWindowTestAccess::reportOldProgramPreviewReady(&window);
   if (!expect(
@@ -21845,16 +21915,30 @@ bool test_paused_preview_command_order() {
     return false;
   const auto resuming = recorded();
   if (!expect(
-          resuming.contains(QString("@process-resume %1").arg(generation)) && no_preview_commands(resuming),
-          "Resume must reach the runner before any paused preview mutation"))
+          resuming.contains(QString("@process-resume %1").arg(generation)) && no_preview_commands(resuming) &&
+              !resuming.contains("@seek ") && !resuming.contains("@reset-progress-rate ") &&
+              window.pipelineStateText() == "PAUSED",
+          "Resume must reach the runner before any queued seek, progress reset or preview mutation"))
     return false;
   HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation + 1);
+  const auto stale_resume = recorded();
   if (!expect(
-          no_preview_commands(recorded()) && HStreamWindowTestAccess::previewCommandsDeferred(&window),
-          "A stale Resume ACK must not release paused preview requests"))
+          no_preview_commands(stale_resume) && !stale_resume.contains("@seek ") &&
+              !stale_resume.contains("@reset-progress-rate ") &&
+              HStreamWindowTestAccess::deferredPlaybackSeekNs(&window) == 20'000'000'000LL &&
+              HStreamWindowTestAccess::previewCommandsDeferred(&window),
+          "A stale Resume ACK must retain paused seek and preview requests"))
     return false;
   HStreamWindowTestAccess::reportProcessPause(&window, "resumed", generation);
   const auto resumed = recorded();
+  if (!expect(
+          resumed.count("@seek ") == 1 && resumed.contains("@seek 20000000000 ") &&
+              !resumed.contains("@reset-progress-rate ") && window.pipelineStateText() == "PLAYING" &&
+              !HStreamWindowTestAccess::deferredPlaybackSeekNs(&window).has_value(),
+          "Only the matching Resume ACK may send the latest seek, before resetting progress"))
+    return false;
+  HStreamWindowTestAccess::reportPlaybackSeekApplied(
+      &window, HStreamWindowTestAccess::playbackSeekGeneration(&window), 20'000'000'000LL);
   if (!expect(
           resumed.count("@set-preview-active stitched ") == 1 && !resumed.contains("@set-preview-active none ") &&
               !resumed.contains("@set-preview-active program ") && !resumed.contains("@set-preview-active source0 ") &&
