@@ -1,4 +1,5 @@
 #include "Int8PreparationDialog.h"
+#include "src/apps/hstream-ui/LogTextEdit.h"
 #include <QtCore/QDateTime>
 #include <csignal>
 #include "hstream/src/libs/common/BaselineConfig.h"
@@ -69,7 +70,8 @@ Int8PreparationDialog::Int8PreparationDialog(Int8PreparationRequest request, QWi
   status_->setObjectName("int8PreparationStatus");
   status_->setWordWrap(true);
   layout->addWidget(status_);
-  log_ = new QPlainTextEdit;
+  log_ = new LogTextEdit;
+  log_->setObjectName("int8PreparationLog");
   log_->setReadOnly(true);
   log_->setMaximumBlockCount(500);
   layout->addWidget(log_);
@@ -175,7 +177,7 @@ void Int8PreparationDialog::start() {
   engine_.clear();
   manifest_.clear();
   output_.clear();
-  log_->clear();
+  log_->editLog([&] { log_->clear(); }, true);
   prepare_->setEnabled(false);
   count_->setEnabled(false);
   status_->setText("Checking preparation tools and sampling the recording…");
@@ -213,7 +215,7 @@ void Int8PreparationDialog::start() {
   const auto prepared = PrepareSupervisedProcess(
       process_, operation_game_, operation_token_, shutdown_timeout_ms_, poll_interval_ms_, true);
   if (!prepared.ok()) {
-    log_->appendPlainText(QString::fromStdString(prepared.ToString()));
+    log_->appendLogText(QString::fromStdString(prepared.ToString()));
     finishWhenStopped(1, QProcess::CrashExit);
     return;
   }
@@ -266,7 +268,7 @@ void Int8PreparationDialog::readOutput() {
     const auto newline = output_.indexOf('\n');
     const QByteArray line = output_.left(newline);
     output_.remove(0, newline + 1);
-    log_->appendPlainText(QString::fromUtf8(line));
+    log_->appendLogText(QString::fromUtf8(line));
     if (line.startsWith("HSTREAM_INT8_READY ")) {
       const auto result = QJsonDocument::fromJson(line.mid(sizeof("HSTREAM_INT8_READY ") - 1)).object();
       engine_ = result.value("engine").toString();
@@ -279,7 +281,7 @@ void Int8PreparationDialog::readOutput() {
       status_->setText("Building and checking the INT8 engine…");
   }
   if (output_.size() > 65536) {
-    log_->appendPlainText(QString::fromUtf8(output_.left(65536)));
+    log_->appendLogText(QString::fromUtf8(output_.left(65536)));
     output_.clear();
   }
 }

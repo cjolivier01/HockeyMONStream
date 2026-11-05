@@ -5,6 +5,7 @@
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
 #include "src/apps/hstream-ui/CameraOpticsWidget.h"
 #include "src/apps/hstream-ui/InputLensWidget.h"
+#include "src/apps/hstream-ui/LogTextEdit.h"
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/PreviewDialogWindow.h"
@@ -95,21 +96,21 @@
 
 namespace {
 
-void insert_log_output(QPlainTextEdit* log, QString text) {
+void insert_log_output(LogTextEdit* log, QString text) {
   text.replace("\r\n", "\n");
   text.replace('\r', '\n');
   const bool dark = log->palette().color(QPalette::Base).lightness() < 128;
-  log->moveCursor(QTextCursor::End);
-  auto cursor = log->textCursor();
-  const auto lines = text.split('\n');
-  for (int index = 0; index < lines.size(); ++index) {
-    if (index != 0)
-      cursor.insertBlock();
-    cursor.insertHtml("<span style=\"white-space:pre-wrap\">" + hm::ui::ansi_to_html(lines[index], dark) + "</span>");
-    cursor.setCharFormat(QTextCharFormat());
-  }
-  log->setTextCursor(cursor);
-  log->ensureCursorVisible();
+  log->editLog([&] {
+    QTextCursor cursor(log->document());
+    cursor.movePosition(QTextCursor::End);
+    const auto lines = text.split('\n');
+    for (int index = 0; index < lines.size(); ++index) {
+      if (index != 0)
+        cursor.insertBlock();
+      cursor.insertHtml("<span style=\"white-space:pre-wrap\">" + hm::ui::ansi_to_html(lines[index], dark) + "</span>");
+      cursor.setCharFormat(QTextCharFormat());
+    }
+  });
 }
 
 void add_image_navigation(QVBoxLayout* layout, CalibrationFrameView* view) {
@@ -659,7 +660,7 @@ struct StitchingExperimentDialog::Impl {
   QLabel* status{nullptr};
   QLabel* cache_location{nullptr};
   QProgressBar* progress{nullptr};
-  QPlainTextEdit* log{nullptr};
+  LogTextEdit* log{nullptr};
   std::unique_ptr<QTemporaryDir> session;
   std::optional<StitchingExperimentStore> store;
   QString store_error;
@@ -3199,9 +3200,8 @@ struct StitchingExperimentDialog::Impl {
     location->setTextInteractionFlags(Qt::TextSelectableByMouse);
     location->setWordWrap(true);
     layout->addWidget(location);
-    auto* contents = new QPlainTextEdit();
+    auto* contents = new LogTextEdit();
     insert_log_output(contents, QString::fromUtf8(bytes));
-    contents->moveCursor(QTextCursor::Start);
     contents->setObjectName("stitchExperimentRetainedRunnerLog");
     contents->setReadOnly(true);
     layout->addWidget(contents, 1);
@@ -4465,7 +4465,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.cache_location->setObjectName("stitchExperimentCacheLocation");
   s.cache_location->setWordWrap(true);
   s.cache_location->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  s.log = new QPlainTextEdit();
+  s.log = new LogTextEdit();
   s.log->setObjectName("stitchExperimentLog");
   s.log->setReadOnly(true);
   s.log->setMaximumBlockCount(4000);
