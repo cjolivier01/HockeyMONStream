@@ -5,17 +5,22 @@
 #include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QEventLoop>
 #include <QtCore/QFile>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QPointer>
+#include <QtCore/QSaveFile>
+#include <QtCore/QStringList>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtCore/QUuid>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QRegion>
 #include <QtGui/QWheelEvent>
+#include <QtGui/QWindow>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -23,6 +28,8 @@
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QMainWindow>
+#include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
@@ -34,6 +41,7 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <unistd.h>
+#include <algorithm>
 #include <csignal>
 #include <iostream>
 #include <stdexcept>
@@ -214,7 +222,7 @@ void plans(const StitchingExperimentStore& store) {
 }
 
 constexpr const char* kController = R"PY(#!/usr/bin/python3
-import json,os,sys,time
+import json,os,signal,sys,time
 from pathlib import Path
 root=Path(os.environ['WORKFLOW_TEST_ROOT']); args=sys.argv[1:]; operation=args[0]
 def option(name): return args[args.index(name)+1]
@@ -222,6 +230,7 @@ with (root/'calls').open('a') as f: f.write(operation+'\n')
 if operation=='profiles': value=json.loads((root/'profiles.json').read_text())
 elif operation=='submit':
  plan=json.loads(Path(option('--plan')).read_text())
+ while (root/'hold-submit').exists(): time.sleep(.01)
  if (root/'reject-submit').exists():
   print(json.dumps(dict(error='Resource profile changed before admission',submission='rejected',workflow_id=plan['workflow_id'])),file=sys.stderr); raise SystemExit(2)
  (root/'submitted.json').write_text(json.dumps(plan))
@@ -230,26 +239,51 @@ elif operation=='submit':
   node=dict(node); node.update(state='running' if index==0 else 'waiting',reason='Waiting for verified prerequisite',result=None)
   node['attempts']=[dict(id='attempt-current',epoch=0,state='running',details={'scheduler_id':'31','host':'compute-a','reason':'Resources'})] if index==0 else []
   nodes.append(node)
- value=dict(workflow_id=plan['workflow_id'],state='running',epoch=0,revision=1,nodes=nodes,limits=plan['limits'])
+ value=dict(workflow_id=plan['workflow_id'],state='running',owner_released=False,epoch=0,revision=1,nodes=nodes,limits=plan['limits'])
  (root/'state.json').write_text(json.dumps(value))
+ mode=(root/'submit-response-mode').read_text() if (root/'submit-response-mode').exists() else ''
+ if mode=='timeout': time.sleep(60)
+ if mode=='empty': raise SystemExit(0)
+ if mode=='malformed': print('{invalid'); raise SystemExit(0)
+ if mode=='crashed': os.kill(os.getpid(),signal.SIGKILL)
  if (root/'lose-submit-response').exists():
-  (root/'status-unavailable').write_text('2'); print('Submission response unavailable',file=sys.stderr); raise SystemExit(1)
+  if not (root/'skip-submit-status-failures').exists(): (root/'status-unavailable').write_text('2')
+  print('Submission response unavailable',file=sys.stderr); raise SystemExit(1)
 elif operation=='export':
  plan=json.loads(Path(option('--plan')).read_text()); destination=Path(option('--output')); destination.write_text('#!/bin/sh\n'); destination.with_suffix('.json').write_text(json.dumps(plan)); value={'script':str(destination),'workflow_id':plan['workflow_id']}
 elif operation=='status':
+ while (root/'hold-status-response').exists(): time.sleep(.01)
  time.sleep(.03)
  unavailable=root/'status-unavailable'
  if unavailable.exists() and int(unavailable.read_text())>0:
   unavailable.write_text(str(int(unavailable.read_text())-1)); print('Workflow registration temporarily unavailable',file=sys.stderr); raise SystemExit(1)
  value=json.loads((root/'state.json').read_text())
+ if (root/'status-override.json').exists(): value=json.loads((root/'status-override.json').read_text())
 elif operation in ('cancel','retry'):
+ if operation=='retry':
+  while (root/'hold-retry').exists(): time.sleep(.01)
+  if (root/'reject-retry').exists():
+   print('Retry rejected by fixture controller',file=sys.stderr); raise SystemExit(1)
  value=json.loads((root/'state.json').read_text()); assert int(option('--epoch'))==value['epoch']
- if operation=='cancel': value['state']='cancelled'; value['cancel_requested']=True
+ if operation=='cancel':
+  if (root/'reject-cancel').exists():
+   print('Cancellation rejected by fixture controller',file=sys.stderr); raise SystemExit(1)
+  value['state']='cancelled'; value['cancel_requested']=True; value['owner_released']=not (root/'hold-owner-release').exists()
+  for node in value['nodes']: node['state']='cancelled'
  else:
-  value['epoch']+=1; value['state']='running'
+  value['epoch']+=1; value['state']='running'; value['owner_released']=False; value.pop('cancel_requested',None)
   node=next(n for n in value['nodes'] if n['id']==option('--stage')); node['state']='running'
   node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
  (root/'state.json').write_text(json.dumps(value))
+ if operation=='cancel' and (root/'lose-cancel-response').exists():
+  print('Cancellation response unavailable',file=sys.stderr); raise SystemExit(1)
+ if operation=='retry' and (root/'lose-retry-response').exists():
+  if (root/'retry-status-unavailable').exists(): (root/'status-unavailable').write_text('1000')
+  print('Retry response unavailable',file=sys.stderr); raise SystemExit(1)
+ if operation=='retry' and (root/'retry-response-mode').exists():
+  (root/'status-unavailable').write_text('1000')
+  if (root/'retry-response-mode').read_text()=='missing-nodes': value.pop('nodes')
+  else: value['revision']-=1
 elif operation=='log': value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
 else: raise SystemExit(9)
 print(json.dumps(value))
@@ -264,7 +298,7 @@ void profileResponseBounds(const QString& root, YAML::Node baseline) {
     write(root + "/profiles.json", QJsonDocument(catalog).toJson(QJsonDocument::Compact));
     StitchingWorkflow pane(root + "/game", root, environment, baseline, nullptr);
     bool rejected = false;
-    pane.message = [&](const QString&, bool error) { rejected = error; };
+    pane.message = [&](const QString&, bool error, const QString&) { rejected = error; };
     auto* selector = widget<QComboBox>(pane, "stitchWorkflowProfile");
     if (megabytes < 8) {
       require(wait([&] { return selector->count() == 2 || rejected; }), "Large profile catalog did not finish loading");
@@ -336,7 +370,13 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   content_layout->setAlignment(Qt::Alignment{});
   bool exported = false;
   QString export_message;
-  pane->message = [&](const QString& message, bool error) {
+  QString shown_message;
+  bool shown_error = false;
+  pane->message = [&](const QString& message, bool error, const QString& replaces) {
+    if (!replaces.isEmpty() && shown_message != replaces)
+      return;
+    shown_message = message;
+    shown_error = error;
     if (!error && message.startsWith("Exported batch:")) {
       exported = true;
       export_message = message;
@@ -384,6 +424,9 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       read(root + "/state.json").value("workflow_id") == pane->workflowId(),
       "Submission recovery changed the intended workflow identity");
   require(pane->active() && ticks > 1, "Workflow request blocked Qt event processing");
+  require(
+      !shown_error && shown_message.startsWith("Workflow status recovered."),
+      "Recovered submission left its stale error visible");
   const auto submitted = read(root + "/submitted.json");
   require(
       submitted.value("limits").toObject().value("max_parallel").toInt() == 3,
@@ -706,6 +749,800 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       wait([&] { return !pane->active() && !pane->busy(); }), "Explicit cancellation did not use the current epoch");
   delete pane;
 }
+int controllerCalls(const QString& root, const QByteArray& operation) {
+  QFile calls(root + "/calls");
+  require(calls.open(QIODevice::ReadOnly), "Cannot inspect controller calls");
+  return calls.readAll().count(operation + "\n");
+}
+
+void publishSnapshot(const QString& path, const QJsonObject& value) {
+  QSaveFile file(path);
+  const auto bytes = QJsonDocument(value).toJson();
+  require(
+      file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size() && file.commit(),
+      "Cannot atomically publish controller fixture status");
+}
+
+void dialogSubmissionRecovery(const QString& root) {
+  const QString screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_RECOVERY_SCREENSHOT_DIR");
+  require(screenshots.isEmpty() || QDir().mkpath(screenshots), "Cannot prepare submission recovery screenshots");
+  for (const QString scenario :
+       {"timeout",
+        "empty",
+        "malformed",
+        "crashed",
+        "wrong-workflow",
+        "older-status",
+        "failed",
+        "controller-warning",
+        "controller-error",
+        "cancel-error",
+        "controller-warning-unrelated",
+        "cleanup",
+        "unrelated-error",
+        "rejected",
+        "launch-failure"}) {
+    std::cout << "Submission response scenario: " << scenario.toStdString() << std::endl;
+    const QString fixture = root + "/response-" + scenario;
+    const QString game = fixture + "/game";
+    const QString launcher = fixture + "/scripts/hstream-workflow";
+    require(
+        QDir().mkpath(fixture + "/scripts") && QDir().mkpath(game + "/_hockeymon"), "Cannot prepare response fixture");
+    write(launcher, kController);
+    require(
+        QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner),
+        "Cannot make response fixture executable");
+    write(fixture + "/profiles.json", QJsonDocument(profiles()).toJson());
+    write(
+        game + "/_hockeymon/config.yaml",
+        ("game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\nworkflow:\n  registry: " + fixture +
+         "\n  poll_interval_ms: 100\n  command_timeout_seconds: 1\n")
+            .toUtf8());
+    write(game + "/left.mp4", "left");
+    write(game + "/right.mp4", "right");
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.insert("WORKFLOW_TEST_ROOT", fixture);
+    StitchingExperimentDialog dialog(
+        game, "/bin/false", fixture, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(dialog, "stitchingWorkflowPane"));
+    auto* profile = widget<QComboBox>(dialog, "stitchWorkflowProfile");
+    auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
+    auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
+    auto* stages = widget<QComboBox>(dialog, "stitchWorkflowStage");
+    const auto is_error = [&] { return status->styleSheet().contains("#b42318"); };
+    QJsonObject observed;
+    QStringList notices;
+    const auto message = workflow->message;
+    workflow->message = [&](const QString& value, bool error, const QString& replaces) {
+      notices << value;
+      message(value, error, replaces);
+    };
+    const auto snapshot_changed = workflow->snapshotChanged;
+    workflow->snapshotChanged = [&](const QJsonObject& value) {
+      observed = value;
+      snapshot_changed(value);
+    };
+    widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton")->click();
+    require(
+        wait([&] { return start->isEnabled() && profile->count() == 2; }),
+        "Response fixture did not prepare one candidate");
+    require(
+        widget<QTableWidget>(dialog, "stitchExperimentCandidates")->rowCount() == 1,
+        "Response fixture needs one candidate");
+    profile->setCurrentIndex(1);
+    const bool definite = scenario == "rejected" || scenario == "launch-failure";
+    if (scenario == "launch-failure")
+      require(
+          QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner),
+          "Cannot model a controller launch failure");
+    else if (scenario == "rejected")
+      write(fixture + "/reject-submit", "rejected");
+    else {
+      write(fixture + "/hold-status-response", "held");
+      write(
+          fixture + "/submit-response-mode",
+          (scenario == "timeout" || scenario == "malformed" || scenario == "crashed" ? scenario : QString("empty"))
+              .toUtf8());
+    }
+    QElapsedTimer submission;
+    submission.start();
+    start->click();
+    if (definite) {
+      require(
+          wait([&] { return !workflow->busy() && !workflow->active() && is_error(); }),
+          "Definite submission failure did not remain visible or release admission");
+      const QString failure = status->text();
+      require(
+          failure.contains(
+              scenario == "rejected" ? "Resource profile changed" : "Could not start the workflow command") &&
+              workflow->workflowId().isEmpty(),
+          "Definite rejection and launch failure lost their distinct diagnostics");
+      QElapsedTimer retained;
+      retained.start();
+      require(wait([&] { return retained.elapsed() >= 250; }), "Cannot observe retained submission failure");
+      require(
+          status->text() == failure && is_error() && controllerCalls(fixture, "status") == 0 &&
+              controllerCalls(fixture, "submit") == (scenario == "rejected" ? 1 : 0) &&
+              controllerCalls(fixture, "cancel") == 0,
+          "Definite submission failure was cleared, polled, resubmitted or cancelled");
+      continue;
+    }
+    const QString diagnostic = scenario == "timeout" ? "timed out after 1 seconds"
+        : scenario == "malformed"                    ? "invalid response"
+        : scenario == "crashed"                      ? "stopped unexpectedly"
+                                                     : "empty response";
+    require(
+        wait([&] { return is_error() && status->text().contains(diagnostic) && !workflow->busy(); }),
+        "Submission response failure did not show its distinct diagnostic in the dialog");
+    require(
+        status->text().contains("Do not start it again") && workflow->active() && !start->isEnabled() &&
+            observed.isEmpty(),
+        "An uncertain submission was treated as rejected or resolved before exact status arrived");
+    if (scenario == "timeout") {
+      require(submission.elapsed() >= 800, "Timeout fixture did not exercise the configured command timer");
+      if (!screenshots.isEmpty())
+        require(
+            dialog.grab().save(screenshots + "/submission-timeout-unconfirmed.png"), "Cannot capture pending timeout");
+    }
+    auto current = read(fixture + "/state.json");
+    require(
+        current.value("workflow_id") == workflow->workflowId(), "Response recovery changed the intended workflow ID");
+    const auto set_state = [&](QJsonObject& value, const QString& state, bool released) {
+      value.insert("state", state);
+      value.insert("owner_released", released);
+      auto nodes = value.value("nodes").toArray();
+      for (int index = 0; index < nodes.size(); ++index) {
+        auto node = nodes[index].toObject();
+        node.insert("state", state == "queued" ? "waiting" : state);
+        nodes[index] = node;
+      }
+      value.insert("nodes", nodes);
+    };
+    if (scenario == "timeout" || scenario == "cleanup")
+      set_state(current, "succeeded", scenario == "timeout");
+    else if (scenario == "failed")
+      set_state(current, "failed", true);
+    else if (scenario == "empty")
+      set_state(current, "queued", false);
+    const QString controller_key = scenario.startsWith("controller-warning") ? "controller_warning"
+        : scenario == "controller-error" || scenario == "failed"             ? "controller_error"
+        : scenario == "cancel-error"                                         ? "cancel_error"
+                                                                             : "";
+    const QString controller_detail = controller_key == "controller_warning" ? "Controller heartbeat is unavailable."
+        : controller_key == "cancel_error" ? "Cancellation could not confirm ownership."
+                                           : "Controller could not reconcile its state.";
+    if (!controller_key.isEmpty()) {
+      current.insert(controller_key, QJsonObject{{"error", controller_detail}});
+      if (controller_key == "controller_warning") {
+        set_state(current, "queued", false);
+        current.insert("controller_online", false);
+      }
+    }
+    if (scenario == "older-status") {
+      current.insert("epoch", 2);
+      current.insert("revision", 5);
+    }
+    publishSnapshot(fixture + "/state.json", current);
+    if (scenario == "wrong-workflow") {
+      auto wrong = current;
+      wrong.insert("workflow_id", "unrelated-workflow");
+      set_state(wrong, "succeeded", true);
+      publishSnapshot(fixture + "/status-override.json", wrong);
+    }
+    const QString unrelated = "Preview output could not be opened; check the selected display.";
+    if (scenario == "unrelated-error") {
+      workflow->message(unrelated, true, {});
+      write(fixture + "/status-unavailable", "1000");
+    }
+    QFile::remove(fixture + "/hold-status-response");
+    if (scenario == "unrelated-error") {
+      require(
+          wait([&] {
+            return std::any_of(notices.begin(), notices.end(), [](const QString& value) {
+              return value.startsWith("Workflow status is temporarily unavailable:");
+            });
+          }),
+          "Unrelated-error fixture did not observe a failed status poll");
+      require(
+          status->text() == unrelated && is_error() && observed.isEmpty(),
+          "A repeated response warning overwrote a newer unrelated dialog error");
+      QFile::remove(fixture + "/status-unavailable");
+    }
+    if (scenario == "wrong-workflow") {
+      require(
+          wait([&] { return status->text().startsWith("Waiting for current status of this workflow."); }),
+          "A different workflow response did not remain unresolved");
+      require(
+          observed.isEmpty() && stages->count() == 0 && is_error() && workflow->active() && !start->isEnabled(),
+          "A different workflow response rendered success or prematurely released submission admission");
+      QFile::remove(fixture + "/status-override.json");
+    }
+    require(wait([&] { return observed == current; }), "Current exact workflow status did not recover the submission");
+    if (scenario == "unrelated-error")
+      require(status->text() == unrelated && is_error(), "Status recovery overwrote a newer unrelated dialog error");
+    else if (scenario == "failed")
+      require(
+          status->text().startsWith("Workflow confirmed: failed.") && is_error() &&
+              status->text().contains("open its log") && !workflow->active(),
+          "Recovered failed work was presented as a successful response recovery");
+    else if (scenario == "timeout" || scenario == "cleanup") {
+      require(
+          !is_error() && status->text().startsWith("Workflow confirmed: succeeded.") &&
+              (scenario == "cleanup" ? status->text().contains("Waiting for resource cleanup.") &&
+                       !status->text().contains("ready to preview") && workflow->active()
+                                     : status->text().contains("ready to preview") && !workflow->active()),
+          "Recovered success either retained its transport error or claimed readiness before cleanup");
+      if (scenario == "timeout" && !screenshots.isEmpty())
+        require(
+            dialog.grab().save(screenshots + "/submission-timeout-recovered.png"), "Cannot capture recovered success");
+      if (scenario == "cleanup") {
+        current.insert("owner_released", true);
+        current.insert("revision", current.value("revision").toInt() + 1);
+        publishSnapshot(fixture + "/state.json", current);
+        require(
+            wait([&] {
+              return observed == current && !workflow->active() && !is_error() &&
+                  status->text().contains("ready to preview") &&
+                  !status->text().contains("Waiting for resource cleanup");
+            }),
+            "Verified cleanup release left its earlier waiting message visible");
+      }
+    } else if (!controller_key.isEmpty())
+      require(
+          is_error() && status->text().startsWith("Workflow status recovered.") &&
+              status->text().contains(controller_detail) && workflow->active(),
+          "Recovered controller diagnostics were not shown as errors in the actual dialog");
+    else
+      require(
+          !is_error() && status->text().startsWith("Workflow status recovered.") && workflow->active(),
+          "Recovered queued or running work left a stale red submission warning");
+    if (!controller_key.isEmpty()) {
+      require(
+          is_error() && status->text().contains(controller_detail), "Recovery dropped an active controller diagnostic");
+      if (scenario == "controller-warning-unrelated")
+        workflow->message(unrelated, true, {});
+      current.remove(controller_key);
+      current.remove("controller_online");
+      current.insert("revision", current.value("revision").toInt() + 1);
+      publishSnapshot(fixture + "/state.json", current);
+      require(wait([&] { return observed == current; }), "Healthy status after a controller diagnostic did not arrive");
+      if (scenario == "controller-warning-unrelated")
+        require(
+            status->text() == unrelated && is_error(),
+            "Clearing a controller diagnostic overwrote a newer unrelated dialog error");
+      else if (scenario == "failed")
+        require(
+            is_error() && status->text().startsWith("Workflow confirmed: failed.") &&
+                !status->text().contains(controller_detail),
+            "A cleared controller diagnostic concealed terminal failure or retained its obsolete detail");
+      else
+        require(
+            !is_error() && status->text().startsWith("Workflow status recovered.") &&
+                !status->text().contains(controller_detail),
+            "Healthy controller status left its previous red recovered notice visible");
+    }
+    if (scenario == "older-status") {
+      for (const bool older_epoch : {true, false}) {
+        auto stale = current;
+        stale.insert("epoch", older_epoch ? 1 : 2);
+        stale.insert("revision", older_epoch ? 6 : 4);
+        set_state(stale, "succeeded", true);
+        const QString retained_stage = stages->currentText();
+        publishSnapshot(fixture + "/status-override.json", stale);
+        require(
+            wait([&] { return status->text().startsWith("Waiting for current status of this workflow."); }),
+            "Regressing status did not remain unresolved");
+        require(
+            observed == current && stages->currentText() == retained_stage && is_error() && workflow->active() &&
+                !start->isEnabled(),
+            "A lower epoch or revision replaced current state or admitted new work");
+        QFile::remove(fixture + "/status-override.json");
+        require(
+            wait([&] { return !is_error() && status->text().startsWith("Workflow status recovered."); }),
+            "Fresh status did not clear the stale-response warning");
+      }
+    }
+    const int polls = controllerCalls(fixture, "status");
+    require(
+        wait([&] { return controllerCalls(fixture, "status") >= polls + 2; }), "Recovered workflow stopped polling");
+    require(
+        controllerCalls(fixture, "submit") == 1 && controllerCalls(fixture, "cancel") == 0,
+        "Response recovery duplicated submission or sent unsolicited cancellation");
+  }
+}
+
+void closeWorkflow(StitchingExperimentDialog& dialog, const QString& route, bool cancel, bool expect_prompt = true) {
+  bool prompted = false;
+  bool safe_default = false;
+  QTimer::singleShot(0, &dialog, [&] {
+    if (auto* prompt = dialog.findChild<QMessageBox*>("stitchExperimentWorkflowCloseGuard")) {
+      prompted = true;
+      auto* stop = prompt->findChild<QPushButton*>("stitchExperimentCloseWorkflowCancel");
+      auto* keep = prompt->findChild<QPushButton*>("stitchExperimentCloseWorkflowKeep");
+      safe_default = stop && keep && prompt->defaultButton() == keep && prompt->escapeButton() == keep &&
+          !stop->icon().isNull() && !keep->icon().isNull();
+      const auto screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_CLOSE_SCREENSHOT_DIR");
+      if (!screenshots.isEmpty())
+        prompt->grab().save(screenshots + "/close-confirmation.png");
+      if (safe_default)
+        (cancel ? stop : keep)->click();
+      else
+        prompt->reject();
+    }
+  });
+  if (route == "button")
+    widget<QPushButton>(dialog, "closeStitchExperimentButton")->click();
+  else if (route == "window")
+    dialog.windowHandle()->close();
+  else {
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QApplication::sendEvent(&dialog, &escape);
+  }
+  QApplication::processEvents();
+  require(
+      expect_prompt ? prompted && safe_default : !prompted,
+      "Workflow Close must confirm cancellation once with Keep as default, then retain the pending cleanup");
+}
+
+void waitForDeleted(QPointer<StitchingExperimentDialog>& dialog) {
+  if (!dialog)
+    return;
+  // A real loop delivers DeferredDelete as HStreamWindow's show() does; a
+  // processEvents-only polling loop cannot prove WA_DeleteOnClose behavior.
+  QEventLoop closed;
+  QTimer timeout;
+  timeout.setSingleShot(true);
+  QObject::connect(&timeout, &QTimer::timeout, &closed, &QEventLoop::quit);
+  QObject::connect(dialog, &QObject::destroyed, &closed, &QEventLoop::quit);
+  timeout.start(5000);
+  closed.exec();
+  require(
+      dialog.isNull(), "Finished workflow close did not delete the dialog; reopening would strand its Close action");
+}
+
+void dialogCancelLifecycle(
+    const QString& root,
+    const QString& game,
+    const QString& runner,
+    const QProcessEnvironment& environment) {
+  auto running = read(root + "/state.json");
+  running.insert("state", "running");
+  running.insert("owner_released", false);
+  running.remove("cancel_requested");
+  auto initial_owner = hm::game_operation::Inspect(game.toStdString());
+  require(initial_owner.ok() && initial_owner->has_value(), "Cancellation fixture requires durable workflow ownership");
+  auto remote = **initial_owner;
+  QMainWindow owner;
+  auto* main_action = new QPushButton("Main window action", &owner);
+  owner.setCentralWidget(main_action);
+  owner.resize(800, 600);
+  owner.show();
+  int main_actions = 0;
+  QObject::connect(main_action, &QPushButton::clicked, &owner, [&] { ++main_actions; });
+  int reopen_count = 0;
+  for (const QString scenario :
+       {"button",
+        "window",
+        "escape",
+        "cancel-error",
+        "lost-cancel-response",
+        "recovery",
+        "status-unavailable",
+        "cleanup-recovery",
+        "cleanup-error",
+        "controller-error",
+        "controller-offline",
+        "button"}) {
+    std::cout << "Workflow close scenario: " << scenario.toStdString() << std::endl;
+    require(!owner.findChild<QDialog*>("stitchingExperimentDialog"), "Reopen found a previously closing dialog");
+    if (reopen_count) {
+      auto lock = hm::game_operation::Lock::Acquire(game.toStdString());
+      require(lock.ok() && (*lock)->Claim(remote).ok(), "Cannot claim the next isolated workflow fixture");
+    }
+    running.insert("epoch", reopen_count);
+    running.insert("state", scenario == "recovery" ? "recovery" : "running");
+    write(root + "/state.json", QJsonDocument(running).toJson());
+    write(root + "/hold-owner-release", "held");
+    const int cancellations = controllerCalls(root, "cancel");
+    const int retries = controllerCalls(root, "retry");
+    bool saw_release = false;
+    bool retry_enabled_at_release = false;
+    QPointer<StitchingExperimentDialog> dialog = new StitchingExperimentDialog(
+        game, runner, root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00", &owner);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->show();
+    require(
+        wait([&] {
+          return widget<QComboBox>(*dialog, "stitchWorkflowStage")->count() > 4 &&
+              widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled();
+        }),
+        "Parent-owned monitor did not attach to the running workflow");
+    require(QApplication::activeModalWidget() == dialog, "Fixture must exercise the real modal parent relationship");
+    widget<QComboBox>(*dialog, "stitchWorkflowStage")->setCurrentIndex(0);
+    auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(*dialog, "stitchingWorkflowPane"));
+    const auto snapshot_changed = workflow->snapshotChanged;
+    workflow->snapshotChanged = [&, snapshot_changed](const QJsonObject& value) {
+      snapshot_changed(value);
+      if (value.value("owner_released").toBool()) {
+        saw_release = true;
+        auto* retry = widget<QPushButton>(*dialog, "retryStitchWorkflowStageButton");
+        retry_enabled_at_release |= retry->isEnabled();
+        retry->click();
+      }
+    };
+    const QString route = scenario == "window" || scenario == "escape" ? scenario : "button";
+    closeWorkflow(*dialog, route, false);
+    require(
+        dialog && dialog->isVisible() && controllerCalls(root, "cancel") == cancellations,
+        "Keeping the workflow running closed its dialog or sent cancellation");
+    QPointer<QDialog> expanded;
+    if (reopen_count % 2 == 0) {
+      widget<QPushButton>(*dialog, "expandStitchWorkflowButton")->click();
+      expanded = widget<QDialog>(*dialog, "stitchWorkflowExpandedWindow");
+      require(wait([&] { return expanded && expanded->isVisible(); }), "Expanded monitor did not open");
+    }
+    int finished = 0;
+    QObject::connect(dialog, &QDialog::finished, &owner, [&](int) { ++finished; });
+    const bool retry = scenario == "cancel-error" || scenario == "lost-cancel-response";
+    if (retry)
+      write(root + (scenario == "cancel-error" ? "/reject-cancel" : "/lose-cancel-response"), "reject");
+    closeWorkflow(*dialog, route, true);
+    if (retry) {
+      require(
+          wait([&] {
+            return widget<QLabel>(*dialog, "stitchExperimentStatus")
+                ->text()
+                .contains(scenario == "cancel-error" ? "Cancellation rejected" : "Cancellation response unavailable");
+          }),
+          "Cancellation failure was not reported for explicit retry");
+      require(dialog->isVisible() && finished == 0, "Cancellation failure silently closed the dialog");
+      QFile::remove(root + "/reject-cancel");
+      QFile::remove(root + "/lose-cancel-response");
+      closeWorkflow(*dialog, route, true);
+    }
+    int expected_cancellations = cancellations + (retry ? 2 : 1);
+    // The controller writes its state before the response arrives. Inject
+    // post-cancellation failures only after the command callback completes.
+    require(
+        wait([&] {
+          return !workflow->busy() && controllerCalls(root, "cancel") == expected_cancellations &&
+              read(root + "/state.json").value("cancel_requested").toBool();
+        }),
+        "Confirmed close did not request workflow cancellation");
+    if (scenario == "status-unavailable" || scenario == "cleanup-recovery" || scenario == "cleanup-error" ||
+        scenario == "controller-error" || scenario == "controller-offline") {
+      QString expected_error;
+      if (scenario == "status-unavailable")
+        write(root + "/status-unavailable", "2");
+      else {
+        auto stalled = read(root + "/state.json");
+        if (scenario == "cleanup-recovery")
+          stalled.insert("state", "recovery");
+        else if (scenario == "controller-error") {
+          expected_error = "Fixture controller could not reconcile ownership release";
+          stalled.insert("controller_error", QJsonObject{{"error", expected_error}});
+        } else if (scenario == "controller-offline") {
+          expected_error = "Fixture controller heartbeat unavailable";
+          stalled.insert("controller_online", false);
+          stalled.insert("controller_warning", QJsonObject{{"error", expected_error}});
+        } else
+          stalled.insert("cancel_error", QJsonObject{{"error", "Fixture cleanup could not confirm resource release"}});
+        write(root + "/state.json", QJsonDocument(stalled).toJson());
+      }
+      const bool retry_available = wait([&] {
+        return widget<QPushButton>(*dialog, "closeStitchExperimentButton")->isEnabled() &&
+            widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled() &&
+            (expected_error.isEmpty() ||
+             widget<QLabel>(*dialog, "stitchExperimentStatus")->text().contains(expected_error));
+      });
+      if (!retry_available)
+        std::cerr << "Close recovery scenario " << scenario.toStdString() << ": "
+                  << widget<QLabel>(*dialog, "stitchExperimentStatus")->text().toStdString() << '\n'
+                  << "Close enabled=" << widget<QPushButton>(*dialog, "closeStitchExperimentButton")->isEnabled()
+                  << " Cancel enabled=" << widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled()
+                  << " Workflow busy=" << workflow->busy() << " active=" << workflow->active() << '\n'
+                  << QJsonDocument(read(root + "/state.json")).toJson(QJsonDocument::Compact).toStdString() << '\n';
+      require(
+          retry_available,
+          "Monitoring or cleanup failure stranded the pending close instead of allowing explicit cancellation retry");
+      require(
+          dialog->isVisible() && finished == 0 && controllerCalls(root, "cancel") == expected_cancellations,
+          "Monitoring recovery dismissed the dialog or retried cancellation without an explicit action");
+      QFile::remove(root + "/status-unavailable");
+      auto recovered = read(root + "/state.json");
+      recovered.insert("state", "cancelled");
+      recovered.remove("cancel_error");
+      recovered.remove("controller_error");
+      recovered.remove("controller_warning");
+      recovered.remove("controller_online");
+      write(root + "/state.json", QJsonDocument(recovered).toJson());
+      closeWorkflow(*dialog, route, true);
+      ++expected_cancellations;
+      require(
+          wait([&] { return controllerCalls(root, "cancel") == expected_cancellations; }),
+          "Explicit close retry did not reach the recovered cancellation controller");
+    }
+    const int polls = controllerCalls(root, "status");
+    require(wait([&] { return controllerCalls(root, "status") >= polls + 3; }), "Cleanup monitoring stopped");
+    require(
+        dialog && dialog->isVisible() && finished == 0 && QApplication::activeModalWidget() == dialog &&
+            controllerCalls(root, "cancel") == expected_cancellations,
+        "Terminal cancellation closed before owner release or repeatedly sent cancellation");
+    closeWorkflow(*dialog, route, false, false);
+    require(controllerCalls(root, "cancel") == expected_cancellations, "Repeated Close resent pending cancellation");
+    const auto retained_owner = hm::game_operation::Inspect(game.toStdString());
+    require(
+        retained_owner.ok() && retained_owner->has_value() && (**retained_owner).token == remote.token,
+        "Closing bypassed the workflow's retained cleanup ownership");
+    auto terminal = read(root + "/state.json");
+    terminal.remove("owner_released");
+    write(root + "/state.json", QJsonDocument(terminal).toJson());
+    const int missing_release_polls = controllerCalls(root, "status");
+    require(
+        wait([&] { return controllerCalls(root, "status") >= missing_release_polls + 2; }) && dialog->isVisible(),
+        "Missing release attestation was treated as completed cleanup");
+    const auto screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_CLOSE_SCREENSHOT_DIR");
+    if (!screenshots.isEmpty() && !expanded)
+      require(dialog->grab().save(screenshots + "/waiting-for-cleanup.png"), "Cannot capture cleanup wait");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game.toStdString());
+      require(lock.ok() && (*lock)->Release(remote.token, remote.revision, true).ok(), "Cannot finish fixture cleanup");
+    }
+    QFile::remove(root + "/hold-owner-release");
+    terminal.insert("owner_released", true);
+    write(root + "/state.json", QJsonDocument(terminal).toJson());
+    waitForDeleted(dialog);
+    require(expanded.isNull() && finished == 1, "Cancellation close left an expanded window or duplicated completion");
+    require(!QApplication::activeModalWidget(), "Completed cancellation left the main window modal-blocked");
+    main_action->click();
+    require(main_actions == ++reopen_count, "Main window controls did not return after verified cancellation");
+    require(controllerCalls(root, "cancel") == expected_cancellations, "Final cleanup resubmitted cancellation");
+    require(
+        saw_release && !retry_enabled_at_release && controllerCalls(root, "retry") == retries &&
+            read(root + "/state.json").value("epoch").toInt() == reopen_count - 1,
+        "Deferred close briefly enabled Retry or admitted a new epoch after cleanup released the workflow");
+  }
+}
+
+void dialogCloseDuringSubmission(const QString& root) {
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", root);
+  QMainWindow owner;
+  owner.resize(800, 600);
+  owner.show();
+  for (const QString scenario : {"accepted", "lost-response", "rejected"}) {
+    const QString game = root + "/close-during-submit-" + scenario;
+    QDir().mkpath(game + "/_hockeymon");
+    write(
+        game + "/_hockeymon/config.yaml",
+        ("game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\nworkflow:\n  registry: " + root +
+         "\n  poll_interval_ms: 100\n")
+            .toUtf8());
+    write(game + "/left.mp4", "left");
+    write(game + "/right.mp4", "right");
+    QFile::remove(root + "/lose-submit-response");
+    QFile::remove(root + "/skip-submit-status-failures");
+    QFile::remove(root + "/reject-submit");
+    QFile::remove(root + "/status-unavailable");
+    write(root + "/hold-submit", "held");
+    write(root + "/hold-owner-release", "held");
+    if (scenario != "accepted")
+      write(root + (scenario == "rejected" ? "/reject-submit" : "/lose-submit-response"), "fixture");
+    if (scenario == "lost-response")
+      write(root + "/skip-submit-status-failures", "fixture");
+    const int submissions = controllerCalls(root, "submit");
+    const int cancellations = controllerCalls(root, "cancel");
+    QPointer<StitchingExperimentDialog> dialog = new StitchingExperimentDialog(
+        game, "/bin/false", root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00", &owner);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->show();
+    auto* profile = widget<QComboBox>(*dialog, "stitchWorkflowProfile");
+    auto* start = widget<QPushButton>(*dialog, "startStitchExperimentBatchButton");
+    widget<QPushButton>(*dialog, "addStitchExperimentsToBatchButton")->click();
+    require(
+        wait([&] { return start->isEnabled() && profile->count() == 2; }),
+        "Pending submission fixture did not prepare");
+    profile->setCurrentIndex(1);
+    start->click();
+    require(
+        wait([&] { return controllerCalls(root, "submit") == submissions + 1; }), "Submission was not held in flight");
+    closeWorkflow(*dialog, "button", true);
+    QElapsedTimer held;
+    held.start();
+    require(wait([&] { return held.elapsed() >= 150; }), "Pending submission observation stalled");
+    require(
+        dialog && dialog->isVisible() && controllerCalls(root, "cancel") == cancellations,
+        "Close raced cancellation against an unresolved submission or disappeared before admission resolved");
+    QFile::remove(root + "/hold-submit");
+    if (scenario != "rejected") {
+      require(
+          wait([&] {
+            return controllerCalls(root, "cancel") == cancellations + 1 &&
+                read(root + "/state.json").value("cancel_requested").toBool();
+          }),
+          "Pending Close lost its cancellation intent after submission acceptance or response loss");
+      require(dialog && dialog->isVisible(), "Accepted submission closed before cancellation cleanup");
+      auto terminal = read(root + "/state.json");
+      terminal.insert("owner_released", true);
+      write(root + "/state.json", QJsonDocument(terminal).toJson());
+    }
+    waitForDeleted(dialog);
+    require(
+        controllerCalls(root, "submit") == submissions + 1 &&
+            controllerCalls(root, "cancel") == cancellations + (scenario == "rejected" ? 0 : 1),
+        "Close resubmitted compute, duplicated cancellation or cancelled a definitely rejected submission");
+    require(!QApplication::activeModalWidget(), "Resolved submission close kept the main window modal-blocked");
+    QFile::remove(root + "/hold-owner-release");
+  }
+  QFile::remove(root + "/lose-submit-response");
+  QFile::remove(root + "/skip-submit-status-failures");
+  QFile::remove(root + "/reject-submit");
+  QFile::remove(root + "/status-unavailable");
+}
+
+void dialogCloseDuringRetry(const QString& root) {
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", root);
+  const QString launcher = root + "/scripts/hstream-workflow";
+  const auto launcher_permissions = QFile::permissions(launcher);
+  QMainWindow owner;
+  owner.resize(800, 600);
+  owner.show();
+  for (const QString scenario :
+       {"accepted",
+        "lost-response",
+        "lost-response-status-unavailable",
+        "missing-nodes",
+        "older-revision",
+        "rejected",
+        "launch-failure"}) {
+    std::cout << "Workflow retry-close scenario: " << scenario.toStdString() << std::endl;
+    const bool accepted = scenario != "rejected" && scenario != "launch-failure";
+    const bool launch_failure = scenario == "launch-failure";
+    const bool invalid_response = scenario == "missing-nodes" || scenario == "older-revision";
+    for (const QString flag :
+         {"hold-retry",
+          "reject-retry",
+          "lose-retry-response",
+          "retry-status-unavailable",
+          "retry-response-mode",
+          "status-unavailable"})
+      QFile::remove(root + "/" + flag);
+    const QString game = root + "/close-during-retry-" + scenario;
+    QDir().mkpath(game + "/_hockeymon");
+    write(
+        game + "/_hockeymon/config.yaml",
+        ("game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\nworkflow:\n  registry: " + root +
+         "\n  poll_interval_ms: 100\n")
+            .toUtf8());
+    write(game + "/left.mp4", "left");
+    write(game + "/right.mp4", "right");
+    QPointer<StitchingExperimentDialog> dialog = new StitchingExperimentDialog(
+        game, "/bin/false", root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00", &owner);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->show();
+    auto* profile = widget<QComboBox>(*dialog, "stitchWorkflowProfile");
+    auto* start = widget<QPushButton>(*dialog, "startStitchExperimentBatchButton");
+    auto* retry = widget<QPushButton>(*dialog, "retryStitchWorkflowStageButton");
+    auto* stage = widget<QComboBox>(*dialog, "stitchWorkflowStage");
+    auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(*dialog, "stitchingWorkflowPane"));
+    widget<QPushButton>(*dialog, "addStitchExperimentsToBatchButton")->click();
+    require(wait([&] { return start->isEnabled() && profile->count() == 2; }), "Retry-close fixture did not prepare");
+    profile->setCurrentIndex(1);
+    start->click();
+    require(
+        wait([&] { return !workflow->busy() && workflow->active() && stage->count() > 0; }),
+        "Retry-close fixture did not submit its initial workflow");
+    const int submissions = controllerCalls(root, "submit");
+    auto terminal = read(root + "/state.json");
+    terminal.insert("state", "failed");
+    terminal.insert("owner_released", true);
+    auto nodes = terminal.value("nodes").toArray();
+    auto failed = nodes[0].toObject();
+    failed.insert("state", "failed");
+    nodes[0] = failed;
+    terminal.insert("nodes", nodes);
+    write(root + "/state.json", QJsonDocument(terminal).toJson());
+    stage->setCurrentIndex(0);
+    require(
+        wait([&] { return retry->isEnabled() && !workflow->active(); }),
+        "Released terminal epoch did not enable Retry");
+    const int previous_epoch = terminal.value("epoch").toInt();
+    const int retries = controllerCalls(root, "retry");
+    const int cancellations = controllerCalls(root, "cancel");
+    write(root + "/hold-owner-release", "held");
+    write(root + "/hold-retry", "held");
+    if (scenario.startsWith("lost-response"))
+      write(root + "/lose-retry-response", "fixture");
+    if (scenario == "lost-response-status-unavailable")
+      write(root + "/retry-status-unavailable", "fixture");
+    if (invalid_response)
+      write(root + "/retry-response-mode", scenario.toUtf8());
+    if (scenario == "rejected")
+      write(root + "/reject-retry", "fixture");
+    if (launch_failure)
+      require(
+          QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner),
+          "Cannot prevent the Retry client from starting");
+    retry->click();
+    if (!launch_failure)
+      require(
+          wait([&] { return workflow->busy() && controllerCalls(root, "retry") == retries + 1; }),
+          "Retry request was not held in flight");
+    closeWorkflow(*dialog, "button", true, workflow->active() || workflow->busy());
+    if (!launch_failure) {
+      QElapsedTimer held;
+      held.start();
+      require(wait([&] { return held.elapsed() >= 150; }), "Pending Retry observation stalled");
+      require(
+          dialog && dialog->isVisible() && QApplication::activeModalWidget() == dialog &&
+              controllerCalls(root, "cancel") == cancellations &&
+              read(root + "/state.json").value("epoch").toInt() == previous_epoch,
+          "Close used the previous epoch's release or cancelled before Retry resolved");
+    }
+    const int status_before_resolution = controllerCalls(root, "status");
+    QFile::remove(root + "/hold-retry");
+    if (scenario == "lost-response-status-unavailable" || invalid_response) {
+      require(
+          wait([&] { return !dialog || controllerCalls(root, "status") >= status_before_resolution + 2; }),
+          "Lost Retry response did not reconcile through fresh status requests");
+      require(
+          dialog && dialog->isVisible() && QApplication::activeModalWidget() == dialog && workflow->active() &&
+              workflow->busy() && !retry->isEnabled() && !start->isEnabled() &&
+              controllerCalls(root, "cancel") == cancellations &&
+              read(root + "/state.json").value("epoch").toInt() == previous_epoch + 1 &&
+              !read(root + "/state.json").value("owner_released").toBool(),
+          "Uncertain Retry closed from the prior release or cancelled a stale epoch while status was unavailable");
+      QFile::remove(root + "/status-unavailable");
+    }
+    if (accepted) {
+      require(
+          wait([&] {
+            return !dialog ||
+                (!workflow->busy() && controllerCalls(root, "cancel") == cancellations + 1 &&
+                 read(root + "/state.json").value("cancel_requested").toBool());
+          }),
+          "Close did not cancel the accepted Retry after response or status reconciliation");
+      require(dialog && dialog->isVisible(), "Accepted Retry closed using the previous epoch's release");
+      terminal = read(root + "/state.json");
+      require(
+          terminal.value("epoch").toInt() == previous_epoch + 1 && !terminal.value("owner_released").toBool(),
+          "Retry cancellation did not retain the new epoch's cleanup ownership");
+      const int cancellation_polls = controllerCalls(root, "status");
+      require(
+          wait([&] { return controllerCalls(root, "status") >= cancellation_polls + 2; }) && dialog->isVisible(),
+          "Retry cancellation closed before explicit owner release");
+      terminal.insert("owner_released", true);
+      write(root + "/state.json", QJsonDocument(terminal).toJson());
+    }
+    waitForDeleted(dialog);
+    require(QFile::setPermissions(launcher, launcher_permissions), "Cannot restore the fixture controller");
+    require(
+        controllerCalls(root, "submit") == submissions &&
+            controllerCalls(root, "retry") == retries + (launch_failure ? 0 : 1) &&
+            controllerCalls(root, "cancel") == cancellations + (accepted ? 1 : 0) &&
+            read(root + "/state.json").value("epoch").toInt() == previous_epoch + (accepted ? 1 : 0),
+        "Retry-close duplicated a request, cancelled an unaccepted Retry or lost its new epoch");
+    require(
+        scenario != "rejected" || controllerCalls(root, "status") > status_before_resolution,
+        "Rejected Retry closed without a fresh status response confirming the prior epoch still owns no work");
+    require(!QApplication::activeModalWidget(), "Resolved Retry kept the main window modal-blocked");
+    QFile::remove(root + "/hold-owner-release");
+  }
+  for (const QString flag :
+       {"hold-retry",
+        "reject-retry",
+        "lose-retry-response",
+        "retry-status-unavailable",
+        "retry-response-mode",
+        "status-unavailable"})
+    QFile::remove(root + "/" + flag);
+}
+
 void dialogOwnership(const QString& root) {
   const auto status_calls = [&] {
     QFile calls(root + "/calls");
@@ -880,11 +1717,13 @@ void dialogOwnership(const QString& root) {
   require(before.open(QIODevice::ReadOnly), "Cannot read controller calls");
   const auto calls = before.readAll();
   before.close();
-  dialog.close();
-  require(wait([&] { return !dialog.isVisible(); }), "Closing submitted workflow did not detach");
+  const auto running_snapshot = read(root + "/state.json");
+  closeWorkflow(dialog, "button", true);
+  require(wait([&] { return !dialog.isVisible(); }), "Confirmed workflow cancellation did not close the dialog");
   QFile after(root + "/calls");
   require(after.open(QIODevice::ReadOnly), "Cannot reread controller calls");
-  require(after.readAll().count("cancel") == calls.count("cancel"), "Dialog close cancelled submitted jobs");
+  require(after.readAll().count("cancel") == calls.count("cancel") + 1, "Confirmed Close did not cancel exactly once");
+  write(root + "/state.json", QJsonDocument(running_snapshot).toJson());
   // Real submission owns the game durably. Reopening must use advisory config
   // reads, not attempt transaction recovery through the mutation admission gate.
   auto store = OpenStitchingExperimentStore(game.toStdString());
@@ -923,8 +1762,8 @@ void dialogOwnership(const QString& root) {
         !widget<QPushButton>(reopened, "addStitchExperimentsToBatchButton")->isEnabled() &&
             !widget<QPushButton>(reopened, "startStitchExperimentBatchButton")->isEnabled(),
         "Unbound workflow monitoring permitted a conflicting batch");
-    reopened.close();
-    require(wait([&] { return !reopened.isVisible(); }), "Unbound owner monitor did not detach");
+    closeWorkflow(reopened, "button", false);
+    require(reopened.isVisible(), "Declining cancellation closed an unbound owner monitor");
   }
   write(index_path, unbound_index);
   hm::game_operation::RegisterAuthorization(store->game_directory, remote.token);
@@ -972,13 +1811,10 @@ void dialogOwnership(const QString& root) {
     require(
         main_config.open(QIODevice::ReadOnly) && main_config.readAll() == before_reopen,
         "Read-only workflow reopen rewrote the main configuration");
-    reopened.close();
-    require(wait([&] { return !reopened.isVisible(); }), "Reopened monitor did not detach");
+    closeWorkflow(reopened, "button", false);
+    require(reopened.isVisible(), "Declining cancellation closed the reopened monitor");
   }
-  {
-    auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
-    require(lock.ok() && (*lock)->Release(remote.token, remote.revision, true).ok(), "Cannot retire remote test owner");
-  }
+  dialogCancelLifecycle(root, game, runner, environment);
 }
 
 void killedExperimentGuard(const QString& root) {
@@ -1058,6 +1894,11 @@ int main(int argc, char** argv) {
     qputenv("HSTREAM_JOB_MANAGED_RUNTIME", "1");
     auto baseline = hm::baseline_config::load();
     require(baseline.ok(), "Cannot load baseline");
+    if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_RECOVERY_ONLY") != 0) {
+      dialogSubmissionRecovery(temporary.path());
+      std::cout << "Workflow submission diagnostics and dialog recovery passed\n";
+      return 0;
+    }
     StitchingExperimentStore store;
     store.game_directory = temporary.path().toStdString() + "/game";
     store.directory = store.game_directory / "_hockeymon/stitching-experiments";
@@ -1065,8 +1906,12 @@ int main(int argc, char** argv) {
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));
     dialogOwnership(temporary.path());
+    dialogCloseDuringSubmission(temporary.path());
+    dialogCloseDuringRetry(temporary.path());
+    dialogSubmissionRecovery(temporary.path());
     killedExperimentGuard(temporary.path());
-    std::cout << "Workflow DAG, async UI, retry/log history, wheel routing, detach/reopen and cancellation passed\n";
+    std::cout
+        << "Workflow DAG, async UI, retry/log history, wheel routing, close confirmation and verified cancellation passed\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << "FAIL: " << error.what() << '\n';

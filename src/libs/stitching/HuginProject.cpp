@@ -3449,10 +3449,15 @@ absl::Status HuginProject::PromoteArtifactsAndConfig(
     return absl::InvalidArgumentError("Stitching experiment source and destination must be different directories");
   error.clear();
 
-  auto source_lock = RecoverAndLock(experiment_game_dir);
+  // Promotion reads a published source generation; it does not own the source
+  // pipeline or authorize recovery/normalization there. Retain all snapshot
+  // locks through publication and normalize only the destination's staging copy.
+  auto source_lock = try_lock_canvas_constraint_snapshot(experiment_game_dir);
   if (!source_lock.ok())
     return source_lock.status();
-  auto provenance = ReadCanvasProvenance(experiment_game_dir, **source_lock);
+  if (!*source_lock)
+    return absl::UnavailableError("Selected calibration is being updated or requires transaction recovery");
+  auto provenance = ReadCanvasProvenanceLocked(experiment_game_dir);
   if (!provenance.ok())
     return provenance.status();
   const std::optional<size_t> maximum_dimension = provenance->has_value() && (**provenance).max_canvas_dimension > 0
@@ -3461,10 +3466,9 @@ absl::Status HuginProject::PromoteArtifactsAndConfig(
   const std::optional<size_t> maximum_width = provenance->has_value() && (**provenance).max_output_width > 0
       ? std::optional<size_t>((**provenance).max_output_width)
       : std::nullopt;
-  HM_RETURN_IF_ERROR(validate_staged_artifacts(
-      hm::game_storage::StateDirectory(experiment_game_dir), maximum_dimension, maximum_width));
-
-  auto destination_lock = RecoverAndLock(game_dir);
+  // Do not wait while retaining the source locks: another selection can have
+  // the two directories in the opposite order.
+  auto destination_lock = RecoverAndLock(game_dir, /*wait=*/false);
   if (!destination_lock.ok())
     return destination_lock.status();
   auto staging_result = make_staging_directory(game_dir);

@@ -290,8 +290,9 @@ stage details, attempt history/logs, Retry and Stop with matching native icons a
 enablement. Graph nodes show prerequisites and distinct waiting/queued/running/
 unavailable/blocked/recovery outcomes. Selecting nodes and reading logs works during
 execution. Ready results can be inspected; preview/promotion remains exclusively
-admitted. Closing detaches; reopen, another tab/window and full app restart recover
-the same workflow. Main controls remain disabled by durable ownership.
+admitted. Closing requires cancellation and verified cleanup; refusing cancellation
+keeps the dialog open. Reopen after an unexpected exit recovers the same workflow.
+Main controls remain disabled by durable ownership.
 
 Export batch in both interfaces as an owner-scoped runnable launcher plus sealed
 plan, with explicit execution mode. Web export must use admitted profile/input IDs

@@ -35,6 +35,13 @@ Switching tabs preserves playback, inputs and stage/attempt selection. It
 restores an expanded preview or workflow to the tab layout without stopping
 work. A local sequential batch reports progress and output in Workflow too.
 
+Closing the dialog while a workflow is active offers **Cancel workflow and
+close** or **Keep workflow running**. The latter leaves the dialog open.
+Cancellation keeps the Workflow tab visible until jobs stop and cleanup releases
+their resources, then closes without applying or deleting completed results.
+If cancellation fails or cleanup remains uncertain, the dialog stays open;
+the error and logs remain available, and Close can retry a failed cancellation.
+
 ### What Save Preset stores
 
 For a desktop game, **Save Preset** writes `_hockeymon/config.yaml`: the displayed

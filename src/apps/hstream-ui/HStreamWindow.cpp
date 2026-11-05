@@ -191,6 +191,13 @@ QString ui_path_preference(const QString& key) {
   return QSettings(ui_settings_path(), QSettings::IniFormat).value(key).toString();
 }
 
+QString ui_game_selection_key(const QString& root) {
+  const QFileInfo directory(root);
+  const QString canonical = directory.canonicalFilePath();
+  const QString identity = canonical.isEmpty() ? QDir::cleanPath(directory.absoluteFilePath()) : canonical;
+  return "selection/last-game/" + QString::fromLatin1(QUrl::toPercentEncoding(identity));
+}
+
 bool save_ui_path_preference(const QString& key, const QString& path) {
   QSettings settings(ui_settings_path(), QSettings::IniFormat);
   settings.setValue(key, path);
@@ -5529,6 +5536,13 @@ void HStreamWindow::closeEvent(QCloseEvent* event) {
   if (!event) {
     return;
   }
+  if (auto* experiments = findChild<QDialog*>("stitchingExperimentDialog")) {
+    // Parent destruction must not bypass the experiment window's cancellation
+    // and cleanup gate. A later main-window close can exit once it has retired.
+    event->ignore();
+    experiments->close();
+    return;
+  }
   deferred_play_requested_ = false;
   deferred_restart_requested_ = false;
   deferred_restart_game_id_.clear();
@@ -6770,6 +6784,7 @@ void HStreamWindow::buildGameControls(QVBoxLayout* root) {
   connect(game_id_edit_, &QLineEdit::editingFinished, this, [this]() {
     game_id_edit_->setText(sanitized_game_id(game_id_edit_->text()));
     refreshVideoSets();
+    rememberGameSelection();
   });
 
   auto* create = new QPushButton(style()->standardIcon(QStyle::SP_DialogApplyButton), "Create / Load");
@@ -21956,6 +21971,24 @@ bool HStreamWindow::applySavedControlConfig(
   return true;
 }
 
+QString HStreamWindow::rememberedGame() const {
+  const QString game = ui_path_preference(ui_game_selection_key(gameRoot()));
+  return !game.isEmpty() && game != "_hockeymon" && sanitized_game_id(game) == game &&
+          QFileInfo(gameDirectory(game)).isDir()
+      ? game
+      : QString();
+}
+
+void HStreamWindow::rememberGameSelection() {
+  const QString game = game_id_edit_ ? game_id_edit_->text() : QString();
+  if (editing_defaults_ || game.isEmpty() || game == "_hockeymon" || sanitized_game_id(game) != game ||
+      !QFileInfo(gameDirectory(game)).isDir())
+    return;
+  const QString key = ui_game_selection_key(gameRoot());
+  if (ui_path_preference(key) != game && !save_ui_path_preference(key, game))
+    appendLog(QString("could not save game selection to %1").arg(ui_settings_path()));
+}
+
 void HStreamWindow::browseGameRoot() {
   if (!game_controls_->isEnabled())
     return;
@@ -21976,8 +22009,10 @@ void HStreamWindow::browseGameRoot() {
   // calibration and controls belong to a different game directory.
   {
     const QSignalBlocker blocker(game_id_edit_);
-    game_id_edit_->setText(
-        !previous_game.isEmpty() && QFileInfo(QDir(root).filePath(previous_game)).isDir() ? previous_game : QString());
+    QString next = rememberedGame();
+    if (next.isEmpty() && !previous_game.isEmpty() && QFileInfo(QDir(root).filePath(previous_game)).isDir())
+      next = previous_game;
+    game_id_edit_->setText(next);
   }
   refreshGames();
   if (game_id_edit_->text().isEmpty())
@@ -22012,6 +22047,11 @@ void HStreamWindow::refreshGames() {
       continue;
     game_selector_->addItem(dir.fileName());
   }
+  // Explicitly selected hidden games are valid, although ordinary discovery
+  // leaves hidden directories out of the game list.
+  const QString remembered = rememberedGame();
+  if (!remembered.isEmpty() && game_selector_->findText(remembered) < 0)
+    game_selector_->addItem(remembered);
 
   if (!current.isEmpty()) {
     int index = -1;
@@ -22027,7 +22067,14 @@ void HStreamWindow::refreshGames() {
   } else if (editing_defaults_ || game_selector_->count() == 1) {
     selectDefaults();
   } else if (game_selector_->count() > 1) {
-    game_selector_->setCurrentIndex(1);
+    int selected = 1;
+    for (int i = 1; i < game_selector_->count(); ++i) {
+      if (!remembered.isEmpty() && game_selector_->itemText(i) == remembered) {
+        selected = i;
+        break;
+      }
+    }
+    game_selector_->setCurrentIndex(selected);
     selectGame(game_selector_->currentText());
   } else if (game_path_label_) {
     game_path_label_->setText(gameRoot());
@@ -22055,6 +22102,23 @@ void HStreamWindow::selectGame(const QString& game_id) {
     return;
   }
   game_id_edit_->setText(sanitized_game_id(game_id));
+  if (game_selector_) {
+    const QSignalBlocker blocker(game_selector_);
+    const QString selected = game_id_edit_->text();
+    int index = -1;
+    for (int i = 1; i < game_selector_->count(); ++i) {
+      if (game_selector_->itemText(i) == selected) {
+        index = i;
+        break;
+      }
+    }
+    if (index < 0 && !selected.isEmpty() && selected != "_hockeymon" && QFileInfo(gameDirectory(selected)).isDir()) {
+      index = game_selector_->count();
+      game_selector_->addItem(selected);
+    }
+    if (index >= 0)
+      game_selector_->setCurrentIndex(index);
+  }
   if (game_path_label_) {
     game_path_label_->setText(gameDirectory(game_id_edit_->text()));
   }
@@ -22063,6 +22127,7 @@ void HStreamWindow::selectGame(const QString& game_id) {
   }
   refreshVideoSets();
   loadSavedControlConfig();
+  rememberGameSelection();
   appendLog(QString("game selected %1").arg(game_id_edit_->text()));
 }
 
@@ -22493,6 +22558,7 @@ bool HStreamWindow::ensureGameDirectory() {
   if (game_path_label_) {
     game_path_label_->setText(gameDirectory(game_id));
   }
+  rememberGameSelection();
   return true;
 }
 

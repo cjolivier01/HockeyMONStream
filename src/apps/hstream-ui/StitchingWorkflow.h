@@ -37,14 +37,16 @@ class StitchingWorkflow : public QWidget {
   void setEditingEnabled(bool enabled, bool queued);
   void start(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);
   void exportBatch(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);
-  void cancel();
+  void cancel(std::function<void(bool)> completed = {});
   void attach(const QString& workflow_id);
   void selectCandidate(const QString& catalog_key);
   void showLog();
   void restoreMonitor();
   std::function<void()> changed;
   std::function<void(const QJsonObject&)> snapshotChanged;
-  std::function<void(const QString&, bool)> message;
+  // A nonempty third argument replaces only that earlier notice, preserving
+  // newer messages from other dialog operations.
+  std::function<void(const QString&, bool, const QString&)> message;
   std::function<void()> exportRequested;
 
  private:

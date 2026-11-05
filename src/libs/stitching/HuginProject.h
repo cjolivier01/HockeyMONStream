@@ -274,7 +274,9 @@ class HuginProject {
   // Promotes the artifact generation and publishes the selected config/rink
   // invalidation under the same artifact/config locks. The durable artifact
   // journal uses the expected config contents to finish or roll back an
-  // interrupted selection as one generation.
+  // interrupted selection as one generation. The source is a read-only locked
+  // snapshot: its owner and artifacts are preserved, and pending source
+  // transactions must be recovered by their owner before selection can proceed.
   static absl::Status PromoteArtifactsAndConfig(
       const std::filesystem::path& experiment_game_dir,
       const std::filesystem::path& game_dir,

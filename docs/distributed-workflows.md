@@ -19,11 +19,19 @@ experiment target merely because its CLI cross-build succeeds.
 
 With no resource profile selected, the existing local serial workflow remains
 available. A configured profile exposes concurrency, dependencies, stage and
-attempt details, logs, Stop, Retry and Export. Closing a submitted workflow's
-pane detaches; reopening the recording reattaches to durable state. Stop is an
-explicit cancellation request, and remains pending until descendants and private
-runtime cleanup have stopped. The desktop and browser use the same graph states
+attempt details, logs, Stop, Retry and Export. Closing Stitching Experiments with
+an active workflow asks whether to **Cancel workflow and close** or **Keep
+workflow running**. Keeping it running leaves the dialog open. Confirming keeps
+the monitor visible until cancellation and private runtime cleanup release its
+resources; completed results stay saved. Errors and unconfirmed cleanup keep the
+window open, with logs and an explicit retry available. A terminal job status
+alone does not authorize closing. The desktop and browser use the same graph states
 and preserve successful siblings when a different solve fails.
+
+Unexpected application termination or browser-tab closure cannot prove that
+remote jobs stopped. Durable recording ownership remains in place; reopening
+the recording restores the monitor so the workflow can be cancelled and cleaned
+up. Normal dialog close never releases that owner itself.
 
 ```mermaid
 flowchart TD
@@ -87,6 +95,21 @@ The recording has one durable operation owner. Main playback, INT8 preparation,
 local experiment operations and distributed workflows respect the same owner,
 including across independent desktop processes and window closure. Releasing a
 GPU allocation alone does not release recording ownership before cleanup.
+
+Local experiment previews and calibration commands also reserve the actual
+candidate workspace under their command supervisor. The CLI inherits that
+workspace's authorization; verified descendant cleanup releases both scopes,
+including after a forced stop during startup. A failed launch retires its
+unconsumed reservation. Missing supervisor proof or a replaced owner retains
+the reservation for recovery.
+
+**Use selected in main Program** reads a locked snapshot of the completed
+candidate and copies it into the main game's publication transaction. It does
+not rewrite the candidate or clear its ownership record. This permits selecting
+an intact published result left with an old preview owner, while an active
+writer or unfinished source transaction still blocks selection. Seam
+normalization happens only in the destination's staging copy. The main game's
+ownership checks still apply.
 
 ## Standalone configuration
 
@@ -268,6 +291,22 @@ hstream-workflow cancel --registry /srv/hockey/workflow-registry --workflow UUID
 hstream-workflow retry --registry /srv/hockey/workflow-registry --workflow UUID --epoch 0 --stage STAGE
 hstream-workflow serve --registry /srv/hockey/workflow-registry
 ```
+
+`submit` acknowledges the sealed plan and durable registry entry before native
+runtime verification or ownership acquisition. The controller service performs
+those steps and binds the candidate catalog before admitting any task. A queued
+response means the request is retained, not that resources have been acquired.
+An ownership conflict permanently cancels that request and remains visible in
+status; it cannot start later when the conflicting operation finishes. `run`
+retains foreground admission and supervision.
+
+The desktop continues observing the exact workflow ID if a submission reply is
+lost or times out. Its notice identifies the failed command and asks the user to
+wait while status is checked, rather than resubmit. A current status replaces
+only that temporary notice; unrelated errors remain visible. Finished jobs,
+cleanup still in progress, and actual controller failures stay distinct. The
+browser follows its authenticated session/revision and workflow identity fences
+for the same recovery behavior.
 
 Read the current epoch from `status` before Stop or Retry. A control from an older
 retry epoch is rejected. Cancellation intent is durable independently of the

@@ -397,6 +397,8 @@ class HStreamWindow : public QMainWindow {
   void refreshGames();
   void browseGameRoot();
   void selectGame(const QString& game_id);
+  QString rememberedGame() const;
+  void rememberGameSelection();
   void createOrLoadGame();
   void addVideoPath();
   bool addVideoFile(const QString& path);

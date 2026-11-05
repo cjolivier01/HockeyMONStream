@@ -81,7 +81,8 @@ absl::Status PrepareSupervisedProcess(
     const std::string& token,
     int64_t grace_ms,
     int64_t poll_ms,
-    bool new_session) {
+    bool new_session,
+    const std::filesystem::path& command_game) {
   if (process.state() != QProcess::NotRunning)
     return absl::FailedPreconditionError("A running process cannot acquire another command permit");
   const auto guard = executable(process);
@@ -92,7 +93,7 @@ absl::Status PrepareSupervisedProcess(
   std::vector<std::string> child{process.program().toStdString()};
   for (const auto& argument : process.arguments())
     child.push_back(argument.toStdString());
-  auto permit = game_operation::PrepareSupervisedCommand(game, token, grace_ms, poll_ms, child);
+  auto permit = game_operation::PrepareSupervisedCommand(game, token, grace_ms, poll_ms, child, command_game);
   if (!permit.ok())
     return permit.status();
   delete command(process);
@@ -104,6 +105,12 @@ absl::Status PrepareSupervisedProcess(
     arguments << QString::fromStdString(argument);
   process.setProgram(new_session ? "/usr/bin/setsid" : *guard);
   process.setArguments(arguments);
+  if (!permit->command_game.empty()) {
+    auto environment = process.processEnvironment();
+    environment.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(permit->command_game.string()));
+    environment.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(permit->command_token));
+    process.setProcessEnvironment(environment);
+  }
   return absl::OkStatus();
 }
 

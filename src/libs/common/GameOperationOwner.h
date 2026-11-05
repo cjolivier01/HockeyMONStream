@@ -75,13 +75,18 @@ absl::Status EnableSupervisedChildProof(const std::string& token);
 struct SupervisedCommand {
   std::string id;
   std::vector<std::string> arguments;
+  // A command may operate on a private candidate instead of the recording
+  // that owns the outer operation. Its admission retires with this receipt.
+  std::filesystem::path command_game;
+  std::string command_token;
 };
 absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
     const std::filesystem::path& game,
     const std::string& token,
     int64_t grace_ms,
     int64_t poll_ms,
-    const std::vector<std::string>& command);
+    const std::vector<std::string>& command,
+    const std::filesystem::path& command_game = {});
 absl::Status SupervisedCommandStarted(const std::string& token, const std::string& id);
 absl::Status SupervisedCommandFinished(const std::string& token, const std::string& id);
 absl::StatusOr<bool> SupervisedCommandStopped(const std::string& token, const std::string& id);
