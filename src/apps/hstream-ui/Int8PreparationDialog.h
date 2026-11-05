@@ -7,7 +7,7 @@
 #include <filesystem>
 
 class QLabel;
-class QPlainTextEdit;
+class LogTextEdit;
 class QSpinBox;
 class QPushButton;
 class QCheckBox;
@@ -56,7 +56,7 @@ class Int8PreparationDialog : public QDialog {
   QByteArray output_;
   QString engine_, manifest_;
   QLabel* status_;
-  QPlainTextEdit* log_;
+  LogTextEdit* log_;
   QSpinBox* count_;
   QPushButton* prepare_;
   QCheckBox* play_;

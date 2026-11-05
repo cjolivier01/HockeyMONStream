@@ -31,6 +31,7 @@ filegroup(
         "ActionIcons.h",
         "AnsiLogFormat.cpp",
         "AnsiLogFormat.h",
+        "LogTextEdit.h",
         "ApplicationIdentity.cpp",
         "ApplicationIdentity.h",
         "BackendOptions.cpp",
@@ -107,6 +108,23 @@ filegroup(
         "ValueControlWheel.h",
     ],
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "log_text_edit",
+    hdrs = ["LogTextEdit.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "log_text_edit_test",
+    srcs = ["LogTextEditTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":log_text_edit", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -617,6 +635,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":log_text_edit",
         ":supervised_process",
         ":experiment_task_runtime",
         "//src/libs/common:game_operation_owner",
@@ -940,6 +959,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":log_text_edit",
         ":supervised_process",
         "//src/libs/common:game_operation_owner","//src/libs/common:game_storage",
         ":detector_options",
@@ -1169,7 +1189,7 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":supervised_process", "//src/libs/common:game_operation_owner", "//src/libs/common:baseline_config", ":action_icons", ":value_control_wheel", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
+    deps = [":log_text_edit", ":supervised_process", "//src/libs/common:game_operation_owner", "//src/libs/common:baseline_config", ":action_icons", ":value_control_wheel", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
 )
 
 cc_test(

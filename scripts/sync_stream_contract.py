@@ -211,7 +211,7 @@ def detector_catalog(root, baseline):
             "preparation_model": {
                 "config_infer_yolov8_hockey": "yolov8m",
                 "config_infer_yolov8s_hockey": "yolov8s",
-            }[row["config_prefix"]],
+            }.get(row["config_prefix"]),
         }
         for precision in precisions:
             filename = (
@@ -1285,6 +1285,8 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "src/apps/hstream-ui/HighlightItemEditor.cpp",
                 "src/apps/hstream-ui/StitchingExperimentDialog.cpp",
                 "src/apps/hstream-ui/StitchingWorkflow.cpp",
+                "src/apps/hstream-ui/LogTextEdit.h",
+                "src/apps/hstream-ui/Int8PreparationDialog.cpp",
                 "src/apps/hstream-ui/BackendOptions.cpp",
                 "src/apps/hstream-ui/ActionIcons.cpp",
                 "src/apps/hstream-ui/ActionIcons.h",

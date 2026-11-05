@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/UserConfig.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
+#include "src/apps/hstream-ui/LogTextEdit.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
@@ -643,7 +644,7 @@ struct StitchingWorkflow::Impl {
   uint64_t request_generation{0};
   int retry_epoch{-1};
   bool log_pending{false};
-  QPointer<QPlainTextEdit> log_view;
+  QPointer<LogTextEdit> log_view;
   void showMonitor(bool visible) {
     monitor->setVisible(visible);
     owner->setSizePolicy(
@@ -995,7 +996,9 @@ struct StitchingWorkflow::Impl {
     if (!log_view)
       return;
     if (!owner->hasSelection() || attempt->currentData().toString().isEmpty()) {
-      log_view->setPlainText("No attempt log is available. " + selectedNode().value("reason").toString());
+      log_view->setLogText(
+          "No attempt log is available. " + selectedNode().value("reason").toString(),
+          workflow + "/" + stage->currentData().toString());
       return;
     }
     if (log_pending)
@@ -1010,7 +1013,9 @@ struct StitchingWorkflow::Impl {
           if (!log_view || stage->currentData().toString() != selected_stage ||
               attempt->currentData().toString() != selected_attempt)
             return;
-          log_view->setPlainText(error.isEmpty() ? value.value("text").toString() : error);
+          log_view->setLogText(
+              error.isEmpty() ? value.value("text").toString() : error,
+              workflow + "/" + selected_stage + "/" + selected_attempt);
         });
   }
   void submitPlan(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog, bool exporting) {
@@ -1397,7 +1402,7 @@ void StitchingWorkflow::showLog() {
   dialog->setWindowTitle("Workflow stage log");
   dialog->resize(850, 500);
   auto* layout = new QVBoxLayout(dialog);
-  auto* log = new QPlainTextEdit(dialog);
+  auto* log = new LogTextEdit(dialog);
   log->setObjectName("stitchWorkflowLog");
   log->setReadOnly(true);
   log->setMaximumBlockCount(20000);

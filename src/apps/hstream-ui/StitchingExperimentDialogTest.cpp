@@ -2539,6 +2539,7 @@ void exercise_workflow_frame_selection(const QString& game, const QString& root)
                 {"state", released ? "succeeded" : "running"},
                 {"owner_released", released},
                 {"epoch", 0},
+                {"revision", 1},
                 {"nodes", QJsonArray{node}}})
             .toJson());
   };
@@ -2853,7 +2854,7 @@ void exercise_completed_workflow_preview(const QString& game, const QString& roo
       QFile::setPermissions(
           working + "/scripts/hstream-workflow", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
       "Cannot prepare completed workflow observer");
-  write(workflow_state, R"({"workflow_id":"preview-workflow","state":"running","epoch":0,"nodes":[]})");
+  write(workflow_state, R"({"workflow_id":"preview-workflow","state":"running","epoch":0,"revision":1,"nodes":[]})");
   for (const QString gesture : {"untouched", "click", "keyboard"}) {
     QFile::remove(status_requested);
     QFile::remove(status_release);
@@ -2904,7 +2905,7 @@ void exercise_completed_workflow_preview(const QString& game, const QString& roo
   }
   write(
       workflow_state,
-      R"({"workflow_id":"preview-workflow","state":"succeeded","owner_released":true,"epoch":0,"nodes":[]})");
+      R"({"workflow_id":"preview-workflow","state":"succeeded","owner_released":true,"epoch":0,"revision":1,"nodes":[]})");
   const auto workspace_unowned = [&] {
     const auto current = hm::game_operation::Inspect(result.game_directory);
     if (absl::IsUnavailable(current.status()))

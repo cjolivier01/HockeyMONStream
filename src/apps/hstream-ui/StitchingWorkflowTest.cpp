@@ -284,7 +284,9 @@ elif operation in ('cancel','retry'):
   (root/'status-unavailable').write_text('1000')
   if (root/'retry-response-mode').read_text()=='missing-nodes': value.pop('nodes')
   else: value['revision']-=1
-elif operation=='log': value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
+elif operation=='log':
+ value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
+ if (root/'log.txt').exists(): value['text']+='\n'+(root/'log.txt').read_text()
 else: raise SystemExit(9)
 print(json.dumps(value))
 )PY";
@@ -684,6 +686,51 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
         return log && log->toPlainText().contains("attempt-current retained log");
       }),
       "Running attempt log was not available");
+  auto* log = widget<QPlainTextEdit>(*pane, "stitchWorkflowLog");
+  auto* log_scroll = log->verticalScrollBar();
+  QByteArray output;
+  for (int line = 0; line < 200; ++line)
+    output += "Workflow output " + QByteArray::number(line) + '\n';
+  const auto update_log = [&](const QByteArray& marker) {
+    output += marker;
+    write(root + "/log.txt", output);
+    require(wait([&] { return log->toPlainText().endsWith(QString::fromUtf8(marker)); }), "Log poll did not arrive");
+  };
+  update_log("Initial tail\n");
+  require(
+      log_scroll->maximum() > 0 && log_scroll->value() == log_scroll->maximum(), "Workflow log did not open at tail");
+  update_log("New tail\n");
+  require(log_scroll->value() == log_scroll->maximum(), "Workflow polling lost tail following");
+  log_scroll->setValue(30);
+  const int reading_position = log_scroll->value();
+  update_log("While reading history\n");
+  require(log_scroll->value() == reading_position, "Workflow polling moved the reader's scroll position");
+  QTextCursor selection(log->document());
+  selection.setPosition(10);
+  selection.setPosition(20, QTextCursor::KeepAnchor);
+  log->setTextCursor(selection);
+  log_scroll->setValue(reading_position);
+  QElapsedTimer unchanged;
+  unchanged.start();
+  require(wait([&] { return unchanged.elapsed() > 400; }), "Unchanged log polling stalled");
+  require(log->textCursor().selectedText() == selection.selectedText(), "Unchanged polling erased log selection");
+  require(log_scroll->value() == reading_position, "Unchanged polling reset the scrollbar");
+  log_scroll->setValue(log_scroll->maximum());
+  update_log("Following again\n");
+  require(log_scroll->value() == log_scroll->maximum(), "Returning to the bottom did not resume following");
+  log->window()->resize(600, 300);
+  QApplication::processEvents();
+  require(log_scroll->value() == log_scroll->maximum(), "Resizing the workflow log lost the tail");
+  output = output.mid(output.indexOf("Workflow output 100"));
+  update_log("Rotated tail\n");
+  require(log_scroll->value() == log_scroll->maximum(), "Replacing a bounded log tail reset scrolling");
+  log_scroll->setValue(15);
+  stages->setCurrentIndex((stages->currentIndex() + 1) % stages->count());
+  require(wait([&] { return log->toPlainText().startsWith("No attempt log"); }), "Stage change did not update the log");
+  stages->setCurrentIndex(0);
+  require(wait([&] { return log->toPlainText().endsWith("Rotated tail\n"); }), "Stage log was not restored");
+  require(log_scroll->value() == log_scroll->maximum(), "Selecting an attempt did not start at its tail");
+  QFile::remove(root + "/log.txt");
   QJsonObject state = read(root + "/state.json");
   state.insert("state", "failed");
   auto nodes = state.value("nodes").toArray();
