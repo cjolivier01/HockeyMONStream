@@ -14886,7 +14886,10 @@ bool test_detector_precision() {
             !calibration_args.join(' ').contains("primary-gie.config-file"),
             "calibration-only playback must not request detection precision"))
       return false;
-    if ((mode == "bf16" || mode == "int8") &&
+    if (mode == "bf16" &&
+        !expect(status->text().contains("built and cached when needed"), "BF16 must describe automatic preparation"))
+      return false;
+    if (mode == "int8" &&
         !expect(status->text().contains("prepared engine"), "offline precision requirements must be visible"))
       return false;
     if (!HStreamWindowTestAccess::savePreset(&window)) {

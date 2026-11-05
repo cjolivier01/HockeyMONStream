@@ -32,6 +32,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/apps/int8-calib-builder:bf16_engine",
     "//src/libs/common:game_storage",
     "//src/libs/common:game_operation_owner",
     "//src/apps/apps-common:preview_capture_receipt",
@@ -585,6 +586,7 @@ cc_test(
     ],
     copts = HSTREAM_CLI_COPTS,
     deps = [
+        "//src/apps/int8-calib-builder:bf16_engine",
         "//src/libs/assets:asset_manager",
     "//src/libs/common:tensorrt_gpu_identity",
         "@com_google_absl//absl/status",

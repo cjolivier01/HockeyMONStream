@@ -11683,11 +11683,12 @@ void HStreamWindow::updateDetectorPrecisionStatus() {
     status = precision == "fp32" ? "FP32 is the default detector precision. "
                                  : "FP16 allows faster half-precision inference. ";
     status += "The engine is built and cached on first use. Selecting a precision uses the bundled detector.";
+  } else if (precision == "bf16") {
+    status = "BF16 needs no calibration images. The selected detector's engine is built and cached when needed "
+             "for this GPU and inference runtime. The first run can take longer while it prepares the model.";
   } else {
     status = precision.toUpper() + " requires a prepared engine for this GPU and inference runtime. ";
-    status += precision == "bf16"
-        ? "BF16 needs no calibration images. "
-        : "Use Prepare INT8 from recording after stitching calibration, then validate detection accuracy. ";
+    status += "Use Prepare INT8 from recording after stitching calibration, then validate detection accuracy. ";
     status +=
         "See the detection precision documentation for preparation. Selecting a precision uses the bundled detector.";
   }

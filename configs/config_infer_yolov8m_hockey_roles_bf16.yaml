@@ -1,11 +1,11 @@
 person-roles: {goalie: 1, referee: 2}
 
-# Never rebuild a failed BF16 engine as FP32 from the original ONNX.
+# Startup prepares this exact BF16 detector when its engine is missing or incompatible.
 hstream-prebuilt-precision: bf16
 
 pretrained-assets:
   - property: onnx-file
-    # Only offline preparation needs the source; engine-only playback works offline.
+    # Download only when the engine needs preparation; valid cached engines work offline.
     on-demand: true
     # Release-hosted; keep out of binary packages and download into the user cache.
     redistributable: false
@@ -24,11 +24,11 @@ property:
   model-color-format: 0
   # Iter 487500: COCO initialized, CrowdHuman + gray hockey; person/goalie/official.
   onnx-file: $HOME/.cache/hstream/models/hm_hockey_roles_yolov8_m_1984_736_iter487500-c11f239899cef757.onnx
-  # Generated offline by src/apps/int8-calib-builder with --precision=bf16; do not commit this engine.
+  # Built automatically for the selected model/GPU/runtime; do not commit this engine.
   model-engine-file: $HOME/.cache/hstream/models/hm_hockey_roles_yolov8_m_1984_736_iter487500-c11f239899cef757.onnx_b2_gpu0_{gpu}_bf16.engine
   labelfile-path: $HOME/.cache/hstream/models/hockey_roles_person_goalie_official.txt
   batch-size: 2
-  # DeepStream has no BF16 network-mode. It deserializes the prebuilt BF16 engine above.
+  # DeepStream has no BF16 network-mode. Startup builds/validates BF16 before loading it.
   network-mode: 0
   # Class order is part of the pinned model contract.
   num-detected-classes: 3

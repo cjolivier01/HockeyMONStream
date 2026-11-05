@@ -12,7 +12,7 @@ its inference config, including an inherited override.
 | --- | --- |
 | FP32 | Built and cached by nvinfer when needed |
 | FP16 | Built and cached by nvinfer when needed; no calibration |
-| BF16 | Offline engine build with a matching TensorRT SDK; no calibration |
+| BF16 | Built, inspected and cached automatically when needed; no calibration |
 | INT8 | Offline calibration/quantization and engine build; accuracy evaluation required |
 
 ## Detection model
@@ -69,8 +69,8 @@ BF16 engine with:
 ```
 
 FP16/BF16 permit mixed execution with higher precision where required. The
-engine's name is not evidence of its internal precision. The offline builder
-checks that detailed engine inspection contains the requested tensor type and
+engine's name is not evidence of its internal precision. The BF16 startup builder and offline builder
+check that detailed engine inspection contains the requested tensor type and
 writes `<engine>.layers.json` for inspection. It preserves FP32 network input and
 output for the current `NvDsInferParseYolo` parser.
 
@@ -95,9 +95,19 @@ export HSTREAM_TENSORRT_SDK_ROOT=/path/to/matching/TensorRT-SDK
 bazelisk build --config=opt //src/apps/int8-calib-builder:int8-calib-builder
 ```
 
-Engine preparation is currently a source-checkout tool. Installed UI/CLI runs
-can consume prepared engines at the paths in the inference YAMLs. Build engines
-on the target GPU/runtime; do not copy desktop engines to Jetson.
+BF16 preparation runs inside native pipeline startup for desktop, CLI and browser
+jobs, including installed packages. Its SDK uses the same DeepStream-matched
+selection as the player-model runtime. A missing, empty, incompatible or
+wrong-precision BF16 engine is rebuilt from the selected inference recipe's
+ONNX. Only that recipe's declared asset is fetched, and only when preparation is
+needed. A valid cached engine works without its source ONNX or network access.
+Cache preparation is serialized across runners; Stop cancels download, lock
+waiting and TensorRT build progress. A failed build keeps the previous engine;
+only a deserialized engine with inspected BF16 tensors and FP32 parser boundaries
+is published. Runtime configs remove nvinfer's FP32 rebuild path afterward.
+
+Recording INT8 preparation still uses the source-checkout tool described below.
+Build engines on the target GPU/runtime; do not copy desktop engines to Jetson.
 
 The recording preparation helper and wrapper build commands compare the
 builder's `--runtime-info` with `hstream-cli --tensorrt-runtime-info` **before
@@ -123,8 +133,8 @@ runner resolves the token using the effective inference GPU, preserving engines
 for other GPUs and precisions. UI presets retain that token for ordinary bundled
 choices. Recording preparation saves an explicit, immutable engine path and
 provenance for that particular build. Explicit custom paths remain explicit;
-incompatible prepared engines fail instead of being rebuilt over an existing
-file. Resolve a template for CUDA GPU 0 with:
+prepared INT8 engines retain their explicit preparation requirement. BF16
+recipes rebuild incompatible caches using their own source model and precision. Resolve a template for CUDA GPU 0 with:
 
 ```sh
 bazel-bin/src/apps/hstream-cli/hstream-cli --resolve-engine-path '/path/detector_{gpu}_bf16.engine'
@@ -197,7 +207,13 @@ Evaluate accuracy on separate frames/games before choosing INT8 for production.
 
 ## BF16
 
-TensorRT 9/10 supports the BF16 builder flag on Ampere and later GPUs:
+Selecting BF16 in Detection prepares the selected model automatically before
+video starts, using TensorRT 9/10 on Ampere and later GPUs. Default CrowdHuman,
+Distilled and Hockey Roles use distinct source assets and caches. An unsaved
+model/precision choice applies to the next Play; the saved preset never overrides
+that explicit choice. The initial build can take several minutes.
+
+For explicit offline preparation, the existing builder remains available:
 
 ```sh
 MODEL="$HOME/.cache/hstream/models/hm_crowdhuman_yolov8_m_1984_736_epoch90-4b701af53e11cd79.onnx"
@@ -207,14 +223,16 @@ bazel-bin/src/apps/int8-calib-builder/int8-calib-builder \
 ```
 
 The source wrapper also supports `./run.sh --game-id=GAME --models-bf16-build`.
-Preparation explicitly downloads declared source assets; playback only requires
-the prepared engine and labels. Wrapper precision flags replace saved UI engine
+The wrapper explicitly downloads declared source assets. Ordinary startup
+downloads the source only when its selected BF16 cache needs preparation. Wrapper precision flags replace saved UI engine
 selections; later explicit `--options` retain their usual precedence.
 Keep `HSTREAM_TENSORRT_SDK_ROOT` set when the wrapper rebuilds the tool.
 
 TensorRT 11 removes the weakly typed precision flags. It requires an already
 typed BF16 ONNX with FP32 input/output boundaries and `--explicit-precision`.
-This tool does not convert a floating-point ONNX to BF16 on TensorRT 11.
+Automatic FP32-ONNX-to-BF16 conversion and this offline tool do not support
+TensorRT 11; a compatible, already prepared typed BF16 engine can still load.
+Neither path silently substitutes FP32 or FP16.
 
 ## INT8 with explicit Q/DQ
 

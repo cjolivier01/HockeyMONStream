@@ -1685,12 +1685,15 @@ absl::Status PipelineApplication::configureInstances(
       }
       HM_RETURN_IF_ERROR(
           ensure_effective_inference_assets(config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
-      emit_ui_startup("models", "Preparing TensorRT models and engine caches");
-      HM_RETURN_IF_ERROR(
-          hm::pipeline::PrepareTensorRtModelCache(
-              config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path()));
       {
         PlayerModelPreparationSignals preparation_signals;
+        emit_ui_startup("models", "Preparing TensorRT models and engine caches");
+        hm::pipeline::TensorRtModelCacheOptions detector_options;
+        detector_options.cancelled = [this] { return cintr_ || player_model_preparation_interrupted; };
+        detector_options.progress = [](const std::string& message) { g_print("%s\n", message.c_str()); };
+        HM_RETURN_IF_ERROR(hm::pipeline::PrepareTensorRtModelCache(
+            config["pipeline"], fs::path(app_ctx->app_config_file()).parent_path(),
+            hm::inference::TensorRtGpuName, detector_options));
         hm::pipeline::PlayerModelCacheOptions options;
         options.cancelled = [this] { return cintr_ || player_model_preparation_interrupted; };
         options.progress = [](const std::string& message) {

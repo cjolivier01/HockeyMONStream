@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -464,7 +465,7 @@ fs::path derived_engine_path(
       ".engine");
 }
 
-absl::Status acquire_engine_lock(const fs::path& path) {
+absl::Status acquire_engine_lock(const fs::path& path, const std::function<bool()>& cancelled = {}) {
   for (const auto& lock : held_engine_locks())
     if (lock.path == path)
       return absl::OkStatus();
@@ -476,9 +477,15 @@ absl::Status acquire_engine_lock(const fs::path& path) {
     ::close(descriptor);
     return absl::PermissionDeniedError("TensorRT engine lock is not a user-owned regular file: " + path.string());
   }
-  while (::flock(descriptor, LOCK_EX) != 0) {
-    if (errno == EINTR)
+  while (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+    if (cancelled && cancelled()) {
+      ::close(descriptor);
+      return absl::CancelledError("TensorRT engine preparation cancelled while waiting for its cache lock");
+    }
+    if (errno == EINTR || errno == EWOULDBLOCK) {
+      ::poll(nullptr, 0, 50);
       continue;
+    }
     const std::string message = std::strerror(errno);
     ::close(descriptor);
     return absl::InternalError("Unable to lock TensorRT engine cache: " + message);
@@ -575,12 +582,77 @@ absl::Status publish_relocated_runtime_config(
   return absl::OkStatus();
 }
 
+absl::Status prepare_bf16_engine(
+    fs::path& engine,
+    const YAML::Node& inference,
+    const fs::path& inference_path,
+    const YAML::Node& section,
+    const YAML::Node& pipeline,
+    const TensorRtModelCacheOptions& options) {
+  if (options.cancelled && options.cancelled())
+    return absl::CancelledError("BF16 engine preparation cancelled");
+  auto root = cache_root();
+  if (!root.ok())
+    return root.status();
+  auto status = ensure_private_directory(*root);
+  if (!status.ok())
+    return status;
+  // Directory aliases (including private web homes) share one engine and lock.
+  std::error_code error;
+  engine = fs::weakly_canonical(engine.parent_path(), error) / engine.filename();
+  if (error)
+    return absl::FailedPreconditionError("Cannot resolve BF16 engine cache: " + error.message());
+  auto key = hm::assets::AssetManager::Sha256Bytes(engine.string());
+  if (!key.ok())
+    return key.status();
+  status = acquire_engine_lock(*root / ("bf16-" + *key + ".lock"), options.cancelled);
+  if (!status.ok())
+    return status;
+  const auto properties = inference["property"];
+  hm::inference::Bf16EngineOptions build_options{
+      inference_gpu(properties, section, pipeline),
+      scalar_unsigned(section, properties, "batch-size", 0),
+      std::nullopt, options.cancelled, options.progress};
+  if (!build_options.batch)
+    return absl::InvalidArgumentError("BF16 preparation requires a positive configured batch-size");
+  if (properties["workspace-size"])
+    build_options.workspace_mib = properties["workspace-size"].as<unsigned>();
+  status = options.validate_bf16(engine, build_options);
+  if (status.ok() || absl::IsCancelled(status))
+    return status;
+  const std::string message = "Preparing selected BF16 detector engine: " + engine.string() +
+      " (" + std::string(status.message()) + ")";
+  if (options.progress)
+    options.progress(message);
+  else
+    std::cout << message << '\n';
+  if (!properties["onnx-file"] || !properties["onnx-file"].IsScalar())
+    return absl::FailedPreconditionError("Cannot rebuild selected BF16 engine without its source ONNX: " + engine.string());
+  auto onnx = resolve_path(properties["onnx-file"].as<std::string>(), inference_path.parent_path());
+  auto assets = hm::assets::AssetManager::DeclaredAssets(inference, fs::absolute(inference_path));
+  if (!assets.ok())
+    return assets.status();
+  for (const auto& asset : *assets) {
+    if (asset.target.lexically_normal() != onnx.lexically_normal())
+      continue;
+    auto verified = hm::assets::AssetManager::EnsureCacheAsset(asset, {}, options.cancelled);
+    if (!verified.ok())
+      return verified.status();
+    onnx = verified->target;
+  }
+  status = ensure_private_directory(engine.parent_path());
+  if (!status.ok())
+    return status;
+  return options.build_bf16(onnx, engine, build_options);
+}
+
 absl::Status prepare_inference_config(
     YAML::Node section,
     const YAML::Node& pipeline,
     const std::string& section_name,
     const fs::path& config_directory,
-    const GpuNameProvider& gpu_name) {
+    const GpuNameProvider& gpu_name,
+    const TensorRtModelCacheOptions& options) {
   if (!enabled(section) || !section["config-file"] || !section["config-file"].IsScalar())
     return absl::OkStatus();
   const fs::path inference_path = resolve_path(section["config-file"].as<std::string>(), config_directory);
@@ -639,13 +711,18 @@ absl::Status prepare_inference_config(
   if (properties && properties.IsMap() && properties["model-engine-file"] &&
       properties["model-engine-file"].IsScalar()) {
     const bool overridden = section["model-engine-file"] && section["model-engine-file"].IsScalar();
-    const fs::path engine = overridden
+    fs::path engine = overridden
         ? resolve_path(section["model-engine-file"].as<std::string>(), config_directory)
         : resolve_path(properties["model-engine-file"].as<std::string>(), inference_path.parent_path());
     const bool legacy_bf16 = lowercase(engine.filename().string()).find("_bf16.engine") != std::string::npos;
     if (required_precision || legacy_bf16) {
       const std::string precision = required_precision ? required_precision.as<std::string>() : "bf16";
       std::error_code error;
+      if (required_precision && precision == "bf16") {
+        auto status = prepare_bf16_engine(engine, inference, inference_path, section, pipeline, options);
+        if (!status.ok())
+          return status;
+      }
       if (!fs::is_regular_file(engine, error) || error || fs::file_size(engine, error) == 0 || error) {
         return absl::NotFoundError(
             "Prepared " + precision + " detector engine is missing or empty: " + engine.string() +
@@ -860,7 +937,8 @@ absl::Status prepare_inference_config(
 absl::Status PrepareTensorRtModelCache(
     YAML::Node pipeline,
     const fs::path& config_directory,
-    const GpuNameProvider& gpu_name) {
+    const GpuNameProvider& gpu_name,
+    const TensorRtModelCacheOptions& options) {
   if (!pipeline || !pipeline.IsMap())
     return absl::OkStatus();
   for (auto entry : pipeline) {
@@ -869,9 +947,11 @@ absl::Status PrepareTensorRtModelCache(
     const std::string name = entry.first.as<std::string>();
     if (name.rfind("primary-gie", 0) != 0 && name.rfind("secondary-gie", 0) != 0)
       continue;
-    auto status = prepare_inference_config(entry.second, pipeline, name, config_directory, gpu_name);
-    if (!status.ok())
+    auto status = prepare_inference_config(entry.second, pipeline, name, config_directory, gpu_name, options);
+    if (!status.ok()) {
+      release_engine_locks();
       return status;
+    }
   }
   return absl::OkStatus();
 }

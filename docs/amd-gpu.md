@@ -1420,3 +1420,9 @@ large stitched canvases (including 21636×11479 scaled to 1280×680). The bounde
 render workload remains unchanged. Wrapped player-scan planning and exact still
 replay are shared; the existing AMD fresh-calibration limitation above still
 applies. NVIDIA FakeSink lateness uses the required signed 64-bit property type.
+
+BF16 detector startup preparation is currently NVIDIA-only (TensorRT 9/10 on
+Ampere or newer). AMD Program retains its explicit FP32/FP16 selection and
+MIGraphX cache path; BF16/INT8 remain unsupported there and fail explicitly,
+without substituting another precision. `detector_settings_test` covers that
+boundary. Automatic AMD BF16 preparation remains an existing port gap.
