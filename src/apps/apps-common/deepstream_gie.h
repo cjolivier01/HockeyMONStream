@@ -34,6 +34,10 @@ typedef struct {
 
   gboolean input_tensor_meta;
 
+  gboolean tiled_inference;
+  gdouble tile_overlap;
+  gfloat tile_merge_iou;
+
   gboolean override_colors;
 
   gint operate_on_gie_id;

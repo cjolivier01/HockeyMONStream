@@ -173,6 +173,7 @@ ImageInput Input(Cursor cursor) {
       const auto shape = Type(cursor.Message(field));
       input.width = shape[3];
       input.height = shape[2];
+      input.batch = shape[0];
     }
   }
   Require(!input.name.empty() && type, "Missing ONNX input name or type");

@@ -3,6 +3,34 @@ load("//bazel:gpu_library.bzl", "gpu_library")
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "tile_inference_config",
+    srcs = ["TileInferenceConfig.cpp"],
+    hdrs = ["TileInferenceConfig.h"],
+    include_prefix = "hstream/src/libs/detection",
+    deps = [":tile_inference", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "tile_inference_config_test",
+    srcs = ["TileInferenceConfigTest.cpp"],
+    deps = [":tile_inference_config"],
+)
+
+cc_library(
+    name = "tile_inference",
+    srcs = ["TileInference.cpp"],
+    hdrs = ["TileInference.h"],
+    include_prefix = "hstream/src/libs/detection",
+    deps = [":types", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "tile_inference_test",
+    srcs = ["TileInferenceTest.cpp"],
+    deps = [":tile_inference"],
+)
+
+cc_library(
     name = "gpu_headers",
     hdrs = ["DetectorGpu.h"],
     include_prefix = "hstream/src/libs/detection",
@@ -38,7 +66,7 @@ cc_library(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":gpu", ":postprocess", "//src/libs/gpu/migraphx:session"],
+    deps = [":gpu", ":postprocess", ":tile_inference", "//src/libs/gpu/migraphx:session"],
 )
 
 cc_test(
@@ -55,7 +83,7 @@ cc_binary(
         "//:use_hip": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [":hip_detector", "@opencv_linux//:opencv", "@yaml-cpp"],
+    deps = [":hip_detector", ":tile_inference_config", "@opencv_linux//:opencv", "@yaml-cpp"],
 )
 
 cc_test(

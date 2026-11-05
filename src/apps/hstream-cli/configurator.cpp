@@ -1,4 +1,5 @@
 #include "configurator.h"
+#include "hstream/src/libs/detection/TileInferenceConfig.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/PinnedFile.h"
@@ -9290,6 +9291,18 @@ absl::Status Configurator::complete_configuration(
       HM_RETURN_IF_ERROR(configure_job_telemetry(pipeline, stitching_calibration_only));
     }
     HM_RETURN_IF_ERROR(apply_gpu_memory_profile(pipeline));
+    const auto tiling_node = pipeline["primary-gie"]["tiled-inference"];
+    const auto tiling = hm::detection::ReadTileInferenceSettings(tiling_node);
+    if (!tiling.ok())
+      return tiling.status();
+    if (*tiling) {
+      // Select the batch-two engine/cache before model preparation, including
+      // when the automatic low-memory profile normally selects batch one.
+      if (explicit_value_rank("pipeline.primary-gie.batch-size") >= 1 &&
+          pipeline["primary-gie"]["batch-size"].as<int>() != 2)
+        return absl::InvalidArgumentError("Two-tile inference requires primary-gie.batch-size=2");
+      pipeline["primary-gie"]["batch-size"] = 2;
+    }
   }
 
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());

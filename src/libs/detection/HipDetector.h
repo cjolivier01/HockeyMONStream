@@ -7,6 +7,7 @@
 
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/detection/DetectorGpu.h"
+#include "hstream/src/libs/detection/TileInference.h"
 #include "hstream/src/libs/gpu/migraphx/MigraphxSession.h"
 
 namespace hm::detection {
@@ -20,6 +21,7 @@ struct DetectorConfig {
   gpu::MigraphxSession::Precision precision;
   size_t maximum_io_bytes;
   std::optional<gpu::MigraphxCacheConfig> cache;
+  std::optional<TileInferenceSettings> tiling;
 };
 
 // Native AMD execution of the shipped YOLO xyxy/score/class ONNX contract.

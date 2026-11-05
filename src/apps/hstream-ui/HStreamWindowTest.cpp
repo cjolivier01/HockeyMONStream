@@ -14836,6 +14836,101 @@ bool test_blend_mode() {
       alpha_feather_row->isHidden(), "the feather row must follow the selected mode, not the baseline default");
 }
 
+bool test_tiled_detection() {
+  QTemporaryDir root;
+  if (!root.isValid())
+    return false;
+  struct RestoreGameRoot {
+    QByteArray previous{qgetenv("HM_GAME_DIR")};
+    ~RestoreGameRoot() {
+      qputenv("HM_GAME_DIR", previous);
+    }
+  } restore;
+  qputenv("HM_GAME_DIR", root.path().toLocal8Bit());
+  QDir().mkpath(root.path() + "/tiles/_hockeymon");
+  const auto path = (root.path() + "/tiles/_hockeymon/config.yaml").toStdString();
+  std::ofstream(path) << "pipeline:\n  primary-gie:\n    config-file: custom.yaml\n"
+                         "    model-engine-file: custom.engine\n";
+  HStreamWindow window;
+  auto* games = require_child<QComboBox>(&window, "gameSelector");
+  auto* tiled = require_child<QCheckBox>(&window, "tiledDetectionCheck");
+  auto* save = require_child<QPushButton>(&window, "savePresetButton");
+  if (!games || !tiled || !save)
+    return false;
+  games->setCurrentIndex(games->findText("tiles"));
+  if (!expect(!tiled->isChecked() && tiled->isEnabled(), "Tiling must default off and be editable while idle"))
+    return false;
+  tiled->click();
+  if (!expect(
+          save->isEnabled() &&
+              HStreamWindowTestAccess::standaloneArguments(&window).contains(
+                  "--options=pipeline.primary-gie.tiled-inference.enable=1"),
+          "Unsaved tiling must reach Program launch and dirty the preset") ||
+      !expect(
+          !HStreamWindowTestAccess::calibrationArguments(&window).join(' ').contains("tiled-inference"),
+          "Calibration launch must omit Program tiling") ||
+      !HStreamWindowTestAccess::savePreset(&window))
+    return false;
+  auto saved = YAML::LoadFile(path)["pipeline"]["primary-gie"];
+  if (!expect(
+          saved["tiled-inference"]["enable"].as<int>() == 1 &&
+              saved["config-file"].as<std::string>() == "custom.yaml" &&
+              saved["model-engine-file"].as<std::string>() == "custom.engine",
+          "Saving tiling must preserve a custom model and engine"))
+    return false;
+  {
+    HStreamWindow reloaded;
+    auto* selection = require_child<QComboBox>(&reloaded, "gameSelector");
+    auto* toggle = require_child<QCheckBox>(&reloaded, "tiledDetectionCheck");
+    if (!selection || !toggle)
+      return false;
+    selection->setCurrentIndex(selection->findText("tiles"));
+    if (!expect(toggle->isChecked(), "Saved tiling must reload"))
+      return false;
+    toggle->click();
+    if (!expect(
+            HStreamWindowTestAccess::standaloneArguments(&reloaded).contains(
+                "--options=pipeline.primary-gie.tiled-inference.enable=0"),
+            "An unchecked draft must override saved tiling") ||
+        !HStreamWindowTestAccess::savePreset(&reloaded))
+      return false;
+    if (!expect(
+            YAML::LoadFile(path)["pipeline"]["primary-gie"]["tiled-inference"]["enable"].as<int>(0) == 0,
+            "Turning tiling off must persist"))
+      return false;
+  }
+  if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
+    return false;
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  const bool locked = !tiled->isEnabled() && tiled->isChecked();
+  HStreamWindowTestAccess::killStubPipelineProcess(&window);
+  HStreamWindowTestAccess::refreshRunControls(&window);
+  if (!expect(locked && tiled->isEnabled(), "A running pipeline must lock tiling and retain its value"))
+    return false;
+  auto* reset = require_child<QPushButton>(&window, "resetCameraButton");
+  if (!reset)
+    return false;
+  reset->click();
+  if (!expect(!tiled->isChecked(), "Reset must restore baseline tiling"))
+    return false;
+  const auto screenshot = qEnvironmentVariable("HSTREAM_UI_TILED_SCREENSHOT");
+  if (!screenshot.isEmpty()) {
+    window.show();
+    QGuiApplication::sync();
+    if (!tiled->parentWidget()->grab().save(screenshot))
+      return false;
+  }
+  hm::ui::BackendOptions backend;
+  backend.name = "hockeymon";
+  backend.runner = qEnvironmentVariable("HSTREAM_UI_TEST_RUNNER");
+  HStreamWindow python_window(nullptr, backend);
+  auto* python_tiled = require_child<QCheckBox>(&python_window, "tiledDetectionCheck");
+  return expect(
+      python_tiled && !python_tiled->isEnabled() &&
+          !HStreamWindowTestAccess::standaloneArguments(&python_window).join(' ').contains("tiled-inference"),
+      "The Python backend must not offer native tiling");
+}
+
 bool test_detector_precision() {
   QTemporaryDir precision_games;
   if (!precision_games.isValid())
@@ -22350,7 +22445,7 @@ int main(int argc, char** argv) {
     return test_stitch_rotation_launch_draft() && test_stitch_rotation_export_inheritance() ? 0 : 1;
   // The focused detector suite does not need the unrelated hardware memory probe.
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_PRECISION_ONLY"))
-    return test_detector_precision() && test_detector_model() ? 0 : 1;
+    return test_detector_precision() && test_detector_model() && test_tiled_detection() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_CONTROL_POINT_LIMIT_ONLY"))
     return test_control_point_limit_precedence() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_ROLES_ONLY"))
@@ -22462,7 +22557,7 @@ int main(int argc, char** argv) {
     return test_blend_mode() ? 0 : 1;
   if (!test_blend_mode())
     return 1;
-  if (!test_detector_precision())
+  if (!test_detector_precision() || !test_tiled_detection())
     return 1;
   if (!test_detector_model())
     return 1;
