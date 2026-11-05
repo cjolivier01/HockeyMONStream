@@ -30,6 +30,7 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QPointer>
 #include <QtCore/QRegularExpression>
+#include <QtCore/QScopeGuard>
 #include <QtCore/QSettings>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryDir>
@@ -49,6 +50,7 @@
 #include <QtTest/QTest>
 #include <QtWidgets/QAbstractButton>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QToolTip>
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
@@ -1251,6 +1253,90 @@ for line in sys.stdin:
     return draft != window->scheduled_rotation_controls_.end() && draft->second == value &&
         window->scheduled_rotation_controls_ready_ && window->runtime_control_batches_.empty() &&
         window->pending_runtime_controls_.empty() && !window->active_live_rotation_authorization_.has_value();
+  }
+
+  static bool playbackSeekTooltipChecks() {
+    const auto expect = [](bool condition, const char* message) {
+      if (!condition)
+        std::cerr << "FAIL: " << message << '\n';
+      return condition;
+    };
+    HStreamWindow window;
+    const QSignalBlocker process_signals(window.pipeline_process_);
+    window.pipeline_process_->start("sleep", {"120"});
+    if (!window.pipeline_process_->waitForStarted(5000))
+      return false;
+    const auto cleanup = qScopeGuard([&] {
+      window.pipeline_process_->kill();
+      window.pipeline_process_->waitForFinished(5000);
+    });
+    beginPendingPlaybackSeek(&window, 0);
+    window.active_run_telemetry_requested_ = true;
+    window.updatePlaybackSeekControls();
+    window.resize(1440, 900);
+    window.show();
+    QWidget other_window;
+    other_window.setGeometry(1500, 100, 200, 100);
+    other_window.show();
+    other_window.activateWindow();
+    if (!QTest::qWaitFor([&] { return other_window.isActiveWindow() && !window.isActiveWindow(); }))
+      return expect(false, "Seek tooltip fixture needs another active window");
+    const QString artifacts = qEnvironmentVariable("HSTREAM_UI_TEST_SEEK_TOOLTIP_ARTIFACTS");
+    const auto capture = [&](const QString& name) {
+      if (artifacts.isEmpty())
+        return true;
+      QDir().mkpath(artifacts);
+      QTest::qWait(100);
+      QGuiApplication::sync();
+      return window.screen()->grabWindow(0, window.x(), window.y(), window.width(), window.height() + 80)
+          .save(QDir(artifacts).filePath(name));
+    };
+    // Reproduce Qt's previous inactive-window behavior before checking the fix.
+    const bool always_show = window.testAttribute(Qt::WA_AlwaysShowToolTips);
+    window.setAttribute(Qt::WA_AlwaysShowToolTips, false);
+    QTest::mouseMove(window.playback_seek_slider_, window.playback_seek_slider_->rect().center());
+    QTest::qWait(1500);
+    if (!expect(!QToolTip::isVisible() && capture("qt-before.png"), "Capture the suppressed inactive-window tooltip"))
+      return false;
+    window.setAttribute(Qt::WA_AlwaysShowToolTips, always_show);
+    const QList<QWidget*> controls{
+        window.playback_seek_slider_, window.playback_seek_back_button_, window.playback_seek_forward_button_};
+    for (QWidget* control : controls) {
+      QToolTip::hideText();
+      QTest::mouseMove(&other_window, other_window.rect().center());
+      QTest::qWait(350);
+      QTest::mouseMove(control, control->rect().center());
+      if (!expect(
+              !control->isEnabled() && QTest::qWaitFor([] {
+                return QToolTip::isVisible() && QToolTip::text().contains("DriveGPT database capture");
+              }),
+              "Hovering a disabled seek control must show the DriveGPT reason without activating the window"))
+        return false;
+      if (control == window.playback_seek_slider_ && !capture("qt-after.png"))
+        return false;
+    }
+    QToolTip::hideText();
+    window.active_run_telemetry_requested_ = false;
+    for (quint64* pending : {&window.pending_process_pause_generation_, &window.pending_process_resume_generation_}) {
+      *pending = 1;
+      window.updatePlaybackSeekControls();
+      const QString action = pending == &window.pending_process_pause_generation_ ? "pause" : "resume";
+      for (QWidget* control : controls) {
+        if (!expect(
+                !control->isEnabled() && control->toolTip().contains("Waiting for playback to " + action),
+                "Disabled seek controls must explain the pending playback transition"))
+          return false;
+      }
+      *pending = 0;
+    }
+    window.updatePlaybackSeekControls();
+    for (QWidget* control : controls) {
+      if (!expect(
+              control->isEnabled() && control->toolTip().startsWith("Drag to seek"),
+              "Re-enabled seek controls must replace their disabled explanation"))
+        return false;
+    }
+    return true;
   }
 
   static void beginPendingPlaybackSeek(HStreamWindow* window, quint64 generation) {
@@ -22418,6 +22504,10 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (!HStreamWindowTestAccess::playbackSeekTooltipChecks())
+    return 1;
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SEEK_TOOLTIP_ONLY"))
+    return 0;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_GAME_HISTORY_ONLY"))
     return test_game_selection_history() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FRESH_EXPERIMENTS_ONLY"))
