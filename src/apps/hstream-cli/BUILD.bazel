@@ -591,6 +591,7 @@ cc_test(
     "//src/libs/common:tensorrt_gpu_identity",
         "@com_google_absl//absl/status",
         "@yaml-cpp",
+        "@gstreamer",
     ],
 )
 

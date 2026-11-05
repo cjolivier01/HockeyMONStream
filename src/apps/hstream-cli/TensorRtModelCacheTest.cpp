@@ -3,6 +3,9 @@
 #include "OnnxExternalData.h"
 #include "hstream/src/libs/assets/AssetManager.h"
 
+#include <dlfcn.h>
+#include <gst/gst.h>
+
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -112,8 +115,23 @@ int main(int argc, char** argv) {
         pipeline, recipe.parent_path(), hm::inference::TensorRtGpuName, options);
     hm::pipeline::ReleaseTensorRtModelCacheLocks();
     std::cout << status << '\n';
-    if (status.ok())
+    if (status.ok()) {
       std::cout << pipeline << '\n';
+      // The same process must be able to load DeepStream after cache preflight;
+      // TensorRT keeps plugin creators registered by its shared libraries.
+      void* runtime = dlopen("libnvds_infer.so", RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD);
+      if (!runtime) {
+        std::cerr << "DeepStream unloaded while TensorRT still owns its plugin creators\n";
+        return 1;
+      }
+      dlclose(runtime);
+      gst_init(nullptr, nullptr);
+      auto* inference = gst_element_factory_make("nvinfer", "prepared-detector");
+      if (!inference)
+        return 1;
+      gst_object_unref(inference);
+      std::cout << "PASS: nvinfer creation after BF16 preparation\n";
+    }
     return status.ok() ? 0 : 1;
   }
   if (argc == 3 &&

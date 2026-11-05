@@ -65,11 +65,12 @@ void check_runtime(const Bf16EngineOptions& options) {
   require(
       TensorRtVersionMatches(getInferLibVersion(), NV_TENSORRT_MAJOR, NV_TENSORRT_MINOR),
       "BF16 builder SDK does not match the loaded TensorRT runtime");
-  void* library = dlopen("libnvds_infer.so", RTLD_NOW | RTLD_LOCAL);
+  // Loading DeepStream also registers TensorRT plugin creators. They remain
+  // in the process registry, so closing this handle would leave dangling
+  // creators and crash when the pipeline later loads the nvinfer plugin.
+  static void* library = dlopen("libnvds_infer.so", RTLD_NOW | RTLD_LOCAL);
   auto version = library ? reinterpret_cast<int (*)()>(dlsym(library, "getInferLibVersion")) : nullptr;
   const bool matches = version && version() == getInferLibVersion();
-  if (library)
-    dlclose(library);
   require(matches, "BF16 builder runtime does not match DeepStream's inference runtime");
   require(options.batch > 0, "BF16 engine batch must be positive");
   cudaDeviceProp device{};
