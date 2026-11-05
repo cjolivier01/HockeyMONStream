@@ -211,7 +211,7 @@ def detector_catalog(root, baseline):
             "preparation_model": {
                 "config_infer_yolov8_hockey": "yolov8m",
                 "config_infer_yolov8s_hockey": "yolov8s",
-            }[row["config_prefix"]],
+            }.get(row["config_prefix"]),
         }
         for precision in precisions:
             filename = (
