@@ -28,7 +28,9 @@ YAML::Node NativeValue(const CameraSliderSpec& spec, double value) {
 }
 } // namespace
 
-absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(const YAML::Node& resolved) {
+absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(
+    const YAML::Node& resolved,
+    const YAML::Node* materialized_tracker) {
   CameraControlValues result;
   try {
     const auto required = [&](const std::string& path) -> YAML::Node {
@@ -74,6 +76,11 @@ absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(const YAML::Nod
       const auto override = get_node(resolved, "hstream_ui.camera_controls." + id);
       if (override)
         value = override->as<double>();
+    }
+    if (materialized_tracker) {
+      const auto tracker = (*materialized_tracker)["play-tracker"];
+      result["Ignore_Referees"] = tracker["ignore-referees"].as<bool>();
+      result["Ignore_Goalies"] = tracker["ignore-goalies"].as<bool>();
     }
     const auto specs = PlaytrackerControlSpecs(result);
     if (!specs.ok())

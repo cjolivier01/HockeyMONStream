@@ -103,5 +103,21 @@ play-tracker:
   auto missing_role = YAML::Clone(baseline);
   missing_role["rink"]["tracking"].remove("cam_ignore_goalies");
   Check(!hm::tracking::ReadPlaytrackerControlValues(missing_role).ok(), "A missing role default was silently supplied");
+  for (const bool excluded : {true, false}) {
+    auto canonical = YAML::Clone(baseline);
+    canonical["rink"]["tracking"]["cam_ignore_referees"] = !excluded;
+    canonical["rink"]["tracking"]["cam_ignore_goalies"] = !excluded;
+    auto materialized = YAML::Clone(source);
+    materialized["play-tracker"]["ignore-referees"] = excluded;
+    materialized["play-tracker"]["ignore-goalies"] = excluded;
+    const auto actual = hm::tracking::ReadPlaytrackerControlValues(canonical, &materialized);
+    Check(
+        actual.ok() && actual->at("Ignore_Referees") == excluded && actual->at("Ignore_Goalies") == excluded,
+        "Initial role readback ignored the materialized native tracker precedence");
+    materialized["play-tracker"].remove("ignore-goalies");
+    Check(
+        !hm::tracking::ReadPlaytrackerControlValues(canonical, &materialized).ok(),
+        "Incomplete native role state silently fell back to canonical values");
+  }
   return 0;
 }

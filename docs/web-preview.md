@@ -64,7 +64,10 @@ PLAYING confirmation without changing its signaling or playback commands.
 Program's shared camera-control registry includes the referee and goalie filters
 for Qt and browser runtime batches. Reset Controls must publish their explicit
 boolean values together with motion changes; missing registry entries previously
-rejected the entire reset. Required defaults remain in the baseline. These role
+rejected the entire reset. Required defaults remain in the baseline. Initial
+readback uses the materialized native tracker, preserving a selected tracker's
+precedence over canonical settings. Retained live values survive graph
+reconstruction. These role
 filters stay out of Camera Experiments because its recordings lack role metadata.
 Live AMD camera mutations remain a separate gap in `docs/amd-gpu.md`.
 
