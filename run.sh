@@ -42,7 +42,7 @@ Model precision:
   --int8-calib-start-seconds S         Start offset for calibration frame extraction. Default: 0.
   --models-fp16, --fp16-models         Use the FP16 detector config. Needs no prebuilt engine; nvinfer
                                        builds and caches it on first run.
-  --models-bf16, --bf16-models         Use a prebuilt BF16 TensorRT detector engine.
+  --models-bf16, --bf16-models         Use BF16 detection; build and cache the selected engine when needed.
   --models-bf16-build, --bf16-build    Build the BF16 detector engine offline, then run from timestamp zero.
   --models-detector=PREFIX             Detector family the options above act on, as a config_prefix from
                                        hstream_ui.detector_models in configs/baseline.yaml. Without this,

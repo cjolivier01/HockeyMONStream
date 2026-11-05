@@ -2,11 +2,11 @@
 
 #include "EnginePrecision.h"
 
-#include <NvInfer.h>
-#include <NvOnnxParser.h>
 #include <cuda_runtime_api.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <hstream_player_tensorrt/NvInfer.h>
+#include <hstream_player_tensorrt/NvOnnxParser.h>
 #include <unistd.h>
 
 #include <fstream>

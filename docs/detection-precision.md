@@ -105,6 +105,11 @@ Cache preparation is serialized across runners; Stop cancels download, lock
 waiting and TensorRT build progress. A failed build keeps the previous engine;
 only a deserialized engine with inspected BF16 tensors and FP32 parser boundaries
 is published. Runtime configs remove nvinfer's FP32 rebuild path afterward.
+Automatic builds record the canonical source, declared digest, ONNX/external
+weight hashes and engine hash in `<engine>.source.yaml`. Changed source paths or
+bytes trigger preparation; offline hits retain the recorded source identity.
+An interrupted publication retains a pending record and is rebuilt. Existing
+externally prepared engines without this record retain engine-only validation.
 
 Recording INT8 preparation still uses the source-checkout tool described below.
 Build engines on the target GPU/runtime; do not copy desktop engines to Jetson.

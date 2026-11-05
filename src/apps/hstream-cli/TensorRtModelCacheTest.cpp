@@ -24,8 +24,12 @@ namespace fs = std::filesystem;
 
 std::string gpu_model = "NVIDIA_Test_GPU";
 volatile sig_atomic_t gpu_preparation_cancelled = 0;
-absl::Status prepare_cache(YAML::Node pipeline, const fs::path& directory) {
+absl::Status prepare_cache(
+    YAML::Node pipeline,
+    const fs::path& directory,
+    const std::function<bool()>& cancelled = {}) {
   hm::pipeline::TensorRtModelCacheOptions options;
+  options.cancelled = cancelled;
   options.validate_bf16 = [](const fs::path& engine, const auto&) {
     return fs::is_regular_file(engine) && fs::file_size(engine) > 0
         ? absl::OkStatus() : absl::NotFoundError("Fixture has no prepared engine");
@@ -111,6 +115,15 @@ int main(int argc, char** argv) {
     if (status.ok())
       std::cout << pipeline << '\n';
     return status.ok() ? 0 : 1;
+  }
+  if (argc == 3 &&
+      (std::string(argv[1]) == "--cancel-lock-probe" || std::string(argv[1]) == "--cancel-bf16-lock-probe")) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+    auto pipeline = pipeline_for(std::string(argv[1]) == "--cancel-lock-probe" ? "infer.yaml" : "automatic-bf16.yaml");
+    const auto status = prepare_cache(
+        pipeline, fs::path(argv[2]) / "configs", [&] { return std::chrono::steady_clock::now() >= deadline; });
+    hm::pipeline::ReleaseTensorRtModelCacheLocks();
+    return absl::IsCancelled(status) ? 0 : 1;
   }
   if (argc == 3 && std::string(argv[1]) == "--lock-probe") {
     const fs::path root = argv[2];
@@ -396,6 +409,33 @@ int main(int argc, char** argv) {
     ok &= expect(
         cached["property"]["raw-output-file-write"].as<bool>(),
         "raw-output-file-write must remain a boolean instead of being treated as a path");
+  }
+
+  // BF16 and ordinary inference share one lock even when runners encounter
+  // primary/secondary engines in a different order. Both waits must cancel.
+  std::ofstream(configs / "automatic-bf16.yaml")
+      << "hstream-prebuilt-precision: bf16\nproperty:\n"
+         "  model-engine-file: ../packaged-models/detector_bf16.engine\n  batch-size: 2\n";
+  for (const char* mode : {"--cancel-lock-probe", "--cancel-bf16-lock-probe"}) {
+    const pid_t child = ::fork();
+    if (child == 0) {
+      ::execl("/proc/self/exe", "/proc/self/exe", mode, root.c_str(), nullptr);
+      _exit(127);
+    }
+    int status = 0;
+    pid_t result = 0;
+    for (int attempt = 0; attempt < 100 && result == 0; ++attempt) {
+      result = ::waitpid(child, &status, WNOHANG);
+      if (result == 0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ok &= expect(
+        result == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "Ordinary and BF16 engine lock contention must be cancellable without releasing the owner lock");
+    if (result == 0) {
+      ::kill(child, SIGKILL);
+      ::waitpid(child, &status, 0);
+    }
   }
 
   const pid_t lock_probe = ::fork();
@@ -882,7 +922,7 @@ int main(int argc, char** argv) {
   for (const char* model : {"config_infer_yolov8_hockey", "config_infer_yolov8s_hockey",
                             "config_infer_yolov8m_hockey_roles"}) {
     const auto name = std::string(model);
-    const auto source = home_models / (name + ".onnx");
+    auto source = home_models / (name + ".onnx");
     const auto engine = home_models / (name + "_Selected_GPU_bf16.engine");
     const auto recipe = configs / (name + "-automatic.yaml");
     write_model(source, name);
@@ -899,11 +939,14 @@ int main(int argc, char** argv) {
     std::ofstream(recipe) << inference;
     int builds = 0;
     bool fail_build = false;
+    unsigned expected_batch = 3;
+    bool multi_source = false, secondary = false, omit_batch = false;
     hm::pipeline::TensorRtModelCacheOptions options;
     const std::string contents = "validated BF16 for " + name;
     options.validate_bf16 = [&](const fs::path& path, const hm::inference::Bf16EngineOptions& requested) {
-      ok &= expect(path == engine && requested.gpu == 2 && requested.batch == 3 && requested.workspace_mib == 128,
-                   "BF16 validation must use the selected model and effective GPU/batch/workspace");
+      ok &= expect(
+          path == engine && requested.gpu == 2 && requested.batch == expected_batch && requested.workspace_mib == 128,
+          "BF16 validation must use the selected model and effective GPU/batch/workspace");
       std::ifstream file(path);
       const std::string actual((std::istreambuf_iterator<char>(file)), {});
       return actual == contents ? absl::OkStatus() : absl::FailedPreconditionError("Missing or incompatible engine");
@@ -918,16 +961,25 @@ int main(int argc, char** argv) {
       return absl::OkStatus();
     };
     const auto prepare = [&] {
-      auto selected = pipeline_for(recipe.string());
-      selected["primary-gie"]["gpu-id"] = 2;
-      selected["primary-gie"]["batch-size"] = 3;
-      selected["primary-gie"]["workspace-size"] = 128;
+      YAML::Node selected;
+      const std::string key = secondary ? "secondary-gie0" : "primary-gie";
+      selected[key]["enable"] = 1;
+      selected[key]["config-file"] = recipe.string();
+      selected[key]["gpu-id"] = 2;
+      if (!omit_batch)
+        selected[key]["batch-size"] = 3;
+      if (multi_source) {
+        selected["application"]["use-nvmultiurisrcbin"] = 1;
+        selected["application"]["max-batch-size"] = 4;
+        selected["application"]["sgie-batch-size"] = 8;
+      }
+      selected[key]["workspace-size"] = 128;
       // This explicit UI override replaces a previously selected model's path.
-      selected["primary-gie"]["model-engine-file"] = inference["property"]["model-engine-file"].as<std::string>();
+      selected[key]["model-engine-file"] = inference["property"]["model-engine-file"].as<std::string>();
       auto status = hm::pipeline::PrepareTensorRtModelCache(selected, configs,
           [](unsigned) -> absl::StatusOr<std::string> { return "Selected_GPU"; }, options);
       if (status.ok()) {
-        auto runtime = YAML::LoadFile(selected["primary-gie"]["config-file"].as<std::string>());
+        auto runtime = YAML::LoadFile(selected[key]["config-file"].as<std::string>());
         ok &= expect(!runtime["property"]["onnx-file"] &&
                          runtime["property"]["model-engine-file"].as<std::string>() == engine.string(),
                      "Prepared BF16 runtime must load the selected engine without an FP32 rebuild path");
@@ -945,6 +997,45 @@ int main(int argc, char** argv) {
       ok &= expect(prepare().ok() && builds == previous_builds + 1,
                    "Empty, damaged, and different-precision cached engines must rebuild as selected BF16");
     }
+    multi_source = true;
+    for (bool use_secondary : {false, true}) {
+      secondary = use_secondary;
+      expected_batch = secondary ? 8 : 4;
+      ok &= expect(prepare().ok(), "BF16 must validate the effective multi-source primary/secondary batch");
+      omit_batch = true;
+      expected_batch = inference["property"]["batch-size"].as<unsigned>();
+      ok &= expect(prepare().ok(), "Omitted section batch must preserve the BF16 inference batch");
+      omit_batch = false;
+    }
+    multi_source = secondary = false;
+    expected_batch = 3;
+    auto rebuilds = builds;
+    write_model(source, name + " updated pinned asset");
+    inference["pretrained-assets"][0]["sha256"] = *hm::assets::AssetManager::Sha256(source);
+    std::ofstream(recipe) << inference;
+    ok &= expect(prepare().ok() && builds == ++rebuilds, "Changed pinned source digest must rebuild BF16");
+    inference.remove("pretrained-assets");
+    std::ofstream(recipe) << inference;
+    ok &= expect(prepare().ok() && builds == ++rebuilds, "Changed source declaration must rebuild BF16");
+    write_model(source, name + " changed custom bytes");
+    ok &= expect(prepare().ok() && builds == ++rebuilds, "Changed custom ONNX bytes must rebuild BF16");
+    source = home_models / (name + "-replacement.onnx");
+    write_model(source, name + " replacement source");
+    inference["property"]["onnx-file"] = source.string();
+    std::ofstream(recipe) << inference;
+    ok &= expect(prepare().ok() && builds == ++rebuilds, "Changed custom ONNX path must rebuild BF16");
+    const auto tensor = home_models / (name + ".tensor");
+    std::ofstream(tensor) << "original weights";
+    write_model(source, name, protobuf_bytes(5, external_tensor(tensor.filename().string())));
+    ok &= expect(prepare().ok() && builds == ++rebuilds, "External ONNX must bind its weights to BF16 provenance");
+    std::ofstream(tensor) << "changed weights";
+    ok &= expect(prepare().ok() && builds == ++rebuilds, "Changed external weights must rebuild BF16");
+    auto record = YAML::LoadFile(engine.string() + ".source.yaml");
+    record["engine-sha256"] = "pending";
+    std::ofstream(engine.string() + ".source.yaml") << record;
+    ok &= expect(
+        prepare().ok() && builds == ++rebuilds,
+        "Interrupted publication must rebuild instead of adopting unbound bytes");
     std::ofstream(engine) << "preserve on failure";
     fail_build = true;
     ok &= expect(!prepare().ok() && fs::file_size(engine) == std::string("preserve on failure").size(),
