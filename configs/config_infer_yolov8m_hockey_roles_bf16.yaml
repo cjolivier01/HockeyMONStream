@@ -1,0 +1,48 @@
+person-roles: {goalie: 1, referee: 2}
+
+# Never rebuild a failed BF16 engine as FP32 from the original ONNX.
+hstream-prebuilt-precision: bf16
+
+pretrained-assets:
+  - property: onnx-file
+    # Only offline preparation needs the source; engine-only playback works offline.
+    on-demand: true
+    # Release-hosted; keep out of binary packages and download into the user cache.
+    redistributable: false
+    url: https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/hm_hockey_roles_yolov8_m_1984_736_iter487500-c11f239899cef757.onnx
+    sha256: c11f239899cef7579746e6b59b2c48a3feed7a8d34a51b7e3fd14db03e6dabcd
+  - property: labelfile-path
+    # Runtime consumes this from the per-user detector cache; do not stage a
+    # second package copy under /opt.
+    redistributable: false
+    url: https://github.com/cjolivier01/HockeyMONStream/releases/download/pretrained-assets-v1/hockey_roles_person_goalie_official.txt
+    sha256: 0d7db9d98bb41e4381ed751405073fe88e492098b0ec5b9d24d7223970c7c051
+
+property:
+  gpu-id: 0
+  net-scale-factor: 0.0039215697906911373
+  model-color-format: 0
+  # Iter 487500: COCO initialized, CrowdHuman + gray hockey; person/goalie/official.
+  onnx-file: $HOME/.cache/hstream/models/hm_hockey_roles_yolov8_m_1984_736_iter487500-c11f239899cef757.onnx
+  # Generated offline by src/apps/int8-calib-builder with --precision=bf16; do not commit this engine.
+  model-engine-file: $HOME/.cache/hstream/models/hm_hockey_roles_yolov8_m_1984_736_iter487500-c11f239899cef757.onnx_b2_gpu0_{gpu}_bf16.engine
+  labelfile-path: $HOME/.cache/hstream/models/hockey_roles_person_goalie_official.txt
+  batch-size: 2
+  # DeepStream has no BF16 network-mode. It deserializes the prebuilt BF16 engine above.
+  network-mode: 0
+  # Class order is part of the pinned model contract.
+  num-detected-classes: 3
+  interval: 0
+  gie-unique-id: 1
+  process-mode: 1
+  network-type: 0
+  cluster-mode: 2
+  maintain-aspect-ratio: 1
+  symmetric-padding: 1
+  parse-bbox-func-name: NvDsInferParseYolo
+  custom-lib-path: libnvdsinfer_custom_impl_Yolo.so
+
+class-attrs-all:
+  nms-iou-threshold: 0.45
+  pre-cluster-threshold: 0.25
+  topk: 300

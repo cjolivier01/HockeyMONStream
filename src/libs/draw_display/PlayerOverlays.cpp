@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/PersonRoles.h"
 #include "hstream/src/libs/draw_display/PlayerOverlays.h"
 
 #include "hstream/src/libs/player_analytics/TeamAffiliation.h"
@@ -70,14 +71,17 @@ bool VisibleBox(const std::array<Point, 4>& corners, float width, float height) 
 }
 } // namespace
 
-void AddIgnoredPlayerLabel(
+void AddPlayerBoxLabel(
     const NvOSD_RectParams& rect,
+    std::string_view role,
+    bool ignored,
     const preview_overlay::PlayCropperTransform* transform,
     float coordinate_width,
     float coordinate_height,
     CommandList* commands) {
-  if (!commands || !std::isfinite(coordinate_width) || !std::isfinite(coordinate_height) || coordinate_width <= 0 ||
-      coordinate_height <= 0 || rect.width <= 0 || rect.height <= 0)
+  if ((role.empty() && !ignored) || !commands || !std::isfinite(coordinate_width) ||
+      !std::isfinite(coordinate_height) || coordinate_width <= 0 || coordinate_height <= 0 || rect.width <= 0 ||
+      rect.height <= 0)
     return;
   const auto map = [transform](Point point) {
     return transform ? preview_overlay::metadata_to_output(*transform, point) : point;
@@ -95,11 +99,13 @@ void AddIgnoredPlayerLabel(
     y = std::min(y, point.y);
   }
   const float height = 24 * std::clamp(coordinate_height / 1080.0F, 0.5F, 8.0F);
-  constexpr std::string_view label = "IGNORED";
+  const std::string_view label = role.empty() ? "IGNORED" : role;
   x = std::clamp(x, 0.0F, std::max(0.0F, coordinate_width - label.size() * height * 2 / 3));
   y = std::max(0.0F, y - height);
   const auto& c = preview_overlay::kIgnoredPlayerColor;
-  commands->AddText(x, y, height, label, {float(c.red), float(c.green), float(c.blue), float(c.alpha)});
+  const Color color =
+      role.empty() ? Color{float(c.red), float(c.green), float(c.blue), float(c.alpha)} : Color{1, 1, 1, 1};
+  commands->AddText(x, y, height, label, color);
 }
 
 void BuildPlayerOverlays(
@@ -132,7 +138,7 @@ void BuildPlayerOverlays(
     // the existing immutable overlay snapshot and its independent UI switch.
     for (const auto* item = frame->obj_meta_list; item; item = item->next) {
       const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
-      if (!object || object->class_id != 0 || object->object_id == player_analytics::kUntrackedId)
+      if (!object || !hm::IsPerson(object->class_id, object->obj_label) || object->object_id == player_analytics::kUntrackedId)
         continue;
       const auto& rect = object->rect_params;
       const std::array<Point, 4> points{
@@ -152,8 +158,14 @@ void BuildPlayerOverlays(
         const auto& b = points[(i + 1) % points.size()];
         commands->AddLine(a.x, a.y, b.x, b.y, line_width, color);
       }
-      if (ignored)
-        AddIgnoredPlayerLabel(rect, transform, coordinate_width, coordinate_height, commands);
+      AddPlayerBoxLabel(
+          rect,
+          hm::PersonRoleText(object->obj_label),
+          ignored,
+          transform,
+          coordinate_width,
+          coordinate_height,
+          commands);
     }
   }
   if (!(layers & (kPose | kJerseys | kActions | kTeams)))
@@ -206,15 +218,15 @@ void BuildPlayerOverlays(
   if (!(layers & (kJerseys | kActions | kTeams)))
     return;
   const auto* snapshot = preview_overlay::find_overlay_snapshot_meta(frame);
-  const auto is_ignored = [frame, snapshot](uint64_t id) {
+  const auto has_box_label = [frame, snapshot](uint64_t id) {
     if (snapshot && !snapshot->player_rects.empty())
       return std::any_of(snapshot->player_rects.begin(), snapshot->player_rects.end(), [id](const auto& player) {
-        return player.ignored && player.track_id == id;
+        return player.track_id == id && (player.ignored || !player.role_label.empty());
       });
     for (const auto* item = frame->obj_meta_list; item; item = item->next) {
       const auto* object = static_cast<const NvDsObjectMeta*>(item->data);
-      if (object && object->class_id == 0 && object->object_id == id)
-        return preview_overlay::player_is_ignored(*object);
+      if (object && hm::IsPerson(object->class_id, object->obj_label) && object->object_id == id)
+        return preview_overlay::player_is_ignored(*object) || *hm::PersonRoleText(object->obj_label);
     }
     return false;
   };
@@ -245,9 +257,9 @@ void BuildPlayerOverlays(
     const float height = 24 * scale;
     x = std::clamp(x, 0.0F, coordinate_width);
     y = std::max(height, y) - height;
-    // Reserve the row above an ignored player for its camera-exclusion label.
-    // Keep semantic rows stable across the independent box visibility switch.
-    if (is_ignored(player.track_id))
+    // Reserve one row for the role or camera-exclusion label, including when
+    // boxes are already baked or hidden by the independent preview switch.
+    if (has_box_label(player.track_id))
       y += height;
     const auto label = [&](std::string_view text) {
       if (text.empty())

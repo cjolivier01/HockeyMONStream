@@ -1,3 +1,4 @@
+#include <string>
 #pragma once
 
 #include <nvdsmeta.h>
@@ -25,6 +26,7 @@ struct PlayerRect {
   NvOSD_RectParams rect;
   uint64_t track_id{UNTRACKED_OBJECT_ID};
   bool ignored{false};
+  std::string role_label;
 };
 
 struct Point {

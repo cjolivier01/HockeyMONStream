@@ -5331,6 +5331,8 @@ void HStreamWindow::loadBaselineDefaults() {
       "Ignore_Largest_Count", integer("rink.tracking.cam_ignore_largest_count"), 0, std::numeric_limits<int>::max());
   if (!boolean("rink.tracking.cam_ignore_largest"))
     camera_defaults_["Ignore_Largest_Count"] = 0;
+  checked("Ignore_Referees", boolean("rink.tracking.cam_ignore_referees"), 0, 1);
+  checked("Ignore_Goalies", boolean("rink.tracking.cam_ignore_goalies"), 0, 1);
   checked("Ignore_Oversized_Players", boolean("rink.tracking.cam_ignore_oversized"), 0, 1);
   camera_defaults_["Oversized_Player_Percent"] = nonnegative_percentage(require("rink.tracking.cam_oversized_percent"));
   checked("Zoom_In_Aggressiveness", integer("rink.camera.zoom_in_aggressiveness"), 0, 100);
@@ -7413,6 +7415,8 @@ void HStreamWindow::configureControlHelp() {
        "Limit tracking speed when the estimated time to the destination falls below this frame count."},
       {"Ignore_Largest_Count",
        "Ignore this many largest tracked player areas. Zero disables this filter. Size filters leave at least three players."},
+      {"Ignore_Referees", "Exclude referees from play framing while keeping their tracked boxes visible."},
+      {"Ignore_Goalies", "Exclude goalies from play framing while keeping their tracked boxes visible."},
       {"Ignore_Oversized_Players",
        "Exclude unusually large player areas after the largest-count filter, such as a nearby referee or a player at the bench."},
       {"Oversized_Player_Percent",
@@ -7539,6 +7543,13 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
           "Ignore_Oversized_Players",
           "Ignore oversized players",
           default_value("Ignore_Oversized_Players") != 0);
+      addCameraCheckBox(
+          content_layout,
+          "Ignore_Referees",
+          "Ignore referees for play tracking",
+          default_value("Ignore_Referees") != 0);
+      addCameraCheckBox(
+          content_layout, "Ignore_Goalies", "Ignore goalies for play tracking", default_value("Ignore_Goalies") != 0);
       auto* percent = addCameraDoubleSpinBox(
           content_layout,
           "Oversized_Player_Percent",
@@ -11409,6 +11420,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
       args << QString("--options=pipeline.primary-gie.config-file=%1").arg(detectorConfigName());
       args << QString("--options=pipeline.primary-gie.model-engine-file=%1").arg(detectorEnginePath());
     }
+    args << QString("--options=rink.tracking.cam_ignore_referees=%1")
+                .arg(cameraControlValue("Ignore_Referees") != 0 ? "true" : "false");
+    args << QString("--options=rink.tracking.cam_ignore_goalies=%1")
+                .arg(cameraControlValue("Ignore_Goalies") != 0 ? "true" : "false");
     args << QString("--options=rink.tracking.cam_ignore_largest=%1")
                 .arg(cameraControlValue("Ignore_Largest_Count") != 0 ? "true" : "false")
          << QString("--options=rink.tracking.cam_ignore_largest_count=%1")
@@ -19811,6 +19826,8 @@ void HStreamWindow::resetCameraControls() {
     const QStringList playtracker_reset_controls = {
         "Zoom_In_Aggressiveness",
         "Ignore_Largest_Count",
+        "Ignore_Referees",
+        "Ignore_Goalies",
         "Ignore_Oversized_Players",
         "Oversized_Player_Percent",
         "Stop_Direction_Change_Delay_Frames",
@@ -20217,6 +20234,8 @@ std::map<QString, double> HStreamWindow::readPlayerSizeControls(
   const bool enabled = effective("rink.tracking.cam_ignore_largest", "ignore-largest-bbox").as<bool>();
   return {
       {"Ignore_Largest_Count", enabled ? count : 0},
+      {"Ignore_Referees", effective("rink.tracking.cam_ignore_referees", "ignore-referees").as<bool>() ? 1 : 0},
+      {"Ignore_Goalies", effective("rink.tracking.cam_ignore_goalies", "ignore-goalies").as<bool>() ? 1 : 0},
       {"Ignore_Oversized_Players",
        effective("rink.tracking.cam_ignore_oversized", "ignore-oversized-bboxes").as<bool>() ? 1 : 0},
       {"Oversized_Player_Percent",
@@ -20906,7 +20925,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
         }
         if ((id == "Link_Fixed_Edge_Rotation_Left_Right" || id == "Apply_To_Fast_Box" ||
              id == "Apply_To_Follower_Box" || id == "Lift_Shadow_Black_Point" || id == "Use_10_Bit_Grading" ||
-             id == "Ignore_Oversized_Players") &&
+             id == "Ignore_Referees" || id == "Ignore_Goalies" || id == "Ignore_Oversized_Players") &&
             value != 0 && value != 1) {
           throw std::invalid_argument(QString("%1 must be 0 or 1").arg(id).toStdString());
         }
@@ -21338,6 +21357,8 @@ bool HStreamWindow::applySavedControlConfig(
            "rink.camera.stop_delay_cooldown_frames",
            "rink.camera.time_to_dest_speed_limit_frames",
            "rink.camera.zoom_in_aggressiveness",
+           "rink.tracking.cam_ignore_referees",
+           "rink.tracking.cam_ignore_goalies",
            "rink.tracking.cam_ignore_largest",
            "rink.tracking.cam_ignore_largest_count",
            "rink.tracking.cam_ignore_oversized",
@@ -21709,6 +21730,14 @@ bool HStreamWindow::applySavedControlConfig(
     mark_runtime_key("rink.tracking.cam_ignore_largest");
     mark_runtime_key("rink.tracking.cam_ignore_largest_count");
   }
+  if (has_control(controls, "Ignore_Referees")) {
+    config["rink"]["tracking"]["cam_ignore_referees"] = slider_value("Ignore_Referees") != 0;
+    mark_runtime_key("rink.tracking.cam_ignore_referees");
+  }
+  if (has_control(controls, "Ignore_Goalies")) {
+    config["rink"]["tracking"]["cam_ignore_goalies"] = slider_value("Ignore_Goalies") != 0;
+    mark_runtime_key("rink.tracking.cam_ignore_goalies");
+  }
   if (has_control(controls, "Ignore_Oversized_Players")) {
     config["rink"]["tracking"]["cam_ignore_oversized"] = slider_value("Ignore_Oversized_Players") != 0;
     mark_runtime_key("rink.tracking.cam_ignore_oversized");
@@ -21718,6 +21747,7 @@ bool HStreamWindow::applySavedControlConfig(
     mark_runtime_key("rink.tracking.cam_oversized_percent");
   }
   const bool has_playtracker_runtime_controls = has_control(controls, "Ignore_Largest_Count") ||
+      has_control(controls, "Ignore_Referees") || has_control(controls, "Ignore_Goalies") ||
       has_control(controls, "Ignore_Oversized_Players") || has_control(controls, "Oversized_Player_Percent") ||
       has_control(controls, "Stop_Direction_Change_Delay_Frames") || has_control(controls, "Zoom_In_Aggressiveness") ||
       has_control(controls, "Cancel_Stop_On_Opposite_Direction") ||
@@ -21729,6 +21759,8 @@ bool HStreamWindow::applySavedControlConfig(
       has_control(controls, "Max_Accel_Y_x10");
   const QStringList tracker_control_ids = {
       "Ignore_Largest_Count",
+      "Ignore_Referees",
+      "Ignore_Goalies",
       "Ignore_Oversized_Players",
       "Oversized_Player_Percent",
       "Stop_Direction_Change_Delay_Frames",
@@ -21806,6 +21838,8 @@ bool HStreamWindow::applySavedControlConfig(
         // from the original file when an untouched control inherits a user default.
         play_tracker["ignore-largest-bbox"] = slider_value("Ignore_Largest_Count") != 0;
         play_tracker["ignore-largest-bbox-count"] = slider_value("Ignore_Largest_Count");
+        play_tracker["ignore-referees"] = slider_value("Ignore_Referees") != 0;
+        play_tracker["ignore-goalies"] = slider_value("Ignore_Goalies") != 0;
         play_tracker["ignore-oversized-bboxes"] = slider_value("Ignore_Oversized_Players") != 0;
         play_tracker["oversized-bbox-percent"] = cameraControlValue("Oversized_Player_Percent");
         if (has_control(controls, "Zoom_In_Aggressiveness")) {
@@ -23815,6 +23849,8 @@ bool HStreamWindow::sendLiveCameraControl(const QString& id, double value) {
       "Stop_Direction_Change_Delay_Frames",
       "Zoom_In_Aggressiveness",
       "Ignore_Largest_Count",
+      "Ignore_Referees",
+      "Ignore_Goalies",
       "Ignore_Oversized_Players",
       "Oversized_Player_Percent",
       "Cancel_Stop_On_Opposite_Direction",

@@ -512,7 +512,7 @@ void IgnoredPlayers() {
   list.Clear();
   auto offscreen = ignored->rect_params;
   offscreen.left = -1000;
-  a::AddIgnoredPlayerLabel(offscreen, nullptr, 800, 600, &list);
+  a::AddPlayerBoxLabel(offscreen, {}, true, nullptr, 800, 600, &list);
   Check(list.empty(), "offscreen ignored player emitted a floating label");
   a::CommandList limited(10);
   a::BuildPlayerOverlays(copy.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &limited);
@@ -537,7 +537,7 @@ void IgnoredAndSemanticLabels() {
       const auto* t = cropped ? &transform : nullptr;
       const float width = cropped ? 1280 : 800, height = cropped ? 720 : 600;
       a::CommandList ignored, semantic;
-      a::AddIgnoredPlayerLabel(player->rect_params, t, width, height, &ignored);
+      a::AddPlayerBoxLabel(player->rect_params, {}, true, t, width, height, &ignored);
       a::BuildPlayerOverlays(frame.frame, a::kJerseys | a::kActions, .3F, t, width, height, &semantic);
       Check(ignored.size() == 7 && semantic.size() == 9, "combined labels lost glyphs");
       Check(semantic.data()[0].y0 >= ignored.data()[0].y1, "jersey label overlaps IGNORED");
@@ -559,6 +559,90 @@ void IgnoredAndSemanticLabels() {
   Check(
       list.size() == 13 && list.data()[11].y0 >= list.data()[4].y1,
       "play-only snapshot lost ignored semantic row separation");
+}
+void HockeyRoleBoxes() {
+  Frame frame;
+  frame.Object(1);
+  auto* goalie = frame.Object(2);
+  goalie->class_id = 1;
+  std::strcpy(goalie->obj_label, "goalie");
+  auto* official = frame.Object(3);
+  official->class_id = 2;
+  std::strcpy(official->obj_label, "official");
+  auto* bicycle = frame.Object(4);
+  bicycle->class_id = 1;
+  std::strcpy(bicycle->obj_label, "bicycle");
+  a::CommandList list;
+  a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes, .3F, nullptr, 800, 600, &list);
+  Check(list.size() == 12 + 6 + 3, "Program must draw three human boxes and only GOALIE/REF text");
+  po::PlayCropperTransform baked{};
+  baked.baked_player_layers = a::kPlayerBoxes;
+  list.Clear();
+  a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes, .3F, &baked, 800, 600, &list);
+  Check(list.empty(), "Preview must not redraw baked role boxes or labels");
+}
+
+void RoleAndSemanticLabels() {
+  constexpr uint32_t semantic_layers = a::kJerseys | a::kActions | a::kTeams;
+  for (const char* role : {"", "person", "goalie"}) {
+    const bool goalie = std::strcmp(role, "goalie") == 0;
+    for (int snapshot : {0, 1, 2}) {
+      for (float angle : {0.0F, 30.0F, -30.0F}) {
+        Frame frame;
+        auto* object = frame.Object();
+        object->class_id = goalie ? 1 : 0;
+        std::strcpy(object->obj_label, role);
+        auto result = Result();
+        // Exercise top-edge clamping as well as rotated label placement.
+        if (angle == 0)
+          object->rect_params.top = result.players[0].box.top = 5;
+        frame.Attach(result);
+        if (snapshot)
+          Check(
+              po::add_selected_overlay_snapshot_meta(frame.frame, snapshot == 1, true, nullptr),
+              "attach role label snapshot");
+        po::PlayCropperTransform transform{};
+        transform.input_width = transform.metadata_width = transform.crop_width = transform.output_width = 800;
+        transform.input_height = transform.metadata_height = transform.crop_height = transform.output_height = 600;
+        transform.anchor_x = 400;
+        transform.anchor_y = 300;
+        transform.angle_degrees = angle;
+        a::CommandList combined;
+        a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes | semantic_layers, .3F, &transform, 800, 600, &combined);
+        const size_t role_glyphs = goalie ? 6 : 0;
+        const size_t semantic_start = 4 + role_glyphs;
+        Check(combined.size() == semantic_start + 13, "role/semantic layers added or lost text");
+        if (goalie)
+          Check(
+              combined.data()[semantic_start].y0 + .001F >= combined.data()[4].y1,
+              "goalie role overlaps semantic labels");
+        Check(
+            combined.data()[semantic_start + 2].y0 + .001F >= combined.data()[semantic_start].y1 &&
+                combined.data()[semantic_start + 9].y0 + .001F >= combined.data()[semantic_start + 2].y1,
+            "jersey/action/team rows overlap");
+
+        // Frozen role metadata must reserve its row even after downstream
+        // object labels change. A play-only snapshot must use the objects.
+        if (snapshot == 1) {
+          object->class_id = 0;
+          std::strcpy(object->obj_label, "person");
+        }
+        a::CommandList semantic;
+        a::BuildPlayerOverlays(frame.frame, semantic_layers, .3F, &transform, 800, 600, &semantic);
+        Check(semantic.size() == 13, "hidden boxes emitted role/player text");
+        Near(semantic.data()[0].y0, combined.data()[semantic_start].y0, "box toggle moved semantic rows");
+        transform.baked_player_layers = a::kPlayerBoxes;
+        semantic.Clear();
+        a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes | semantic_layers, .3F, &transform, 800, 600, &semantic);
+        Check(semantic.size() == 13, "baked boxes emitted role/player text again");
+        Near(semantic.data()[0].y0, combined.data()[semantic_start].y0, "baked role row was not reserved");
+        transform.baked_player_layers |= semantic_layers;
+        semantic.Clear();
+        a::BuildPlayerOverlays(frame.frame, a::kPlayerBoxes | semantic_layers, .3F, &transform, 800, 600, &semantic);
+        Check(semantic.empty(), "fully baked labels were redrawn");
+      }
+    }
+  }
 }
 void HockeySkeleton() {
   Frame frame;
@@ -590,6 +674,8 @@ int main() {
     void (*run)();
   };
   const Test cases[] = {
+      {"hockey_role_boxes", HockeyRoleBoxes},
+      {"role_and_semantic_labels", RoleAndSemanticLabels},
       {"hockey_skeleton", HockeySkeleton},
       {"geometry_and_colors", GeometryAndColors},
       {"copy_on_write_colors", CopyOnWriteColors},

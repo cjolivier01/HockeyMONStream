@@ -95,6 +95,11 @@ absl::StatusOr<DsPlayTrackerRuntimeTuning> parse_runtime_tuning(const YAML::Node
         .ignore_oversized_bboxes = runtime["ignore-oversized-bboxes"]
             ? std::optional<bool>(read_bool(runtime, "ignore-oversized-bboxes", false))
             : std::nullopt,
+        .ignore_referees = runtime["ignore-referees"]
+            ? std::optional<bool>(read_bool(runtime, "ignore-referees", false))
+            : std::nullopt,
+        .ignore_goalies =
+            runtime["ignore-goalies"] ? std::optional<bool>(read_bool(runtime, "ignore-goalies", false)) : std::nullopt,
         .oversized_bbox_percent = oversized_percent,
         .apply_to_fast_box = apply_to_fast,
         .apply_to_follower_box = apply_to_follower,

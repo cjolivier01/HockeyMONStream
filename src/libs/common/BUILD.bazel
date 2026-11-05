@@ -355,6 +355,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         "@deepstream//:deepstream_lib",
         "@glib",
     ],
@@ -536,6 +537,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         ":preview_overlay_meta",
         "//src/libs/player_analytics:track_colors",
         "//src/libs/player_analytics:frame_meta",
@@ -599,12 +601,26 @@ cc_test(
 )
 
 cc_library(
+    name = "person_roles",
+    hdrs = ["PersonRoles.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
     name = "game_operation_owner",
     srcs = ["GameOperationOwner.cpp"],
     hdrs = ["GameOperationOwner.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [":game_storage", ":process_guard", "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "person_roles_test",
+    srcs = ["PersonRolesTest.cpp"],
+    deps = [":person_roles"],
+    visibility = ["//visibility:public"],
 )
 
 cc_library(

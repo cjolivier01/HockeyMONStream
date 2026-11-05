@@ -75,6 +75,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         ":draw",
         ":draw_display_cuda_lib",
         "//src/libs/common:surface",
@@ -277,6 +278,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:person_roles",
         ":analytics_overlay",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/player_analytics:frame_meta",

@@ -2,6 +2,7 @@
 
 #include <nvdsmeta.h>
 #include <cstdint>
+#include <string_view>
 
 #include "hstream/src/libs/common/PreviewOverlayMeta.h"
 #include "hstream/src/libs/draw_display/AnalyticsOverlay.h"
@@ -18,9 +19,12 @@ enum PlayerLayer : uint32_t {
 };
 
 // Shared by Program's CUDA overlay and the GPU preview's box diagnostics.
-// The label is upright above the transformed box, and omitted if off-crop.
-void AddIgnoredPlayerLabel(
+// A role takes the row otherwise used by IGNORED. Ordinary players have no
+// label. Text is upright above the transformed box, and omitted if off-crop.
+void AddPlayerBoxLabel(
     const NvOSD_RectParams& rect,
+    std::string_view role,
+    bool ignored,
     const preview_overlay::PlayCropperTransform* transform,
     float coordinate_width,
     float coordinate_height,
