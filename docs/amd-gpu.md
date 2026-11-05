@@ -1035,6 +1035,9 @@ Controls become active after preparation and before the first processed pair.
 Queued quit and end-of-recording seeks consume no frames. Model preparation is
 not acknowledged as a paused playback graph. Preview-channel routing uses the
 generation protocol described below; additional runtime mutations remain pending.
+This includes live referee/goalie filters and camera-control resets. AMD startup
+already reads both role filters; the shared runtime catalog and serialization
+tests do not establish live AMD mutation support.
 
 `@seek POSITION_NS GENERATION` seeks local preview/discard runs relative to the
 configured playback start. `@seek-relative DELTA_NS GENERATION` jumps from the

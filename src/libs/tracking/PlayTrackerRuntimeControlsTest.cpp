@@ -87,5 +87,37 @@ play-tracker:
   Check(
       empty.ok() && (*empty)["play-tracker"]["hstream-runtime-tuning"].size() == 0,
       "An unchanged control created a sparse runtime override");
+  for (const bool excluded : {true, false}) {
+    values["Ignore_Referees"] = excluded;
+    values["Ignore_Goalies"] = excluded;
+    values["Max_Speed_X_x10"] = excluded ? 123 : defaults.at("Max_Speed_X_x10");
+    const auto reset = hm::tracking::BuildPlaytrackerRuntimeControls(
+        source, values, defaults, {"Ignore_Referees", "Ignore_Goalies", "Max_Speed_X_x10"}, true);
+    Check(reset.ok(), "Role filters rejected a coalesced camera edit/reset");
+    const auto delta = (*reset)["play-tracker"]["hstream-runtime-tuning"];
+    Check(
+        delta["ignore-referees"].as<bool>() == excluded && delta["ignore-goalies"].as<bool>() == excluded &&
+            delta["max-speed-x"].as<double>() == values.at("Max_Speed_X_x10") / 10,
+        "Role filter edits/reset lost boolean values or a coalesced motion change");
+  }
+  auto missing_role = YAML::Clone(baseline);
+  missing_role["rink"]["tracking"].remove("cam_ignore_goalies");
+  Check(!hm::tracking::ReadPlaytrackerControlValues(missing_role).ok(), "A missing role default was silently supplied");
+  for (const bool excluded : {true, false}) {
+    auto canonical = YAML::Clone(baseline);
+    canonical["rink"]["tracking"]["cam_ignore_referees"] = !excluded;
+    canonical["rink"]["tracking"]["cam_ignore_goalies"] = !excluded;
+    auto materialized = YAML::Clone(source);
+    materialized["play-tracker"]["ignore-referees"] = excluded;
+    materialized["play-tracker"]["ignore-goalies"] = excluded;
+    const auto actual = hm::tracking::ReadPlaytrackerControlValues(canonical, &materialized);
+    Check(
+        actual.ok() && actual->at("Ignore_Referees") == excluded && actual->at("Ignore_Goalies") == excluded,
+        "Initial role readback ignored the materialized native tracker precedence");
+    materialized["play-tracker"].remove("ignore-goalies");
+    Check(
+        !hm::tracking::ReadPlaytrackerControlValues(canonical, &materialized).ok(),
+        "Incomplete native role state silently fell back to canonical values");
+  }
   return 0;
 }

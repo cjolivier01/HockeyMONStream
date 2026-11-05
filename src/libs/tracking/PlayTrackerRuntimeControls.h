@@ -12,8 +12,11 @@
 namespace hm::tracking {
 using CameraControlValues = std::map<std::string, double>;
 
-// Read the same canonical controls and optional explicit UI overrides as Qt.
-absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(const YAML::Node& resolved);
+// Read canonical controls and optional explicit UI overrides. At first runtime
+// readback, use the materialized tracker to preserve native role-filter precedence.
+absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(
+    const YAML::Node& resolved,
+    const YAML::Node* materialized_tracker = nullptr);
 
 bool ValidPlaytrackerControlValue(const CameraSliderSpec& spec, double value);
 

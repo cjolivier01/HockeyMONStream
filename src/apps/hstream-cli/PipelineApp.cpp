@@ -2066,8 +2066,6 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
     // Timed mask preparation has no Program tracker. Seed its controls when
     // the final graph enables it, retaining live values across later rebuilds.
     if (!web_camera_controls_ && section.IsMap() && section["enable"].IsScalar() && config_section_enabled(section)) {
-      hm::tracking::CameraControlValues values;
-      HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config));
       if (!section["config-file"].IsScalar())
         return absl::InvalidArgumentError("Live camera controls require the resolved native tracker config");
       try {
@@ -2075,6 +2073,8 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
       } catch (const YAML::Exception& error) {
         return absl::InvalidArgumentError(std::string("Cannot read native tracker configuration: ") + error.what());
       }
+      hm::tracking::CameraControlValues values;
+      HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config, &web_camera_base_));
       web_camera_controls_ = std::move(values);
     }
   }

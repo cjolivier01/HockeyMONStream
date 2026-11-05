@@ -12555,27 +12555,7 @@ void HStreamWindow::pauseOrResumePipeline() {
     stopPipeline();
     return;
   }
-  pipeline_paused_ = !pipeline_paused_;
-  pipeline_state_->setText(pipeline_paused_ ? "PAUSED" : "PLAYING");
-  if (!pipeline_paused_) {
-    playback_eta_ = "Warming up";
-    playback_speed_ = "Warming up";
-    if (deferred_playback_seek_ns_.has_value()) {
-      const qint64 target_ns = *deferred_playback_seek_ns_;
-      deferred_playback_seek_ns_.reset();
-      playback_warming_after_resume_ = true;
-      resume_progress_reset_waiting_for_seek_ = true;
-      sendPlaybackSeek(target_ns);
-      if (pending_playback_seek_generation_ == 0) {
-        resume_progress_reset_waiting_for_seek_ = false;
-        beginPlaybackProgressReset();
-      }
-    } else {
-      beginPlaybackProgressReset();
-    }
-  }
-  preview_status_->setText(pipeline_paused_ ? "Pipeline paused" : "Pipeline resumed");
-  appendLog(pipeline_paused_ ? "pipeline paused" : "pipeline resumed");
+  preview_status_->setText("Resuming pipeline…");
   updateRunControls();
 #else
   appendLog("pause/resume is not supported on this platform yet");
@@ -13462,6 +13442,31 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
   if (generation != 0 && match.captured(1) == "resumed") {
     if (generation == pending_process_resume_generation_) {
       pending_process_resume_generation_ = 0;
+      if (pipeline_stop_requested_ || !pipeline_process_ || pipeline_process_->state() != QProcess::Running)
+        return true;
+      // Cancelling an unacknowledged Pause also receives a Resume ACK. Only
+      // a confirmed pause owns the deferred seek and progress reset below.
+      if (pipeline_paused_) {
+        pipeline_paused_ = false;
+        pipeline_state_->setText("PLAYING");
+        playback_eta_ = "Warming up";
+        playback_speed_ = "Warming up";
+        if (deferred_playback_seek_ns_.has_value()) {
+          const qint64 target_ns = *deferred_playback_seek_ns_;
+          deferred_playback_seek_ns_.reset();
+          playback_warming_after_resume_ = true;
+          resume_progress_reset_waiting_for_seek_ = true;
+          sendPlaybackSeek(target_ns);
+          if (pending_playback_seek_generation_ == 0) {
+            resume_progress_reset_waiting_for_seek_ = false;
+            beginPlaybackProgressReset();
+          }
+        } else {
+          beginPlaybackProgressReset();
+        }
+        preview_status_->setText("Pipeline resumed");
+        appendLog("pipeline resumed");
+      }
       updateRunControls();
       flushDeferredPreviewCommands();
       flushScheduledRuntimeControls();

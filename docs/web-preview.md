@@ -52,6 +52,25 @@ keep their existing command handling. The browser already retains route and
 overlay edits until native PLAYING confirmation. CPU tests cover both command
 orderings; displayed-frame and A/V qualification remain separate.
 
+Qt also retains its PAUSED state and queued seek until that matching Resume
+acknowledgement. Sending SIGCONT or writing the command is not confirmation.
+The latest queued seek runs once after confirmation; progress-rate sampling
+resets after that seek completes, or immediately when no seek is queued. A
+cancelled, unacknowledged Pause does not reset progress when its rollback Resume
+is acknowledged. Stop retires pending acknowledgements in both the native and
+cooperative backend paths. This matches the browser's existing correlated
+PLAYING confirmation without changing its signaling or playback commands.
+
+Program's shared camera-control registry includes the referee and goalie filters
+for Qt and browser runtime batches. Reset Controls must publish their explicit
+boolean values together with motion changes; missing registry entries previously
+rejected the entire reset. Required defaults remain in the baseline. Initial
+readback uses the materialized native tracker, preserving a selected tracker's
+precedence over canonical settings. Retained live values survive graph
+reconstruction. These role
+filters stay out of Camera Experiments because its recordings lack role metadata.
+Live AMD camera mutations remain a separate gap in `docs/amd-gpu.md`.
+
 External Qt timing diagnostics may read `hm::gpu_preview::presented_frame` from an
 exactly identified, unstripped executable. The existing getter returns only the last
 presented generation and PTS under the renderer mutex; it reads no pixels and
