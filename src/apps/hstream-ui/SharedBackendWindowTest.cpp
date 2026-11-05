@@ -89,7 +89,9 @@ struct HStreamWindowTestAccess {
         require(monitor && monitor->isVisible(), "Fresh main window opens the unbound workflow monitor");
         const auto* cancel = monitor->findChild<QPushButton*>("cancelStitchExperimentsButton");
         require(cancel && cancel->isEnabled(), "Reopened monitor exposes Stop while retained data is unavailable");
-        monitor->close();
+        // The active-workflow Close action asks whether to keep or stop it.
+        // Retire only this read-only window; the durable owner must survive.
+        delete monitor;
         QTest::qWait(10);
       }
       const auto current = hm::game_operation::Inspect(game);
@@ -107,6 +109,11 @@ struct HStreamWindowTestAccess {
   }
 
   static void checkGameOwnership(HStreamWindow& window, const QString& directory) {
+    // Save Preset is enabled only for a dirty draft. Keep that independent of
+    // the ownership gate exercised below, including after ownership releases.
+    window.control_points_spin_->setValue(window.control_points_spin_->value() + 1);
+    window.updateRunControls();
+    require(window.save_preset_button_->isEnabled(), "Ownership fixture has a savable draft");
     const std::filesystem::path game(directory.toStdString());
     auto owner = hm::game_operation::LocalOwner("workflow", "remote-test", "remote-test-token");
     owner.workflow_directory = (game / "_hockeymon/workflows/remote-test").string();

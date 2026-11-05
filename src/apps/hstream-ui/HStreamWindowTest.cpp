@@ -1115,7 +1115,9 @@ for line in sys.stdin:
       window->active_hockeymon_program_ = true;
     window->handleProcessPauseOutput(
         QString("HSTREAM_PROCESS_PAUSE status=%1 generation=%2%3")
-            .arg(status).arg(generation).arg(cooperative ? " mode=cooperative" : ""));
+            .arg(status)
+            .arg(generation)
+            .arg(cooperative ? " mode=cooperative" : ""));
   }
   static quint64 pendingProcessPause(HStreamWindow* window) {
     return window->pending_process_pause_generation_;
@@ -16237,6 +16239,15 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
 }
 
 bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory) {
+  // Isolate the remembered game and Defaults overlay as well as legacy HOME
+  // tuning. An earlier test's selected game must not replace these defaults.
+  const QByteArray original_xdg_config = qgetenv("XDG_CONFIG_HOME");
+  auto restore_xdg_config = absl::MakeCleanup([&] {
+    if (original_xdg_config.isNull())
+      qunsetenv("XDG_CONFIG_HOME");
+    else
+      qputenv("XDG_CONFIG_HOME", original_xdg_config);
+  });
   const QByteArray original_scoreboard_override = qgetenv("HM_NO_SCOREBOARD");
   auto restore_scoreboard_override = absl::MakeCleanup([&] {
     if (original_scoreboard_override.isNull())
@@ -16334,6 +16345,7 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   std::ofstream(copied_game / "_hockeymon/seam_file.png") << "preserved optimizer-normalization artifact\n";
 
   qputenv("HOME", user_home.path().toLocal8Bit());
+  qputenv("XDG_CONFIG_HOME", QDir(user_home.path()).filePath(".config").toLocal8Bit());
   qputenv("HM_CONFIG_ROOT", baseline_root.path().toLocal8Bit());
   bool ok = true;
   {
