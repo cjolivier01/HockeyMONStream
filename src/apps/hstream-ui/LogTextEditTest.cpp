@@ -72,6 +72,20 @@ int main(int argc, char** argv) {
     log.editLog([&] { log.clear(); }, true);
     log.appendLogText(text);
     follows(log, "clear");
+    const QString crlf = "first\r\nsecond\r\nthird\r\n";
+    log.setLogText(crlf, "crlf");
+    selection = QTextCursor(log.document());
+    selection.setPosition(1);
+    selection.setPosition(4, QTextCursor::KeepAnchor);
+    log.setTextCursor(selection);
+    log.setLogText(crlf, "crlf");
+    require(log.textCursor().selectedText() == "irs", "Unchanged CRLF snapshot erased selection");
+    log.setLogText(crlf + "fourth\r", "crlf");
+    log.setLogText(crlf + "fourth\r\nfifth", "crlf");
+    require(log.toPlainText() == "first\nsecond\nthird\nfourth\nfifth", "Split CRLF append duplicated a line");
+    log.editLog([&] { log.clear(); }, true);
+    log.setLogText(crlf, "crlf");
+    require(log.toPlainText() == "first\nsecond\nthird\n", "Clearing retained a stale snapshot cache");
     std::cout << "Log tail, manual scroll, bounded history, resize, hidden updates and reset passed\n";
     return 0;
   } catch (const std::exception& error) {

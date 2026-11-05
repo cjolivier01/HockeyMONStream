@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <functional>
+#include <optional>
+#include <utility>
 
 // Match the main runtime log: follow new output until the reader scrolls away,
 // then resume only when they return to the tail. Document edits are not scrolling.
@@ -27,6 +29,7 @@ class LogTextEdit : public QPlainTextEdit {
     const int vertical = verticalScrollBar()->value();
     const int horizontal = horizontalScrollBar()->value();
     QScopedValueRollback<bool> guard(updating_, true);
+    snapshot_.reset();
     if (reset)
       follows_tail_ = true;
     edit();
@@ -34,25 +37,28 @@ class LogTextEdit : public QPlainTextEdit {
     horizontalScrollBar()->setValue(reset ? 0 : horizontal);
   }
 
-  void setLogText(const QString& text, const QString& source) {
+  void setLogText(QString text, const QString& source) {
+    text.replace("\r\n", "\n");
+    text.replace('\r', '\n');
     const bool reset = source != source_;
     source_ = source;
-    const QString previous = toPlainText();
-    if (!reset &&
-        (text == previous ||
-         (maximumBlockCount() > 0 && document()->blockCount() == maximumBlockCount() && text.endsWith(previous))))
+    // The document normalizes text and may trim leading blocks. Compare the
+    // supplied snapshots so neither operation turns an unchanged poll into a reset.
+    if (!reset && snapshot_ && text == *snapshot_)
       return;
+    const qsizetype prefix = !reset && snapshot_ && text.startsWith(*snapshot_) ? snapshot_->size() : -1;
     editLog(
         [&] {
-          if (!reset && text.startsWith(previous)) {
+          if (prefix >= 0) {
             QTextCursor cursor(document());
             cursor.movePosition(QTextCursor::End);
-            cursor.insertText(text.mid(previous.size()));
+            cursor.insertText(text.mid(prefix));
           } else {
             setPlainText(text);
           }
         },
         reset);
+    snapshot_ = std::move(text);
   }
 
   void appendLogText(const QString& text) {
@@ -81,4 +87,5 @@ class LogTextEdit : public QPlainTextEdit {
   bool follows_tail_{true};
   bool updating_{false};
   QString source_;
+  std::optional<QString> snapshot_;
 };
