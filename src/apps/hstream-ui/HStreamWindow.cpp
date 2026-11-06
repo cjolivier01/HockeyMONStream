@@ -919,9 +919,18 @@ class LetterboxRenderHost : public QWidget {
     }
     const int x = (available.width() - width) / 2;
     const int y = (available.height() - height) / 2;
+    const QRect surface_geometry(x, y, width, height);
+    const QRect target_geometry(0, 0, width, height);
+    constexpr int kButtonMargin = 6;
+    const QPoint button_position(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    const bool geometry_changed = render_surface_->geometry() != surface_geometry ||
+        render_target_->geometry() != target_geometry || focus_button_->pos() != button_position;
     const bool xcb = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
-    const bool remap_target = xcb && !render_target_->isHidden();
-    const bool remap_focus_button = xcb && !focus_button_->isHidden();
+    // Status polls can repeat the same source dimensions. Remapping an
+    // unchanged target would clear the renderer's pixels, including its paused
+    // frame. Keep hidden QWindow geometry synchronized without unmapping it.
+    const bool remap_target = geometry_changed && xcb && !render_target_->isHidden();
+    const bool remap_focus_button = geometry_changed && xcb && !focus_button_->isHidden();
     const QRect old_focus_button_geometry = focus_button_->geometry();
     // Moving mapped native X11 children can leave their previous pixels in
     // Qt's backing store. Unmap the overlay hierarchy while geometry changes
@@ -930,10 +939,9 @@ class LetterboxRenderHost : public QWidget {
       focus_button_->hide();
     if (remap_target)
       render_target_->hide();
-    set_native_child_geometry(render_surface_, QRect(x, y, width, height));
-    set_native_child_geometry(render_target_, QRect(0, 0, width, height));
-    constexpr int kButtonMargin = 6;
-    focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    set_native_child_geometry(render_surface_, surface_geometry);
+    set_native_child_geometry(render_target_, target_geometry);
+    focus_button_->move(button_position);
     if (remap_target) {
       render_target_->show();
       render_target_->raise();
@@ -1110,6 +1118,31 @@ std::optional<QString> explicit_chapter_key(const QString& path) {
     return QString("lr:%1:%2").arg(QString::number(part.size()).rightJustified(10, '0'), part);
   }
   return std::nullopt;
+}
+
+bool normalized_explicit_playlist(const YAML::Node& explicit_videos, YAML::Node& playlist) {
+  std::map<QString, QString> by_chapter;
+  std::set<QString> schemes;
+  std::set<QString> unique_paths;
+  for (const auto& item : explicit_videos) {
+    const QString path = QString::fromStdString(item.as<std::string>());
+    if (!unique_paths.insert(path).second)
+      return false;
+    const auto chapter = explicit_chapter_key(path);
+    if (chapter && !by_chapter.emplace(*chapter, path).second)
+      return false;
+    if (chapter)
+      schemes.insert(chapter->section(':', 0, 0));
+  }
+  playlist = YAML::Node(YAML::NodeType::Sequence);
+  if (by_chapter.size() == explicit_videos.size() && schemes.size() == 1) {
+    for (const auto& [_, path] : by_chapter)
+      playlist.push_back(path.toStdString());
+  } else {
+    for (const auto& item : explicit_videos)
+      playlist.push_back(item.as<std::string>());
+  }
+  return playlist.size() > 0;
 }
 
 QString canonical_dir_path(const QString& path) {
@@ -5503,6 +5536,10 @@ HStreamWindow::~HStreamWindow() {
 }
 
 bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (source_camera_player_ && source_camera_index_ >= 0 &&
+      watched == camera_preview_render_targets_[source_camera_index_] &&
+      (event->type() == QEvent::Show || event->type() == QEvent::Resize))
+    source_camera_redraw_pending_ = true;
   if (route_value_control_wheel(this, watched, event))
     return true;
   if (watched == setup_preview_splitter_ && event && event->type() == QEvent::Resize && !setup_split_seeded_ &&
@@ -6930,8 +6967,17 @@ QStringList HStreamWindow::sourceCameraFiles(int camera) const {
         for (const auto& file : entry.second)
           if (file.IsScalar())
             files.push_back(QString::fromStdString((game / file.as<std::string>()).lexically_normal().string()));
-        if (matches(files))
+        if (matches(files)) {
+          // The optics identity follows the original selected first file;
+          // playback follows Program's normalized chapter sequence.
+          YAML::Node playlist;
+          if (!normalized_explicit_playlist(entry.second, playlist))
+            return {};
+          files.clear();
+          for (const auto& file : playlist)
+            files.push_back(QString::fromStdString((game / file.as<std::string>()).lexically_normal().string()));
           return files;
+        }
       }
     }
   }
@@ -6994,6 +7040,7 @@ void HStreamWindow::stopSourceCamera() {
   source_camera_player_->Close();
   source_camera_player_.reset();
   source_camera_index_ = -1;
+  source_camera_redraw_pending_ = false;
   setPreviewFocusAvailable(QString("source%1").arg(camera), false);
   if (preview_focus_mode_)
     setPreviewFocusMode(false, camera + 2);
@@ -7038,6 +7085,10 @@ void HStreamWindow::pollSourceCamera() {
   source_camera_time_[camera]->setText(clock(status.position_ms) + " / " + clock(status.duration_ms));
   source_camera_seek_[camera]->setEnabled(source_camera_available_ && status.ready);
   source_camera_stop_[camera]->setEnabled(true);
+  if (source_camera_redraw_pending_ && status.ready && camera_preview_render_targets_[camera]->isVisible()) {
+    if (status.playing || source_camera_player_->Redraw())
+      source_camera_redraw_pending_ = false;
+  }
 }
 
 void HStreamWindow::updateSourceCameraControls(bool available) {
@@ -7268,6 +7319,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     QWidget* camera_render_target = camera_host->renderTarget();
     camera_render_target->setObjectName(QString("camera%1PreviewRenderTarget").arg(camera_index + 1));
     camera_preview_render_targets_.push_back(camera_render_target);
+    camera_render_target->installEventFilter(this);
 
     auto* camera_notice = new QLabel("Camera preview requires embedded X11 rendering", camera_host);
     camera_notice->setObjectName(QString("camera%1ExternalRenderNotice").arg(camera_index + 1));
@@ -23301,39 +23353,10 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   const bool has_left = explicit_left && explicit_left.IsSequence() && explicit_left.size() > 0;
   const bool has_right = explicit_right && explicit_right.IsSequence() && explicit_right.size() > 0;
   if (has_left && has_right) {
-    auto normalized_playlist = [](const YAML::Node& explicit_videos, YAML::Node& playlist) {
-      std::map<QString, QString> by_chapter;
-      std::set<QString> schemes;
-      std::set<QString> unique_paths;
-      for (const auto& item : explicit_videos) {
-        const QString path = QString::fromStdString(item.as<std::string>());
-        if (!unique_paths.insert(path).second) {
-          return false;
-        }
-        const std::optional<QString> chapter = explicit_chapter_key(path);
-        if (chapter && !by_chapter.emplace(*chapter, path).second) {
-          return false;
-        }
-        if (chapter) {
-          schemes.insert(chapter->section(':', 0, 0));
-        }
-      }
-      playlist = YAML::Node(YAML::NodeType::Sequence);
-      if (by_chapter.size() == explicit_videos.size() && schemes.size() == 1) {
-        for (const auto& [_, path] : by_chapter) {
-          playlist.push_back(path.toStdString());
-        }
-      } else {
-        for (const auto& item : explicit_videos) {
-          playlist.push_back(item.as<std::string>());
-        }
-      }
-      return playlist.size() > 0;
-    };
-
     YAML::Node left_list;
     YAML::Node right_list;
-    if (normalized_playlist(explicit_left, left_list) && normalized_playlist(explicit_right, right_list)) {
+    if (normalized_explicit_playlist(explicit_left, left_list) &&
+        normalized_explicit_playlist(explicit_right, right_list)) {
       // Each camera's chapter labels describe only that camera's physical file boundaries. Preserve and sort the two
       // playlists independently; requiring equal labels or counts drops valid footage when cameras roll files apart.
       config["game"]["videos"]["left"] = left_list;

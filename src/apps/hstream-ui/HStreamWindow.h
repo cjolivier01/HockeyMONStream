@@ -779,6 +779,7 @@ class HStreamWindow : public QMainWindow {
   std::unique_ptr<hm::ui::SourceCameraPlayer> source_camera_player_;
   int source_camera_index_{-1};
   bool source_camera_available_{false};
+  bool source_camera_redraw_pending_{false};
   std::array<qint64, 2> source_camera_positions_{};
   std::array<qint64, 2> source_camera_durations_{};
   std::vector<QPushButton*> source_camera_play_, source_camera_stop_;

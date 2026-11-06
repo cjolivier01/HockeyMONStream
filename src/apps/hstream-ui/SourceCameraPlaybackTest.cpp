@@ -3,10 +3,14 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/ValueControlWheel.h"
 
+#include <QtGui/qguiapplication_platform.h>
+#include <xcb/xcb.h>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QThread>
 #include <QtTest/QTest>
 #include <QtWidgets/QApplication>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -27,6 +31,45 @@ T* Child(HStreamWindow& window, const char* name) {
   Check(child, std::string("Missing ") + name);
   return child;
 }
+
+class RemapCounter : public QObject {
+ public:
+  int shows{0};
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (event->type() == QEvent::Show)
+      ++shows;
+    return QObject::eventFilter(watched, event);
+  }
+};
+
+// Test-only bounded X11 readback checks actual front-buffer pixels. Renderer
+// PTS alone cannot detect a later widget remap clearing the displayed picture.
+QByteArray PresentedPixels(QWidget* target) {
+  auto* connection = qGuiApp->nativeInterface<QNativeInterface::QX11Application>()->connection();
+  auto* reply = xcb_get_image_reply(
+      connection,
+      xcb_get_image(
+          connection,
+          XCB_IMAGE_FORMAT_Z_PIXMAP,
+          target->winId(),
+          target->width() / 4,
+          target->height() / 4,
+          16,
+          16,
+          ~0U),
+      nullptr);
+  Check(reply, "Cannot inspect camera native pixels");
+  QByteArray pixels(reinterpret_cast<const char*>(xcb_get_image_data(reply)), xcb_get_image_data_length(reply));
+  std::free(reply);
+  return pixels;
+}
+bool HasPicture(const QByteArray& pixels) {
+  for (qsizetype i = 0; i + 3 < pixels.size(); i += 4)
+    if (static_cast<unsigned char>(pixels[i]) > 24 || static_cast<unsigned char>(pixels[i + 1]) > 24 ||
+        static_cast<unsigned char>(pixels[i + 2]) > 24)
+      return true;
+  return false;
+}
 } // namespace
 int main(int argc, char** argv) {
   try {
@@ -34,12 +77,12 @@ int main(int argc, char** argv) {
     const auto game = root.path / "game";
     for (const char* camera : {"cam1", "cam2"}) {
       std::filesystem::create_directories(game / camera);
-      for (const char* chapter : {"GX010001.MP4", "GX020001.MP4"})
+      for (const char* chapter : {"GX010001.MP4", "GX020001.MP4", "GX030001.MP4"})
         hm::media::test::Ffmpeg(
             {"-f",
              "lavfi",
              "-i",
-             "testsrc2=s=640x360:r=25:d=3",
+             std::string("testsrc2=s=640x360:r=25:d=") + (chapter[3] == '3' ? "1" : "3"),
              "-f",
              "lavfi",
              "-i",
@@ -52,6 +95,12 @@ int main(int argc, char** argv) {
              "25",
              (game / camera / chapter).string()});
     }
+    std::filesystem::create_directories(game / "_hockeymon");
+    // User import order differs from Program's recognized chapter order.
+    std::ofstream(game / "_hockeymon/config.yaml")
+        << "hstream_ui:\n  video_roles:\n"
+           "    left: [cam1/GX010001.MP4, cam1/GX030001.MP4, cam1/GX020001.MP4]\n"
+           "    right: [cam2/GX010001.MP4, cam2/GX030001.MP4, cam2/GX020001.MP4]\n";
     qputenv("HM_GAME_DIR", root.path.c_str());
     qputenv("HM_OUTPUT_WORK_DIR", (root.path / "output").c_str());
     qputenv("XDG_CONFIG_HOME", (root.path / "config").c_str());
@@ -77,12 +126,27 @@ int main(int argc, char** argv) {
     Wait(
         [&] { return target->property("sourceCameraPresentedPts").toLongLong() > 0; },
         "Hardware renderer did not present a camera frame");
+    QTest::qWait(150);
+    RemapCounter remaps;
+    target->installEventFilter(&remaps);
+    QTest::qWait(600);
+    Check(remaps.shows == 0, "Camera polling remapped the video window during playback");
+    play1->click();
+    Wait([&] { return play1->text() == "Play camera"; }, "Camera did not pause");
+    QTest::qWait(150);
+    const QByteArray paused_pixels = PresentedPixels(target);
+    Check(HasPicture(paused_pixels), "Paused camera lost its displayed picture");
+    QTest::qWait(600);
+    Check(PresentedPixels(target) == paused_pixels, "Paused polling changed the last displayed frame");
+    Check(remaps.shows == 0, "Paused camera polling remapped its video window");
+    play1->click();
     tabs->setCurrentIndex(0);
     Wait([&] { return play1->text() == "Play camera"; }, "Leaving camera did not pause");
     const auto paused = seek1->value();
     QTest::qWait(350);
     Check(std::abs(seek1->value() - paused) < 100, "Hidden camera kept advancing");
     tabs->setCurrentIndex(2);
+    Wait([&] { return HasPicture(PresentedPixels(target)); }, "Returning to a paused camera lost its last frame");
     seek1->setValue(4200);
     QTest::qWait(500);
     Check(std::abs(seek1->value() - 4200) < 150, "Paused seek did not cross chapters");

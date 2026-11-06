@@ -1437,11 +1437,15 @@ teardown code across NVIDIA and AMD. Its AMD branch connects `vah264dec` /
 `vah265dec` DMABuf output directly to `glimagesink`; it never negotiates
 system-memory video or sends VA surfaces through the NVIDIA renderer. This
 source-only player does not add AMD Program source taps, calibration or WebRTC.
+The player retains one GPU sample for paused redraw after a tab return or resize;
+AMD uses `GstVideoOverlay` expose and NVIDIA reuses its retained GPU buffer.
+Unchanged polling never remaps either native target. Container timing and
+MP4/Matroska/AVI demux selection are shared between the two backends.
 
 `source_camera_playback_test` supports both builds with two synthetic chapter
 playlists. The AMD player library builds with `--config=rocm`; NVIDIA playback,
 audio and paused source-frame presentation are verified locally. AMD hardware
 qualification remains pending: `ripper` was unreachable over SSH during this
-change. DMABuf/EGL import,
-paused seeks and full decoder retirement must pass there before claiming AMD
-runtime parity. The Qt targets retain their existing Jetson incompatibility.
+change. DMABuf/EGL import, paused seeks and full decoder retirement must pass
+there before claiming AMD runtime parity. The Qt targets retain their existing
+Jetson incompatibility.

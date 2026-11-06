@@ -1754,3 +1754,12 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":hstream_window", ":value_control_wheel", "//src/libs/media:test_mp4", "//src/libs/common:game_operation_owner", "@qt//:qt_widgets", "@qt//:qt_test"],
 )
+
+cc_test(
+    name = "source_camera_container_test",
+    srcs = ["SourceCameraContainerTest.cpp"],
+    copts = COMMON_COPTS,
+    tags = ["manual", "requires-gpu"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":source_camera_player", ":native_preview_surface", "//src/libs/media:test_mp4", "@qt//:qt_widgets"],
+)

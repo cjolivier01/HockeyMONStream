@@ -569,11 +569,20 @@ game changes and window close destroy the source graph before admitting other
 work. The retained camera graph holds the ordinary game operation claim, including
 while paused; another window cannot claim the same recording. Stop releases it.
 
-`SourceCameraPlayer` uses a local MP4 demuxer, hardware video decoder and native
+`SourceCameraPlayer` uses local MP4/Matroska/AVI demuxing, a hardware video decoder and native
 GPU renderer, plus local audio when the recording contains it. It creates no
 calibration, inference, output archive or intermediate video file. Polling uses the
 existing UI runtime-control interval; opening/seeking uses the configured pipeline
 stop timeout. Qt's global wheel guard also protects the camera seek bars.
+Recognized chapter names use the same recording/chapter ordering as Program.
+Unknown explicit names retain their selected order. Video-track duration excludes
+audio tails, including during playback and end-of-recording handling.
+
+Unchanged status polls never remap or clear the native target. Pausing retains the
+last presented frame. After a tab return or an actual geometry change, the camera
+player redraws its retained GPU sample without decoding, seeking or CPU readback.
+This is separate from a SIGSTOP-paused external pipeline, which still cannot
+redraw a cleared resized surface until it resumes.
 
 Run the GPU/Qt regression with an X11 display:
 
@@ -588,6 +597,11 @@ mutually exclusive decoders and retirement before Program admission. Browser
 counterparts are `test_webapp_stream_source_camera_browser.py` in HockeyMONWeb,
 using original MP4 byte-range responses and the same lifecycle. Browser decoding
 uses the client's media support; an unsupported recording reports an error.
+The native test checks actual X11 front-buffer pixels across pause and tab return,
+and rejects repeated remapping during playback. The browser counterpart checks
+the decoded paused frame and retained pixels. Both readbacks are bounded test
+assertions only. `source_camera_container_test` separately covers H.264 MKV/AVI,
+paused seek/redraw, video duration, audio-tail clipping and decoder retirement.
 
 Local validation passed the full optimized x86_64 build, NVIDIA camera playback
 test, camera-tab preflight and the browser source-camera regressions against the

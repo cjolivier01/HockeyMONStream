@@ -23,6 +23,8 @@ class SourceCameraPlayer {
   bool Open(const QStringList& files, quint64 window, qint64 timeout_ms, QString* error);
   void Play();
   void Pause();
+  // Repaint the retained GPU frame after a paused target was remapped/resized.
+  bool Redraw();
   void Seek(qint64 position_ms);
   void Close();
   Status Poll();
