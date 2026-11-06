@@ -8,6 +8,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QThread>
 #include <QtTest/QTest>
+#include <QtTest/qtest_widgets.h>
 #include <QtWidgets/QApplication>
 #include <cstdlib>
 #include <fstream>
@@ -82,7 +83,10 @@ int main(int argc, char** argv) {
             {"-f",
              "lavfi",
              "-i",
-             std::string("testsrc2=s=640x360:r=25:d=") + (chapter[3] == '3' ? "1" : "3"),
+             std::string("testsrc2=s=640x360:r=25:d=") +
+                 (chapter[3] == '1'       ? "13"
+                      : chapter[3] == '3' ? "1"
+                                          : "3"),
              "-f",
              "lavfi",
              "-i",
@@ -147,13 +151,26 @@ int main(int argc, char** argv) {
     Check(std::abs(seek1->value() - paused) < 100, "Hidden camera kept advancing");
     tabs->setCurrentIndex(2);
     Wait([&] { return HasPicture(PresentedPixels(target)); }, "Returning to a paused camera lost its last frame");
-    seek1->setValue(4200);
+    seek1->setValue(14200);
     QTest::qWait(500);
-    Check(std::abs(seek1->value() - 4200) < 150, "Paused seek did not cross chapters");
+    Check(std::abs(seek1->value() - 14200) < 150, "Paused seek did not cross chapters");
     Check(play1->text() == "Play camera", "Paused seek started playback");
     Wait(
         [&] { return std::abs(target->property("sourceCameraPresentedPts").toLongLong() - 1200000000LL) < 150000000; },
         "Paused chapter seek did not present the requested source frame");
+    target->setFocus();
+    window.activateWindow();
+    Check(QTest::qWaitForWindowActive(&window), "Camera window did not become active for keyboard input");
+    Check(target->hasFocus(), "Camera preview did not receive keyboard focus");
+    QTest::keyClick(target, Qt::Key_Left);
+    Wait([&] { return std::abs(seek1->value() - 4200) < 150; }, "Left arrow did not seek backward 10 seconds");
+    Check(play1->text() == "Play camera", "Left arrow resumed a paused camera");
+    seek1->setFocus();
+    QTest::keyClick(seek1, Qt::Key_Right);
+    Wait(
+        [&] { return std::abs(seek1->value() - 14200) < 150; },
+        "Right arrow on slider did not seek forward 10 seconds");
+    Check(play1->text() == "Play camera", "Right arrow resumed a paused camera");
     tabs->setCurrentIndex(3);
     play2->click();
     auto* seek2 = Child<QSlider>(window, "camera2SeekSlider");
@@ -172,7 +189,14 @@ int main(int argc, char** argv) {
     Check(stopped.ok() && !stopped->has_value(), "Stop retained camera recording ownership");
     tabs->setCurrentIndex(2);
     play1->click();
-    Wait([&] { return seek1->value() > 4400; }, "Camera did not retain its independent position");
+    Wait([&] { return seek1->value() > 14400; }, "Camera did not retain its independent position");
+    target->setFocus();
+    const auto before_arrow = seek1->value();
+    QTest::keyClick(target, Qt::Key_Left);
+    Wait(
+        [&] { return std::abs(seek1->value() - (before_arrow - 10000)) < 400; },
+        "Playing arrow seek did not move backward 10 seconds");
+    Check(play1->text() == "Pause camera", "Arrow seek paused a running camera");
     Check(!stop2->isEnabled(), "Second decoder remained owned");
     // Another graph-building workflow retires the camera before admission.
     Child<QPushButton>(window, "startPipelineButton")->click();

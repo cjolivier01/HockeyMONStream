@@ -581,6 +581,9 @@ audio tails, including during playback and end-of-recording handling.
 Unchanged status polls never remap or clear the native target. Pausing retains the
 last presented frame. After a tab return or an actual geometry change, the camera
 player redraws its retained GPU sample without decoding, seeking or CPU readback.
+Left/Right seeks backward/forward 10 seconds while the preview or its transport
+has focus, preserving paused or playing state. Input and optics fields retain
+their normal keyboard editing.
 This is separate from a SIGSTOP-paused external pipeline, which still cannot
 redraw a cleared resized surface until it resumes.
 
@@ -602,6 +605,9 @@ and rejects repeated remapping during playback. The browser counterpart checks
 the decoded paused frame and retained pixels. Both readbacks are bounded test
 assertions only. `source_camera_container_test` separately covers H.264 MKV/AVI,
 paused seek/redraw, video duration, audio-tail clipping and decoder retirement.
+Offset MP4/Matroska recordings also verify normalized positions and final-frame
+coverage. The native player translates through the demuxer's actual stream-time
+segment; physical source timestamps remain attached to presented frames.
 
 Local validation passed the full optimized x86_64 build, NVIDIA camera playback
 test, camera-tab preflight and the browser source-camera regressions against the

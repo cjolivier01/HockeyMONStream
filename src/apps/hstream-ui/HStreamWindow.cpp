@@ -77,6 +77,7 @@
 #include <QtGui/QPaintEngine>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
+#include <QtGui/QShortcut>
 #include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
@@ -7309,6 +7310,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     auto* camera_layout = new QVBoxLayout(camera);
     auto* camera_splitter = new QSplitter(Qt::Horizontal, camera);
     auto* camera_preview = new QWidget(camera_splitter);
+    camera_preview->setFocusPolicy(Qt::StrongFocus);
     auto* camera_preview_layout = new QVBoxLayout(camera_preview);
     auto* camera_host = new LetterboxRenderHost(16.0 / 9.0);
     camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
@@ -7320,6 +7322,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     camera_render_target->setObjectName(QString("camera%1PreviewRenderTarget").arg(camera_index + 1));
     camera_preview_render_targets_.push_back(camera_render_target);
     camera_render_target->installEventFilter(this);
+    camera_render_target->setFocusPolicy(Qt::StrongFocus);
 
     auto* camera_notice = new QLabel("Camera preview requires embedded X11 rendering", camera_host);
     camera_notice->setObjectName(QString("camera%1ExternalRenderNotice").arg(camera_index + 1));
@@ -7345,7 +7348,10 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     auto* seek = new PlaybackSeekSlider(Qt::Horizontal);
     seek->setObjectName(QString("camera%1SeekSlider").arg(camera_index + 1));
     seek->setAccessibleName("Camera recording position");
-    seek->setToolTip("Seek within this camera's original recording; independent of Playback start and Input trim.");
+    seek->setToolTip(
+        "Seek within this camera's original recording; Left/Right moves 10 seconds. Independent of Playback start and Input trim.");
+    seek->setSingleStep(10000);
+    seek->setPageStep(10000);
     auto* time = new QLabel("00:00 / 00:00");
     time->setObjectName(QString("camera%1PlaybackTime").arg(camera_index + 1));
     source_camera_play_.push_back(play);
@@ -7373,6 +7379,19 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     connect(seek, &QSlider::valueChanged, this, [seek, seek_camera](int value) {
       if (!seek->isSliderDown()) seek_camera(value);
     });
+    for (const auto key : {Qt::Key_Left, Qt::Key_Right}) {
+      auto* shortcut = new QShortcut(QKeySequence(key), camera_preview);
+      shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+      connect(shortcut, &QShortcut::activated, this, [this, camera_index, key] {
+        const bool active = source_camera_index_ == camera_index && source_camera_player_;
+        const auto status = active ? source_camera_player_->GetStatus() : hm::ui::SourceCameraPlayer::Status{};
+        const qint64 position = active ? status.position_ms : source_camera_positions_[camera_index];
+        playSourceCamera(
+            camera_index,
+            active && status.playing,
+            std::max<qint64>(0, position + (key == Qt::Key_Left ? -10000 : 10000)));
+      });
+    }
     auto* controls = new QTabWidget(camera_splitter);
     controls->setObjectName(QString("camera%1ControlTabs").arg(camera_index + 1));
     auto* source_start = new CameraSourceStartWidget(controls);

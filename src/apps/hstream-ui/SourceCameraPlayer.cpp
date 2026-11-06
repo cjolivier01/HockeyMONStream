@@ -3,157 +3,22 @@
 #include <gst/gst.h>
 #include <gst/video/videooverlay.h>
 
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/parseutils.h>
-}
-
 #include <QtCore/QElapsedTimer>
 #include <algorithm>
-#include <chrono>
-#include <cmath>
 #include <limits>
 #include <optional>
 #include <vector>
 
-#include "hstream/src/libs/media/Mp4VideoTrack.h"
+#include "src/apps/hstream-ui/SourceCameraTrack.h"
 #ifndef HSTREAM_USE_HIP
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #endif
 
 namespace hm::ui {
-namespace {
-struct CameraTrack {
-  media::VideoCodec codec;
-  int width, height;
-  int64_t duration_ns;
-  const char* demux;
-};
-
-absl::StatusOr<CameraTrack> ReadCameraTrack(const QString& file, qint64 timeout_ms) {
-  if (!file.endsWith(".mkv", Qt::CaseInsensitive) && !file.endsWith(".avi", Qt::CaseInsensitive)) {
-    auto track = media::ReadMp4VideoTrack(file.toStdString(), timeout_ms * GST_MSECOND, {});
-    if (!track.ok())
-      return track.status();
-    return CameraTrack{track->codec, track->width, track->height, track->duration_ns, "qtdemux"};
-  }
-  // These containers do not share MP4's strict header timing contract. Inspect
-  // headers and, if necessary, compressed timestamps only; never open a codec.
-  using Clock = std::chrono::steady_clock;
-  const auto now = Clock::now();
-  const auto timeout = std::chrono::milliseconds(timeout_ms);
-  auto deadline = timeout > Clock::time_point::max() - now ? Clock::time_point::max() : now + timeout;
-  if ((avformat_version() >> 16) != LIBAVFORMAT_VERSION_MAJOR ||
-      (avcodec_version() >> 16) != LIBAVCODEC_VERSION_MAJOR || (avutil_version() >> 16) != LIBAVUTIL_VERSION_MAJOR)
-    return absl::FailedPreconditionError("Camera metadata requires matching FFmpeg headers and libraries");
-  AVFormatContext* context = avformat_alloc_context();
-  if (!context)
-    return absl::ResourceExhaustedError("Cannot allocate camera metadata demuxer");
-  context->interrupt_callback = {
-      [](void* value) { return int(Clock::now() >= *static_cast<const Clock::time_point*>(value)); }, &deadline};
-  AVDictionary* options = nullptr;
-  av_dict_set(&options, "protocol_whitelist", "file", 0);
-  av_dict_set(&options, "format_whitelist", "matroska,webm,avi", 0);
-  const int opened = avformat_open_input(&context, file.toLocal8Bit().constData(), nullptr, &options);
-  av_dict_free(&options);
-  const auto close = [](AVFormatContext* value) { avformat_close_input(&value); };
-  std::unique_ptr<AVFormatContext, decltype(close)> owner(context, close);
-  if (opened < 0 || Clock::now() >= deadline)
-    return absl::DataLossError("Cannot read camera container metadata within its deadline");
-  AVStream* video = nullptr;
-  for (unsigned index = 0; index < context->nb_streams; ++index) {
-    auto* stream = context->streams[index];
-    if (stream->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
-      continue;
-    if (video || (stream->disposition & AV_DISPOSITION_ATTACHED_PIC))
-      return absl::InvalidArgumentError("Camera preview requires one unambiguous video track");
-    video = stream;
-  }
-  if (!video || video->codecpar->width <= 0 || video->codecpar->height <= 0 || video->time_base.num <= 0 ||
-      video->time_base.den <= 0)
-    return absl::DataLossError("Camera recording has no usable video track");
-  const auto* codec = video->codecpar;
-  if (codec->codec_id != AV_CODEC_ID_H264 && codec->codec_id != AV_CODEC_ID_HEVC)
-    return absl::UnimplementedError("Camera hardware preview requires H.264 or HEVC video");
-  const auto free_packet = [](AVPacket* value) { av_packet_free(&value); };
-  std::unique_ptr<AVPacket, decltype(free_packet)> packet(av_packet_alloc(), free_packet);
-  if (!packet)
-    return absl::ResourceExhaustedError("Cannot allocate camera metadata packet");
-  for (unsigned index = 0; index < context->nb_streams; ++index)
-    if (context->streams[index] != video)
-      context->streams[index]->discard = AVDISCARD_ALL;
-  const double unit = av_q2d(video->time_base);
-  double origin = video->start_time == AV_NOPTS_VALUE ? 0 : video->start_time * unit;
-  if (video->start_time == AV_NOPTS_VALUE) {
-    bool found = false;
-    for (size_t count = 0; count < 100000 && Clock::now() < deadline; ++count) {
-      if (av_read_frame(context, packet.get()) < 0)
-        break;
-      if (packet->stream_index == video->index && packet->pts != AV_NOPTS_VALUE) {
-        origin = packet->pts * unit;
-        found = true;
-      }
-      av_packet_unref(packet.get());
-      if (found)
-        break;
-    }
-    if (!found)
-      return absl::DataLossError("Camera video has no bounded presentation origin");
-  }
-  double seconds = video->duration > 0 ? video->duration * unit : 0;
-  // Matroska DURATION is a track end timestamp, not a length. In particular,
-  // container duration includes audio tails and cannot define this timeline.
-  if (seconds <= 0)
-    if (const auto* tag = av_dict_get(video->metadata, "DURATION", nullptr, 0)) {
-      int64_t end = 0;
-      if (av_parse_time(&end, tag->value, 1) == 0)
-        seconds = end / double(AV_TIME_BASE) - origin;
-    }
-  const double fps = av_q2d(video->avg_frame_rate);
-  if (seconds <= 0 && video->nb_frames > 0 && std::isfinite(fps) && fps > 0)
-    seconds = video->nb_frames / fps;
-  if (seconds <= 0 && context->duration > 0) {
-    // Container duration is only a seek hint. Confirm the actual video end
-    // from bounded compressed packets, including containers without track tags.
-    const auto hint = av_rescale_q(context->duration, AVRational{1, AV_TIME_BASE}, video->time_base);
-    if (av_seek_frame(context, video->index, hint, AVSEEK_FLAG_BACKWARD) >= 0) {
-      double end = origin;
-      for (size_t count = 0; count < 100000 && Clock::now() < deadline; ++count) {
-        const int result = av_read_frame(context, packet.get());
-        if (result == AVERROR_EOF) {
-          seconds = end - origin;
-          break;
-        }
-        if (result < 0)
-          break;
-        if (packet->stream_index == video->index && packet->pts != AV_NOPTS_VALUE) {
-          const double length = packet->duration > 0 ? packet->duration * unit
-              : std::isfinite(fps) && fps > 0        ? 1.0 / fps
-                                                     : 0;
-          if (length > 0)
-            end = std::max(end, packet->pts * unit + length);
-        }
-        av_packet_unref(packet.get());
-      }
-    }
-  }
-  if (Clock::now() >= deadline || !std::isfinite(seconds) || seconds <= 0 ||
-      seconds * 1e9 >= std::numeric_limits<int64_t>::max())
-    return absl::DataLossError("Camera video duration is missing, invalid or exceeded its inspection deadline");
-  return CameraTrack{
-      codec->codec_id == AV_CODEC_ID_H264 ? media::VideoCodec::kH264 : media::VideoCodec::kHevc,
-      codec->width,
-      codec->height,
-      static_cast<int64_t>(std::llround(seconds * 1e9)),
-      g_strcmp0(context->iformat->name, "avi") == 0 ? "avidemux" : "matroskademux"};
-}
-} // namespace
-
 struct SourceCameraPlayer::Impl {
   struct Chapter {
     QString file;
-    CameraTrack track;
+    SourceCameraTrack track;
     qint64 start_ms;
   };
   std::vector<Chapter> chapters;
@@ -168,6 +33,7 @@ struct SourceCameraPlayer::Impl {
   std::uint64_t generation{0};
   qint64 timeout_ms{0};
   std::optional<qint64> seek_ms;
+  GstClockTime stream_origin{GST_CLOCK_TIME_NONE};
   bool preroll{false};
   bool seeking{false};
   QElapsedTimer transition;
@@ -186,6 +52,7 @@ struct SourceCameraPlayer::Impl {
     graph = parser = video_input = sink = nullptr;
     bus = nullptr;
     preroll = seeking = false;
+    stream_origin = GST_CLOCK_TIME_NONE;
     status.open = status.ready = false;
     status.presented_ns = -1;
   }
@@ -362,7 +229,7 @@ bool SourceCameraPlayer::Open(const QStringList& files, quint64 window, qint64 t
     const auto remaining = timeout_ms - probe.elapsed();
     if (remaining <= 0)
       return fail("Camera recording metadata timed out.");
-    auto track = ReadCameraTrack(file, remaining);
+    auto track = ReadSourceCameraTrack(file, remaining);
     if (!track.ok())
       return fail(QString::fromStdString(track.status().ToString()));
     const qint64 duration = track->duration_ns / GST_MSECOND;
@@ -454,6 +321,21 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
     return s.status;
   }
   if (s.preroll && gst_element_get_state(s.graph, nullptr, nullptr, 0) == GST_STATE_CHANGE_SUCCESS) {
+    GstSample* sample = nullptr;
+    g_object_get(s.sink, "last-sample", &sample, nullptr);
+    const auto* segment = sample ? gst_sample_get_segment(sample) : nullptr;
+    auto* buffer = sample ? gst_sample_get_buffer(sample) : nullptr;
+    if (segment && buffer && GST_BUFFER_PTS_IS_VALID(buffer))
+      s.stream_origin = gst_segment_to_stream_time(segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer));
+    if (sample)
+      gst_sample_unref(sample);
+    // MP4 edit lists and Matroska use different timestamp origins. Convert the
+    // first decoded frame through its actual segment without reading pixels.
+    if (!GST_CLOCK_TIME_IS_VALID(s.stream_origin) ||
+        s.stream_origin > guint64(std::numeric_limits<gint64>::max() - s.chapters[s.chapter].track.duration_ns)) {
+      s.fail("Camera preroll did not establish a bounded video timeline.");
+      return s.status;
+    }
     s.preroll = false;
     s.status.ready = true;
   }
@@ -475,9 +357,9 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
             GST_FORMAT_TIME,
             GstSeekFlags(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
             GST_SEEK_TYPE_SET,
-            (target - item.start_ms) * GST_MSECOND,
+            s.stream_origin + (target - item.start_ms) * GST_MSECOND,
             GST_SEEK_TYPE_SET,
-            item.track.duration_ns)) {
+            s.stream_origin + item.track.duration_ns)) {
       s.fail("Camera recording rejected the seek.");
       return s.status;
     }
@@ -499,8 +381,10 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
     gint64 position = 0;
     if (s.graph && s.status.position_ms < s.status.duration_ms &&
         gst_element_query_position(s.graph, GST_FORMAT_TIME, &position) && position >= 0)
-      s.status.position_ms =
-          std::min(s.status.duration_ms, s.chapters[s.chapter].start_ms + position / qint64(GST_MSECOND));
+      s.status.position_ms = std::min(
+          s.status.duration_ms,
+          s.chapters[s.chapter].start_ms +
+              std::max<qint64>(0, position - qint64(s.stream_origin)) / qint64(GST_MSECOND));
   }
   if (s.sink && s.status.ready && !s.seeking && !s.seek_ms) {
 #ifdef HSTREAM_USE_HIP
