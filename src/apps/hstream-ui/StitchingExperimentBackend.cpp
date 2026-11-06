@@ -1486,15 +1486,15 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
     calibration["status"] = "complete";
     calibration["rink_mask_status"] = "pending";
+    calibration["review_pending"] = true;
     calibration.remove("reframe");
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_resolution");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_filtering");
-    // Choosing this candidate accepts its existing crop as seen in the preview.
-    // Its alignment may differ from the inherited game's crop-review marker.
-    // Bind the review to the promoted geometry so first Play reuses these maps.
+    // Experiment previews do not offer crop selection. Leave the promoted
+    // alignment unreviewed so Play can ask for framing before Program starts.
     current["hstream_ui"].remove("projection_crop_geometry");
     const fs::path project_path = experiment_config.parent_path() / "autooptimiser_out.pto";
     std::error_code project_error;
@@ -1510,7 +1510,6 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
       const std::string geometry = hm::stitching::projection_crop_geometry(pto, framing);
       if (geometry.empty())
         return absl::FailedPreconditionError("Selected candidate has no valid crop geometry");
-      hm::stitching::write_projection_crop_review(current, geometry);
     }
     remove_downstream_generation(current);
     // Blend is an explicit render choice, independent of the candidate's calibration settings.

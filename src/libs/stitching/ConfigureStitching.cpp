@@ -347,7 +347,8 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
     const fs::path& staging,
     const StitchingBackendChoices& expected_choices,
     const std::string& invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    bool persist_selection = true) {
   const fs::path response_path = staging / ".rink-leveling-response";
   std::error_code error;
   fs::remove(response_path, error);
@@ -369,9 +370,11 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
       return std::optional<std::array<double, 3>>{};
     }
     const std::array<double, 3>& rotation = **selected;
-    auto updated = apply_stitching_leveling_rotation(game_dir, invalidation_id, expected_choices, rotation);
-    if (!updated.ok())
-      return updated.status();
+    if (persist_selection) {
+      auto updated = apply_stitching_leveling_rotation(game_dir, invalidation_id, expected_choices, rotation);
+      if (!updated.ok())
+        return updated.status();
+    }
     std::cout.imbue(std::locale::classic());
     std::cout << std::setprecision(std::numeric_limits<double>::max_digits10)
               << "HSTREAM_RINK_LEVELING status=selected yaw=" << rotation[0] << " pitch=" << rotation[1]
@@ -441,7 +444,8 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
     StitchingBackendChoices expected,
     const StitchProjectionFraming& framing,
     const std::string& invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    bool persist_selection = true) {
   expected.projection_framing = framing; // Leveling may have updated the owner tuple.
   std::ifstream project(staging / "autooptimiser_out.pto");
   const std::string pto((std::istreambuf_iterator<char>(project)), std::istreambuf_iterator<char>());
@@ -454,7 +458,10 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
       return lock.status();
     try {
       const auto config = YAML::LoadFile((hm::game_storage::StateDirectory(game_dir) / "config.yaml").string());
-      HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, invalidation_id, expected));
+      if (persist_selection)
+        HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, invalidation_id, expected));
+      else
+        HM_RETURN_IF_ERROR(validate_pending_stitching_invalidation(config, invalidation_id));
       if (projection_crop_reviewed(config, geometry))
         return framing;
     } catch (const YAML::Exception& error) {
@@ -491,9 +498,11 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
     if (!input.eof())
       return absl::InvalidArgumentError("Crop selection response has trailing data");
     selected.auto_crop = automatic != 0;
-    auto updated = apply_stitching_crop_selection(game_dir, invalidation_id, expected, selected, geometry);
-    if (!updated.ok())
-      return updated.status();
+    if (persist_selection) {
+      auto updated = apply_stitching_crop_selection(game_dir, invalidation_id, expected, selected, geometry);
+      if (!updated.ok())
+        return updated.status();
+    }
     std::cout.imbue(std::locale::classic());
     std::cout << std::setprecision(std::numeric_limits<double>::max_digits10)
               << "HSTREAM_PROJECTION_CROP status=selected auto=" << automatic;
@@ -5612,6 +5621,7 @@ absl::Status reframe_stitching(
   const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   StitchingReframeIntent intent;
   std::string request;
+  bool review_pending = false;
   {
     auto artifacts = HuginProject::RecoverAndLock(game_dir);
     if (!artifacts.ok())
@@ -5623,6 +5633,7 @@ absl::Status reframe_stitching(
       const YAML::Node config = YAML::LoadFile(config_path.string());
       HM_ASSIGN_OR_RETURN(intent, ValidateStitchingReframeIntentLocked(game_dir, config));
       request = YAML::Dump(config["hstream_ui"]["stitching_calibration"]["reframe"]);
+      review_pending = config["hstream_ui"]["stitching_calibration"]["review_pending"].as<bool>(false);
     } catch (const YAML::Exception& error) {
       return absl::InvalidArgumentError("Cannot read saved alignment request: " + std::string(error.what()));
     }
@@ -5630,6 +5641,7 @@ absl::Status reframe_stitching(
   if (intent.desired_owner != expected_invalidation_id || intent.desired_max_output_width != max_output_width)
     return absl::AbortedError("The requested view or calibration owner changed before reusing the saved alignment");
   HuginProject::ReframeOptions options;
+  options.review_saved_view = review_pending;
   options.expected_source_generation = intent.source_generation;
   HM_ASSIGN_OR_RETURN(options.projection, ParseStitchProjection(intent.desired_choices.projection));
   options.projection_parameters = intent.desired_choices.projection_parameters;
@@ -5640,6 +5652,21 @@ absl::Status reframe_stitching(
     options.max_canvas_dimension = intent.desired_max_output_dimension;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
+  // Review choices stay private until the reframe transaction commits. The
+  // immutable request remains authoritative through cancellation and retries.
+  if (review_pending && interactive_rink_leveling_requested()) {
+    options.select_leveling = [&](const fs::path& staging, const StitchProjectionFraming&) {
+      return wait_for_rink_leveling_selection(
+          game_dir, staging, intent.desired_choices, expected_invalidation_id, is_cancelled, false);
+    };
+  }
+  const char* crop_flow = std::getenv("HSTREAM_PROJECTION_CROP_FLOW");
+  if (review_pending && crop_flow && std::string(crop_flow) == "1") {
+    options.select_crop = [&](const fs::path& staging, const StitchProjectionFraming& framing) {
+      return wait_for_crop_selection(
+          game_dir, staging, intent.desired_choices, framing, expected_invalidation_id, is_cancelled, false);
+    };
+  }
   options.validate_source = [&]() -> absl::Status {
     try {
       const YAML::Node current = YAML::LoadFile(config_path.string());
@@ -5652,15 +5679,17 @@ absl::Status reframe_stitching(
       return absl::InvalidArgumentError("Cannot validate saved alignment request: " + std::string(error.what()));
     }
   };
-  options.build_config = [&](const fs::path& staging) -> absl::StatusOr<std::string> {
+  options.build_config = [&](const fs::path& staging,
+                             const StitchProjectionFraming& framing) -> absl::StatusOr<std::string> {
     HM_RETURN_IF_ERROR(options.validate_source());
     try {
       YAML::Node current = YAML::LoadFile(config_path.string());
       std::string pto;
       HM_ASSIGN_OR_RETURN(pto, HuginProject::ReadProject(staging / "autooptimiser_out.pto"));
-      const std::string geometry = projection_crop_geometry(pto, options.projection_framing);
+      const std::string geometry = projection_crop_geometry(pto, framing);
       if (geometry.empty())
         return absl::FailedPreconditionError("Reframed project has no valid crop geometry");
+      write_stitch_projection_framing(current, framing);
       write_projection_crop_review(current, geometry);
       remove_control_point_dependent_cache_keys(current);
       YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
@@ -5668,9 +5697,12 @@ absl::Status reframe_stitching(
       calibration["rink_mask_status"] = "pending";
       calibration["artifacts_invalidated"] = true;
       calibration.remove("stale_from");
+      calibration.remove("review_pending");
       ClearStitchingReframeIntent(current);
+      auto final_choices = intent.desired_choices;
+      final_choices.projection_framing = framing;
       HM_RETURN_IF_ERROR(
-          reserve_stitching_backend_generation_in_config(current, expected_invalidation_id, intent.desired_choices));
+          reserve_stitching_backend_generation_in_config(current, expected_invalidation_id, final_choices));
       return YAML::Dump(current) + "\n";
     } catch (const YAML::Exception& error) {
       return absl::InvalidArgumentError("Cannot commit edited view settings: " + std::string(error.what()));

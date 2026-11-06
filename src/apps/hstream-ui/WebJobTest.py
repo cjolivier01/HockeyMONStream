@@ -863,6 +863,7 @@ def main():
     assert "calibration-still-read" in capabilities["operations"]
     assert "saved-calibration-still-v1" in capabilities["features"]
     assert "experiment-optics-filtering-v1" in capabilities["features"]
+    assert "experiment-promotion-review-v1" in capabilities["features"]
     assert "highlight-pinned-archive-v1" in capabilities["features"]
     assert len(capabilities["operations"]) == len(set(capabilities["operations"]))
     assert capabilities["maximum_request_bytes"] < capabilities["maximum_result_bytes"]

@@ -951,9 +951,7 @@ for line in sys.stdin:
   static bool rinkLevelingInputsUnchanged(HStreamWindow* window) {
     return window->rinkLevelingInputsUnchanged();
   }
-  static void openPromotedStitchingLeveling(HStreamWindow* window, const QString& game_directory) {
-    window->openPromotedStitchingLeveling(game_directory);
-  }
+
   static void stageTestLeveling(HStreamWindow* window, const QByteArray& revision = "test-selection") {
     window->pending_leveling_revision_ = revision;
   }
@@ -11774,50 +11772,30 @@ bool test_promoted_stitching_leveling(HStreamWindow* window) {
   auto* game_id = require_child<QLineEdit>(window, "gameIdEdit");
   auto* create = require_child<QPushButton>(window, "createGameButton");
   auto* save = require_child<QPushButton>(window, "savePresetButton");
-  auto* mapping_backend = require_child<QComboBox>(window, "mappingBackendCombo");
-  auto* automatic = require_child<QCheckBox>(window, "showLevelingDialogCheck");
-  if (!game_id || !create || !save || !mapping_backend || !automatic)
+  auto* mapping = require_child<QComboBox>(window, "mappingBackendCombo");
+  if (!game_id || !create || !save || !mapping)
     return false;
   const QString original_game_id = game_id->text();
-  game_id->setText("ui-promoted-stitching-leveling-game");
+  game_id->setText("ui-promoted-stitching-review-game");
   activate(create);
-  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
-  automatic->setChecked(true);
+  mapping->setCurrentIndex(mapping->findData("nona"));
   activate(save);
-  const QString promoted_game = window->gameDirectoryText();
-
-  bool opened = false;
-  QTimer dismiss;
-  QObject::connect(&dismiss, &QTimer::timeout, [&]() {
-    auto* dialog = window->findChild<QDialog*>("rinkLevelingDialog");
-    if (dialog && dialog->isVisible()) {
-      opened = true;
-      dialog->reject();
-    }
-  });
-  dismiss.start(5);
-  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game);
-  bool ok = expect(!opened, "Promotion must return before opening the optional leveling modal");
+  const auto path = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
+  QString error;
+  if (!fs::exists(path) && !HStreamWindowTestAccess::initializeExperimentPreset(window, &error))
+    return expect(false, "Cannot initialize promoted-review fixture: " + error.toStdString());
+  auto config = YAML::LoadFile(path.string());
+  config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
+  config["hstream_ui"]["stitching_calibration"]["review_pending"] = true;
+  std::ofstream(path) << YAML::Dump(config);
+  HStreamWindowTestAccess::reloadSavedControls(window);
   QTest::qWait(30);
-  ok &= expect(opened, "A promoted NONA calibration opens leveling when its preference is enabled");
-
-  opened = false;
-  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game);
-  automatic->setChecked(false);
-  QTest::qWait(30);
-  ok &= expect(!opened, "The deferred leveling callback must honor the current disabled preference");
-
-  automatic->setChecked(true);
-  mapping_backend->setCurrentIndex(mapping_backend->findData("opencv-magsac"));
-  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game);
-  QTest::qWait(30);
-  ok &= expect(!opened, "An OpenCV candidate must not open the NONA leveling editor");
-
-  mapping_backend->setCurrentIndex(mapping_backend->findData("nona"));
-  HStreamWindowTestAccess::openPromotedStitchingLeveling(window, promoted_game + "-different");
-  QTest::qWait(30);
-  ok &= expect(!opened, "Promotion from another game must not open the current game's leveling editor");
-  dismiss.stop();
+  bool ok = capture_widget_artifact(window, "promoted-idle-after.png") &&
+      expect(!window->findChild<QDialog*>("rinkLevelingDialog") && !window->findChild<QDialog*>("projectionCropDialog"),
+             "Loading the promoted candidate must not open setup dialogs before Play");
+  ok &= expect(
+      HStreamWindowTestAccess::ensureProjectionCropReviewed(window),
+      "Promoted crop review must defer to the owned Play setup after leveling");
   game_id->setText(original_game_id);
   activate(create);
   return ok;

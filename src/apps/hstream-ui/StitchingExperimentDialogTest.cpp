@@ -1043,7 +1043,9 @@ void exercise_player_queue(const QString& game, const QString& root) {
       runner,
       "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HSTREAM_TEST_ARGUMENTS\"\n"
       "printf '\\033['; sleep 0.1; printf '31mcolored <error>  text\\033[0m\\n'\n"
-      "printf '%s\\n' 'HSTREAM_CALIBRATION stage=calibration status=failed message=Player overlap mapping canvas mismatch' "
+      "printf '%s\\n' 'HSTREAM_CALIBRATION stage=calibration status=failed message=Hugin control-point optimization "
+      "RMS is too large: 100.549635 pixels. Try enabling Epipolar RANSAC and Homography consistency check under "
+      "Advanced geometric filtering, then retry calibration with those settings' "
       "'HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration' "
       "'INTERNAL: App run failed'\nexit 13\n");
   require(
@@ -1156,15 +1158,24 @@ void exercise_player_queue(const QString& game, const QString& root) {
           !args.contains("--stitching-player-scan-output") && !args.contains("--force-reconfigure"),
       "Baseline must prepare its rink mask without forcing synchronization before player scanning");
   require(
-      table->item(0, 5)->text().contains("Player overlap mapping canvas mismatch") &&
+      table->item(0, 5)->text().contains("RMS is too large") &&
           table->item(0, 5)->toolTip().contains("Runner exited 13") &&
           table->item(1, 5)->text().contains("baseline calibration failed") &&
-          table->item(1, 5)->text().contains("Player overlap mapping canvas mismatch"),
+          table->item(1, 5)->text().contains("RMS is too large"),
       "A failed bootstrap must prevent its dependent scan from launching");
   auto* log = widget<QPlainTextEdit>(dialog, "stitchExperimentLog");
   require(
       log->toPlainText().contains("colored <error>  text\n") && !log->toPlainText().contains(QChar(0x1b)),
       "Runner log must render split ANSI sequences while preserving literal text and line breaks");
+  const QString filtering_hint =
+      "Try enabling Epipolar RANSAC and Homography consistency check under Advanced geometric filtering";
+  require(
+      table->item(0, 5)->text().contains(filtering_hint) && table->item(0, 5)->toolTip().contains(filtering_hint) &&
+          table->item(1, 5)->text().contains(filtering_hint) && log->toPlainText().contains(filtering_hint),
+      "Native filtering advice must reach candidate errors, tooltips, dependent rows and the runner log");
+  const QString screenshot_dir = qEnvironmentVariable("HSTREAM_TEST_SCREENSHOT_DIR");
+  if (!screenshot_dir.isEmpty())
+    require(dialog.grab().save(screenshot_dir + "/stitch-filtering-hint.png"), "Cannot capture filtering advice");
   require(log->document()->blockCount() > 3, "Log lines must remain separate blocks for bounded history");
   auto colored = log->document()->find("colored");
   const QColor expected =
@@ -1274,10 +1285,10 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
             10000),
         "Restored queued dependencies did not complete their failed bootstrap");
     require(
-        table->item(0, 5)->text().contains("Player overlap mapping canvas mismatch") &&
+        table->item(0, 5)->text().contains("RMS is too large") &&
             table->item(1, 5)->text().contains("baseline calibration failed") &&
             table->item(3, 5)->text().contains("shared frame selection") &&
-            table->item(3, 5)->text().contains("Player overlap mapping canvas mismatch") &&
+            table->item(3, 5)->text().contains("RMS is too large") &&
             table->item(3, 5)->toolTip() == table->item(3, 5)->text(),
         "Restored cross-session dependencies must fail closed when their baseline fails");
     restored.reject();
@@ -1855,7 +1866,7 @@ void exercise_frozen_selection_recovery(const QString& game, const QString& root
     require(
         completed.ok() && completed->experiments.size() == 3 &&
             completed->experiments.back().selection_fingerprint == plan.fingerprint &&
-            table->item(2, 5)->text().contains("Player overlap mapping canvas mismatch") &&
+            table->item(2, 5)->text().contains("RMS is too large") &&
             !read(arguments).contains("--force-reconfigure") &&
             !read(arguments).contains("--stitching-player-scan-output"),
         "Recovered exact frames must reach one direct solve without a baseline or player scan");
@@ -2066,8 +2077,7 @@ void exercise_failed_ordinary_selection_recovery(
           10000),
       "Recovered ordinary frames did not reach a direct solve");
   require(
-      table->item(1, 5)->text().contains("Player overlap mapping canvas mismatch") &&
-          !read(arguments).contains("--force-reconfigure") &&
+      table->item(1, 5)->text().contains("RMS is too large") && !read(arguments).contains("--force-reconfigure") &&
           !read(arguments).contains("--stitching-player-scan-output"),
       "A recovered ordinary row must reuse its exact frames without baseline or scan");
   answer_close_guard(reopened, "stitchExperimentCloseDiscard", false);
@@ -2181,7 +2191,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
     QTimer::singleShot(0, &reopened, [&]() {
       if (auto* viewer = reopened.findChild<QDialog*>("stitchExperimentRunnerLogViewer")) {
         auto* contents = viewer->findChild<QPlainTextEdit*>("stitchExperimentRetainedRunnerLog");
-        inspected_log = contents && contents->toPlainText().contains("Player overlap mapping canvas mismatch");
+        inspected_log = contents && contents->toPlainText().contains("RMS is too large");
         viewer->accept();
       }
     });
@@ -2329,8 +2339,8 @@ void exercise_saved_selection(const QString& game, const QString& root) {
             10000),
         "Queued solves must complete after main replaces their frozen selection");
     require(
-        table->item(4, 5)->text().contains("Player overlap mapping canvas mismatch") &&
-            table->item(5, 5)->text().contains("Player overlap mapping canvas mismatch"),
+        table->item(4, 5)->text().contains("RMS is too large") &&
+            table->item(5, 5)->text().contains("RMS is too large"),
         "Both old and replacement solves must retain their actual runner result without a persistence error");
     const auto completed_store = OpenStitchingExperimentStore(game.toStdString());
     require(completed_store.ok(), "Cannot reopen completed selection history");
@@ -2433,8 +2443,7 @@ void exercise_saved_selection(const QString& game, const QString& root) {
             10000),
         "Retained count solve queue did not finish");
     require(
-        table->item(3, 5)->text().contains("Player overlap mapping canvas mismatch") &&
-            !read(arguments).contains("--force-reconfigure") &&
+        table->item(3, 5)->text().contains("RMS is too large") && !read(arguments).contains("--force-reconfigure") &&
             !read(arguments).contains("--stitching-player-scan-output"),
         "Retained count variants must run directly using their frozen inputs");
     const auto opened = OpenStitchingExperimentStore(game.toStdString());
