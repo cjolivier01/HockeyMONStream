@@ -798,3 +798,14 @@ source can supply orientation independently of frozen optics. The private
 `saved_orientation` flag permits reading its saved playlist names; only exact
 admitted relative aliases may label a side. `saved_optics` separately authorizes
 frozen values, preserving source/policy validation and explicit refresh intent.
+
+The same pinned read returns `source_timing` for every admitted chapter alias.
+Each entry contains decimal-string `start_ns` and `duration_ns` for the video
+track, or a bounded advisory error. `SourceCameraTrack` reads headers and bounded
+compressed packet timestamps without decoding video; all timing reads share the
+baseline runtime stop deadline and cancellation signal. The outer service checks
+the exact alias set against the immutable source layout and supplies the
+upload-to-alias mapping. Idle browser camera playback waits for this verified
+metadata, seeks physical video timestamps, and ends chapters before audio tails.
+Missing timing from an older native deployment leaves camera playback unavailable
+with an explicit error; optics controls still work.

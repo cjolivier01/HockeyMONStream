@@ -370,6 +370,15 @@ def qt_layout(root):
             "visibility": "selected-sources",
             "order": ["left", "right"],
             "panorama_label": "Panorama",
+            "playback": {
+                "controls": ["Play camera", "Pause camera", "Stop", "Seek"],
+                "timeline": "original-camera-chapters",
+                "exclusive": True,
+                "leave_tab": "pause",
+                "other_work": "destroy-decoder",
+                "positions": "per-camera-session",
+                "keyboard_seek_seconds": 10,
+            },
         },
         "tab_icons": tab_icons,
     }
@@ -1289,6 +1298,10 @@ def generate(root, *, native_revision=None, include_revision=True):
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in (
                 "src/apps/hstream-ui/HStreamWindow.cpp",
+                "src/apps/hstream-ui/SourceCameraPlayer.cpp",
+                "src/apps/hstream-ui/SourceCameraPlayer.h",
+                "src/apps/hstream-ui/SourceCameraTrack.cpp",
+                "src/apps/hstream-ui/SourceCameraTrack.h",
                 "src/apps/hstream-ui/CameraOpticsWidget.cpp",
                 "src/apps/hstream-ui/CameraOpticsWidget.h",
                 "src/apps/hstream-ui/ValueControlWheel.cpp",

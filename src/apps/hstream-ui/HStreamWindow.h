@@ -3,6 +3,7 @@
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
 #include "src/apps/hstream-ui/DetectorOptions.h"
+#include "src/apps/hstream-ui/SourceCameraPlayer.h"
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -238,6 +239,12 @@ class HStreamWindow : public QMainWindow {
   void applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const;
 
   void startPipeline();
+  void playSourceCamera(int camera, bool play, std::optional<qint64> seek = {});
+  void stopSourceCamera();
+  void pollSourceCamera();
+  void updateSourceCameraControls(bool available);
+  QStringList sourceCameraFiles(int camera) const;
+
   void pauseOrResumePipeline();
   void confirmStopPipeline();
   void stopPipeline(bool publish_partial = false);
@@ -769,6 +776,16 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_surfaces_;
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
+  std::unique_ptr<hm::ui::SourceCameraPlayer> source_camera_player_;
+  int source_camera_index_{-1};
+  bool source_camera_available_{false};
+  bool source_camera_redraw_pending_{false};
+  std::array<qint64, 2> source_camera_positions_{};
+  std::array<qint64, 2> source_camera_durations_{};
+  std::vector<QPushButton*> source_camera_play_, source_camera_stop_;
+  std::vector<QSlider*> source_camera_seek_;
+  std::vector<QLabel*> source_camera_time_;
+
   QTabWidget* program_control_tabs_{nullptr};
   PlayerAnalyticsControls* player_analytics_controls_{nullptr};
   RinkFramingControls* rink_framing_controls_{nullptr};

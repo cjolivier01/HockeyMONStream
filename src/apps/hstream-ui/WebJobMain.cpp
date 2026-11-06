@@ -21,6 +21,7 @@
 #include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 #include "src/apps/hstream-ui/RuntimeOptions.h"
+#include "src/apps/hstream-ui/SourceCameraTrack.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/WebCalibrationControls.h"
 #include "src/apps/hstream-ui/WebCameraExperiment.h"
@@ -584,6 +585,11 @@ QJsonObject read_camera_optics(const Request& request) {
   const fs::path game(temporary.path().toStdString());
   std::vector<std::unique_ptr<PinnedArchive>> pinned;
   std::set<QString> originals, aliases;
+  QJsonObject source_timing;
+  const auto timing_timeout_ms = config["hstream_ui"]["runtime_controls"]["stop_timeout_ms"].as<int64_t>();
+  require(
+      timing_timeout_ms > 0 && timing_timeout_ms <= std::numeric_limits<int>::max(), "Invalid camera metadata timeout");
+  const auto timing_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timing_timeout_ms);
   config["hstream_ui"]["video_roles"] = YAML::Node(YAML::NodeType::Map);
   config["game"].remove("videos");
   for (const auto& entry : media) {
@@ -608,6 +614,20 @@ QJsonObject read_camera_optics(const Request& request) {
         destination != game && !fs::exists(destination) && !fs::is_symlink(destination), "Overlapping optics alias");
     fs::create_directories(destination.parent_path());
     fs::create_symlink(owner->path(), destination);
+    const auto remaining_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(timing_deadline - std::chrono::steady_clock::now())
+            .count();
+    const auto track = hm::ui::ReadSourceCameraTrack(qs(destination), remaining_ms, [] { return interrupted != 0; });
+    if (track.ok()) {
+      source_timing.insert(
+          relative,
+          QJsonObject{
+              {"start_ns", QString::number(track->start_ns)}, {"duration_ns", QString::number(track->duration_ns)}});
+    } else {
+      // Timing is advisory to optics. Retain the per-file failure without
+      // exposing private paths or inventing a whole-container video duration.
+      source_timing.insert(relative, QJsonObject{{"error", "This recording's video timeline could not be read."}});
+    }
     if (role != "auto")
       config["hstream_ui"]["video_roles"][role.toStdString()].push_back(destination.string());
     pinned.push_back(std::move(owner));
@@ -644,6 +664,7 @@ QJsonObject read_camera_optics(const Request& request) {
   return {
       {"version", 1},
       {"source_metadata", source_metadata},
+      {"source_timing", source_timing},
       {"panorama", resolved.panorama},
       {"camera_details", text(resolved.camera_details)},
       {"camera", camera_json(resolved.camera)},
