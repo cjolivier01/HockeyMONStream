@@ -5448,6 +5448,7 @@ void HStreamWindow::loadBaselineDefaults() {
 }
 
 HStreamWindow::~HStreamWindow() {
+  stopSourceCamera();
   // The durable record remains authoritative if closing cannot prove shutdown.
   struct ForgetAdmission {
     HStreamWindow* window;
@@ -5538,6 +5539,7 @@ bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void HStreamWindow::closeEvent(QCloseEvent* event) {
+  stopSourceCamera();
   if (!event) {
     return;
   }
@@ -6493,6 +6495,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     std::map<QString, double> current_controls;
     for (const auto& [id, value] : camera_defaults_)
       current_controls[id] = cameraControlValue(id);
+    stopSourceCamera();
     auto* dialog = new CameraExperimentDialog(
         gameDirectoryText(), this, current_controls, playback_start_time_edit_->time().msecsSinceStartOfDay());
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -6589,6 +6592,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
           "Save Preset stores later changes for this recording.");
     }
     auto selection_applied = std::make_shared<bool>(false);
+    stopSourceCamera();
     auto* dialog = new StitchingExperimentDialog(
         game_directory,
         runner,
@@ -6648,6 +6652,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
           this, "Highlights", "No published archive was found for " + game_id + ". Run and publish one first.");
       return;
     }
+    stopSourceCamera();
     auto* dialog = new hm::ui::HighlightsDialog(
         game_id,
         game_dir,
@@ -6900,6 +6905,166 @@ void HStreamWindow::updateWindowTitle() {
   setWindowTitle(game_id.isEmpty() ? title : title + " — " + game_id);
 }
 
+QStringList HStreamWindow::sourceCameraFiles(int camera) const {
+  if (camera < 0 || camera >= static_cast<int>(camera_optics_sources_.size()))
+    return {};
+  const std::filesystem::path game = gameDirectoryText().toStdString();
+  const auto source = (game / camera_optics_sources_[camera]).lexically_normal();
+  const auto matches = [&](const QStringList& files) {
+    return !files.isEmpty() && std::filesystem::path(files.front().toStdString()).lexically_normal() == source;
+  };
+  const auto saved = load_desktop_game_config(game / "_hockeymon/config.yaml");
+  if (!saved.ok())
+    return {};
+  if (saved->has_value()) {
+    const YAML::Node config = **saved;
+    for (const auto& section : {config["hstream_ui"], config["game"]}) {
+      const auto roles = section && section.IsMap()
+          ? (section["video_roles"] ? section["video_roles"] : section["videos"]) : YAML::Node();
+      if (!roles || !roles.IsMap())
+        continue;
+      for (const auto& entry : roles) {
+        if (!entry.second.IsSequence())
+          continue;
+        QStringList files;
+        for (const auto& file : entry.second)
+          if (file.IsScalar())
+            files.push_back(QString::fromStdString((game / file.as<std::string>()).lexically_normal().string()));
+        if (matches(files))
+          return files;
+      }
+    }
+  }
+  const auto discovered = hm::stitching::get_available_videos(game.string());
+  if (discovered.ok())
+    for (const auto& [key, chapters] : *discovered) {
+      QStringList files;
+      for (const auto& [number, file] : chapters)
+        files.push_back(QString::fromStdString((game / file).lexically_normal().string()));
+      if (matches(files))
+        return files;
+    }
+  return {};
+}
+
+void HStreamWindow::playSourceCamera(int camera, bool play, std::optional<qint64> seek) {
+  updateRunControls(); // Recheck durable ownership immediately before admission.
+  if (!source_camera_available_ || camera < 0 || camera >= static_cast<int>(camera_optics_sources_.size()) ||
+      preview_tabs_->currentIndex() != camera + 2)
+    return;
+  if (source_camera_index_ != camera) {
+    stopSourceCamera();
+    const auto files = sourceCameraFiles(camera);
+    if (files.isEmpty()) {
+      appendLog("Camera preview could not resolve the selected recording's chapters.");
+      return;
+    }
+    if (!beginGameOperation("pipeline"))
+      return;
+    source_camera_index_ = camera; // Retain admission until the graph is destroyed.
+    source_camera_player_ = std::make_unique<hm::ui::SourceCameraPlayer>();
+    auto* surface = camera_preview_surfaces_[camera];
+    auto* target = static_cast<hm::ui::NativePreviewSurface*>(camera_preview_render_targets_[camera]);
+    target->setImageMode(false);
+    surface->show();
+    target->show();
+    camera_preview_notices_[camera]->hide();
+    QString error;
+    if (!source_camera_player_->Open(files, target->winId(), pipeline_stop_timeout_ms_, &error)) {
+      appendLog("Camera preview: " + error);
+      stopSourceCamera();
+      return;
+    }
+    source_camera_player_->Seek(seek.value_or(source_camera_positions_[camera]));
+  } else if (seek) {
+    source_camera_player_->Seek(*seek);
+  }
+  if (play)
+    source_camera_player_->Play();
+  else
+    source_camera_player_->Pause();
+  pollSourceCamera();
+}
+
+void HStreamWindow::stopSourceCamera() {
+  if (!source_camera_player_)
+    return;
+  const int camera = source_camera_index_;
+  source_camera_positions_[camera] = source_camera_player_->GetStatus().position_ms;
+  source_camera_player_->Close();
+  source_camera_player_.reset();
+  source_camera_index_ = -1;
+  setPreviewFocusAvailable(QString("source%1").arg(camera), false);
+  if (preview_focus_mode_)
+    setPreviewFocusMode(false, camera + 2);
+  camera_preview_render_targets_[camera]->setProperty("sourceCameraPresentedPts", qint64{-1});
+  camera_preview_render_targets_[camera]->hide();
+  camera_preview_surfaces_[camera]->hide();
+  releaseGameOperationIfStopped();
+  updateSourceCameraControls(source_camera_available_);
+}
+
+void HStreamWindow::pollSourceCamera() {
+  if (!source_camera_player_)
+    return;
+  const auto status = source_camera_player_->Poll();
+  const int camera = source_camera_index_;
+  source_camera_positions_[camera] = status.position_ms;
+  source_camera_durations_[camera] = status.duration_ms;
+  if (!status.error.isEmpty()) {
+    appendLog("Camera preview: " + status.error);
+    stopSourceCamera();
+    return;
+  }
+  if (status.width > 0 && status.height > 0) {
+    auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[camera + 2]);
+    host->setVideoSize(status.width, status.height);
+  }
+  camera_preview_render_targets_[camera]->setProperty("sourceCameraPresentedPts", status.presented_ns);
+  setPreviewFocusAvailable(QString("source%1").arg(camera), status.ready && status.presented_ns >= 0);
+  source_camera_play_[camera]->setText(status.playing ? "Pause camera" : "Play camera");
+  source_camera_play_[camera]->setIcon(action_icon(status.playing ? ActionIcon::Pause : ActionIcon::Play));
+  auto* slider = source_camera_seek_[camera];
+  if (!slider->isSliderDown()) {
+    const QSignalBlocker blocker(slider);
+    slider->setRange(0, static_cast<int>(std::min<qint64>(status.duration_ms - 1, std::numeric_limits<int>::max())));
+    slider->setValue(static_cast<int>(status.position_ms));
+  }
+  const auto clock = [](qint64 ms) {
+    const auto seconds = std::max<qint64>(0, ms / 1000);
+    return QString("%1:%2:%3").arg(seconds / 3600, 2, 10, QChar('0'))
+        .arg(seconds / 60 % 60, 2, 10, QChar('0')).arg(seconds % 60, 2, 10, QChar('0'));
+  };
+  source_camera_time_[camera]->setText(clock(status.position_ms) + " / " + clock(status.duration_ms));
+  source_camera_seek_[camera]->setEnabled(source_camera_available_ && status.ready);
+  source_camera_stop_[camera]->setEnabled(true);
+}
+
+void HStreamWindow::updateSourceCameraControls(bool available) {
+  source_camera_available_ = available && QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
+  if (!source_camera_available_)
+    stopSourceCamera();
+  for (size_t camera = 0; camera < source_camera_play_.size(); ++camera) {
+    const bool enabled = source_camera_available_ && camera < camera_optics_sources_.size();
+    const bool active = static_cast<int>(camera) == source_camera_index_;
+    source_camera_play_[camera]->setEnabled(enabled);
+    source_camera_play_[camera]->setToolTip(enabled ? "Play this camera's original recording. Leaving this tab pauses it."
+                                                  : "Camera playback is available while other playback and workflows are stopped.");
+    source_camera_stop_[camera]->setEnabled(active);
+    source_camera_seek_[camera]->setEnabled(enabled && source_camera_durations_[camera] > 0);
+    if (!active) {
+      const QSignalBlocker blocker(source_camera_seek_[camera]);
+      source_camera_seek_[camera]->setRange(0, static_cast<int>(std::min<qint64>(
+          std::max<qint64>(0, source_camera_durations_[camera] - 1), std::numeric_limits<int>::max())));
+      source_camera_seek_[camera]->setValue(static_cast<int>(source_camera_positions_[camera]));
+      if (!source_camera_durations_[camera])
+        source_camera_time_[camera]->setText("00:00:00 / 00:00:00");
+      source_camera_play_[camera]->setText("Play camera");
+      source_camera_play_[camera]->setIcon(action_icon(ActionIcon::Play));
+    }
+  }
+}
+
 void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_tabs_ = new QTabWidget();
   preview_tabs_->setObjectName("previewTabs");
@@ -7120,6 +7285,42 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         QString("Camera %1 decoded source preview — downstream controls do not alter this tab").arg(camera_index + 1));
     camera_status->setObjectName(QString("camera%1PreviewStatusLabel").arg(camera_index + 1));
     camera_preview_layout->addWidget(camera_status);
+    auto* transport = new QHBoxLayout();
+    auto* play = new QPushButton(action_icon(ActionIcon::Play), "Play camera");
+    play->setObjectName(QString("camera%1PlayButton").arg(camera_index + 1));
+    auto* stop = new QPushButton(action_icon(ActionIcon::Stop), "Stop");
+    stop->setObjectName(QString("camera%1StopButton").arg(camera_index + 1));
+    auto* seek = new PlaybackSeekSlider(Qt::Horizontal);
+    seek->setObjectName(QString("camera%1SeekSlider").arg(camera_index + 1));
+    seek->setAccessibleName("Camera recording position");
+    seek->setToolTip("Seek within this camera's original recording; independent of Playback start and Input trim.");
+    auto* time = new QLabel("00:00 / 00:00");
+    time->setObjectName(QString("camera%1PlaybackTime").arg(camera_index + 1));
+    source_camera_play_.push_back(play);
+    source_camera_stop_.push_back(stop);
+    source_camera_seek_.push_back(seek);
+    source_camera_time_.push_back(time);
+    transport->addWidget(play);
+    transport->addWidget(stop);
+    transport->addWidget(seek, 1);
+    transport->addWidget(time);
+    camera_preview_layout->addLayout(transport);
+    connect(play, &QPushButton::clicked, this, [this, camera_index] {
+      if (source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing)
+        source_camera_player_->Pause();
+      else
+        playSourceCamera(camera_index, true);
+      pollSourceCamera();
+    });
+    connect(stop, &QPushButton::clicked, this, [this] { stopSourceCamera(); });
+    const auto seek_camera = [this, camera_index](int value) {
+      const bool playing = source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing;
+      playSourceCamera(camera_index, playing, value);
+    };
+    seek->setReleaseHandler([seek_camera](std::optional<int> value) { if (value) seek_camera(*value); });
+    connect(seek, &QSlider::valueChanged, this, [seek, seek_camera](int value) {
+      if (!seek->isSliderDown()) seek_camera(value);
+    });
     auto* controls = new QTabWidget(camera_splitter);
     controls->setObjectName(QString("camera%1ControlTabs").arg(camera_index + 1));
     auto* source_start = new CameraSourceStartWidget(controls);
@@ -7164,7 +7365,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_tabs_->setTabToolTip(
       pipeline_inspector_tab_index_,
       "Inspect the structured live GStreamer graph, select elements, and edit explicitly live-mutable properties.");
+  auto* camera_poll = new QTimer(this);
+  camera_poll->setInterval(runtime_control_debounce_ms_);
+  connect(camera_poll, &QTimer::timeout, this, [this] { pollSourceCamera(); });
+  camera_poll->start();
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
+    if (source_camera_player_ && tab_index != source_camera_index_ + 2) {
+      source_camera_player_->Pause();
+      pollSourceCamera();
+    }
     if (preview_focus_mode_) {
       if (!canFocusPreview(tab_index)) {
         setPreviewFocusMode(false, tab_index);
@@ -8769,6 +8978,7 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
   camera_source_starts_ = result.camera.input_start_times;
   if (input_camera_defaults_group_)
     input_camera_defaults_group_->setVisible(editing_defaults_);
+  const auto previous_sources = camera_optics_sources_;
   camera_optics_sources_.clear();
   if (!editing_defaults_ && !result.panorama)
     for (const auto& [source, values] : result.camera.input_cameras)
@@ -8785,6 +8995,11 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
         };
         return rank(left) < rank(right);
       });
+  if (previous_sources != camera_optics_sources_) {
+    stopSourceCamera();
+    source_camera_positions_ = {};
+    source_camera_durations_ = {};
+  }
   if (!preview_tabs_)
     return;
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
@@ -9259,6 +9474,7 @@ void HStreamWindow::openPromotedStitchingLeveling(const QString& game_directory)
 }
 
 void HStreamWindow::selectRinkLeveling() {
+  stopSourceCamera();
   if (!ensureSavedControlConfigLoaded())
     return;
   if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
@@ -9286,6 +9502,7 @@ void HStreamWindow::selectRinkLeveling() {
 }
 
 void HStreamWindow::selectRinkMap() {
+  stopSourceCamera();
   if (!ensureSavedControlConfigLoaded() || !rink_map_button_ || !rink_map_button_->isEnabled() || !game_id_edit_)
     return;
   const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
@@ -9338,6 +9555,7 @@ void HStreamWindow::selectRinkMap() {
 }
 
 void HStreamWindow::selectProjectionCrop() {
+  stopSourceCamera();
   if (!ensureSavedControlConfigLoaded())
     return;
   if (!projection_crop_button_ || !projection_crop_button_->isEnabled() || !game_id_edit_)
@@ -11507,6 +11725,7 @@ bool HStreamWindow::detectorSelectionChanged() const {
 }
 
 void HStreamWindow::prepareRecordedInt8() {
+  stopSourceCamera();
   if ((pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
       findChild<QDialog*>("stitchingExperimentDialog")) {
     appendLog("Stop playback and close experiments before preparing INT8.");
@@ -11748,6 +11967,7 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 bool HStreamWindow::beginGameOperation(const std::string& kind) {
+  stopSourceCamera();
   const std::filesystem::path game =
       std::filesystem::canonical(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
   auto lock = hm::game_operation::Lock::Acquire(game, false);
@@ -11779,7 +11999,7 @@ bool HStreamWindow::beginGameOperation(const std::string& kind) {
 }
 
 void HStreamWindow::releaseGameOperationIfStopped() {
-  if (operation_token_.empty() || operation_starting_ ||
+  if (operation_token_.empty() || operation_starting_ || source_camera_index_ >= 0 ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
       live_rotation_authorization_pending_)
     return;
@@ -11804,6 +12024,7 @@ void HStreamWindow::releaseGameOperationIfStopped() {
 }
 
 void HStreamWindow::startPipeline() {
+  stopSourceCamera();
   if (deferred_play_requested_ || deferred_restart_requested_)
     return;
   const auto show_startup_error = [this](const QString& detail) {
@@ -18754,6 +18975,9 @@ void HStreamWindow::setAllPreviewFocusAvailable(bool available) {
 }
 
 bool HStreamWindow::canFocusPreview(int tab_index) const {
+  if (source_camera_player_ && source_camera_index_ + 2 == tab_index)
+    return source_camera_player_->GetStatus().presented_ns >= 0;
+
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !pipeline_render_embedded_ ||
       (render_video_toggle_ && !render_video_toggle_->isChecked()) || tab_index < 0 ||
       tab_index >= static_cast<int>(preview_hosts_.size())) {
@@ -18957,7 +19181,12 @@ void HStreamWindow::updateRunControls() {
   }
   const bool waiting_for_start = deferred_play_requested_ || deferred_restart_requested_;
   const bool finalizing =
-      isArchiveFinalizing() || waiting_for_start || external_operation || (!operation_token_.empty() && !running);
+      isArchiveFinalizing() || waiting_for_start || external_operation || (!operation_token_.empty() && !running && source_camera_index_ < 0);
+  const bool camera_dialog = findChild<QDialog*>("cameraExperimentDialog") ||
+      findChild<QDialog*>("stitchingExperimentDialog") || findChild<QDialog*>("highlightsDialog") ||
+      findChild<QDialog*>("int8PreparationDialog");
+  updateSourceCameraControls(!running && !finalizing && !camera_dialog && !editing_defaults_ &&
+      !rink_map_editor_active_ && !live_rotation_authorization_pending_);
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
   if (archive_recovery_was_cleared) {
@@ -22064,6 +22293,7 @@ void HStreamWindow::rememberGameSelection() {
 }
 
 void HStreamWindow::browseGameRoot() {
+  stopSourceCamera();
   if (!game_controls_->isEnabled())
     return;
   const QString directory = QFileDialog::getExistingDirectory(this, "Choose Game Root", gameRoot());
@@ -22159,6 +22389,9 @@ void HStreamWindow::refreshGames() {
 }
 
 void HStreamWindow::selectGame(const QString& game_id) {
+  stopSourceCamera();
+  source_camera_positions_ = {};
+  source_camera_durations_ = {};
   if (!game_id_edit_) {
     return;
   }
@@ -22236,6 +22469,7 @@ void HStreamWindow::addVideoPath() {
 }
 
 bool HStreamWindow::addVideoFile(const QString& path) {
+  stopSourceCamera();
   const QString role = selectedVideoRole();
   if (!ensureGameDirectory()) {
     return false;
@@ -22323,6 +22557,7 @@ void HStreamWindow::browseVideoPath() {
 }
 
 void HStreamWindow::removeSelectedVideoSet() {
+  stopSourceCamera();
   if (!video_set_list_) {
     return;
   }

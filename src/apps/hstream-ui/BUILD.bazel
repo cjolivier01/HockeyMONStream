@@ -48,6 +48,8 @@ filegroup(
         "CalibrationFrameView.h",
         "HStreamWindow.cpp",
         "HStreamWindow.h",
+        "SourceCameraPlayer.cpp",
+        "SourceCameraPlayer.h",
         "HighlightPlan.cpp",
         "HighlightPlan.h",
         "HighlightsDialog.cpp",
@@ -964,6 +966,7 @@ cc_library(
         "//src/libs/common:game_operation_owner","//src/libs/common:game_storage",
         ":detector_options",
         ":runtime_options",
+        ":source_camera_player",
         "//src/libs/tracking:playtracker_runtime_controls",
         "//src/libs/publication",
         "//src/libs/program:tone_controls",
@@ -1728,4 +1731,26 @@ cc_test(
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
+)
+
+cc_library(
+    name = "source_camera_player",
+    defines = select({"//:use_hip": ["HSTREAM_USE_HIP"], "//conditions:default": []}),
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    srcs = ["SourceCameraPlayer.cpp"],
+    hdrs = ["SourceCameraPlayer.h"],
+    copts = COMMON_COPTS,
+    deps = ["@qt//:qt_core", "@gstreamer", "//src/libs/media:mp4_video_track"] + select({
+        "//:use_hip": [],
+        "//conditions:default": ["//src/apps/apps-common:hm_gpu_preview"],
+    }),
+)
+
+cc_test(
+    name = "source_camera_playback_test",
+    srcs = ["SourceCameraPlaybackTest.cpp"],
+    copts = COMMON_COPTS,
+    tags = ["manual", "requires-gpu"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":hstream_window", ":value_control_wheel", "//src/libs/media:test_mp4", "//src/libs/common:game_operation_owner", "@qt//:qt_widgets", "@qt//:qt_test"],
 )

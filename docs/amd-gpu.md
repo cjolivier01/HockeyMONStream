@@ -1429,3 +1429,19 @@ large stitched canvases (including 21636×11479 scaled to 1280×680). The bounde
 render workload remains unchanged. Wrapped player-scan planning and exact still
 replay are shared; the existing AMD fresh-calibration limitation above still
 applies. NVIDIA FakeSink lateness uses the required signed 64-bit property type.
+
+### Independent camera-tab playback
+
+The idle desktop camera transport shares its timeline, ownership, pause/seek and
+teardown code across NVIDIA and AMD. Its AMD branch connects `vah264dec` /
+`vah265dec` DMABuf output directly to `glimagesink`; it never negotiates
+system-memory video or sends VA surfaces through the NVIDIA renderer. This
+source-only player does not add AMD Program source taps, calibration or WebRTC.
+
+`source_camera_playback_test` supports both builds with two synthetic chapter
+playlists. The AMD player library builds with `--config=rocm`; NVIDIA playback,
+audio and paused source-frame presentation are verified locally. AMD hardware
+qualification remains pending: `ripper` was unreachable over SSH during this
+change. DMABuf/EGL import,
+paused seeks and full decoder retirement must pass there before claiming AMD
+runtime parity. The Qt targets retain their existing Jetson incompatibility.
