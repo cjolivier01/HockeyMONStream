@@ -3374,7 +3374,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
   // stays part of the accepted solve. Both operations are private and neither
   // can replace a published artifact until the complete result is validated.
   std::array<double, 3> undo{};
-  if (!fixed_review) {
+  if (!fixed_review || request.select_leveling || request.select_crop) {
     HM_ASSIGN_OR_RETURN(undo, RinkLevelingRotationDelta(provenance->projection_framing->rotation_degrees, {0, 0, 0}));
   }
   if (undo != std::array<double, 3>{0, 0, 0}) {
@@ -3398,6 +3398,8 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
   }
   std::string neutral_project;
   HM_ASSIGN_OR_RETURN(neutral_project, ReadProject(staging / "autooptimiser_out.pto"));
+  if (request.select_leveling || request.select_crop)
+    HM_RETURN_IF_ERROR(write_file(staging / ".autooptimiser_out.aligned.pto", neutral_project));
   auto framing = request.projection_framing;
   const auto project_view = [&]() -> absl::Status {
     if (fixed_review) {

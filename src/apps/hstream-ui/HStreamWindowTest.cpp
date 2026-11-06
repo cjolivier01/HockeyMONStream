@@ -1033,6 +1033,24 @@ for line in sys.stdin:
     return window->ensureProjectionCropReviewed();
   }
 
+  static bool cancelledReviewRetainsSavedFraming(HStreamWindow* window) {
+    const auto saved = window->saved_projection_framing_;
+    const auto displayed = window->stitchProjectionFraming();
+    prepareRinkLevelingProtocol(window, window->game_id_edit_->text(), displayed.rotation_degrees);
+    window->active_projection_framing_ = displayed;
+    window->loaded_projection_framing_ = displayed;
+    window->active_stitching_review_ = true;
+    window->handleRinkLevelingOutput("HSTREAM_RINK_LEVELING status=selected yaw=5 pitch=-7 roll=2");
+    window->handleProjectionCropOutput("HSTREAM_PROJECTION_CROP status=selected auto=0 0.1 0.9 0.2 0.8");
+    const bool provisional = window->active_projection_framing_.rotation_degrees == std::array<double, 3>{5, -7, 2} &&
+        window->active_projection_framing_.crop == std::array<double, 4>{0.1, 0.9, 0.2, 0.8} &&
+        window->saved_projection_framing_ == saved && window->stitchProjectionFraming() == displayed;
+    window->pipeline_stop_requested_ = true;
+    window->handlePipelineFinished(0, QProcess::NormalExit);
+    return provisional && window->stitchProjectionFraming() == displayed &&
+        window->saved_projection_framing_ == saved && !window->active_stitching_review_;
+  }
+
   static hm::stitching::StitchProjectionFraming cropFraming(HStreamWindow* window) {
     return window->stitchProjectionFraming();
   }
@@ -11796,6 +11814,9 @@ bool test_promoted_stitching_leveling(HStreamWindow* window) {
   ok &= expect(
       HStreamWindowTestAccess::ensureProjectionCropReviewed(window),
       "Promoted crop review must defer to the owned Play setup after leveling");
+  ok &= expect(
+      HStreamWindowTestAccess::cancelledReviewRetainsSavedFraming(window),
+      "Cancelled review choices must not become saved controls or the next Play's framing");
   game_id->setText(original_game_id);
   activate(create);
   return ok;

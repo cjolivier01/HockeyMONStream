@@ -11437,6 +11437,14 @@ void HStreamWindow::completeStitchingCalibration() {
         "Stitching inputs changed while calibration was running. Stop and press Play to rebuild the newer dependency.");
     return;
   }
+  if (active_stitching_review_) {
+    loaded_projection_framing_ = active_projection_framing_;
+    saved_projection_framing_ = active_projection_framing_;
+    projection_auto_crop_check_->setChecked(active_projection_framing_.auto_crop);
+    updateRinkLevelingControls();
+    updatePresetDirtyState();
+    active_stitching_review_ = false;
+  }
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
   calibration_pending_ = false;
@@ -13223,6 +13231,8 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
   active_stitching_reframe_ = false;
+  if (active_stitching_review_)
+    loadSavedControlConfig();
   active_stitching_review_ = false;
   pipeline_state_->setText("STOPPED");
   if (completed_successfully) {
@@ -17659,9 +17669,11 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
     }
     active_projection_framing_.rotation_degrees = {yaw, pitch, roll};
     active_projection_framing_.rotation_inherited = false;
-    loaded_projection_framing_.rotation_degrees = active_projection_framing_.rotation_degrees;
-    loaded_projection_framing_.rotation_inherited = false;
-    saved_projection_framing_ = active_projection_framing_;
+    if (!active_stitching_review_) {
+      loaded_projection_framing_.rotation_degrees = active_projection_framing_.rotation_degrees;
+      loaded_projection_framing_.rotation_inherited = false;
+      saved_projection_framing_ = active_projection_framing_;
+    }
     pending_leveling_revision_.clear();
     updateRinkLevelingControls();
     updatePresetDirtyState();
@@ -17805,9 +17817,11 @@ void HStreamWindow::handleProjectionCropOutput(const QString& line) {
         (framing.auto_crop && framing.crop != hm::stitching::StitchProjectionFraming{}.crop))
       return;
     active_projection_framing_ = framing;
-    loaded_projection_framing_ = framing;
-    saved_projection_framing_ = framing;
-    projection_auto_crop_check_->setChecked(framing.auto_crop);
+    if (!active_stitching_review_) {
+      loaded_projection_framing_ = framing;
+      saved_projection_framing_ = framing;
+      projection_auto_crop_check_->setChecked(framing.auto_crop);
+    }
     crop_selection_revision_.clear();
     pending_crop_geometry_.clear();
     updatePresetDirtyState();

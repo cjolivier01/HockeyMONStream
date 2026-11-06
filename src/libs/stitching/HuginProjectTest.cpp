@@ -868,8 +868,13 @@ bool test_reframe_publication(const std::filesystem::path& root) {
   };
   int review_order = 0;
   request.select_leveling =
-      [&](const fs::path&,
+      [&](const fs::path& staging,
           const hm::stitching::StitchProjectionFraming&) -> absl::StatusOr<std::optional<std::array<double, 3>>> {
+    const auto neutral = HuginProject::ParseCameraPose(read_text_file(staging / ".autooptimiser_out.aligned.pto"), 0);
+    if (!neutral.ok() || std::abs(neutral->yaw) > 1e-9 ||
+        read_binary_file(staging / "left.png") != original["left.png"] ||
+        read_binary_file(staging / "right.png") != original["right.png"])
+      return absl::FailedPreconditionError("Review dialogs require the neutral alignment and original stills");
     review_order = 1;
     return std::optional<std::array<double, 3>>({25, 0, 0});
   };
@@ -988,9 +993,8 @@ bool test_reframe_publication(const std::filesystem::path& root) {
   fixed_request.review_saved_view = true;
   fixed_request.projection_framing.auto_canvas = false;
   fixed_request.expected_source_generation = *fixed_generation;
-  ::setenv("HM_PANO_MODIFY", (root / "forbidden-review-pano-modify").c_str(), 1);
   const auto fixed_result = HuginProject::Reframe(fixed_game, fixed_request);
-  ok &= expect(fixed_result.ok(), "Reviewing an unchanged fixed canvas must need no projection or map generation");
+  ok &= expect(fixed_result.ok(), "Reviewing an unchanged fixed canvas must provide neutral previews without new maps");
   if (!fixed_result.ok())
     std::cerr << fixed_result << '\n';
   ::setenv("HM_PANO_MODIFY", previous_pano.c_str(), 1);
