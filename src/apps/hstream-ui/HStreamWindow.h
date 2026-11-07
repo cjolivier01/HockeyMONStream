@@ -519,7 +519,6 @@ class HStreamWindow : public QMainWindow {
   bool cropRotationSuppressed() const;
   void updateCropRotationControls();
   double cameraPresetControlValue(const QString& id) const;
-  void openPromotedStitchingLeveling(const QString& game_directory);
   void selectRinkLeveling();
   void selectRinkMap();
   void selectProjectionCrop();
@@ -1022,6 +1021,7 @@ class HStreamWindow : public QMainWindow {
   bool calibration_restart_requested_{false};
   bool active_force_reconfigure_{false};
   bool active_stitching_reframe_{false};
+  bool active_stitching_review_{false};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;
   bool capture_complete_log_{false};

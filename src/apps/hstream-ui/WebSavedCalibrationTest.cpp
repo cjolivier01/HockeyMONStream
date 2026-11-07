@@ -991,6 +991,32 @@ void controls_staging_regressions(const QString& binary, const fs::path& source)
           "Changed synchronization cannot reuse the saved alignment for a simultaneous crop edit");
   }
 }
+void promoted_review_staging(const QString& binary, const fs::path& source) {
+  for (bool leveling : {false, true}) {
+    for (bool crop : {false, true}) {
+      QTemporaryDir temporary;
+      const fs::path root(temporary.path().toStdString()), game = root / "game";
+      fs::copy(source, game, fs::copy_options::recursive);
+      auto config = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
+      config["hstream_ui"]["stitching_calibration"]["review_pending"] = true;
+      config["hstream_ui"].remove("projection_crop_geometry");
+      config["hstream_ui"]["show_leveling_dialog"] = leveling;
+      config["hstream_ui"]["show_crop_dialog"] = crop;
+      write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+      const auto payload = controls_payload(game, {}, {});
+      const auto result = invoke(binary, root, "calibration-controls-stage", payload);
+      const auto staged = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
+      expect(
+          result.value("pending").toBool() == (leveling || crop) &&
+              result.value("alignment_reused").toBool() == (leveling || crop) &&
+              result.value("cleanup").toString() == "none" &&
+              staged["hstream_ui"]["stitching_calibration"]["review_pending"].as<bool>() &&
+              read(game / "_hockeymon/mapping_0000.tif") == read(source / "_hockeymon/mapping_0000.tif"),
+          "Browser Play must honor review preferences and preserve the selected alignment");
+    }
+  }
+}
+
 void saved_view_controls_staging(const QString& binary, const fs::path& source) {
   const auto original = read(source / "_hockeymon/config.yaml");
   const auto saved = YAML::Load(original);
@@ -1243,9 +1269,12 @@ void sparse_still_defaults(const QString& binary) {
 int main(int argc, char** argv) {
   QGuiApplication app(argc, argv);
   try {
-    expect(argc == 2, "Pass adapter binary");
-    fresh_controls_staging(argv[1]);
-    sparse_still_defaults(argv[1]);
+    const bool promotion_only = argc == 3 && std::string(argv[2]) == "--promotion-review-only";
+    expect(argc == 2 || promotion_only, "Pass adapter binary and optional --promotion-review-only");
+    if (!promotion_only) {
+      fresh_controls_staging(argv[1]);
+      sparse_still_defaults(argv[1]);
+    }
     // Uniform synthetic images do not always support Enblend seam optimization.
     // Exercise the explicitly enabled native hard-seam path for these tiny stills.
     qputenv("HM_ALLOW_HARD_SEAM_FALLBACK", "1");
@@ -1264,6 +1293,10 @@ int main(int argc, char** argv) {
         game / "_hockeymon/canonical.pto", game / "_hockeymon/hm_project.pto", fs::copy_options::overwrite_existing);
     provenance(game);
     write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    promoted_review_staging(argv[1], game);
+    if (promotion_only)
+      return 0;
+
     {
       QTemporaryDir absolute_temporary;
       const fs::path absolute_root(absolute_temporary.path().toStdString()), absolute_game = absolute_root / "game";

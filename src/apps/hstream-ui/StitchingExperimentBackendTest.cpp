@@ -1501,10 +1501,10 @@ int main() {
     const YAML::Node selected_pipeline = selected["pipeline"];
     const auto selected_framing = hm::stitching::read_stitch_projection_framing(selected);
     ok &= expect(
-        selected_framing.ok() &&
-            hm::stitching::projection_crop_reviewed(
+        selected_framing.ok() && selected["hstream_ui"]["stitching_calibration"]["review_pending"].as<bool>() &&
+            !hm::stitching::projection_crop_reviewed(
                 selected, hm::stitching::projection_crop_geometry(selected_pto, *selected_framing)),
-        "explicit candidate selection must accept its actual crop geometry so first Play reuses the chosen maps");
+        "candidate selection must leave its crop unreviewed for the next Play");
     ok &= expect(
         !selected["stitching"]["calibration_frame_selection"].IsDefined(),
         "promoting an ordinary candidate must remove the previous player plan");

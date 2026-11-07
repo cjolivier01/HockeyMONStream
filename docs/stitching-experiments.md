@@ -216,6 +216,12 @@ materialize the missing PNG bundle; opening the inspector never does that work.
 most the last 1 MiB; the complete log stays with that candidate on disk. Both the live log and retained-output
 viewer render terminal colors through the shared `AnsiLogFormat` helper; saved logs keep their original escapes.
 
+If Hugin rejects an automatic calibration because its control-point RMS is too large, the error suggests enabling
+any disabled **Epipolar RANSAC** or **Homography consistency check** controls under **Advanced geometric filtering**.
+Add a new candidate with those settings and start the batch. The suggestion does not change settings or promise
+a successful solve; it is omitted when both filters are already enabled or the matches were manually edited.
+The shared native error reaches desktop and browser experiment status and runner logs.
+
 Each pair has left/right thumbnails from the exact images extracted for matching. They become available when that
 pair is extracted and remain inspectable if solving subsequently fails. Thumbnail creation reuses the CPU images
 already required by calibration, without another video-surface readback or a separate approximate seek. Each is at
@@ -333,8 +339,11 @@ it is durable retains the matching promoted generation.
 
 Validation and durable publication run on a worker so the desktop remains responsive; conflicting experiment actions
 and dialog closure wait for that transaction to finish. Successful selection closes the dialog automatically and
-returns to the main Program. Selection also accepts the candidate’s existing crop geometry, so the next Play does
-not prompt for an unrelated crop review against the previous calibration. Failed publication leaves the dialog open with the error.
+returns to the main Program without opening a setup dialog. The next Play reviews optional rink leveling and then
+crop framing, according to the automatic-dialog checkboxes. Experiment previews do not count as crop approval.
+The shared startup planner keeps the selected camera alignment; accepting unchanged framing preserves the exact
+maps and seam. Canceling review leaves the selected artifacts and pending review intact for the next Play.
+Failed publication leaves the dialog open with the error.
 Closing with unapplied results, including through the window close button or Escape, offers **Use selected**,
 **Keep results and close**, and **Cancel**. Cancel is the default; keeping results preserves them for the next visit.
 The separate **Discard experiments and cache…** action explicitly deletes the retained history after confirmation.

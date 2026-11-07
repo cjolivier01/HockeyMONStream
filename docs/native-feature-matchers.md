@@ -117,13 +117,13 @@ results on real footage.
 ### Geometric filtering
 
 The matcher menu selects detection and descriptor matching. **Alignment →
-Advanced geometric filtering** has two independent switches, both on by default:
+Advanced geometric filtering** has two independent switches, both off by default:
 
 ```yaml
 stitching:
   control_point_filtering:
-    epipolar_ransac: true
-    homography_consistency: true
+    epipolar_ransac: false
+    homography_consistency: false
 ```
 
 These checks apply to AKAZE, SuperPoint + LightGlue, DeDoDe + LightGlue and

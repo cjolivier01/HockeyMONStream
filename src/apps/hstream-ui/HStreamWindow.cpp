@@ -6629,7 +6629,6 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
           "Initialized _hockeymon/config.yaml from the displayed settings for Stitching Experiments. "
           "Save Preset stores later changes for this recording.");
     }
-    auto selection_applied = std::make_shared<bool>(false);
     stopSourceCamera();
     auto* dialog = new StitchingExperimentDialog(
         game_directory,
@@ -6641,16 +6640,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         stitchingCalibrationFrameCount(),
         stitchFrameTime(),
         this,
-        [this, selection_applied]() {
-          *selection_applied = true;
+        [this]() {
           loadSavedControlConfig();
           appendLog("selected stitching experiment published; main Program will reuse its maps and seam");
         },
         format_stitch_frame_time(playback_start_time_edit_->time()));
-    connect(dialog, &QDialog::finished, this, [this, game_directory, selection_applied](int) {
-      if (*selection_applied)
-        openPromotedStitchingLeveling(game_directory);
-    });
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
     dialog->show();
@@ -9531,19 +9525,6 @@ bool HStreamWindow::rinkLevelingInputsUnchanged() const {
       saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount();
 }
 
-void HStreamWindow::openPromotedStitchingLeveling(const QString& game_directory) {
-  // Promotion first closes its modal dialog and drains its workers. Start this
-  // optional editor on the next event-loop turn, after that close has completed.
-  QTimer::singleShot(0, this, [this, game_directory]() {
-    if (!same_file_path(gameDirectoryText(), game_directory) || mappingBackend() != "nona" ||
-        !stitchingIterationSettings().show_leveling_dialog ||
-        (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
-        QApplication::activeModalWidget())
-      return;
-    selectRinkLeveling();
-  });
-}
-
 void HStreamWindow::selectRinkLeveling() {
   stopSourceCamera();
   if (!ensureSavedControlConfigLoaded())
@@ -9701,6 +9682,9 @@ bool HStreamWindow::ensureProjectionCropReviewed(bool* cancelled) {
       return true;
     try {
       const auto config = YAML::LoadFile(QDir(directory).filePath("_hockeymon/config.yaml").toStdString());
+      YAML::Node review;
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.review_pending", &review) && review.as<bool>())
+        return true; // Play reviews the promoted alignment through the owned setup flow.
       if (hm::stitching::HasStitchingReframeIntent(config))
         return true; // The requested view was already accepted; startup validates its source.
       YAML::Node status;
@@ -10345,6 +10329,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
   *calibration_required = false;
   active_stitching_reframe_ = false;
+  active_stitching_review_ = false;
   if (hockeyMonProgram() && !backend_.initial_launch.isEmpty()) {
     if (!initial_program_requires_stitching_.has_value()) {
       appendLog("Initial HockeyMON source ownership must be resolved before stitching admission");
@@ -10672,6 +10657,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       }
       calibration_plan = *plan;
       active_stitching_reframe_ = plan->alignment_reused;
+      active_stitching_review_ = plan->review_required;
       replay_selected_frames = plan->retain_selected_frames;
       clean_all = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kAll;
       clean_from_control_points = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kControlPoints;
@@ -11450,6 +11436,14 @@ void HStreamWindow::completeStitchingCalibration() {
     failStitchingCalibration(
         "Stitching inputs changed while calibration was running. Stop and press Play to rebuild the newer dependency.");
     return;
+  }
+  if (active_stitching_review_) {
+    loaded_projection_framing_ = active_projection_framing_;
+    saved_projection_framing_ = active_projection_framing_;
+    projection_auto_crop_check_->setChecked(active_projection_framing_.auto_crop);
+    updateRinkLevelingControls();
+    updatePresetDirtyState();
+    active_stitching_review_ = false;
   }
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
@@ -12643,7 +12637,8 @@ void HStreamWindow::startPipeline() {
   env.remove("HSTREAM_PROJECTION_CROP_FLOW");
   // Program can discover missing maps after launch. The backend only asks
   // during actual calibration; unchanged playback never emits a crop request.
-  if (!active_stitching_reframe_ && active_mapping_backend_ == "nona" && active_iteration_settings_.show_crop_dialog)
+  if ((!active_stitching_reframe_ || active_stitching_review_) && active_mapping_backend_ == "nona" &&
+      active_iteration_settings_.show_crop_dialog)
     env.insert("HSTREAM_PROJECTION_CROP_FLOW", "1");
   if (calibration_pending_) {
     const int control_points = active_calibration_control_points_;
@@ -12653,7 +12648,7 @@ void HStreamWindow::startPipeline() {
     env.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(frame_count));
     env.insert("HSTREAM_CALIBRATION_PENDING", "1");
     env.insert("HSTREAM_CALIBRATION_START_STAGE", active_calibration_start_stage_);
-    if (!active_stitching_reframe_ && active_mapping_backend_ == "nona" &&
+    if ((!active_stitching_reframe_ || active_stitching_review_) && active_mapping_backend_ == "nona" &&
         active_iteration_settings_.show_leveling_dialog)
       env.insert("HSTREAM_RINK_LEVELING_FLOW", "1");
     if (active_run_is_calibration_) {
@@ -13236,6 +13231,9 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
   active_stitching_reframe_ = false;
+  if (active_stitching_review_)
+    loadSavedControlConfig();
+  active_stitching_review_ = false;
   pipeline_state_->setText("STOPPED");
   if (completed_successfully) {
     setPlaybackProgressState(PlaybackProgressState::kCompleted);
@@ -13545,6 +13543,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
   active_stitching_reframe_ = false;
+  active_stitching_review_ = false;
   pipeline_state_->setText("STOPPED");
   setPlaybackProgressState(PlaybackProgressState::kError, error_message);
   preview_status_->setText("Pipeline failed to start");
@@ -17670,9 +17669,11 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
     }
     active_projection_framing_.rotation_degrees = {yaw, pitch, roll};
     active_projection_framing_.rotation_inherited = false;
-    loaded_projection_framing_.rotation_degrees = active_projection_framing_.rotation_degrees;
-    loaded_projection_framing_.rotation_inherited = false;
-    saved_projection_framing_ = active_projection_framing_;
+    if (!active_stitching_review_) {
+      loaded_projection_framing_.rotation_degrees = active_projection_framing_.rotation_degrees;
+      loaded_projection_framing_.rotation_inherited = false;
+      saved_projection_framing_ = active_projection_framing_;
+    }
     pending_leveling_revision_.clear();
     updateRinkLevelingControls();
     updatePresetDirtyState();
@@ -17816,9 +17817,11 @@ void HStreamWindow::handleProjectionCropOutput(const QString& line) {
         (framing.auto_crop && framing.crop != hm::stitching::StitchProjectionFraming{}.crop))
       return;
     active_projection_framing_ = framing;
-    loaded_projection_framing_ = framing;
-    saved_projection_framing_ = framing;
-    projection_auto_crop_check_->setChecked(framing.auto_crop);
+    if (!active_stitching_review_) {
+      loaded_projection_framing_ = framing;
+      saved_projection_framing_ = framing;
+      projection_auto_crop_check_->setChecked(framing.auto_crop);
+    }
     crop_selection_revision_.clear();
     pending_crop_geometry_.clear();
     updatePresetDirtyState();

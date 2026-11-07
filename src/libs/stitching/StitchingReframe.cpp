@@ -376,11 +376,11 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   return result;
 }
 
-absl::Status supported(const Snapshot& requested) {
+absl::Status supported(const Snapshot& requested, bool review_unchanged_view = false) {
   if (requested.choices.mapping_backend != "nona" || !requested.choices.run_autooptimizer)
     return absl::FailedPreconditionError(
         "Reframing requires an optimized NONA alignment; explicitly recalibrate to change the solver");
-  if (!requested.choices.projection_framing.auto_canvas)
+  if (!requested.choices.projection_framing.auto_canvas && !review_unchanged_view)
     return absl::FailedPreconditionError("Reframing this saved alignment requires projection_framing.auto_canvas=true");
   return absl::OkStatus();
 }
@@ -560,7 +560,10 @@ absl::StatusOr<StitchingReframeIntent> validate_intent(const fs::path& directory
     return absl::FailedPreconditionError("An input/features invalidation cannot reuse a saved alignment");
   Snapshot current;
   HM_ASSIGN_OR_RETURN(current, snapshot(effective));
-  HM_RETURN_IF_ERROR(supported(current));
+  const auto review = node_at(state, {"review_pending"});
+  const bool unchanged_review =
+      review.IsScalar() && review.as<bool>() && view_text(current.view) == view_text(record["source_view"]);
+  HM_RETURN_IF_ERROR(supported(current, unchanged_review));
   auto comparable = YAML::Clone(current.solver);
   if (record["source_auto_videos"] ||
       canonical_text(current.solver["videos"]) != canonical_text(record["source_solver"]["videos"])) {
@@ -673,7 +676,8 @@ static absl::StatusOr<bool> prepare_reframe_intent_locked(
     const std::string& desired_owner,
     YAML::Node& desired_private,
     bool* solve_inputs_changed,
-    bool resolved) {
+    bool resolved,
+    bool review_unchanged_view) {
   if (solve_inputs_changed)
     *solve_inputs_changed = false;
   try {
@@ -719,7 +723,7 @@ static absl::StatusOr<bool> prepare_reframe_intent_locked(
       ClearStitchingReframeIntent(desired_private);
       return false;
     }
-    if (!existing && view_text(original.view) == view_text(requested.view)) {
+    if (!existing && !review_unchanged_view && view_text(original.view) == view_text(requested.view)) {
       // Both snapshots see the current process environment. Compare against
       // the published limits as well, or an environment-only canvas change
       // would fall through to the generic regeneration/cleanup path.
@@ -737,7 +741,8 @@ static absl::StatusOr<bool> prepare_reframe_intent_locked(
     HM_ASSIGN_OR_RETURN(requested, snapshot(desired));
     if (desired_owner.empty() || desired_owner.size() > 256)
       return absl::InvalidArgumentError("Reframe requires a bounded nonempty desired invalidation owner");
-    HM_RETURN_IF_ERROR(supported(requested));
+    HM_RETURN_IF_ERROR(
+        supported(requested, review_unchanged_view && view_text(original.view) == view_text(requested.view)));
     YAML::Node record;
     if (existing) {
       record = YAML::Clone(node_at(previous_state, {"reframe"}));
@@ -808,7 +813,8 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
     const std::string& owner,
     YAML::Node& desired_private,
     bool* solve_inputs_changed) {
-  return prepare_reframe_intent_locked(directory, before, desired, owner, desired_private, solve_inputs_changed, false);
+  return prepare_reframe_intent_locked(
+      directory, before, desired, owner, desired_private, solve_inputs_changed, false, false);
 }
 
 absl::StatusOr<bool> PrepareResolvedStitchingReframeIntentLocked(
@@ -817,8 +823,10 @@ absl::StatusOr<bool> PrepareResolvedStitchingReframeIntentLocked(
     const YAML::Node& desired,
     const std::string& owner,
     YAML::Node& desired_private,
-    bool* solve_inputs_changed) {
-  return prepare_reframe_intent_locked(directory, before, desired, owner, desired_private, solve_inputs_changed, true);
+    bool* solve_inputs_changed,
+    bool review_unchanged_view) {
+  return prepare_reframe_intent_locked(
+      directory, before, desired, owner, desired_private, solve_inputs_changed, true, review_unchanged_view);
 }
 
 } // namespace hm::stitching

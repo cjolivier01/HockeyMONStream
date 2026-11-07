@@ -136,6 +136,7 @@ QJsonObject Capabilities() {
            "detector-controls-v1",
            "camera-optics-read-v1",
            "experiment-optics-filtering-v1",
+           "experiment-promotion-review-v1",
            "experiment-player-scan-wrap-v1",
            "experiment-materialization-v1",
            "workflow-portable-artifacts-v2",

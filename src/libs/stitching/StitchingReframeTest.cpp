@@ -13,6 +13,7 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
+#include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 
 namespace fs = std::filesystem;
 using namespace hm::stitching;
@@ -459,9 +460,75 @@ bool test_ownership_and_edits(const fs::path& root) {
   provenance(root);
   auto artifact_lock = value(lock_canvas_constraint_artifacts(root));
   auto config_lock = value(GameConfigTransactionLock::Acquire(root));
+  bool reviews_ok = true;
+  for (bool leveling : {false, true}) {
+    for (bool crop : {false, true}) {
+      auto promoted = YAML::Clone(before);
+      promoted["hstream_ui"]["stitching_calibration"]["review_pending"] = true;
+      promoted["hstream_ui"]["show_leveling_dialog"] = leveling;
+      promoted["hstream_ui"]["show_crop_dialog"] = crop;
+      auto desired_review = YAML::Clone(promoted);
+      const auto plan = PrepareStitchingCalibrationControlsLocked(
+          root,
+          value(ReadStitchingCalibrationState(promoted, promoted)),
+          value(ReadStitchingCalibrationControls(promoted)),
+          promoted,
+          promoted,
+          "review-owner",
+          false,
+          false,
+          false,
+          false,
+          desired_review);
+      const bool requested = leveling || crop;
+      reviews_ok &= expect(
+          plan.ok() && plan->required == requested && plan->alignment_reused == requested &&
+              plan->review_required == requested && plan->cleanup == StitchingCalibrationCleanup::kNone &&
+              (!requested || ValidateStitchingReframeIntentLocked(root, desired_review).ok()),
+          "Promoted Play must review enabled dialogs through retained alignment without matching or cleanup");
+      if (!plan.ok())
+        std::cerr << plan.status() << '\n';
+    }
+  }
+  {
+    auto fixed = YAML::Clone(before);
+    fixed["hstream_ui"]["stitching_calibration"]["review_pending"] = true;
+    fixed["stitching"]["projection_framing"]["auto_canvas"] = false;
+    fixed["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+    require(reserve_stitching_backend_generation_in_config(fixed, "completed-solve", choices(fixed)));
+    const auto provenance_path = saved_state(root) / kStitchCanvasProvenanceArtifact;
+    std::ifstream provenance_input(provenance_path);
+    const std::string saved_provenance(
+        (std::istreambuf_iterator<char>(provenance_input)), std::istreambuf_iterator<char>());
+    provenance_input.close();
+    auto fixed_provenance = saved_provenance;
+    const auto auto_canvas = fixed_provenance.find("projection-auto-canvas=1");
+    fixed_provenance.replace(auto_canvas, std::string("projection-auto-canvas=1").size(), "projection-auto-canvas=0");
+    write(provenance_path, fixed_provenance);
+    auto fixed_review = YAML::Clone(fixed);
+    const auto fixed_plan = PrepareStitchingCalibrationControlsLocked(
+        root,
+        value(ReadStitchingCalibrationState(fixed, fixed)),
+        value(ReadStitchingCalibrationControls(fixed)),
+        fixed,
+        fixed,
+        "fixed-review",
+        false,
+        false,
+        false,
+        false,
+        fixed_review);
+    reviews_ok &= expect(
+        fixed_plan.ok() && fixed_plan->review_required && fixed_plan->cleanup == StitchingCalibrationCleanup::kNone &&
+            ValidateStitchingReframeIntentLocked(root, fixed_review).ok(),
+        "An unchanged fixed canvas can be reviewed without requiring a new alignment or view");
+    if (!fixed_plan.ok())
+      std::cerr << fixed_plan.status() << '\n';
+    write(provenance_path, saved_provenance);
+  }
   auto desired = desired_view(before);
   auto prepare = PrepareStitchingReframeIntentLocked(root, before, desired, "view-1", desired);
-  bool ok = expect(prepare.ok() && *prepare, "geometry edit captures the original complete alignment");
+  bool ok = reviews_ok && expect(prepare.ok() && *prepare, "geometry edit captures the original complete alignment");
   if (!prepare.ok()) {
     std::cerr << prepare.status() << '\n';
     return false;
