@@ -1450,7 +1450,7 @@ change. DMABuf/EGL import, paused seeks and full decoder retirement must pass
 there before claiming AMD runtime parity. The Qt targets retain their existing
 Jetson incompatibility.
 
-The NVIDIA camera seek workaround restarts NVDEC between identical flushing
+The NVIDIA HEVC camera seek workaround restarts NVDEC between identical flushing
 seeks to discard stale 8K HEVC surface regions. VA decoding keeps its existing
 seek implementation. `source_camera_seek_pixels_test` exercises the shared
 player and compares full displayed frames against software decoding, including

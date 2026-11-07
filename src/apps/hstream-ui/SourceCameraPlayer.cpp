@@ -312,8 +312,6 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
       g_clear_error(&detail);
     } else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS) {
       eos = true;
-    } else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ASYNC_DONE) {
-      s.seeking = false;
     }
     gst_message_unref(message);
   }
@@ -321,7 +319,12 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
     s.fail(error);
     return s.status;
   }
-  if (s.preroll && gst_element_get_state(s.graph, nullptr, nullptr, 0) == GST_STATE_CHANGE_SUCCESS) {
+  // A recovery seek can leave an ASYNC_DONE from the positioning seek queued.
+  // The current graph state, not an older bus message, owns completion.
+  const bool settled = gst_element_get_state(s.graph, nullptr, nullptr, 0) == GST_STATE_CHANGE_SUCCESS;
+  if (s.seeking && settled)
+    s.seeking = false;
+  if (s.preroll && settled) {
     GstSample* sample = nullptr;
     g_object_get(s.sink, "last-sample", &sample, nullptr);
     const auto* segment = sample ? gst_sample_get_segment(sample) : nullptr;
@@ -372,14 +375,18 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
     // seek from preroll. Position the demuxer, retire the decoder's surfaces,
     // then repeat the exact seek with a fresh decoder, as URI-playlist and
     // highlight playback do. Keep the target and requested Play/Pause state.
-    if (gst_element_set_state(s.decoder, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE ||
-        !gst_element_sync_state_with_parent(s.decoder)) {
-      s.fail("Could not restart the camera decoder after seeking.");
-      return s.status;
-    }
-    if (!seek()) {
-      s.fail("Camera recording rejected the seek after decoder restart.");
-      return s.status;
+    if (item.track.codec == media::VideoCodec::kHevc) {
+      if (gst_element_set_state(s.decoder, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE ||
+          !gst_element_sync_state_with_parent(s.decoder)) {
+        s.fail("Could not restart the camera decoder after seeking.");
+        return s.status;
+      }
+      // Any picture from the positioning seek belongs to the retired decoder.
+      hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
+      if (!seek()) {
+        s.fail("Camera recording rejected the seek after decoder restart.");
+        return s.status;
+      }
     }
 #endif
     s.seeking = true;

@@ -191,6 +191,9 @@ int main(int argc, char** argv) {
     play1->click();
     Wait([&] { return seek1->value() > 14400; }, "Camera did not retain its independent position");
     target->setFocus();
+    window.activateWindow();
+    Check(QTest::qWaitForWindowActive(&window), "Camera window did not reactivate for the playing seek");
+    Check(target->hasFocus(), "Camera preview did not regain focus for the playing seek");
     const auto before_arrow = seek1->value();
     QTest::keyClick(target, Qt::Key_Left);
     Wait(

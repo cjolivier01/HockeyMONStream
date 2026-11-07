@@ -609,7 +609,7 @@ Offset MP4/Matroska recordings also verify normalized positions and final-frame
 coverage. The native player translates through the demuxer's actual stream-time
 segment; physical source timestamps remain attached to presented frames.
 
-NVIDIA camera seeks restart the hardware decoder between two identical accurate
+NVIDIA HEVC camera seeks restart the hardware decoder between two identical accurate
 seeks, matching the recorded-source and Highlights workaround. Without that
 restart, 8K Main 10 HEVC can retain older pixels in the right side of the picture
 even while its PTS and left side advance. This is decoder state, not stitching
@@ -618,7 +618,9 @@ its own media decoder. No CPU video transfer is added to playback.
 
 `source_camera_seek_pixels_test` compares eight vertical strips of the actual
 640×360 X11 preview against a software-decoded reference after repeated paused
-seeks, chapter replacement, retained-frame redraw and a playing seek. Its default
+seeks, chapter replacement and retained-frame redraw. Smooth reference regions
+exclude edges where GL and FFmpeg scaling filters differ. It also checks that
+a playing seek preserves Play, then verifies another paused seek. Its default
 fixture is a temporary 8K Main 10 HEVC clip with changing colors. Both GPU
 backends run the same comparison. Readback and software decoding exist only in
 the test. An original recording and chapter-local time can also be supplied:
