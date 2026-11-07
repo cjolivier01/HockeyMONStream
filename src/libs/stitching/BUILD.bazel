@@ -938,7 +938,7 @@ cc_test(
   name = "stitching_reframe_test",
   srcs = ["StitchingReframeTest.cpp"],
   deps = [
-    ":game_config", ":stitching_reframe", ":stitching_calibration_controls"],
+    ":game_config", ":stitching_reframe", ":stitching_calibration_controls", ":stitching_core"],
 )
 
 cc_library(
