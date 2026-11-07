@@ -2785,7 +2785,7 @@ absl::Status validate_backend_generation_claim(
         claim_parameters == expected_choices.projection_parameters && claim_framing_matches &&
         *parsed_claim_camera == expected_choices.camera;
     if (!claim_matches) {
-      auto format_parameters = [](const std::vector<double>& parameters) {
+      auto format_parameters = [](const auto& parameters) {
         std::ostringstream output;
         output << '[';
         for (size_t index = 0; index < parameters.size(); ++index) {
@@ -2794,6 +2794,15 @@ absl::Status validate_backend_generation_claim(
           output << parameters[index];
         }
         output << ']';
+        return output.str();
+      };
+      auto format_framing = [&](const StitchProjectionFraming& framing) {
+        std::ostringstream output;
+        output << "{auto-fov=" << (framing.auto_fov ? "true" : "false") << ", fov=" << framing.horizontal_fov
+               << ", auto-canvas=" << (framing.auto_canvas ? "true" : "false")
+               << ", auto-crop=" << (framing.auto_crop ? "true" : "false")
+               << ", rotation=" << format_parameters(framing.rotation_degrees)
+               << ", crop=" << format_parameters(framing.crop) << '}';
         return output.str();
       };
       std::ostringstream detail;
@@ -2805,6 +2814,7 @@ absl::Status validate_backend_generation_claim(
              << ", backend=" << expected_choices.mapping_backend << ", projection=" << expected_choices.projection
              << ", autooptimizer=" << (expected_choices.run_autooptimizer ? "true" : "false")
              << ", parameters=" << format_parameters(expected_choices.projection_parameters)
+             << ", framing=" << format_framing(expected_choices.projection_framing)
              << "}, reserved {id=" << claim["invalidation_id"].as<std::string>()
              << ", provider=" << hm::onnx::ExecutionProviderName(claim_provider)
              << ", resolution=" << ControlPointResolutionName(claim_resolution)
@@ -2813,10 +2823,7 @@ absl::Status validate_backend_generation_claim(
              << ", projection=" << claim["projection"].as<std::string>()
              << ", autooptimizer=" << (claim["run_autooptimizer"].as<bool>() ? "true" : "false")
              << ", parameters=" << format_parameters(claim_parameters)
-             << ", framing={auto-fov=" << (parsed_claim_framing->auto_fov ? "true" : "false")
-             << ", fov=" << parsed_claim_framing->horizontal_fov
-             << ", auto-canvas=" << (parsed_claim_framing->auto_canvas ? "true" : "false")
-             << ", auto-crop=" << (parsed_claim_framing->auto_crop ? "true" : "false") << "}}";
+             << ", framing=" << format_framing(*parsed_claim_framing) << '}';
       detail << ", camera={config=" << parsed_claim_camera->configuration
              << ", hfov=" << parsed_claim_camera->horizontal_fov << ", vfov=" << parsed_claim_camera->vertical_fov
              << "}";

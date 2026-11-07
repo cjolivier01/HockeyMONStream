@@ -636,8 +636,10 @@ empty. The exact hashed initial config contains only `game.videos` and
 `hstream_ui.video_roles`; every admitted source has an unchanged identity/role/alias
 binding. The adapter rejects prior calibration state, artifacts and indirect
 directories before acquiring native transaction locks. It validates again under
-those locks, allowing only the known journal files they create. Explicit Center
-metadata is retained; Auto aliases keep native discovery and orientation instead
+those locks, allowing only the known journal files they create. The regular, empty
+`_hockeymon/.game-operation.lock` created by native ownership checks is also allowed
+before and after locking; a symlink or nonempty file at that path remains invalid.
+Explicit Center metadata is retained; Auto aliases keep native discovery and orientation instead
 of acquiring Left/Right roles from upload order. Automatic optics and input-stage
 planning use the existing native implementations. The ordinary stage receipt
 owns the new invalidation; it does not claim a completed calibration.
