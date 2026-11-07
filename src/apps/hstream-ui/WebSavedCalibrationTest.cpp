@@ -458,6 +458,9 @@ void fresh_controls_staging(const QString& binary) {
        {"",
         "auto",
         "center",
+        "operation-lock",
+        "operation-lock-data",
+        "operation-lock-alias",
         "journal",
         "hash",
         "generation",
@@ -473,7 +476,7 @@ void fresh_controls_staging(const QString& binary) {
     const fs::path root(temporary.path().toStdString()), game = root / "game";
     fs::create_directories(game);
     const bool automatic = failure == "auto";
-    const bool success = failure.empty() || automatic || failure == "center";
+    const bool success = failure.empty() || automatic || failure == "center" || failure == "operation-lock";
     YAML::Node config;
     config["game"]["videos"] = YAML::Node(YAML::NodeType::Map);
     config["hstream_ui"]["video_roles"] = YAML::Node(YAML::NodeType::Map);
@@ -507,6 +510,10 @@ void fresh_controls_staging(const QString& binary) {
     if (failure == "state")
       config["hstream_ui"]["stitching_calibration"]["status"] = "complete";
     write(game / "_hockeymon/config.yaml", YAML::Dump(config));
+    if (failure == "operation-lock" || failure == "operation-lock-data")
+      write(game / "_hockeymon/.game-operation.lock", failure == "operation-lock" ? "" : "unowned data");
+    if (failure == "operation-lock-alias")
+      fs::create_symlink(root / "left.mp4", game / "_hockeymon/.game-operation.lock");
     const auto initial = read(game / "_hockeymon/config.yaml");
     QJsonObject source{{"fresh", true}, {"generation", QJsonValue::Null}, {"config_sha256", digest(initial)}};
     if (failure == "hash")

@@ -5689,6 +5689,10 @@ absl::Status reframe_stitching(
       const std::string geometry = projection_crop_geometry(pto, framing);
       if (geometry.empty())
         return absl::FailedPreconditionError("Reframed project has no valid crop geometry");
+      // Direct saved-view callers may not have reserved a worker claim yet.
+      // Reserve the original tuple, or validate the existing claim, before edits.
+      HM_RETURN_IF_ERROR(reserve_stitching_backend_generation_in_config(
+          current, expected_invalidation_id, intent.desired_choices));
       write_stitch_projection_framing(current, framing);
       write_projection_crop_review(current, geometry);
       remove_control_point_dependent_cache_keys(current);
@@ -5699,6 +5703,13 @@ absl::Status reframe_stitching(
       calibration.remove("stale_from");
       calibration.remove("review_pending");
       ClearStitchingReframeIntent(current);
+      // The review may change rotation and crop within this owned transaction.
+      // Publish its framing and claim together after validating the old tuple.
+      calibration["backend_generation"]["projection_framing"] =
+          YAML::Clone(current["stitching"]["projection_framing"]);
+      // Claims bind resolved angles even when the game inherits its rink preset.
+      calibration["backend_generation"]["projection_framing"]["rotation_degrees"] =
+          std::vector<double>(framing.rotation_degrees.begin(), framing.rotation_degrees.end());
       auto final_choices = intent.desired_choices;
       final_choices.projection_framing = framing;
       HM_RETURN_IF_ERROR(

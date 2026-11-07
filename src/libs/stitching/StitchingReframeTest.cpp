@@ -1,17 +1,21 @@
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 
 #include <unistd.h>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 
 #include <opencv2/imgcodecs.hpp>
+#include <tiffio.h>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 #include "hstream/src/libs/stitching/PlayerFrameInputStore.h"
 #include "hstream/src/libs/stitching/StitchingCalibrationControls.h"
 
@@ -894,6 +898,241 @@ bool test_selected_retention(const fs::path& root) {
   return ok;
 }
 
+std::string read_bytes(const fs::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+// Exercise the actual native review protocol and commit callback. The Hugin
+// unit tests supply their own build_config callback, bypassing that boundary.
+class ReviewReplies : public std::stringbuf {
+ public:
+  ReviewReplies(const fs::path& game, bool leveling, bool crop, bool supersede, bool cancel)
+      : game_(game),
+        pending_(read_bytes(saved_state(game) / "config.yaml")),
+        leveling_(leveling),
+        crop_(crop),
+        supersede_(supersede),
+        cancel_(cancel),
+        previous_(std::cout.rdbuf(this)) {}
+  ~ReviewReplies() override {
+    std::cout.rdbuf(previous_);
+  }
+  bool untouched{true};
+  bool cancelled{false};
+  int replies{0};
+  std::string superseded_config;
+
+ protected:
+  int sync() override {
+    const auto message = str();
+    str("");
+    previous_->sputn(message.data(), message.size());
+    previous_->pubsync();
+    const auto marker = message.find("status=ready directory-hex=");
+    if (marker == std::string::npos)
+      return 0;
+    const auto start = marker + std::string("status=ready directory-hex=").size();
+    const auto hex = message.substr(start, message.find_first_of(" \r\n", start) - start);
+    std::string directory;
+    for (size_t index = 0; index < hex.size(); index += 2)
+      directory.push_back(static_cast<char>(std::stoul(hex.substr(index, 2), nullptr, 16)));
+    const auto config_path = saved_state(game_) / "config.yaml";
+    untouched &= read_bytes(config_path) == pending_;
+    const bool leveling_prompt = message.find("HSTREAM_RINK_LEVELING") != std::string::npos;
+    const fs::path response =
+        fs::path(directory) / (leveling_prompt ? ".rink-leveling-response" : ".projection-crop-response");
+    write(
+        response.string() + ".tmp",
+        leveling_prompt ? (leveling_ ? "use 25 0 0\n" : "skip\n")
+                        : (crop_ ? "use 0 0.1 0.9 0.2 0.8\n" : "use 0 0 1 0 1\n"));
+    fs::rename(response.string() + ".tmp", response);
+    ++replies;
+    if (!leveling_prompt && supersede_) {
+      auto current = YAML::LoadFile(config_path.string());
+      current["hstream_ui"]["stitching_calibration"]["backend_generation"]["control_point_matcher"] = "akaze-hamming";
+      superseded_config = YAML::Dump(current) + "\n";
+      write(config_path, superseded_config);
+    }
+    if (!leveling_prompt && cancel_)
+      cancelled = true;
+    return 0;
+  }
+
+ private:
+  fs::path game_;
+  std::string pending_;
+  bool leveling_, crop_, supersede_, cancel_;
+  std::streambuf* previous_;
+};
+
+bool test_review_publication(
+    const fs::path& root,
+    bool leveling,
+    bool crop,
+    bool inherited,
+    bool supersede = false,
+    bool cancel = false,
+    bool reserved = true) {
+  auto before = fixture(root);
+  auto framing = value(read_stitch_projection_framing(before));
+  framing.rotation_degrees = {0, 0, 0};
+  framing.rotation_inherited = inherited;
+  if (inherited) {
+    framing.rotation_degrees[0] = 10;
+    before["stitching"]["rink_configs"]["fixture"] =
+        YAML::Load("{display_name: Fixture, rotation_degrees: [10, 0, 0]}");
+    before["stitching"]["rink_config"] = "fixture";
+  }
+  write_stitch_projection_framing(before, framing);
+  before["unrelated"]["keep"] = "retained";
+  before["hstream_ui"]["stitching_calibration"].remove("backend_generation");
+  require(reserve_stitching_backend_generation_in_config(before, "completed-solve", choices(before)));
+  before["hstream_ui"]["stitching_calibration"]["review_pending"] = true;
+  provenance(root);
+  auto source = read_bytes(saved_state(root) / kStitchCanvasProvenanceArtifact);
+  for (const auto& [old, replacement] : std::vector<std::pair<std::string, std::string>>{
+           {"projection-rotation-0=0", inherited ? "projection-rotation-0=10" : "projection-rotation-0=0"},
+           {"projection-rotation-1=-15", "projection-rotation-1=0"},
+           {"projection-rotation-2=3", "projection-rotation-2=0"}})
+    source.replace(source.find(old), old.size(), replacement);
+  write(saved_state(root) / kStitchCanvasProvenanceArtifact, source);
+  if (inherited) {
+    for (const char* name : {"autooptimiser_out.pto", "hm_project.pto"}) {
+      auto pto = read_bytes(saved_state(root) / name);
+      pto.replace(pto.find("y0 "), 3, "y10 ");
+      pto.replace(pto.find("y45 "), 4, "y55 ");
+      write(saved_state(root) / name, pto);
+    }
+  }
+  auto desired = YAML::Clone(before);
+  {
+    auto artifact_lock = value(lock_canvas_constraint_artifacts(root));
+    auto config_lock = value(GameConfigTransactionLock::Acquire(root));
+    if (!value(
+            PrepareResolvedStitchingReframeIntentLocked(root, before, desired, "review-owner", desired, nullptr, true)))
+      throw std::runtime_error("Review fixture did not retain alignment");
+    pending(desired, "review-owner");
+    if (reserved)
+      require(reserve_stitching_backend_generation_in_config(desired, "review-owner", choices(desired)));
+  }
+  const auto pending_config = YAML::Dump(desired) + "\n";
+  write(saved_state(root) / "config.yaml", pending_config);
+  const auto old_project = read_bytes(saved_state(root) / "autooptimiser_out.pto");
+  const auto old_map = read_bytes(saved_state(root) / "mapping_0000.tif");
+  const auto tools = root / "tools";
+  fs::create_directory(tools);
+  const auto script = [&](const char* name, const std::string& body) {
+    const auto path = tools / name;
+    write(path, "#!/bin/sh\nset -eu\n" + body);
+    fs::permissions(path, fs::perms::owner_all);
+    return path.string();
+  };
+  const auto pano = script("pano", R"sh(
+output=; input=; yaw=0; crop=0,100,0,100
+while test "$#" -gt 0; do
+  case "$1" in
+    --output=*) output=${1#*=} ;;
+    --rotate=*) rotation=${1#*=}; yaw=${rotation%%,*} ;;
+    --crop=*) crop=${1#*=}; crop=${crop%%%} ;;
+    --*) ;;
+    *) input=$1 ;;
+  esac
+  shift
+done
+awk -v yaw="$yaw" -v crop="$crop" '
+  /^p / { split(crop,c,","); printf "p f19 w64 h32 v180 P\"100 0 0\" S%d,%d,%d,%d\n", c[1]*.64,c[2]*.64,c[3]*.32,c[4]*.32; next }
+  /^i / { for(i=1;i<=NF;i++) if($i ~ /^y[-+0-9.]+$/) $i="y" (substr($i,2)+yaw) }
+  { print }
+' "$input" > "$output"
+)sh");
+  cv::Mat x(32, 64, CV_16UC1), y(32, 64, CV_16UC1);
+  for (int row = 0; row < x.rows; ++row)
+    for (int column = 0; column < x.cols; ++column) {
+      x.at<uint16_t>(row, column) = column % 16;
+      y.at<uint16_t>(row, column) = row % 16;
+    }
+  cv::imwrite((tools / "x.tif").string(), x);
+  cv::imwrite((tools / "y.tif").string(), y);
+  cv::imwrite((tools / "rgba.tif").string(), cv::Mat(32, 64, CV_8UC4, cv::Scalar(1, 2, 3, 255)));
+  cv::Mat seam(32, 64, CV_8UC1, cv::Scalar(0));
+  seam.colRange(32, 64).setTo(255);
+  cv::imwrite((tools / "seam.tif").string(), seam);
+  for (const char* name : {"rgba.tif", "seam.tif"}) {
+    TIFF* image = TIFFOpen((tools / name).c_str(), "r+");
+    if (!image)
+      throw std::runtime_error("Cannot open review TIFF fixture");
+    TIFFSetField(image, TIFFTAG_XRESOLUTION, 1.0f);
+    TIFFSetField(image, TIFFTAG_YRESOLUTION, 1.0f);
+    TIFFSetField(image, TIFFTAG_XPOSITION, 0.0f);
+    TIFFSetField(image, TIFFTAG_YPOSITION, 0.0f);
+    const bool written = TIFFRewriteDirectory(image) != 0;
+    TIFFClose(image);
+    if (!written)
+      throw std::runtime_error("Cannot add TIFF placement to review fixture");
+  }
+  cv::imwrite((tools / "panorama.tif").string(), cv::Mat(32, 64, CV_8UC3, cv::Scalar(4, 5, 6)));
+  const auto nona = script(
+      "nona",
+      "for camera in 0000 0001; do\ncp '" + (tools / "rgba.tif").string() + "' mapping_$camera.tif\ncp '" +
+          (tools / "x.tif").string() + "' mapping_${camera}_x.tif\ncp '" + (tools / "y.tif").string() +
+          "' mapping_${camera}_y.tif\ndone\n");
+  const auto enblend = script(
+      "enblend",
+      "cp '" + (tools / "seam.tif").string() + "' seam_file.tif\ncp '" + (tools / "panorama.tif").string() +
+          "' panorama.tif\n");
+  ScopedEnvironment pano_env("HM_PANO_MODIFY", pano.c_str()), nona_env("HM_NONA", nona.c_str()),
+      enblend_env("HM_ENBLEND", enblend.c_str()), leveling_env("HSTREAM_RINK_LEVELING_FLOW", "1"),
+      crop_env("HSTREAM_PROJECTION_CROP_FLOW", "1");
+  ReviewReplies replies(root, leveling, crop, supersede, cancel);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  const auto status = reframe_stitching(
+      root.string(),
+      "review-owner",
+      [&] { return replies.cancelled || std::chrono::steady_clock::now() >= deadline; },
+      0);
+  bool ok = expect(replies.replies == 2 && replies.untouched, "review choices stay private until publication");
+  if (supersede || cancel) {
+    ok &= expect(supersede ? absl::IsAborted(status) : absl::IsCancelled(status), "superseded/cancelled review fails");
+    ok &= expect(
+        read_bytes(saved_state(root) / "config.yaml") == (supersede ? replies.superseded_config : pending_config) &&
+            read_bytes(saved_state(root) / "autooptimiser_out.pto") == old_project &&
+            read_bytes(saved_state(root) / "mapping_0000.tif") == old_map,
+        "failed review preserves saved config and original alignment/maps");
+    return ok;
+  }
+  if (!status.ok()) {
+    std::cerr << status << '\n';
+    return false;
+  }
+  const auto committed = YAML::LoadFile((saved_state(root) / "config.yaml").string());
+  const auto actual = value(read_stitch_projection_framing(committed));
+  if (leveling) {
+    framing.rotation_degrees = {25, 0, 0};
+    framing.rotation_inherited = false;
+  }
+  if (crop)
+    framing.crop = {0.1, 0.9, 0.2, 0.8};
+  if (!leveling && !crop)
+    ok &= expect(
+        read_bytes(saved_state(root) / "autooptimiser_out.pto") == old_project &&
+            read_bytes(saved_state(root) / "mapping_0000.tif") == old_map,
+        "accepting the unchanged review retains the exact saved project and maps");
+  ok &= expect(
+      actual == framing && actual.rotation_inherited == framing.rotation_inherited &&
+          validate_stitching_backend_generation(committed, "review-owner", choices(committed)).ok() &&
+          committed["unrelated"]["keep"].as<std::string>() == "retained" &&
+          committed["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "complete" &&
+          !committed["hstream_ui"]["stitching_calibration"]["review_pending"] && !HasStitchingReframeIntent(committed),
+      "review commits the selected framing and exact claim together, preserving unrelated settings");
+  auto artifacts = value(HuginProject::RecoverAndLock(root));
+  const auto published = value(HuginProject::ReadCanvasProvenance(root, *artifacts));
+  ok &= expect(
+      published && published->projection_framing == framing,
+      "published map provenance agrees with the accepted framing");
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -917,6 +1156,16 @@ int main() {
     ok &= test_projections_without_parameters(root / "no-parameters");
     ok &= test_selected_retention(root / "selected");
     ok &= test_manual_identity(root / "manual");
+    for (bool leveling : {false, true})
+      for (bool crop : {false, true})
+        ok &= test_review_publication(
+            root / ("review-" + std::to_string(leveling) + std::to_string(crop)), leveling, crop, false);
+    ok &= test_review_publication(root / "review-inherited", false, true, true);
+    ok &= test_review_publication(root / "review-inherited-unchanged", false, false, true);
+    ok &= test_review_publication(root / "review-unreserved", true, true, false, false, false, false);
+    ok &= test_review_publication(root / "review-unreserved-unchanged", false, false, true, false, false, false);
+    ok &= test_review_publication(root / "review-superseded", true, true, false, true);
+    ok &= test_review_publication(root / "review-cancelled", true, true, false, false, true);
     fs::remove_all(root);
     return ok ? 0 : 1;
   } catch (const std::exception& error) {

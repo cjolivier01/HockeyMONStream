@@ -343,6 +343,10 @@ returns to the main Program without opening a setup dialog. The next Play review
 crop framing, according to the automatic-dialog checkboxes. Experiment previews do not count as crop approval.
 The shared startup planner keeps the selected camera alignment; accepting unchanged framing preserves the exact
 maps and seam. Canceling review leaves the selected artifacts and pending review intact for the next Play.
+When review changes framing, publication validates the original owner and backend claim, then commits the
+accepted rotation/crop and matching claim with the maps. Rink-inherited rotation remains inherited in the
+game settings while the claim records its resolved angles. A conflicting claim still aborts publication.
+Direct saved-view callers can reserve the original tuple during that transaction if no claim exists yet.
 Failed publication leaves the dialog open with the error.
 Closing with unapplied results, including through the window close button or Escape, offers **Use selected**,
 **Keep results and close**, and **Cancel**. Cancel is the default; keeping results preserves them for the next visit.
