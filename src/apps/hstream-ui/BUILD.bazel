@@ -1775,3 +1775,12 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":source_camera_player", ":source_camera_track", ":native_preview_surface", "//src/libs/media:test_mp4", "@qt//:qt_widgets"],
 )
+
+cc_test(
+    name = "source_camera_seek_pixels_test",
+    srcs = ["SourceCameraSeekPixelsTest.cpp"],
+    copts = COMMON_COPTS,
+    tags = ["manual", "requires-gpu"],
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":source_camera_player", ":native_preview_surface", "//src/libs/media:test_mp4", "@qt//:qt_widgets"],
+)
