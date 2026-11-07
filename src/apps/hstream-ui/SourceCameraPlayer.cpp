@@ -24,6 +24,7 @@ struct SourceCameraPlayer::Impl {
   std::vector<Chapter> chapters;
   GstElement* graph{nullptr};
   GstElement* parser{nullptr};
+  GstElement* decoder{nullptr};
   GstElement* video_input{nullptr};
   GstElement* sink{nullptr};
   GstBus* bus{nullptr};
@@ -49,7 +50,7 @@ struct SourceCameraPlayer::Impl {
       gst_object_unref(bus);
     if (graph)
       gst_object_unref(graph);
-    graph = parser = video_input = sink = nullptr;
+    graph = parser = decoder = video_input = sink = nullptr;
     bus = nullptr;
     preroll = seeking = false;
     stream_origin = GST_CLOCK_TIME_NONE;
@@ -143,13 +144,13 @@ struct SourceCameraPlayer::Impl {
     parser = gst_element_factory_make(hevc ? "h265parse" : "h264parse", nullptr);
     video_input = gst_element_factory_make("queue", nullptr);
 #ifdef HSTREAM_USE_HIP
-    auto* decoder = gst_element_factory_make(hevc ? "vah265dec" : "vah264dec", nullptr);
+    decoder = gst_element_factory_make(hevc ? "vah265dec" : "vah264dec", nullptr);
     // VA exports DMABufs directly to EGL/GL. Never negotiate system-memory video.
     auto* convert = gst_element_factory_make("identity", nullptr);
     sink = gst_element_factory_make("glimagesink", nullptr);
     auto* caps = gst_caps_from_string("video/x-raw(memory:DMABuf)");
 #else
-    auto* decoder = gst_element_factory_make("nvv4l2decoder", nullptr);
+    decoder = gst_element_factory_make("nvv4l2decoder", nullptr);
     auto* convert = gst_element_factory_make("nvvideoconvert", nullptr);
     sink = gst_element_factory_make("hmgpupreviewsink", nullptr);
     auto* caps = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA");
@@ -160,7 +161,7 @@ struct SourceCameraPlayer::Impl {
       for (auto* element : elements)
         if (element)
           gst_object_unref(element);
-      parser = video_input = sink = nullptr;
+      parser = decoder = video_input = sink = nullptr;
       gst_caps_unref(caps);
       fail("Camera preview hardware decoder or renderer is unavailable.");
       return false;
@@ -351,18 +352,36 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
     hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
 #endif
     s.status.presented_ns = -1;
-    if (!gst_element_seek(
-            s.graph,
-            1.0,
-            GST_FORMAT_TIME,
-            GstSeekFlags(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
-            GST_SEEK_TYPE_SET,
-            s.stream_origin + (target - item.start_ms) * GST_MSECOND,
-            GST_SEEK_TYPE_SET,
-            s.stream_origin + item.track.duration_ns)) {
+    const auto seek = [&] {
+      return gst_element_seek(
+          s.graph,
+          1.0,
+          GST_FORMAT_TIME,
+          GstSeekFlags(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
+          GST_SEEK_TYPE_SET,
+          s.stream_origin + (target - item.start_ms) * GST_MSECOND,
+          GST_SEEK_TYPE_SET,
+          s.stream_origin + item.track.duration_ns);
+    };
+    if (!seek()) {
       s.fail("Camera recording rejected the seek.");
       return s.status;
     }
+#ifndef HSTREAM_USE_HIP
+    // NVDEC can retain stale regions of an 8K HEVC picture after a flushing
+    // seek from preroll. Position the demuxer, retire the decoder's surfaces,
+    // then repeat the exact seek with a fresh decoder, as URI-playlist and
+    // highlight playback do. Keep the target and requested Play/Pause state.
+    if (gst_element_set_state(s.decoder, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE ||
+        !gst_element_sync_state_with_parent(s.decoder)) {
+      s.fail("Could not restart the camera decoder after seeking.");
+      return s.status;
+    }
+    if (!seek()) {
+      s.fail("Camera recording rejected the seek after decoder restart.");
+      return s.status;
+    }
+#endif
     s.seeking = true;
     s.transition.restart();
     eos = false;
