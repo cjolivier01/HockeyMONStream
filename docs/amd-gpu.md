@@ -841,17 +841,22 @@ owned panorama while producing NV12/P010 Program output. Original video alpha
 cannot erase the overlay. The scoreboard follows the native ordering after
 Program crop/tone and therefore samples the original panorama's colors. There
 is no extra video allocation, upload, download, map, file access or stream wait
-per frame. The direct homography uses one bilinear reconstruction, whereas the
-NVIDIA scoreboard first resizes a cropped image and then warps it; subpixel
-values are not claimed identical to that two-pass reconstruction.
+per frame. Both AMD and NVIDIA now use one bilinear perspective reconstruction
+from original source samples. NVIDIA keeps a GPU-only crop copy to establish
+opaque video alpha without modifying the shared panorama. It no longer resizes
+that crop before warping. Surface formats and floating-point implementations
+still differ, so byte-identical subpixel values are not claimed.
 
 GPU tests use a half-float synthetic panorama and independently verify every
 luma/chroma output value, including mixed overlay/background 2x2 chroma blocks,
 zero source alpha, unaffected crop pixels, row padding and guards. They also
 reject stale dimensions and nonfinite matrices. CPU tests cover generation
 binding, native aliases/layers, disabled sentinel, baseline reset, malformed
-polygons, sizing and all placement modes. Existing NVIDIA scoreboard tests
-remain unchanged.
+polygons, sizing and all placement modes. Scale regressions cover shrinking and
+enlarging the destination rectangle on the shared CUDA/HIP renderer and native
+NVIDIA warp. Qt and browser Scale controls edit the existing baseline-backed
+`rink.scoreboard.scoreboard_scale` for the next playback; both disable editing
+during playback. Interactive AMD selection and live controls remain pending.
 
 The real AMD CLI export with scoreboard enabled completed 120 frames and 2,719
 track observations. Its atomic MP4 is 3840×2160 HEVC Main10, 2.002 seconds; a

@@ -1029,6 +1029,8 @@ class HStreamWindow : public QMainWindow {
   QString scoreboard_selector_url_;
   QPushButton* scoreboard_select_button_{nullptr};
   QComboBox* scoreboard_position_combo_{nullptr};
+  QDoubleSpinBox* scoreboard_scale_spin_{nullptr};
+  double saved_scoreboard_scale_{};
   QLabel* scoreboard_controls_status_{nullptr};
   QString saved_scoreboard_position_{"upper-left"};
   QString pending_scoreboard_property_;

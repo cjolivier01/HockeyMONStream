@@ -633,7 +633,7 @@ for line in sys.stdin:
     window->pipeline_paused_ = false;
     window->scoreboard_runtime_ready_ = true;
     window->updateScoreboardControls();
-    ok &= window->scoreboard_select_button_->isEnabled();
+    ok &= window->scoreboard_select_button_->isEnabled() && !window->scoreboard_scale_spin_->isEnabled();
     combo->setCurrentIndex(combo->findData("upper-left"));
     ok &= !combo->isEnabled() && window->pending_scoreboard_property_ == "scoreboard-position";
     ok &= !window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-position=upper-right");
@@ -19877,10 +19877,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   auto* camera1_surface = require_child<QWidget>(window, "camera1PreviewSurface");
   auto* camera1_render_target = require_child<QWidget>(window, "camera1PreviewRenderTarget");
   auto* playback_progress = require_child<QProgressBar>(window, "playbackProgress");
+  auto* scoreboard_scale = require_child<QDoubleSpinBox>(window, "scoreboardScaleSpin");
   if (!game_id_edit || !create || !start || !stop || !mode || !control_points || !render_video ||
       !show_player_tracking || !show_play_tracking || !show_rink_mask || !archive || !preview_tabs ||
       !program_surface || !program_render_target || !stitched_surface || !stitched_render_target || !camera1_surface ||
-      !camera1_render_target || !playback_progress) {
+      !camera1_render_target || !playback_progress || !scoreboard_scale) {
     return false;
   }
   const bool verify_x11_preview = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_VERIFY_X11_PREVIEW");
@@ -19904,6 +19905,18 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
 
   game_id_edit->setText(game_id);
   activate(create);
+
+  const QString requested_scale = qEnvironmentVariable("HSTREAM_UI_E2E_SCOREBOARD_SCALE");
+  if (!requested_scale.isEmpty()) {
+    bool valid = false;
+    const double scale = requested_scale.toDouble(&valid);
+    if (!expect(
+            valid && std::isfinite(scale) && scale >= scoreboard_scale->minimum() &&
+                scale <= scoreboard_scale->maximum(),
+            "E2E scoreboard scale must fit the visible control"))
+      return false;
+    scoreboard_scale->setValue(scale);
+  }
 
   const QString run_mode = QString::fromLocal8Bit(qgetenv("HSTREAM_UI_E2E_RUN_MODE"));
   if (!run_mode.isEmpty()) {
@@ -20064,6 +20077,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   }
   QApplication::processEvents();
   bool observed_first_frame = false;
+  bool scale_disabled = false;
   bool submitted_scoreboard = false;
   QJsonObject scoreboard_proposal_evidence;
   const bool cancel_initial_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_CANCEL_INITIAL_SCOREBOARD");
@@ -20299,6 +20313,7 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
         observed_first_frame = true;
         if (first_frame_at_ms < 0) {
           first_frame_at_ms = timer.elapsed();
+          scale_disabled = !scoreboard_scale->isEnabled();
         }
         break;
       }
@@ -20359,8 +20374,25 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
       playback_progress->toolTip().contains("ETA:") && playback_progress->format().contains("ETA ") &&
       playback_fps_label.match(playback_progress->format()).hasMatch();
   const bool require_scoreboard = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_REQUIRE_SCOREBOARD_SELECTOR");
-  if (window->pipelineStateText() != "STOPPED")
-    activate(stop);
+  if (window->pipelineStateText() != "STOPPED") {
+    // This workflow verifies published archives. Explicitly select publication;
+    // ordinary fixture Stop clicks intentionally choose Don't publish.
+    QTimer publish_confirmation;
+    QObject::connect(&publish_confirmation, &QTimer::timeout, [&] {
+      auto* dialog = window->findChild<QMessageBox*>("stopPublicationDialog");
+      if (!dialog)
+        return;
+      for (auto* choice : dialog->buttons()) {
+        if (dialog->buttonRole(choice) == QMessageBox::YesRole) {
+          publish_confirmation.stop();
+          choice->click();
+          break;
+        }
+      }
+    });
+    publish_confirmation.start(10);
+    activate(stop, false);
+  }
   for (int i = 0; i < 300 && window->pipelineStateText() != "STOPPED"; ++i) {
     QApplication::processEvents();
     QTest::qWait(100);
@@ -20479,6 +20511,9 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
   report += QString("scoreboard_proposal_outcome: %1\n")
                 .arg(scoreboard_proposal_evidence.value("outcome").toString("not-requested"));
   report += QString("positive_fps_observed: %1\n").arg(observed_first_frame ? "true" : "false");
+  report += QString("scoreboard_scale: %1\nscoreboard_scale_disabled_during_playback: %2\n")
+                .arg(scoreboard_scale->value())
+                .arg(scale_disabled ? "true" : "false");
   report += QString("playback_progress_observed: %1\n").arg(observed_playback_progress ? "true" : "false");
   report += QString("log_issue_lines: %1\n").arg(log_issue_count);
   report += QString("fatal_log_issue: %1\n").arg(fatal_log_issue ? "true" : "false");
@@ -20531,6 +20566,11 @@ bool run_real_pipeline_e2e(HStreamWindow* window, const QString& game_id) {
           !require_scoreboard || submitted_scoreboard,
           "Real UI run should launch and complete the scoreboard selector") ||
       !expect(observed_first_frame, "Real UI run should process frames at positive FPS") ||
+      !expect(
+          requested_scale.isEmpty() ||
+              (scale_disabled && scoreboard_scale->isEnabled() &&
+               scoreboard_scale->value() == requested_scale.toDouble()),
+          "Scoreboard scale must remain disabled during playback and available after Stop") ||
       !expect(observed_playback_progress, "Real UI run should expose backend playback progress in the Qt bar") ||
       !expect(
           !verify_x11_preview || (stitched_target_acknowledged && (calibration_only || program_target_acknowledged)),

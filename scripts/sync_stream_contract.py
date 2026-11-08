@@ -720,6 +720,17 @@ def generate(root, *, native_revision=None, include_revision=True):
         },
     )
 
+    add(
+        "rink.scoreboard.scoreboard_scale",
+        "Program scoreboard",
+        minimum=0.1,
+        maximum=4.0,
+        label="Scale (next play)",
+    )
+    fields[-1].update(
+        qt_control_id="scoreboardScaleSpin", qt_stage="program", qt_tab="Runtime"
+    )
+
     for key, choices in {
         "control_point_matcher": [
             "akaze-hamming",

@@ -6515,7 +6515,33 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   };
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-width", "rink.scoreboard.projected_width"));
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-height", "rink.scoreboard.projected_height"));
-  HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-scale", "rink.scoreboard.scoreboard_scale"));
+  YAML::Node scale;
+  int scale_rank = -1;
+  for (const char* path : hm::scoreboard::kScalePaths) {
+    const auto value = get_node(config_, path);
+    if (!value || !value->IsDefined())
+      continue;
+    const int rank = std::max(0, explicit_value_rank(path));
+    if (rank >= scale_rank) {
+      scale.reset(YAML::Clone(*value));
+      scale_rank = rank;
+    }
+  }
+  if (scale.IsNull()) {
+    const auto baseline = get_node(recording_config_layers_, "baseline.rink.scoreboard.scoreboard_scale");
+    if (!baseline)
+      return absl::InvalidArgumentError("Scoreboard scale reset requires its baseline value");
+    scale.reset(YAML::Clone(*baseline));
+  }
+  if (!scale.IsScalar())
+    return absl::InvalidArgumentError("Scoreboard scale must be finite and positive");
+  try {
+    const double value = scale.as<double>();
+    if (!std::isfinite(value) || value <= 0)
+      return absl::InvalidArgumentError("Scoreboard scale must be finite and positive");
+  } catch (const YAML::Exception&) {
+    return absl::InvalidArgumentError("Scoreboard scale must be finite and positive");
+  }
   // Resolve before removing native aliases so game and CLI choices outrank
   // inherited settings, including private property bags applied by the bin.
   std::string position = "upper-left";
@@ -6534,15 +6560,20 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   }
   auto cropper = pipeline["hmplaycropper"];
   cropper.remove("scoreboard_position");
+  cropper.remove("scoreboard_scale");
   for (const char* bag : {"properties", "private-properties"}) {
     auto values = cropper[bag];
     if (values.IsMap()) {
       values.remove("scoreboard-position");
       values.remove("scoreboard_position");
+      values.remove("scoreboard-scale");
+      values.remove("scoreboard_scale");
     }
   }
   cropper["scoreboard-position"] = position;
   explicit_value_ranks_["pipeline.hmplaycropper.scoreboard-position"] = std::max(0, position_rank);
+  cropper["scoreboard-scale"] = scale;
+  explicit_value_ranks_["pipeline.hmplaycropper.scoreboard-scale"] = std::max(0, scale_rank);
 
   const std::string source_path = "rink.scoreboard.perspective_polygon";
   const std::string destination_path = "pipeline.hmplaycropper.scoreboard-perspective-polygon";

@@ -97,7 +97,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   float scoreboard_height_ratio_{1.0 / 8};
   std::string scoreboard_projected_width_;
   std::string scoreboard_projected_height_;
-  float scoreboard_scale_{1.0};
+  double scoreboard_scale_{0}; // Required from the resolved baseline before rendering.
   std::unique_ptr<hm::scoreboard::Scoreboard<uchar4>> scoreboard_;
   std::vector<cv::Point2f> scoreboard_perspective_polygion_;
   bool scoreboard_disabled_{false};

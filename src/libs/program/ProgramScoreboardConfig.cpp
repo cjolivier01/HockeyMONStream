@@ -124,11 +124,12 @@ absl::StatusOr<std::optional<ProgramScoreboardConfig>> ResolveProgramScoreboardC
     if (!generation || !generation->IsScalar() || generation->Scalar().empty())
       return absl::FailedPreconditionError("Scoreboard requires a saved output-generation identity");
     result.generation = generation->Scalar();
-    const double scale = Number(BaselineOnNull(
-                                    config,
-                                    CropSetting(config, "rink.scoreboard.scoreboard_scale", "scoreboard-scale"),
-                                    "rink.scoreboard.scoreboard_scale")
-                                    .as<std::string>());
+    const double scale =
+        Number(BaselineOnNull(
+                   config,
+                   Select(config, {std::begin(scoreboard::kScalePaths), std::end(scoreboard::kScalePaths)}),
+                   "rink.scoreboard.scoreboard_scale")
+                   .as<std::string>());
     if (scale <= 0)
       return absl::InvalidArgumentError("Scoreboard scale must be positive");
     result.requested_width = Dimension(

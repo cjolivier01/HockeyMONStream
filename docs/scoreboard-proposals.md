@@ -95,3 +95,19 @@ These are one-shot setup measurements, not video-throughput claims. Export
 parity against the original raw heads had maximum absolute error 0.00056.
 The proposal, selector protocol, Qt edit-race, and ONNX OOM tests cover the
 runtime contracts without downloading models during ordinary unit tests.
+
+## Output scale
+
+Program's **Scale (next play)** control, beside Select scoreboard and Position,
+changes the final scoreboard width and height together. `1×` preserves the
+existing size; `0.5×` halves it; `2×` doubles it. The baseline owns the `1.0`
+default at `rink.scoreboard.scoreboard_scale`. Save Preset retains it for the
+game or Defaults. Qt and the browser disable this control during playback.
+
+The original selected corners and their canvas generation remain unchanged.
+Both backends scale the requested destination dimensions before computing the
+perspective transform and retain the current aspect adjustment and placement.
+NVIDIA copies the original ROI on the GPU to normalize video alpha, then warps
+it once directly into the final overlay rectangle. AMD samples the original
+panorama directly into its output. Neither path resizes an extracted scoreboard
+before the perspective warp or reads video back to the CPU.

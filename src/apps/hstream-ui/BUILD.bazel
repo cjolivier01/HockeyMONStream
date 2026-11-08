@@ -1784,3 +1784,34 @@ cc_test(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":source_camera_player", ":native_preview_surface", "//src/libs/media:test_mp4", "@qt//:qt_widgets"],
 )
+
+cc_test(
+    name = "scoreboard_controls_test",
+    srcs = ["ScoreboardControlsTest.cpp"],
+    data = [
+        "//configs:play_tracker_config.yaml",
+        "//configs:ds_hockey_app_config.yaml",
+        "//configs:ds_hockey_configure_stitching.yaml",
+        "//configs:config_infer_yolov8_hockey.yaml",
+        "//configs:config_infer_yolov8_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8_hockey_int8.yaml",
+        "//configs:config_infer_yolov8s_hockey.yaml",
+        "//configs:config_infer_yolov8m_hockey_roles.yaml",
+        "//configs:config_infer_yolov8s_hockey_fp16.yaml",
+        "//configs:config_infer_yolov8m_hockey_roles_fp16.yaml",
+        "//configs:config_infer_yolov8s_hockey_bf16.yaml",
+        "//configs:config_infer_yolov8m_hockey_roles_bf16.yaml",
+        "//configs:config_infer_yolov8s_hockey_int8.yaml",
+        "//configs:config_infer_yolov8m_hockey_roles_int8.yaml",
+    ],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":hstream_window",
+        ":value_control_wheel",
+        "@qt//:qt_widgets",
+        "@yaml-cpp",
+    ],
+)

@@ -356,10 +356,11 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     scoreboard_projected_height_ = prop.value;
     scoreboard_.reset();
   } else if (key == "scoreboard-scale") {
-    scoreboard_scale_ = std::atof(prop.value.c_str());
-    if (scoreboard_scale_ <= 0) {
-      scoreboard_scale_ = 1.0;
-    }
+    double scale = 0;
+    std::istringstream input(prop.value);
+    if (!(input >> scale) || !(input >> std::ws).eof() || !std::isfinite(scale) || scale <= 0)
+      return false;
+    scoreboard_scale_ = scale;
     scoreboard_.reset();
   } else if (key == "plot-play-tracking") {
     plot_play_tracking_ = !!std::atoi(prop.value.c_str());
@@ -1194,7 +1195,7 @@ absl::Status PlayCropperPriv::RenderScoreboard(
         return absl::InvalidArgumentError(TO_STRING("Invalid scoreboard dimension: " << value));
       }
       const float pixels = is_percent ? (parsed / 100.0f) * extent : parsed;
-      if (pixels <= 0) {
+      if (!std::isfinite(pixels) || pixels < 1 || double(pixels) > INT32_MAX) {
         return absl::InvalidArgumentError(TO_STRING("Invalid scoreboard dimension: " << value));
       }
       return std::max(1, static_cast<int>(pixels));
@@ -1209,14 +1210,23 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     if (!scoreboard_height_or.ok()) {
       return scoreboard_height_or.status();
     }
-    const int scoreboard_width = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_width_or.value()));
-    const int scoreboard_height = std::max(1, static_cast<int>(scoreboard_scale_ * scoreboard_height_or.value()));
+    const double scaled_width = scoreboard_scale_ * scoreboard_width_or.value();
+    const double scaled_height = scoreboard_scale_ * scoreboard_height_or.value();
+    if (!std::isfinite(scaled_width) || !std::isfinite(scaled_height) || scaled_width < 2 || scaled_height < 2 ||
+        scaled_width > out_surface.width() || scaled_height > out_surface.height())
+      return absl::InvalidArgumentError("Scaled scoreboard dimensions must fit within the output");
+    const int scoreboard_width = static_cast<int>(scaled_width);
+    const int scoreboard_height = static_cast<int>(scaled_height);
     // The polygon is runtime-settable and only validated as eight finite floats,
     // so a degenerate one reaches the perspective transform. Scoreboard reports
     // that by throwing, and this runs on a bare worker thread.
     try {
       scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
           scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height);
+      if (size_t(scoreboard_->getWidth()) > out_surface.width() || size_t(scoreboard_->getHeight()) > out_surface.height()) {
+        scoreboard_.reset();
+        return absl::InvalidArgumentError("Aspect-adjusted scoreboard must fit within the output");
+      }
     } catch (const std::exception& e) {
       return absl::InvalidArgumentError(TO_STRING("Cannot build the scoreboard perspective transform: " << e.what()));
     }
