@@ -6,13 +6,13 @@
 #include "cupano/utils/showImage.h"
 
 #include "jetson-utils/cuda/cudaOverlay.h"
-#include "jetson-utils/cuda/cudaResizeRoi.h"
 #include "jetson-utils/cuda/cudaWarp.h"
 
 #include <opencv2/imgproc.hpp>
 #include "absl/synchronization/mutex.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <stdexcept>
 #include <type_traits>
@@ -109,25 +109,25 @@ Scoreboard<T_pixel>::Scoreboard(
     }
   }
 
-  // Compute the bounding box of the source points.
-  float minX = srcPts_[0].x, minY = srcPts_[0].y;
-  float maxX = srcPts_[0].x, maxY = srcPts_[0].y;
-  for (const auto& pt : srcPts_) {
-    minX = std::min(minX, pt.x);
-    minY = std::min(minY, pt.y);
-    maxX = std::max(maxX, pt.x);
-    maxY = std::max(maxY, pt.y);
+  for (const auto& point : srcPts_) {
+    if (!std::isfinite(point.x) || !std::isfinite(point.y) || point.x < 0 || point.y < 0 || point.x > INT_MAX / 2 ||
+        point.y > INT_MAX / 2)
+      throw std::invalid_argument("Scoreboard source points must be finite panorama coordinates.");
   }
-  bboxSrc_ = cv::Rect(cv::Point2f(minX, minY), cv::Point2f(maxX, maxY));
-
-  // Adjust the source points relative to the bounding box.
-  for (auto& pt : srcPts_) {
-    pt.x -= bboxSrc_.x;
-    pt.y -= bboxSrc_.y;
+  if (destWidth < 2 || destHeight < 2 || !cv::isContourConvex(srcPts_) || cv::contourArea(srcPts_) < 1)
+    throw std::invalid_argument("Scoreboard requires positive dimensions and a convex quadrilateral.");
+  // Include the boundary pixels. Copying this ROI preserves the original
+  // samples; only the perspective warp interpolates them.
+  bboxSrc_ = cv::boundingRect(srcPts_);
+  // Fractional edge coordinates need their upper bilinear neighbors too.
+  for (const auto& point : srcPts_) {
+    bboxSrc_.width = std::max(bboxSrc_.width, int(std::ceil(point.x)) - bboxSrc_.x + 1);
+    bboxSrc_.height = std::max(bboxSrc_.height, int(std::ceil(point.y)) - bboxSrc_.y + 1);
   }
-
-  float srcWidth = bboxSrc_.width;
-  float srcHeight = bboxSrc_.height;
+  for (auto& point : srcPts_) {
+    point.x -= bboxSrc_.x;
+    point.y -= bboxSrc_.y;
+  }
 
   // Adjust output dimensions based on the source aspect ratio if autoAspect is true.
   if (autoAspect) {
@@ -138,32 +138,19 @@ Scoreboard<T_pixel>::Scoreboard(
     float wAvg = (wTop + wBottom) / 2.0f;
     float hAvg = (hLeft + hRight) / 2.0f;
     float aspectRatio = wAvg / hAvg;
-    int destWidthNew = static_cast<int>(destHeight_ * aspectRatio);
-    int destHeightNew = static_cast<int>(destWidth_ / aspectRatio);
+    const double destWidthNew = std::trunc(double(destHeight_) * aspectRatio);
+    const double destHeightNew = std::trunc(double(destWidth_) / aspectRatio);
     // Choose the adjustment that causes the least relative change.
     if (std::fabs(destWidth_ - destWidthNew) / float(destWidth_) <
         std::fabs(destHeight_ - destHeightNew) / float(destHeight_)) {
-      destWidth_ = destWidthNew;
+      if (!std::isfinite(destWidthNew) || destWidthNew < 2 || destWidthNew > INT_MAX)
+        throw std::invalid_argument("Invalid aspect-adjusted scoreboard width");
+      destWidth_ = static_cast<int>(destWidthNew);
     } else {
-      destHeight_ = destHeightNew;
+      if (!std::isfinite(destHeightNew) || destHeightNew < 2 || destHeightNew > INT_MAX)
+        throw std::invalid_argument("Invalid aspect-adjusted scoreboard height");
+      destHeight_ = static_cast<int>(destHeightNew);
     }
-  }
-
-  // Determine intermediate scaling dimensions.
-  int totW = std::max(destWidth_, static_cast<int>(srcWidth));
-  int totH = std::max(destHeight_, static_cast<int>(srcHeight));
-  if (totW > srcWidth || totH > srcHeight) {
-    float ratioW = totW / srcWidth;
-    float ratioH = totH / srcHeight;
-    destW_ = totW;
-    destH_ = totH;
-    for (auto& pt : srcPts_) {
-      pt.x *= ratioW;
-      pt.y *= ratioH;
-    }
-  } else {
-    destW_ = static_cast<int>(srcWidth);
-    destH_ = static_cast<int>(srcHeight);
   }
 
   // Define destination points: top-left, top-right, bottom-right, bottom-left.
@@ -173,8 +160,7 @@ Scoreboard<T_pixel>::Scoreboard(
   dstPts.push_back(cv::Point2f(destWidth_ - 1, destHeight_ - 1)); // bottom-right
   dstPts.push_back(cv::Point2f(0, destHeight_ - 1)); // bottom-left
 
-  // Compute the perspective transform matrix in the same crop-relative working
-  // coordinate space used by the Python hmtrack scoreboard transform.
+  // Map the original crop directly to the final, scaled destination rectangle.
   perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts);
   if (perspectiveMatrix_.type() == CV_64F) {
     perspectiveMatrix_.convertTo(perspectiveMatrix_, CV_32F);
@@ -189,28 +175,10 @@ Scoreboard<T_pixel>::Scoreboard(
  */
 template <typename T_pixel>
 cv::Mat Scoreboard<T_pixel>::forward_cv(const cv::Mat& inputImage) {
-  // Extract the region of interest using the computed bounding box.
-  cv::Mat srcImage = inputImage(bboxSrc_).clone();
-
-  // Resize the source image to the intermediate dimensions.
-  cv::Mat resizedImage;
-  // The scoreboard commonly contains an LED matrix whose fine grid aliases
-  // badly when the extracted ROI is enlarged with nearest-neighbor sampling.
-  // Match the production CUDA path's bilinear reconstruction so the
-  // perspective warp starts from a smoothly sampled image.
-  cv::resize(srcImage, resizedImage, cv::Size(destW_, destH_), 0, 0, cv::INTER_LINEAR);
-
-  // Apply the perspective transformation.
-  cv::Mat warpedImage;
-  cv::warpPerspective(resizedImage, warpedImage, perspectiveMatrix_, cv::Size(destW_, destH_), cv::INTER_LINEAR);
-
-  // Crop the warped image to the final desired dimensions.
-  cv::Rect cropRect(0, 0, destWidth_, destHeight_);
-  if (cropRect.x + cropRect.width > warpedImage.cols || cropRect.y + cropRect.height > warpedImage.rows) {
-    throw std::runtime_error("Warped image size is smaller than destination size.");
-  }
-  cv::Mat finalImage = warpedImage(cropRect).clone();
-  return finalImage;
+  cv::Mat warped;
+  cv::warpPerspective(
+      inputImage(bboxSrc_), warped, perspectiveMatrix_, cv::Size(destWidth_, destHeight_), cv::INTER_LINEAR);
+  return warped;
 }
 
 template <typename T_pixel>
@@ -221,10 +189,14 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     cudaStream_t stream,
     Position position) {
   absl::MutexLock lk(&mu_);
+  if (size_t(bboxSrc_.x) + bboxSrc_.width > source_surface.width() ||
+      size_t(bboxSrc_.y) + bboxSrc_.height > source_surface.height() || size_t(destWidth_) > dest_surface.width() ||
+      size_t(destHeight_) > dest_surface.height())
+    return absl::InvalidArgumentError("Scoreboard exceeds source or destination dimensions");
   if (!warped_image_) {
     rewarp = true;
-    working_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
-    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
+    working_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, bboxSrc_.width, bboxSrc_.height);
+    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destWidth_, destHeight_);
   }
 
   if (rewarp) {
@@ -232,30 +204,19 @@ absl::Status Scoreboard<T_pixel>::forward_prod(
     assert(source_surface.pitch() % source_surface.bytes_per_pixel() == 0);
     assert(working_image_);
 
-    cudaError_t cuerr = cudaResizeROI(
-        source_surface.dataptr<T_pixel*>(),
-        source_surface.pitch_width(),
-        source_surface.height(),
-        bboxSrc_.x,
-        bboxSrc_.y,
-        bboxSrc_.width,
-        bboxSrc_.height,
+    const auto* source = source_surface.dataptr<const unsigned char*>() + size_t(bboxSrc_.y) * source_surface.pitch() +
+        bboxSrc_.x * sizeof(T_pixel);
+    cudaError_t cuerr = cudaMemcpy2DAsync(
         working_image_->data(),
-        working_image_->width(),
-        working_image_->height(),
-        0,
-        0,
-        working_image_->width(),
-        working_image_->height(),
-        source_surface.get_image_format(),
-        // Smooth the high-frequency LED grid while enlarging the scoreboard
-        // ROI.  The following perspective warp is also bilinear, so this
-        // avoids baking nearest-neighbor checker artifacts into the overlay.
-        FILTER_LINEAR,
+        working_image_->pitch(),
+        source,
+        source_surface.pitch(),
+        bboxSrc_.width * sizeof(T_pixel),
+        bboxSrc_.height,
+        cudaMemcpyDeviceToDevice,
         stream);
-    if (cuerr != cudaSuccess) {
-      return absl::InternalError(TO_STRING("Scoreboard cudaResizeROI failed: " << cudaGetErrorString(cuerr)));
-    }
+    if (cuerr != cudaSuccess)
+      return absl::InternalError(TO_STRING("Scoreboard ROI copy failed: " << cudaGetErrorString(cuerr)));
 
     if constexpr (std::is_same_v<T_pixel, uchar4>) {
       cuerr = make_scoreboard_opaque(
@@ -325,19 +286,20 @@ cv::Mat Scoreboard<T_pixel>::forward_cuda(const cv::Mat& inputImage) {
   (void)cuErr;
 
   hm::CudaMat<T_pixel> full_image(inputImage);
+  hm::CudaMat<T_pixel> source_crop(inputImage(bboxSrc_).clone());
 
   absl::MutexLock lk(&mu_);
   if (!warped_image_) {
-    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destW_, destH_);
+    warped_image_ = std::make_unique<hm::CudaMat<T_pixel>>(/*B=*/1, destWidth_, destHeight_);
   }
 
   static const float border[] = {0, 0, 0, 0};
   assert(perspectiveMatrix_.type() == CV_32F && perspectiveMatrix_.rows == 3 && perspectiveMatrix_.cols == 3);
   cuErr = warpPerspectiveCudaRaw(
-      full_image.data_raw(),
-      full_image.pitch(),
-      full_image.width(),
-      full_image.height(),
+      source_crop.data_raw(),
+      source_crop.pitch(),
+      source_crop.width(),
+      source_crop.height(),
       warped_image_->data_raw(),
       warped_image_->pitch(),
       warped_image_->width(),

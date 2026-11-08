@@ -42,6 +42,21 @@ int main(int argc, char** argv) {
               std::abs((h[3] * x + h[4] * y + h[5]) / denominator - (*result)->polygon[i][1]) < .001,
           "Projected rectangle corner changed");
     }
+    for (const double scale : {0.5, 1.0, 2.0}) {
+      const auto scaled = resolve({"rink.scoreboard.scoreboard_scale=" + std::to_string(scale)}, game);
+      Check(scaled.ok() && scaled->has_value(), "Scale rejected");
+      const auto mapped = hm::program::PrepareProgramScoreboard(**scaled, "saved", 1000, 1000, 3840, 2160);
+      Check(
+          mapped.ok() && mapped->width == 384 * scale && mapped->height == 192 * scale,
+          "Scale did not change the final mapping rectangle");
+      const auto* h = mapped->inverse;
+      const double x = mapped->width - 1, y = mapped->height - 1;
+      const double d = h[6] * x + h[7] * y + h[8];
+      Check(
+          std::abs((h[0] * x + h[1] * y + h[2]) / d - 300) < .001 &&
+              std::abs((h[3] * x + h[4] * y + h[5]) / d - 200) < .001,
+          "Scale changed original source coordinates");
+    }
     Check(
         !hm::program::PrepareProgramScoreboard(**result, "other", 1000, 1000, 3840, 2160).ok(),
         "Stale output generation accepted");

@@ -7217,6 +7217,22 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   program_footer->addWidget(scoreboard_select_button_);
   program_footer->addWidget(new QLabel("Position:"));
   program_footer->addWidget(scoreboard_position_combo_);
+  scoreboard_scale_spin_ = new QDoubleSpinBox();
+  scoreboard_scale_spin_->setObjectName("scoreboardScaleSpin");
+  scoreboard_scale_spin_->setRange(0.1, 4.0);
+  scoreboard_scale_spin_->setDecimals(2);
+  scoreboard_scale_spin_->setSingleStep(0.1);
+  scoreboard_scale_spin_->setSuffix("×");
+  scoreboard_scale_spin_->setToolTip(
+      "Scoreboard size on the next playback, including recordings and streams. "
+      "1× keeps the original size; 0.5× halves it; 2× doubles it. Save Preset to keep this scale.");
+  auto* scale_label = new QLabel("Scale (next play):");
+  scale_label->setBuddy(scoreboard_scale_spin_);
+  program_footer->addWidget(scale_label);
+  program_footer->addWidget(scoreboard_scale_spin_);
+  connect(
+      scoreboard_scale_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+      [this] { updatePresetDirtyState(); });
   scoreboard_controls_status_ = new QLabel();
   scoreboard_controls_status_->setObjectName("scoreboardControlsStatus");
   scoreboard_controls_status_->setWordWrap(true);
@@ -11749,6 +11765,8 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
     // must use its current capture selection, including explicit opt-out.
     args << QString("--options=hstream_ui.job.capture_telemetry=%1").arg(capture_telemetry ? "true" : "false");
   }
+  if (!isCalibrationRun() && scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_)
+    args << QString("--options=rink.scoreboard.scoreboard_scale=%1").arg(scoreboard_scale_spin_->value(), 0, 'g', 17);
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
 }
@@ -17358,6 +17376,27 @@ void HStreamWindow::loadScoreboardControls(const YAML::Node& config) {
   const QSignalBlocker blocker(scoreboard_position_combo_);
   set_combo_to_data(scoreboard_position_combo_, position);
   saved_scoreboard_position_ = position;
+  const double baseline_scale = baseline_layer_["rink"]["scoreboard"]["scoreboard_scale"].as<double>();
+  double scale = baseline_scale;
+  for (const auto& layer : {baseline_layer_, user_layer_, config}) {
+    for (const char* path : {
+             "rink.scoreboard.scoreboard_scale",
+             "pipeline.hmplaycropper.scoreboard_scale", "pipeline.hmplaycropper.scoreboard-scale",
+             "pipeline.hmplaycropper.properties.scoreboard_scale", "pipeline.hmplaycropper.properties.scoreboard-scale",
+             "pipeline.hmplaycropper.private-properties.scoreboard_scale",
+             "pipeline.hmplaycropper.private-properties.scoreboard-scale"}) {
+      YAML::Node value;
+      if (lookup_yaml_path(layer, path, &value))
+        scale = value.IsNull() ? baseline_scale : value.as<double>();
+    }
+  }
+  if (!std::isfinite(scale) || scale <= 0)
+    throw std::invalid_argument("Scoreboard scale must be finite and positive");
+  const QSignalBlocker scale_blocker(scoreboard_scale_spin_);
+  // Preserve existing configuration values outside the usual editing range.
+  scoreboard_scale_spin_->setRange(std::min(0.1, scale), std::max(4.0, scale));
+  scoreboard_scale_spin_->setValue(scale);
+  saved_scoreboard_scale_ = scoreboard_scale_spin_->value();
   scoreboard_controls_status_->clear();
   updateScoreboardControls();
 }
@@ -17374,6 +17413,7 @@ void HStreamWindow::updateScoreboardControls() {
     }
   }
   const bool selecting = scoreboard_reselect_waiting_ || scoreboard_selection_dialog_;
+  scoreboard_scale_spin_->setEnabled(!running && !isArchiveFinalizing() && !selecting && !calibration_pending_);
   const bool available = !isArchiveFinalizing() && !isCalibrationRun() && !calibration_pending_ &&
       pending_scoreboard_property_.isEmpty() && pending_playback_seek_generation_ == 0 &&
       playback_seek_recovery_generation_ == 0 && pending_process_pause_generation_ == 0 &&
@@ -20341,6 +20381,7 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
 
 void HStreamWindow::captureSavedControlState() {
   saved_output_rink_map_ = outputRinkMapState();
+  saved_scoreboard_scale_ = scoreboard_scale_spin_->value();
   storeProjectionParameterControls();
   saved_camera_controls_.clear();
   for (const auto& [id, default_value] : camera_defaults_) {
@@ -20408,7 +20449,8 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = defaults_reset_pending_ || defaults_save_retry_ || retry_required ||
+  bool dirty = (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) ||
+      defaults_reset_pending_ || defaults_save_retry_ || retry_required ||
       saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
       (tiled_detection_check_ && tiled_detection_check_->isChecked() != saved_tiled_detection_) ||
       (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
@@ -21516,6 +21558,14 @@ bool HStreamWindow::applySavedControlConfig(
       config["output"]["rink-map"]["size"] = after[1].toStdString();
     if (before.size() != 3 || before[2] != after[2])
       config["output"]["rink-map"]["position"] = after[2].toStdString();
+  }
+  if (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) {
+    config["rink"]["scoreboard"]["scoreboard_scale"] = scoreboard_scale_spin_->value();
+    for (const char* key : {"scoreboard-scale", "scoreboard_scale"}) {
+      remove_yaml_path(config, {"pipeline", "hmplaycropper", key});
+      for (const char* bag : {"properties", "private-properties"})
+        remove_yaml_path(config, {"pipeline", "hmplaycropper", bag, key});
+    }
   }
   const auto previous_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
   if (!backend_.isHockeyMon() && tiled_detection_check_ && tiled_detection_check_->isChecked() != saved_tiled_detection_)

@@ -633,7 +633,7 @@ for line in sys.stdin:
     window->pipeline_paused_ = false;
     window->scoreboard_runtime_ready_ = true;
     window->updateScoreboardControls();
-    ok &= window->scoreboard_select_button_->isEnabled();
+    ok &= window->scoreboard_select_button_->isEnabled() && !window->scoreboard_scale_spin_->isEnabled();
     combo->setCurrentIndex(combo->findData("upper-left"));
     ok &= !combo->isEnabled() && window->pending_scoreboard_property_ == "scoreboard-position";
     ok &= !window->handleScoreboardControlOutput("runtime property playcropper0 scoreboard-position=upper-right");
