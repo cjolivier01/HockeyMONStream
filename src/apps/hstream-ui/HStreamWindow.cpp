@@ -7221,7 +7221,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   scoreboard_scale_spin_->setObjectName("scoreboardScaleSpin");
   scoreboard_scale_spin_->setRange(0.1, 4.0);
   scoreboard_scale_spin_->setDecimals(2);
-  scoreboard_scale_spin_->setSingleStep(0.1);
+  scoreboard_scale_spin_->setSingleStep(0.01);
   scoreboard_scale_spin_->setSuffix("×");
   scoreboard_scale_spin_->setToolTip(
       "Scoreboard size on the next playback, including recordings and streams. "
@@ -17379,12 +17379,7 @@ void HStreamWindow::loadScoreboardControls(const YAML::Node& config) {
   const double baseline_scale = baseline_layer_["rink"]["scoreboard"]["scoreboard_scale"].as<double>();
   double scale = baseline_scale;
   for (const auto& layer : {baseline_layer_, user_layer_, config}) {
-    for (const char* path : {
-             "rink.scoreboard.scoreboard_scale",
-             "pipeline.hmplaycropper.scoreboard_scale", "pipeline.hmplaycropper.scoreboard-scale",
-             "pipeline.hmplaycropper.properties.scoreboard_scale", "pipeline.hmplaycropper.properties.scoreboard-scale",
-             "pipeline.hmplaycropper.private-properties.scoreboard_scale",
-             "pipeline.hmplaycropper.private-properties.scoreboard-scale"}) {
+    for (const char* path : hm::scoreboard::kScalePaths) {
       YAML::Node value;
       if (lookup_yaml_path(layer, path, &value))
         scale = value.IsNull() ? baseline_scale : value.as<double>();

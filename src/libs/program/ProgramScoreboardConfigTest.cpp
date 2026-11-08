@@ -4,6 +4,8 @@
 #include <iostream>
 #include <stdexcept>
 
+#include "hstream/src/libs/common/ConfigPath.h"
+
 namespace {
 void Check(bool ok, const std::string& message) {
   if (!ok)
@@ -56,6 +58,27 @@ int main(int argc, char** argv) {
           std::abs((h[0] * x + h[1] * y + h[2]) / d - 300) < .001 &&
               std::abs((h[3] * x + h[4] * y + h[5]) / d - 200) < .001,
           "Scale changed original source coordinates");
+    }
+    for (const char* alias : hm::scoreboard::kScalePaths) {
+      auto selected = YAML::Clone(game);
+      hm::set_node_value(selected, alias, "1.7");
+      for (const bool draft : {false, true}) {
+        const auto scaled = resolve(
+            draft ? std::vector<std::string>{"rink.scoreboard.scoreboard_scale=0.75"} : std::vector<std::string>{},
+            selected);
+        Check(
+            scaled.ok() && scaled->has_value() && (*scaled)->requested_width == (draft ? 288 : 652),
+            "Scale alias or draft override precedence differs between backends");
+      }
+      YAML::Node reset_baseline(YAML::NodeType::Map);
+      // A later layer's explicit null resets a saved native alias to baseline.
+      reset_baseline["rink"]["scoreboard"]["scoreboard_scale"] = YAML::Node(YAML::NodeType::Null);
+      const auto reset_config = hm::config::ResolveProgramConfiguration(baseline, selected, reset_baseline, native, {});
+      Check(reset_config.ok(), "Scale reset configuration rejected");
+      const auto reset = hm::program::ResolveProgramScoreboardConfig(*reset_config, 3840, 2160);
+      Check(
+          reset.ok() && reset->has_value() && (*reset)->requested_width == 384,
+          "Scale null reset differs between backends");
     }
     Check(
         !hm::program::PrepareProgramScoreboard(**result, "other", 1000, 1000, 3840, 2160).ok(),

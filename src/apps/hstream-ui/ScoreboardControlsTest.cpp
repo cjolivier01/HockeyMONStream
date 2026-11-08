@@ -26,6 +26,21 @@ struct HStreamWindowTestAccess {
   static void reset(HStreamWindow& window) {
     window.resetDefaultsToBaseline();
   }
+  static bool scaleDisabledDuringPlayback(HStreamWindow& window) {
+    QProcess process;
+    process.start("/bin/sleep", {"30"});
+    if (!process.waitForStarted(5000))
+      return false;
+    auto* original = window.pipeline_process_;
+    window.pipeline_process_ = &process;
+    window.updateScoreboardControls();
+    const bool disabled = !window.scoreboard_scale_spin_->isEnabled();
+    process.kill();
+    const bool stopped = process.waitForFinished(5000);
+    window.pipeline_process_ = original;
+    window.updateScoreboardControls();
+    return disabled && stopped && window.scoreboard_scale_spin_->isEnabled();
+  }
 };
 namespace {
 void Check(bool value, const char* message) {
@@ -66,23 +81,24 @@ int main(int argc, char** argv) {
     Check(scale->value() == 1, "Fresh game must read baseline scale 1");
     game->setCurrentIndex(game->findText("one"));
     Check(scale->value() == 1.7, "Native scale alias must win within the game layer");
-    scale->setValue(.5);
+    Check(HStreamWindowTestAccess::scaleDisabledDuringPlayback(window), "Scale must be disabled during playback");
+    scale->setValue(.75);
     QWheelEvent wheel(
         QPointF(1, 1), QPointF(1, 1), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
     QApplication::sendEvent(scale, &wheel);
-    Check(scale->value() == .5, "Wheel changed scoreboard scale");
+    Check(scale->value() == .75, "Wheel changed scoreboard scale");
     Check(save->isEnabled(), "Scale edit did not mark preset dirty");
     Check(
-        HStreamWindowTestAccess::args(window).contains("--options=rink.scoreboard.scoreboard_scale=0.5"),
+        HStreamWindowTestAccess::args(window).contains("--options=rink.scoreboard.scoreboard_scale=0.75"),
         "Draft scale did not reach the next playback");
     Check(HStreamWindowTestAccess::save(window), "Could not save scale");
     const auto saved = YAML::LoadFile(config_path.toStdString());
-    Check(saved["rink"]["scoreboard"]["scoreboard_scale"].as<double>() == .5, "Scale did not persist");
+    Check(saved["rink"]["scoreboard"]["scoreboard_scale"].as<double>() == .75, "Scale did not persist");
     Check(
         !saved["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard-scale"].IsDefined(),
         "Saved scale kept a conflicting alias");
     HStreamWindowTestAccess::reload(window);
-    Check(scale->value() == .5, "Saved scale did not reload");
+    Check(scale->value() == .75, "Saved scale did not reload");
     auto with_polygon = YAML::Clone(saved);
     const auto polygon = YAML::Load("[[10,10],[30,10],[30,20],[10,20]]");
     with_polygon["rink"]["scoreboard"]["perspective_polygon"] = polygon;

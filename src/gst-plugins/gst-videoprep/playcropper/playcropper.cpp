@@ -356,8 +356,9 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
     scoreboard_projected_height_ = prop.value;
     scoreboard_.reset();
   } else if (key == "scoreboard-scale") {
-    float scale = 0;
-    if (!parse_finite_float(prop.value, &scale) || scale <= 0)
+    double scale = 0;
+    std::istringstream input(prop.value);
+    if (!(input >> scale) || !(input >> std::ws).eof() || !std::isfinite(scale) || scale <= 0)
       return false;
     scoreboard_scale_ = scale;
     scoreboard_.reset();
@@ -1209,8 +1210,8 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     if (!scoreboard_height_or.ok()) {
       return scoreboard_height_or.status();
     }
-    const double scaled_width = double(scoreboard_scale_) * scoreboard_width_or.value();
-    const double scaled_height = double(scoreboard_scale_) * scoreboard_height_or.value();
+    const double scaled_width = scoreboard_scale_ * scoreboard_width_or.value();
+    const double scaled_height = scoreboard_scale_ * scoreboard_height_or.value();
     if (!std::isfinite(scaled_width) || !std::isfinite(scaled_height) || scaled_width < 2 || scaled_height < 2 ||
         scaled_width > out_surface.width() || scaled_height > out_surface.height())
       return absl::InvalidArgumentError("Scaled scoreboard dimensions must fit within the output");
