@@ -16,6 +16,12 @@ user defaults file; selecting a game keeps saving to its `_hockeymon/config.yaml
 The application never writes the bundled baseline. The defaults path is fixed
 under `HOME`, independently of the `XDG_CONFIG_HOME` UI preference location.
 
+The recorded-game E2E workflow accepts `HSTREAM_UI_E2E_SCOREBOARD_SCALE=0.75`
+to edit the visible scale before Play. Its report records the selected scale and
+checks that the control is disabled while frames are processed and enabled after
+Stop. This archive workflow explicitly chooses **Publish partial outputs** in
+the Stop dialog, then verifies publication and the encoded frame geometry.
+
 Program → Color and Stitched → Color & Precision share the three-state
 **10-bit / FP16 mode** checkbox. Click or Space cycles Auto, Force on, Force off,
 then Auto. Its default comes from `pipeline.hmstitcher.properties.high-bit-depth`
