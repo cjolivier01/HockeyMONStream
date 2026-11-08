@@ -4,6 +4,7 @@
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
+#include <QtGui/QWheelEvent>
 #include <QtWidgets/QApplication>
 
 #include <iostream>
@@ -56,6 +57,7 @@ int main(int argc, char** argv) {
         config_path,
         "rink: {scoreboard: {scoreboard_scale: 1.2}}\npipeline: {hmplaycropper: {private-properties: {scoreboard-scale: 1.7}}}\n");
     QApplication app(argc, argv);
+    install_value_control_wheel_guard();
     HStreamWindow window;
     auto* game = Find<QComboBox>(window, "gameSelector");
     auto* scale = Find<QDoubleSpinBox>(window, "scoreboardScaleSpin");
@@ -65,6 +67,10 @@ int main(int argc, char** argv) {
     game->setCurrentIndex(game->findText("one"));
     Check(scale->value() == 1.7, "Native scale alias must win within the game layer");
     scale->setValue(.5);
+    QWheelEvent wheel(
+        QPointF(1, 1), QPointF(1, 1), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(scale, &wheel);
+    Check(scale->value() == .5, "Wheel changed scoreboard scale");
     Check(save->isEnabled(), "Scale edit did not mark preset dirty");
     Check(
         HStreamWindowTestAccess::args(window).contains("--options=rink.scoreboard.scoreboard_scale=0.5"),
@@ -77,6 +83,19 @@ int main(int argc, char** argv) {
         "Saved scale kept a conflicting alias");
     HStreamWindowTestAccess::reload(window);
     Check(scale->value() == .5, "Saved scale did not reload");
+    auto with_polygon = YAML::Clone(saved);
+    const auto polygon = YAML::Load("[[10,10],[30,10],[30,20],[10,20]]");
+    with_polygon["rink"]["scoreboard"]["perspective_polygon"] = polygon;
+    with_polygon["rink"]["stitched_output_generation"] = "unchanged-scoreboard-canvas";
+    Write(config_path, QByteArray::fromStdString(YAML::Dump(with_polygon)));
+    HStreamWindowTestAccess::reload(window);
+    scale->setValue(2);
+    Check(HStreamWindowTestAccess::save(window), "Could not save scale with existing corners");
+    const auto retained = YAML::LoadFile(config_path.toStdString());
+    Check(
+        YAML::Dump(retained["rink"]["scoreboard"]["perspective_polygon"]) == YAML::Dump(polygon) &&
+            retained["rink"]["stitched_output_generation"].as<std::string>() == "unchanged-scoreboard-canvas",
+        "Scale changed selected source corners or their generation");
     game->setCurrentIndex(game->findText("two"));
     Check(scale->value() == 1, "Game scale leaked into another game");
     HStreamWindowTestAccess::defaults(window);
