@@ -95,8 +95,8 @@ both modes; tiled inference used batch two. These numbers measure an additional
 2.62 ms of detector work, not end-to-end FPS or referee classification accuracy.
 
 Four-quadrant qualification used a later 12228×3258 CAHA still with the same
-CrowdHuman medium FP16 model. On RTX 5090, 30-frame runs excluding the first ten
-averaged 4.98 ms with two halves and 9.19 ms with four quadrants. The fixture
+CrowdHuman medium FP16 model. On RTX 5090, direct-nvinfer 30-frame runs excluding
+the first ten averaged 4.98 ms with two halves and 9.19 ms with four quadrants. The fixture
 verified one inference callback per frame with the selected batch size. On
 Radeon RX 9060 XT, ten four-quadrant runs completed with stable results and
 approximately 38 ms per warm inference. These still-image checks establish
@@ -108,9 +108,14 @@ batch execution and metadata integrity, not accuracy or end-to-end playback FPS.
 preservation and frame identity without a GPU. Shared geometry/config tests live
 in `src/libs/detection`, and `:gpu_test` compares full-frame and crop sampling
 against an independent CPU reference for RGB8/RGB10/NV12/P010/FP16 on CUDA or HIP.
+`//src/apps/apps-common:primary_gie_tiling_test` exercises the production YAML
+parser and primary-GIE bin creation with tiling disabled, two halves, four
+quadrants and conflicting batch sizes. It requires installed DeepStream plugins
+but does not start inference or load a model.
 
 The offline `//src/apps/apps-common:tiled_inference_fixture` uploads one still
-once, runs the real NVIDIA detector repeatedly, verifies exactly one inference
+once, creates the detector through the production YAML parser and primary-GIE
+bin, runs inference repeatedly, and verifies exactly one inference
 callback of batch one, two or four per original frame, and prints detection counts and
 latency. Supply a prepared YAML with absolute asset/parser paths:
 

@@ -234,7 +234,9 @@ gboolean create_primary_gie_bin(NvDsGieConfig* config, NvDsPrimaryGieBin* bin) {
       goto done;
     }
     const auto status = hm::pipeline::InstallTiledInference(
-        bin->primary_gie, GET_FILE_PATH(config->config_file_path), {config->tile_overlap, config->tile_merge_iou});
+        bin->primary_gie,
+        GET_FILE_PATH(config->config_file_path),
+        {config->tile_overlap, config->tile_merge_iou, config->tile_count});
     if (!status.ok()) {
       NVGSTDS_ERR_MSG_V("%s", status.ToString().c_str());
       goto done;

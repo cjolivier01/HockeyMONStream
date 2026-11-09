@@ -1,11 +1,12 @@
 // Offline qualification: upload one still once, then exercise the production
-// nvinfer boundary repeatedly. No video readback; only detections return.
-#include "hstream/src/apps/apps-common/TiledInference.h"
+// YAML-to-primary-GIE setup and detector repeatedly. No video readback;
+// only detections return.
+#include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
+#include "hstream/src/apps/apps-common/deepstream_primary_gie.h"
 
 #include <cuda_runtime_api.h>
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
-#include <gstnvdsinfer.h>
 #include <gstnvdsmeta.h>
 #include <nvbufsurface.h>
 #include <opencv2/imgcodecs.hpp>
@@ -15,6 +16,8 @@
 #include <iostream>
 #include <stdexcept>
 
+GST_DEBUG_CATEGORY(NVDS_APP);
+
 namespace {
 void Check(bool value, const std::string& message) {
   if (!value)
@@ -23,13 +26,25 @@ void Check(bool value, const std::string& message) {
 struct Owner {
   GstElement* pipeline{};
   NvBufSurface* surface{};
+  NvDsGieConfig config{};
+  NvDsPrimaryGieBin gie{};
   ~Owner() {
+    for (auto* element : {gie.queue, gie.nvvidconv, gie.capsfilter, gie.primary_gie})
+      if (element && !GST_OBJECT_PARENT(element))
+        gst_object_unref(element);
+    if (gie.bin && !GST_OBJECT_PARENT(gie.bin))
+      gst_object_unref(gie.bin);
     if (pipeline) {
       gst_element_set_state(pipeline, GST_STATE_NULL);
       gst_object_unref(pipeline);
     }
     if (surface)
       NvBufSurfaceDestroy(surface);
+    g_free(config.config_file_path);
+    if (config.bbox_border_color_table)
+      g_hash_table_unref(config.bbox_border_color_table);
+    if (config.bbox_bg_color_table)
+      g_hash_table_unref(config.bbox_bg_color_table);
   }
 };
 struct Batches {
@@ -62,11 +77,11 @@ int main(int argc, char** argv) {
     return 2;
   }
   gst_init(&argc, &argv);
+  GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   try {
     const int tiles = std::stoi(argv[3]);
     Check(tiles == 0 || tiles == 2 || tiles == 4, "Tiles must be 0, 2 or 4");
     const bool tiled = tiles != 0;
-    const hm::detection::TileInferenceSettings settings{std::stod(argv[4]), std::stof(argv[5]), tiles};
     const int runs = std::stoi(argv[6]);
     Check(runs > 0, "Positive run count required");
     auto bgr = cv::imread(argv[2]);
@@ -89,11 +104,23 @@ int main(int argc, char** argv) {
             cudaSuccess,
         "Fixture upload failed");
     owner.pipeline = gst_pipeline_new(nullptr);
+    YAML::Node node;
+    node["enable"] = 1;
+    node["plugin-type"] = 0;
+    node["config-file"] = argv[1];
+    node["batch-size"] = tiled ? tiles : 1;
+    node["interval"] = 0;
+    node["tiled-inference"]["enable"] = int(tiled);
+    node["tiled-inference"]["tiles"] = tiled ? tiles : 2;
+    node["tiled-inference"]["overlap"] = std::stod(argv[4]);
+    node["tiled-inference"]["merge-iou"] = std::stof(argv[5]);
+    Check(parse_gie_yaml(&owner.config, "primary-gie", node, "."), "Cannot parse primary GIE settings");
+    Check(create_primary_gie_bin(&owner.config, &owner.gie), "Cannot create primary GIE bin");
     auto* source = gst_element_factory_make("appsrc", "source");
-    auto* infer = gst_element_factory_make("nvinfer", "primary_gie");
+    auto* infer = owner.gie.primary_gie;
     auto* sink = gst_element_factory_make("appsink", "sink");
     Check(source && infer && sink, "Missing inference fixture elements");
-    gst_bin_add_many(GST_BIN(owner.pipeline), source, infer, sink, nullptr);
+    gst_bin_add_many(GST_BIN(owner.pipeline), source, owner.gie.bin, sink, nullptr);
     auto* caps = gst_caps_new_simple(
         "video/x-raw",
         "format",
@@ -113,23 +140,10 @@ int main(int argc, char** argv) {
     gst_caps_set_features(caps, 0, gst_caps_features_new("memory:NVMM", nullptr));
     g_object_set(source, "caps", caps, "format", GST_FORMAT_TIME, nullptr);
     gst_caps_unref(caps);
-    g_object_set(
-        infer,
-        "config-file-path",
-        argv[1],
-        "batch-size",
-        static_cast<guint>(tiled ? tiles : 1),
-        "process-mode",
-        1,
-        nullptr);
     Batches batches;
     g_object_set(infer, "raw-output-generated-callback", Raw, "raw-output-generated-userdata", &batches, nullptr);
-    if (tiled) {
-      const auto status = hm::pipeline::InstallTiledInference(infer, argv[1], settings);
-      Check(status.ok(), status.ToString());
-    }
     g_object_set(sink, "sync", FALSE, "async", FALSE, nullptr);
-    Check(gst_element_link_many(source, infer, sink, nullptr), "Cannot link inference fixture");
+    Check(gst_element_link_many(source, owner.gie.bin, sink, nullptr), "Cannot link inference fixture");
     if (gst_element_set_state(owner.pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
       throw std::runtime_error(Error(owner.pipeline));
     for (int index = 0; index < runs; ++index) {

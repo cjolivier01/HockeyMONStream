@@ -18,7 +18,13 @@ cc_test(
 cc_binary(
     name = "tiled_inference_fixture",
     srcs = ["TiledInferenceFixture.cpp"],
-    deps = [":tiled_inference", "@deepstream//:deepstream_lib", "@gstreamer", "@local_cuda//:cuda_runtime", "@opencv_linux//:opencv"],
+    deps = [":deepstream_apps_common", "@deepstream//:deepstream_lib", "@gstreamer", "@local_cuda//:cuda_runtime", "@opencv_linux//:opencv", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "primary_gie_tiling_test",
+    srcs = ["PrimaryGieTilingTest.cpp"],
+    deps = [":deepstream_apps_common", "@gstreamer", "@yaml-cpp"],
 )
 
 cc_library(
