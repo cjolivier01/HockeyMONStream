@@ -958,13 +958,13 @@ def generate(root, *, native_revision=None, include_revision=True):
         qt_order=2,
         qt_toggle=True,
     )
-    tile_labels = dict(
-        (count, label)
+    tile_labels = {
+        count: label
         for label, count in re.findall(
             r'detection_tiles_combo_->addItem\("([^"\n]+)", "([^"\n]+)"\)',
             runtime_source,
         )
-    )
+    }
     if set(tile_labels) != {"2", "4"}:
         raise ValueError(
             "Qt detection tile layouts changed; review the native contract"
