@@ -85,7 +85,7 @@ absl::StatusOr<std::unique_ptr<HipDetector>> HipDetector::Create(const DetectorC
     if (!status.ok())
       return status;
   }
-  const size_t batch = config.tiling ? 2 : 1;
+  const size_t batch = config.tiling ? config.tiling->tiles : 1;
   auto session = gpu::MigraphxSession::Compile(
       config.onnx,
       {{config.input_name, {batch, 3, static_cast<size_t>(config.height), static_cast<size_t>(config.width)}}},
@@ -127,7 +127,7 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
     return absl::InvalidArgumentError("AMD detector requires one explicit caller stream");
   std::vector<DetectionTile> tiles{{0, 0, image.width, image.height}};
   if (config.tiling) {
-    const auto plan = MakeDetectionTiles(image.width, image.height, config.tiling->overlap);
+    const auto plan = MakeDetectionTiles(image.width, image.height, *config.tiling);
     if (!plan.ok())
       return plan.status();
     tiles.assign(plan->begin(), plan->end());
@@ -191,7 +191,7 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
           *box,
           image.width,
           image.height);
-    std::array<std::vector<Proposal>, 2> per_tile;
+    std::vector<std::vector<Proposal>> per_tile(tiles.size());
     for (uint32_t index = 0; index < *impl.host_count; ++index) {
       const auto& p = impl.host_proposals[index];
       per_tile[p.source_index / impl.rows_per_tile].push_back(p);
@@ -211,7 +211,7 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
         merged.push_back({p, index});
       }
     }
-    const auto selected = MergeTileProposals(merged, config.tiling->merge_iou);
+    const auto selected = MergeTileProposals(merged, *config.tiling);
     if (!selected.ok())
       return selected.status();
     std::vector<Proposal> result;

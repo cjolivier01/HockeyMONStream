@@ -28,7 +28,7 @@ struct Buffer {
     (void)cudaFree(data);
   }
 };
-void TestImage(PixelFormat format, cudaStream_t stream, bool cropped) {
+void TestImage(PixelFormat format, cudaStream_t stream, int crop) {
   constexpr int width = 6, height = 4;
   constexpr size_t pitch = 64;
   std::vector<uint8_t> source(pitch * height, 0xa5), chroma(pitch * height / 2, 0x5a);
@@ -86,7 +86,9 @@ void TestImage(PixelFormat format, cudaStream_t stream, bool cropped) {
             std::clamp(yf + 2.11240179f * uf, 0.f, 255.f));
       }
     }
-  const DetectionTile tile = cropped ? DetectionTile{2, 0, 4, 4} : DetectionTile{0, 0, width, height};
+  const DetectionTile tile = crop == 2 ? DetectionTile{2, 2, 4, 2}
+      : crop == 1                      ? DetectionTile{2, 0, 4, 4}
+                                       : DetectionTile{0, 0, width, height};
   const auto box = MakeLetterbox(tile.width, tile.height, 13, 11, true, true, 1.f / 255);
   Check(box.ok(), "letterbox");
   cv::Mat resized;
@@ -195,8 +197,8 @@ int main() {
           PixelFormat::kNv12,
           PixelFormat::kP010,
           PixelFormat::kRgba16Float})
-      for (bool cropped : {false, true})
-        TestImage(format, stream, cropped);
+      for (int crop : {0, 1, 2})
+        TestImage(format, stream, crop);
     TestFiltering(stream);
     Gpu(cudaStreamDestroy(stream));
     std::cout << "Detector RGB8/RGB10/NV12/P010 preprocessing and proposal tests passed\n";

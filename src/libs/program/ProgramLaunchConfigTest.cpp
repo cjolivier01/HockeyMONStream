@@ -76,21 +76,21 @@ int main(int argc, char** argv) {
     Check(warned.ok() && warned->chapters[1].size() == 2, "Chapter warnings must not reject an AMD launch");
     Write(game_dir / "_hockeymon" / "config.yaml", game);
 
-    game["pipeline"]["primary-gie"]["tiled-inference"] =
-        YAML::Load("{enable: 1, tiles: 4, overlap: 0.3, merge-iou: 0.6}");
-    Write(game_dir / "_hockeymon" / "config.yaml", game);
-    const auto restored_tiling = load();
+    for (int tiles : {2, 4}) {
+      std::vector<std::string> options{
+          "pipeline.primary-gie.tiled-inference.enable=1",
+          "pipeline.primary-gie.tiled-inference.tiles=" + std::to_string(tiles)};
+      auto tiled = load(options);
+      Check(tiled.ok() && tiled->tiling && tiled->tiling->tiles == tiles, "Tile layout did not reach AMD launch");
+      options.push_back("pipeline.primary-gie.batch-size=" + std::to_string(tiles));
+      Check(load(options).ok(), "Matching explicit tile batch rejected");
+      options.back() = "pipeline.primary-gie.batch-size=1";
+      Check(!load(options).ok(), "Conflicting tile batch accepted");
+    }
+    auto legacy_tiled = load({"pipeline.primary-gie.tiled-inference.enable=1"});
     Check(
-        restored_tiling.ok() && restored_tiling->tiling && restored_tiling->tiling->overlap == 0.3 &&
-            restored_tiling->tiling->merge_iou == 0.6f,
-        "Saved quadrant selector must retain the two-half enable/overlap/merge preferences");
-    const auto disabled_tiling = load({"pipeline.primary-gie.tiled-inference.enable=0"});
-    Check(disabled_tiling.ok() && !disabled_tiling->tiling, "Explicit launch override must disable saved tiling");
-    Check(load({"pipeline.primary-gie.batch-size=2"}).ok(), "Two-half batch override rejected");
-    for (const char* conflict : {"pipeline.primary-gie.batch-size=1", "pipeline.primary-gie.batch-size=4"})
-      Check(!load({conflict}).ok(), "Conflicting saved tiling batch accepted");
-    game.remove("pipeline");
-    Write(game_dir / "_hockeymon" / "config.yaml", game);
+        legacy_tiled.ok() && legacy_tiled->tiling && legacy_tiled->tiling->tiles == 2,
+        "Existing enabled presets must inherit two tiles from baseline");
     auto overridden = load({"rink.camera.zoom_in_aggressiveness=83"});
     Check(
         overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,

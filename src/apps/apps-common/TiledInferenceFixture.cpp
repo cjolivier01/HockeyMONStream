@@ -73,15 +73,15 @@ std::string Error(GstElement* pipeline) {
 } // namespace
 int main(int argc, char** argv) {
   if (argc != 7) {
-    std::cerr << "Usage: tiled_inference_fixture INFER_YAML IMAGE TILED_0_OR_1 OVERLAP MERGE_IOU RUNS\n";
+    std::cerr << "Usage: tiled_inference_fixture INFER_YAML IMAGE TILES_0_2_OR_4 OVERLAP MERGE_IOU RUNS\n";
     return 2;
   }
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   try {
-    const int enabled = std::stoi(argv[3]);
-    Check(enabled == 0 || enabled == 1, "Tiling must be 0 or 1");
-    const bool tiled = enabled == 1;
+    const int tiles = std::stoi(argv[3]);
+    Check(tiles == 0 || tiles == 2 || tiles == 4, "Tiles must be 0, 2 or 4");
+    const bool tiled = tiles != 0;
     const int runs = std::stoi(argv[6]);
     Check(runs > 0, "Positive run count required");
     auto bgr = cv::imread(argv[2]);
@@ -108,9 +108,10 @@ int main(int argc, char** argv) {
     node["enable"] = 1;
     node["plugin-type"] = 0;
     node["config-file"] = argv[1];
-    node["batch-size"] = tiled ? 2 : 1;
+    node["batch-size"] = tiled ? tiles : 1;
     node["interval"] = 0;
     node["tiled-inference"]["enable"] = int(tiled);
+    node["tiled-inference"]["tiles"] = tiled ? tiles : 2;
     node["tiled-inference"]["overlap"] = std::stod(argv[4]);
     node["tiled-inference"]["merge-iou"] = std::stof(argv[5]);
     Check(parse_gie_yaml(&owner.config, "primary-gie", node, "."), "Cannot parse primary GIE settings");
@@ -174,7 +175,7 @@ int main(int argc, char** argv) {
       Check(
           result->frame_num == index && result->buf_pts == index * GST_SECOND / 30 && result->bInferDone,
           "Lost frame completion/identity");
-      Check(batches.calls == before + 1 && batches.size == (tiled ? 2 : 1), "Expected exactly one inference batch");
+      Check(batches.calls == before + 1 && batches.size == (tiled ? tiles : 1), "Expected exactly one inference batch");
       for (auto* item = result->obj_meta_list; item; item = item->next) {
         const auto* object = static_cast<NvDsObjectMeta*>(item->data);
         const auto& r = object->rect_params;

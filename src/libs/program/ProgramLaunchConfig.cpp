@@ -107,8 +107,9 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       return tiling.status();
     result.tiling = *tiling;
     if (result.tiling && Rank(result.configuration.ranks, "pipeline.primary-gie.batch-size") >= 1 &&
-        result.configuration.values["pipeline"]["primary-gie"]["batch-size"].as<int>() != 2)
-      return absl::InvalidArgumentError("Two-tile inference requires primary-gie.batch-size=2");
+        result.configuration.values["pipeline"]["primary-gie"]["batch-size"].as<int>() != result.tiling->tiles)
+      return absl::InvalidArgumentError(
+          "Tiled inference requires primary-gie.batch-size=" + std::to_string(result.tiling->tiles));
     if (result.inference["person-roles"])
       result.camera["person-roles"] = YAML::Clone(result.inference["person-roles"]);
     if (!result.inference.IsMap() || !result.inference["property"].IsMap())

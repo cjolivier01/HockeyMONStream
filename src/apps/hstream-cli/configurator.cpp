@@ -9332,12 +9332,13 @@ absl::Status Configurator::complete_configuration(
     if (!tiling.ok())
       return tiling.status();
     if (*tiling) {
-      // Select the batch-two engine/cache before model preparation, including
+      // Select the tiled engine/cache before model preparation, including
       // when the automatic low-memory profile normally selects batch one.
       if (explicit_value_rank("pipeline.primary-gie.batch-size") >= 1 &&
-          pipeline["primary-gie"]["batch-size"].as<int>() != 2)
-        return absl::InvalidArgumentError("Two-tile inference requires primary-gie.batch-size=2");
-      pipeline["primary-gie"]["batch-size"] = 2;
+          pipeline["primary-gie"]["batch-size"].as<int>() != (*tiling)->tiles)
+        return absl::InvalidArgumentError(
+            "Tiled inference requires primary-gie.batch-size=" + std::to_string((*tiling)->tiles));
+      pipeline["primary-gie"]["batch-size"] = (*tiling)->tiles;
     }
   }
 

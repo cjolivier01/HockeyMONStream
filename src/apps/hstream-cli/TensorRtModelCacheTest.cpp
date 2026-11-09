@@ -537,6 +537,19 @@ int main(int argc, char** argv) {
   hm::pipeline::ReleaseTensorRtModelCacheLocks();
 
   const fs::path fp32_runtime_directory = runtime_config.parent_path();
+  YAML::Node quadrant_pipeline = pipeline_for("infer.yaml");
+  quadrant_pipeline["primary-gie"]["batch-size"] = 4;
+  ok &= expect(prepare_cache(quadrant_pipeline, configs).ok(), "Four-tile engine cache preparation failed");
+  const fs::path quadrant_runtime = quadrant_pipeline["primary-gie"]["config-file"].as<std::string>();
+  if (fs::is_regular_file(quadrant_runtime)) {
+    const auto quadrant = YAML::LoadFile(quadrant_runtime.string());
+    ok &= expect(
+        quadrant_runtime.parent_path() != fp32_runtime_directory &&
+            fs::path(quadrant["property"]["model-engine-file"].as<std::string>()).filename() ==
+                "detector_NVIDIA_Test_GPU.onnx_b4_gpu0_fp32.engine",
+        "Four tiles must select a separate batch-four engine cache");
+  }
+  hm::pipeline::ReleaseTensorRtModelCacheLocks();
   write_inference_config(configs / "infer.yaml", 2);
   YAML::Node changed_pipeline = pipeline_for("infer.yaml");
   ok &=

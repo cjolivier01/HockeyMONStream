@@ -14956,19 +14956,23 @@ bool test_tiled_detection() {
   HStreamWindow window;
   auto* games = require_child<QComboBox>(&window, "gameSelector");
   auto* tiled = require_child<QCheckBox>(&window, "tiledDetectionCheck");
+  auto* tiles = require_child<QComboBox>(&window, "detectionTilesCombo");
   auto* save = require_child<QPushButton>(&window, "savePresetButton");
-  if (!games || !tiled || !save)
-    return false;
-  if (!expect(!window.findChild<QWidget*>("detectionTilesCombo"), "The quadrant selector must stay removed"))
+  if (!games || !tiled || !tiles || !save)
     return false;
   games->setCurrentIndex(games->findText("tiles"));
-  if (!expect(!tiled->isChecked() && tiled->isEnabled(), "Tiling must default off and be editable while idle"))
+  if (!expect(
+          !tiled->isChecked() && tiled->isEnabled() && tiles->currentData().toString() == "2" && tiles->isEnabled(),
+          "Tiling must default off and be editable while idle"))
     return false;
   tiled->click();
+  tiles->setCurrentIndex(tiles->findData("4"));
   if (!expect(
           save->isEnabled() &&
               HStreamWindowTestAccess::standaloneArguments(&window).contains(
-                  "--options=pipeline.primary-gie.tiled-inference.enable=1"),
+                  "--options=pipeline.primary-gie.tiled-inference.enable=1") &&
+              HStreamWindowTestAccess::standaloneArguments(&window).contains(
+                  "--options=pipeline.primary-gie.tiled-inference.tiles=4"),
           "Unsaved tiling must reach Program launch and dirty the preset") ||
       !expect(
           !HStreamWindowTestAccess::calibrationArguments(&window).join(' ').contains("tiled-inference"),
@@ -14977,7 +14981,7 @@ bool test_tiled_detection() {
     return false;
   auto saved = YAML::LoadFile(path)["pipeline"]["primary-gie"];
   if (!expect(
-          saved["tiled-inference"]["enable"].as<int>() == 1 &&
+          saved["tiled-inference"]["enable"].as<int>() == 1 && saved["tiled-inference"]["tiles"].as<int>() == 4 &&
               saved["config-file"].as<std::string>() == "custom.yaml" &&
               saved["model-engine-file"].as<std::string>() == "custom.engine",
           "Saving tiling must preserve a custom model and engine"))
@@ -14986,10 +14990,11 @@ bool test_tiled_detection() {
     HStreamWindow reloaded;
     auto* selection = require_child<QComboBox>(&reloaded, "gameSelector");
     auto* toggle = require_child<QCheckBox>(&reloaded, "tiledDetectionCheck");
-    if (!selection || !toggle)
+    auto* count = require_child<QComboBox>(&reloaded, "detectionTilesCombo");
+    if (!selection || !toggle || !count)
       return false;
     selection->setCurrentIndex(selection->findText("tiles"));
-    if (!expect(toggle->isChecked(), "Saved tiling must reload"))
+    if (!expect(toggle->isChecked() && count->currentData().toString() == "4", "Saved quadrants must reload"))
       return false;
     toggle->click();
     if (!expect(
@@ -15006,19 +15011,24 @@ bool test_tiled_detection() {
   if (!HStreamWindowTestAccess::startStubPipelineProcess(&window))
     return false;
   HStreamWindowTestAccess::refreshRunControls(&window);
-  const bool locked = !tiled->isEnabled() && tiled->isChecked();
+  const bool locked =
+      !tiled->isEnabled() && tiled->isChecked() && !tiles->isEnabled() && tiles->currentData().toString() == "4";
   HStreamWindowTestAccess::killStubPipelineProcess(&window);
   HStreamWindowTestAccess::refreshRunControls(&window);
-  if (!expect(locked && tiled->isEnabled(), "A running pipeline must lock tiling and retain its value"))
+  if (!expect(
+          locked && tiled->isEnabled() && tiles->isEnabled(),
+          "A running pipeline must lock tiling and retain its value"))
     return false;
   auto* reset = require_child<QPushButton>(&window, "resetCameraButton");
   if (!reset)
     return false;
   reset->click();
-  if (!expect(!tiled->isChecked(), "Reset must restore baseline tiling"))
+  if (!expect(!tiled->isChecked() && tiles->currentData().toString() == "2", "Reset must restore baseline tiling"))
     return false;
   const auto screenshot = qEnvironmentVariable("HSTREAM_UI_TILED_SCREENSHOT");
   if (!screenshot.isEmpty()) {
+    tiles->setCurrentIndex(tiles->findData("4"));
+    tiled->setChecked(true);
     window.show();
     QGuiApplication::sync();
     if (!tiled->parentWidget()->grab().save(screenshot))
@@ -15029,8 +15039,9 @@ bool test_tiled_detection() {
   backend.runner = qEnvironmentVariable("HSTREAM_UI_TEST_RUNNER");
   HStreamWindow python_window(nullptr, backend);
   auto* python_tiled = require_child<QCheckBox>(&python_window, "tiledDetectionCheck");
+  auto* python_tiles = require_child<QComboBox>(&python_window, "detectionTilesCombo");
   return expect(
-      python_tiled && !python_tiled->isEnabled() &&
+      python_tiles && !python_tiles->isEnabled() && python_tiled && !python_tiled->isEnabled() &&
           !HStreamWindowTestAccess::standaloneArguments(&python_window).join(' ').contains("tiled-inference"),
       "The Python backend must not offer native tiling");
 }

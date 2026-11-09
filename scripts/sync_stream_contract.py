@@ -949,7 +949,7 @@ def generate(root, *, native_revision=None, include_revision=True):
         "pipeline.primary-gie.tiled-inference.enable",
         "Detection",
         maximum=1,
-        label="Two-tile detection (next run)",
+        label="Tiled detection (next run)",
     )
     fields[-1].update(
         qt_stage="program",
@@ -957,6 +957,32 @@ def generate(root, *, native_revision=None, include_revision=True):
         qt_control_id="tiledDetectionCheck",
         qt_order=2,
         qt_toggle=True,
+    )
+    tile_labels = dict(
+        (count, label)
+        for label, count in re.findall(
+            r'detection_tiles_combo_->addItem\("([^"\n]+)", "([^"\n]+)"\)',
+            runtime_source,
+        )
+    )
+    if set(tile_labels) != {"2", "4"}:
+        raise ValueError(
+            "Qt detection tile layouts changed; review the native contract"
+        )
+    tile_key = "pipeline.primary-gie.tiled-inference.tiles"
+    add(
+        tile_key,
+        "Detection",
+        default=str(value(tile_key)),
+        choices=list(tile_labels),
+        label="Detection tiles (next run)",
+    )
+    fields[-1].update(
+        qt_stage="program",
+        qt_tab="Detection",
+        qt_control_id="detectionTilesCombo",
+        qt_order=3,
+        choice_labels=tile_labels,
     )
     for feature in ("pose", "jersey", "action"):
         add(

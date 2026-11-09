@@ -800,6 +800,8 @@ class HStreamWindow : public QMainWindow {
   QComboBox* detector_precision_combo_{nullptr};
   QCheckBox* tiled_detection_check_{nullptr};
   bool saved_tiled_detection_{false};
+  QComboBox* detection_tiles_combo_{nullptr};
+  QString saved_detection_tiles_;
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;
   QString saved_detector_model_;
