@@ -65,6 +65,21 @@ int main(int argc, char** argv) {
             result->chapters[0][1] == game_dir / "left1.mp4" && result->frame_offsets[0] == 2.5,
         "Saved chapters or fractional synchronization changed");
     Check(result->camera["zoom-in-aggressiveness"].as<int>() == 61, "Game camera tuning did not override user tuning");
+    for (int tiles : {2, 4}) {
+      std::vector<std::string> options{
+          "pipeline.primary-gie.tiled-inference.enable=1",
+          "pipeline.primary-gie.tiled-inference.tiles=" + std::to_string(tiles)};
+      auto tiled = load(options);
+      Check(tiled.ok() && tiled->tiling && tiled->tiling->tiles == tiles, "Tile layout did not reach AMD launch");
+      options.push_back("pipeline.primary-gie.batch-size=" + std::to_string(tiles));
+      Check(load(options).ok(), "Matching explicit tile batch rejected");
+      options.back() = "pipeline.primary-gie.batch-size=1";
+      Check(!load(options).ok(), "Conflicting tile batch accepted");
+    }
+    auto legacy_tiled = load({"pipeline.primary-gie.tiled-inference.enable=1"});
+    Check(
+        legacy_tiled.ok() && legacy_tiled->tiling && legacy_tiled->tiling->tiles == 2,
+        "Existing enabled presets must inherit two tiles from baseline");
     auto overridden = load({"rink.camera.zoom_in_aggressiveness=83"});
     Check(
         overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,

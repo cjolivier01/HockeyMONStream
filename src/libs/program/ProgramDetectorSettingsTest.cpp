@@ -50,7 +50,8 @@ int main(int argc, char** argv) {
     auto settings = hm::program::PrepareProgramDetector(config_path, config, {});
     Check(settings.ok(), settings.status().ToString());
     Check(
-        hm::program::PrepareProgramDetector(config_path, config, {}, hm::detection::TileInferenceSettings{.2, .5}).ok(),
+        hm::program::PrepareProgramDetector(config_path, config, {}, hm::detection::TileInferenceSettings{.2, .5, 4})
+            .ok(),
         "Dynamic-batch detector rejected for tiling");
     Check(
         settings->onnx == model_path && settings->input_name == "images" && settings->width == 1984 &&

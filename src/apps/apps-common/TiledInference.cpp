@@ -36,7 +36,7 @@ absl::Status PrepareTiledInferenceBuffer(GstBuffer* buffer, const detection::Til
     auto* batch = gst_buffer_get_nvds_batch_meta(buffer);
     Require(
         batch && batch->num_frames_in_batch == 1 && batch->frame_meta_list,
-        "Two-tile inference requires one stitched frame per buffer");
+        "Tiled inference requires one stitched frame per buffer");
     auto* frame = static_cast<NvDsFrameMeta*>(batch->frame_meta_list->data);
     // NVMM mapping exposes only the surface descriptor. No video pixels are
     // mapped or copied to the CPU; nvinfer owns the batched GPU crop operation.
@@ -48,7 +48,7 @@ absl::Status PrepareTiledInferenceBuffer(GstBuffer* buffer, const detection::Til
     int height = valid ? surface->surfaceList[frame->batch_id].height : 0;
     gst_buffer_unmap(buffer, &map);
     Require(valid, "Invalid tiled inference surface descriptor");
-    const auto tiles = detection::MakeDetectionTiles(width, height, settings.overlap);
+    const auto tiles = detection::MakeDetectionTiles(width, height, settings);
     if (!tiles.ok())
       throw std::runtime_error(tiles.status().ToString());
     MetaLock lock(batch);
@@ -118,8 +118,8 @@ absl::Status MergeTiledInferenceBuffer(GstBuffer* buffer, const detection::TileI
            static_cast<unsigned>(parent->class_id)});
       objects.push_back(object);
     }
-    Require(parents.size() == 2, "Detector lost its two tile regions");
-    const auto selected = detection::MergeTileProposals(proposals, settings.merge_iou);
+    Require(parents.size() == static_cast<size_t>(settings.tiles), "Detector lost its tile regions");
+    const auto selected = detection::MergeTileProposals(proposals, settings);
     if (!selected.ok())
       throw std::runtime_error(selected.status().ToString());
     std::vector<bool> keep(objects.size(), false);
@@ -159,11 +159,19 @@ absl::Status InstallTiledInference(
     guint batch = 0, interval = 0, unique = 0;
     g_object_get(infer, "batch-size", &batch, "interval", &interval, "unique-id", &unique, nullptr);
     Require(
-        batch == 2 && interval == 0 && unique != kTileComponent,
-        "Tiling requires batch-size=2, interval=0 and a nonreserved detector identity");
-    // Both regions are untracked, so secondary reinference history never
+        batch == static_cast<guint>(settings.tiles) && interval == 0 && unique != kTileComponent,
+        "Tiling requires batch-size matching tiles, interval=0 and a nonreserved detector identity");
+    // All regions are untracked, so secondary reinference history never
     // suppresses a frame. Keep the original detector ID and role labels.
-    g_object_set(infer, "process-mode", 2, "infer-on-gie-id", kTileComponent, "infer-on-class-ids", "0:1", nullptr);
+    g_object_set(
+        infer,
+        "process-mode",
+        2,
+        "infer-on-gie-id",
+        kTileComponent,
+        "infer-on-class-ids",
+        settings.tiles == 4 ? "0:1:2:3" : "0:1",
+        nullptr);
     for (const char* name : {"sink", "src"}) {
       auto* pad = gst_element_get_static_pad(infer, name);
       Require(pad, "Missing nvinfer pad");
@@ -195,9 +203,12 @@ absl::Status InstallTiledInference(
       gst_object_unref(pad);
     }
     g_print(
-        "Tiled inference: two full-height crops, overlap=%.3f, merge-iou=%.3f, one batch of 2\n",
+        "Tiled inference: %d %s, overlap=%.3f, merge-iou=%.3f, one batch of %d\n",
+        settings.tiles,
+        settings.tiles == 4 ? "quadrants" : "full-height crops",
         settings.overlap,
-        settings.merge_iou);
+        settings.merge_iou,
+        settings.tiles);
     return absl::OkStatus();
   } catch (const std::exception& e) {
     return absl::InvalidArgumentError(std::string("Tiled inference: ") + e.what());

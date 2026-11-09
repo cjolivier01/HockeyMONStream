@@ -58,13 +58,15 @@ std::string Error(GstElement* pipeline) {
 } // namespace
 int main(int argc, char** argv) {
   if (argc != 7) {
-    std::cerr << "Usage: tiled_inference_fixture INFER_YAML IMAGE TILED_0_OR_1 OVERLAP MERGE_IOU RUNS\n";
+    std::cerr << "Usage: tiled_inference_fixture INFER_YAML IMAGE TILES_0_2_OR_4 OVERLAP MERGE_IOU RUNS\n";
     return 2;
   }
   gst_init(&argc, &argv);
   try {
-    const bool tiled = std::stoi(argv[3]) == 1;
-    const hm::detection::TileInferenceSettings settings{std::stod(argv[4]), std::stof(argv[5])};
+    const int tiles = std::stoi(argv[3]);
+    Check(tiles == 0 || tiles == 2 || tiles == 4, "Tiles must be 0, 2 or 4");
+    const bool tiled = tiles != 0;
+    const hm::detection::TileInferenceSettings settings{std::stod(argv[4]), std::stof(argv[5]), tiles};
     const int runs = std::stoi(argv[6]);
     Check(runs > 0, "Positive run count required");
     auto bgr = cv::imread(argv[2]);
@@ -111,7 +113,15 @@ int main(int argc, char** argv) {
     gst_caps_set_features(caps, 0, gst_caps_features_new("memory:NVMM", nullptr));
     g_object_set(source, "caps", caps, "format", GST_FORMAT_TIME, nullptr);
     gst_caps_unref(caps);
-    g_object_set(infer, "config-file-path", argv[1], "batch-size", 2u, "process-mode", 1, nullptr);
+    g_object_set(
+        infer,
+        "config-file-path",
+        argv[1],
+        "batch-size",
+        static_cast<guint>(tiled ? tiles : 1),
+        "process-mode",
+        1,
+        nullptr);
     Batches batches;
     g_object_set(infer, "raw-output-generated-callback", Raw, "raw-output-generated-userdata", &batches, nullptr);
     if (tiled) {
@@ -151,7 +161,7 @@ int main(int argc, char** argv) {
       Check(
           result->frame_num == index && result->buf_pts == index * GST_SECOND / 30 && result->bInferDone,
           "Lost frame completion/identity");
-      Check(batches.calls == before + 1 && batches.size == (tiled ? 2 : 1), "Expected exactly one inference batch");
+      Check(batches.calls == before + 1 && batches.size == (tiled ? tiles : 1), "Expected exactly one inference batch");
       for (auto* item = result->obj_meta_list; item; item = item->next) {
         const auto* object = static_cast<NvDsObjectMeta*>(item->data);
         const auto& r = object->rect_params;

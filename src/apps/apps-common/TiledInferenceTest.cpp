@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
     auto* meta =
         gst_buffer_add_nvds_meta(buffer, batch, nullptr, nvds_batch_meta_copy_func, nvds_batch_meta_release_func);
     meta->meta_type = NVDS_BATCH_GST_META;
-    const hm::detection::TileInferenceSettings settings{.2, .5};
+    const hm::detection::TileInferenceSettings settings{.2, .5, 2};
     Check(hm::pipeline::PrepareTiledInferenceBuffer(buffer, settings).ok(), "Tile preparation failed");
     Check(frame->num_obj_meta == 2 && batch->num_frames_in_batch == 1, "Tiles changed frame identity");
     std::vector<NvDsObjectMeta*> tiles;
@@ -52,6 +52,7 @@ int main(int argc, char** argv) {
       object->rect_params.width = 30;
       object->rect_params.height = 100;
       nvds_add_obj_meta_to_frame(frame, object, parent);
+      return object;
     };
     add(tiles[0], 480, .7, 0);
     add(tiles[1], 481, .9, 0);
@@ -88,6 +89,52 @@ int main(int argc, char** argv) {
     batch->num_frames_in_batch = 2;
     Check(!hm::pipeline::PrepareTiledInferenceBuffer(buffer, settings).ok(), "Multiple source frames accepted");
     batch->num_frames_in_batch = 1;
+    // Reuse the frame with a four-quadrant plan and synthetic panorama-space
+    // detections at both seams, the four-way overlap, and the lower-right edge.
+    while (frame->obj_meta_list)
+      nvds_remove_obj_meta_from_frame(frame, static_cast<NvDsObjectMeta*>(frame->obj_meta_list->data));
+    pixels.height = 800;
+    const hm::detection::TileInferenceSettings quadrants{.2, .5, 4};
+    Check(hm::pipeline::PrepareTiledInferenceBuffer(buffer, quadrants).ok(), "Quadrant preparation failed");
+    Check(frame->num_obj_meta == 4, "Missing quadrants");
+    tiles.clear();
+    for (auto* item = frame->obj_meta_list; item; item = item->next)
+      tiles.push_back(static_cast<NvDsObjectMeta*>(item->data));
+    std::sort(tiles.begin(), tiles.end(), [](const auto* a, const auto* b) { return a->class_id < b->class_id; });
+    auto quadrant_box = [&](unsigned tile, float left, float top, float confidence, int role) {
+      auto* object = add(tiles[tile], left, confidence, role);
+      object->rect_params.top = top;
+      object->rect_params.height = 30;
+    };
+    for (unsigned index = 0; index < 4; ++index)
+      quadrant_box(index, 480, 380, .6f + index * .1f, 0);
+    quadrant_box(0, 480, 380, .85, 2); // A different role survives.
+    quadrant_box(0, 100, 380, .7, 0);
+    quadrant_box(2, 101, 381, .8, 0); // Horizontal seam.
+    quadrant_box(0, 480, 100, .7, 0);
+    quadrant_box(1, 481, 101, .8, 0); // Vertical seam.
+    quadrant_box(3, 900, 700, .5, 0);
+    quadrant_box(3, 990, 790, .4, 0); // Clip at both panorama edges.
+    quadrant_box(3, 100, 100, .9, 0); // Entirely outside this quadrant.
+    Check(hm::pipeline::MergeTiledInferenceBuffer(buffer, quadrants).ok(), "Quadrant merge failed");
+    Check(
+        frame->num_obj_meta == 6 && frame->frame_num == 42 && frame->buf_pts == GST_SECOND && frame->source_id == 7 &&
+            frame->bInferDone,
+        "Quadrant merge lost identity or detections");
+    bool bottom_right = false, clipped = false;
+    for (auto* item = frame->obj_meta_list; item; item = item->next) {
+      auto* object = static_cast<NvDsObjectMeta*>(item->data);
+      const auto& rect = object->rect_params;
+      Check(!object->parent && object->unique_component_id == 1, "Quadrant ROI escaped downstream");
+      bottom_right |= rect.left == 900 && rect.top == 700;
+      clipped |= rect.left == 990 && rect.top == 790 && rect.width == 10 && rect.height == 10;
+      Check(object->detector_bbox_info.org_bbox_coords.top == rect.top, "Detector box lost vertical mapping");
+    }
+    Check(bottom_right && clipped, "Lower quadrant coordinates/clipping lost");
+    Check(
+        hm::pipeline::PrepareTiledInferenceBuffer(buffer, quadrants).ok() &&
+            hm::pipeline::MergeTiledInferenceBuffer(buffer, quadrants).ok() && frame->num_obj_meta == 6,
+        "Empty inference leaked quadrant metadata");
     gst_buffer_unref(buffer);
     return 0;
   } catch (const std::exception& e) {

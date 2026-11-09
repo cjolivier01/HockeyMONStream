@@ -139,7 +139,7 @@ absl::StatusOr<ProgramDetectorSettings> PrepareProgramDetector(
       const auto status = detection::ValidateTileInference(*tiling);
       if (!status.ok())
         return status;
-      Require(input->batch == -1, "Two-tile inference requires a dynamic-batch ONNX detector");
+      Require(input->batch == -1, "Tiled inference requires a dynamic-batch ONNX detector");
     }
     result.input_name = input->name;
     result.width = input->width;
