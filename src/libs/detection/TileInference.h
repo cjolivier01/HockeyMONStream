@@ -8,6 +8,9 @@
 namespace hm::detection {
 
 struct TileInferenceSettings {
+  constexpr TileInferenceSettings(double overlap, float merge_iou, int tiles)
+      : overlap(overlap), merge_iou(merge_iou), tiles(tiles) {}
+
   double overlap;
   float merge_iou;
   int tiles;

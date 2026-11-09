@@ -63,6 +63,7 @@ gboolean parse_gie_yaml(
       }
       config->tiled_inference = tile->has_value();
       if (*tile) {
+        config->tile_count = (**tile).tiles;
         config->tile_overlap = (**tile).overlap;
         config->tile_merge_iou = (**tile).merge_iou;
       }

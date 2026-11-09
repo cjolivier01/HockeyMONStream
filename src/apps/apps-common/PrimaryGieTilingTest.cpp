@@ -57,11 +57,10 @@ struct Setup {
 void CheckSetup(const char* inference_file, int tiles, bool enabled, int batch, bool accepted) {
   auto node = YAML::Load(
       "enable: 1\nplugin-type: 0\ninterval: 0\n"
-      "tiled-inference: {enable: 1, overlap: 0.2, merge-iou: 0.5}\n");
+      "tiled-inference: {enable: 1, tiles: 2, overlap: 0.2, merge-iou: 0.5}\n");
   node["config-file"] = inference_file;
   node["batch-size"] = batch;
-  if (tiles)
-    node["tiled-inference"]["tiles"] = tiles; // Retired quadrant preference.
+  node["tiled-inference"]["tiles"] = tiles;
   node["tiled-inference"]["enable"] = int(enabled);
   Setup setup;
   Check(parse_gie_yaml(&setup.config, "primary-gie", node, "."), "Production GIE parser failed");
@@ -76,7 +75,7 @@ void CheckSetup(const char* inference_file, int tiles, bool enabled, int batch, 
   if (enabled) {
     gchar* classes{};
     g_object_get(setup.gie.primary_gie, "infer-on-class-ids", &classes, nullptr);
-    const bool correct = g_strcmp0(classes, "0:1:") == 0;
+    const bool correct = g_strcmp0(classes, tiles == 4 ? "0:1:2:3:" : "0:1:") == 0;
     g_free(classes);
     Check(correct, "Production setup dropped tile selection");
   }
@@ -88,12 +87,10 @@ int main(int argc, char** argv) {
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   try {
     InferenceFile inference;
-    CheckSetup(inference.path, 0, false, 1, true);
-    CheckSetup(inference.path, 0, true, 2, true);
+    CheckSetup(inference.path, 4, false, 1, true);
     CheckSetup(inference.path, 2, true, 2, true);
-    CheckSetup(inference.path, 4, true, 4, false);
-    CheckSetup(inference.path, 4, true, 2, true);
-    CheckSetup(inference.path, 0, true, 1, false);
+    CheckSetup(inference.path, 4, true, 4, true);
+    CheckSetup(inference.path, 4, true, 2, false);
     CheckSetup(inference.path, 2, true, 4, false);
     return 0;
   } catch (const std::exception& error) {
