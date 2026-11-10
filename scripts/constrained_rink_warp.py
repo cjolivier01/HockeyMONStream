@@ -237,7 +237,7 @@ def main(argv=None):
   report["input_sha256"] = hashlib.sha256(image_bytes).hexdigest()
   write_image(args.output_dir / "warped.png", output)
   width = min(args.comparison_width, image.shape[1])
-  height = round(image.shape[0] * width / image.shape[1])
+  height = max(1, round(image.shape[0] * width / image.shape[1]))
   panes = []
   for label, frame in (("Before", image), ("Constrained warp (same framing)", output)):
     pane = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)

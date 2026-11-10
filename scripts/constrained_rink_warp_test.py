@@ -158,6 +158,18 @@ class WarpTest(unittest.TestCase):
           main(args)
         self.assertFalse((root / "result").exists())
 
+  def test_comparison_height_stays_positive_for_very_wide_inputs(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = Path(directory)
+      spec = specification()
+      spec["source_size"] = [2000, 2]
+      (root / "guides.json").write_text(json.dumps(spec))
+      cv2.imwrite(str(root / "input.png"), np.zeros((2, 2000, 3), dtype=np.uint8))
+      with contextlib.redirect_stdout(io.StringIO()):
+        main([str(root / "input.png"), "--guides", str(root / "guides.json"),
+              "--output-dir", str(root / "result"), "--comparison-width", "320"])
+      self.assertEqual(cv2.imread(str(root / "result/comparison.jpg")).shape[1], 320)
+
 
 if __name__ == "__main__":
   unittest.main()
