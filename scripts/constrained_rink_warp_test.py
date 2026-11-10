@@ -11,15 +11,14 @@ import unittest
 import cv2
 import numpy as np
 
-from constrained_rink_warp import Curve, RinkWarp, main
+from constrained_rink_warp import Curve, RinkWarp, interval, main
 
 
 def specification():
-  return {"schema": 1, "source_size": [321, 151],
-          "guides": [[0, .15, .45], [.25, .2, .7], [.5, .23, .85],
-                     [.75, .2, .7], [1, .15, .45]],
-          "target_y": .9, "max_vertical_stretch": 4,
-          "transition_fraction": .15, "limit_transition_fraction": .2}
+  return {"schema": 2, "source_size": [321, 151],
+          "guides": [[0, .15, .45], [.25, .4, .7], [.5, .55, .85],
+                     [.75, .4, .7], [1, .15, .45]],
+          "target_rows": [.6, .9], "horizontal_crop": [0, 1]}
 
 
 class WarpTest(unittest.TestCase):
@@ -33,84 +32,142 @@ class WarpTest(unittest.TestCase):
       self.assertGreaterEqual(result.min(), min(y[i], y[i + 1]) - 1e-15)
       self.assertLessEqual(result.max(), max(y[i], y[i + 1]) + 1e-15)
 
-  def test_exact_near_constraint_and_fixed_far_region(self):
+  def test_both_rails_are_level_to_the_extreme_ends(self):
     warp = RinkWarp(specification())
     x = np.linspace(0, 1, 1001)
-    far, near, _ = warp.columns(x)
-    np.testing.assert_allclose(warp.forward_y(x, near), warp.target, atol=1e-14)
-    for fraction in (0, .2, .8, 1):
-      np.testing.assert_array_equal(warp.forward_y(x, far * fraction), far * fraction)
+    upper, lower = warp.columns(x)
+    np.testing.assert_allclose(warp.forward_y(x, upper), .6, atol=1e-14)
+    np.testing.assert_allclose(warp.forward_y(x, lower), .9, atol=1e-14)
+    self.assertLess(warp.report()["max_guide_error_pixels"], 1e-10)
+    # Symmetric inputs have symmetric output; the endpoints are not subject
+    # to an independent stretch cap that could leave one side higher.
+    y = np.linspace(0, 1, 501)[:, None]
+    np.testing.assert_allclose(warp.inverse_y(x, y), warp.inverse_y(1 - x, y), atol=1e-13)
 
-  def test_stretch_budget_monotonicity_and_continuous_shoulders(self):
-    spec = specification()
-    spec["max_vertical_stretch"] = 2
-    warp = RinkWarp(spec)
+  def test_positive_jacobian_and_continuous_slopes_at_rails(self):
+    warp = RinkWarp(specification())
     x = np.linspace(0, 1, 251)
     y = np.linspace(0, 1, 10001)[:, None]
-    forward = warp.forward_y(x, y)
-    scale = np.diff(forward, axis=0) * 10000
-    self.assertGreaterEqual(scale.min(), 1 - 1e-10)
-    self.assertLessEqual(scale.max(), 2 + 1e-10)
-    far, near, _ = warp.columns(x)
-    # Derivatives return to one on both sides of both constraints.
-    for boundary in (far, near):
+    scale = np.diff(warp.forward_y(x, y), axis=0) * 10000
+    self.assertGreater(scale.min(), 0)
+    self.assertTrue(np.all(np.isfinite(scale)))
+    # Line thickness does not jump at a guide or the translation boundary.
+    upper, lower, _, middle, shared, _ = warp.segments(x)
+    for boundary, expected in ((upper, 1 / shared), (lower, 1 / middle)):
       for sign in (-1, 1):
-        eps = 1e-7
+        eps = 1e-9
         slope = (warp.forward_y(x, boundary + sign * eps) - warp.forward_y(x, boundary)) / (sign * eps)
-        np.testing.assert_allclose(slope, 1, atol=1e-7)
-    actual = warp.forward_y(x, near)
-    self.assertGreater(warp.target - actual.min(), .1)
-    self.assertLessEqual(actual.max(), warp.target + 1e-15)
+        np.testing.assert_allclose(slope, expected, atol=1e-6)
 
-  def test_inverse_roundtrip_including_outside_the_canvas(self):
+  def test_inverse_roundtrip_with_compression_expansion_and_linear_tails(self):
     rng = np.random.default_rng(123)
-    for transition in (.001, .15, .5):
-      spec = specification()
-      spec["transition_fraction"] = transition
-      warp = RinkWarp(spec)
-      x = rng.uniform(0, 1, 20000)
-      y = rng.uniform(-.1, 1.6, 20000)
-      np.testing.assert_allclose(warp.inverse_y(x, warp.forward_y(x, y)), y, atol=1e-9)
-      np.testing.assert_allclose(warp.forward_y(x, warp.inverse_y(x, y)), y, atol=1e-9)
+    warp = RinkWarp(specification())
+    x = rng.uniform(0, 1, 20000)
+    y = rng.uniform(-.1, 1.6, 20000)
+    np.testing.assert_allclose(warp.inverse_y(x, warp.forward_y(x, y)), y, atol=1e-12)
+    np.testing.assert_allclose(warp.forward_y(x, warp.inverse_y(x, y)), y, atol=1e-12)
+    for slope in (.0001, .01, 1, 10, 10000):
+      t = np.linspace(0, 1, 1001)
+      result = interval(t, 0, 1, 0, slope, 1, 1)
+      np.testing.assert_allclose(interval(result, 0, 1, 0, slope, 1, 1, inverse=True), t, atol=1e-7)
+      self.assertTrue(np.all(np.diff(result) > 0))
 
-  def test_scalar_inverse_and_zero_displacement(self):
+  def test_identity_and_scalars(self):
     spec = specification()
-    spec["max_vertical_stretch"] = 1
+    spec["guides"] = [[0, .6, .9], [1, .6, .9]]
     warp = RinkWarp(spec)
     for x in (0, .33, 1):
       for y in (0, .2, .7, 1):
         self.assertAlmostEqual(float(warp.inverse_y(x, y)), y)
         self.assertAlmostEqual(float(warp.forward_y(x, y)), y)
 
-  def test_source_coordinates_stay_on_canvas(self):
-    warp = RinkWarp(specification())
-    x = np.linspace(0, 1, 321)
+  def test_source_sampling_bounds_and_whole_rink_preservation(self):
+    spec = specification()
+    spec["horizontal_crop"] = [.02, .98]
+    warp = RinkWarp(spec)
+    source_x = warp.inverse_x(np.linspace(0, 1, 321))
+    np.testing.assert_allclose(warp.forward_x(source_x), np.linspace(0, 1, 321))
+    self.assertTrue(np.all(np.diff(source_x) > 0))
     y = np.linspace(0, 1, 151)[:, None]
-    source = warp.inverse_y(x, y)
-    self.assertGreaterEqual(source.min(), 0)
-    self.assertLessEqual(source.max(), 1)
-    self.assertTrue(np.all(np.diff(source, axis=0) > 0))
+    source_y = warp.inverse_y(source_x, y)
+    self.assertGreaterEqual(source_y.min(), 0)
+    self.assertLessEqual(source_y.max(), 1)
+    self.assertTrue(np.all(np.diff(source_y, axis=0) > 0))
+    # Every point above the lower guide stays vertically in frame, including
+    # the two corners. Foreground below that guide may be intentionally cropped.
+    _, lower = warp.columns(source_x)
+    for fraction in np.linspace(0, 1, 101):
+      mapped = warp.forward_y(source_x, lower * fraction)
+      self.assertGreaterEqual(mapped.min(), 0)
+      self.assertLessEqual(mapped.max(), warp.bottom + 1e-14)
+    self.assertGreater(warp.forward_y(.02, 1), 1)
 
-  def test_render_keeps_protected_pixels_and_vertical_lines(self):
+  def test_render_preserves_verticals_and_does_not_invent_black_borders(self):
     image = np.zeros((151, 321, 3), dtype=np.uint8)
     image[:] = np.arange(321, dtype=np.uint16)[None, :, None] % 256
     warp = RinkWarp(specification())
-    np.testing.assert_array_equal(warp.render(image), image)
-    rng = np.random.default_rng(1)
-    image = rng.integers(0, 256, image.shape, dtype=np.uint8)
     output = warp.render(image)
-    np.testing.assert_array_equal(output[:23], image[:23])
+    np.testing.assert_array_equal(output, np.broadcast_to(output[:1], output.shape))
+    np.testing.assert_array_equal(warp.render(np.full_like(image, 255)), 255)
+
+  def test_mask_report_detects_each_cropping_direction(self):
+    spec = specification()
+    spec["horizontal_crop"] = [.1, .9]
+    warp = RinkWarp(spec)
+    mask = np.zeros((151, 321), np.uint8)
+    mask[50, 160] = 1
+    self.assertEqual(warp.mask_report(mask)["input_ice_pixels_mapped_outside_canvas"], 0)
+    for point in ((50, 0), (50, 320), (150, 50)):
+      mask[point] = 1
+    self.assertEqual(warp.mask_report(mask)["input_ice_pixels_mapped_outside_canvas"], 3)
+    self.assertLess(warp.mask_report(mask)["minimum_ice_clearance_pixels"], 0)
+
+  def test_horizontal_expansion_matches_vertical_scale_between_rails(self):
+    spec = specification()
+    warp = RinkWarp(spec)
+    x = (warp.source_x[1:] + warp.source_x[:-1]) / 2
+    upper, lower = warp.columns(x)
+    vertical = (warp.bottom - warp.top) / (lower - upper)
+    horizontal = np.diff(warp.output_x) / np.diff(warp.source_x)
+    horizontal *= (warp.output_size[0] - 1) / (warp.source_size[0] - 1)
+    np.testing.assert_allclose(horizontal, vertical, rtol=.003)
+    # A constant-scale grid must remain square in pixel coordinates, and the
+    # output grows instead of compressing the horizontal axis back afterward.
+    spec["guides"] = [[0, .3, .45], [1, .3, .45]]
+    uniform = RinkWarp(spec)
+    self.assertEqual(uniform.output_size, (641, 151))
+    self.assertAlmostEqual(float(uniform.forward_y(.5, .35) - uniform.forward_y(.5, .3)), .1)
+
+  def test_foreground_boundary_limit_and_output_width_limit(self):
+    spec = specification()
+    spec["target_rows"] = [.8, .9]
+    warp = RinkWarp(spec)
+    self.assertEqual(float(warp.inverse_y(.5, 1)), 1)
+    x = np.linspace(0, 1, 301)
+    y = np.linspace(0, 1, 501)[:, None]
+    mapped = warp.inverse_y(x, y)
+    self.assertGreaterEqual(mapped.min(), 0)
+    self.assertLessEqual(mapped.max(), 1)
+    self.assertTrue(np.all(np.diff(mapped, axis=0) > 0))
+    np.testing.assert_allclose(warp.forward_y(x, mapped), np.broadcast_to(y, mapped.shape), atol=1e-12)
+    spec["source_size"] = [2000, 151]
+    spec["guides"] = [[0, .44, .45], [1, .44, .45]]
+    spec["target_rows"] = [.3, .9]
+    with self.assertRaisesRegex(ValueError, "output width"):
+      RinkWarp(spec)
 
   def test_invalid_documents_are_rejected(self):
-    cases = [("schema", True), ("schema", 2), ("source_size", [1, 151]),
+    cases = [("schema", True), ("schema", 1), ("source_size", [1, 151]),
              ("source_size", [321.0, 151]), ("source_size", [32767, 151]),
-             ("target_y", .5), ("target_y", float("nan")),
-             ("max_vertical_stretch", .9), ("max_vertical_stretch", True),
-             ("transition_fraction", 0), ("transition_fraction", .51),
-             ("limit_transition_fraction", 1), ("guides", []),
-             ("guides", [[0, .2, .5], [1, .6, .5]]),
+             ("target_rows", [.5, .8]), ("target_rows", [.9, .9]),
+             ("target_rows", [.5, float("nan")]), ("target_rows", [True, .9]),
+             ("target_rows", 0), ("target_rows", [.1, 1]),
+             ("horizontal_crop", [1, 0]), ("horizontal_crop", [0, 1.1]),
+             ("horizontal_crop", [0, 0]), ("horizontal_crop", [0, float("inf")]),
+             ("guides", []), ("guides", [[0, .2, .5], [1, .6, .5]]),
              ("guides", [[0, .2, .5], [0, .2, .5]]),
              ("guides", [[0, .2, .5], [.9, .2, .5]]),
+             ("guides", [[0, 0, .5], [1, .2, .5]]),
              ("guides", [[0, .2, .5], [1, float("inf"), .5]])]
     for key, value in cases:
       with self.subTest(key=key, value=value):
@@ -123,11 +180,11 @@ class WarpTest(unittest.TestCase):
     with self.assertRaises(ValueError):
       RinkWarp(spec)
 
-  def test_cli_writes_comparison_and_refuses_overwrite(self):
+  def test_cli_writes_comparison_and_refuses_overwrite_or_clipped_ice(self):
     with tempfile.TemporaryDirectory() as directory:
       root = Path(directory)
       image = np.zeros((151, 321, 3), dtype=np.uint8)
-      image[35:120, :, 1] = 255
+      image[35:60, :, 1] = 255
       cv2.imwrite(str(root / "input.png"), image)
       cv2.imwrite(str(root / "mask.png"), image[:, :, 1])
       (root / "guides.json").write_text(json.dumps(specification()))
@@ -137,13 +194,17 @@ class WarpTest(unittest.TestCase):
       with contextlib.redirect_stdout(io.StringIO()):
         self.assertEqual(main(args), 0)
       report = json.loads((root / "result/report.json").read_text())
-      self.assertGreater(report["ice_fraction_after"], report["ice_fraction_before"])
-      self.assertGreater(report["input_ice_pixels_mapped_outside_canvas"], 0)
-      self.assertEqual(cv2.imread(str(root / "result/warped.png")).shape, image.shape)
+      self.assertEqual(report["input_ice_pixels_mapped_outside_canvas"], 0)
+      self.assertEqual(cv2.imread(str(root / "result/warped.png")).shape[1::-1], RinkWarp(specification()).output_size)
       self.assertTrue((root / "result/comparison.jpg").is_file())
       with self.assertRaises(FileExistsError):
         main(args)
       np.testing.assert_array_equal(cv2.imread(str(root / "input.png")), image)
+      args[args.index(str(root / "result"))] = str(root / "clipped")
+      cv2.imwrite(str(root / "mask.png"), np.full((151, 321), 255, np.uint8))
+      with self.assertRaisesRegex(ValueError, "marked ice outside"):
+        main(args)
+      self.assertFalse((root / "clipped").exists())
 
   def test_cli_rejects_shape_mismatch_and_precision_loss_before_writing(self):
     with tempfile.TemporaryDirectory() as directory:
