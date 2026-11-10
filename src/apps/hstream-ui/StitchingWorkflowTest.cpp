@@ -272,8 +272,12 @@ elif operation in ('cancel','retry'):
   for node in value['nodes']: node['state']='cancelled'
  else:
   value['epoch']+=1; value['state']='running'; value['owner_released']=False; value.pop('cancel_requested',None)
-  node=next(n for n in value['nodes'] if n['id']==option('--stage')); node['state']='running'
-  node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
+  ids=[args[i+1] for i,arg in enumerate(args) if arg=='--stage']
+  (root/'retry-stages.json').write_text(json.dumps({'ids':ids}))
+  for node in value['nodes']:
+   if node['id'] not in ids: continue
+   node['state']='running'
+   node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
  (root/'state.json').write_text(json.dumps(value))
  if operation=='cancel' and (root/'lose-cancel-response').exists():
   print('Cancellation response unavailable',file=sys.stderr); raise SystemExit(1)
@@ -796,6 +800,61 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       wait([&] { return !pane->active() && !pane->busy(); }), "Explicit cancellation did not use the current epoch");
   delete pane;
 }
+void retryFailedStages(const QString& root, YAML::Node baseline) {
+  auto state = read(root + "/state.json");
+  auto nodes = state.value("nodes").toArray();
+  const QStringList states{"succeeded", "failed", "unavailable", "blocked", "cancelled"};
+  for (int index = 0; index < nodes.size(); ++index) {
+    auto node = nodes[index].toObject();
+    node.insert("state", states[std::min(index, int(states.size()) - 1)]);
+    nodes[index] = node;
+  }
+  state.insert("state", "failed");
+  state.insert("owner_released", false);
+  state.insert("nodes", nodes);
+  write(root + "/state.json", QJsonDocument(state).toJson());
+  baseline["workflow"]["registry"] = root.toStdString();
+  baseline["workflow"]["poll_interval_ms"] = 100;
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", root);
+  StitchingWorkflow pane(root + "/game", root, environment, baseline, nullptr);
+  pane.attach(state.value("workflow_id").toString());
+  auto* retry = widget<QPushButton>(pane, "retryStitchWorkflowStageButton");
+  auto* retry_failed = widget<QPushButton>(pane, "retryFailedStitchWorkflowButton");
+  auto* stages = widget<QComboBox>(pane, "stitchWorkflowStage");
+  require(wait([&] { return stages->count() == nodes.size(); }), "Bulk retry fixture did not attach");
+  require(!retry_failed->isEnabled(), "Bulk retry bypassed pending cleanup");
+  state.insert("owner_released", true);
+  write(root + "/state.json", QJsonDocument(state).toJson());
+  require(wait([&] { return retry_failed->isEnabled(); }), "Bulk retry requires a failed stage selection");
+  require(!retry->isEnabled(), "Successful selected stage became retryable");
+  require(!retry_failed->icon().isNull(), "Bulk retry has no action icon");
+  pane.setEditingEnabled(false, false);
+  require(!retry_failed->isEnabled(), "Bulk retry ignored the dialog editing fence");
+  pane.setEditingEnabled(true, false);
+  write(root + "/lose-retry-response", "lost");
+  QFile calls(root + "/calls");
+  require(calls.open(QIODevice::ReadOnly), "Cannot inspect retry calls");
+  const int before = calls.readAll().count("retry\n");
+  calls.close();
+  retry_failed->click();
+  require(!retry_failed->isEnabled() && !retry->isEnabled(), "In-flight retry allowed another request");
+  retry_failed->click();
+  require(wait([&] { return !pane.busy() && pane.active(); }), "Lost bulk retry response was not reconciled");
+  QFile::remove(root + "/lose-retry-response");
+  require(calls.open(QIODevice::ReadOnly), "Cannot inspect completed retry calls");
+  require(calls.readAll().count("retry\n") == before + 1, "Bulk retry submitted more than one request");
+  const auto ids = read(root + "/retry-stages.json").value("ids").toArray();
+  require(
+      ids == QJsonArray{nodes[1].toObject().value("id"), nodes[2].toObject().value("id")},
+      "Bulk retry did not select exactly the failed and unavailable stages");
+  const auto retried = read(root + "/state.json");
+  require(retried.value("epoch").toInt() == state.value("epoch").toInt() + 1, "Bulk retry split workflow epochs");
+  require(retried.value("limits") == state.value("limits"), "Bulk retry changed the parallel stage limit");
+  require(retried.value("nodes").toArray()[0] == nodes[0], "Bulk retry changed a successful stage");
+  require(!retry_failed->isEnabled(), "Running workflow enabled bulk retry");
+}
+
 int controllerCalls(const QString& root, const QByteArray& operation) {
   QFile calls(root + "/calls");
   require(calls.open(QIODevice::ReadOnly), "Cannot inspect controller calls");
@@ -1951,6 +2010,7 @@ int main(int argc, char** argv) {
     store.directory = store.game_directory / "_hockeymon/stitching-experiments";
     plans(store);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
+    retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
     profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));
     dialogOwnership(temporary.path());
     dialogCloseDuringSubmission(temporary.path());
