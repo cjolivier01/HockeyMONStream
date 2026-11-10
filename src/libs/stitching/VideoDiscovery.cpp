@@ -388,8 +388,9 @@ absl::Status ValidateCameraChapters(const std::map<std::string, std::vector<std:
 
 absl::Status ValidateDiscoveredCameraChapters(const VideosDict& cameras) {
   std::map<std::string, std::vector<std::string>> playlists;
+  const bool paired = cameras.count("left") && cameras.count("right");
   for (const auto& [camera, chapters] : cameras)
-    if (camera != "stitched")
+    if (camera != "stitched" && (!paired || camera == "left" || camera == "right"))
       for (const auto& [number, file] : chapters)
         playlists[camera].push_back(file);
   return ValidateCameraChapters(playlists);

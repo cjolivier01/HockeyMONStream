@@ -85,6 +85,31 @@ int main() {
     Check(
         hm::stitching::ValidateDiscoveredCameraChapters(ignored_output).ok(),
         "Published output must not be treated as a camera");
+    // Root Left/Right playlists own playback even beside unused vendor files.
+    const auto selected_root = root / "selected";
+    std::filesystem::create_directories(selected_root);
+    for (const auto* file :
+         {"left-1.mp4",
+          "left-2.mp4",
+          "left-3.mp4",
+          "right-1.mp4",
+          "right-2.mp4",
+          "right-3.mp4",
+          "GX010001.MP4",
+          "GX020001.MP4",
+          "GX030001.MP4",
+          "GH010002.MP4",
+          "GH030002.MP4"})
+      std::ofstream(selected_root / file).put('x');
+    auto selected = hm::stitching::get_available_videos(selected_root.string());
+    Check(
+        selected.ok() && hm::stitching::ValidateDiscoveredCameraChapters(*selected).ok(),
+        "Unused vendor recordings must not warn when Left/Right own playback");
+    std::filesystem::remove(selected_root / "right-2.mp4");
+    selected = hm::stitching::get_available_videos(selected_root.string());
+    Check(
+        selected.ok() && !hm::stitching::ValidateDiscoveredCameraChapters(*selected).ok(),
+        "Gaps in the selected Left/Right playlists must still warn");
     std::filesystem::remove_all(root);
     std::cout << "Camera chapter validation passed\n";
     return 0;
