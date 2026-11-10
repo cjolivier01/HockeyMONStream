@@ -945,19 +945,6 @@ def generate(root, *, native_revision=None, include_revision=True):
         qt_control_id="gpuMemoryProfileCombo",
         choice_labels=labels,
     )
-    add(
-        "pipeline.primary-gie.tiled-inference.enable",
-        "Detection",
-        maximum=1,
-        label="Two-tile detection (next run)",
-    )
-    fields[-1].update(
-        qt_stage="program",
-        qt_tab="Detection",
-        qt_control_id="tiledDetectionCheck",
-        qt_order=2,
-        qt_toggle=True,
-    )
     for feature in ("pose", "jersey", "action"):
         add(
             f"pipeline.player-analytics.{feature}.enable",

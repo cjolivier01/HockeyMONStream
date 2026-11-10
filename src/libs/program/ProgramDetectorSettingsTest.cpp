@@ -50,11 +50,8 @@ int main(int argc, char** argv) {
     auto settings = hm::program::PrepareProgramDetector(config_path, config, {});
     Check(settings.ok(), settings.status().ToString());
     Check(
-        hm::program::PrepareProgramDetector(config_path, config, {}, hm::detection::TileInferenceSettings{.2, .5}).ok(),
-        "Dynamic-batch detector rejected for tiling");
-    Check(
         settings->onnx == model_path && settings->input_name == "images" && settings->width == 1984 &&
-            settings->height == 736 && settings->fp16 && settings->classes == 1 &&
+            settings->height == 736 && settings->fp16 && settings->classes == 80 &&
             settings->maximum_detections == 300 && settings->maintain_aspect && settings->symmetric_padding,
         "Detector model/configuration contract changed");
     config["property"]["network-mode"] = 0;

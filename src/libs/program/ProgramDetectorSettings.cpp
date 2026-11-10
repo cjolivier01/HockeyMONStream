@@ -55,8 +55,7 @@ std::filesystem::path ModelPath(const std::string& text, const std::filesystem::
 absl::StatusOr<ProgramDetectorSettings> PrepareProgramDetector(
     const std::filesystem::path& inference_file,
     const YAML::Node& inference,
-    const std::function<bool()>& cancelled,
-    std::optional<detection::TileInferenceSettings> tiling) {
+    const std::function<bool()>& cancelled) {
   if (cancelled && cancelled())
     return absl::CancelledError("Detector preparation cancelled");
   try {
@@ -135,12 +134,6 @@ absl::StatusOr<ProgramDetectorSettings> PrepareProgramDetector(
     const auto input = onnx::ReadImageInput(result.onnx);
     if (!input.ok())
       return input.status();
-    if (tiling) {
-      const auto status = detection::ValidateTileInference(*tiling);
-      if (!status.ok())
-        return status;
-      Require(input->batch == -1, "Two-tile inference requires a dynamic-batch ONNX detector");
-    }
     result.input_name = input->name;
     result.width = input->width;
     result.height = input->height;

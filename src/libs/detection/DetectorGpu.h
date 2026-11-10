@@ -18,12 +18,6 @@ using gpu::PixelFormat;
 // Source dimensions must be below 2^24 for exact float pixel coordinates.
 // No allocation, upload, synchronization, or video readback.
 cudaError_t PreprocessDetector(const Image& image, const Letterbox& box, float* tensor, cudaStream_t stream);
-cudaError_t PreprocessDetectorTile(
-    const Image& image,
-    const DetectionTile& tile,
-    const Letterbox& box,
-    float* tensor,
-    cudaStream_t stream);
 
 // Compact valid [x1,y1,x2,y2,score,class] rows on the device. Output capacity is
 // rows, so thresholding cannot silently discard a later, higher score. count

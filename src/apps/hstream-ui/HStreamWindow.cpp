@@ -7935,14 +7935,6 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     for (const QString mode : {"fp32", "fp16", "bf16", "int8"})
       detector_precision_combo_->addItem(mode.toUpper(), mode);
     detection_layout->addWidget(detector_precision_combo_);
-    tiled_detection_check_ = new QCheckBox("Two-tile detection (next run)");
-    tiled_detection_check_->setObjectName("tiledDetectionCheck");
-    tiled_detection_check_->setEnabled(!backend_.isHockeyMon());
-    tiled_detection_check_->setToolTip(
-        "Processes two overlapping crops in one batch. Can improve small detections in wide panoramas; "
-        "adds GPU work. Available with the native HStream backend.");
-    detection_layout->addWidget(tiled_detection_check_);
-    connect(tiled_detection_check_, &QCheckBox::toggled, this, [this] { updatePresetDirtyState(); });
     detector_precision_status_ = new QLabel();
     detector_precision_status_->setObjectName("detectorPrecisionStatus");
     detector_precision_status_->setWordWrap(true);
@@ -11730,9 +11722,6 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
       args << QString("--options=pipeline.primary-gie.config-file=%1").arg(detectorConfigName());
       args << QString("--options=pipeline.primary-gie.model-engine-file=%1").arg(detectorEnginePath());
     }
-    if (!backend_.isHockeyMon() && tiled_detection_check_)
-      args << QString("--options=pipeline.primary-gie.tiled-inference.enable=%1")
-                  .arg(tiled_detection_check_->isChecked() ? 1 : 0);
     args << QString("--options=rink.tracking.cam_ignore_referees=%1")
                 .arg(cameraControlValue("Ignore_Referees") != 0 ? "true" : "false");
     args << QString("--options=rink.tracking.cam_ignore_goalies=%1")
@@ -11967,14 +11956,6 @@ void HStreamWindow::loadBlendMode(const YAML::Node& config) {
 void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   if (!detector_precision_combo_)
     return;
-  if (tiled_detection_check_) {
-    const auto resolved = merge_yaml_maps(baseline_config_, config);
-    const int enabled = resolved["pipeline"]["primary-gie"]["tiled-inference"]["enable"].as<int>();
-    if (enabled != 0 && enabled != 1)
-      throw std::runtime_error("tiled-inference.enable must be 0 or 1");
-    const QSignalBlocker blocker(tiled_detection_check_);
-    tiled_detection_check_->setChecked(!backend_.isHockeyMon() && enabled == 1);
-  }
   const auto selected = hm::ui::ReadDetectorSelection(
       merge_yaml_maps(baseline_config_, config),
       detectorModels(),
@@ -19331,8 +19312,6 @@ void HStreamWindow::updateRunControls() {
     save_preset_button_->setEnabled(false);
   if (auto* prepare = findChild<QPushButton*>("prepareRecordedInt8Button"))
     prepare->setEnabled(!external_operation && !running && !finalizing);
-  if (tiled_detection_check_)
-    tiled_detection_check_->setEnabled(!backend_.isHockeyMon() && !external_operation && !running && !finalizing);
   if (start_button_) {
     start_button_->setEnabled(
         !editing_defaults_ && !running && !finalizing && !archive_recovery_blocked &&
@@ -20128,9 +20107,6 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(detector_model_combo_, detectorModels().front().id);
   if (!pipeline_running && detector_precision_combo_)
     set_combo_to_data(detector_precision_combo_, "fp32");
-  if (!pipeline_running && tiled_detection_check_)
-    tiled_detection_check_->setChecked(
-        !backend_.isHockeyMon() && baseline_config_["pipeline"]["primary-gie"]["tiled-inference"]["enable"].as<int>() == 1);
   if (!pipeline_running && player_analytics_controls_)
     player_analytics_controls_->resetToDefaults();
   if (!pipeline_running && rink_framing_controls_)
@@ -20385,7 +20361,6 @@ void HStreamWindow::captureSavedControlState() {
   }
   saved_high_bit_depth_mode_ = highBitDepthMode();
   saved_detector_precision_ = detectorPrecision();
-  saved_tiled_detection_ = tiled_detection_check_ && tiled_detection_check_->isChecked();
   saved_detector_model_ = detectorModel();
   saved_prepared_int8_engine_ = prepared_int8_engine_;
   saved_prepared_int8_manifest_ = prepared_int8_manifest_;
@@ -20447,7 +20422,6 @@ void HStreamWindow::updatePresetDirtyState() {
   bool dirty = (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) ||
       defaults_reset_pending_ || defaults_save_retry_ || retry_required ||
       saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
-      (tiled_detection_check_ && tiled_detection_check_->isChecked() != saved_tiled_detection_) ||
       (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
       (rink_framing_controls_ && rink_framing_controls_->isDirty()) ||
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
@@ -21563,8 +21537,6 @@ bool HStreamWindow::applySavedControlConfig(
     }
   }
   const auto previous_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
-  if (!backend_.isHockeyMon() && tiled_detection_check_ && tiled_detection_check_->isChecked() != saved_tiled_detection_)
-    config["pipeline"]["primary-gie"]["tiled-inference"]["enable"] = tiled_detection_check_->isChecked() ? 1 : 0;
   if (backend_.isHockeyMon() && !detectorPrecision().isEmpty() && detectorSelectionChanged()) {
     YAML::Node detector = config["hstream_ui"]["hockeymon"]["detector"];
     detector["model"] = detectorModel().toStdString();

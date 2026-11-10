@@ -271,7 +271,7 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const auto& right = pair->cameras[1].info;
   Require(gst_video_colorimetry_is_equal(&left.colorimetry, &right.colorimetry), "Camera colorimetry differs");
   g_print("HSTREAM_AMD_PREPARATION state=begin\n");
-  const auto detector = Take(hm::program::PrepareProgramDetector(launch.inference_file, launch.inference, {}, launch.tiling));
+  const auto detector = Take(hm::program::PrepareProgramDetector(launch.inference_file, launch.inference, {}));
   const hm::detection::DetectorConfig detector_config{
       detector.onnx,
       detector.input_name,
@@ -287,8 +287,7 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
       detector.symmetric_padding,
       detector.fp16 ? hm::gpu::MigraphxSession::Precision::kFloat16 : hm::gpu::MigraphxSession::Precision::kFloat32,
       launch.amd.maximum_inference_io_bytes,
-      launch.amd.model_cache,
-      launch.tiling};
+      launch.amd.model_cache};
   auto blend = hm::pano::BlendSettings::HardSeam();
   switch (Take(hm::stitching::ParseBlendMode(launch.blend.mode))) {
     case hm::stitching::BlendMode::kLaplacian:

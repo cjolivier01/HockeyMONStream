@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "hstream/src/libs/common/ConfigLayers.h"
-#include "hstream/src/libs/detection/TileInferenceConfig.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 
@@ -17,7 +16,6 @@ struct ProgramLaunchConfig {
   AmdProgramSettings amd;
   stitching::ResolvedBlendSettings blend;
   bool minimize_blend;
-  std::optional<detection::TileInferenceSettings> tiling;
   std::array<std::vector<std::filesystem::path>, 2> chapters;
   std::array<double, 2> frame_offsets;
 };

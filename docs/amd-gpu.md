@@ -1,11 +1,5 @@
 # AMD GPU port
 
-Optional [two-tile detection](tiled-inference.md) uses the shared native
-`pipeline.primary-gie.tiled-inference` settings. HIP preprocesses both crops into
-one batch-two tensor and submits MIGraphX once; shared cross-tile suppression
-returns stitched coordinates before tracking. The default full-frame path is
-unchanged. The same GPU sampling tests cover both modes on CUDA and HIP.
-
 Status: native HIP kernels, VA/HIP video interoperability and MIGraphX inference
 work on AMD. A ROCm build of `hstream-cli` now owns the saved-calibration Program
 video path: stereo decode, stitching, detection, rink filtering, geometric

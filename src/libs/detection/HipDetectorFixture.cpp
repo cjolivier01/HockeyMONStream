@@ -1,7 +1,6 @@
 // Offline hardware qualification only. Reads one bounded image, uploads once,
 // and writes detection metadata; production video never uses this CPU path.
 #include "hstream/src/libs/detection/HipDetector.h"
-#include "hstream/src/libs/detection/TileInferenceConfig.h"
 
 #include <chrono>
 #include <fstream>
@@ -60,12 +59,6 @@ int main(int argc, char** argv) {
         precision == "fp16" ? hm::gpu::MigraphxSession::Precision::kFloat16
                             : hm::gpu::MigraphxSession::Precision::kFloat32,
         std::stoull(argv[7])};
-    if (yaml["tiled-inference"]) {
-      const auto tiling = hm::detection::ReadTileInferenceSettings(yaml["tiled-inference"]);
-      if (!tiling.ok())
-        throw std::runtime_error(tiling.status().ToString());
-      config.tiling = *tiling;
-    }
     const int runs = std::stoi(argv[9]);
     if (runs <= 0)
       throw std::runtime_error("Positive run count required");

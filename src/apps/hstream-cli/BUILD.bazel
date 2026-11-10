@@ -32,7 +32,6 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
-    "//src/libs/detection:tile_inference_config",
     "//src/libs/common:game_storage",
     "//src/libs/common:game_operation_owner",
     "//src/apps/apps-common:preview_capture_receipt",
