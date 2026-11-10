@@ -1,25 +1,20 @@
 # Constrained rink warp preview
 
-`scripts/constrained_rink_warp.py` is an offline still renderer for evaluating
-rink-specific straightening. It accepts an already stitched panorama and
-explicit image-space guides. It writes a new directory containing the warped
-PNG, a labeled before/after JPEG with identical framing, copied guides and a
-JSON measurement report. Python 3, NumPy and OpenCV are required; SciPy is not.
-The command accepts 8-bit, three-channel input images and refuses other formats
-instead of silently dropping alpha or reducing precision.
+`scripts/constrained_rink_warp.py` straightens two measured front rails in an
+already stitched panorama. Both rails have common horizontal destination rows,
+including at the ends. Upright posts stay upright. The output is a PNG at the
+source height with an expanded or reduced width, a labeled before/after JPEG,
+copied guides and a JSON measurement report.
+Python 3, NumPy and OpenCV are required; SciPy is not.
 
-This is an experiment tool, not a live projection setting. It does not modify
-game settings, Hugin projects, camera maps, masks or calibration generations.
-The CPU image remap is confined to this offline command. NVIDIA and AMD
-playback remain unchanged. Wiring the warp into playback would require
-composing the inverse field into both cameras' GPU maps, transforming all
-panorama-to-ray/ice geometry, updating generation identities and exposing
-matching desktop/web controls. Do not substitute the result for `s.png` or
-publish it as a calibrated panorama.
+This is an offline experiment, not a saved playback setting. Game settings,
+Hugin projects, camera maps, masks and calibration generations stay unchanged.
+The CPU remap reads only the explicitly supplied still. NVIDIA and AMD playback
+are unaffected. Live integration would need both GPU map implementations,
+transformed panorama-to-ray/ice geometry, generation identities and matching
+Qt/web controls. Do not replace `s.png` with the result.
 
 ## Reproduce the Littleton comparison
-
-From the repository root:
 
 ```bash
 python3 scripts/constrained_rink_warp.py \
@@ -30,68 +25,108 @@ python3 scripts/constrained_rink_warp.py \
   --comparison-width 1800
 ```
 
-The output directory must not exist. The example describes the 11830×2556
-panorama inspected on 2026-11-10. Its near guide was sampled from a robust,
-global degree-four fit of the ice mask's lower boundary, using the central
-6–94% of image width and eight Huber-reweighting passes to suppress jagged
-edges and obstructions. This fit was prepared for the example; the renderer
-itself consumes explicit guide points and does not detect the rink. The far
-guide protects the far-side boards. These are measured choices for that
-image, not defaults or automatic rink detection. A changed camera calibration,
-projection, leveling or crop requires new guides, even if the dimensions match.
-The report records the hash of the exact image bytes decoded for the render.
+The output directory must not exist. Only 8-bit, three-channel images are
+accepted. A supplied mask must be single-channel and match the image size.
+If any marked ice would leave the output canvas, the command fails before
+creating the output directory. This check includes the horizontal crop and
+vertical displacement, not just the lower guide. A mask cannot establish
+preservation of ice it failed to mark; inspect the actual rink ends too.
 
-The saved mask occupied 41.2% of the original canvas and 55.8% of the result.
-The example allows at most 3× **vertical** stretching and brings the near guide
-within one output pixel of its horizontal target over approximately 76% of
-the width. The extreme ends retain curvature. The mask is approximate evidence
-of ice coverage, not ground truth, and an increased area does not mean new
-detail was recovered. Use the report's source-mask out-of-canvas count to check
-whether any marked ice was displaced beyond the frame; the example displaced
-zero marked ice pixels outside the canvas.
+The example describes the 11830×2556 panorama inspected on 2026-11-10, with
+SHA-256 `1c91d4a8502160978ac5729d7ef37b40f40d71106694f9c281aba15620c99815`.
+Its guides follow the upper black glass rail and lower red board cap. The
+central traces use broad quadratic/quartic fits, with explicit marks at the
+physical ends. The lower central fit began with the ice-mask contour. It is
+**not extrapolated through the right-hand gate**. These are image-specific,
+editable measurements; the renderer does not automatically detect the rink.
+Different calibration, leveling, crop or projection requires new guides.
 
-## Guide format and transform
+The lower target is 96% of the image height, leaving about 102 native pixels
+below the guide. The horizontal crop retains the left 96% of the source,
+removing the right-hand access area and centering the rink. Horizontal spacing
+matches the average vertical expansion between the rails.
+The resulting canvas is 15455×2556; forcing it back to the original aspect
+ratio would make the people too tall. Foreground below the boards continues
+at the local scale and may leave frame; it is not compressed into a thin
+strip. The complete supplied ice mask stays inside, with about 63 pixels
+minimum clearance. Mask coverage changes from 41.2% to 45.5%. The comparison
+fits each image to the same display width without changing its aspect ratio.
 
-Every document field is required; the tool has no independent projection
-defaults. `schema` is `1`; `source_size` is `[width, height]`. `guides` is an
-ordered list of `[x, far_y, near_y]` marks. Coordinates are fractions of the
-pixel-center extent: `(0, 0)` is the top-left pixel and `(1, 1)` the bottom-right.
-The marks must cover x=0 through x=1 and satisfy `0 <= far_y < near_y < 1`.
+These measurements describe framing, not photographic quality. The far-side
+corners move down and walls near the ends stretch. The example's sampled
+maximum local vertical scale is about 2.67. Matching horizontal scale reduces changes in
+proportion, but cannot remove shear or preserve every object exactly. Broad
+guides also leave small real-world rail irregularities and existing stitch discontinuities. This is an artistic
+rectification, not a new camera calibration or a distortion-free projection.
+Inspect the full-resolution result, corners and player details before using
+it as the basis for any future playback work.
 
-- `target_y` is the requested horizontal near-boundary position, at or below
-  all near marks, and no farther than the bottom pixel.
-- `max_vertical_stretch` bounds the local derivative `dy_out / dy_in`. A value
-  of 1 is identity. It is not a bound on all distortion or on shear.
-- `transition_fraction` sets each smooth shoulder's fraction of the distance
-  between the guides, in `(0, 0.5]`.
-- `limit_transition_fraction`, in `(0, 1)`, softens the switch into the stretch
-  limit. It sacrifices a small amount of straightening around that threshold
-  to avoid an abrupt horizontal change in slope.
+## Explicit guide document
 
-Shape-preserving cubic interpolation defines the near curve and the ratio of
-far to near, preventing crossing between marks. At each column, let `a` be the
-far guide, `b` the near guide and `d` the admitted downward displacement. The
-forward map is `x_out = x_in`, `y_out = y_in + d * F((y_in-a)/(b-a))`.
-`F` is zero above the far guide and one below the near guide. Its derivative
-ramps smoothly from zero to a constant and back to zero. Thus the forward
-vertical derivative is at least one, the Jacobian stays positive, and the
-transform cannot fold. Upright verticals remain vertical; the region above the
-far guide stays exactly fixed. The continuation below the near guide is a
-translation, so some foreground can leave the canvas.
+Every field is required. Schema `2` replaces the previous far/near guide
+semantics; schema `1` documents are rejected rather than silently reinterpreted.
 
-The displacement is capped by the requested stretch limit before inversion.
-The C1 soft cap never exceeds either the requested displacement or the budget.
-The inverse has an analytic middle section and monotone quartic shoulders,
-solved by bounded bisection. Rendering uses inverse sampling in row tiles to
-avoid holes and avoid allocating full-resolution coordinate maps.
+- `source_size`: `[width, height]`, each in `[2, 32766]`.
+- `guides`: ordered `[x, upper_y, lower_y]` marks, covering x=0 through x=1.
+  Both y values lie inside the frame, with upper above lower. Adjacent x
+  marks and y constraints need at least 0.0001 separation for conditioning.
+- `target_rows`: `[upper_target, lower_target]`, ordered inside the frame.
+  The lower target must be at or below every lower source mark.
+- `horizontal_crop`: `[left, right]` in source coordinates. Use `[0, 1]` to
+  retain the whole source width. Any other interval explicitly crops it.
 
-Perfectly flattening the entire front while fixing the far side becomes
-singular where the visible ice narrows to zero at the rink ends. The renderer
-reports the remaining guide error instead of silently violating the stretch
-limit. Players inside the warped band can still change proportions. Judge
-that tradeoff on multiple frames before considering playback integration.
+Coordinates refer to pixel centers: `(0, 0)` is the top-left pixel and `(1, 1)`
+is the bottom-right. `forward_y` and `inverse_y` both take **source x**;
+`inverse_x` converts an output x to the corresponding source x first.
 
-Run the geometry and artifact regressions with:
+The source lower curve uses shape-preserving cubic interpolation. Interpolating
+the upper/lower ratio prevents crossing between marks. At each source x, the
+inverse y map interpolates these three anchors:
+
+| Output y | Source y |
+| --- | --- |
+| 0 | 0 |
+| upper target | measured upper rail |
+| lower target | measured lower rail |
+
+Each segment is a monotone rational quadratic. The endpoint derivatives use
+the adjacent interval scales, with their harmonic mean at the shared upper
+rail. This avoids a narrow region of excessive stretching between unit-slope
+anchors. Positive interval lengths and derivatives guarantee a positive
+Jacobian. The vertical joins have matching derivatives. Below the lower rail,
+the local scale continues until the image bottom; if that would sample beyond
+the source, a final monotone segment reaches its boundary instead. That last
+boundary clamp is continuous in x, but can have a horizontal derivative change
+in the foreground where it activates.
+
+Horizontal expansion at each source column equals the average forward vertical
+scale between the rails. Trapezoidal integration on a source-width sampling
+grid gives an ordered x map and the required output width. The map uses linear
+interpolation between these samples. Vertical lines remain vertical. The
+output retains the source height; width is derived, rounded to a pixel and
+must remain below OpenCV's 32767-pixel remap limit. Dimensions are never silently
+clamped or stretched back to the input aspect ratio.
+
+The forward y transform uses the analytic inverse of the same quadratic,
+rather than fitting an unrelated reverse curve. Row-tiled inverse sampling
+produces no holes and bounds temporary memory. The report includes guide
+residuals, sampled vertical scales and horizontal interval scales. These do
+not bound shear or imply that every scene line remains straight.
+
+## Research and implementation scope
+
+[He, Chang and Sun, Rectangling Panoramic Images via Warping (SIGGRAPH 2013)](https://people.csail.mit.edu/kaiming/sig13/index.html)
+shows why line, shape and boundary constraints matter for panorama warps.
+This renderer uses explicit line constraints and verifies rink containment;
+it does not implement that paper's seam carving or global mesh optimization.
+
+The monotone interpolation and analytic inversion follow the rational-quadratic
+form in [Durkan et al., Neural Spline Flows (2019), equation 4 and appendix A.3](https://proceedings.neurips.cc/paper/2019/file/7ac71d433f282034e088473244df8c02-Paper.pdf),
+with positive knot derivatives from the adjacent interval scales. Only that
+interpolation formula is used; there is no neural network, synthesized content
+or model dependency.
+
+Run the geometry, crop-containment and artifact regressions with:
 
 ```bash
 python3 scripts/constrained_rink_warp_test.py

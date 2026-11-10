@@ -245,10 +245,10 @@ the next native build so Bazel refreshes its cached SDK directory listing.
 
 ## Constrained rink straightening previews
 
-`scripts/constrained_rink_warp.py` renders an offline panorama with a fixed far
-side and a flatter near boundary, subject to an explicit vertical-stretch
-limit. It produces a full-resolution PNG and a before/after comparison without
-changing game calibration. See [the guide and Littleton example](docs/constrained-rink-warp.md)
+`scripts/constrained_rink_warp.py` renders an offline panorama with two level
+front rails, upright posts, balanced horizontal/vertical expansion and an explicit crop. A supplied ice mask must stay
+inside the canvas. It produces a full-resolution PNG and a before/after
+comparison without changing game calibration. See [the guide and Littleton example](docs/constrained-rink-warp.md)
 for the command, measured constraints and remaining distortion.
 
 ## Side-by-side video comparisons
