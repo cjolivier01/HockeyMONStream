@@ -243,6 +243,14 @@ binaries or Python wheels for Ubuntu 26.04. The original download is preserved.
 After upgrading an installed SDK, run `bazelisk sync --only=deepstream` before
 the next native build so Bazel refreshes its cached SDK directory listing.
 
+## Constrained rink straightening previews
+
+`scripts/constrained_rink_warp.py` renders an offline panorama with a fixed far
+side and a flatter near boundary, subject to an explicit vertical-stretch
+limit. It produces a full-resolution PNG and a before/after comparison without
+changing game calibration. See [the guide and Littleton example](docs/constrained-rink-warp.md)
+for the command, measured constraints and remaining distortion.
+
 ## Side-by-side video comparisons
 
 Create a comparison MP4 from two already synchronized videos using Python 3,

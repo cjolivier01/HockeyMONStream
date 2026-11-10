@@ -37,6 +37,7 @@ exports_files([
     "prepare_recording_int8.py",
     "quantize_detector_onnx.py",
     "capture_stitching_projection_frames.py",
+    "constrained_rink_warp.py",
     "deepstream_artifact.sh",
     "deploy.sh",
     "install_deb.sh",
@@ -89,6 +90,14 @@ py_test(
     main = "hstream_workflow_dispatch_test.py",
     data = ["hstream-workflow"],
     deps = [":workflow_library"],
+)
+
+py_test(
+    name = "constrained_rink_warp_test",
+    size = "small",
+    srcs = ["constrained_rink_warp.py", "constrained_rink_warp_test.py"],
+    imports = ["."],
+    main = "constrained_rink_warp_test.py",
 )
 
 py_test(
