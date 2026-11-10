@@ -63,7 +63,12 @@ verified PNG bundle remains available if a following calibration fails. A failed
 unavailable prerequisite blocks descendants, while unrelated candidates
 continue. Retry creates a new attempt and observation epoch, preserving verified
 successful prerequisites. Retry is available after all attempts have stopped and
-recording ownership has been released.
+recording ownership has been released. **Retry failed** requeues every failed or
+unavailable stage in one request, preserving successful results and attempt
+history. Independent stages resume up to the batch's original parallel-stage
+limit; blocked descendants wait for their prerequisites. **Retry selected stage**
+remains available for a targeted retry. Both actions keep the original execution
+profile, so repair a failing worker before retrying its work.
 
 The desktop and browser show the graph from top to bottom, wrapping sibling
 nodes to fit the available width. Select a node to see its named prerequisites,
