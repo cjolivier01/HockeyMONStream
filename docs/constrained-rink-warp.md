@@ -31,15 +31,19 @@ python3 scripts/constrained_rink_warp.py \
 ```
 
 The output directory must not exist. The example describes the 11830×2556
-panorama inspected on 2026-11-10. The near guide follows its red board cap; the
-far guide protects the far-side boards. These are measured choices for that
+panorama inspected on 2026-11-10. Its near guide was sampled from a robust,
+global degree-four fit of the ice mask's lower boundary, using the central
+6–94% of image width and eight Huber-reweighting passes to suppress jagged
+edges and obstructions. This fit was prepared for the example; the renderer
+itself consumes explicit guide points and does not detect the rink. The far
+guide protects the far-side boards. These are measured choices for that
 image, not defaults or automatic rink detection. A changed camera calibration,
 projection, leveling or crop requires new guides, even if the dimensions match.
 The report records the hash of the exact image bytes decoded for the render.
 
-The saved mask occupied 41.2% of the original canvas and 54.8% of the result.
+The saved mask occupied 41.2% of the original canvas and 55.8% of the result.
 The example allows at most 3× **vertical** stretching and brings the near guide
-within one output pixel of its horizontal target over approximately 77% of
+within one output pixel of its horizontal target over approximately 76% of
 the width. The extreme ends retain curvature. The mask is approximate evidence
 of ice coverage, not ground truth, and an increased area does not mean new
 detail was recovered. Use the report's source-mask out-of-canvas count to check
