@@ -1,6 +1,33 @@
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
+    name = "tiled_inference",
+    srcs = ["TiledInference.cpp"],
+    hdrs = ["TiledInference.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/detection:tile_inference", "@deepstream//:deepstream_lib", "@gstreamer", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "tiled_inference_test",
+    srcs = ["TiledInferenceTest.cpp"],
+    deps = [":tiled_inference", "@deepstream//:deepstream_lib", "@gstreamer"],
+)
+
+cc_binary(
+    name = "tiled_inference_fixture",
+    srcs = ["TiledInferenceFixture.cpp"],
+    deps = [":deepstream_apps_common", "@deepstream//:deepstream_lib", "@gstreamer", "@local_cuda//:cuda_runtime", "@opencv_linux//:opencv", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "primary_gie_tiling_test",
+    srcs = ["PrimaryGieTilingTest.cpp"],
+    deps = [":deepstream_apps_common", "@gstreamer", "@yaml-cpp"],
+)
+
+cc_library(
     name = "pipeline_startup_error",
     srcs = ["PipelineStartupError.cpp"],
     hdrs = ["PipelineStartupError.h"],
@@ -695,6 +722,8 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":tiled_inference",
+        "//src/libs/detection:tile_inference_config",
         ":preview_route_graph",
         ":webrtc_signaling",
         ":archive_watermark",

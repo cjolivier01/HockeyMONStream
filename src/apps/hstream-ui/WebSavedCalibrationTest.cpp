@@ -2,6 +2,7 @@
 #include <sys/stat.h>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QProcess>
+#include <QtCore/QJsonDocument>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QGuiApplication>
 #include <fstream>
