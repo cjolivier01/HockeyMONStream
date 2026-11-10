@@ -46,6 +46,7 @@ struct HipDetector::Impl {
   hipStream_t stream{nullptr};
   bool retired{false};
   uint32_t rows{0};
+  uint32_t rows_per_tile{0};
   uint32_t* device_count{nullptr};
   uint32_t* host_count{nullptr};
   Proposal* device_proposals{nullptr};
@@ -79,9 +80,15 @@ absl::StatusOr<std::unique_ptr<HipDetector>> HipDetector::Create(const DetectorC
       config.confidence_threshold < 0 || config.confidence_threshold > 1 || !std::isfinite(config.iou_threshold) ||
       config.iou_threshold < 0 || config.iou_threshold > 1)
     return absl::InvalidArgumentError("Invalid AMD detector configuration");
+  if (config.tiling) {
+    const auto status = ValidateTileInference(*config.tiling);
+    if (!status.ok())
+      return status;
+  }
+  const size_t batch = config.tiling ? 2 : 1;
   auto session = gpu::MigraphxSession::Compile(
       config.onnx,
-      {{config.input_name, {1, 3, static_cast<size_t>(config.height), static_cast<size_t>(config.width)}}},
+      {{config.input_name, {batch, 3, static_cast<size_t>(config.height), static_cast<size_t>(config.width)}}},
       config.precision,
       config.device,
       config.maximum_io_bytes,
@@ -89,16 +96,17 @@ absl::StatusOr<std::unique_ptr<HipDetector>> HipDetector::Create(const DetectorC
   if (!session.ok())
     return session.status();
   if ((*session)->output_count() != 1)
-    return absl::InvalidArgumentError("Detector must have one [1,N,6] output");
+    return absl::InvalidArgumentError("Detector must have one [batch,N,6] output");
   const auto& shape = (*session)->output(0).dimensions;
-  if (shape.size() != 3 || shape[0] != 1 || shape[2] != 6 || !shape[1] ||
-      shape[1] > std::numeric_limits<uint32_t>::max() - 255 ||
-      shape[1] > config.maximum_io_bytes / (2 * sizeof(Proposal)))
-    return absl::InvalidArgumentError("Detector output is not bounded [1,N,6]");
+  if (shape.size() != 3 || shape[0] != batch || shape[2] != 6 || !shape[1] ||
+      shape[1] > (std::numeric_limits<uint32_t>::max() - 255) / batch ||
+      shape[1] > config.maximum_io_bytes / (batch * 2 * sizeof(Proposal)))
+    return absl::InvalidArgumentError("Detector output is not bounded [batch,N,6]");
   try {
     DeviceScope scope(config.device);
     auto impl = std::make_unique<Impl>(config);
-    impl->rows = shape[1];
+    impl->rows_per_tile = shape[1];
+    impl->rows = batch * shape[1];
     impl->session = std::move(*session);
     Hip(hipMalloc(reinterpret_cast<void**>(&impl->device_count), sizeof(uint32_t)));
     Hip(hipHostMalloc(reinterpret_cast<void**>(&impl->host_count), sizeof(uint32_t)));
@@ -117,9 +125,16 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
     return absl::FailedPreconditionError("AMD detector retired after GPU failure");
   if (!stream || stream == hipStreamLegacy || stream == hipStreamPerThread || (impl.stream && impl.stream != stream))
     return absl::InvalidArgumentError("AMD detector requires one explicit caller stream");
+  std::vector<DetectionTile> tiles{{0, 0, image.width, image.height}};
+  if (config.tiling) {
+    const auto plan = MakeDetectionTiles(image.width, image.height, config.tiling->overlap);
+    if (!plan.ok())
+      return plan.status();
+    tiles.assign(plan->begin(), plan->end());
+  }
   const auto box = MakeLetterbox(
-      image.width,
-      image.height,
+      tiles[0].width,
+      tiles[0].height,
       config.width,
       config.height,
       config.maintain_aspect,
@@ -135,7 +150,10 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
       return absl::InvalidArgumentError("Detector stream belongs to another device");
     impl.stream = stream;
     DrainOnFailure drain{stream};
-    Hip(PreprocessDetector(image, *box, impl.session->input(0).data, stream));
+    const size_t tensor_stride = size_t(config.width) * config.height * 3;
+    for (size_t index = 0; index < tiles.size(); ++index)
+      Hip(PreprocessDetectorTile(
+          image, tiles[index], *box, impl.session->input(0).data + index * tensor_stride, stream));
     auto status = impl.session->Enqueue(stream);
     if (!status.ok()) {
       impl.retired = true;
@@ -165,13 +183,41 @@ absl::StatusOr<std::vector<Proposal>> HipDetector::Detect(const Image& image, hi
       Hip(hipStreamSynchronize(stream));
     }
     drain.complete = true;
-    return SuppressProposals(
-        {impl.host_proposals, impl.host_proposals + *impl.host_count},
-        config.iou_threshold,
-        config.maximum_detections,
-        *box,
-        image.width,
-        image.height);
+    if (!config.tiling)
+      return SuppressProposals(
+          {impl.host_proposals, impl.host_proposals + *impl.host_count},
+          config.iou_threshold,
+          config.maximum_detections,
+          *box,
+          image.width,
+          image.height);
+    std::array<std::vector<Proposal>, 2> per_tile;
+    for (uint32_t index = 0; index < *impl.host_count; ++index) {
+      const auto& p = impl.host_proposals[index];
+      per_tile[p.source_index / impl.rows_per_tile].push_back(p);
+    }
+    std::vector<TileProposal> merged;
+    for (unsigned index = 0; index < tiles.size(); ++index) {
+      const auto& tile = tiles[index];
+      auto selected = SuppressProposals(
+          std::move(per_tile[index]), config.iou_threshold, config.maximum_detections, *box, tile.width, tile.height);
+      if (!selected.ok())
+        return selected.status();
+      for (auto p : *selected) {
+        p.left += tile.left;
+        p.right += tile.left;
+        p.top += tile.top;
+        p.bottom += tile.top;
+        merged.push_back({p, index});
+      }
+    }
+    const auto selected = MergeTileProposals(merged, config.tiling->merge_iou);
+    if (!selected.ok())
+      return selected.status();
+    std::vector<Proposal> result;
+    for (size_t index : *selected)
+      result.push_back(merged[index].box);
+    return result;
   } catch (const std::exception& error) {
     impl.retired = true;
     return absl::InternalError(std::string("AMD detector: ") + error.what());
