@@ -65,6 +65,15 @@ int main(int argc, char** argv) {
             result->chapters[0][1] == game_dir / "left1.mp4" && result->frame_offsets[0] == 2.5,
         "Saved chapters or fractional synchronization changed");
     Check(result->camera["zoom-in-aggressiveness"].as<int>() == 61, "Game camera tuning did not override user tuning");
+    game["pipeline"]["primary-gie"]["tiled-inference"] =
+        YAML::Load("{enable: 1, tiles: 4, overlap: 0.2, merge-iou: 0.5}");
+    Write(game_dir / "_hockeymon" / "config.yaml", game);
+    const auto retired_tiling = load();
+    Check(
+        retired_tiling.ok() && YAML::Dump(retired_tiling->inference) == YAML::Dump(result->inference),
+        "Retired tiling preferences must not change full-frame detector configuration");
+    game.remove("pipeline");
+    Write(game_dir / "_hockeymon" / "config.yaml", game);
     auto overridden = load({"rink.camera.zoom_in_aggressiveness=83"});
     Check(
         overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,

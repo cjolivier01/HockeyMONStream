@@ -4,10 +4,6 @@
 
 namespace hm::detection {
 
-struct DetectionTile {
-  int left, top, width, height;
-};
-
 struct Letterbox {
   int width, height;
   int resized_width, resized_height;

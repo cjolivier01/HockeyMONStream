@@ -4,9 +4,7 @@
 #include <functional>
 #include <string>
 
-#include <optional>
 #include "absl/status/statusor.h"
-#include "hstream/src/libs/detection/TileInference.h"
 #include "yaml-cpp/yaml.h"
 
 namespace hm::program {
@@ -24,6 +22,5 @@ struct ProgramDetectorSettings {
 absl::StatusOr<ProgramDetectorSettings> PrepareProgramDetector(
     const std::filesystem::path& inference_file,
     const YAML::Node& inference,
-    const std::function<bool()>& cancelled,
-    std::optional<detection::TileInferenceSettings> tiling = std::nullopt);
+    const std::function<bool()>& cancelled);
 } // namespace hm::program

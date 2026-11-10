@@ -9,7 +9,6 @@ namespace hm::onnx {
 struct ImageInput {
   std::string name;
   int width, height;
-  int batch; // -1 denotes the symbolic batch dimension.
 };
 // Inspect the ONNX graph's input declaration without loading tensor payloads
 // or creating an inference session. Requires one float32 NCHW image input,
