@@ -1301,8 +1301,7 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
   }
 
   if (!ui_left.empty() && !ui_right.empty()) {
-    // Chapter labels describe each camera's physical file boundaries. They are not cross-camera pair IDs: cameras
-    // can split the same frame timeline at different points and therefore have different labels, counts, or schemes.
+    // Chapter gaps are advisory: the UI confirms them and unattended launches log a warning.
     selection.left_is_explicit = true;
     selection.right_is_explicit = true;
   } else if (!ui_left.empty()) {
@@ -6741,6 +6740,12 @@ absl::Status Configurator::gather_stitching_videos(
     return absl::InvalidArgumentError(
         "Mixed explicit/Auto video selection could not resolve both sides. Select both Left and Right explicitly, or use Auto for all video sets.");
   }
+
+  const auto chapter_warning = !left_files.empty() && !right_files.empty()
+      ? stitching::ValidateCameraChapters({{"left", left_files}, {"right", right_files}})
+      : stitching::ValidateDiscoveredCameraChapters(videos);
+  if (!chapter_warning.ok())
+    std::cerr << "Warning: " << chapter_warning.message() << " Continuing with the selected inputs.\n";
 
   if ((explicit_left || explicit_right) && !left_files.empty() && !right_files.empty()) {
     private_config_["game"]["videos"]["left"] = left_files;

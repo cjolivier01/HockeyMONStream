@@ -120,6 +120,9 @@ absl::Status configure_game_orientation(
   auto videos = get_available_videos(game_dir.string());
   if (!videos.ok())
     return videos.status();
+  const auto chapters_status = ValidateDiscoveredCameraChapters(*videos);
+  if (!chapters_status.ok())
+    std::cerr << "Warning: " << chapters_status.message() << " Continuing with the selected inputs.\n";
   if (videos->count("left") && videos->count("right")) {
     return orientation_internal::save_orientation_config(
         game_dir, videos->at("left"), videos->at("right"), expected_invalidation_id);

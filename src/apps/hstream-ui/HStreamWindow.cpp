@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/CameraChapterWarning.h"
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
@@ -10322,6 +10323,15 @@ bool HStreamWindow::resolveInitialProgramSources() {
       }
     }
     initial_program_requires_stitching_ = sources.contains("left");
+    if (*initial_program_requires_stitching_) {
+      std::map<std::string, std::vector<std::string>> chapters;
+      for (const auto& role : roles)
+        for (const auto& path : sources.value(role).toArray())
+          chapters[role.toStdString()].push_back(path.toString().toStdString());
+      const auto checked = hm::stitching::ValidateCameraChapters(chapters);
+      if (!checked.ok() && !ConfirmCameraChapterWarning(this, QString::fromStdString(std::string(checked.message()))))
+        return false;
+    }
     return true;
   } catch (const std::exception& error) {
     const QString detail = QString::fromUtf8(error.what());
@@ -12223,6 +12233,9 @@ void HStreamWindow::startPipeline() {
       return;
     }
   }
+  if (!initial_single_source && (!hockeyMonProgram() || backend_.initial_launch.isEmpty()) &&
+      !ConfirmCameraChapterWarning(this, CameraChapterWarning(gameDirectoryText().toStdString())))
+    return;
   pipeline_state_->setText("STARTING");
   if (rink_framing_controls_)
     rink_framing_controls_->setCheckingSuspended(true);

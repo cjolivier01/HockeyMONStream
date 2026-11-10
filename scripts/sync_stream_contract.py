@@ -1309,6 +1309,10 @@ def generate(root, *, native_revision=None, include_revision=True):
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in (
                 "src/apps/hstream-ui/HStreamWindow.cpp",
+                "src/apps/hstream-ui/CameraChapterWarning.cpp",
+                "src/apps/hstream-ui/CameraChapterWarning.h",
+                "src/libs/stitching/VideoDiscovery.cpp",
+                "src/libs/stitching/VideoDiscovery.h",
                 "src/apps/hstream-ui/SourceCameraPlayer.cpp",
                 "src/apps/hstream-ui/SourceCameraPlayer.h",
                 "src/apps/hstream-ui/SourceCameraTrack.cpp",

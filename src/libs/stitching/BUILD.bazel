@@ -1048,6 +1048,12 @@ cc_test(
   deps = [":stitching_core", "//src/libs/common:process", "@opencv_linux//:opencv", "@yaml-cpp"],
 )
 
+cc_test(
+  name = "video_discovery_test",
+  srcs = ["VideoDiscoveryTest.cpp"],
+  deps = [":video_discovery"],
+)
+
 cc_library(
   name = "video_discovery",
   srcs = ["VideoDiscovery.cpp"],
