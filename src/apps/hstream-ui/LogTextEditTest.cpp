@@ -56,6 +56,11 @@ int main(int argc, char** argv) {
       log.appendLogText(QString("New output %1").arg(line));
     follows(log, "cap");
     require(log.document()->blockCount() == 100, "Log history is no longer bounded");
+    const int near_tail = log.verticalScrollBar()->maximum() - 1;
+    log.verticalScrollBar()->setValue(near_tail);
+    log.appendLogText("One line back is still reading history");
+    pump();
+    require(log.verticalScrollBar()->value() == near_tail, "Appending ignored a one-line manual scroll");
     log.verticalScrollBar()->setValue(20);
     log.appendLogText("While reading history");
     pump();

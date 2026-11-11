@@ -35,6 +35,7 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
@@ -184,6 +185,7 @@ class StageGraph final : public QWidget {
     });
   }
   std::function<void(const QString&)> selected;
+  std::function<void(const QString&)> logRequested;
   void showStages(const QJsonArray& nodes, const QString& current) {
     const QByteArray identity = QJsonDocument(nodes).toJson(QJsonDocument::Compact) + current.toUtf8();
     if (identity == identity_)
@@ -194,6 +196,7 @@ class StageGraph final : public QWidget {
     for (auto* button : buttons_)
       delete button;
     buttons_.clear();
+    log_buttons_.clear();
     running_.clear();
     for (const auto& value : nodes_) {
       const auto node = value.toObject();
@@ -210,7 +213,8 @@ class StageGraph final : public QWidget {
       button->setObjectName("stitchWorkflowNode_" + id);
       button->setProperty("workflowState", node.value("state").toString());
       button->setAccessibleName(stageLabel(node) + " · " + node.value("state").toString());
-      button->setToolTip(stageDescription(node, nodes_) + "\n" + node.value("reason").toString());
+      button->setToolTip(stageDescription(node, nodes_) + "\nOpen the stage log to read diagnostics.");
+      button->setStyleSheet("padding-right: 30px;");
       button->setCheckable(true);
       button->setChecked(id == current);
       button->show();
@@ -219,6 +223,17 @@ class StageGraph final : public QWidget {
           selected(id);
       });
       buttons_.push_back(button);
+      auto* log = new QToolButton(button);
+      log->setObjectName("stitchWorkflowNodeLog_" + id);
+      log->setIcon(action_icon(ActionIcon::Document));
+      log->setToolTip("View log for " + stageLabel(node));
+      log->setAccessibleName(log->toolTip());
+      log->show();
+      QObject::connect(log, &QToolButton::clicked, this, [this, id] {
+        if (logRequested)
+          logRequested(id);
+      });
+      log_buttons_.push_back(log);
     }
     layoutStages();
     updateAnimation();
@@ -362,7 +377,7 @@ class StageGraph final : public QWidget {
           QString line;
           for (const auto& word : stageLabel(node).split(' ')) {
             const auto next = line.isEmpty() ? word : line + " " + word;
-            if (!line.isEmpty() && button->fontMetrics().horizontalAdvance(next) > card_width - 40) {
+            if (!line.isEmpty() && button->fontMetrics().horizontalAdvance(next) > card_width - 70) {
               lines << line;
               line = word;
             } else {
@@ -381,6 +396,7 @@ class StageGraph final : public QWidget {
           auto& bounds = rectangles[nodes_[index].toObject().value("id").toString()];
           bounds.setHeight(row_height);
           buttons_[index]->setGeometry(bounds);
+          log_buttons_[index]->setGeometry(bounds.width() - 28, 4, 24, 24);
         }
         top += row_height + 28;
       }
@@ -421,6 +437,7 @@ class StageGraph final : public QWidget {
   QJsonArray nodes_;
   QString current_;
   std::vector<QPushButton*> buttons_;
+  std::vector<QToolButton*> log_buttons_;
   std::vector<Edge> edges_;
 };
 } // namespace
@@ -632,7 +649,7 @@ struct StitchingWorkflow::Impl {
   StageGraph* graph{nullptr};
   QComboBox* stage{nullptr};
   QComboBox* attempt{nullptr};
-  QPlainTextEdit* details{nullptr};
+  LogTextEdit* details{nullptr};
   QPushButton* retry{nullptr};
   QPushButton* retry_failed{nullptr};
   QPushButton* observer{nullptr};
@@ -888,8 +905,7 @@ struct StitchingWorkflow::Impl {
         saved = value.toObject();
     const auto fields = saved.value("details").toObject();
     QString value = stageLabel(node) + "\n" + stageDescription(node, snapshot.value("nodes").toArray()) +
-        "\nState: " + node.value("state").toString() + "\n" + node.value("reason").toString() +
-        "\nStage ID: " + node.value("id").toString();
+        "\nState: " + node.value("state").toString() + "\nStage ID: " + node.value("id").toString();
     if (!saved.isEmpty()) {
       value += "\nAttempt: " + saved.value("id").toString() + " (epoch " +
           QString::number(saved.value("epoch").toInt()) + ")";
@@ -909,7 +925,11 @@ struct StitchingWorkflow::Impl {
       if (!error.isEmpty())
         value += "\n" + QString::fromUtf8(key) + ": " + error;
     }
-    details->setPlainText(value);
+    if (!node.value("reason").toString().isEmpty())
+      value += "\n" + node.value("reason").toString();
+    if (!saved.value("error").toString().isEmpty())
+      value += "\n" + saved.value("error").toString();
+    details->setLogText(value, workflow + "/" + stage->currentData().toString() + "/" + selected_attempt);
     controls();
   }
   void chooseStage() {
@@ -1041,26 +1061,28 @@ struct StitchingWorkflow::Impl {
   void loadLog() {
     if (!log_view)
       return;
+    log_view->window()->setWindowTitle("Workflow stage log — " + stageLabel(selectedNode()));
     if (!owner->hasSelection() || attempt->currentData().toString().isEmpty()) {
       log_view->setLogText(
-          "No attempt log is available. " + selectedNode().value("reason").toString(),
+          "No attempt log is available.\n\n" + details->toPlainText(),
           workflow + "/" + stage->currentData().toString());
       return;
     }
     if (log_pending)
       return;
     log_pending = true;
+    const auto selected_workflow = workflow;
     const auto selected_stage = stage->currentData().toString();
     const auto selected_attempt = attempt->currentData().toString();
     call(
         {"log", "--workflow", workflow, "--stage", selected_stage, "--attempt", selected_attempt},
-        [this, selected_stage, selected_attempt](QJsonObject value, QString error) {
+        [this, selected_workflow, selected_stage, selected_attempt](QJsonObject value, QString error) {
           log_pending = false;
-          if (!log_view || stage->currentData().toString() != selected_stage ||
+          if (!log_view || workflow != selected_workflow || stage->currentData().toString() != selected_stage ||
               attempt->currentData().toString() != selected_attempt)
             return;
           log_view->setLogText(
-              error.isEmpty() ? value.value("text").toString() : error,
+              details->toPlainText() + "\n\n" + (error.isEmpty() ? value.value("text").toString() : error),
               workflow + "/" + selected_stage + "/" + selected_attempt);
         });
   }
@@ -1232,7 +1254,7 @@ StitchingWorkflow::StitchingWorkflow(
   selectors->addRow("Stage", s.stage);
   selectors->addRow("Attempt", s.attempt);
   monitor->addLayout(selectors);
-  s.details = new QPlainTextEdit(s.monitor);
+  s.details = new LogTextEdit(s.monitor);
   s.details->setObjectName("stitchWorkflowDetails");
   s.details->setReadOnly(true);
   s.details->setMaximumHeight(105);
@@ -1274,6 +1296,10 @@ StitchingWorkflow::StitchingWorkflow(
       s.loadLog();
   });
   s.graph->selected = [&s](const QString& id) { s.stage->setCurrentIndex(s.stage->findData(id)); };
+  s.graph->logRequested = [this, &s](const QString& id) {
+    s.stage->setCurrentIndex(s.stage->findData(id));
+    showLog();
+  };
   connect(s.observer, &QPushButton::clicked, this, [&s] {
     QDesktopServices::openUrl(s.observer->property("url").toUrl());
   });
@@ -1418,7 +1444,9 @@ void StitchingWorkflow::showLog() {
     s.loadLog();
     return;
   }
-  auto* dialog = new QDialog(this);
+  auto* dialog = new QDialog(this, Qt::Window | Qt::WindowMaximizeButtonHint | Qt::WindowCloseButtonHint);
+  dialog->setObjectName("stitchWorkflowLogWindow");
+  dialog->setSizeGripEnabled(true);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   dialog->setWindowTitle("Workflow stage log");
   dialog->resize(850, 500);

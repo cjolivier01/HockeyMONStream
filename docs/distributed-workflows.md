@@ -93,8 +93,13 @@ even when their control-point budgets differ. A running solve keeps the
 
 For a failed stage, select its node and attempt in the workflow pane. The
 reason includes scheduler status and a bounded tail of the native task log when
-available; the Logs control shows the longer attempt log. A successful frame
-selection remains reusable when a later calibration solve fails.
+available. Each node's document icon opens a persistent, scrollable stage log
+with those diagnostics and the longer attempt output; it stays open until
+closed. Stages that failed before an attempt still show their failure reason.
+The workflow details and log windows follow new output at the bottom. Scrolling
+up pauses following; returning to the bottom resumes it. Unchanged status polls
+preserve text selection and scroll position. A successful frame selection
+remains reusable when a later calibration solve fails.
 
 The recording has one durable operation owner. Main playback, INT8 preparation,
 local experiment operations and distributed workflows respect the same owner,
