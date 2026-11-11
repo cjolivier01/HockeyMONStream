@@ -14,6 +14,7 @@
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QTemporaryDir>
 #include <QtTest/QTest>
+#include <QtTest/qtest_widgets.h>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QDialog>
 
@@ -106,6 +107,83 @@ struct HStreamWindowTestAccess {
     }
     auto lock = hm::game_operation::Lock::Acquire(game);
     require(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "Retire fresh-window test owner");
+  }
+
+  static void checkBusyGameNavigation(const QString& directory) {
+    const std::filesystem::path game(directory.toStdString());
+    const auto other = QString::fromStdString((game.parent_path() / "other-game/_hockeymon/config.yaml").string());
+    writeFile(other, "{}\n");
+    for (const QString& backend : {QString("native"), QString("hockeymon")}) {
+      for (const std::string kind : {"pipeline", "workflow"}) {
+        auto owner = hm::game_operation::LocalOwner(kind, "navigation-owner", "navigation-owner-token");
+        owner.host = "remote-host";
+        {
+          auto lock = hm::game_operation::Lock::Acquire(game);
+          require(lock.ok() && (*lock)->Claim(owner).ok(), "Claim remote navigation fixture");
+        }
+        HStreamWindow fresh(nullptr, {backend == "native" ? QString("hstream") : backend, "/bin/true"});
+        fresh.openGame("game", false);
+        fresh.updateRunControls();
+        auto* create = fresh.findChild<QPushButton*>("createGameButton");
+        auto* root = fresh.findChild<QPushButton*>("browseGameRootButton");
+        auto* refresh = fresh.findChild<QPushButton*>("refreshGamesButton");
+        const QString screenshot = qEnvironmentVariable("HSTREAM_UI_NAVIGATION_SCREENSHOT");
+        if (!screenshot.isEmpty() && backend == "native" && kind == "pipeline") {
+          fresh.resize(1400, 950);
+          fresh.show();
+          QTest::qWait(100);
+          require(fresh.game_controls_->grab().save(screenshot), "Save navigation screenshot");
+        }
+        require(
+            fresh.game_selector_->isEnabled() && root->isEnabled() && refresh->isEnabled(),
+            "Remote ownership must permit game selection and root navigation");
+        require(
+            !create->isEnabled() && !fresh.game_id_edit_->isEnabled() && !fresh.start_button_->isEnabled() &&
+                !fresh.save_preset_button_->isEnabled() && !fresh.video_controls_->isEnabled() &&
+                !fresh.clean_stitching_button_->isEnabled(),
+            "Navigation must not enable mutations of the remotely owned game");
+        fresh.game_selector_->setFocus();
+        QTest::keyClick(fresh.game_selector_, Qt::Key_End);
+        require(
+            fresh.game_id_edit_->text() == "other-game" && fresh.start_button_->isEnabled(),
+            "A deliberate selector key must leave the busy game and allow the free game");
+        fresh.game_selector_->setCurrentIndex(fresh.game_selector_->findText("game"));
+        fresh.updateRunControls();
+        require(!fresh.start_button_->isEnabled(), "Returning to an owned game must restore its fence");
+        const auto current = hm::game_operation::Inspect(game);
+        require(
+            current.ok() && current->has_value() && (**current).token == owner.token &&
+                (**current).revision == owner.revision,
+            "Navigating must preserve the exact remote owner");
+        // Local work and unresolved local shutdown cannot move to another game.
+        for (bool* pending :
+             {&fresh.deferred_play_requested_,
+              &fresh.deferred_restart_requested_,
+              &fresh.pipeline_completion_proof_pending_,
+              &fresh.archive_completion_proof_pending_}) {
+          *pending = true;
+          fresh.updateRunControls();
+          require(
+              !fresh.game_selector_->isEnabled() && !root->isEnabled(),
+              "Pending local work or missing shutdown proof must retain navigation ownership");
+          *pending = false;
+        }
+        fresh.pending_pipeline_completion_ = [] {};
+        fresh.updateRunControls();
+        require(!fresh.game_selector_->isEnabled(), "Unfinished local finalization must keep navigation locked");
+        fresh.pending_pipeline_completion_ = {};
+        fresh.operation_token_ = "local-retained";
+        fresh.updateRunControls();
+        require(!fresh.game_selector_->isEnabled(), "Retained local admission must keep navigation locked");
+        fresh.operation_token_.clear();
+        fresh.updateRunControls();
+        require(fresh.game_selector_->isEnabled(), "Cleared local state must restore navigation");
+        auto lock = hm::game_operation::Lock::Acquire(game);
+        require(
+            lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(),
+            "Release process-free navigation fixture");
+      }
+    }
   }
 
   static void checkGameOwnership(HStreamWindow& window, const QString& directory) {
@@ -399,6 +477,7 @@ struct HStreamWindowTestAccess {
           }),
           "Real backend process must display the first Program frame");
       require(color(window.preview_render_target_).red() > 200, "Program preview contains the producer's pixels");
+      require(!window.game_selector_->isEnabled(), "Local playback must keep game navigation locked");
       window.schedulePlayerDrawingRuntimeControl();
       QTest::qWait(150);
       require(
@@ -706,6 +785,9 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     HStreamWindow window(nullptr, {"hockeymon", "/bin/true"});
     window.openGame("game", false);
+    HStreamWindowTestAccess::checkBusyGameNavigation(game);
+    if (qEnvironmentVariableIsSet("HSTREAM_UI_GAME_NAVIGATION_ONLY"))
+      return 0;
     HStreamWindowTestAccess::checkGameOwnership(window, game);
     HStreamWindowTestAccess::checkOwnedGameReopen(game);
     HStreamWindowTestAccess::check(window, game);

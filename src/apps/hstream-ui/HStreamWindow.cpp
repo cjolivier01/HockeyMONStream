@@ -19329,8 +19329,9 @@ void HStreamWindow::updateRunControls() {
     ++scheduled_player_drawing_generation_;
   }
   const bool waiting_for_start = deferred_play_requested_ || deferred_restart_requested_;
-  const bool finalizing =
-      isArchiveFinalizing() || waiting_for_start || external_operation || (!operation_token_.empty() && !running && source_camera_index_ < 0);
+  const bool local_finalizing = isArchiveFinalizing() || waiting_for_start || pipeline_completion_proof_pending_ ||
+      archive_completion_proof_pending_ || (!operation_token_.empty() && !running && source_camera_index_ < 0);
+  const bool finalizing = local_finalizing || external_operation;
   const bool camera_dialog = findChild<QDialog*>("cameraExperimentDialog") ||
       findChild<QDialog*>("stitchingExperimentDialog") || findChild<QDialog*>("highlightsDialog") ||
       findChild<QDialog*>("int8PreparationDialog");
@@ -19482,7 +19483,12 @@ void HStreamWindow::updateRunControls() {
     drivegpt_csv_toggle_->setEnabled(!running && !finalizing);
   }
   if (game_controls_) {
-    game_controls_->setEnabled(!running && !finalizing);
+    // A foreign recording owner fences edits, not navigation away from that
+    // recording. Only this window's own work must keep its game binding.
+    game_controls_->setEnabled(!running && !local_finalizing);
+    game_id_edit_->setEnabled(!running && !finalizing);
+    if (auto* create = game_controls_->findChild<QPushButton*>("createGameButton"))
+      create->setEnabled(!running && !finalizing);
   }
   if (video_controls_) {
     video_controls_->setEnabled(!editing_defaults_ && !running && !finalizing);
