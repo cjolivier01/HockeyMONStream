@@ -14951,8 +14951,7 @@ bool test_tiled_detection() {
   QDir().mkpath(root.path() + "/tiles/_hockeymon");
   const auto path = (root.path() + "/tiles/_hockeymon/config.yaml").toStdString();
   std::ofstream(path) << "pipeline:\n  primary-gie:\n    config-file: custom.yaml\n"
-                         "    model-engine-file: custom.engine\n"
-                         "    tiled-inference: {enable: 0, tiles: 4}\n";
+                         "    model-engine-file: custom.engine\n";
   HStreamWindow window;
   auto* games = require_child<QComboBox>(&window, "gameSelector");
   auto* tiled = require_child<QCheckBox>(&window, "tiledDetectionCheck");
