@@ -2,6 +2,7 @@
 """Filesystem regression tests for Plex publication and obsolete-export cleanup."""
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -372,6 +373,27 @@ class PlexLinksTest(unittest.TestCase):
         self.assertIn('Obsolete exports to delete', forced.stderr)
         self.assertNotIn('[y/N]', forced.stderr)
         self.assertFalse(obsolete.exists())
+
+    def test_an_interrupted_confirmation_deletes_nothing(self):
+        kept = self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        # Nothing is ever written to stdin, so the sweep waits at the prompt.
+        with subprocess.Popen(
+                [sys.executable, str(script), str(self.root), '--clean', '--quiet'],
+                env={**os.environ, 'HOME': str(self.home)},
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True) as running:
+            # Read up to the question before interrupting, rather than race it.
+            asked = ''
+            while '[y/N]' not in asked:
+                character = running.stderr.read(1)
+                self.assertNotEqual(character, '', f'the sweep ended without asking: {asked!r}')
+                asked += character
+            running.send_signal(signal.SIGINT)
+            self.assertIn('Stopped before deleting anything.', asked + running.stderr.read())
+            self.assertEqual(running.wait(), 130)
+        self.assertTrue(obsolete.is_file() and kept.is_file())
 
     def test_the_confirmation_flags_only_apply_to_clean(self):
         self.video('game/tracking_output-2.mp4')

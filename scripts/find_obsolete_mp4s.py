@@ -551,7 +551,13 @@ def main() -> None:
             if not args.quiet:
                 Console(stderr=True).print(cleanup_table(targets, superseded_by, root, args.absolute))
             if not args.force:
-                targets = confirmed_targets(targets, root, args.absolute, args.all)
+                try:
+                    targets = confirmed_targets(targets, root, args.absolute, args.all)
+                except KeyboardInterrupt:
+                    # Nothing is unlinked until every answer is in, so the
+                    # interrupt costs the sweep and not a half-deleted game.
+                    print("\nStopped before deleting anything.", file=sys.stderr)
+                    sys.exit(130)
         if remove_obsolete(targets, root, args.absolute, args.dry_run):
             sys.exit(1)
         return
