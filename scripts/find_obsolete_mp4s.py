@@ -34,6 +34,9 @@ CONFIG_EVENT_RE = re.compile(
     re.IGNORECASE,
 )
 MASK_RE = re.compile(r"^rink_mask_0-(\d+)\.png$", re.IGNORECASE)
+# The canonical mask carries no generation and is never retired. It is
+# discovered anyway, because it is what replaces the versioned ones.
+BASE_MASK_RE = re.compile(r"^rink_mask_0\.png$", re.IGNORECASE)
 # The finalizer publishes each archive's game-time origin beside it. Nothing
 # reads a sidecar whose video is gone, so it goes when the video does.
 ARCHIVE_SIDECAR_SUFFIX = ".hstream-archive.json"
@@ -131,6 +134,7 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None
             or CONFIG_BASE_RE.fullmatch(path.name)
             or CONFIG_EVENT_RE.fullmatch(path.name)
             or MASK_RE.fullmatch(path.name)
+            or BASE_MASK_RE.fullmatch(path.name)
         ):
             paths_by_parent[path.parent].append(path)
 
@@ -204,6 +208,11 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None
         spared: list[tuple[Path, str]] = []
         for path in pending:
             name = path.name
+            if BASE_MASK_RE.fullmatch(name):
+                # Preserved whatever the generation, so it is here only to
+                # stand in for the versioned masks that are not.
+                spared.append((path, name.lower()))
+                continue
             if match := MASK_RE.fullmatch(name):
                 version = int(match.group(1))
             elif match := CONFIG_EVENT_RE.fullmatch(name):
@@ -473,10 +482,13 @@ def print_cleanup_table(targets: list[tuple[Path, Path | None]], superseded_by: 
 def confirm(question: str) -> bool:
     """Ask on stderr, where the sweep already reports. Anything but yes is no."""
     print(f"{question} [y/N] ", end="", file=sys.stderr, flush=True)
-    try:
-        return input().strip().lower() in ("y", "yes")
-    except UnicodeDecodeError:
-        return False  # Whatever that byte was, nobody typed it meaning yes.
+    answer = input()
+    # A terminal closes the line with the user's own Return. A pipe echoes
+    # nothing, so without this the first "removed" record lands on the end of
+    # the last question and no longer begins a line of its own.
+    if not sys.stdin.isatty():
+        print(file=sys.stderr)
+    return answer.strip().lower() in ("y", "yes")
 
 
 def confirmed_targets(targets: list[tuple[Path, Path | None]], root: Path, absolute: bool,
@@ -498,10 +510,11 @@ def confirmed_targets(targets: list[tuple[Path, Path | None]], root: Path, absol
             if confirm(question + "?"):
                 approved.append((path, sidecar))
     # RuntimeError is a closed fd 0 rather than an empty one, which a
-    # daemonised caller hands us just as readily. Either way nobody is there
-    # to answer the rest, and an unattended --clean asking a season's worth of
-    # questions it cannot hear is only noise.
-    except (EOFError, RuntimeError):
+    # daemonised caller hands us just as readily, and a byte that will not
+    # decode takes the whole buffered read down with it. Either way nobody is
+    # there to answer the rest, and an unattended --clean asking a season's
+    # worth of questions it cannot hear is only noise.
+    except (EOFError, RuntimeError, UnicodeDecodeError):
         print("\nNo answer: leaving the rest in place.", file=sys.stderr)
     return approved
 
@@ -681,7 +694,10 @@ def main() -> None:
             failures = remove_obsolete(targets, root, args.absolute, args.dry_run)
         except KeyboardInterrupt:
             # Partway through the unlinks, where --force spends its whole run.
-            # remove_obsolete has already named each file as it went.
+            # remove_obsolete has already named each file as it went -- unless
+            # this was a dry run, which unlinked nothing to be partway through.
+            if args.dry_run:
+                raise
             print("\nStopped partway through.", file=sys.stderr)
             sys.exit(130)
         if failures:

@@ -493,6 +493,66 @@ class PlexLinksTest(unittest.TestCase):
         self.assertIn('removed 1 file\n', run('--clean', '--quiet', '--force').stderr)
         self.assertFalse(obsolete.exists())
 
+    def test_the_canonical_mask_is_what_supersedes_a_versioned_one(self):
+        self.video('game/hstream_telemetry-9.db')
+        canonical = self.video('game/rink_mask_0.png')
+        versioned = self.video('game/rink_mask_0-3.png')
+        # It carries no generation and is never retired, which is exactly what
+        # makes it the thing the retired ones are replaced by.
+        cleaned = self.run_cli('--clean', answers='y\n')
+        self.assertEqual(self.table_cells(cleaned.stderr),
+                         [['1', 'game/rink_mask_0-3.png', 'game/rink_mask_0.png']])
+        self.assertFalse(versioned.exists())
+        self.assertTrue(canonical.is_file())
+
+    def test_every_removal_record_begins_a_line_of_its_own(self):
+        for generation in (1, 2, 3):
+            self.video(f'game/tracking_output-{generation}.mp4')
+        # A pipe echoes no Return, so the first record used to land on the end
+        # of the last question and vanish from `grep '^removed '`.
+        removed = [line for line in self.run_cli('--clean', answers='y\ny\n').stderr.splitlines()
+                   if line.startswith('removed ')]
+        self.assertEqual(removed, ['removed game/tracking_output-1.mp4',
+                                   'removed game/tracking_output-2.mp4',
+                                   'removed 2 files'])
+
+    def test_a_byte_that_will_not_decode_stops_the_sweep_safely(self):
+        for generation in range(1, 6):
+            self.video(f'game/tracking_output-{generation}.mp4')
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        # input() decodes a whole buffered read at once, so the y before the
+        # bad byte goes with it. Nothing is deleted on an answer nobody can
+        # read, which is the half that matters.
+        stopped = subprocess.run(
+            [sys.executable, str(script), str(self.root), '--clean', '--quiet'],
+            env=self.environment(), input=b'y\n\xff\ny\n', check=False, capture_output=True)
+        self.assertEqual(stopped.returncode, 0)
+        self.assertNotIn(b'Traceback', stopped.stderr)
+        self.assertIn(b'No answer: leaving the rest in place.', stopped.stderr)
+        self.assertIn(b'removed 0 files\n', stopped.stderr)
+        self.assertEqual(len(list((self.root / 'game').iterdir())), 5)
+
+    def test_an_interrupted_dry_run_does_not_claim_it_deleted_anything(self):
+        for generation in range(1, 4000):
+            self.video(f'game/tracking_output-{generation}.mp4')
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        with subprocess.Popen(
+                [sys.executable, str(script), str(self.root), '--dry-run'],
+                env=self.environment(), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as running:
+            reported = ''
+            while reported.count('would remove ') < 2:
+                character = running.stderr.read(1)
+                self.assertNotEqual(character, '', f'the run ended too soon: {reported[-200:]!r}')
+                reported += character
+            running.send_signal(signal.SIGINT)
+            rest = reported + running.stderr.read()
+            self.assertEqual(running.wait(), 130)
+        # A dry run unlinks nothing, so it was never partway through anything.
+        self.assertNotIn('Stopped partway through.', rest)
+        self.assertIn('Stopped.', rest)
+        self.assertEqual(len(list((self.root / 'game').iterdir())), 3999)
+
     def test_a_closed_stdin_stops_the_questions_instead_of_crashing(self):
         for generation in range(1, 5):
             self.video(f'game/tracking_output-{generation}.mp4')
