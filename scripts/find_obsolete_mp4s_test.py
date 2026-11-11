@@ -27,12 +27,18 @@ class PlexLinksTest(unittest.TestCase):
         path.touch()
         return path
 
+    def environment(self):
+        """A terminal rich cannot be talked into dressing up by the ambient env."""
+        env = {key: value for key, value in os.environ.items()
+               if key not in ('FORCE_COLOR', 'TERM', 'COLORTERM', 'TTY_COMPATIBLE')}
+        # A fixed width keeps the --clean table from folding its paths.
+        return {**env, 'HOME': str(self.home), 'COLUMNS': '200', 'NO_COLOR': '1'}
+
     def run_cli(self, *args, check=True, answers=''):
         script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        # A closed stdin keeps an unanswered prompt from hanging the suite.
         return subprocess.run([sys.executable, str(script), str(self.root), *args],
-                              # A fixed width keeps the --clean table from folding its paths,
-                              # and a closed stdin keeps an unanswered prompt from hanging.
-                              env={**os.environ, 'HOME': str(self.home), 'COLUMNS': '200'},
+                              env=self.environment(),
                               input=answers, check=check, capture_output=True, text=True)
 
     def table_cells(self, output):
@@ -306,7 +312,7 @@ class PlexLinksTest(unittest.TestCase):
         self.assertEqual(self.table_cells(self.run_cli('--clean').stderr), [
             ['1', 'game/program_4k_output-1.mp4.hstream-archive.json', '(export already gone)'],
             ['2', 'game/tracking_output-1.mp4', 'game/tracking_output-2.mp4'],
-            ['', 'game/tracking_output-1.mp4.hstream-archive.json',
+            ['3', 'game/tracking_output-1.mp4.hstream-archive.json',
              '(origin of game/tracking_output-1.mp4)'],
         ])
 
@@ -315,11 +321,94 @@ class PlexLinksTest(unittest.TestCase):
         self.video('game/tracking-7.csv')
         self.video('game/tracking-2.csv')
         self.video('game/camera-2.csv')
-        # Nothing carries camera.csv forward, so the surviving generation stands in.
+        # Nothing carries camera.csv forward, and naming the database that
+        # happens to survive would read as the CSV's contents having moved in.
         self.assertEqual(self.table_cells(self.run_cli('--clean').stderr), [
-            ['1', 'game/camera-2.csv', 'game/hstream_telemetry-7.db'],
+            ['1', 'game/camera-2.csv', '(nothing of its kind; generation 7 survives)'],
             ['2', 'game/tracking-2.csv', 'game/tracking-7.csv'],
         ])
+
+    def test_a_game_name_is_not_rich_markup(self):
+        # Brackets are a style tag and an unbalanced pair aborts the render;
+        # colons are an emoji. All three are legal in a directory name.
+        for game in ('sharks [away]', 'ducks [/] sharks', 'a:vs:b'):
+            self.video(f'{game}/tracking_output-2.mp4')
+            self.video(f'{game}/tracking_output-1.mp4')
+        rows = self.table_cells(self.run_cli('--clean').stderr)
+        self.assertEqual([cells[1] for cells in rows],
+                         ['a:vs:b/tracking_output-1.mp4',
+                          'ducks [/] sharks/tracking_output-1.mp4',
+                          'sharks [away]/tracking_output-1.mp4'])
+
+    def test_the_column_never_names_a_file_the_same_sweep_takes(self):
+        # The 4K is retired by its own newer generation, which the companion
+        # rule then retires in favour of the stitched export.
+        self.video('game/program_4k_output-1.mp4')
+        self.video('game/program_4k_output-3.mp4')
+        self.video('game/stitched_output-9.mp4')
+        self.assertEqual(self.table_cells(self.run_cli('--clean').stderr), [
+            ['1', 'game/program_4k_output-1.mp4', 'game/stitched_output-9.mp4'],
+            ['2', 'game/program_4k_output-3.mp4', 'game/stitched_output-9.mp4'],
+        ])
+
+    def test_a_program_export_outranks_a_stitching_intermediate(self):
+        self.video('game/program_4k_output-2.mp4')
+        self.video('game/program_8k_output-9.mp4')
+        self.video('game/stitched_output-9.mp4')
+        # Both survivors are generation 9, and the companion rule is about
+        # Program exports, so the one Plex publishes is the one to name.
+        self.assertEqual(self.table_cells(self.run_cli('--clean').stderr),
+                         [['1', 'game/program_4k_output-2.mp4', 'game/program_8k_output-9.mp4']])
+
+    def test_a_config_event_is_paired_across_generations_not_sequences(self):
+        self.video('game/hstream_telemetry-7.db')
+        self.video('game/play_tracker_source-7-1.yaml')
+        self.video('game/play_tracker_source-2-1.yaml')
+        # The trailing -1 is the event sequence; the generation is the 2.
+        self.assertEqual(self.table_cells(self.run_cli('--clean').stderr),
+                         [['1', 'game/play_tracker_source-2-1.yaml',
+                           'game/play_tracker_source-7-1.yaml']])
+
+    def test_a_box_without_rich_keeps_everything_but_the_table(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        shadow = self.home / 'no-rich'
+        shadow.mkdir()
+        (shadow / 'rich.py').write_text('raise ImportError("no rich on this box")\n')
+        env = {**self.environment(), 'PYTHONPATH': str(shadow)}
+
+        def run(*args, **kwargs):
+            script = Path(__file__).with_name('find_obsolete_mp4s.py')
+            return subprocess.run([sys.executable, str(script), str(self.root), *args],
+                                  env=env, input='', check=False, capture_output=True, text=True,
+                                  **kwargs)
+
+        # Only the table needs rich, so everything that draws none still runs.
+        self.assertEqual(run().stdout, 'game/tracking_output-1.mp4\n')
+        self.assertIn('would remove 1 file\n', run('--dry-run').stderr)
+        # Asking to confirm against a table it cannot draw is the one refusal.
+        refused = run('--clean')
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('--clean needs rich to draw its table', refused.stderr)
+        self.assertTrue(obsolete.is_file())
+        self.assertIn('removed 1 file\n', run('--clean', '--quiet', '--force').stderr)
+        self.assertFalse(obsolete.exists())
+
+    def test_a_closed_stdin_stops_the_questions_instead_of_crashing(self):
+        for generation in range(1, 5):
+            self.video(f'game/tracking_output-{generation}.mp4')
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        # 0<&- is a closed descriptor, not the empty one /dev/null gives.
+        closed = subprocess.run(
+            ['/bin/sh', '-c', 'exec 0<&-; exec "$@"', 'sh',
+             sys.executable, str(script), str(self.root), '--clean', '--quiet'],
+            check=False, capture_output=True, text=True, env=self.environment())
+        self.assertEqual(closed.returncode, 0)
+        self.assertNotIn('Traceback', closed.stderr)
+        self.assertIn('No answer: leaving the rest in place.', closed.stderr)
+        # One dead question, not one per file.
+        self.assertEqual(closed.stderr.count('[y/N]'), 1)
+        self.assertIn('removed 0 files\n', closed.stderr)
 
     def test_an_unanswered_clean_deletes_nothing(self):
         self.video('game/tracking_output-2.mp4')
@@ -358,19 +447,19 @@ class PlexLinksTest(unittest.TestCase):
         self.video('game/tracking_output-2.mp4')
         obsolete = self.video('game/tracking_output-1.mp4')
         cleaned = self.run_cli('--clean', '--quiet', answers='y\n')
-        self.assertNotIn('Obsolete exports to delete', cleaned.stderr)
+        self.assertNotIn('Obsolete files to delete', cleaned.stderr)
         self.assertIn('Delete game/tracking_output-1.mp4? [y/N]', cleaned.stderr)
         self.assertFalse(obsolete.exists())
         self.video('game/tracking_output-3.mp4')
         forced = self.run_cli('--clean', '-q', '--force')
-        self.assertNotIn('Obsolete exports to delete', forced.stderr)
+        self.assertNotIn('Obsolete files to delete', forced.stderr)
         self.assertIn('removed game/tracking_output-2.mp4\n', forced.stderr)
 
     def test_force_prints_the_table_without_asking(self):
         self.video('game/tracking_output-2.mp4')
         obsolete = self.video('game/tracking_output-1.mp4')
         forced = self.run_cli('--clean', '--force')
-        self.assertIn('Obsolete exports to delete', forced.stderr)
+        self.assertIn('Obsolete files to delete', forced.stderr)
         self.assertNotIn('[y/N]', forced.stderr)
         self.assertFalse(obsolete.exists())
 
@@ -381,7 +470,7 @@ class PlexLinksTest(unittest.TestCase):
         # Nothing is ever written to stdin, so the sweep waits at the prompt.
         with subprocess.Popen(
                 [sys.executable, str(script), str(self.root), '--clean', '--quiet'],
-                env={**os.environ, 'HOME': str(self.home)},
+                env=self.environment(),
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True) as running:
             # Read up to the question before interrupting, rather than race it.
@@ -396,15 +485,16 @@ class PlexLinksTest(unittest.TestCase):
         self.assertTrue(obsolete.is_file() and kept.is_file())
 
     def test_the_confirmation_flags_only_apply_to_clean(self):
-        self.video('game/tracking_output-2.mp4')
-        obsolete = self.video('game/tracking_output-1.mp4')
         for flag in ('--all', '--force', '--quiet'):
             failed = self.run_cli(flag, check=False)
             self.assertEqual(failed.returncode, 2)
             self.assertIn(f'{flag} only applies to --clean', failed.stderr)
         # A dry run only reports, so it never reaches a prompt to skip either.
         self.assertEqual(self.run_cli('--dry-run', '--force', check=False).returncode, 2)
-        self.assertTrue(obsolete.is_file())
+        # One answer or none: --all has nothing left to collapse under --force.
+        refused = self.run_cli('--clean', '--all', '--force', check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn('not allowed with argument', refused.stderr)
 
     def test_a_mistyped_root_is_an_error_not_an_empty_sweep(self):
         self.root = self.home / 'Vidoes'
