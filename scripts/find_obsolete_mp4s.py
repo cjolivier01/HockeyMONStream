@@ -182,16 +182,14 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None
                 continue
             dated.append((version, path))
 
-        kept_pending: dict[str, tuple[int, Path]] = {}
-        for version, path in dated:
-            if version >= telemetry_newest:
-                stem = generation_stem(path.name)
-                if version > kept_pending.get(stem, (-1, path))[0]:
-                    kept_pending[stem] = (version, path)
+        # Ascending, so the last write per kind is its newest surviving file
+        # and rglob's arbitrary order cannot change which one the table names.
+        kept_pending: dict[str, Path] = {generation_stem(path.name): path
+                                         for version, path in sorted(dated)
+                                         if version >= telemetry_newest}
         for version, path in dated:
             if version < telemetry_newest:
-                successor = kept_pending.get(generation_stem(path.name))
-                retire(path, successor[1] if successor else generation_survivor)
+                retire(path, kept_pending.get(generation_stem(path.name), generation_survivor))
     return sorted(obsolete)
 
 
