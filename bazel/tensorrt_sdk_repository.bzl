@@ -70,8 +70,10 @@ cc_import(name = "infer", shared_library = "lib/libnvinfer.so")
 cc_import(name = "onnx_parser", shared_library = "lib/libnvonnxparser.so")
 cc_library(
     name = "sdk",
-    hdrs = glob(["include/**/*.h"]),
-    includes = ["include"],
+    # A private header tree avoids adding an alias of /usr/include ahead of
+    # libstdc++, which breaks its #include_next <stdlib.h> lookup.
+    hdrs = glob(["include/Nv*.h"]),
+    strip_include_prefix = "include",
     deps = [":infer", ":onnx_parser"],
     visibility = ["//visibility:public"],
 )
