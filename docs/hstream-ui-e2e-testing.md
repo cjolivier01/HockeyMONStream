@@ -2,8 +2,14 @@
 
 The Game panel shows the current **Game root** (the folder containing game
 directories). **Change root…** chooses another folder and reloads its games;
-it is disabled during playback and archive finalization. The UI remembers the
-selection in `~/.config/hstream-ui/settings.ini`, or
+it is disabled during this window's playback, archive finalization and unresolved
+local shutdown. A game owned by another pipeline or workflow keeps Game selection,
+Refresh and Change root available, while Play, Save, Create / Load, the editable
+game ID and video import remain fenced. Navigation never releases that owner.
+`shared_backend_window_test` covers both native and HockeyMON windows, actual
+selector input, return to the owned game, and retained local admission/proof.
+
+The UI remembers the selection in `~/.config/hstream-ui/settings.ini`, or
 `$XDG_CONFIG_HOME/hstream-ui/settings.ini` when set. At startup, `HM_GAME_DIR`
 takes precedence over this preference, followed by `paths.game-root` in the
 shared `~/.hstream/hstream.yaml` configuration and finally `~/Videos`.
