@@ -45,8 +45,10 @@ PUBLISHABLE_SUFFIXES = NONOFFICIAL_4K_SUFFIXES + ("tracking_output", "program_8k
 def plex_rank(base: str) -> tuple[bool, bool, bool]:
     """How strongly Plex prefers a video base, ranked worst to best.
 
-    Shared with symlink_plex_programs so that the file a sweep names as the
-    successor is the file publication would actually put in the library.
+    Publication filters on the first element and orders on the rest. The
+    sweep sorts on the whole tuple below the generation, so that where one
+    generation holds several MP4s it credits the same one the library gets,
+    and not whichever path happens to sort last.
     """
     stripped = base.lower().removesuffix("-with-audio")
     is_4k = stripped.endswith(NONOFFICIAL_4K_SUFFIXES)
@@ -72,10 +74,16 @@ def generation_stem(match: re.Match[str]) -> str:
     """
     index = generation_group(match)
     if index is None:
-        return match.string.lower()
-    start, end = match.span(index)
-    # The dash introducing the generation goes out with it.
-    return (match.string[:start - 1] + match.string[end:]).lower()
+        stem = match.string
+    else:
+        start, end = match.span(index)
+        # The dash introducing the generation goes out with it.
+        stem = match.string[:start - 1] + match.string[end:]
+    stem = stem.lower()
+    if stem.endswith(".sqlite"):
+        # A database that changed suffix is the same kind of thing it was.
+        stem = stem.removesuffix(".sqlite") + ".db"
+    return stem
 
 
 def config_owners(paths: list[Path]) -> dict[str, set[int]]:
@@ -193,6 +201,7 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None
 
         owners = config_owners(paths)
         dated: list[tuple[int, Path, str]] = []
+        spared: list[tuple[Path, str]] = []
         for path in pending:
             name = path.name
             if match := MASK_RE.fullmatch(name):
@@ -202,7 +211,11 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None
                 if base_match := CONFIG_BASE_RE.fullmatch(name):
                     assigned = owners.get(name.lower(), set())
                     if len(assigned) != 1:
-                        continue  # A single suffix can be a run number or event sequence.
+                        # A single suffix can be a run number or event
+                        # sequence. Unreadable means kept, and kept means it
+                        # is there to stand in for an older one of its kind.
+                        spared.append((path, generation_stem(base_match)))
+                        continue
                     version = next(iter(assigned))
                     # The suffix is the generation after all, so read the stem
                     # off the pattern that says so rather than the event one.
@@ -215,8 +228,9 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None
 
         # Ascending, so the last write per kind is its newest surviving file
         # and rglob's arbitrary order cannot change which one the table names.
-        kept_pending = {stem: path for version, path, stem in sorted(dated)
-                        if version >= telemetry_newest}
+        kept_pending = {stem: path for path, stem in sorted(spared)}
+        kept_pending.update({stem: path for version, path, stem in sorted(dated)
+                             if version >= telemetry_newest})
         for version, path, stem in dated:
             if version < telemetry_newest:
                 retire(path, kept_pending.get(stem))
@@ -287,10 +301,10 @@ def symlink_plex_programs(
             match = VIDEO_RE.fullmatch(path.name)
             if not match or match.group("ext").lower() != "mp4" or not path.is_file():
                 continue
-            publishable, is_4k, with_audio = plex_rank(match.group("base"))
-            if not publishable:
+            rank = plex_rank(match.group("base"))
+            if not rank[0]:
                 continue
-            candidates.append((int(match.group("version") or 0), is_4k, with_audio, path))
+            candidates.append((int(match.group("version") or 0), rank, path))
         if not candidates:
             continue
         source = max(candidates)[-1].absolute()
@@ -624,42 +638,45 @@ def main() -> None:
     if sweeping and args.symlink_plex and not plex_dir.is_dir():
         parser.error(f"--plex-dir is not an existing directory: {args.plex_dir}")
     unpublished: list[str] = []
-    # Work out what publication spares without writing anything yet. A dry run
-    # must not write at all, and --clean must not either until it has asked:
-    # publishing relinks the library and unlinks what it replaced, so doing it
-    # first would mean answering "no" to the sweep and still changing the tree.
-    published = (symlink_plex_programs(root, plex_dir, unpublished, publish=False)
+    # A dry run works out what publication would spare but writes no links, so
+    # that previewing --clean --symlink-plex reports what it would really do.
+    # The confirmation below is about the sweep and not about publication:
+    # publishing one pass to decide and a second to apply makes the first a
+    # model of the second rather than the thing itself, and the two disagree
+    # on any game whose stale link an earlier game's pass would have reclaimed.
+    published = (symlink_plex_programs(root, plex_dir, unpublished, publish=not args.dry_run)
                  if args.symlink_plex else set())
     if sweeping and unpublished:
         parser.error("cannot sweep games that were not published: " + ", ".join(unpublished))
+    # --write-jobs overwrites a script in every game, which a dry run must not.
+    if args.write_jobs and not args.dry_run:
+        write_job_scripts(root)
     superseded_by: dict[Path, Path] = {}
     targets = cleanup_targets(root, published, args.absolute, superseded_by)
-    if args.clean and targets:
-        if not args.quiet:
-            try:
-                print_cleanup_table(targets, superseded_by, root, args.absolute)
-            except ImportError as error:
-                # --force waived the confirmation the table informs, so it has
-                # nothing to lose by going without one. An answer given against
-                # no table at all is the only thing worth refusing over.
-                if not args.force:
-                    parser.error(f"--clean needs rich to draw its table ({error}). "
-                                 "Install it, or pass --quiet to sweep without one.")
-                print(f"Skipping the table: {error}", file=sys.stderr)
-        if not args.force:
-            try:
-                targets = confirmed_targets(targets, root, args.absolute, args.all)
-            except KeyboardInterrupt:
-                print("\nStopped before deleting anything.", file=sys.stderr)
-                sys.exit(130)
-    # Everything below here writes, and the question above has been answered.
-    if not args.dry_run:
-        if args.symlink_plex:
-            symlink_plex_programs(root, plex_dir)
-        # --write-jobs overwrites a script in every game, which a dry run must not.
-        if args.write_jobs:
-            write_job_scripts(root)
     if sweeping:
+        if args.clean and targets:
+            if not args.quiet:
+                # Only the import is guarded. A rich that is installed but
+                # fails mid-render is a broken rich, not a missing one, and
+                # reporting it as missing would truncate the table in silence.
+                try:
+                    import rich.console  # noqa: F401  Probe before drawing.
+                except ImportError as error:
+                    # --force waived the confirmation the table informs, so it
+                    # has nothing left to lose by going without one. An answer
+                    # given against no table is the thing worth refusing over.
+                    if not args.force:
+                        parser.error(f"--clean needs rich to draw its table ({error}). "
+                                     "Install it, or pass --quiet to sweep without one.")
+                    print(f"Skipping the table: {error}", file=sys.stderr)
+                else:
+                    print_cleanup_table(targets, superseded_by, root, args.absolute)
+            if not args.force:
+                try:
+                    targets = confirmed_targets(targets, root, args.absolute, args.all)
+                except KeyboardInterrupt:
+                    print("\nStopped before deleting anything.", file=sys.stderr)
+                    sys.exit(130)
         try:
             failures = remove_obsolete(targets, root, args.absolute, args.dry_run)
         except KeyboardInterrupt:
@@ -677,4 +694,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # The scan and the publication pass are where a real run spends its
+        # time, and either is as likely to catch a Ctrl-C as the prompt is.
+        print("\nStopped.", file=sys.stderr)
+        sys.exit(130)

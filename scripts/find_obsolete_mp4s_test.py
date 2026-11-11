@@ -405,40 +405,31 @@ class PlexLinksTest(unittest.TestCase):
                          [['1', 'game/program-4k_output-2.mp4', 'game/program_4k_output-9.mp4']])
         self.assertEqual((self.plex / 'game.mp4').resolve(), chosen)
 
-    def test_nothing_is_written_before_the_question_is_answered(self):
-        self.video('game/tracking_output-2.mp4')
-        obsolete = self.video('game/tracking_output-1.mp4')
-        stale = self.plex / 'under-its-old-name.mp4'
-        stale.symlink_to(obsolete)
-        script = Path(__file__).with_name('find_obsolete_mp4s.py')
-        # Publication relinks the library and unlinks what it replaced, which
-        # used to happen on the way to a prompt that had not been asked yet.
-        with subprocess.Popen(
-                [sys.executable, str(script), str(self.root), '--clean', '--quiet',
-                 '--symlink-plex', '--plex-dir', str(self.plex)],
-                env=self.environment(), stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as running:
-            asked = ''
-            while '[y/N]' not in asked:
-                character = running.stderr.read(1)
-                self.assertNotEqual(character, '', f'the sweep ended without asking: {asked!r}')
-                asked += character
-            self.assertEqual([entry.name for entry in self.plex.iterdir()], [stale.name])
-            running.send_signal(signal.SIGINT)
-            self.assertEqual(running.wait(), 130)
-        self.assertEqual([entry.name for entry in self.plex.iterdir()], [stale.name])
-        self.assertTrue(obsolete.is_file())
-
-    def test_a_refused_sweep_keeps_its_files_and_publishes_anyway(self):
+    def test_the_answer_is_about_the_sweep_and_not_about_publication(self):
         self.video('game/tracking_output-2.mp4')
         obsolete = self.video('game/tracking_output-1.mp4')
         refused = self.run_cli('--clean', '--quiet', '--symlink-plex', '--plex-dir', str(self.plex),
                                answers='n\n')
         self.assertIn('removed 0 files\n', refused.stderr)
         self.assertTrue(obsolete.is_file())
-        # The answer is about the sweep. Publication was asked for separately
-        # and still happens, only now after the question rather than before.
+        # Publication was asked for by its own flag and runs either way. It
+        # cannot be deferred past the question: deciding in one pass and
+        # applying in a second makes the first a model of the second, and the
+        # two disagree on a game whose stale link an earlier game reclaims.
         self.assertEqual([entry.name for entry in self.plex.iterdir()], ['game.mp4'])
+
+    def test_a_stale_cross_named_link_does_not_block_the_sweep(self):
+        self.video('a/tracking_output-1.mp4')
+        self.video('b/program_4k_output-1.mp4')
+        self.video('b/stitched_output-9.mp4')
+        # Left behind by a renamed game: named for b, pointing into a.
+        (self.plex / 'b.mp4').symlink_to(self.root / 'a/tracking_output-1.mp4')
+        listed = self.run_cli('--symlink-plex', '--plex-dir', str(self.plex))
+        # b's 4K is published, so it is not a candidate and must not be listed
+        # as one by a run that is publishing it in the same breath.
+        self.assertEqual(listed.stdout, '')
+        self.assertEqual((self.plex / 'b.mp4').resolve(), self.root / 'b/program_4k_output-1.mp4')
+        self.assertEqual((self.plex / 'a.mp4').resolve(), self.root / 'a/tracking_output-1.mp4')
 
     def test_an_interrupt_partway_through_the_unlinks_is_not_a_traceback(self):
         for generation in range(1, 400):
