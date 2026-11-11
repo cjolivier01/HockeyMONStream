@@ -42,6 +42,17 @@ NONOFFICIAL_4K_SUFFIXES = ("program_4k_output", "program-4k_output")
 PUBLISHABLE_SUFFIXES = NONOFFICIAL_4K_SUFFIXES + ("tracking_output", "program_8k_output")
 
 
+def plex_rank(base: str) -> tuple[bool, bool, bool]:
+    """How strongly Plex prefers a video base, ranked worst to best.
+
+    Shared with symlink_plex_programs so that the file a sweep names as the
+    successor is the file publication would actually put in the library.
+    """
+    stripped = base.lower().removesuffix("-with-audio")
+    is_4k = stripped.endswith(NONOFFICIAL_4K_SUFFIXES)
+    return (stripped.endswith(PUBLISHABLE_SUFFIXES), is_4k, "-with-audio" in base.lower())
+
+
 def generation_group(match: re.Match[str]) -> int | None:
     """The index of the group holding the generation, where the name carries one."""
     return next((index for index, value in enumerate(match.groups(), start=1) if value is not None), None)
@@ -96,13 +107,13 @@ def config_owners(paths: list[Path]) -> dict[str, set[int]]:
     return owners
 
 
-def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path | int] | None = None) -> list[Path]:
+def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None) -> list[Path]:
     """Find exports older than the comparable generation in each directory.
 
-    Records what retires each one into superseded_by, because a caller about
-    to delete something has to be able to show what replaces it. A Path there
-    is the surviving file of the same kind; an int is a bare generation, for
-    the rules that compare a number and have no one file to point at.
+    Records the surviving file of the same kind into superseded_by, because a
+    caller about to delete something has to be able to show what replaces it.
+    A file absent from it has no replacement of its kind, which the rules
+    comparing a bare generation often leave it with.
     """
     paths_by_parent: dict[Path, list[Path]] = defaultdict(list)
     for path in root.rglob("*"):
@@ -117,7 +128,7 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path | int] | None 
 
     obsolete: list[Path] = []
 
-    def retire(path: Path, successor: Path | int | None) -> None:
+    def retire(path: Path, successor: Path | None) -> None:
         obsolete.append(path)
         if superseded_by is not None and successor is not None:
             superseded_by[path] = successor
@@ -143,10 +154,10 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path | int] | None 
         # A generation holding several MP4s is credited to the one Plex would
         # publish, so the companion rule below does not retire a Program export
         # in the name of the stitching intermediate it was cut from.
-        mp4s = [(version, base.removesuffix("-with-audio").endswith(PUBLISHABLE_SUFFIXES), path)
+        mp4s = [(version, plex_rank(base), path)
                 for base, versions in videos.items()
                 for version, path, ext in versions if ext == "mp4"]
-        newest_mp4, _, newest_mp4_path = max(mp4s, default=(0, False, None))
+        newest_mp4, _, newest_mp4_path = max(mp4s, default=(0, (), None))
         for base, versions in videos.items():
             newest = max(version for version, _, _ in versions)
             # The MP4 takes a tie: an MKV only stands in for a generation it holds alone.
@@ -175,11 +186,10 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path | int] | None 
         # nothing to supersede it. Whatever else goes, the newest stays.
         for version, path, stem in telemetry:
             if version < telemetry_newest and version != telemetry_kept:
-                # Only its own kind is a real replacement. Where nothing
-                # carries this one forward, the surviving generation is the
-                # whole of what retired it, and naming some unrelated file
-                # would read as the contents having moved there.
-                retire(path, kept_telemetry.get(stem, telemetry_newest))
+                # Only its own kind is a real replacement. Naming the file
+                # that happens to carry the generation instead would read as
+                # these readings having moved in there.
+                retire(path, kept_telemetry.get(stem))
 
         owners = config_owners(paths)
         dated: list[tuple[int, Path, str]] = []
@@ -189,11 +199,14 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path | int] | None 
                 version = int(match.group(1))
             elif match := CONFIG_EVENT_RE.fullmatch(name):
                 version = int(match.group(1)) if match.group(1) is not None else 0
-                if CONFIG_BASE_RE.fullmatch(name):
+                if base_match := CONFIG_BASE_RE.fullmatch(name):
                     assigned = owners.get(name.lower(), set())
                     if len(assigned) != 1:
                         continue  # A single suffix can be a run number or event sequence.
                     version = next(iter(assigned))
+                    # The suffix is the generation after all, so read the stem
+                    # off the pattern that says so rather than the event one.
+                    match = base_match
             elif match := CONFIG_BASE_RE.fullmatch(name):
                 version = 0
             else:
@@ -206,7 +219,7 @@ def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path | int] | None 
                         if version >= telemetry_newest}
         for version, path, stem in dated:
             if version < telemetry_newest:
-                retire(path, kept_pending.get(stem, telemetry_newest))
+                retire(path, kept_pending.get(stem))
     return sorted(obsolete)
 
 
@@ -274,12 +287,10 @@ def symlink_plex_programs(
             match = VIDEO_RE.fullmatch(path.name)
             if not match or match.group("ext").lower() != "mp4" or not path.is_file():
                 continue
-            base = match.group("base").lower().removesuffix("-with-audio")
-            is_4k = base.endswith(("program_4k_output", "program-4k_output"))
-            if not is_4k and not base.endswith(("tracking_output", "program_8k_output")):
+            publishable, is_4k, with_audio = plex_rank(match.group("base"))
+            if not publishable:
                 continue
-            candidates.append((int(match.group("version") or 0), is_4k,
-                               "-with-audio" in match.group("base").lower(), path))
+            candidates.append((int(match.group("version") or 0), is_4k, with_audio, path))
         if not candidates:
             continue
         source = max(candidates)[-1].absolute()
@@ -347,7 +358,7 @@ def display(path: Path, root: Path, absolute: bool) -> Path:
 
 
 def cleanup_targets(root: Path, published: set[Path], absolute: bool,
-                    superseded_by: dict[Path, Path | int] | None = None) -> list[tuple[Path, Path | None]]:
+                    superseded_by: dict[Path, Path] | None = None) -> list[tuple[Path, Path | None]]:
     """Each file to remove, paired with the origin sidecar that goes with it.
 
     Companions are resolved here rather than in find_obsolete_mp4s so that
@@ -371,7 +382,7 @@ def cleanup_targets(root: Path, published: set[Path], absolute: bool,
     return targets
 
 
-def resolve_successors(superseded_by: dict[Path, Path | int], going: set[Path]) -> None:
+def resolve_successors(superseded_by: dict[Path, Path], going: set[Path]) -> None:
     """Follow each successor past anything this same sweep is about to delete.
 
     A generation retires a file through whatever is newest at the time, which
@@ -379,31 +390,40 @@ def resolve_successors(superseded_by: dict[Path, Path | int], going: set[Path]) 
     doomed export replaces another is the one thing the column must not do, so
     the chain is walked to something that will still be there afterwards.
     """
+    def doomed(path: Path) -> bool:
+        if path in going:
+            return True
+        # A link is worth no more than what it points at, and discovery came
+        # through it: the export behind it can be on the list under its own
+        # name, which would leave the named successor dangling.
+        try:
+            return path.is_symlink() and path.resolve() in going
+        except (OSError, RuntimeError):
+            return False
+
     for path in list(superseded_by):
         successor, seen = superseded_by[path], {path}
-        while isinstance(successor, Path) and successor in going and successor not in seen:
+        while successor is not None and doomed(successor) and successor not in seen:
             seen.add(successor)
             successor = superseded_by.get(successor)
-        if successor is None or (isinstance(successor, Path) and successor in going):
+        if successor is None or doomed(successor):
             del superseded_by[path]
         else:
             superseded_by[path] = successor
 
 
-def supersession(path: Path, superseded_by: dict[Path, Path | int], root: Path, absolute: bool) -> str:
+def supersession(path: Path, superseded_by: dict[Path, Path], root: Path, absolute: bool) -> str:
     """What replaces one file, as the column says it."""
-    successor = superseded_by.get(path)
-    if isinstance(successor, Path):
+    if successor := superseded_by.get(path):
         return str(display(successor, root, absolute))
-    if successor is not None:
-        # A generation, for a rule that compared numbers rather than files.
-        return f"(nothing of its kind; generation {successor} survives)"
+    # Only an orphan reaches the list under a sidecar's own name; a companion
+    # is carried on its export's row instead.
     if path.name.endswith(ARCHIVE_SIDECAR_SUFFIX):
         return "(export already gone)"
-    return "(nothing newer survives)"
+    return "(nothing of its kind survives)"
 
 
-def print_cleanup_table(targets: list[tuple[Path, Path | None]], superseded_by: dict[Path, Path | int],
+def print_cleanup_table(targets: list[tuple[Path, Path | None]], superseded_by: dict[Path, Path],
                         root: Path, absolute: bool) -> None:
     """Print the sweep as a table: every file to delete beside what replaces it.
 
@@ -439,7 +459,10 @@ def print_cleanup_table(targets: list[tuple[Path, Path | None]], superseded_by: 
 def confirm(question: str) -> bool:
     """Ask on stderr, where the sweep already reports. Anything but yes is no."""
     print(f"{question} [y/N] ", end="", file=sys.stderr, flush=True)
-    return input().strip().lower() in ("y", "yes")
+    try:
+        return input().strip().lower() in ("y", "yes")
+    except UnicodeDecodeError:
+        return False  # Whatever that byte was, nobody typed it meaning yes.
 
 
 def confirmed_targets(targets: list[tuple[Path, Path | None]], root: Path, absolute: bool,
@@ -601,36 +624,50 @@ def main() -> None:
     if sweeping and args.symlink_plex and not plex_dir.is_dir():
         parser.error(f"--plex-dir is not an existing directory: {args.plex_dir}")
     unpublished: list[str] = []
-    # A dry run works out what publication would spare but writes no links, so
-    # that previewing --clean --symlink-plex reports what it would really do.
-    published = (symlink_plex_programs(root, plex_dir, unpublished, publish=not args.dry_run)
+    # Work out what publication spares without writing anything yet. A dry run
+    # must not write at all, and --clean must not either until it has asked:
+    # publishing relinks the library and unlinks what it replaced, so doing it
+    # first would mean answering "no" to the sweep and still changing the tree.
+    published = (symlink_plex_programs(root, plex_dir, unpublished, publish=False)
                  if args.symlink_plex else set())
     if sweeping and unpublished:
         parser.error("cannot sweep games that were not published: " + ", ".join(unpublished))
-    # --write-jobs overwrites a script in every game, which a dry run must not.
-    if args.write_jobs and not args.dry_run:
-        write_job_scripts(root)
-    superseded_by: dict[Path, Path | int] = {}
+    superseded_by: dict[Path, Path] = {}
     targets = cleanup_targets(root, published, args.absolute, superseded_by)
-    if sweeping:
-        if args.clean and targets:
-            if not args.quiet:
-                try:
-                    print_cleanup_table(targets, superseded_by, root, args.absolute)
-                except ImportError as error:
-                    # There is nothing to confirm against without the table,
-                    # so say so rather than ask the question blind.
+    if args.clean and targets:
+        if not args.quiet:
+            try:
+                print_cleanup_table(targets, superseded_by, root, args.absolute)
+            except ImportError as error:
+                # --force waived the confirmation the table informs, so it has
+                # nothing to lose by going without one. An answer given against
+                # no table at all is the only thing worth refusing over.
+                if not args.force:
                     parser.error(f"--clean needs rich to draw its table ({error}). "
                                  "Install it, or pass --quiet to sweep without one.")
-            if not args.force:
-                try:
-                    targets = confirmed_targets(targets, root, args.absolute, args.all)
-                except KeyboardInterrupt:
-                    # Nothing is unlinked until every answer is in, so the
-                    # interrupt costs the sweep and not a half-deleted game.
-                    print("\nStopped before deleting anything.", file=sys.stderr)
-                    sys.exit(130)
-        if remove_obsolete(targets, root, args.absolute, args.dry_run):
+                print(f"Skipping the table: {error}", file=sys.stderr)
+        if not args.force:
+            try:
+                targets = confirmed_targets(targets, root, args.absolute, args.all)
+            except KeyboardInterrupt:
+                print("\nStopped before deleting anything.", file=sys.stderr)
+                sys.exit(130)
+    # Everything below here writes, and the question above has been answered.
+    if not args.dry_run:
+        if args.symlink_plex:
+            symlink_plex_programs(root, plex_dir)
+        # --write-jobs overwrites a script in every game, which a dry run must not.
+        if args.write_jobs:
+            write_job_scripts(root)
+    if sweeping:
+        try:
+            failures = remove_obsolete(targets, root, args.absolute, args.dry_run)
+        except KeyboardInterrupt:
+            # Partway through the unlinks, where --force spends its whole run.
+            # remove_obsolete has already named each file as it went.
+            print("\nStopped partway through.", file=sys.stderr)
+            sys.exit(130)
+        if failures:
             sys.exit(1)
         return
     for path, sidecar in targets:

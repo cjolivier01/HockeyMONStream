@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Filesystem regression tests for Plex publication and obsolete-export cleanup."""
+import json
 import os
 from pathlib import Path
 import signal
@@ -32,7 +33,9 @@ class PlexLinksTest(unittest.TestCase):
         env = {key: value for key, value in os.environ.items()
                if key not in ('FORCE_COLOR', 'TERM', 'COLORTERM', 'TTY_COMPATIBLE')}
         # A fixed width keeps the --clean table from folding its paths.
-        return {**env, 'HOME': str(self.home), 'COLUMNS': '200', 'NO_COLOR': '1'}
+        return {**env, 'HOME': str(self.home), 'COLUMNS': '200', 'NO_COLOR': '1',
+                # rich falls back to ASCII box characters without this.
+                'PYTHONIOENCODING': 'utf-8'}
 
     def run_cli(self, *args, check=True, answers=''):
         script = Path(__file__).with_name('find_obsolete_mp4s.py')
@@ -321,10 +324,10 @@ class PlexLinksTest(unittest.TestCase):
         self.video('game/tracking-7.csv')
         self.video('game/tracking-2.csv')
         self.video('game/camera-2.csv')
-        # Nothing carries camera.csv forward, and naming the database that
-        # happens to survive would read as the CSV's contents having moved in.
+        # Nothing carries camera.csv forward, and naming whichever file holds
+        # the generation would read as the readings having moved in there.
         self.assertEqual(self.table_cells(self.run_cli('--clean').stderr), [
-            ['1', 'game/camera-2.csv', '(nothing of its kind; generation 7 survives)'],
+            ['1', 'game/camera-2.csv', '(nothing of its kind survives)'],
             ['2', 'game/tracking-2.csv', 'game/tracking-7.csv'],
         ])
 
@@ -368,6 +371,111 @@ class PlexLinksTest(unittest.TestCase):
         self.assertEqual(self.table_cells(self.run_cli('--clean').stderr),
                          [['1', 'game/play_tracker_source-2-1.yaml',
                            'game/play_tracker_source-7-1.yaml']])
+
+    def test_a_link_onto_a_doomed_export_is_not_a_successor(self):
+        going = self.video('game/tracking_output-2.mp4')
+        link = self.root / 'game/tracking_output-3.mp4'
+        link.symlink_to(going.name)
+        # Discovery came through the link, so the generation it carries is the
+        # file below it. Naming the link would promise a dangling one.
+        self.assertEqual(self.table_cells(self.run_cli('--clean').stderr),
+                         [['1', 'game/tracking_output-2.mp4', '(nothing of its kind survives)']])
+
+    def test_a_bare_config_artifact_pairs_across_generations(self):
+        for generation in (5, 7):
+            (self.root / f'game/hstream_telemetry-{generation}.json').parent.mkdir(
+                parents=True, exist_ok=True)
+            (self.root / f'game/hstream_telemetry-{generation}.json').write_text(json.dumps(
+                {'config_provenance': {'source_artifact': f'play_tracker_source-{generation}.yaml'}}))
+            self.video(f'game/play_tracker_source-{generation}.yaml')
+        # The -5 suffix is this one's generation, not an event sequence, so it
+        # belongs with play_tracker_source-7.yaml and not with a database.
+        self.assertEqual(self.table_cells(self.run_cli('--clean').stderr), [
+            ['1', 'game/hstream_telemetry-5.json', 'game/hstream_telemetry-7.json'],
+            ['2', 'game/play_tracker_source-5.yaml', 'game/play_tracker_source-7.yaml'],
+        ])
+
+    def test_the_4k_program_outranks_the_tracking_export_plex_passed_over(self):
+        self.video('game/program-4k_output-2.mp4')
+        chosen = self.video('game/program_4k_output-9.mp4')
+        self.video('game/tracking_output-9.mp4')
+        cleaned = self.run_cli('--clean', '--symlink-plex', '--plex-dir', str(self.plex), answers='n\n')
+        # Whatever the table credits has to be what the library ends up with.
+        self.assertEqual(self.table_cells(cleaned.stderr),
+                         [['1', 'game/program-4k_output-2.mp4', 'game/program_4k_output-9.mp4']])
+        self.assertEqual((self.plex / 'game.mp4').resolve(), chosen)
+
+    def test_nothing_is_written_before_the_question_is_answered(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        stale = self.plex / 'under-its-old-name.mp4'
+        stale.symlink_to(obsolete)
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        # Publication relinks the library and unlinks what it replaced, which
+        # used to happen on the way to a prompt that had not been asked yet.
+        with subprocess.Popen(
+                [sys.executable, str(script), str(self.root), '--clean', '--quiet',
+                 '--symlink-plex', '--plex-dir', str(self.plex)],
+                env=self.environment(), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as running:
+            asked = ''
+            while '[y/N]' not in asked:
+                character = running.stderr.read(1)
+                self.assertNotEqual(character, '', f'the sweep ended without asking: {asked!r}')
+                asked += character
+            self.assertEqual([entry.name for entry in self.plex.iterdir()], [stale.name])
+            running.send_signal(signal.SIGINT)
+            self.assertEqual(running.wait(), 130)
+        self.assertEqual([entry.name for entry in self.plex.iterdir()], [stale.name])
+        self.assertTrue(obsolete.is_file())
+
+    def test_a_refused_sweep_keeps_its_files_and_publishes_anyway(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        refused = self.run_cli('--clean', '--quiet', '--symlink-plex', '--plex-dir', str(self.plex),
+                               answers='n\n')
+        self.assertIn('removed 0 files\n', refused.stderr)
+        self.assertTrue(obsolete.is_file())
+        # The answer is about the sweep. Publication was asked for separately
+        # and still happens, only now after the question rather than before.
+        self.assertEqual([entry.name for entry in self.plex.iterdir()], ['game.mp4'])
+
+    def test_an_interrupt_partway_through_the_unlinks_is_not_a_traceback(self):
+        for generation in range(1, 400):
+            self.video(f'game/tracking_output-{generation}.mp4')
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        with subprocess.Popen(
+                [sys.executable, str(script), str(self.root), '--clean', '--quiet', '--force'],
+                env=self.environment(), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as running:
+            # Interrupt once the unlinks are underway, which is the only window
+            # --force ever spends time in.
+            removed = ''
+            while removed.count('removed ') < 2:
+                character = running.stderr.read(1)
+                self.assertNotEqual(character, '', f'the sweep ended too soon: {removed!r}')
+                removed += character
+            running.send_signal(signal.SIGINT)
+            self.assertIn('Stopped partway through.', removed + running.stderr.read())
+            self.assertEqual(running.wait(), 130)
+
+    def test_force_sweeps_without_rich_but_says_it_drew_no_table(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        shadow = self.home / 'no-rich-force'
+        shadow.mkdir()
+        (shadow / 'rich.py').write_text('raise ImportError("no rich on this box")\n')
+        script = Path(__file__).with_name('find_obsolete_mp4s.py')
+        # --force waived the confirmation the table informs, so it has nothing
+        # left to lose by going without one.
+        forced = subprocess.run(
+            [sys.executable, str(script), str(self.root), '--clean', '--force'],
+            env={**self.environment(), 'PYTHONPATH': str(shadow)},
+            input='', check=False, capture_output=True, text=True)
+        self.assertEqual(forced.returncode, 0)
+        self.assertIn('Skipping the table: no rich on this box', forced.stderr)
+        self.assertIn('removed 1 file\n', forced.stderr)
+        self.assertFalse(obsolete.exists())
 
     def test_a_box_without_rich_keeps_everything_but_the_table(self):
         self.video('game/tracking_output-2.mp4')
