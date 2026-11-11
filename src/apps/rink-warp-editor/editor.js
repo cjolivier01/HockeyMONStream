@@ -154,7 +154,8 @@
   function apply(candidate, history = true) {
     try {
       const next = new G.Warp(candidate);
-      if (history) remember();
+      if (history && JSON.stringify(candidate) !== JSON.stringify(spec))
+        remember();
       spec = clone(candidate);
       warp = next;
       for (const pane of panes) pane.renderer.setWarp(warp);
@@ -191,11 +192,17 @@
       ? { ...document, schema: 3, strength: 1, aspect_balance: 1 }
       : document;
   }
-  async function setImage(url, title, guides = null, maskURL = null) {
+  async function setImage(
+    url,
+    title,
+    guides = null,
+    maskURL = null,
+    request = fileRequest,
+  ) {
     const ticket = ++imageTicket;
     status("Loading still image…");
     const loaded = await loadImage(url);
-    if (ticket !== imageTicket) return;
+    if (ticket !== imageTicket || request !== fileRequest) return;
     const size = [loaded.naturalWidth, loaded.naturalHeight],
       candidate = guides ? normalizeImport(guides, size) : newSpec(size);
     new G.Warp(candidate);
@@ -215,23 +222,29 @@
     stroke = [];
     $("[data-action=draw]").setAttribute("aria-pressed", "false");
     if (!apply(candidate, false)) return;
+    initial = clone(spec);
     $("#warp-title").textContent = title || "Panorama";
     if (maskURL) {
       try {
-        await setMask(maskURL, ticket, !guides);
+        await setMask(maskURL, ticket, !guides, request);
       } catch (error) {
         status(error.message, true);
       }
     }
-    if (ticket !== imageTicket) return;
+    if (ticket !== imageTicket || request !== fileRequest) return;
     initial = clone(spec);
     fitViews();
     controls();
   }
-  async function setMask(url, ticket = imageTicket, auto = false) {
+  async function setMask(
+    url,
+    ticket = imageTicket,
+    auto = false,
+    request = fileRequest,
+  ) {
     if (!spec) throw Error("Open a panorama before its mask.");
     const loaded = await loadImage(url);
-    if (ticket !== imageTicket) return;
+    if (ticket !== imageTicket || request !== fileRequest) return;
     if (
       loaded.naturalWidth !== spec.source_size[0] ||
       loaded.naturalHeight !== spec.source_size[1]
@@ -527,7 +540,7 @@
       (p[1] - pane.rect[1]) / pane.rect[3],
     ];
   }
-  function movePoint(x, y) {
+  function movePoint(x, y, history = true) {
     const next = clone(spec),
       rail = +input("guide").value,
       i = selected,
@@ -559,7 +572,8 @@
       }
       next.guides.sort((a, b) => a[0] - b[0]);
     }
-    apply(next, false);
+    if (JSON.stringify(next) === JSON.stringify(spec)) return false;
+    return apply(next, history);
   }
   function addPoint(x, y) {
     if (
@@ -652,8 +666,7 @@
           if (hit) {
             selected = hit[0];
             input("guide").value = hit[1];
-            remember();
-            dragging = { pane, point: true };
+            dragging = { pane, point: true, changed: false };
             controls();
             schedule();
           } else {
@@ -678,7 +691,7 @@
       } else if (dragging.draw) {
         stroke.push([G.clamp(x, 0, 1), G.clamp(y, G.EPS, 1 - G.EPS)]);
         schedule();
-      } else movePoint(x, y);
+      } else if (movePoint(x, y, !dragging.changed)) dragging.changed = true;
     });
     const finish = () => {
       if (dragging?.pane !== pane) return;
@@ -723,7 +736,6 @@
       };
       if (!directions[e.key]) return;
       e.preventDefault();
-      remember();
       const d = directions[e.key],
         r = spec.guides[selected],
         step = e.shiftKey ? 10 : 1;
@@ -760,29 +772,24 @@
     { capture: true, passive: false },
   );
   $$("input[type=range]").forEach((el) => {
+    let gesture = null;
     el.addEventListener("pointerdown", () => {
-      remember();
+      gesture = { changed: false };
     });
-    el.addEventListener("keydown", (e) => {
-      if (
-        [
-          "ArrowLeft",
-          "ArrowRight",
-          "ArrowUp",
-          "ArrowDown",
-          "Home",
-          "End",
-          "PageUp",
-          "PageDown",
-        ].includes(e.key)
-      )
-        remember();
-    });
+    for (const event of ["pointerup", "pointercancel", "blur"])
+      el.addEventListener(event, () => {
+        gesture = null;
+      });
     el.addEventListener("input", () => {
       if (spec) {
         const next = clone(spec);
         next[el.name] = +el.value;
-        apply(next, false);
+        if (
+          next[el.name] !== spec[el.name] &&
+          apply(next, !gesture?.changed) &&
+          gesture
+        )
+          gesture.changed = true;
       }
     });
   });
@@ -956,8 +963,9 @@
       } else {
         const url = await dataURL(file);
         if (request !== fileRequest) return;
-        if (action === "open-image") await setImage(url, file.name);
-        else await setMask(url, ticket);
+        if (action === "open-image")
+          await setImage(url, file.name, null, null, request);
+        else await setMask(url, ticket, false, request);
       }
     } catch (error) {
       status(error.message, true);

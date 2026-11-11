@@ -22,6 +22,17 @@ def specification():
 
 
 class WarpTest(unittest.TestCase):
+  def test_half_pixel_output_width_rounds_to_even(self):
+    for schema in (2, 3):
+      for width, expected in ((8194, 4097), (8196, 4099)):
+        spec = specification()
+        spec.update(schema=schema, source_size=[width, 201],
+                    guides=[[0, .6, .9], [1, .6, .9]], target_rows=[.6, .9],
+                    horizontal_crop=[0, .5], strength=0, aspect_balance=0)
+        if schema == 2:
+          del spec["strength"], spec["aspect_balance"]
+        self.assertEqual(RinkWarp(spec).output_size, (expected, 201))
+
   def test_curve_does_not_overshoot_and_hits_marks(self):
     x = np.array([0., .1, .2, .8, 1.])
     y = np.array([.2, .8, .8, .1, .3])

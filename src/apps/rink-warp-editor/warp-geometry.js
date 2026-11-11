@@ -171,7 +171,12 @@
         lastScale = scale;
       }
       const total = this.u[n - 1];
-      this.size = [1 + Math.round(total * (n - 1)), spec.source_size[1]];
+      // Match the offline renderer's ties-to-even rounding, including schema 2.
+      const span = total * (n - 1),
+        base = Math.floor(span);
+      const rounded =
+        span - base === 0.5 ? base + (base % 2) : Math.round(span);
+      this.size = [1 + rounded, spec.source_size[1]];
       if (this.size[0] < 2 || this.size[0] >= 32767)
         throw Error(
           "Output would be too wide. Reduce strength or proportion balance, or widen the guide spacing.",

@@ -32,6 +32,30 @@ for (const strength of [0, 0.05, 0.5, 1])
     }
     if (strength === 0) assert.deepEqual(w.size, spec.source_size);
   }
+for (const schema of [2, 3])
+  for (const [width, expected] of [
+    [8194, 4097],
+    [8196, 4099],
+  ]) {
+    const candidate = {
+      ...spec,
+      schema,
+      source_size: [width, 201],
+      guides: [
+        [0, 0.6, 0.9],
+        [1, 0.6, 0.9],
+      ],
+      target_rows: [0.6, 0.9],
+      horizontal_crop: [0, 0.5],
+      strength: 0,
+      aspect_balance: 0,
+    };
+    if (schema === 2) {
+      delete candidate.strength;
+      delete candidate.aspect_balance;
+    }
+    assert.deepEqual(new Warp(candidate).size, [expected, 201]);
+  }
 const points = Array.from({ length: 250 }, (_, i) => {
   const x = i / 249;
   return [x, 0.85 - 0.35 * (2 * x - 1) ** 2 + (i % 17 === 0 ? -0.3 : 0)];

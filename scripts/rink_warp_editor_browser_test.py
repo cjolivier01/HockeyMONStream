@@ -165,6 +165,17 @@ class EditorTest(unittest.TestCase):
         )
         self.page.get_by_role("button", name="Undo", exact=True).click()
         self.assertEqual(self.snapshot(), self.spec)
+        # Selecting a point is not an edit and must preserve the redo branch.
+        self.page.mouse.click(*self.point(0.5, 0.8))
+        self.page.mouse.click(*self.point(0, 0.5))
+        self.page.keyboard.press("ArrowLeft")
+        self.assertEqual(self.snapshot(), self.spec)
+        self.assertTrue(
+            self.page.get_by_role("button", name="Undo", exact=True).is_disabled()
+        )
+        self.assertTrue(
+            self.page.get_by_role("button", name="Redo", exact=True).is_enabled()
+        )
         self.page.get_by_role("button", name="Redo", exact=True).click()
         self.assertEqual(self.snapshot(), changed)
         slider = self.page.get_by_role("slider", name="Flattening", exact=True)
@@ -215,6 +226,73 @@ class EditorTest(unittest.TestCase):
         self.page.keyboard.press("Home")
         self.assertEqual(self.snapshot()["strength"], 0)
         self.assertEqual(self.page.evaluate("rinkWarpEditor.outputSize()"), [401, 201])
+
+    def test_latest_mask_selection_wins_after_delayed_decode(self):
+        self.page.evaluate("""() => {
+          const NativeImage = window.Image;
+          let count = 0;
+          window.Image = function() {
+            const image = new NativeImage(), held = ++count === 1;
+            Object.defineProperty(image, 'onload', {set(callback) {
+              image.addEventListener('load', () => {
+                if (held) window.releaseDecodedImage = () => callback.call(image);
+                else callback.call(image);
+              });
+            }});
+            return image;
+          };
+        }""")
+        for name, lower in (("first", 0.6), ("second", 0.9)):
+            mask = np.zeros((201, 401), dtype=np.uint8)
+            mask[40 : int(lower * 200)] = 255
+            path = self.root / f"{name}.png"
+            cv2.imwrite(str(path), mask)
+            with self.page.expect_file_chooser() as chooser:
+                self.page.get_by_role(
+                    "button", name="Open ice mask", exact=True
+                ).click()
+            chooser.value.set_files(path)
+            if name == "first":
+                self.page.wait_for_function("typeof releaseDecodedImage === 'function'")
+        fit = self.page.get_by_role(
+            "button", name="Fit lower guide to mask", exact=True
+        )
+        fit.click()
+        self.page.wait_for_function("rinkWarpEditor.snapshot().guides[6][2] > .89")
+        self.page.evaluate("releaseDecodedImage()")
+        fit.click()
+        self.assertAlmostEqual(self.snapshot()["guides"][6][2], 0.895, delta=0.001)
+
+    def test_selected_mask_supersedes_delayed_bootstrap_mask(self):
+        self.page.add_init_script("""(() => {
+          const NativeImage = window.Image;
+          let count = 0;
+          window.Image = function() {
+            const image = new NativeImage(), held = ++count === 2;
+            Object.defineProperty(image, 'onload', {set(callback) {
+              image.addEventListener('load', () => {
+                if (held) window.releaseBootstrapMask = () => callback.call(image);
+                else { callback.call(image); window.lastImageDecoded = count; }
+              });
+            }});
+            return image;
+          };
+        })();""")
+        self.page.reload()
+        self.page.wait_for_function("typeof releaseBootstrapMask === 'function'")
+        mask = np.zeros((201, 401), dtype=np.uint8)
+        mask[40:180] = 255
+        path = self.root / "selected.png"
+        cv2.imwrite(str(path), mask)
+        with self.page.expect_file_chooser() as chooser:
+            self.page.get_by_role("button", name="Open ice mask", exact=True).click()
+        chooser.value.set_files(path)
+        self.page.wait_for_function("lastImageDecoded === 3")
+        self.page.evaluate("releaseBootstrapMask()")
+        self.page.get_by_role(
+            "button", name="Fit lower guide to mask", exact=True
+        ).click()
+        self.assertAlmostEqual(self.snapshot()["guides"][6][2], 0.895, delta=0.001)
 
     def test_save_reload_and_gpu_png_matches_cpu(self):
         with self.page.expect_download() as download:
