@@ -56,6 +56,7 @@
     scheduled = false,
     imageTicket = 0,
     fileRequest = 0,
+    geometryRevision = 0,
     exporting = false;
   const panes = [];
   try {
@@ -157,6 +158,7 @@
       if (history && JSON.stringify(candidate) !== JSON.stringify(spec))
         remember();
       spec = clone(candidate);
+      geometryRevision++;
       warp = next;
       for (const pane of panes) pane.renderer.setWarp(warp);
       controls();
@@ -223,6 +225,7 @@
     $("[data-action=draw]").setAttribute("aria-pressed", "false");
     if (!apply(candidate, false)) return;
     initial = clone(spec);
+    fitViews();
     $("#warp-title").textContent = title || "Panorama";
     if (maskURL) {
       try {
@@ -232,8 +235,6 @@
       }
     }
     if (ticket !== imageTicket || request !== fileRequest) return;
-    initial = clone(spec);
-    fitViews();
     controls();
   }
   async function setMask(
@@ -243,6 +244,7 @@
     request = fileRequest,
   ) {
     if (!spec) throw Error("Open a panorama before its mask.");
+    const revision = geometryRevision;
     const loaded = await loadImage(url);
     if (ticket !== imageTicket || request !== fileRequest) return;
     if (
@@ -290,8 +292,10 @@
     mask = loaded;
     boundary = edge;
     maskExtents = extents;
-    if (auto && edge.length >= 12) fitMask(false, true);
-    else {
+    if (auto && edge.length >= 12 && revision === geometryRevision) {
+      fitMask(false, true);
+      initial = clone(spec);
+    } else {
       controls();
       schedule();
     }

@@ -102,6 +102,7 @@ class EditorTest(unittest.TestCase):
             "guides": self.spec,
             "title": "<still & guides>",
         }
+        self.boot = boot
         html = bundle.template(ROOT / "src/apps/rink-warp-editor").replace(
             "@@WARP_BOOTSTRAP@@", json.dumps(boot).replace("<", "\\u003c")
         )
@@ -293,6 +294,45 @@ class EditorTest(unittest.TestCase):
             "button", name="Fit lower guide to mask", exact=True
         ).click()
         self.assertAlmostEqual(self.snapshot()["guides"][6][2], 0.895, delta=0.001)
+
+    def test_manual_edit_supersedes_delayed_automatic_fit(self):
+        boot = {k: v for k, v in self.boot.items() if k != "guides"}
+        html = bundle.template(ROOT / "src/apps/rink-warp-editor").replace(
+            "@@WARP_BOOTSTRAP@@", json.dumps(boot).replace("<", "\\u003c")
+        )
+        (self.root / "editor.html").write_text(html)
+        self.page.add_init_script("""(() => {
+          const NativeImage = window.Image;
+          let count = 0;
+          window.Image = function() {
+            const image = new NativeImage(), held = ++count === 2;
+            Object.defineProperty(image, 'onload', {set(callback) {
+              image.addEventListener('load', () => {
+                if (held) window.releaseBootstrapMask = () => callback.call(image);
+                else callback.call(image);
+              });
+            }});
+            return image;
+          };
+        })();""")
+        self.page.reload()
+        self.page.wait_for_function("typeof releaseBootstrapMask === 'function'")
+        self.page.wait_for_selector('html[data-warp-ready="true"]')
+        initial = self.snapshot()
+        self.drag(self.point(0.5, 0.96), self.point(0.5, 0.70))
+        edited = self.snapshot()
+        self.assertAlmostEqual(edited["guides"][6][2], 0.70, delta=0.002)
+        self.page.evaluate("releaseBootstrapMask()")
+        self.page.wait_for_function(
+            "!document.querySelector('[data-action=fit-mask]').disabled"
+        )
+        self.assertEqual(self.snapshot(), edited)
+        self.page.get_by_role("button", name="Undo", exact=True).click()
+        self.assertEqual(self.snapshot(), initial)
+        self.page.get_by_role("button", name="Redo", exact=True).click()
+        self.assertEqual(self.snapshot(), edited)
+        self.page.get_by_role("button", name="Reset", exact=True).click()
+        self.assertEqual(self.snapshot(), initial)
 
     def test_save_reload_and_gpu_png_matches_cpu(self):
         with self.page.expect_download() as download:
