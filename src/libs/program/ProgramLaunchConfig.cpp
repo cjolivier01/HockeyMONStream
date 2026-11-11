@@ -3,11 +3,13 @@
 #include "hstream/src/libs/stitching/CameraSourceStart.h"
 
 #include <cmath>
+#include <iostream>
 
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/VideoDiscovery.h"
 #include "hstream/src/libs/tracking/ProgramCameraMapping.h"
 
 namespace hm::program {
@@ -111,6 +113,7 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       result.camera["person-roles"] = YAML::Clone(result.inference["person-roles"]);
     if (!result.inference.IsMap() || !result.inference["property"].IsMap())
       return absl::InvalidArgumentError("Program requires an inference YAML property map");
+    std::map<std::string, std::vector<std::string>> chapter_names;
     for (size_t index = 0; index < 2; ++index) {
       const std::string name = index ? "right" : "left";
       const auto sources = get_node(result.configuration.values, "game.videos." + name);
@@ -121,6 +124,7 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
           return absl::InvalidArgumentError("Camera chapter must be a nonempty local path");
         const fs::path path(value.as<std::string>());
         result.chapters[index].push_back(path.is_absolute() ? path : result.game / path);
+        chapter_names[name].push_back(path.string());
       }
       auto offset = get_node(result.configuration.values, "game.stitching.frame_offsets." + name);
       if (!offset || offset->IsNull())
@@ -131,6 +135,9 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       if (!std::isfinite(result.frame_offsets[index]) || result.frame_offsets[index] < 0)
         return absl::InvalidArgumentError("Camera synchronization must be a finite nonnegative frame offset");
     }
+    const auto chapters_status = stitching::ValidateCameraChapters(chapter_names);
+    if (!chapters_status.ok())
+      std::cerr << "Warning: " << chapters_status.message() << " Continuing with the selected inputs.\n";
     const auto requested_starts = hm::stitching::ReadCameraSourceStarts(
         get_node(result.configuration.values, "stitching.input_start_times").value_or(YAML::Node()));
     const auto saved_starts = hm::stitching::ReadCameraSourceStarts(

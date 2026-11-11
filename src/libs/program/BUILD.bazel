@@ -355,6 +355,7 @@ cc_library(
         "//src/libs/common:baseline_config", "//src/libs/common:user_config",
         "//src/libs/stitching:game_config", "//src/libs/tracking:program_camera_mapping",
         "//src/libs/stitching:stitching_algorithms",
+        "//src/libs/stitching:video_discovery",
     ],
 )
 

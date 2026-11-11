@@ -66,6 +66,16 @@ int main(int argc, char** argv) {
         "Saved chapters or fractional synchronization changed");
     Check(result->camera["zoom-in-aggressiveness"].as<int>() == 61, "Game camera tuning did not override user tuning");
     Check(!result->tiling, "Baseline must leave two-half detection disabled");
+    // Filename gaps are advisory. UI confirmation must remain usable on AMD;
+    // unattended runners keep their existing noninteractive launch behavior.
+    auto missing_chapter = YAML::Clone(game);
+    missing_chapter["game"]["videos"]["left"] = YAML::Load("[GX010001.MP4, GX020001.MP4, GX030001.MP4]");
+    missing_chapter["game"]["videos"]["right"] = YAML::Load("[GH010002.MP4, GH030002.MP4]");
+    Write(game_dir / "_hockeymon" / "config.yaml", missing_chapter);
+    const auto warned = load();
+    Check(warned.ok() && warned->chapters[1].size() == 2, "Chapter warnings must not reject an AMD launch");
+    Write(game_dir / "_hockeymon" / "config.yaml", game);
+
     game["pipeline"]["primary-gie"]["tiled-inference"] =
         YAML::Load("{enable: 1, tiles: 4, overlap: 0.3, merge-iou: 0.6}");
     Write(game_dir / "_hockeymon" / "config.yaml", game);

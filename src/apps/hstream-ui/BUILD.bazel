@@ -27,6 +27,8 @@ QT_UI_COMPATIBILITY = select({
 filegroup(
     name = "runtime_sources",
     srcs = [
+        "CameraChapterWarning.cpp",
+        "CameraChapterWarning.h",
         "ActionIcons.cpp",
         "ActionIcons.h",
         "AnsiLogFormat.cpp",
@@ -632,6 +634,24 @@ cc_test(
 )
 
 cc_library(
+    name = "camera_chapter_warning",
+    srcs = ["CameraChapterWarning.cpp"],
+    hdrs = ["CameraChapterWarning.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", "//src/libs/stitching:game_config", "//src/libs/stitching:video_discovery", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "camera_chapter_warning_test",
+    srcs = ["CameraChapterWarningTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":camera_chapter_warning", "@qt//:qt_widgets"],
+)
+
+cc_library(
     name = "stitching_experiment_dialog",
     srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp", "StitchingWorkflow.cpp"],
     hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h", "StitchingExperimentDefaults.h", "StitchingWorkflow.h"],
@@ -639,6 +659,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":camera_chapter_warning",
         ":log_text_edit",
         ":supervised_process",
         ":experiment_task_runtime",
@@ -963,6 +984,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":camera_chapter_warning",
         ":log_text_edit",
         ":supervised_process",
         "//src/libs/common:game_operation_owner","//src/libs/common:game_storage",

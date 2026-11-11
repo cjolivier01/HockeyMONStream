@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
+#include "src/apps/hstream-ui/CameraChapterWarning.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
@@ -2898,6 +2899,16 @@ struct StitchingExperimentDialog::Impl {
         !std::any_of(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; }))
       return;
     if (preparation_worker || !ensure_session())
+      return;
+    QStringList warnings;
+    for (const auto& candidate : candidates) {
+      if (!candidate.queued || !candidate.workspace || (only_row >= 0 && candidate.row != only_row))
+        continue;
+      const auto warning = CameraChapterWarning(candidate.workspace->game_directory);
+      if (!warning.isEmpty() && !warnings.contains(warning))
+        warnings.push_back(warning);
+    }
+    if (!ConfirmCameraChapterWarning(dialog, warnings.join("\n")))
       return;
     if (only_row < 0 && workflow && workflow->selected()) {
       submit_workflow(false);

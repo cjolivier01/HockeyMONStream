@@ -58,3 +58,26 @@ and later seeks. Fresh AMD calibration remains subject to the existing gaps in
 
 Qt/browser persistence, source retirement, native adapter and experiment
 validation are covered by the corresponding UI, web and stitching tests.
+
+## Missing camera chapters
+
+Desktop Play (including calibration and Restart) and Stitching Experiments Start
+check recognized GoPro, Insta360 and numbered Left/Right filenames before
+launching. A chapter present in one camera but missing before the other camera's
+last chapter prompts **Missing camera chapter**, with **Cancel** selected by
+default and **Continue anyway** available. Missing first chapters are included.
+Extra trailing chapters pass silently: cameras can split files at different rates
+or stop at different times. Equal file counts do not hide different internal gaps.
+
+The comparison uses chapter numbers within each camera's ordered recordings,
+not matching recording IDs across cameras. Different naming schemes and
+unrecognized filenames do not establish matching chapter boundaries. Center and
+unused Auto sets are excluded when Left and Right are explicitly selected.
+Experiments check their frozen input playlists, rather than newly imported files.
+
+This is an advisory UI check. Continue applies to that launch; it does not save an
+ignore setting. CLI and unattended launches log the diagnostic and continue.
+The browser uses the same rules and offers the same confirmation before Play,
+Prepare, Restart and experiment Start. Ordinary malformed-input errors retain
+their existing behavior. The check reads filenames, without decoding video or
+changing synchronization offsets, trims or input files.
