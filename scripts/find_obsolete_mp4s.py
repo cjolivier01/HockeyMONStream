@@ -14,6 +14,9 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
+from rich.console import Console
+from rich.table import Table
+
 
 VIDEO_RE = re.compile(
     r"^(?P<base>.*(?:tracking|stitched|program_4k|program-4k|program_8k)_output(?:-with-audio)?)"
@@ -37,11 +40,18 @@ MASK_RE = re.compile(r"^rink_mask_0-(\d+)\.png$", re.IGNORECASE)
 # The finalizer publishes each archive's game-time origin beside it. Nothing
 # reads a sidecar whose video is gone, so it goes when the video does.
 ARCHIVE_SIDECAR_SUFFIX = ".hstream-archive.json"
+GENERATION_SUFFIX_RE = re.compile(r"-\d+$")
 
 
 def version_from_match(match: re.Match[str]) -> int:
     version = next((value for value in match.groups() if value is not None), None)
     return int(version) if version is not None else 0
+
+
+def generation_stem(name: str) -> str:
+    """An artifact's name without its generation, so it can be paired with its successor."""
+    stem, dot, extension = name.rpartition(".")
+    return (GENERATION_SUFFIX_RE.sub("", stem) + dot + extension).lower()
 
 
 def config_owners(paths: list[Path]) -> dict[str, set[int]]:
@@ -73,8 +83,12 @@ def config_owners(paths: list[Path]) -> dict[str, set[int]]:
     return owners
 
 
-def find_obsolete_mp4s(root: Path) -> list[Path]:
-    """Find exports older than the comparable generation in each directory."""
+def find_obsolete_mp4s(root: Path, superseded_by: dict[Path, Path] | None = None) -> list[Path]:
+    """Find exports older than the comparable generation in each directory.
+
+    Records the newer file that retires each one into superseded_by, because a
+    caller about to delete something has to be able to show what replaces it.
+    """
     paths_by_parent: dict[Path, list[Path]] = defaultdict(list)
     for path in root.rglob("*"):
         if path.is_file() and (
@@ -87,6 +101,12 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
             paths_by_parent[path.parent].append(path)
 
     obsolete: list[Path] = []
+
+    def retire(path: Path, successor: Path | None) -> None:
+        obsolete.append(path)
+        if superseded_by is not None and successor is not None:
+            superseded_by[path] = successor
+
     for parent, paths in paths_by_parent.items():
         videos: dict[str, list[tuple[int, Path, str]]] = defaultdict(list)
         ui_videos: list[tuple[int, Path]] = []
@@ -105,12 +125,13 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
                 pending.append(path)
 
         ui_newest = max((version for version, _ in ui_videos), default=0)
-        newest_mp4 = max(
-            (version for versions in videos.values() for version, _, ext in versions if ext == "mp4"),
-            default=0,
-        )
+        mp4s = [(version, path)
+                for versions in videos.values() for version, path, ext in versions if ext == "mp4"]
+        newest_mp4, newest_mp4_path = max(mp4s, default=(0, None))
         for base, versions in videos.items():
             newest = max(version for version, _, _ in versions)
+            # The MP4 takes a tie: an MKV only stands in for a generation it holds alone.
+            survivor = max((version, extension == "mp4", path) for version, path, extension in versions)[-1]
             nonofficial_4k = base.endswith(("program_4k_output", "program-4k_output"))
             for version, path, extension in versions:
                 # CLI work archives reuse their bare MKV path on every run.
@@ -121,18 +142,29 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
                     and extension == "mp4"
                     and nonofficial_4k
                 )
-                if version < newest or (nonofficial_4k_companion and version < newest_mp4):
-                    obsolete.append(path)
+                if version < newest:
+                    retire(path, survivor)
+                elif nonofficial_4k_companion and version < newest_mp4:
+                    retire(path, newest_mp4_path)
 
         telemetry_kept = max((version for version, _ in telemetry), default=0)
         telemetry_newest = max(telemetry_kept, ui_newest)
+        kept_telemetry = sorted(path for version, path in telemetry if version == telemetry_kept)
+        # Whatever carries the surviving generation stands in for an artifact
+        # whose own kind has no successor left in the directory.
+        generation_survivor = (kept_telemetry[0] if kept_telemetry and telemetry_kept >= ui_newest
+                               else max(ui_videos, default=(0, None))[1])
         # A run that publishes video without DriveGPT carries ui_newest past
         # every database, which would retire a game's only telemetry with
         # nothing to supersede it. Whatever else goes, the newest stays.
-        obsolete.extend(
-            path for version, path in telemetry if version < telemetry_newest and version != telemetry_kept)
+        for version, path in telemetry:
+            if version < telemetry_newest and version != telemetry_kept:
+                stem = generation_stem(path.name)
+                retire(path, next((kept for kept in kept_telemetry if generation_stem(kept.name) == stem),
+                                  generation_survivor))
 
         owners = config_owners(paths)
+        dated: list[tuple[int, Path]] = []
         for path in pending:
             name = path.name
             if match := MASK_RE.fullmatch(name):
@@ -148,8 +180,18 @@ def find_obsolete_mp4s(root: Path) -> list[Path]:
                 version = 0
             else:
                 continue
+            dated.append((version, path))
+
+        kept_pending: dict[str, tuple[int, Path]] = {}
+        for version, path in dated:
+            if version >= telemetry_newest:
+                stem = generation_stem(path.name)
+                if version > kept_pending.get(stem, (-1, path))[0]:
+                    kept_pending[stem] = (version, path)
+        for version, path in dated:
             if version < telemetry_newest:
-                obsolete.append(path)
+                successor = kept_pending.get(generation_stem(path.name))
+                retire(path, successor[1] if successor else generation_survivor)
     return sorted(obsolete)
 
 
@@ -289,7 +331,8 @@ def display(path: Path, root: Path, absolute: bool) -> Path:
     return path if absolute else path.relative_to(root)
 
 
-def cleanup_targets(root: Path, published: set[Path], absolute: bool) -> list[tuple[Path, Path | None]]:
+def cleanup_targets(root: Path, published: set[Path], absolute: bool,
+                    superseded_by: dict[Path, Path] | None = None) -> list[tuple[Path, Path | None]]:
     """Each file to remove, paired with the origin sidecar that goes with it.
 
     Companions are resolved here rather than in find_obsolete_mp4s so that
@@ -297,7 +340,7 @@ def cleanup_targets(root: Path, published: set[Path], absolute: bool) -> list[tu
     that a video which survives keeps the sidecar nothing else can reach.
     """
     targets: list[tuple[Path, Path | None]] = []
-    for path in find_obsolete_mp4s(root):
+    for path in find_obsolete_mp4s(root, superseded_by):
         if path in published:
             continue
         # Discovery follows links, so a link named like an older export would
@@ -309,6 +352,56 @@ def cleanup_targets(root: Path, published: set[Path], absolute: bool) -> list[tu
     targets.extend((orphan, None) for orphan in orphaned_sidecars(root))
     targets.sort(key=lambda pair: pair[0])
     return targets
+
+
+def cleanup_table(targets: list[tuple[Path, Path | None]], superseded_by: dict[Path, Path],
+                  root: Path, absolute: bool) -> Table:
+    """The sweep as a table: every file to delete beside the one that replaces it."""
+    table = Table(title="Obsolete exports to delete", title_style="bold", header_style="bold")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("File to delete", style="red", overflow="fold")
+    table.add_column("Superseded by", style="green", overflow="fold")
+    for number, (path, sidecar) in enumerate(targets, start=1):
+        successor = superseded_by.get(path)
+        # Every rule names a successor, so the only file without one is an
+        # orphaned sidecar: it goes because its export already left.
+        table.add_row(str(number), str(display(path, root, absolute)),
+                      str(display(successor, root, absolute)) if successor else "(export already gone)")
+        if sidecar is not None:
+            table.add_row("", str(display(sidecar, root, absolute)),
+                          f"(origin of {display(path, root, absolute)})")
+    return table
+
+
+def confirm(question: str) -> bool:
+    """Ask on stderr, where the sweep already reports. EOF, like anything but yes, is no."""
+    print(f"{question} [y/N] ", end="", file=sys.stderr, flush=True)
+    try:
+        answer = input()
+    except EOFError:
+        print(file=sys.stderr)
+        return False
+    return answer.strip().lower() in ("y", "yes")
+
+
+def confirmed_targets(targets: list[tuple[Path, Path | None]], root: Path, absolute: bool,
+                      once: bool) -> list[tuple[Path, Path | None]]:
+    """Narrow the sweep to what was approved, in one answer or file by file.
+
+    A sidecar is never offered on its own: it is the origin of the export on
+    its row, and keeping one without the other is what the pairing prevents.
+    """
+    if once:
+        count = sum(2 if sidecar is not None else 1 for _, sidecar in targets)
+        return targets if confirm(f"Delete all {count} file{'' if count == 1 else 's'}?") else []
+    approved = []
+    for path, sidecar in targets:
+        question = f"Delete {display(path, root, absolute)}"
+        if sidecar is not None:
+            question += f" and {display(sidecar, root, absolute)}"
+        if confirm(question + "?"):
+            approved.append((path, sidecar))
+    return approved
 
 
 def remove_obsolete(targets: list[tuple[Path, Path | None]], root: Path, absolute: bool, dry_run: bool) -> int:
@@ -355,8 +448,10 @@ def main() -> None:
             "directory, each with the archive origin sidecar it would leave "
             "behind, plus sidecars whose export is already gone. CLI work MKVs "
             "and the game's unversioned rink_mask_0.png are preserved. Use "
-            "--clean to delete them: the listing is one bare path per line, so "
-            "piping it into rm splits any game name containing a space."
+            "--clean to delete them, which first tables each file against the "
+            "one superseding it and then asks: the listing is one bare path "
+            "per line, so piping it into rm splits any game name containing a "
+            "space."
         )
     )
     parser.add_argument(
@@ -375,12 +470,29 @@ def main() -> None:
     sweep.add_argument(
         "--clean",
         action="store_true",
-        help="Delete the listed files here instead of printing them.",
+        help=("Delete the listed files here instead of printing them, after showing a table "
+              "of each one beside what supersedes it and confirming them file by file."),
     )
     sweep.add_argument(
         "--dry-run",
         action="store_true",
         help="Report what --clean would delete, on stderr, without deleting.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Confirm the whole --clean sweep in one answer instead of file by file.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Delete without confirming. The --clean table is still printed unless --quiet.",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Do not print the --clean table of files to delete.",
     )
     parser.add_argument(
         "--symlink-plex",
@@ -409,6 +521,11 @@ def main() -> None:
     # A mistyped root otherwise scans nothing and reports a reassuring zero.
     if not root.is_dir():
         parser.error(f"not a directory: {args.root}")
+    # Each of these only reaches the confirmation --clean asks for. Accepting
+    # one silently elsewhere reads as a sweep that ran and found nothing.
+    for enabled, flag in ((args.all, "--all"), (args.force, "--force"), (args.quiet, "--quiet")):
+        if enabled and not args.clean:
+            parser.error(f"{flag} only applies to --clean")
     plex_dir = args.plex_dir.expanduser()
     # Publication is the only thing sparing a 4K Program export from the
     # companion rule, and it spares nothing for a game it could not publish.
@@ -427,8 +544,14 @@ def main() -> None:
     # --write-jobs overwrites a script in every game, which a dry run must not.
     if args.write_jobs and not args.dry_run:
         write_job_scripts(root)
-    targets = cleanup_targets(root, published, args.absolute)
+    superseded_by: dict[Path, Path] = {}
+    targets = cleanup_targets(root, published, args.absolute, superseded_by)
     if sweeping:
+        if args.clean and targets:
+            if not args.quiet:
+                Console(stderr=True).print(cleanup_table(targets, superseded_by, root, args.absolute))
+            if not args.force:
+                targets = confirmed_targets(targets, root, args.absolute, args.all)
         if remove_obsolete(targets, root, args.absolute, args.dry_run):
             sys.exit(1)
         return

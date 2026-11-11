@@ -26,11 +26,18 @@ class PlexLinksTest(unittest.TestCase):
         path.touch()
         return path
 
-    def run_cli(self, *args, check=True):
+    def run_cli(self, *args, check=True, answers=''):
         script = Path(__file__).with_name('find_obsolete_mp4s.py')
         return subprocess.run([sys.executable, str(script), str(self.root), *args],
-                              env={**os.environ, 'HOME': str(self.home)},
-                              check=check, capture_output=True, text=True)
+                              # A fixed width keeps the --clean table from folding its paths,
+                              # and a closed stdin keeps an unanswered prompt from hanging.
+                              env={**os.environ, 'HOME': str(self.home), 'COLUMNS': '200'},
+                              input=answers, check=check, capture_output=True, text=True)
+
+    def table_cells(self, output):
+        """The --clean table's rows, without the box rich draws around them."""
+        return [[cell.strip() for cell in line.split('│')[1:4]]
+                for line in output.splitlines() if line.count('│') >= 4]
 
     def test_game_named_database_generations_and_legacy_recordings(self):
         legacy = self.video('game/hstream_telemetry-2.db')
@@ -105,7 +112,7 @@ class PlexLinksTest(unittest.TestCase):
         self.video('game/stitched_output-3.mp4')
         ordinary = self.run_cli()
         self.assertIn(str(chosen.relative_to(self.root)), ordinary.stdout)
-        published = self.run_cli('--symlink-plex', '--plex-dir', str(self.plex), '--clean')
+        published = self.run_cli('--symlink-plex', '--plex-dir', str(self.plex), '--clean', '--force')
         self.assertIn('removed 0 files', published.stderr)
         self.assertEqual((self.plex / 'game.mp4').resolve(), chosen)
         self.assertTrue(sidecar.is_file(), 'a published export must keep its origin')
@@ -146,16 +153,16 @@ class PlexLinksTest(unittest.TestCase):
         self.video('game/game-program_8k_output-with-audio-1.mp4')
         self.video('game/game-program_8k_output-with-audio-2.mp4')
         kept = self.video('game/game_telemetry-1.db')
-        self.run_cli('--clean')
+        self.run_cli('--clean', '--force')
         self.assertTrue(kept.is_file(), 'a game must not be left with no telemetry at all')
         older = self.video('game/game_telemetry-0.db')
-        self.run_cli('--clean')
+        self.run_cli('--clean', '--force')
         self.assertTrue(kept.is_file() and not older.exists(), 'superseded telemetry still goes')
 
     def test_a_file_named_only_like_a_sidecar_is_ignored(self):
         self.video('game/tracking_output-1.mp4')
         stray = self.video('game/.hstream-archive.json')
-        self.run_cli('--clean')
+        self.run_cli('--clean', '--force')
         self.assertTrue(stray.is_file())
 
     def test_a_sidecar_whose_export_is_already_gone_is_swept(self):
@@ -163,7 +170,7 @@ class PlexLinksTest(unittest.TestCase):
         orphan = self.video('game/program_4k_output-1.mp4.hstream-archive.json')
         self.video('game/notes.json')
         self.assertEqual(self.run_cli().stdout.split(), [str(orphan.relative_to(self.root))])
-        self.run_cli('--clean')
+        self.run_cli('--clean', '--force')
         self.assertFalse(orphan.exists())
 
     def test_orphans_are_listed_in_order_with_everything_else(self):
@@ -181,7 +188,7 @@ class PlexLinksTest(unittest.TestCase):
         offline = self.root / 'game/program_4k_output-3.mp4'
         offline.symlink_to(self.home / 'detached-volume/program_4k_output-3.mp4')
         sidecar = self.video('game/program_4k_output-3.mp4.hstream-archive.json')
-        self.assertEqual(self.run_cli('--clean').stderr.splitlines()[-1], 'removed 0 files')
+        self.assertEqual(self.run_cli('--clean', '--force').stderr.splitlines()[-1], 'removed 0 files')
         self.assertTrue(sidecar.is_file(), 'an export that is away is not an export that is gone')
         self.assertTrue(offline.is_symlink())
 
@@ -245,7 +252,7 @@ class PlexLinksTest(unittest.TestCase):
         self.video('game/stitched_output-9.mp4')
         chosen = self.video('game/program_4k_output-3.mp4')
         sidecar = self.video('game/program_4k_output-3.mp4.hstream-archive.json')
-        self.run_cli('--clean', '--symlink-plex', '--plex-dir', str(self.plex))
+        self.run_cli('--clean', '--force', '--symlink-plex', '--plex-dir', str(self.plex))
         self.assertEqual((self.plex / 'game.mp4').resolve(), chosen)
         self.assertTrue(chosen.is_file() and sidecar.is_file())
 
@@ -260,12 +267,12 @@ class PlexLinksTest(unittest.TestCase):
         self.assertIn('would remove game/tracking_output-1.mp4.hstream-archive.json\n', dry.stderr)
         self.assertIn('would remove 2 files\n', dry.stderr)
         self.assertTrue(obsolete.is_file() and sidecar.is_file())
-        cleaned = self.run_cli('--clean')
+        cleaned = self.run_cli('--clean', '--force')
         self.assertIn('removed game/tracking_output-1.mp4\n', cleaned.stderr)
         self.assertIn('removed 2 files\n', cleaned.stderr)
         self.assertFalse(obsolete.exists() or sidecar.exists())
         self.assertTrue(current.is_file())
-        self.assertIn('removed 0 files\n', self.run_cli('--clean').stderr)
+        self.assertIn('removed 0 files\n', self.run_cli('--clean', '--force').stderr)
 
     def test_a_symlink_named_like_an_older_export_is_left_alone(self):
         current = self.video('game/tracking_output-2.mp4')
@@ -275,7 +282,7 @@ class PlexLinksTest(unittest.TestCase):
         listed = self.run_cli()
         self.assertIn('Skipping symlink: game/tracking_output-1.mp4', listed.stderr)
         self.assertEqual(listed.stdout, '', 'a pipe into rm must not take the link either')
-        self.run_cli('--clean')
+        self.run_cli('--clean', '--force')
         self.assertTrue(link.is_symlink() and current.is_file())
         self.assertTrue(sidecar.is_file(), 'a spared link must keep its sidecar')
 
@@ -285,9 +292,97 @@ class PlexLinksTest(unittest.TestCase):
         game = self.root / 'game'
         game.chmod(0o500)
         self.addCleanup(game.chmod, 0o700)
-        failed = self.run_cli('--clean', check=False)
+        failed = self.run_cli('--clean', '--force', check=False)
         self.assertEqual(failed.returncode, 1)
         self.assertIn('Could not remove game/tracking_output-1.mp4', failed.stderr)
+
+    def test_the_clean_table_pairs_each_file_with_what_supersedes_it(self):
+        self.video('game/tracking_output-2.mp4')
+        self.video('game/tracking_output-1.mp4')
+        self.video('game/tracking_output-1.mp4.hstream-archive.json')
+        self.video('game/program_4k_output-2.mp4')
+        self.video('game/program_4k_output-1.mp4.hstream-archive.json')
+        self.assertEqual(self.table_cells(self.run_cli('--clean').stderr), [
+            ['1', 'game/program_4k_output-1.mp4.hstream-archive.json', '(export already gone)'],
+            ['2', 'game/tracking_output-1.mp4', 'game/tracking_output-2.mp4'],
+            ['', 'game/tracking_output-1.mp4.hstream-archive.json',
+             '(origin of game/tracking_output-1.mp4)'],
+        ])
+
+    def test_each_file_is_tabled_against_its_own_kind_before_the_generation(self):
+        self.video('game/hstream_telemetry-7.db')
+        self.video('game/tracking-7.csv')
+        self.video('game/tracking-2.csv')
+        self.video('game/camera-2.csv')
+        # Nothing carries camera.csv forward, so the surviving generation stands in.
+        self.assertEqual(self.table_cells(self.run_cli('--clean').stderr), [
+            ['1', 'game/camera-2.csv', 'game/hstream_telemetry-7.db'],
+            ['2', 'game/tracking-2.csv', 'game/tracking-7.csv'],
+        ])
+
+    def test_an_unanswered_clean_deletes_nothing(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        # stdin is closed, and EOF is not consent.
+        self.assertIn('removed 0 files\n', self.run_cli('--clean').stderr)
+        self.assertTrue(obsolete.is_file())
+
+    def test_clean_deletes_only_the_files_confirmed_one_by_one(self):
+        self.video('game/stitched_output-2.mp4')
+        declined = self.video('game/stitched_output-1.mp4')
+        self.video('game/tracking_output-2.mp4')
+        approved = self.video('game/tracking_output-1.mp4')
+        sidecar = self.video('game/tracking_output-1.mp4.hstream-archive.json')
+        cleaned = self.run_cli('--clean', answers='n\ny\n')
+        self.assertIn('Delete game/stitched_output-1.mp4? [y/N]', cleaned.stderr)
+        # One answer takes the export and the origin that cannot outlive it.
+        self.assertIn('Delete game/tracking_output-1.mp4 and '
+                      'game/tracking_output-1.mp4.hstream-archive.json? [y/N]', cleaned.stderr)
+        self.assertIn('removed 2 files\n', cleaned.stderr)
+        self.assertTrue(declined.is_file())
+        self.assertFalse(approved.exists() or sidecar.exists())
+
+    def test_all_takes_one_answer_for_the_whole_sweep(self):
+        kept = self.video('game/tracking_output-2.mp4')
+        self.video('game/tracking_output-1.mp4')
+        self.video('game/tracking_output-1.mp4.hstream-archive.json')
+        refused = self.run_cli('--clean', '--all', answers='n\n')
+        self.assertIn('Delete all 2 files?', refused.stderr)
+        self.assertIn('removed 0 files\n', refused.stderr)
+        swept = self.run_cli('--clean', '--all', answers='y\n')
+        self.assertIn('removed 2 files\n', swept.stderr)
+        self.assertEqual([path.name for path in (self.root / 'game').iterdir()], [kept.name])
+
+    def test_quiet_withholds_the_table_but_not_the_question(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        cleaned = self.run_cli('--clean', '--quiet', answers='y\n')
+        self.assertNotIn('Obsolete exports to delete', cleaned.stderr)
+        self.assertIn('Delete game/tracking_output-1.mp4? [y/N]', cleaned.stderr)
+        self.assertFalse(obsolete.exists())
+        self.video('game/tracking_output-3.mp4')
+        forced = self.run_cli('--clean', '-q', '--force')
+        self.assertNotIn('Obsolete exports to delete', forced.stderr)
+        self.assertIn('removed game/tracking_output-2.mp4\n', forced.stderr)
+
+    def test_force_prints_the_table_without_asking(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        forced = self.run_cli('--clean', '--force')
+        self.assertIn('Obsolete exports to delete', forced.stderr)
+        self.assertNotIn('[y/N]', forced.stderr)
+        self.assertFalse(obsolete.exists())
+
+    def test_the_confirmation_flags_only_apply_to_clean(self):
+        self.video('game/tracking_output-2.mp4')
+        obsolete = self.video('game/tracking_output-1.mp4')
+        for flag in ('--all', '--force', '--quiet'):
+            failed = self.run_cli(flag, check=False)
+            self.assertEqual(failed.returncode, 2)
+            self.assertIn(f'{flag} only applies to --clean', failed.stderr)
+        # A dry run only reports, so it never reaches a prompt to skip either.
+        self.assertEqual(self.run_cli('--dry-run', '--force', check=False).returncode, 2)
+        self.assertTrue(obsolete.is_file())
 
     def test_a_mistyped_root_is_an_error_not_an_empty_sweep(self):
         self.root = self.home / 'Vidoes'
