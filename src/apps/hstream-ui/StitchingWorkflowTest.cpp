@@ -292,6 +292,9 @@ elif operation in ('cancel','retry'):
 elif operation=='log':
  value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
  if (root/'log.txt').exists(): value['text']+='\n'+(root/'log.txt').read_text()
+ if (root/'hold-log-response').exists():
+  (root/'log-request-started').write_text(option('--stage'))
+  while (root/'hold-log-response').exists(): time.sleep(.01)
 else: raise SystemExit(9)
 print(json.dumps(value))
 )PY";
@@ -810,6 +813,36 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(wait([&] { return log->toPlainText().endsWith("Rotated tail\n"); }), "Stage log was not restored");
   require(log_scroll->value() == log_scroll->maximum(), "Selecting an attempt did not start at its tail");
   QFile::remove(root + "/log.txt");
+  write(root + "/hold-log-response", "hold");
+  require(wait([&] { return QFileInfo::exists(root + "/log-request-started"); }), "Log request was not held");
+  auto pending_state = read(root + "/state.json");
+  auto pending_nodes = pending_state.value("nodes").toArray();
+  auto other_node = pending_nodes[1].toObject();
+  other_node.insert("reason", "Diagnostics for the newly selected stage");
+  other_node.insert("attempts", QJsonArray{QJsonObject{{"id", "attempt-other"}, {"epoch", 0}, {"state", "failed"}}});
+  pending_nodes[1] = other_node;
+  pending_state.insert("nodes", pending_nodes);
+  write(root + "/state.json", QJsonDocument(pending_state).toJson());
+  stages->setCurrentIndex(1);
+  require(
+      wait([&] { return attempts->currentData().toString() == "attempt-other"; }), "Other attempt was not observed");
+  require(
+      log->window()->windowTitle().contains(other_node.value("label").toString()) &&
+          log->toPlainText().contains("Diagnostics for the newly selected stage") &&
+          log->toPlainText().endsWith("Loading attempt log…") &&
+          !log->toPlainText().contains("attempt-current retained log"),
+      "Stage selection displayed the previous log under a new title while its request was pending");
+  QFile::remove(root + "/hold-log-response");
+  require(
+      wait([&] { return log->toPlainText().endsWith("attempt-other retained log"); }), "New stage log did not load");
+  require(
+      !log->toPlainText().contains("attempt-current retained log"), "Late response replaced the selected stage log");
+  QFile::remove(root + "/log-request-started");
+  write(root + "/state.json", QJsonDocument(original_state).toJson());
+  stages->setCurrentIndex(0);
+  require(
+      wait([&] { return log->toPlainText().endsWith("attempt-current retained log"); }),
+      "Original log was not restored");
   QJsonObject state = read(root + "/state.json");
   state.insert("state", "failed");
   auto nodes = state.value("nodes").toArray();

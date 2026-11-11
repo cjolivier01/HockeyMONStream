@@ -663,6 +663,7 @@ struct StitchingWorkflow::Impl {
   int retry_epoch{-1};
   bool log_pending{false};
   QPointer<LogTextEdit> log_view;
+  QString log_source;
   void showMonitor(bool visible) {
     monitor->setVisible(visible);
     owner->setSizePolicy(
@@ -1061,26 +1062,34 @@ struct StitchingWorkflow::Impl {
   void loadLog() {
     if (!log_view)
       return;
+    const auto selected_workflow = workflow;
+    const auto selected_stage = stage->currentData().toString();
+    const auto selected_attempt = attempt->currentData().toString();
+    const auto source = selected_workflow + "/" + selected_stage + "/" + selected_attempt;
     log_view->window()->setWindowTitle("Workflow stage log — " + stageLabel(selectedNode()));
     if (!owner->hasSelection() || attempt->currentData().toString().isEmpty()) {
-      log_view->setLogText(
-          "No attempt log is available.\n\n" + details->toPlainText(),
-          workflow + "/" + stage->currentData().toString());
+      log_source = source;
+      log_view->setLogText("No attempt log is available.\n\n" + details->toPlainText(), source);
       return;
+    }
+    if (log_source != source) {
+      log_source = source;
+      log_view->setLogText(details->toPlainText() + "\n\nLoading attempt log…", source);
     }
     if (log_pending)
       return;
     log_pending = true;
-    const auto selected_workflow = workflow;
-    const auto selected_stage = stage->currentData().toString();
-    const auto selected_attempt = attempt->currentData().toString();
     call(
         {"log", "--workflow", workflow, "--stage", selected_stage, "--attempt", selected_attempt},
         [this, selected_workflow, selected_stage, selected_attempt](QJsonObject value, QString error) {
           log_pending = false;
-          if (!log_view || workflow != selected_workflow || stage->currentData().toString() != selected_stage ||
-              attempt->currentData().toString() != selected_attempt)
+          if (!log_view)
             return;
+          if (workflow != selected_workflow || stage->currentData().toString() != selected_stage ||
+              attempt->currentData().toString() != selected_attempt) {
+            loadLog();
+            return;
+          }
           log_view->setLogText(
               details->toPlainText() + "\n\n" + (error.isEmpty() ? value.value("text").toString() : error),
               workflow + "/" + selected_stage + "/" + selected_attempt);
@@ -1460,6 +1469,7 @@ void StitchingWorkflow::showLog() {
   layout->addWidget(close);
   connect(close, &QPushButton::clicked, dialog, &QDialog::close);
   s.log_view = log;
+  s.log_source.clear();
   dialog->show();
   s.loadLog();
 }
