@@ -16110,7 +16110,8 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
             launched_config["stitching"]["calibration_frame_count"].as<int>() == frames->value() &&
             !launched_config["stitching"]["calibration_frame_selection"].IsDefined() &&
             QString::fromStdString(launched_config["stitching"]["stitch_frame_time"].as<std::string>("00:00:00")) ==
-                calibration_time(reference).toString("HH:mm:ss") &&
+                (selection == 0 ? QString("00:00:00") : calibration_time(reference).toString("HH:mm:ss")) &&
+            (selection != 0 || reference->text() == selected_playback) &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_PROJECTION_CROP_FLOW") ==
                 (crop->isChecked() ? "1" : "") &&
             HStreamWindowTestAccess::pipelineEnvironmentValue(&window, "HSTREAM_RINK_LEVELING_FLOW") ==
@@ -22371,8 +22372,33 @@ int main(int argc, char** argv) {
     HStreamWindowTestAccess::reloadSavedControls(&window);
     auto* reference = require_child<QLineEdit>(&window, "stitchFrameTimeEdit");
     auto* count = require_child<QSpinBox>(&window, "calibrationFrameCountSpin");
+    auto* playback = require_child<QTimeEdit>(&window, "playbackStartTimeEdit");
+    reference->setText("00:00:00");
+    playback->setTime(QTime(0, 3, 45, 125));
+    if (!expect(reference->text() == "00:03:45.125", "Untouched main reference must display Playback start"))
+      return 1;
+    playback->setTime(QTime(0, 3, 46, 125));
+    if (!expect(reference->text() == "00:03:46.125", "Inherited reference must follow later playback edits"))
+      return 1;
+    playback->setTime(QTime(0, 3, 45, 125));
+    if (!expect(
+            HStreamWindowTestAccess::calibrationArguments(&window).contains("--start-time=00:03:45.125"),
+            "A zero main reference must calibrate from the displayed Playback start"))
+      return 1;
+    if (!HStreamWindowTestAccess::savePreset(&window))
+      return 1;
+    HStreamWindowTestAccess::reloadSavedControls(&window);
+    if (!expect(reference->text() == "00:03:45.125", "Inherited reference must survive Save/reload"))
+      return 1;
+    reference->setText("00:00:07");
+    playback->setTime(QTime(0, 3, 50));
+    if (!expect(reference->text() == "00:00:07", "Playback edits must retain explicit positive references"))
+      return 1;
     reference->setText("-00:00:01.125");
     count->setValue(3);
+    playback->setTime(QTime(0, 4, 0));
+    if (!expect(reference->text() == "-00:00:01.125", "Playback edits must retain explicit negative references"))
+      return 1;
     if (!HStreamWindowTestAccess::savePreset(&window))
       return 1;
     HStreamWindowTestAccess::reloadSavedControls(&window);

@@ -273,6 +273,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   size_t calibration_frame_count_{4};
   bool end_relative_calibration_{false};
   uint64_t calibration_sample_span_ns_{0};
+  std::optional<uint64_t> calibration_playback_start_ns_;
   int max_output_width_{0};
   std::string expected_artifact_revision_;
   bool require_decoded_frame_sequence_meta_{false};

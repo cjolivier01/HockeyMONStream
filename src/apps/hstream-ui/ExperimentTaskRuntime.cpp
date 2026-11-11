@@ -281,6 +281,8 @@ void run_experiment(
              "--stitch-frame-time=" + saved.settings.stitch_frame_time,
              "-t=1"})
       arguments.push_back(argument);
+    if (saved.settings.player_scan_playback_start)
+      arguments.push_back("--start-time=" + *saved.settings.player_scan_playback_start);
     if (require_mask && !materialize)
       arguments.push_back("--stitching-calibration-with-ice-mask");
     if (!request.workflow.isEmpty())

@@ -6405,6 +6405,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     playback_start_time_edit_->setDisplayFormat(
         value.msec() == 0 && !playback_start_time_edit_->hasFocus() ? kStitchFrameTimeFormat
                                                                     : kStitchFrameTimeFractionalFormat);
+    updateInheritedStitchFrameTime();
     updatePresetDirtyState();
   });
   setStitchingIterationSettings(default_iteration_settings_);
@@ -6414,8 +6415,15 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_->setMinimumWidth(110);
   stitch_frame_time_edit_->setToolTip(
       "First calibration frame: HH:MM:SS[.mmm], or a negative time relative to the synchronized recording end. "
-      "Additional samples wrap to the beginning. Playback resumes at Playback start after calibration.");
-  connect(stitch_frame_time_edit_, &QLineEdit::textChanged, this, [this] { updatePresetDirtyState(); });
+      "Zero uses Playback start. Additional samples wrap to Playback start. "
+      "Playback resumes there after calibration.");
+  connect(stitch_frame_time_edit_, &QLineEdit::textChanged, this, [this] {
+    stitch_frame_time_inherits_playback_ = parse_calibration_reference(stitch_frame_time_edit_->text().trimmed()) ==
+        QString::fromLatin1(kZeroStitchFrameTime);
+    updatePresetDirtyState();
+  });
+  connect(stitch_frame_time_edit_, &QLineEdit::editingFinished, this, &HStreamWindow::updateInheritedStitchFrameTime);
+  setStitchFrameTime(default_stitch_frame_time_);
   updateStitchFrameTimeAvailability();
 
   render_video_toggle_ = new QCheckBox("Render video");
@@ -8924,7 +8932,26 @@ bool HStreamWindow::runAutooptimizer() const {
   return run_autooptimizer_check_ ? run_autooptimizer_check_->isChecked() : default_run_autooptimizer_;
 }
 
+void HStreamWindow::setStitchFrameTime(const QString& value) {
+  const QSignalBlocker blocker(stitch_frame_time_edit_);
+  stitch_frame_time_inherits_playback_ =
+      parse_calibration_reference(value) == QString::fromLatin1(kZeroStitchFrameTime);
+  stitch_frame_time_edit_->setText(value);
+  updateInheritedStitchFrameTime();
+}
+
+void HStreamWindow::updateInheritedStitchFrameTime() {
+  if (stitch_frame_time_edit_ && playback_start_time_edit_ && stitch_frame_time_inherits_playback_) {
+    const QSignalBlocker blocker(stitch_frame_time_edit_);
+    stitch_frame_time_edit_->setText(format_stitch_frame_time(playback_start_time_edit_->time()));
+  }
+}
+
 QString HStreamWindow::stitchFrameTime() const {
+  // Keep zero as the persisted inheritance marker, while displaying its current
+  // effective value. Explicit positive and negative references stay independent.
+  if (stitch_frame_time_inherits_playback_)
+    return QString::fromLatin1(kZeroStitchFrameTime);
   const auto text = stitch_frame_time_edit_ ? stitch_frame_time_edit_->text().trimmed() : default_stitch_frame_time_;
   return parse_calibration_reference(text).value_or(text);
 }
@@ -20153,7 +20180,7 @@ void HStreamWindow::resetCameraControls() {
   if (!pipeline_running && stitch_frame_time_edit_) {
     const auto parsed = parse_calibration_reference(default_stitch_frame_time_);
     if (parsed.has_value())
-      stitch_frame_time_edit_->setText(*parsed);
+      setStitchFrameTime(*parsed);
   }
   if (!pipeline_running && control_point_matcher_combo_) {
     set_combo_to_data(control_point_matcher_combo_, default_control_point_matcher_);
@@ -20279,14 +20306,14 @@ void HStreamWindow::cleanStitchingCalibration() {
   // when it starts the next calibration.
   const int selected_control_points = stitchingCalibrationControlPoints();
   const int selected_frame_count = stitchingCalibrationFrameCount();
-  const QString selected_reference_time = stitch_frame_time_edit_->text();
+  const QString selected_reference_time = stitchFrameTime();
   const auto selected_iteration_settings = stitchingIterationSettings();
   auto reload_controls =
       [this, selected_control_points, selected_frame_count, selected_reference_time, selected_iteration_settings]() {
         loadSavedControlConfig();
         control_points_spin_->setValue(selected_control_points);
         calibration_frame_count_spin_->setValue(selected_frame_count);
-        stitch_frame_time_edit_->setText(selected_reference_time);
+        setStitchFrameTime(selected_reference_time);
         setStitchingIterationSettings(selected_iteration_settings);
         updatePresetDirtyState();
       };
@@ -20360,6 +20387,7 @@ void HStreamWindow::setStitchingIterationSettings(const hm::ui_internal::Stitchi
     playback_start_time_edit_->setDisplayFormat(
         time.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
   }
+  updateInheritedStitchFrameTime();
 }
 
 void HStreamWindow::updateStitchFrameTimeAvailability() {
@@ -20786,7 +20814,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   }
   if (stitch_frame_time_edit_) {
     const bool blocked = stitch_frame_time_edit_->blockSignals(true);
-    stitch_frame_time_edit_->setText(default_stitch_frame_time_);
+    setStitchFrameTime(default_stitch_frame_time_);
     stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
@@ -21347,7 +21375,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     }
     if (stitch_frame_time_edit_) {
       const bool blocked = stitch_frame_time_edit_->blockSignals(true);
-      stitch_frame_time_edit_->setText(staged_stitch_frame_time);
+      setStitchFrameTime(staged_stitch_frame_time);
       stitch_frame_time_edit_->blockSignals(blocked);
     }
     if (control_point_matcher_combo_) {

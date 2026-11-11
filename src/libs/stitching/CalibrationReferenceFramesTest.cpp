@@ -20,7 +20,7 @@ int main() {
   };
   const std::array<CameraRecordingWindow, 2> cameras{
       {{{{"left-a", 5, 2}, {"left-b", 0, 3}}, 25, 5}, {{{"right-a", 8, 1}, {"right-b", 0, 4}}, 25, 5}}};
-  auto plan = PlanCalibrationReferenceFrames(cameras, -1000000000LL, 5);
+  auto plan = PlanCalibrationReferenceFrames(cameras, -1000000000LL, 5, 0);
   expect(plan.ok(), "Plan wrapped calibration samples");
   if (!plan.ok())
     return 1;
@@ -32,7 +32,24 @@ int main() {
       plan->at(1)[0].video == "left-a" && plan->at(1)[0].seconds == 5 && plan->at(1)[1].video == "right-a" &&
           plan->at(1)[1].seconds == 8,
       "Additional pairs must wrap to synchronized starts");
-  expect(!PlanCalibrationReferenceFrames(cameras, -6000000000LL, 1).ok(), "Reject reference before recording start");
+  expect(!PlanCalibrationReferenceFrames(cameras, -6000000000LL, 1, 0).ok(), "Reject reference before recording start");
+  auto resumed = PlanCalibrationReferenceFrames(cameras, -1000000000LL, 3, 2000000000ULL);
+  expect(resumed.ok(), "Plan end-relative samples around Playback start");
+  if (resumed.ok()) {
+    const double left[] = {2, 0, 1}, right[] = {3, 1, 2};
+    for (size_t i = 0; i < 3; ++i)
+      expect(
+          resumed->at(i)[0].video == "left-b" && resumed->at(i)[0].seconds == left[i] &&
+              resumed->at(i)[1].video == "right-b" && resumed->at(i)[1].seconds == right[i],
+          "Continuation must use Playback start with independent camera chapters, not zero");
+  }
+  auto early = PlanCalibrationReferenceFrames(cameras, -4000000000LL, 4, 2000000000ULL);
+  expect(
+      early.ok() && early->at(0)[0].seconds == 6 && early->at(3)[0].seconds == 2,
+      "A reference before Playback start samples the remaining tail without revisiting frames");
+  expect(
+      !PlanCalibrationReferenceFrames(cameras, -1000000000LL, 3, 5000000000ULL).ok(),
+      "Reject Playback start at the recording end");
   const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
   if (!ffmpeg)
     return 1;
@@ -81,6 +98,18 @@ int main() {
       expect(!cv::imread(image.string(), cv::IMREAD_UNCHANGED).empty(), "Extracted PNG must be readable");
     }
   }
+  auto resumed_inputs = EndRelativeCalibrationInputs(game, config, 2, {}, 1000000000ULL);
+  expect(
+      resumed_inputs.ok() && resumed_inputs->at(1).left(game / "resumed-left.png").ok() &&
+          resumed_inputs->at(1).right(game / "resumed-right.png").ok() &&
+          resumed_inputs->at(1).source(0).seconds == 1 && resumed_inputs->at(1).source(1).seconds == 2,
+      "Lazy extraction must decode Playback start after the end-relative anchor");
+  auto frozen = YAML::Clone(config);
+  frozen["hstream_ui"]["playback_start_time"] = "00:00:01";
+  const auto frozen_inputs = EndRelativeCalibrationInputs(game, frozen, 2, {});
+  expect(
+      frozen_inputs.ok() && frozen_inputs->at(1).source(0).seconds == 1,
+      "Offline extraction resolves the frozen UI start when no runtime start is supplied");
   config["stitching"]["stitch_frame_time"] = "-00:00:00.001";
   auto last = EndRelativeCalibrationInputs(game, config, 1, {});
   expect(

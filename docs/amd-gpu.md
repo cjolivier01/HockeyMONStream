@@ -1462,3 +1462,9 @@ player and compares full displayed frames against software decoding, including
 the rightmost strips, repeated seeks and chapter replacement. The AMD branch
 passes a local compile check; this pixel regression still needs AMD hardware
 qualification because `ripper` remains unreachable.
+
+Calibration reference defaults use the shared Qt controls on both backends: zero
+inherits Playback start, while nonzero references retain their sign. The shared
+CPU reference sampler wraps end-relative samples to the frozen Playback start.
+Fresh automatic AMD calibration remains unavailable; this does not add an AMD
+pipeline calibration path or change saved calibration validation.
