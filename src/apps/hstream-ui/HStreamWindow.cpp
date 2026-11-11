@@ -36,6 +36,7 @@
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
 #include "src/apps/hstream-ui/RinkMapDialog.h"
+#include "src/apps/hstream-ui/RinkWarpEditor.h"
 #include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
@@ -71,6 +72,7 @@
 #include <QtCore/QUrl>
 #include <QtCore/Qt>
 #include <QtGui/QCloseEvent>
+#include <QtGui/QDesktopServices>
 #include <QtGui/QFontInfo>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QLinearGradient>
@@ -7300,6 +7302,33 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   stitched_status_->setObjectName("stitchedPreviewStatusLabel");
   auto* stitched_footer = new QHBoxLayout();
   stitched_footer->addWidget(stitched_status_, 1);
+  auto* rink_warp = new QPushButton(action_icon(ActionIcon::Stitching), "Rink warp…");
+  rink_warp->setObjectName("rinkWarpButton");
+  rink_warp->setToolTip(
+      "Open a still panorama in the GPU browser editor. Drag guides and export images without changing calibration.");
+  stitched_footer->addWidget(rink_warp);
+  connect(rink_warp, &QPushButton::clicked, this, [this] {
+    const QString directory = gameDirectory(game_id_edit_->text().trimmed());
+    QString image = QString::fromStdString(hm::game_storage::StatePath(directory.toStdString(), "s.png").string());
+    if (!QFileInfo::exists(image))
+      image = QFileDialog::getOpenFileName(
+          this, "Choose a panorama still", directory, "Images (*.png *.jpg *.jpeg *.webp)");
+    if (image.isEmpty())
+      return;
+    const QString mask = QDir(QFileInfo(image).absolutePath()).filePath("rink_mask_0.png");
+    try {
+      const QString path = WriteRinkWarpEditor(
+          image,
+          QFileInfo::exists(mask) ? mask : QString(),
+          baseline_layer_,
+          QDir(QStandardPaths::writableLocation(QStandardPaths::CacheLocation)).filePath("rink-warp"));
+      if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path)))
+        throw std::runtime_error("Could not open the default browser. Open the editor HTML from the hstream-ui cache.");
+      appendLog("Opened the still-frame rink warp editor in the browser.");
+    } catch (const std::exception& error) {
+      QMessageBox::warning(this, "Rink warp", QString::fromUtf8(error.what()));
+    }
+  });
   stitched_preview_layout->addWidget(stitched_host, 1);
   stitched_preview_layout->addLayout(stitched_footer);
   auto* stitched_controls_column = new QWidget(stitched_splitter);
@@ -19332,6 +19361,8 @@ void HStreamWindow::updateRunControls() {
   const bool local_finalizing = isArchiveFinalizing() || waiting_for_start || pipeline_completion_proof_pending_ ||
       archive_completion_proof_pending_ || (!operation_token_.empty() && !running && source_camera_index_ < 0);
   const bool finalizing = local_finalizing || external_operation;
+  if (auto* warp_button = findChild<QPushButton*>("rinkWarpButton"))
+    warp_button->setEnabled(!editing_defaults_ && !running && !finalizing);
   const bool camera_dialog = findChild<QDialog*>("cameraExperimentDialog") ||
       findChild<QDialog*>("stitchingExperimentDialog") || findChild<QDialog*>("highlightsDialog") ||
       findChild<QDialog*>("int8PreparationDialog");

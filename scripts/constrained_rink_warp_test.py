@@ -232,5 +232,35 @@ class WarpTest(unittest.TestCase):
       self.assertEqual(cv2.imread(str(root / "result/comparison.jpg")).shape[1], 320)
 
 
+class EditorSchemaTest(unittest.TestCase):
+  def test_zero_strength_is_identity(self):
+    spec = {"schema": 3, "source_size": [321, 151],
+            "guides": [[0, .2, .4], [.5, .5, .9], [1, .2, .4]],
+            "target_rows": [.62, .96], "horizontal_crop": [0, 1],
+            "strength": 0, "aspect_balance": 1}
+    warp = RinkWarp(spec)
+    self.assertEqual(warp.output_size, warp.source_size)
+    x = np.linspace(0, 1, 23)
+    y = np.linspace(0, 1, 37)[:, None]
+    np.testing.assert_allclose(warp.inverse_y(x, y), np.broadcast_to(y, (37, 23)), atol=1e-12)
+    np.testing.assert_allclose(warp.inverse_x(x), x, atol=1e-12)
+
+  def test_partial_strength_round_trip_and_targets(self):
+    spec = {"schema": 3, "source_size": [321, 151],
+            "guides": [[0, .2, .4], [.5, .5, .9], [1, .2, .4]],
+            "target_rows": [.3, .7], "horizontal_crop": [.05, .95],
+            "strength": .47, "aspect_balance": .6}
+    warp = RinkWarp(spec)
+    x = np.linspace(0, 1, 29)
+    y = np.linspace(0, 1, 101)[:, None]
+    source_y = warp.inverse_y(x, y)
+    self.assertTrue(np.all(np.diff(source_y, axis=0) > 0))
+    np.testing.assert_allclose(warp.forward_y(x, source_y), np.broadcast_to(y, (101, 29)), atol=1e-12)
+    up, low = warp.columns(x)
+    top, bottom = warp.targets(x)
+    np.testing.assert_allclose(warp.forward_y(x, up), top, atol=1e-12)
+    np.testing.assert_allclose(warp.forward_y(x, low), bottom, atol=1e-12)
+
+
 if __name__ == "__main__":
   unittest.main()

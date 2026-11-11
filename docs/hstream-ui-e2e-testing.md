@@ -651,3 +651,11 @@ generated contract. ARM64/SBSA validation needs a native ARM64 host; this machin
 is x86_64. Jetson validation was unavailable because its local sysroot is absent
 and `stubby` did not respond to SSH. AMD compile and hardware limits are recorded
 in `docs/amd-gpu.md`.
+
+The Stitched footer's **Rink warp…** action is available while idle for both
+Program backends and remains fenced during playback or recording ownership.
+`rink_warp_editor_test` checks private frozen snapshots, canonical defaults,
+escaped filenames and stale-mask fallback without editing source artifacts.
+The shared browser suite in `scripts/rink_warp_editor_browser_test.py` exercises
+the editor's actual drawing, history, wheel and export behavior on rendered
+pixels; see `docs/constrained-rink-warp.md` for commands and GPU evidence.

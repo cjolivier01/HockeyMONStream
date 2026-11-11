@@ -1,0 +1,20 @@
+filegroup(
+    name = "assets",
+    srcs = ["editor.html", "editor.css", "warp-icons.css", "warp-geometry.js", "warp-gpu.js", "editor.js"],
+    visibility = ["//visibility:public"],
+)
+
+py_binary(
+    name = "bundle",
+    srcs = ["bundle.py"],
+    main = "bundle.py",
+)
+
+genrule(
+    name = "embedded_assets",
+    srcs = [":assets"],
+    outs = ["RinkWarpAssets.h"],
+    tools = [":bundle"],
+    cmd = "$(location :bundle) --root src/apps/rink-warp-editor --output $@ --header",
+    visibility = ["//visibility:public"],
+)

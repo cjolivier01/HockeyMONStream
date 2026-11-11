@@ -87,10 +87,18 @@ def interval(z, x0, x1, y0, y1, d0, d1, *, inverse=False):
 class RinkWarp:
   def __init__(self, spec):
     keys = {"schema", "source_size", "guides", "target_rows", "horizontal_crop"}
+    if isinstance(spec, dict) and spec.get("schema") == 3:
+      keys |= {"strength", "aspect_balance"}
     if not isinstance(spec, dict) or set(spec) != keys:
       raise ValueError(f"guide document must contain exactly: {', '.join(sorted(keys))}")
-    if type(spec["schema"]) is not int or spec["schema"] != 2:
+    if type(spec["schema"]) is not int or spec["schema"] not in (2, 3):
       raise ValueError("unsupported guide schema; redraw schema-1 far/near guides as two front rails")
+    self.schema = spec["schema"]
+    # Schema 2 is the original full warp, not an independently defaulted setting.
+    self.strength = 1.0 if self.schema == 2 else number(spec["strength"], "strength")
+    self.aspect_balance = 1.0 if self.schema == 2 else number(spec["aspect_balance"], "aspect balance")
+    if not (0 <= self.strength <= 1 and 0 <= self.aspect_balance <= 1):
+      raise ValueError("strength and aspect_balance must be in [0, 1]")
     size = spec["source_size"]
     if (not isinstance(size, list) or len(size) != 2
         or any(type(v) is not int or not 2 <= v < 32767 for v in size)):
@@ -116,8 +124,10 @@ class RinkWarp:
       raise ValueError("target_rows and horizontal_crop must each contain two numbers")
     self.top, self.bottom = [number(v, "target row") for v in targets]
     self.left, self.right = [number(v, "crop bound") for v in crop]
-    if not (1e-4 <= self.top <= self.bottom - 1e-4 and max(lower) <= self.bottom <= 1 - 1e-4):
-      raise ValueError("target rows must be ordered inside the frame; lower target must be at/below all lower marks")
+    if not (1e-4 <= self.top <= self.bottom - 1e-4 and self.bottom <= 1 - 1e-4):
+      raise ValueError("target rows must be ordered inside the frame")
+    if self.schema == 2 and max(lower) > self.bottom:
+      raise ValueError("schema 2 lower target must be at/below all lower marks")
     if not (0 <= self.left <= self.right - 1e-4 and self.right <= 1):
       raise ValueError("horizontal_crop must be an increasing interval within [0, 1]")
     self.lower = Curve(x, lower)
@@ -128,7 +138,8 @@ class RinkWarp:
     # width; keeping the original width would squash that geometry afterward.
     self.source_x = np.linspace(self.left, self.right, size[0])
     up, low = self.columns(self.source_x)
-    scales = (self.bottom - self.top) / (low - up)
+    top, bottom = self.targets(self.source_x)
+    scales = 1 + self.aspect_balance * ((bottom - top) / (low - up) - 1)
     integral = np.r_[0, np.cumsum((scales[1:] + scales[:-1]) * np.diff(self.source_x) / 2)]
     output_width = 1 + round(float(integral[-1]) * (size[0] - 1))
     if not 2 <= output_width < 32767:
@@ -158,37 +169,45 @@ class RinkWarp:
       raise ValueError("output x coordinates must be finite and in [0, 1]")
     return np.interp(x, self.output_x, self.source_x)
 
+  def targets(self, source_x):
+    upper, lower = self.columns(source_x)
+    return (upper * (1 - self.strength) + self.top * self.strength,
+            lower * (1 - self.strength) + self.bottom * self.strength)
+
   def segments(self, source_x):
     upper, lower = self.columns(source_x)
-    first = upper / self.top
-    middle = (lower - upper) / (self.bottom - self.top)
+    top, bottom = self.targets(source_x)
+    first = upper / top
+    middle = (lower - upper) / (bottom - top)
     shared = 2 * first * middle / (first + middle)
     # Below the boards continue the local scale. If that would sample beyond
     # the input, a final monotone segment reaches the image boundary instead.
-    end = np.minimum(1, lower + (1 - self.bottom) * middle)
+    end = np.minimum(1, lower + (1 - bottom) * middle)
     return upper, lower, first, middle, shared, end
 
   def inverse_y(self, source_x, output_y):
     """Source y at output_y; x is ALWAYS in source-image coordinates."""
     upper, lower, first, middle, shared, end = self.segments(source_x)
+    top, bottom = self.targets(source_x)
     y = np.asarray(output_y, dtype=float)
     if not np.all(np.isfinite(y)):
       raise ValueError("y coordinates must be finite")
     return np.where(y <= 0, y * first,
-        np.where(y < self.top, interval(y, 0, self.top, 0, upper, first, shared),
-        np.where(y < self.bottom, interval(y, self.top, self.bottom, upper, lower, shared, middle),
-        np.where(y <= 1, interval(y, self.bottom, 1, lower, end, middle, middle),
+        np.where(y < top, interval(y, 0, top, 0, upper, first, shared),
+        np.where(y < bottom, interval(y, top, bottom, upper, lower, shared, middle),
+        np.where(y <= 1, interval(y, bottom, 1, lower, end, middle, middle),
                  end + (y - 1) * middle))))
 
   def forward_y(self, source_x, source_y):
     upper, lower, first, middle, shared, end = self.segments(source_x)
+    top, bottom = self.targets(source_x)
     y = np.asarray(source_y, dtype=float)
     if not np.all(np.isfinite(y)):
       raise ValueError("y coordinates must be finite")
     return np.where(y <= 0, y / first,
-        np.where(y < upper, interval(y, 0, self.top, 0, upper, first, shared, inverse=True),
-        np.where(y < lower, interval(y, self.top, self.bottom, upper, lower, shared, middle, inverse=True),
-        np.where(y <= end, interval(y, self.bottom, 1, lower, end, middle, middle, inverse=True),
+        np.where(y < upper, interval(y, 0, top, 0, upper, first, shared, inverse=True),
+        np.where(y < lower, interval(y, top, bottom, upper, lower, shared, middle, inverse=True),
+        np.where(y <= end, interval(y, bottom, 1, lower, end, middle, middle, inverse=True),
                  1 + (y - end) / middle))))
 
   def render(self, image, *, nearest=False):
@@ -239,12 +258,15 @@ class RinkWarp:
     y = np.linspace(0, 1, 2049)[:, None]
     scale = np.diff(self.forward_y(sx, y), axis=0) * 2048
     horizontal = np.diff(self.output_x) / np.diff(self.source_x) * (width - 1) / (self.source_size[0] - 1)
-    return {"algorithm": "two-rail-aspect-warp-v2", "source_size": list(self.source_size),
+    top, bottom = self.targets(x)
+    return {"algorithm": "two-rail-aspect-warp-v2" if self.schema == 2 else "two-rail-aspect-warp-v3",
+            "strength": self.strength, "aspect_balance": self.aspect_balance,
+            "source_size": list(self.source_size),
             "output_size": list(self.output_size),
             "horizontal_crop": [self.left, self.right], "target_rows": [self.top, self.bottom],
             "front_margin_pixels": (1 - self.bottom) * (height - 1),
-            "max_guide_error_pixels": float(max(np.max(np.abs(self.forward_y(x, upper) - self.top)),
-                                                np.max(np.abs(self.forward_y(x, lower) - self.bottom))) * (height - 1)),
+            "max_guide_error_pixels": float(max(np.max(np.abs(self.forward_y(x, upper) - top)),
+                                                np.max(np.abs(self.forward_y(x, lower) - bottom))) * (height - 1)),
             "sampled_minimum_vertical_scale": float(scale.min()),
             "sampled_maximum_vertical_scale": float(scale.max()),
             "minimum_horizontal_scale": float(horizontal.min()),

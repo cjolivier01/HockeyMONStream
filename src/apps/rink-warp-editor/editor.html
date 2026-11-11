@@ -1,0 +1,202 @@
+<div class="warp-app">
+  <header class="warp-header">
+    <div>
+      <h1>Rink warp</h1>
+      <p id="warp-title">Interactive still-frame editor</p>
+    </div>
+    <span class="warp-badge">Still image · GPU preview</span>
+  </header>
+  <nav class="warp-toolbar" aria-label="Files and history">
+    <button data-action="open-image" data-action-icon="open">Open image</button>
+    <button data-action="open-mask" data-action-icon="level">
+      Open ice mask
+    </button>
+    <button data-action="open-guides" data-action-icon="document">
+      Load guides
+    </button>
+    <button data-action="save-guides" data-action-icon="save">
+      Save guides
+    </button>
+    <button data-action="export" data-action-icon="camera">Export PNG</button>
+    <span class="warp-spacer"></span>
+    <button data-action="undo" data-action-icon="undo">Undo</button>
+    <button data-action="redo" data-action-icon="next">Redo</button>
+    <button data-action="reset" data-action-icon="reset">Reset</button>
+  </nav>
+  <main class="warp-main">
+    <aside class="warp-controls" aria-label="Warp controls">
+      <p id="warp-notice" class="warp-hint" hidden></p>
+      <section>
+        <h2>Shape</h2>
+        <label
+          >Flattening <output data-value="strength"></output
+          ><input
+            aria-label="Flattening"
+            type="range"
+            name="strength"
+            min="0"
+            max="1"
+            step="0.01"
+        /></label>
+        <label
+          >Preserve proportions <output data-value="aspect_balance"></output
+          ><input
+            aria-label="Preserve proportions"
+            type="range"
+            name="aspect_balance"
+            min="0"
+            max="1"
+            step="0.01"
+        /></label>
+        <p class="warp-hint">
+          Drag a colored point in the source. The upper and lower guides become
+          horizontal at 100% flattening.
+        </p>
+        <label
+          >Upper target (%)<input
+            name="top"
+            type="number"
+            min="0.01"
+            max="99.98"
+            step="0.1"
+        /></label>
+        <label
+          >Lower target (%)<input
+            name="bottom"
+            type="number"
+            min="0.02"
+            max="99.99"
+            step="0.1"
+        /></label>
+        <label class="warp-check"
+          ><input name="symmetric" type="checkbox" />Mirror guide edits</label
+        >
+      </section>
+      <section>
+        <h2>Guides</h2>
+        <label
+          >Active guide<select name="guide" aria-label="Active guide">
+            <option value="1">Upper · blue</option>
+            <option value="2">Lower · amber</option>
+          </select></label
+        >
+        <div class="warp-button-row">
+          <button
+            data-action="draw"
+            data-action-icon="stitching"
+            aria-pressed="false"
+          >
+            Draw guide</button
+          ><button data-action="delete-point" data-action-icon="remove">
+            Remove point
+          </button>
+        </div>
+        <p class="warp-hint">
+          Double-click to add a point. Draw a replacement curve, or select a
+          point and use arrow keys. Delete removes an interior point.
+        </p>
+        <label
+          >Fit smoothness<select name="degree" aria-label="Fit smoothness">
+            <option value="2">Very broad · quadratic</option>
+            <option value="4">Broad · quartic</option>
+            <option value="6">More flexible · degree 6</option>
+          </select></label
+        >
+        <button data-action="fit-mask" data-action-icon="prepare">
+          Fit lower guide to mask
+        </button>
+        <button data-action="smooth" data-action-icon="level">
+          Smooth active guide
+        </button>
+        <label class="warp-check"
+          ><input name="show_guides" type="checkbox" />Show guides and
+          targets</label
+        >
+        <label class="warp-check"
+          ><input name="show_mask" type="checkbox" />Show mask boundary</label
+        >
+      </section>
+      <section>
+        <h2>Framing</h2>
+        <label
+          >Crop left (%)<input
+            name="left"
+            type="number"
+            min="0"
+            max="99.9"
+            step="0.1"
+        /></label>
+        <label
+          >Crop right (%)<input
+            name="right"
+            type="number"
+            min="0.1"
+            max="100"
+            step="0.1"
+        /></label>
+        <p class="warp-hint">
+          Width expands to preserve proportions. Cropping is explicit; red mask
+          points show ice outside the output.
+        </p>
+        <button data-action="fit-view" data-action-icon="fit">
+          Fit both views
+        </button>
+      </section>
+    </aside>
+    <div class="warp-views">
+      <section class="warp-pane" data-pane="source">
+        <header>
+          <h2>Source · edit guides</h2>
+          <span id="source-size"></span
+          ><button
+            data-action="maximize-source"
+            data-action-icon="expand"
+            data-icon-only="true"
+            aria-label="Maximize source"
+            aria-pressed="false"
+          ></button>
+        </header>
+        <div class="warp-canvas-wrap">
+          <canvas class="warp-image" aria-hidden="true"></canvas
+          ><canvas
+            class="warp-overlay"
+            tabindex="0"
+            aria-label="Source guide editor"
+          ></canvas>
+        </div>
+      </section>
+      <section class="warp-pane" data-pane="result">
+        <header>
+          <h2>Warped · live result</h2>
+          <span id="result-size"></span
+          ><button
+            data-action="maximize-result"
+            data-action-icon="expand"
+            data-icon-only="true"
+            aria-label="Maximize warped result"
+            aria-pressed="false"
+          ></button>
+        </header>
+        <div class="warp-canvas-wrap">
+          <canvas class="warp-image" aria-hidden="true"></canvas
+          ><canvas
+            class="warp-overlay"
+            tabindex="0"
+            aria-label="Warped panorama preview"
+          ></canvas>
+        </div>
+      </section>
+      <footer>
+        <span id="warp-status" role="status">Open a panorama to begin.</span
+        ><span id="warp-timing"></span>
+      </footer>
+    </div>
+  </main>
+  <footer class="warp-footer">
+    <span
+      >Scroll over an image to zoom · right-drag to pan · guides save separately
+      from calibration</span
+    ><span id="warp-device"></span>
+  </footer>
+  <input id="warp-file" type="file" hidden />
+</div>

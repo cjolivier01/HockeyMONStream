@@ -27,6 +27,7 @@ QT_UI_COMPATIBILITY = select({
 filegroup(
     name = "runtime_sources",
     srcs = [
+        "//src/apps/rink-warp-editor:assets",
         "CameraChapterWarning.cpp",
         "CameraChapterWarning.h",
         "ActionIcons.cpp",
@@ -75,6 +76,8 @@ filegroup(
         "CameraExperimentPreviewWorker.h",
         "CameraExperimentSource.cpp",
         "CameraExperimentSource.h",
+        "RinkWarpEditor.cpp",
+        "RinkWarpEditor.h",
         "RinkLevelingDialog.cpp",
         "RinkLevelingDialog.h",
         "RinkMapBackend.cpp",
@@ -976,6 +979,15 @@ cc_test(
 )
 
 cc_library(
+    name = "rink_warp_editor",
+    srcs = ["RinkWarpEditor.cpp"],
+    hdrs = ["RinkWarpEditor.h", "//src/apps/rink-warp-editor:embedded_assets"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = ["@qt//:qt_gui", "@yaml-cpp"],
+)
+
+cc_library(
     name = "hstream_window",
     srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
     hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h", "CameraControlSpecs.h"],
@@ -984,6 +996,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":rink_warp_editor",
         ":camera_chapter_warning",
         ":log_text_edit",
         ":supervised_process",
@@ -1836,4 +1849,13 @@ cc_test(
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],
+)
+
+cc_test(
+    name = "rink_warp_editor_test",
+    srcs = ["RinkWarpEditorTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":rink_warp_editor", "//src/libs/common:baseline_config", "@qt//:qt_gui", "@yaml-cpp"],
 )

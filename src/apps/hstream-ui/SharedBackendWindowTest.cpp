@@ -140,12 +140,14 @@ struct HStreamWindowTestAccess {
         require(
             !create->isEnabled() && !fresh.game_id_edit_->isEnabled() && !fresh.start_button_->isEnabled() &&
                 !fresh.save_preset_button_->isEnabled() && !fresh.video_controls_->isEnabled() &&
-                !fresh.clean_stitching_button_->isEnabled(),
+                !fresh.clean_stitching_button_->isEnabled() &&
+                !fresh.findChild<QPushButton*>("rinkWarpButton")->isEnabled(),
             "Navigation must not enable mutations of the remotely owned game");
         fresh.game_selector_->setFocus();
         QTest::keyClick(fresh.game_selector_, Qt::Key_End);
         require(
-            fresh.game_id_edit_->text() == "other-game" && fresh.start_button_->isEnabled(),
+            fresh.game_id_edit_->text() == "other-game" && fresh.start_button_->isEnabled() &&
+                fresh.findChild<QPushButton*>("rinkWarpButton")->isEnabled(),
             "A deliberate selector key must leave the busy game and allow the free game");
         fresh.game_selector_->setCurrentIndex(fresh.game_selector_->findText("game"));
         fresh.updateRunControls();

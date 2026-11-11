@@ -1209,6 +1209,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "hstream_ui.int8_preparation.play_when_ready"
             ),
         },
+        "rink_warp": baseline["hstream_ui"]["rink_warp"],
         "version": 1,
         "native_revision": native_revision,
         "sources": {
@@ -1309,6 +1310,15 @@ def generate(root, *, native_revision=None, include_revision=True):
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in (
                 "src/apps/hstream-ui/HStreamWindow.cpp",
+                "src/apps/hstream-ui/RinkWarpEditor.cpp",
+                "src/apps/hstream-ui/RinkWarpEditor.h",
+                "src/apps/rink-warp-editor/bundle.py",
+                "src/apps/rink-warp-editor/editor.html",
+                "src/apps/rink-warp-editor/editor.css",
+                "src/apps/rink-warp-editor/editor.js",
+                "src/apps/rink-warp-editor/warp-geometry.js",
+                "src/apps/rink-warp-editor/warp-gpu.js",
+                "src/apps/rink-warp-editor/warp-icons.css",
                 "src/apps/hstream-ui/CameraChapterWarning.cpp",
                 "src/apps/hstream-ui/CameraChapterWarning.h",
                 "src/libs/stitching/VideoDiscovery.cpp",
