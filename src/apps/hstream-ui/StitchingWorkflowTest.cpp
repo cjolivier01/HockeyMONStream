@@ -38,6 +38,7 @@
 #include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
 #include <unistd.h>
@@ -291,6 +292,9 @@ elif operation in ('cancel','retry'):
 elif operation=='log':
  value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
  if (root/'log.txt').exists(): value['text']+='\n'+(root/'log.txt').read_text()
+ if (root/'hold-log-response').exists():
+  (root/'log-request-started').write_text(option('--stage'))
+  while (root/'hold-log-response').exists(): time.sleep(.01)
 else: raise SystemExit(9)
 print(json.dumps(value))
 )PY";
@@ -683,6 +687,80 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       "Small workflow pane left its retry control unreachable");
   shell.resize(700, 650);
   monitor_scroll->verticalScrollBar()->setValue(0);
+  auto* detail_log = widget<QPlainTextEdit>(*pane, "stitchWorkflowDetails");
+  auto* detail_scroll = detail_log->verticalScrollBar();
+  auto detail_state = read(root + "/state.json");
+  auto detail_nodes = detail_state.value("nodes").toArray();
+  auto detail_node = detail_nodes[0].toObject();
+  QString reason;
+  for (int line = 0; line < 100; ++line)
+    reason += QString("Diagnostic line %1\n").arg(line);
+  const auto update_details = [&](const QString& line) {
+    reason += line;
+    detail_node.insert("reason", reason);
+    detail_nodes[0] = detail_node;
+    detail_state.insert("nodes", detail_nodes);
+    write(root + "/state.json", QJsonDocument(detail_state).toJson());
+    require(wait([&] { return detail_log->toPlainText().contains(line); }), "Workflow detail poll did not arrive");
+  };
+  update_details("Initial diagnostic tail\n");
+  require(
+      detail_scroll->maximum() > 0 && detail_scroll->value() == detail_scroll->maximum(),
+      "Workflow details did not follow the newest diagnostic");
+  update_details("Next diagnostic tail\n");
+  require(detail_scroll->value() == detail_scroll->maximum(), "Workflow detail append reset scrolling");
+  QWheelEvent detail_wheel(
+      QPointF(4, 4),
+      QPointF(detail_log->viewport()->mapToGlobal(QPoint(4, 4))),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::NoScrollPhase,
+      false);
+  QApplication::sendEvent(detail_log->viewport(), &detail_wheel);
+  require(detail_scroll->value() < detail_scroll->maximum(), "Workflow details ignored wheel scrollback");
+  detail_scroll->setValue(20);
+  update_details("Diagnostic while reading\n");
+  require(detail_scroll->value() == 20, "Workflow detail append moved the reader");
+  QTextCursor detail_selection(detail_log->document());
+  detail_selection.setPosition(10);
+  detail_selection.setPosition(20, QTextCursor::KeepAnchor);
+  detail_log->setTextCursor(detail_selection);
+  detail_scroll->setValue(20);
+  QElapsedTimer detail_poll;
+  detail_poll.start();
+  require(wait([&] { return detail_poll.elapsed() > 400; }), "Workflow detail polling stalled");
+  require(
+      detail_log->textCursor().selectedText() == detail_selection.selectedText() && detail_scroll->value() == 20,
+      "Unchanged workflow details erased selection or reset scrolling");
+  detail_scroll->setValue(detail_scroll->maximum());
+  update_details("Diagnostic following again\n");
+  require(detail_scroll->value() == detail_scroll->maximum(), "Workflow details did not resume following");
+  detail_node.insert("state", "failed");
+  update_details("Calibration failed: inspect retained output\n");
+  stages->setCurrentIndex(1);
+  auto* node_log = widget<QToolButton>(*graph, qPrintable("stitchWorkflowNodeLog_" + first_id));
+  require(!node_log->icon().isNull(), "Workflow node log action has no icon");
+  node_log->click();
+  require(stages->currentData().toString() == first_id, "Node log opened another stage's diagnostics");
+  auto* log_window = widget<QDialog>(*pane, "stitchWorkflowLogWindow");
+  require(
+      wait([&] {
+        return widget<QPlainTextEdit>(*pane, "stitchWorkflowLog")->toPlainText().contains("Calibration failed:");
+      }),
+      "Node log action lost the failure reason");
+  require(
+      log_window->isVisible() && log_window->isSizeGripEnabled() &&
+          log_window->windowFlags().testFlag(Qt::WindowMaximizeButtonHint),
+      "Workflow node log must stay open in a resizable window");
+  detail_poll.restart();
+  require(wait([&] { return detail_poll.elapsed() > 400; }), "Node log polling stalled");
+  require(log_window->isVisible(), "Workflow polling dismissed the node log");
+  const auto log_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_LOG_SCREENSHOT");
+  if (!log_screenshot.isEmpty())
+    require(log_window->grab().save(log_screenshot), "Could not capture persistent node log");
+  write(root + "/state.json", QJsonDocument(original_state).toJson());
   pane->showLog();
   require(
       wait([&] {
@@ -735,6 +813,36 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(wait([&] { return log->toPlainText().endsWith("Rotated tail\n"); }), "Stage log was not restored");
   require(log_scroll->value() == log_scroll->maximum(), "Selecting an attempt did not start at its tail");
   QFile::remove(root + "/log.txt");
+  write(root + "/hold-log-response", "hold");
+  require(wait([&] { return QFileInfo::exists(root + "/log-request-started"); }), "Log request was not held");
+  auto pending_state = read(root + "/state.json");
+  auto pending_nodes = pending_state.value("nodes").toArray();
+  auto other_node = pending_nodes[1].toObject();
+  other_node.insert("reason", "Diagnostics for the newly selected stage");
+  other_node.insert("attempts", QJsonArray{QJsonObject{{"id", "attempt-other"}, {"epoch", 0}, {"state", "failed"}}});
+  pending_nodes[1] = other_node;
+  pending_state.insert("nodes", pending_nodes);
+  write(root + "/state.json", QJsonDocument(pending_state).toJson());
+  stages->setCurrentIndex(1);
+  require(
+      wait([&] { return attempts->currentData().toString() == "attempt-other"; }), "Other attempt was not observed");
+  require(
+      log->window()->windowTitle().contains(other_node.value("label").toString()) &&
+          log->toPlainText().contains("Diagnostics for the newly selected stage") &&
+          log->toPlainText().endsWith("Loading attempt log…") &&
+          !log->toPlainText().contains("attempt-current retained log"),
+      "Stage selection displayed the previous log under a new title while its request was pending");
+  QFile::remove(root + "/hold-log-response");
+  require(
+      wait([&] { return log->toPlainText().endsWith("attempt-other retained log"); }), "New stage log did not load");
+  require(
+      !log->toPlainText().contains("attempt-current retained log"), "Late response replaced the selected stage log");
+  QFile::remove(root + "/log-request-started");
+  write(root + "/state.json", QJsonDocument(original_state).toJson());
+  stages->setCurrentIndex(0);
+  require(
+      wait([&] { return log->toPlainText().endsWith("attempt-current retained log"); }),
+      "Original log was not restored");
   QJsonObject state = read(root + "/state.json");
   state.insert("state", "failed");
   auto nodes = state.value("nodes").toArray();
