@@ -8,6 +8,7 @@
 #include <limits>
 #include <sstream>
 
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -55,9 +56,10 @@ CalibrationImageWriter Writer(
     std::string ffmpeg,
     std::shared_ptr<std::array<CalibrationFrameSource, 2>> sources,
     size_t camera,
+    int compression_level,
     std::function<bool()> is_cancelled,
     bool exact = false) {
-  return [ffmpeg = std::move(ffmpeg), sources = std::move(sources), camera, is_cancelled, exact](
+  return [ffmpeg = std::move(ffmpeg), sources = std::move(sources), camera, compression_level, is_cancelled, exact](
              const std::filesystem::path& output) {
     if (is_cancelled && is_cancelled())
       return absl::CancelledError("Calibration frame extraction cancelled");
@@ -74,10 +76,35 @@ CalibrationImageWriter Writer(
     // one still is encoded. CPU image access is confined to offline calibration,
     // whose feature matcher and PNG/EXIF store already consume CPU images.
     const int status = hm::run_command(
-        {ffmpeg,      "-seek_timestamp", "1",        "-nostdin",  "-v",      "info",         "-hwaccel",
-         "auto",      "-noautorotate",   "-ss",      time.str(),  "-copyts", "-i",           requested.video.string(),
-         "-map",      "0:v:0",           "-an",      "-frames:v", "1",       "-vf",          "showinfo",
-         "-fps_mode", "passthrough",     "-pix_fmt", "rgb48be",   "-y",      output.string()},
+        {ffmpeg,
+         "-seek_timestamp",
+         "1",
+         "-nostdin",
+         "-v",
+         "info",
+         "-hwaccel",
+         "auto",
+         "-noautorotate",
+         "-ss",
+         time.str(),
+         "-copyts",
+         "-i",
+         requested.video.string(),
+         "-map",
+         "0:v:0",
+         "-an",
+         "-frames:v",
+         "1",
+         "-vf",
+         "showinfo",
+         "-fps_mode",
+         "passthrough",
+         "-pix_fmt",
+         "rgb48be",
+         "-compression_level",
+         std::to_string(compression_level),
+         "-y",
+         output.string()},
         "",
         {{"LC_ALL", "C"}},
         [&](const std::string& error, const std::string&) {
@@ -169,6 +196,15 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
     size_t count,
     const std::function<bool()>& is_cancelled) {
   try {
+    const auto baseline = hm::baseline_config::load();
+    if (!baseline.ok())
+      return baseline.status();
+    const auto compression = config["stitching"]["calibration_png_compression_level"];
+    const int compression_level = compression
+        ? compression.as<int>()
+        : baseline->values["stitching"]["calibration_png_compression_level"].as<int>();
+    if (compression_level < 0 || compression_level > 9)
+      return absl::InvalidArgumentError("stitching.calibration_png_compression_level must be between 0 and 9");
     const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
     if (!ffmpeg)
       return absl::NotFoundError("End-relative calibration requires ffmpeg");
@@ -202,8 +238,8 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
     for (const auto& pair : planned) {
       auto decoded = std::make_shared<std::array<CalibrationFrameSource, 2>>(pair);
       CalibrationFrameInput input{
-          Writer(*ffmpeg, decoded, 0, is_cancelled, selected),
-          Writer(*ffmpeg, decoded, 1, is_cancelled, selected),
+          Writer(*ffmpeg, decoded, 0, compression_level, is_cancelled, selected),
+          Writer(*ffmpeg, decoded, 1, compression_level, is_cancelled, selected),
           pair[0],
           pair[1]};
       input.decoded_sources = decoded;
