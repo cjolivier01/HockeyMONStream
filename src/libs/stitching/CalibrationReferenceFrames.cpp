@@ -8,6 +8,7 @@
 #include <limits>
 #include <sstream>
 
+#include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -17,7 +18,8 @@ namespace hm::stitching {
 absl::StatusOr<std::vector<std::array<CalibrationFrameSource, 2>>> PlanCalibrationReferenceFrames(
     const std::array<CameraRecordingWindow, 2>& cameras,
     int64_t reference_ns,
-    size_t count) {
+    size_t count,
+    uint64_t playback_start_ns) {
   const double duration = std::min(cameras[0].duration_seconds, cameras[1].duration_seconds);
   if (!std::isfinite(cameras[0].fps) || !std::isfinite(cameras[1].fps) || cameras[0].fps <= 0 || cameras[1].fps <= 0)
     return absl::InvalidArgumentError("Calibration requires known camera frame rates");
@@ -27,9 +29,19 @@ absl::StatusOr<std::vector<std::array<CalibrationFrameSource, 2>>> PlanCalibrati
   if (!std::isfinite(duration) || duration < interval || count == 0 || !std::isfinite(first) || first < 0 ||
       first >= duration)
     return absl::OutOfRangeError("First calibration frame is outside the synchronized recording");
+  const double playback = playback_start_ns / 1e9;
+  if (playback >= duration)
+    return absl::OutOfRangeError("Playback start is outside the synchronized recording");
+  // Walk each usable position at most once: the tail from the reference, then
+  // Playback start up to the reference. An anchor before Playback start has no
+  // unvisited continuation, so it samples forward without wrapping.
+  const double span = duration - std::min(first, playback);
   std::vector<std::array<CalibrationFrameSource, 2>> result(count);
   for (size_t index = 0; index < count; ++index) {
-    const double time = std::min(std::fmod(first + duration * (double(index) / count), duration), duration - interval);
+    double time = first + span * (double(index) / count);
+    if (time >= duration)
+      time = playback + (time - duration);
+    time = std::min(time, duration - interval);
     for (size_t camera = 0; camera < 2; ++camera) {
       double remaining = time;
       for (const auto& chapter : cameras[camera].chapters) {
@@ -167,7 +179,8 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
     const std::filesystem::path& game,
     const YAML::Node& config,
     size_t count,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    std::optional<uint64_t> playback_start_ns) {
   try {
     const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
     if (!ffmpeg)
@@ -196,7 +209,20 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
           hm::stitch_frame_time_to_nanoseconds(config["stitching"]["stitch_frame_time"].as<std::string>());
       std::array<CameraRecordingWindow, 2> cameras;
       HM_ASSIGN_OR_RETURN(cameras, RecordingWindows(game, config));
-      HM_ASSIGN_OR_RETURN(planned, PlanCalibrationReferenceFrames(cameras, reference, count));
+      if (!playback_start_ns) {
+        const auto ui = config["hstream_ui"];
+        auto playback = ui ? ui["playback_start_time"] : YAML::Node();
+        if (!playback || playback.IsNull()) {
+          hm::baseline_config::BaselineConfig baseline;
+          HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
+          playback.reset(baseline.values["hstream_ui"]["playback_start_time"]);
+        }
+        const auto parsed = hm::stitch_frame_time_to_nanoseconds(playback.as<std::string>());
+        if (parsed < 0)
+          return absl::InvalidArgumentError("Playback start must be nonnegative");
+        playback_start_ns = parsed;
+      }
+      HM_ASSIGN_OR_RETURN(planned, PlanCalibrationReferenceFrames(cameras, reference, count, *playback_start_ns));
     }
     std::vector<CalibrationFrameInput> inputs;
     for (const auto& pair : planned) {

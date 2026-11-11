@@ -519,6 +519,27 @@ void exercise_frame_navigation(const QString& root) {
   require(left->pixmap().isNull() && left->message().contains("limits"), "Inspector must reject symlink images");
 }
 
+void exercise_reference_defaults(const QString& game, const QString& root) {
+  for (const QString& reference : {QString("00:00:00"), QString("00:00:07.125"), QString("-00:00:01")}) {
+    StitchingExperimentDialog dialog(
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        100,
+        1,
+        reference,
+        nullptr,
+        {},
+        "00:03:45.125");
+    const auto expected = reference == "00:00:00" ? QString("00:03:45.125") : reference;
+    require(
+        widget<QLineEdit>(dialog, "stitchExperimentStartFrames")->text() == expected,
+        "Only a zero reference must inherit the main Playback start");
+  }
+}
+
 void exercise_filtering_queue(const QString& game, const QString& root) {
   {
     StitchingExperimentDialog dialog(
@@ -4076,6 +4097,11 @@ int main(int argc, char** argv) {
         write(game + "/right.mp4", "right");
         return game;
       };
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_REFERENCE_DEFAULTS_ONLY") != 0) {
+        exercise_reference_defaults(make_game("reference-defaults"), fixture.path());
+        std::cout << "Stitching reference defaults passed\n";
+        return 0;
+      }
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_PREVIEW_OWNERSHIP_ONLY") != 0) {
         exercise_completed_workflow_preview(make_game("workflow-preview"), fixture.path());
         std::cout << "Stitching workflow preview admission and promotion checks passed\n";
@@ -4124,6 +4150,7 @@ int main(int argc, char** argv) {
       }
       exercise_frame_navigation(fixture.path());
       exercise_resolution_queue(make_game("resolutions"), fixture.path());
+      exercise_reference_defaults(make_game("reference-defaults"), fixture.path());
       exercise_filtering_queue(make_game("filtering"), fixture.path());
       exercise_matcher_queue(make_game("matchers"), fixture.path());
       exercise_input_lens_queue(make_game("input-lens"), fixture.path());

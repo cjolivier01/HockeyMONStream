@@ -1899,6 +1899,16 @@ absl::Status PipelineApplication::createPipelines(
       resolved_stitch_frame_positions_[app.get()] = std::llround(std::min(reference, duration - interval) * GST_SECOND);
     }
   }
+  for (const auto& app : app_contexts) {
+    auto& properties = app->config.hmsticher_config.private_properties;
+    properties.erase(
+        std::remove_if(
+            properties.begin(),
+            properties.end(),
+            [](const auto& property) { return property.name == "calibration-playback-start-ns"; }),
+        properties.end());
+    properties.push_back({"calibration-playback-start-ns", std::to_string(start_time_ns_)});
+  }
   // Section 2: Create pipelines for each instance.
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
     const auto& app = app_contexts.front();

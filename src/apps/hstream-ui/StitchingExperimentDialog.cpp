@@ -2256,6 +2256,8 @@ struct StitchingExperimentDialog::Impl {
            << QString("--options=pipeline.hmstitcher.calibration-frame-count=%1").arg(candidate.settings.frame_count)
            << QString("--stitch-frame-time=%1").arg(QString::fromStdString(candidate.settings.stitch_frame_time))
            << "-t=1";
+      if (candidate.settings.player_scan_playback_start)
+        args << QString("--start-time=%1").arg(QString::fromStdString(*candidate.settings.player_scan_playback_start));
       if (candidate.requires_ice_mask)
         args << "--stitching-calibration-with-ice-mask";
     }
@@ -2548,6 +2550,8 @@ struct StitchingExperimentDialog::Impl {
                         epipolar_ransac->isChecked(), homography_consistency->isChecked()},
             };
             settings.player_scan_playback_start = initial_settings.player_scan_playback_start;
+            if (hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time) == 0)
+              settings.stitch_frame_time = *settings.player_scan_playback_start;
             settings.camera->input_lens = input_lens->lens();
             const auto exact_fov = camera_horizontal_fov->property("exactLensFov");
             settings.camera->horizontal_fov =
@@ -3816,6 +3820,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       : playback_start_time.toStdString();
   if (hm::stitch_frame_time_to_nanoseconds(*s.initial_settings.player_scan_playback_start) < 0)
     throw std::runtime_error("Playback start must be nonnegative");
+  if (hm::stitch_frame_time_to_nanoseconds(s.initial_settings.stitch_frame_time) == 0)
+    s.initial_settings.stitch_frame_time = *s.initial_settings.player_scan_playback_start;
   s.selection_applied = std::move(selection_applied);
   s.operation_poll = new QTimer(this);
   s.operation_poll->setInterval(experiment_baseline->values["workflow"]["poll_interval_ms"].as<int>());
@@ -3851,11 +3857,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.frame_counts = new QLineEdit(QString::number(frame_count));
   s.frame_counts->setObjectName("stitchExperimentFrameCounts");
   s.frame_counts->setPlaceholderText("1,4,8");
-  s.start_frames = new QLineEdit(stitch_frame_time);
+  s.start_frames = new QLineEdit(QString::fromStdString(s.initial_settings.stitch_frame_time));
   s.start_frames->setObjectName("stitchExperimentStartFrames");
   s.start_frames->setPlaceholderText("00:05:00,-00:00:01");
   s.start_frames->setToolTip(
-      "Negative times count back from the synchronized recording end. The first frame is retained; additional samples wrap around the recording.");
+      "Zero uses Playback start. Negative times count back from the synchronized recording end. "
+      "Additional samples wrap to Playback start, preserving the first frame.");
   s.control_point_matcher = new QComboBox();
   s.control_point_matcher->setObjectName("stitchExperimentControlPointMatcher");
   s.control_point_matcher->addItem("SuperPoint + LightGlue", "superpoint-lightglue");

@@ -396,6 +396,8 @@ class HStreamWindow : public QMainWindow {
   void resetCameraControls();
   void cleanStitchingCalibration();
   void updateStitchFrameTimeAvailability();
+  void setStitchFrameTime(const QString& value);
+  void updateInheritedStitchFrameTime();
   void updateWindowTitle();
   void captureSavedControlState();
   bool autoInputLensFrozen() const;
@@ -731,6 +733,7 @@ class HStreamWindow : public QMainWindow {
   // only while the effective crop differs from the saved preset.
   QByteArray crop_selection_revision_;
   QLineEdit* stitch_frame_time_edit_{nullptr};
+  bool stitch_frame_time_inherits_playback_{false};
   QTimeEdit* playback_start_time_edit_{nullptr};
   QCheckBox* gyro_sync_check_{nullptr};
   QCheckBox* show_crop_dialog_check_{nullptr};
