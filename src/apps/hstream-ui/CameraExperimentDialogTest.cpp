@@ -57,6 +57,21 @@ T* widget(CameraExperimentDialog& dialog, const char* name) {
   return result;
 }
 
+QJsonObject camera_capture_geometry(CameraExperimentDialog& dialog) {
+  QJsonObject geometry, visibility;
+  for (const auto& [key, name] :
+       {std::make_pair("preview", "experimentVideoTarget"),
+        std::make_pair("timeline", "experimentCameraPlot"),
+        std::make_pair("control_tabs", "experimentControlTabs")}) {
+    auto* control = widget<QWidget>(dialog, name);
+    const QPoint origin = control->mapTo(&dialog, QPoint());
+    geometry.insert(key, QJsonArray{origin.x(), origin.y(), control->width(), control->height()});
+    visibility.insert(key, control->isVisible());
+  }
+  geometry.insert("geometry_visibility", visibility);
+  return geometry;
+}
+
 bool wait_until(const std::function<bool()>& ready, int timeout_ms = 60000) {
   QElapsedTimer timer;
   timer.start();
@@ -451,6 +466,23 @@ bool smoke() {
     std::cerr << "Camera preview did not focus while retaining its GPU target\n";
     return false;
   }
+  const auto hidden_before = camera_capture_geometry(first);
+  auto* hidden_tabs = widget<QTabWidget>(first, "experimentControlTabs");
+  hidden_tabs->resize(hidden_tabs->size() + QSize(0, 17));
+  const auto hidden_after = camera_capture_geometry(first);
+  if (hidden_before.value("control_tabs") == hidden_after.value("control_tabs") ||
+      camera_capture_test::capture_identity(hidden_before) != camera_capture_test::capture_identity(hidden_after)) {
+    std::cerr << "Hidden Camera layout invalidated the presented capture identity\n";
+    return false;
+  }
+  const QSize visible_size = video->size();
+  video->resize(visible_size + QSize(10, 0));
+  if (camera_capture_test::capture_identity(hidden_after) ==
+      camera_capture_test::capture_identity(camera_capture_geometry(first))) {
+    std::cerr << "Visible Camera geometry escaped the capture identity fence\n";
+    return false;
+  }
+  video->resize(visible_size);
   preview_stop->click();
   QCoreApplication::processEvents();
   if (!controls_panel->isVisible() || !plot_panel->isVisible() ||
@@ -458,6 +490,9 @@ bool smoke() {
     std::cerr << "Stopping camera preview did not restore its layout\n";
     return false;
   }
+  if (camera_capture_test::capture_identity(hidden_after) ==
+      camera_capture_test::capture_identity(camera_capture_geometry(first)))
+    return false; // Restoring visibility is itself a different presented layout.
   auto* first_override = widget<QCheckBox>(first, "experimentOverride_Max_Speed_X_x10");
   auto* first_value = widget<QDoubleSpinBox>(first, "experimentValue_Max_Speed_X_x10");
   if (first_value->isEnabled() || widget<QPushButton>(first, "experimentApply")->isEnabled())
@@ -1047,14 +1082,10 @@ bool e2e(const QStringList& raw_args) {
          {"playing_after_save", reference_play->text() == "Pause"},
          {"save_enabled_after_resume", reference_save->isEnabled()}});
   }
-  const auto bounds = [&](const char* object_name) {
-    auto* control = widget<QWidget>(dialog, object_name);
-    const QPoint origin = control->mapTo(&dialog, QPoint());
-    return QJsonArray{origin.x(), origin.y(), control->width(), control->height()};
-  };
   const auto observation = [&] {
     const QPoint origin = dialog.mapToGlobal(QPoint());
     const int confirmed = confirmed_camera_frame(dialog);
+    const auto geometry = camera_capture_geometry(dialog);
     QJsonArray scroll;
     for (auto* bar : dialog.findChildren<QScrollBar*>())
       scroll.append(
@@ -1067,9 +1098,10 @@ bool e2e(const QStringList& raw_args) {
         {"device_pixel_ratio", dialog.devicePixelRatioF()},
         {"dialog_global_origin", QJsonArray{origin.x(), origin.y()}},
         {"dialog_size", QJsonArray{dialog.width(), dialog.height()}},
-        {"preview", bounds("experimentVideoTarget")},
-        {"timeline", bounds("experimentCameraPlot")},
-        {"control_tabs", bounds("experimentControlTabs")},
+        {"preview", geometry.value("preview")},
+        {"timeline", geometry.value("timeline")},
+        {"control_tabs", geometry.value("control_tabs")},
+        {"geometry_visibility", geometry.value("geometry_visibility")},
         {"tab", widget<QTabWidget>(dialog, "experimentControlTabs")->currentIndex()},
         {"controls", camera_control_snapshot(dialog)},
         {"scroll", scroll},
@@ -1096,13 +1128,7 @@ bool e2e(const QStringList& raw_args) {
     }
     return value;
   };
-  const auto capture_identity = [](QJsonObject value) {
-    if (value.value("playing").toBool())
-      for (const char* key :
-           {"requested_index", "confirmed_index", "frame_label", "screenshot_ready", "trial_sample_id", "trial_pts_ns"})
-        value.remove(key);
-    return value;
-  };
+  const auto capture_identity = camera_capture_test::capture_identity;
   const auto stable_observation = [&] { return capture_identity(observation()); };
   const auto capture = [&](const char* name, bool handoff = true) {
     QJsonObject before;
@@ -1142,10 +1168,10 @@ bool e2e(const QStringList& raw_args) {
         {"device_pixel_ratio", dialog.devicePixelRatioF()},
         {"dialog_size", QJsonArray{dialog.width(), dialog.height()}},
         {"minimum_size", QJsonArray{dialog.minimumWidth(), dialog.minimumHeight()}},
-        {"image_size", QJsonArray{pixels.width(), pixels.height()}},
-        {"preview", bounds("experimentVideoTarget")},
-        {"timeline", bounds("experimentCameraPlot")},
-        {"control_tabs", bounds("experimentControlTabs")}};
+        {"image_size", QJsonArray{pixels.width(), pixels.height()}}};
+    const auto captured_geometry = camera_capture_geometry(dialog);
+    for (auto entry = captured_geometry.begin(); entry != captured_geometry.end(); ++entry)
+      geometry.insert(entry.key(), entry.value());
     const auto after = observation();
     geometry.insert("before_capture", before);
     geometry.insert("after_capture", after);

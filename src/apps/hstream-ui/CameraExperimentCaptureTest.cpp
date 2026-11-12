@@ -276,6 +276,20 @@ QString seek_phase(int frame, int sequence) {
   return QString("visual-timeline-seek-%1-frame-%2").arg(sequence).arg(frame);
 }
 
+QJsonObject capture_identity(QJsonObject value) {
+  if (value.value("playing").toBool())
+    for (const char* key :
+         {"requested_index", "confirmed_index", "frame_label", "screenshot_ready", "trial_sample_id", "trial_pts_ns"})
+      value.remove(key);
+  // QWidget::grab can lay out a hidden subtree. Its cached bounds do not
+  // describe presented pixels; retain visibility and every other state fence.
+  const auto visibility = value.value("geometry_visibility").toObject();
+  for (const char* key : {"preview", "timeline", "control_tabs"})
+    if (visibility.contains(key) && visibility.value(key).isBool() && !visibility.value(key).toBool())
+      value.remove(key);
+  return value;
+}
+
 bool tests() {
   const auto rejects = [](const std::function<void()>& action) {
     try {

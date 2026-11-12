@@ -80,6 +80,10 @@ not an invented native GPU-generation receipt. Playing geometry checkpoints keep
 geometry/source/view/control state stable while recording frame observations
 before/after internal capture and after acknowledgment. They describe a bounded
 frame interval; the externally captured image needs independent frame analysis.
+Geometry records retain raw bounds and explicit visibility for the preview,
+timeline and controls tabs. Hidden widgets' cached bounds may change when Qt
+captures the dialog; they are excluded from presentation identity while visibility,
+visible bounds and the controls themselves remain fenced.
 
 Visual timeline seeks include both an increasing seek sequence and the requested
 frame in their phase names, including repeated seeks to the same frame. Confirmed
