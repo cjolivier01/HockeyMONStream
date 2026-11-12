@@ -983,8 +983,9 @@ LogSeverity classify_log_message(const QString& message, bool stderr_output) {
     return LogSeverity::kWarning;
   if (success_pattern.match(message).hasMatch())
     return LogSeverity::kSuccess;
-  // Uncategorised runner stderr is still worth separating from the UI's own
-  // narration without shouting about it.
+  // Explicitly identified stderr can use the quieter detail style. The main
+  // pipeline merges its descriptors for ordered diagnostics, so its unmarked
+  // lines have no recoverable stream origin and retain the ordinary style.
   return stderr_output ? LogSeverity::kDetail : LogSeverity::kInfo;
 }
 
@@ -4976,7 +4977,10 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
   install_value_control_wheel_guard();
   qApp->installEventFilter(this);
   pipeline_process_ = new QProcess(this);
-  pipeline_process_->setProcessChannelMode(QProcess::SeparateChannels);
+  // Context records and failures can use different descriptors. Merge in the
+  // child before Qt buffers either pipe so delayed reads preserve their scope
+  // order, including CPU-fallback markers and internal configuration passes.
+  pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
   connect(pipeline_process_, &QProcess::started, this, [this]() { handlePipelineStarted(); });
   connect(
       pipeline_process_,
@@ -13361,7 +13365,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   }
   handleTelemetryOutputStatus(trimmed);
   handleArchiveOutputStatus(trimmed);
-  appendLog(trimmed, stderr_output);
+  appendLog(trimmed, stderr_output, "runner-output");
   if (!handleScoreboardControlOutput(trimmed))
     handleRuntimeControlResponse(trimmed);
   handleScoreboardSelectorOutput(trimmed);
@@ -13378,9 +13382,9 @@ void HStreamWindow::flushPipelineOutputFragments() {
     buffer->clear();
     handlePipelineOutputLine(fragment, stderr_output);
   };
-  // Failure details are conventionally written to stderr while the structured
-  // terminal calibration event is written to stdout. Process stderr first so
-  // the first rendered failure analysis already contains the detailed cause.
+  // The main pipeline's merged stream has one trailing fragment in the stdout
+  // buffer. Keep the separate-buffer path for independently supplied channels;
+  // it cannot establish cross-descriptor order or original merged provenance.
   flush(&pipeline_stderr_buffer_, true);
   flush(&pipeline_stdout_buffer_, false);
 }
@@ -23526,11 +23530,14 @@ void HStreamWindow::addRtspOutput() {
   appendLog(QString("rtsp server mount /dynamic%1 enabled for the next pipeline start").arg(dynamic_rtsp_count_));
 }
 
-void HStreamWindow::appendLog(const QString& message, bool stderr_output) {
+void HStreamWindow::appendLog(const QString& message, bool stderr_output, const char* diagnostic_source) {
   const QString entry_timestamp = timestamp();
   const QByteArray plain_entry = QString("%1 %2\n").arg(entry_timestamp, message).toUtf8();
   hm::diagnostics::Log(
-      stderr_output ? "runner-stderr" : "ui-log", {plain_entry.constData(), static_cast<size_t>(plain_entry.size())});
+      diagnostic_source   ? diagnostic_source
+          : stderr_output ? "runner-stderr"
+                          : "ui-log",
+      {plain_entry.constData(), static_cast<size_t>(plain_entry.size())});
   FILE* console = stderr_output ? stderr : stdout;
   if (console) {
     (void)std::fwrite(plain_entry.constData(), 1, static_cast<size_t>(plain_entry.size()), console);

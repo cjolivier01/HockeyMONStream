@@ -193,6 +193,21 @@ def test(binary, root):
     result = run(binary, root, "later-output", completed)
     assert result["applicability"] == "none" and result["restart_outcome"] == "complete"
 
+    for stage, label in (
+        ("projection", "Apply panorama projection"),
+        ("materialize", "Prepare selected calibration frames"),
+    ):
+        log = (
+            records()
+            + b"HSTREAM_CALIBRATION stage=optimizer status=started\n"
+            + b"HSTREAM_CALIBRATION stage=optimizer status=complete\n"
+            + f"HSTREAM_CALIBRATION stage={stage} status=started\n".encode()
+            + b"HSTREAM_CALIBRATION stage=calibration status=failed message=Native substep failed\n"
+        )
+        result = run(binary, root, "substep-" + stage, log)
+        assert result["stage"] == label and result["solve_outcome"] == "failed"
+        assert f"Failed stage: {label}" in result["rendered_text"]
+
     scope, context = records().splitlines()
     before_context = (
         scope

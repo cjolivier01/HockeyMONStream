@@ -1013,6 +1013,57 @@ for line in sys.stdin:
     window->calibration_failure_session_ = hm::stitching::failure::Session(binding);
   }
 
+  static bool drainCalibrationProcess(HStreamWindow* window, const QByteArray& first, const QByteArray& second) {
+    auto* process = window->pipeline_process_;
+    if (!process || process->state() != QProcess::NotRunning)
+      return false;
+    const auto program = process->program();
+    const auto arguments = process->arguments();
+    const QSignalBlocker blocked(process);
+    const auto restore = qScopeGuard([&] {
+      if (process->state() != QProcess::NotRunning) {
+        process->kill();
+        process->waitForFinished(5000);
+      }
+      process->setProgram(program);
+      process->setArguments(arguments);
+      window->pipeline_stdout_buffer_.clear();
+      window->pipeline_stderr_buffer_.clear();
+    });
+    // Buffer both descriptors before invoking the real window drain. This
+    // models delayed GUI delivery without relying on notifier scheduling.
+    // Generation one is consumed first, so a separate stderr drain attributes
+    // generation two's OOM to the preceding width instead of its emitted scope.
+    const QString child =
+        "import os, sys\n"
+        "first = bytes.fromhex(sys.argv[1])\n"
+        "os.write(1, first[:17])\n"
+        "os.write(1, first[17:])\n"
+        "sys.stdin.buffer.readline()\n"
+        "os.write(1, bytes.fromhex(sys.argv[2]))\n"
+        "os.write(2, b'Cuda failure: status=2\\n')\n"
+        "os.write(2, b'Opening ordered-merged-neutral MODE\\nWarning: ordered-merged-warning\\n')\n"
+        "os.write(1, b'Native operation successfully ordered-merged-success\\n')\n"
+        "os.write(2, b'ERROR: ordered-merged-fragment')\n";
+    process->start("python3", {"-u", "-c", child, first.toHex(), second.toHex()});
+    if (!process->waitForStarted(5000))
+      return false;
+    while (!window->calibration_failure_session_.has_context()) {
+      if (!process->waitForReadyRead(5000))
+        return false;
+      window->readPipelineOutput();
+    }
+    if (process->write("continue\n") != 9 || !process->waitForFinished(5000))
+      return false;
+    window->readPipelineOutput();
+    window->flushPipelineOutputFragments();
+    return process->exitStatus() == QProcess::NormalExit && process->exitCode() == 0;
+  }
+
+  static hm::stitching::failure::Diagnosis calibrationDiagnosis(HStreamWindow* window) {
+    return window->calibration_failure_session_.Analyze("INTERNAL: App run failed");
+  }
+
   static QDialog* showCalibrationFailureArtifact(HStreamWindow* window, const QString& message) {
     showCalibrationProgress(window, "matching");
     window->failStitchingCalibration(message);
@@ -3222,6 +3273,86 @@ bool test_scoped_calibration_failure_analysis(HStreamWindow* window) {
   HStreamWindowTestAccess::setActiveStitchMaxOutputWidth(window, 0);
   HStreamWindowTestAccess::resetActiveCalibrationSettings(window);
   return valid && rejected && captured;
+}
+
+bool test_calibration_failure_process_order(HStreamWindow* window) {
+  namespace failure = hm::stitching::failure;
+  const std::string binding(64, 'a'), invocation(32, 'b');
+  failure::Context context;
+  context.matcher = "akaze-hamming";
+  context.mapping_backend = "opencv-magsac";
+  context.projection = "rectilinear";
+  context.frame_count = 4;
+  context.control_point_limit = context.default_control_point_limit = 1500;
+  context.max_output_width = 8192;
+  context.camera = context.default_camera = {"gopro-mission-1", 127.2, 95};
+  context.calibration_required = true;
+  context.calibration_start_stage = "input";
+  const auto records = [&](unsigned generation) {
+    return QByteArray::fromStdString(
+        *failure::ScopeRecord(binding, invocation, generation, 0, 1) + "\n" +
+        *failure::ContextRecord(binding, invocation, generation, context) + "\n");
+  };
+  const auto first = records(1);
+  context.max_output_width = 16384;
+  const auto second = records(2);
+  HStreamWindowTestAccess::bindCalibrationDiagnostics(window, binding);
+  HStreamWindowTestAccess::clearLog(window);
+  const bool ran = HStreamWindowTestAccess::drainCalibrationProcess(window, first, second);
+  const auto diagnosis = HStreamWindowTestAccess::calibrationDiagnosis(window);
+  const bool ordered = expect(
+      ran && diagnosis.cause_generation == 2 && diagnosis.action.find("try 8192 pixels (half)") != std::string::npos &&
+          diagnosis.action.find("try 4096 pixels") == std::string::npos,
+      "Real QProcess stdout context and stderr failure must retain their emitted generation and width");
+  if (!ordered)
+    std::cerr << "Observed cause generation " << diagnosis.cause_generation << ": " << diagnosis.action << '\n';
+  auto* runtime_log = require_child<QTextEdit>(window, "runtimeLog");
+  const auto format = [runtime_log](const QString& marker) {
+    if (runtime_log)
+      for (auto block = runtime_log->document()->begin(); block.isValid(); block = block.next())
+        for (auto fragment = block.begin(); !fragment.atEnd(); ++fragment)
+          if (fragment.fragment().isValid() && fragment.fragment().text().contains(marker))
+            return fragment.fragment().charFormat();
+    return QTextCharFormat();
+  };
+  const auto neutral = format("ordered-merged-neutral");
+  const auto warning = format("ordered-merged-warning");
+  const auto success = format("ordered-merged-success");
+  const auto error = format("ordered-merged-fragment");
+  const bool presentation = expect(
+      window->logText().contains("ERROR: ordered-merged-fragment") &&
+          !neutral.hasProperty(QTextFormat::ForegroundBrush) && warning.hasProperty(QTextFormat::ForegroundBrush) &&
+          success.hasProperty(QTextFormat::ForegroundBrush) && error.hasProperty(QTextFormat::ForegroundBrush) &&
+          error.foreground().color() != warning.foreground().color() &&
+          error.foreground().color() != success.foreground().color(),
+      "Merged output must retain final fragments and text severity; unknown stream origins stay neutral");
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  HStreamWindowTestAccess::clearLog(window);
+  return ordered && presentation;
+}
+
+bool test_calibration_failure_native_substeps(HStreamWindow* window) {
+  const auto clear = qScopeGuard([&] { HStreamWindowTestAccess::clearCalibrationDiagnostics(window); });
+  for (const auto& stage : {"projection", "materialize"}) {
+    HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+    for (const auto& line :
+         {QString("HSTREAM_CALIBRATION stage=optimizer status=started"),
+          QString("HSTREAM_CALIBRATION stage=optimizer status=complete"),
+          QString("HSTREAM_CALIBRATION stage=%1 status=started").arg(stage),
+          QString("HSTREAM_CALIBRATION stage=calibration status=failed message=Native substep failed")})
+      HStreamWindowTestAccess::recordCalibrationDiagnostic(window, line);
+    const auto diagnosis = HStreamWindowTestAccess::calibrationDiagnosis(window);
+    const std::string expected =
+        std::string(stage) == "projection" ? "Apply panorama projection" : "Prepare selected calibration frames";
+    if (!expect(
+            diagnosis.stage == expected && diagnosis.solve_outcome == "failed" &&
+                HStreamWindowTestAccess::calibrationFailureAnalysis(window, "Native substep failed")
+                    .contains(QString::fromStdString("Failed stage: " + expected)),
+            "Qt diagnosis must retain the emitted native substep after optimizer completion"))
+      return false;
+  }
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  return true;
 }
 
 // A watchdog expiry arrives as a bare GStreamer error with no absl status
@@ -22739,10 +22870,11 @@ int main(int argc, char** argv) {
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAILURE_ONLY")) {
     HStreamWindow window;
     window.show();
+    const bool process_order = test_calibration_failure_process_order(&window);
+    const bool native_substeps = test_calibration_failure_native_substeps(&window);
     return test_wheel_routing_log_follow_and_calibration_analysis(&window) &&
-            test_cuda_oom_calibration_failure_analysis(&window) &&
-            test_scoped_calibration_failure_analysis(&window) &&
-            test_stall_watchdog_calibration_failure_analysis(&window)
+            test_cuda_oom_calibration_failure_analysis(&window) && test_scoped_calibration_failure_analysis(&window) &&
+            test_stall_watchdog_calibration_failure_analysis(&window) && process_order && native_substeps
         ? 0
         : 1;
   }
@@ -22978,6 +23110,9 @@ int main(int argc, char** argv) {
     std::cerr << "test_scoped_calibration_failure_analysis failed\n";
     return 1;
   }
+
+  if (!test_calibration_failure_process_order(&window) || !test_calibration_failure_native_substeps(&window))
+    return 1;
   if (!test_stall_watchdog_calibration_failure_analysis(&window)) {
     std::cerr << "test_stall_watchdog_calibration_failure_analysis failed\n";
     return 1;

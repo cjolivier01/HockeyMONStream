@@ -842,6 +842,15 @@ blender, and retires recovered inference OOM evidence on the exact native CPU
 fallback marker. Native configuration and diagnostic text are interpreted once;
 the browser displays the verified native result as text.
 
+Qt merges the main runner's stdout and stderr before reading either descriptor,
+matching the web supervisor's ordered log. The same stream carries native scope
+records, failure evidence and CPU-fallback resets. Buffered GUI delivery cannot
+attach a failure to a preceding or subsequent configuration generation. Merged
+entries use the neutral `runner-output` diagnostic source; their original
+descriptor is unavailable. Error, warning and success colors still come from
+message text, while unmarked lines retain the ordinary color. Trailing fragments
+and the runtime log's following/scroll-position rules remain unchanged.
+
 The supervisor issues `HSTREAM_FAILURE_BINDING`, a 64-character lowercase hex
 correlation token, only to the admitted main invocation. Qt issues the same kind
 of token to its native process. The NVIDIA CLI writes two bounded JSON records:
@@ -876,6 +885,11 @@ failure are separate outcomes: a failed restart still needs diagnosis after a
 successful solve. Successful solve and restart prevent an unrelated later output
 failure from reopening the calibration failure dialog. The returned
 `applicability` is `calibration`, `playback-restart`, `runtime`, or `none`.
+
+Failure stage recognition covers native substeps as well as the visible progress
+rows, including Hugin's `projection` and selected-frame `materialize`. An emitted
+projection failure therefore names projection even after optimizer completion;
+the main progress row layout is unchanged.
 
 Only after the original descendants, bridge helpers and log writers stop may the
 supervisor copy the pinned complete original log into a fresh private diagnosis

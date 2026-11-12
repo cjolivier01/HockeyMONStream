@@ -456,7 +456,7 @@ class HStreamWindow : public QMainWindow {
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
   void addRtspOutput();
-  void appendLog(const QString& message, bool stderr_output = false);
+  void appendLog(const QString& message, bool stderr_output = false, const char* diagnostic_source = nullptr);
   void recordStitchingCalibrationDiagnostic(const QString& line);
   QString stitchingCalibrationFailureAnalysis(const QString& message) const;
   QString writePlaytrackerRuntimeConfig();

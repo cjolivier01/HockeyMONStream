@@ -292,3 +292,7 @@ are separate: an explicit failed restart still needs diagnosis. The web helper
 reads one pinned complete original log in a separate root, never a retained tail
 or live preferences; helper failure cannot replace the original failure. See
 `docs/web-workflows.md` for the bounded internal protocol and unqualified scopes.
+Qt merges the main runner's descriptors before reading generation-bound evidence;
+merged log entries retain text severity but do not claim stdout/stderr provenance.
+Failure stage recognition includes native projection/materialization substeps
+without adding progress rows.

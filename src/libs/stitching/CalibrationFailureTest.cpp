@@ -177,6 +177,29 @@ int main() {
   line(session, "HSTREAM_CALIBRATION stage=calibration status=complete");
   check(session.Analyze("failed").restart_outcome == "complete", "Late solve completion reset completed restart");
 
+  // Native progress includes substeps that are not separate rows in the main
+  // calibration dialog. They must still replace the preceding failed stage.
+  for (const auto& [stage, label] : std::map<std::string, std::string>{
+           {"input", "Wait for synchronized camera frames"},
+           {"orientation", "Find the ice rink and orient cameras"},
+           {"features", "Look for control points"},
+           {"matching", "Match control points"},
+           {"optimizer", "Run panorama optimizer (autooptimiser)"},
+           {"projection", "Apply panorama projection"},
+           {"leveling", "Optionally level the rink"},
+           {"canvas", "Build stitch maps and panorama"},
+           {"rink-mask", "Find the ice surface"},
+           {"materialize", "Prepare selected calibration frames"}}) {
+    session = failure::Session(binding);
+    scope(session, 1, context());
+    line(session, "HSTREAM_CALIBRATION stage=optimizer status=started");
+    line(session, "HSTREAM_CALIBRATION stage=optimizer status=complete");
+    line(session, "HSTREAM_CALIBRATION stage=" + stage + " status=started");
+    line(session, "HSTREAM_CALIBRATION stage=calibration status=failed message=Native substep failed");
+    result = session.Analyze("App run failed");
+    check(result.stage == label && result.solve_outcome == "failed", "Native calibration substep was ignored");
+  }
+
   session = failure::Session(binding);
   scope(session, 1, context());
   line(session, std::string(65000, 'x') + " INVALID_ARGUMENT: unsafe canvas extent");

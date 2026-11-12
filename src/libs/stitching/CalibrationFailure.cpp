@@ -137,9 +137,11 @@ std::string StageLabel(const std::string& stage) {
       {"features", "Look for control points"},
       {"matching", "Match control points"},
       {"optimizer", "Run panorama optimizer (autooptimiser)"},
+      {"projection", "Apply panorama projection"},
       {"leveling", "Optionally level the rink"},
       {"canvas", "Build stitch maps and panorama"},
       {"rink-mask", "Find the ice surface"},
+      {"materialize", "Prepare selected calibration frames"},
       {"playback-restart", "Restarting playback"}};
   const auto it = labels.find(stage);
   return it == labels.end() ? (stage.empty() ? "calibration" : stage) : it->second;
