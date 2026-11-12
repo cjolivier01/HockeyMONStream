@@ -278,13 +278,15 @@ def check(binary, replay, root, *, selected_media, dense=False):
                 )
 
                 if dense:
-                    # The preceding command's state/ACK is a barrier: no stale
-                    # periodic state can precede the next Save's first poll.
-                    command("source-confirm", confirmed=True)
+                    # Queue the barrier and Save together. Waiting for the
+                    # barrier ACK excludes old state, and native cannot poll
+                    # its idle loop between these already queued commands.
+                    barrier = envelope("source-confirm", confirmed=True)
                     during_token = token()
                     during = envelope("save", save_token=during_token, view=2)
+                    send(barrier, during)
+                    acknowledgement(barrier["request"])
                     before = len(observed)
-                    send(during)
                     wait(lambda event: event["kind"] == "state")
                     assert not any(
                         event["kind"] == "ack" and event["request"] == during["request"]
@@ -355,9 +357,11 @@ def check(binary, replay, root, *, selected_media, dense=False):
             if dense:
                 command("source-confirm", confirmed=True)
                 command("trial", **{**trial, "name": "Owner disconnect comparison"})
+                barrier = envelope("source-confirm", confirmed=True)
                 close_save = envelope("save", save_token=token(), view=3)
+                send(barrier, close_save)
+                acknowledgement(barrier["request"])
                 before = len(observed)
-                send(close_save)
                 wait(lambda event: event["kind"] == "state")
                 assert not any(
                     event["kind"] == "ack" and event["request"] == close_save["request"]
