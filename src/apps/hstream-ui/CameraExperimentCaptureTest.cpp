@@ -260,6 +260,22 @@ void Handshake::checkpoint(
   }
 }
 
+int confirmed_frame(const QString& label, int frame_count, bool screenshot_ready) {
+  const auto match = QRegularExpression("(?:^|  ·  )frame ([0-9]+) / ([0-9]+)(?:$|  ·  )").match(label);
+  bool valid_frame = false, valid_count = false;
+  const int frame = match.captured(1).toInt(&valid_frame);
+  const int count = match.captured(2).toInt(&valid_count);
+  return screenshot_ready && match.hasMatch() && valid_frame && valid_count && count == frame_count && frame > 0 &&
+          frame <= count
+      ? frame - 1
+      : -1;
+}
+
+QString seek_phase(int frame, int sequence) {
+  require(frame >= 0 && sequence > 0, "Invalid visual timeline checkpoint identity");
+  return QString("visual-timeline-seek-%1-frame-%2").arg(sequence).arg(frame);
+}
+
 bool tests() {
   const auto rejects = [](const std::function<void()>& action) {
     try {
@@ -275,6 +291,17 @@ bool tests() {
   require(
       parsed.values.at("Max_Speed_X_x10") == 15 && parsed.playback_start_ms == 250 && !parsed.complete,
       "Control snapshot did not preserve raw units");
+  const QString frame_label = "Sample 104  ·  0.100 s  ·  frame 4 / 18000  ·  Program (12.0, 34.0) 480×270";
+  require(confirmed_frame(frame_label, 18000, true) == 3, "Production Camera frame label was not recognized");
+  for (const auto& label :
+       {QString("Sample 104"),
+        QString("frame 0 / 18000"),
+        QString("frame 18001 / 18000"),
+        QString("frame 4 / 17"),
+        QString("frame 999999999999999999999 / 18000"),
+        QString("unconfirmed frame 4 / 18000")})
+    require(confirmed_frame(label, 18000, true) == -1, "Invalid Camera frame label was accepted");
+  require(confirmed_frame(frame_label, 18000, false) == -1, "Covered Camera frame was treated as confirmed");
   QJsonArray all_controls;
   for (const auto& id : control_ids())
     all_controls.append(QJsonArray{id, 0});
@@ -292,6 +319,30 @@ bool tests() {
         QByteArray(R"({"schema":1,"controls":[],"playback_start_ms":-1})"),
         QByteArray(65537, ' ')})
     require(rejects([&] { parse_controls(invalid); }), "Invalid control snapshot was accepted");
+
+  {
+    QTemporaryDir directory;
+    require(directory.isValid(), "Cannot create repeated-seek capture directory");
+    Handshake handshake(directory.path());
+    int sequence = 0;
+    for (const int frame : {0, 17999, 9000, 9000, 9000}) {
+      const QString phase = seek_phase(frame, ++sequence);
+      QTimer observer;
+      observer.setSingleShot(true);
+      QObject::connect(&observer, &QTimer::timeout, [&] {
+        QFile request(QDir(directory.path()).filePath(entry(sequence, "request")));
+        require(request.open(QIODevice::ReadOnly), "Repeated seek did not publish its request");
+        auto ack = object(request.readAll());
+        require(ack.value("phase").toString() == phase, "Repeated seek changed its phase");
+        ack.remove("evidence");
+        ack.remove("stable_state");
+        write_json(QDir(directory.path()).filePath(entry(sequence, "ack")), ack);
+      });
+      observer.start(15);
+      handshake.begin(phase, {});
+      handshake.checkpoint(phase, {}, [&] { return QJsonObject{{"frame", frame}}; }, 400);
+    }
+  }
 
   for (const QString mode :
        {"success",
@@ -364,7 +415,7 @@ bool tests() {
     require(rejects([&] { Handshake reused(directory.path()); }), "Nonempty handshake directory was reused");
   }
   std::cout
-      << "PASS: bounded capture handoff, stale/wrong/malformed/oversized ACK, timeout, identity change, heartbeat, control snapshots\n";
+      << "PASS: production frame labels, repeated seek phases, bounded capture handoff, stale/wrong/malformed/oversized ACK, timeout, identity change, heartbeat, control snapshots\n";
   return true;
 }
 } // namespace camera_capture_test

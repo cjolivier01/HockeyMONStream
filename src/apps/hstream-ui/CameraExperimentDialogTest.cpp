@@ -42,6 +42,7 @@
 #include <functional>
 #include <future>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -862,14 +863,10 @@ QJsonObject camera_control_snapshot(CameraExperimentDialog& dialog) {
 }
 
 int confirmed_camera_frame(CameraExperimentDialog& dialog) {
-  const auto label = widget<QLabel>(dialog, "experimentFrameStatus")->text();
-  const auto match = QRegularExpression("^frame ([0-9]+) / ([0-9]+)").match(label);
-  auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
-  const int frame = match.captured(1).toInt() - 1;
-  return match.hasMatch() && match.captured(2).toInt() == timeline->maximum() + 1 && frame >= 0 &&
-          frame <= timeline->maximum() && widget<QPushButton>(dialog, "experimentScreenshot")->isEnabled()
-      ? frame
-      : -1;
+  return camera_capture_test::confirmed_frame(
+      widget<QLabel>(dialog, "experimentFrameStatus")->text(),
+      widget<QSlider>(dialog, "experimentTimeline")->maximum() + 1,
+      widget<QPushButton>(dialog, "experimentScreenshot")->isEnabled());
 }
 
 bool e2e(const QStringList& raw_args) {
@@ -1005,13 +1002,22 @@ bool e2e(const QStringList& raw_args) {
     std::cerr << "Trial preview failed: " << status->text().toStdString() << '\n';
     return false;
   }
-  YAML::Node reference_trial;
+  std::optional<YAML::Node> reference_trial;
   QString reference_sha256, reference_path;
   if (handshake.enabled()) {
     // A real, separate Save binds the trial's exact immutable sample/PTS rows
     // without adding an accessor or GPU-generation claim to production code.
     reference_path = QDir(artifacts).absoluteFilePath("capture-reference-trial.yaml");
     auto* reference_save = widget<QPushButton>(dialog, "experimentSave");
+    auto* reference_play = widget<QPushButton>(dialog, "experimentPlay");
+    if (reference_play->text() == "Pause")
+      reference_play->click();
+    if (!wait_until([&] {
+          return reference_play->text() != "Pause" && reference_save->isEnabled() &&
+              confirmed_camera_frame(dialog) >= 0;
+        }))
+      throw std::runtime_error("Capture reference Save did not reach a confirmed paused frame");
+    const int paused_reference_frame = confirmed_camera_frame(dialog);
     if (QFileInfo::exists(reference_path) || !save_trial_dialog(reference_save, reference_path, true) ||
         !wait_until([&] { return reference_save->isEnabled(); }) || !QFileInfo::exists(reference_path))
       throw std::runtime_error("Could not save the independent capture reference trial");
@@ -1022,12 +1028,24 @@ bool e2e(const QStringList& raw_args) {
     if (!digest.addData(&reference_file))
       throw std::runtime_error("Could not hash the capture reference trial");
     reference_sha256 = QString::fromLatin1(digest.result().toHex());
-    reference_trial = YAML::LoadFile(reference_path.toStdString());
-    if (reference_trial["schema"].as<std::string>() != "hstream-camera-experiment-v1" ||
-        reference_trial["frames"].size() !=
+    reference_trial.emplace(YAML::LoadFile(reference_path.toStdString()));
+    if ((*reference_trial)["schema"].as<std::string>() != "hstream-camera-experiment-v1" ||
+        (*reference_trial)["frames"].size() !=
             static_cast<std::size_t>(widget<QSlider>(dialog, "experimentTimeline")->maximum() + 1))
       throw std::runtime_error("Capture reference trial differs from the prepared sample range");
     heartbeat.restart(); // Parsing/hash work is test-only; the real Save was measured.
+    reference_play->click();
+    if (!wait_until([&] {
+          const int frame = confirmed_camera_frame(dialog);
+          return reference_play->text() == "Pause" && frame >= 0 && frame != paused_reference_frame;
+        }))
+      throw std::runtime_error("Capture reference Save did not resume verified frame progress");
+    camera_capture_test::write_json(
+        QDir(artifacts).filePath("capture-reference-playback.json"),
+        {{"paused_frame", paused_reference_frame},
+         {"resumed_frame", confirmed_camera_frame(dialog)},
+         {"playing_after_save", reference_play->text() == "Pause"},
+         {"save_enabled_after_resume", reference_save->isEnabled()}});
   }
   const auto bounds = [&](const char* object_name) {
     auto* control = widget<QWidget>(dialog, object_name);
@@ -1072,7 +1090,7 @@ bool e2e(const QStringList& raw_args) {
         layers.insert(toggle->objectName(), toggle->isChecked());
     value.insert("plot_layers", layers);
     if (reference_trial && confirmed >= 0) {
-      const auto row = reference_trial["frames"][confirmed];
+      const auto row = (*reference_trial)["frames"][confirmed];
       value.insert("trial_sample_id", QString::number(row["sample_id"].as<uint64_t>()));
       value.insert("trial_pts_ns", QString::number(row["pts_ns"].as<uint64_t>()));
     }
@@ -1325,6 +1343,7 @@ bool e2e(const QStringList& raw_args) {
         timeline->value() != paused_frame)
       return false;
   }
+  int plot_seek_sequence = 0;
   const auto click_plot_frame = [&](int frame) {
     const QPointF position(14.0 + (plot->width() - 28.0) * frame / timeline->maximum(), plot->height() / 2.0);
     QMouseEvent press(
@@ -1349,7 +1368,7 @@ bool e2e(const QStringList& raw_args) {
                 << '\n';
       return false;
     }
-    return visible_preview("visual timeline seek");
+    return visible_preview(camera_capture_test::seek_phase(frame, ++plot_seek_sequence).toUtf8().constData());
   };
   if (plot->accessibleName() != "Visual timeline")
     return false;
@@ -1646,7 +1665,7 @@ bool e2e(const QStringList& raw_args) {
     std::cerr << "Saved trial does not retain the selected native range and tuning\n";
     return false;
   }
-  if (reference_trial && YAML::Dump(reference_trial) != YAML::Dump(exported))
+  if (reference_trial && YAML::Dump(*reference_trial) != YAML::Dump(exported))
     throw std::runtime_error("Final trial Save differs from the immutable capture reference");
   heartbeat.restart();
   widget<QPushButton>(dialog, "experimentStopPreview")->click();

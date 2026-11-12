@@ -45,8 +45,12 @@ and must not establish production main-window default parity.
 Create an empty directory owned by the test user with mode `0700`, then pass
 `--capture-handshake-dir=/absolute/handshake` to `--e2e`. Reusing a nonempty
 directory fails. The driver first saves `capture-reference-trial.yaml` through
-the real dialog, separately from its later Save/Cancel/Close cases. Its hash and
-exact sample/PTS rows bind capture evidence. Recorded, baseline and trial views
+the real dialog, separately from its later Save/Cancel/Close cases. The driver
+first pauses through the ordinary playback button, waits for a confirmed frame
+and Save readiness, saves, then resumes and requires new confirmed frame progress
+before its playing captures. `capture-reference-playback.json` records that
+transition. The trial's hash and exact sample/PTS rows bind capture evidence.
+Recorded, baseline and trial views
 share sample identity; trial ROI/overlay fields do not describe the other views.
 
 Each checkpoint uses a random run token, increasing sequence and unique phase:
@@ -76,6 +80,12 @@ not an invented native GPU-generation receipt. Playing geometry checkpoints keep
 geometry/source/view/control state stable while recording frame observations
 before/after internal capture and after acknowledgment. They describe a bounded
 frame interval; the externally captured image needs independent frame analysis.
+
+Visual timeline seeks include both an increasing seek sequence and the requested
+frame in their phase names, including repeated seeks to the same frame. Confirmed
+indices are parsed from the frame segment of the complete native Sample label;
+covered or malformed labels never establish readiness. Ordinary runs have no
+reference trial and do not read reference rows or compare their final Save to one.
 
 Named normal, resized, restored, preview-maximized and window-maximized phases
 retain separate PNGs and geometry. Paused visibility probes are separately named
