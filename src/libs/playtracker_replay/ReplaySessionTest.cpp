@@ -49,7 +49,9 @@ std::string fixture(
     unsigned width = 3840,
     unsigned height = 2160,
     double fps = 10,
-    bool guided = false) {
+    bool guided = false,
+    std::size_t ticks = 300,
+    bool continuous = false) {
   fs::create_directories(directory);
   const hm::BBox arena(40, 0, width - 40, height);
   auto created = DsPlayTrackerCreateCpuTracker(arena, YAML::Load(kConfig)["play-tracker"]);
@@ -72,9 +74,9 @@ std::string fixture(
     return std::string(png.begin(), png.end());
   };
   hm::play_tracker::PlayTrackerResults previous_results;
-  for (size_t tick = 0; tick <= 300; ++tick) {
+  for (size_t tick = 0; tick <= ticks; ++tick) {
     bool checkpoint = tick % 30 == 0;
-    if (tick == 100) {
+    if (!continuous && tick == 100) {
       const std::string tuning_yaml = R"(play-tracker:
   live-boxes: [{name: current_roi}, {name: current_roi_aspect}]
   hstream-runtime-tuning:
@@ -93,7 +95,7 @@ std::string fixture(
           "write event");
       checkpoint = true;
     }
-    if (tick == 250) {
+    if (!continuous && tick == 250) {
       auto next = DsPlayTrackerCreateCpuTracker(arena, YAML::Load(kConfig)["play-tracker"]);
       tracker = std::move(*next);
       check(exporter.TryRecordDiscontinuity({"seek", "seek", "25", {}, {}}), "write seek");
@@ -105,7 +107,7 @@ std::string fixture(
     sample.width = width;
     sample.height = height;
     sample.pts_ns = 2000000000ULL + static_cast<uint64_t>(tick * 1e9 / fps);
-    sample.seek_epoch = tick >= 250 ? 1 : 0;
+    sample.seek_epoch = !continuous && tick >= 250 ? 1 : 0;
     std::vector<size_t> ids;
     std::vector<hm::BBox> boxes;
     if (tick >= 3 && tick != 81 && tick != 82) {
@@ -131,7 +133,7 @@ std::string fixture(
       replay.arena = {arena.left, arena.top, arena.right, arena.bottom};
       replay.stepped = captured.stepped && !(skipped_tick && tick == 85);
       replay.has_received_tracks = captured.has_received_tracks;
-      replay.reset_epoch = tick >= 250 ? 1 : 0;
+      replay.reset_epoch = !continuous && tick >= 250 ? 1 : 0;
       replay.checkpoint = captured.checkpoint;
       replay.base_checkpoint = captured.base_checkpoint;
       for (size_t i = 0; i < ids.size(); ++i)
@@ -245,15 +247,20 @@ int main(int argc, char** argv) {
                 << '\n';
       return 0;
     }
-    if ((argc == 3 || argc == 6) &&
+    if ((argc == 3 || argc == 6 || argc == 7) &&
         (std::string(argv[1]) == "--make-fixture" || std::string(argv[1]) == "--make-legacy-fixture")) {
+      const auto ticks = argc == 7 ? std::stoul(argv[6]) : 300;
+      check(ticks > 0 && ticks <= 18000, "fixture tick count exceeds its bound");
       std::cout << fixture(
                        argv[2],
                        std::string(argv[1]) == "--make-legacy-fixture",
                        false,
-                       argc == 6 ? std::stoul(argv[3]) : 3840,
-                       argc == 6 ? std::stoul(argv[4]) : 2160,
-                       argc == 6 ? std::stod(argv[5]) : 10)
+                       argc >= 6 ? std::stoul(argv[3]) : 3840,
+                       argc >= 6 ? std::stoul(argv[4]) : 2160,
+                       argc >= 6 ? std::stod(argv[5]) : 10,
+                       false,
+                       ticks,
+                       argc == 7)
                 << '\n';
       return 0;
     }

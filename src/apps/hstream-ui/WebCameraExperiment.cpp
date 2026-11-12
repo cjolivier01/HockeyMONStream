@@ -12,13 +12,18 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonParseError>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <deque>
+#include <exception>
 #include <future>
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <thread>
@@ -49,6 +54,13 @@ std::size_t index(const QJsonObject& value, const char* key, std::size_t maximum
   require(std::floor(parsed) == parsed, std::string("Expected integer camera field ") + key);
   return static_cast<std::size_t>(parsed);
 }
+QString save_token(const QJsonObject& command) {
+  const auto token = RequiredString(command, "save_token", 32);
+  require(token.size() == 32, "Invalid camera Save token");
+  for (const auto c : token)
+    require((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'), "Invalid camera Save token");
+  return token;
+}
 void command_fields(const QJsonObject& command, const QString& action) {
   std::set<QString> allowed{"generation", "request", "run", "action"};
   const auto add = [&](std::initializer_list<const char*> keys) {
@@ -59,6 +71,8 @@ void command_fields(const QJsonObject& command, const QString& action) {
     add({"frame"});
   else if (action == "view")
     add({"view"});
+  else if (action == "save")
+    add({"save_token", "view"});
   else if (action == "source-confirm")
     add({"confirmed"});
   else if (action == "loop")
@@ -79,7 +93,7 @@ void command_fields(const QJsonObject& command, const QString& action) {
          "adaptive_zoom"});
   else
     require(
-        action == "play" || action == "pause" || action == "stop" || action == "close" || action == "save",
+        action == "play" || action == "pause" || action == "stop" || action == "close",
         "Unsupported camera experiment command");
   require(std::size_t(command.size()) == allowed.size(), "Camera command has missing or unsupported fields");
   for (auto field = command.begin(); field != command.end(); ++field)
@@ -241,20 +255,40 @@ void PublishEvent(const Request& request, QJsonObject value) {
 
 class Commands {
  public:
-  std::vector<QJsonObject> Read() {
+  std::optional<QJsonObject> Read(bool cancellation_only = false) {
+    ReadAvailable();
+    const auto selected = cancellation_only
+        ? std::find_if(
+              ready_.begin(),
+              ready_.end(),
+              [](const auto& command) { return command.value("action") == "cancel-save"; })
+        : ready_.begin();
+    if (selected == ready_.end())
+      return std::nullopt;
+    auto result = std::move(*selected);
+    ready_.erase(selected);
+    return result;
+  }
+  bool closed() const {
+    return closed_;
+  }
+
+ private:
+  void ReadAvailable() {
+    if (closed_)
+      return;
     pollfd descriptor{STDIN_FILENO, POLLIN, 0};
     if (::poll(&descriptor, 1, 0) <= 0)
-      return {};
+      return;
     char bytes[8192];
     const auto count = ::read(STDIN_FILENO, bytes, sizeof(bytes));
     if (count == 0) {
       closed_ = true;
-      return {};
+      return;
     }
     require(count > 0, "Could not read camera commands");
     pending_.append(bytes, count);
     require(pending_.size() <= 16384, "Camera command exceeds its byte limit");
-    std::vector<QJsonObject> result;
     int boundary = 0;
     while ((boundary = pending_.indexOf('\n')) >= 0) {
       const auto line = pending_.left(boundary);
@@ -264,17 +298,12 @@ class Commands {
       QJsonParseError error;
       const auto document = QJsonDocument::fromJson(line, &error);
       require(error.error == QJsonParseError::NoError && document.isObject(), "Invalid camera command JSON");
-      result.push_back(document.object());
-      require(result.size() <= 32, "Camera command batch exceeds its limit");
+      ready_.push_back(document.object());
+      require(ready_.size() <= 32, "Camera command batch exceeds its limit");
     }
-    return result;
   }
-  bool closed() const {
-    return closed_;
-  }
-
- private:
   QByteArray pending_;
+  std::deque<QJsonObject> ready_;
   bool closed_{false};
 };
 } // namespace
@@ -603,9 +632,125 @@ QJsonObject RunCameraExperiment(
          {"rink", rink}});
     last_state = std::chrono::steady_clock::now();
   };
+  struct SaveOperation {
+    std::size_t view;
+    std::atomic<bool> cancelled{false};
+    QJsonObject outcome;
+    explicit SaveOperation(std::size_t selected) : view(selected) {}
+  };
+  // The supervisor durably retains these outcomes and early-cancel tombstones.
+  // Native also fences token replay for this exact session; never evict an old
+  // binding while a delayed command could still reuse it.
+  constexpr std::size_t kMaximumSaveOperations = 256;
+  std::map<QString, std::unique_ptr<SaveOperation>> save_operations;
+  QString active_save;
+  std::exception_ptr command_failure;
+  const auto cancel_save = [&](const QJsonObject& command) {
+    QJsonObject reply{{"kind", "save-cancel"}, {"save_token", command.value("save_token")}, {"status", "rejected"}};
+    try {
+      require(command.size() == 4 && command.contains("action"), "Invalid camera Save cancellation fields");
+      require(
+          RequiredString(command, "run", 64).toStdString() == request.run_id && index(command, "generation", 1) == 1,
+          "Camera Save cancellation belongs to another session");
+      const auto token = save_token(command);
+      const auto found = save_operations.find(token);
+      require(found != save_operations.end(), "Unknown camera Save operation");
+      require(token == active_save || !found->second->outcome.isEmpty(), "Camera Save operation is unavailable");
+      if (token == active_save)
+        found->second->cancelled = true;
+      // This only acknowledges the request. The original Save ACK owns its
+      // terminal outcome, including a commit that raced the last cancel check.
+      reply.insert("status", "ok");
+    } catch (const std::exception& failure) {
+      reply.insert("error", QString::fromUtf8(failure.what()));
+    }
+    PublishEvent(request, reply);
+  };
+  const auto drain_save_cancellations = [&] {
+    while (auto command = commands.Read(true))
+      cancel_save(*command);
+  };
+  const auto save_trial = [&](const QJsonObject& command, const CameraExperimentPreviewWorker::Status& state) {
+    const auto token = save_token(command);
+    const auto selected = index(command, "view", std::numeric_limits<int>::max() - 1);
+    auto found = save_operations.find(token);
+    if (found != save_operations.end()) {
+      require(found->second->view == selected, "Camera Save token cannot select another trial");
+      require(!found->second->outcome.isEmpty(), "Camera Save operation is still running");
+      return found->second->outcome;
+    }
+    require(save_operations.size() < kMaximumSaveOperations, "Camera Save operation limit reached; reopen the dialog");
+    auto& operation = *save_operations.emplace(token, std::make_unique<SaveOperation>(selected)).first->second;
+    QJsonObject outcome{{"save_token", token}, {"status", "rejected"}};
+    try {
+      require(!state.busy && !state.seeking, "Wait for the current camera preview operation");
+      require(
+          !state.playing && confirmed && view >= 2, "Pause, confirm the source and select a trial before saving it");
+      require(selected == view, "The selected camera trial changed before Save");
+      const auto path = request.root / ("camera-trial-" + std::to_string(selected - 1) + ".yaml");
+      active_save = token;
+      if (!saved_trials.count(selected)) {
+        require(!std::filesystem::exists(std::filesystem::symlink_status(path)), "The trial output already exists");
+        // A cancellation may already share the read that supplied Save. Drain
+        // it before starting work, preserving queued ordinary commands.
+        try {
+          drain_save_cancellations();
+        } catch (...) {
+          command_failure = std::current_exception();
+          throw;
+        }
+        if (interrupted() || commands.closed())
+          operation.cancelled = true;
+        auto save = std::async(std::launch::async, [&operation, selected, &session, &trials, &media, path] {
+          return session->SaveTrial(path.string(), trials.at(selected - 2), media, &operation.cancelled);
+        });
+        try {
+          while (save.wait_for(std::chrono::milliseconds(30)) != std::future_status::ready) {
+            drain_save_cancellations();
+            if (interrupted() || commands.closed())
+              operation.cancelled = true;
+            if (std::chrono::steady_clock::now() - last_state >= std::chrono::milliseconds(100))
+              publish_state();
+          }
+        } catch (...) {
+          operation.cancelled = true;
+          save.wait();
+          command_failure = std::current_exception();
+        }
+        // Even a broken command channel cannot erase an already committed
+        // file. Publish the retired worker's result before failing the session.
+        const auto saved = save.get();
+        if (absl::IsCancelled(saved)) {
+          outcome.insert("cancelled", true);
+          outcome.insert("status", "ok");
+        } else {
+          require(saved.ok(), saved.ToString());
+          saved_trials.emplace(selected, Artifact(request, path, "metadata"));
+          artifacts.append(saved_trials.at(selected));
+        }
+      }
+      if (saved_trials.count(selected)) {
+        outcome.insert("saved", QString::fromStdString(path.filename().string()));
+        outcome.insert("artifact", saved_trials.at(selected));
+        outcome.insert("status", "ok");
+      }
+    } catch (const std::exception& failure) {
+      outcome.insert("error", QString::fromUtf8(failure.what()));
+    }
+    active_save.clear();
+    operation.outcome = outcome;
+    return outcome;
+  };
   while (!finished && !interrupted()) {
-    for (const auto& command : commands.Read()) {
+    for (auto next = commands.Read(); next && !finished && !interrupted(); next = commands.Read()) {
+      const auto& command = *next;
+      if (command.value("action") == "cancel-save") {
+        cancel_save(command);
+        continue;
+      }
       QJsonObject reply{{"kind", "ack"}, {"request", command.value("request")}, {"status", "rejected"}};
+      if (command.value("action") == "save")
+        reply.insert("save_token", command.value("save_token"));
       try {
         const auto request_id = index(command, "request", 9007199254740991ULL);
         require(request_id > last_request, "Stale camera command sequence");
@@ -616,7 +761,16 @@ QJsonObject RunCameraExperiment(
         const auto action = RequiredString(command, "action", 32);
         command_fields(command, action);
         const auto state = preview.Poll();
-        if (action == "close")
+        if (action == "save") {
+          const auto outcome = save_trial(command, state);
+          for (auto field = outcome.begin(); field != outcome.end(); ++field)
+            reply.insert(field.key(), field.value());
+          publish_state();
+          PublishEvent(request, reply);
+          if (command_failure)
+            break;
+          continue;
+        } else if (action == "close")
           finished = true;
         else if (action == "stop") {
           inspected_frame = state.frame.value_or(inspected_frame);
@@ -714,27 +868,6 @@ QJsonObject RunCameraExperiment(
             CommitCameraExperimentTrials(trials, take(trial.get()), publish_catalog);
             view = trials.size() + 1;
             seek(0, !media.path.empty(), true);
-          } else if (action == "save") {
-            require(
-                !state.playing && confirmed && view >= 2,
-                "Pause, confirm the source and select a trial before saving it");
-            const auto path = request.root / ("camera-trial-" + std::to_string(view - 1) + ".yaml");
-            if (!saved_trials.count(view)) {
-              require(
-                  !std::filesystem::exists(std::filesystem::symlink_status(path)), "The trial output already exists");
-              auto save = std::async(std::launch::async, [&] {
-                return session->SaveTrial(path.string(), trials.at(view - 2), media, &cancelled);
-              });
-              while (save.wait_for(std::chrono::milliseconds(30)) != std::future_status::ready)
-                if (interrupted())
-                  cancelled = true;
-              const auto saved = save.get();
-              require(saved.ok(), saved.ToString());
-              saved_trials.emplace(view, Artifact(request, path, "metadata"));
-              artifacts.append(saved_trials.at(view));
-            }
-            reply.insert("saved", QString::fromStdString(path.filename().string()));
-            reply.insert("artifact", saved_trials.at(view));
           } else
             throw std::runtime_error("Unsupported camera experiment command");
         }
@@ -747,6 +880,8 @@ QJsonObject RunCameraExperiment(
       publish_state();
       PublishEvent(request, reply);
     }
+    if (command_failure)
+      std::rethrow_exception(command_failure);
     require(!commands.closed(), "Camera experiment command owner disconnected");
     if (std::chrono::steady_clock::now() - last_state >= std::chrono::milliseconds(100))
       publish_state();

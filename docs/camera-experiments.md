@@ -76,12 +76,23 @@ outside that crop.
    offsets and stitching revision. **Screenshot**
    captures the displayed frame and experiment controls.
 
-Saving runs on a background worker. **Cancel saving** stops an uncommitted
-desktop save and retains the prepared trial; closing the dialog cancels and
-waits for that worker before releasing it. An already committed file remains
-saved. The browser currently offers **Cancel experiment** during Save: it
-retires the whole session and its unsaved trials. Operation-only browser
-cancellation remains a tracked parity gap.
+Saving runs on a background worker. **Cancel saving** requests cancellation and
+retains the prepared trial; closing the dialog cancels and waits for the worker
+to retire. Cancellation observed at the serializer's prepublication checks
+aborts the save. A request racing the final check and atomic commit can still
+finish successfully; that file remains saved.
+
+The browser uses `camera-save-cancel-v1` for the same operation-only cancellation.
+Each Save freezes its selected trial and a random token before admission. A
+separate token-bound cancellation lane remains readable during serialization;
+it does not advance ordinary command sequencing or admit other mutations. Its
+acknowledgment only accepts the request. The original Save acknowledgment reports
+the committed receipt, failure or cancellation after worker retirement. Native
+retains up to 256 token bindings and outcomes for the session without eviction;
+the outer supervisor durably retains admission, early-cancel tombstones and
+results so delayed or repeated requests cannot start a second Save. A cancelled
+Save leaves the prepared comparisons usable for another attempt. Whole-session
+Close, lost-owner and lease-expiry cleanup remain supervised separately.
 
 Original means the camera trajectory in the CSV. Recomputed baseline means the
 historical starting configuration held constant across this passage. A candidate
@@ -352,6 +363,17 @@ active Save cancellation, complete YAML export and Close during Save. Use a
 dense range to exercise the serializer; the test requires the UI heartbeat to
 stay below one second. For database recordings, pass empty `ARENA` and `CONFIG`
 arguments. It does not qualify GPU presentation or browser cancellation.
+
+`web_camera_metadata_test` drives the actual native adapter with GPU visibility
+disabled. It covers frozen-view and token-rebinding rejection, Save/Cancel in one
+stdin read, queued ordinary commands, cancellation during dense serialization,
+another Save of the retained trial, committed receipt recovery, the token bound
+and command-owner disconnect while saving. Its dense input has 18,000 samples at
+150 fps with twelve observations per sample and stays within current drawing
+bounds. The replay test utility creates that continuous fixture with
+`--make-fixture DIRECTORY 3840 2160 150 18000`; omitting the final count retains
+the existing short fixture with its tuning and seek/reset events. These CPU
+checks do not qualify GPU presentation or authenticated browser workflows.
 
 The dialog test also has an opt-in real GPU exercise. Supply a completed recording,
 the corresponding game directory or panorama, output directory, recording offset, duration, and the
