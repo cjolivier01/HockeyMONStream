@@ -1070,11 +1070,7 @@ bool is_auto_chapter_file(const QString& file_name) {
   static const QRegularExpression insta360("^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\\.(MP4|mp4)$");
   static const QRegularExpression left_right("(left|right)(-[0-9])?\\.mp4$");
   return gopro.match(file_name).hasMatch() || insta360.match(file_name).hasMatch() ||
-      left_right.match(file_name).hasMatch();
-}
-
-bool is_root_auto_file(const QString& file_name) {
-  return is_auto_chapter_file(file_name);
+      left_right.match(file_name).hasMatch() || hm::stitching::IsStandaloneCameraFile(file_name.toStdString());
 }
 
 QString auto_file_family(const QString& file_name) {
@@ -1093,7 +1089,17 @@ QString auto_file_family(const QString& file_name) {
   if (lr_match.hasMatch()) {
     return "lr-" + lr_match.captured(1).toLower();
   }
+  if (hm::stitching::IsStandaloneCameraFile(file_name.toStdString())) {
+    return "file-" + file_name;
+  }
   return {};
+}
+
+bool is_root_auto_file(const QString& file_name) {
+  const QString family = auto_file_family(file_name);
+  // Arbitrary root videos may be published outputs; only imported camN inputs
+  // participate in standalone discovery.
+  return !family.isEmpty() && !family.startsWith("file-");
 }
 
 std::optional<QString> explicit_chapter_key(const QString& path) {

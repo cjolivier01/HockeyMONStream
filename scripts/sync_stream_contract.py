@@ -186,8 +186,18 @@ def source_set_contract(root):
     extensions = re.findall(r'suffix == "([a-z0-9]+)"', video)
     if not extensions:
         raise ValueError("Native source formats are unavailable.")
+    discovery = (root / "src/libs/stitching/VideoDiscovery.h").read_text()
+    standalone = re.search(
+        r'kStandaloneCameraFilePattern\s*=\s*R"\((.*?)\)";', discovery
+    )
+    if not standalone or any(
+        "hm::stitching::IsStandaloneCameraFile(file_name.toStdString())" not in owner
+        for owner in (block, family)
+    ):
+        raise ValueError("Native standalone camera admission changed; review grouping.")
     return {
         "auto_patterns": patterns,
+        "standalone_pattern": standalone[1],
         "family_slices": slices,
         "extensions": extensions,
     }
