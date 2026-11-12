@@ -12,6 +12,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "hstream/src/libs/stitching/VideoDiscovery.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/CameraOpticsWidget.h"
@@ -1722,6 +1723,20 @@ for line in sys.stdin:
     if (projection.ok())
       hm::stitching::write_stitch_projection_parameters(required, *projection, window->stitchProjectionParameters());
     hm::stitching::write_stitch_projection_framing(required, window->stitchProjectionFraming());
+    const auto rink = window->rink_configuration_combo_->currentData().toString().toStdString();
+    required["stitching"]["rink_config"] = rink.empty() ? YAML::Node(YAML::NodeType::Null) : YAML::Node(rink);
+    const auto mask_mode = window->rink_mask_time_mode_->currentData().toString();
+    if (mask_mode == "inherit") {
+      required["stitching"]["rink_mask_frame_time"] = YAML::Node(YAML::NodeType::Null);
+    } else if (mask_mode == "auto") {
+      required["stitching"]["rink_mask_frame_time"] = "auto";
+    } else {
+      const auto mask_time =
+          hm::stitching::ParseRinkMaskFrameTime(window->rink_mask_time_edit_->text().trimmed().toStdString());
+      if (!mask_time.ok() || !mask_time->has_value())
+        throw std::runtime_error("Cannot freeze an invalid displayed rink mask frame time");
+      required["stitching"]["rink_mask_frame_time"] = hm::stitching::FormatRinkMaskFrameTime(*mask_time);
+    }
     return {
         {"required_yaml", QString::fromStdString(YAML::Dump(required))},
         {"allowed_inherited_yaml", QString::fromStdString(YAML::Dump(inherited))}};
@@ -18642,20 +18657,57 @@ bool test_fresh_calibration_evidence_controls(HStreamWindow* window) {
         "control_point_matcher",
         "control_point_filtering",
         "projection_framing",
+        "rink_config",
+        "rink_mask_frame_time",
         "sync_method"}) {
     auto missing = YAML::Clone(captured);
     missing["stitching"].remove(field);
     if (!expect(
             !fresh_admitted_calibration_matches(QByteArray::fromStdString(YAML::Dump(missing)), expected),
-            "Missing admitted reference/starts/optics/calibration fields cannot pass"))
+            "Missing admitted reference/starts/optics/rink/calibration fields cannot pass"))
       return false;
   }
-  for (const char* field : {"stitch_frame_time", "input_start_times", "input_cameras"}) {
+  for (const char* field :
+       {"stitch_frame_time", "input_start_times", "input_cameras", "rink_config", "rink_mask_frame_time"}) {
     auto wrong = YAML::Clone(captured);
     wrong["stitching"][field] = "wrong";
     if (!expect(
             !fresh_admitted_calibration_matches(QByteArray::fromStdString(YAML::Dump(wrong)), expected),
-            "Wrong captured reference or source prescription cannot pass"))
+            "Wrong captured reference, source prescription or rink setting cannot pass"))
+      return false;
+  }
+  auto* rink = window->findChild<QComboBox*>("stitchRinkConfigurationCombo");
+  auto* mask_mode = window->findChild<QComboBox*>("rinkMaskTimeModeCombo");
+  auto* mask_time = window->findChild<QLineEdit*>("rinkMaskTimeEdit");
+  if (!rink || !mask_mode || !mask_time || rink->findData("tv-dublin") < 0)
+    return false;
+  const int old_rink = rink->currentIndex(), old_mode = mask_mode->currentIndex();
+  const auto old_time = mask_time->text();
+  const auto restore_rink = qScopeGuard([&] {
+    rink->setCurrentIndex(old_rink);
+    mask_mode->setCurrentIndex(old_mode);
+    mask_time->setText(old_time);
+  });
+  if (!reveal_fresh_control(window, rink))
+    return false;
+  rink->setCurrentIndex(rink->findData("tv-dublin"));
+  for (const auto& mode : {QString("inherit"), QString("auto"), QString("custom")}) {
+    if (!reveal_fresh_control(window, mask_mode))
+      return false;
+    mask_mode->setCurrentIndex(mask_mode->findData(mode));
+    if (mode == "custom") {
+      if (!reveal_fresh_control(window, mask_time))
+        return false;
+      mask_time->setText("-2.5");
+    }
+    const auto frozen = HStreamWindowTestAccess::freshCalibrationExpectedConfig(window);
+    const auto fields = YAML::Load(frozen["required_yaml"].toString().toStdString())["stitching"];
+    if (!expect(
+            fields["rink_config"].as<std::string>() == "tv-dublin" &&
+                (mode == "inherit"
+                     ? fields["rink_mask_frame_time"].IsNull()
+                     : fields["rink_mask_frame_time"].as<std::string>() == (mode == "auto" ? "auto" : "-00:00:02.500")),
+            "Admission evidence freezes displayed Rink selection and inherited, automatic or signed custom mask time"))
       return false;
   }
   return true;
@@ -18719,23 +18771,15 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     return result;
   };
   const auto geometry = [&] {
-    QJsonObject result;
     const auto deadline = std::min(overall_deadline, std::chrono::steady_clock::now() + std::chrono::seconds(30));
-    for (const char* name :
-         {"hm_project.pto",
-          "autooptimiser_out.pto",
-          "mapping_0000.tif",
-          "mapping_0000_x.tif",
-          "mapping_0000_y.tif",
-          "mapping_0001.tif",
-          "mapping_0001_x.tif",
-          "mapping_0001_y.tif",
-          "seam_file.png",
-          "stitching_generation_id",
-          "stitching_canvas_provenance"})
-      result[name] =
-          evidence::fingerprint(QFileInfo(config_path).dir().filePath(name), 2LL * 1024 * 1024 * 1024, deadline);
-    return result;
+    QStringList names, required;
+    for (const auto& name : hm::stitching::stitch_artifact_names())
+      names.append(QString::fromStdString(name));
+    for (const auto& name : hm::stitching::required_stitch_artifact_names())
+      required.append(QString::fromStdString(name));
+    required.append(hm::stitching::kStitchGenerationArtifact);
+    return evidence::artifact_inventory(
+        QFileInfo(config_path).absolutePath(), names, required, 2LL * 1024 * 1024 * 1024, deadline);
   };
   const auto contents_equal = [&](const QJsonObject& first, const QJsonObject& second) {
     if (first.isEmpty() || first.keys() != second.keys())
@@ -19199,7 +19243,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       const std::string generation = YAML::Dump(calibration);
       const auto before_geometry = geometry();
       if (!expect(
-              contents_equal(before_geometry, before_geometry) &&
+              evidence::same_artifacts(before_geometry, before_geometry) &&
                   evidence::write(QDir(artifact_dir).filePath("geometry-before-save.json"), before_geometry),
               "Completed geometry must be independently hashed before active Save"))
         return false;
@@ -19216,7 +19260,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       const auto after_geometry = geometry();
       passed =
           expect(
-              contents_equal(before_geometry, after_geometry) &&
+              evidence::same_artifacts(before_geometry, after_geometry) &&
                   evidence::write(QDir(artifact_dir).filePath("geometry-after-save.json"), after_geometry) && saved &&
                   save_clicks == 1 && after_file.valid() &&
                   after["stitching"]["blend_mode"].as<std::string>("") == "alpha" &&

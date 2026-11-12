@@ -93,7 +93,7 @@ inline File snapshot(const QString& path, qint64 limit = 4 * 1024 * 1024) {
   return result;
 }
 // Hash large immutable media/geometry without retaining their bytes. The caller
-// supplies a shared phase deadline so nine artifacts cannot each extend it.
+// supplies a shared phase deadline so artifacts cannot each extend it.
 inline QJsonObject fingerprint(
     const QString& path,
     qint64 limit,
@@ -146,6 +146,43 @@ inline QJsonObject fingerprint(
 inline bool same_content(const QJsonObject& first, const QJsonObject& second) {
   return first["state"] == "captured" && second["state"] == "captured" && first["sha256"] == second["sha256"] &&
       first["size"] == second["size"];
+}
+// The caller supplies the production catalog. Absence is evidence only for an
+// optional leaf; symlinks, failed reads and expired observations stay unverified.
+inline QJsonObject artifact_inventory(
+    const QString& directory,
+    QStringList names,
+    const QStringList& required,
+    qint64 limit,
+    std::chrono::steady_clock::time_point deadline) {
+  names.append(required);
+  names.removeDuplicates();
+  QJsonObject result;
+  for (const auto& name : names) {
+    auto entry = fingerprint(QDir(directory).filePath(name), limit, deadline);
+    entry["required"] = required.contains(name);
+    if (!entry["required"].toBool() && entry["errno"].toInt() == ENOENT &&
+        std::chrono::steady_clock::now() < deadline) {
+      entry["state"] = "absent";
+      entry["after_ns"] = timestamp();
+    }
+    result[name] = entry;
+  }
+  return result;
+}
+inline bool same_artifacts(const QJsonObject& first, const QJsonObject& second) {
+  if (first.isEmpty() || first.keys() != second.keys())
+    return false;
+  for (const auto& name : first.keys()) {
+    const auto before = first[name].toObject(), after = second[name].toObject();
+    if (!before["required"].isBool() || before["required"] != after["required"])
+      return false;
+    if (!before["required"].toBool() && before["state"] == "absent" && after["state"] == "absent")
+      continue;
+    if (!same_content(before, after))
+      return false;
+  }
+  return true;
 }
 inline bool writeBytes(const QString& path, const QByteArray& bytes) {
   if (bytes.size() > 32 * 1024 * 1024 || !QDir().mkpath(QFileInfo(path).absolutePath()))

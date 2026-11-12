@@ -41,12 +41,75 @@ void put(const QString& path, const QByteArray& bytes) {
   QFile file(path);
   require(file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size(), "write CPU fixture");
 }
+void test_artifact_inventory(const QTemporaryDir& root) {
+  const QDir directory(root.filePath("geometry"));
+  require(QDir().mkpath(directory.path()), "create geometry fixture");
+  const QStringList names{"left.png", "right.png", "seam_file.png", "panorama.tif"};
+  const QStringList required{"left.png", "right.png", "stitching_generation_id"};
+  const auto inventory = [&] {
+    return evidence::artifact_inventory(
+        directory.path(), names, required, 1024, std::chrono::steady_clock::now() + std::chrono::seconds(1));
+  };
+  for (const auto& name : required)
+    put(directory.filePath(name), name.toUtf8());
+  const auto baseline = inventory();
+  require(
+      baseline.size() == 5 && baseline["seam_file.png"].toObject()["state"] == "absent" &&
+          baseline["panorama.tif"].toObject()["state"] == "absent" && evidence::same_artifacts(baseline, baseline) &&
+          evidence::same_artifacts(baseline, inventory()),
+      "required generation is included and stable optional absence passes");
+  put(directory.filePath("manifest.json"), "mutable manifest\n");
+  require(evidence::same_artifacts(baseline, inventory()), "mutable manifest is outside the artifact catalog");
+  for (const auto& name : required) {
+    put(directory.filePath(name), "changed bytes");
+    require(!evidence::same_artifacts(baseline, inventory()), "changed required image or generation fails");
+    require(QFile::remove(directory.filePath(name)), "remove required fixture");
+    const auto missing = inventory();
+    require(!evidence::same_artifacts(missing, missing), "missing required image or generation fails");
+    put(directory.filePath(name), name.toUtf8());
+  }
+  for (const auto& name : {QString("seam_file.png"), QString("panorama.tif")}) {
+    const auto path = directory.filePath(name);
+    put(path, "optional bytes");
+    const auto present = inventory();
+    require(
+        evidence::same_artifacts(present, inventory()) && !evidence::same_artifacts(baseline, present),
+        "stable optional bytes pass but optional appearance fails");
+    put(path, "changed optional bytes");
+    require(!evidence::same_artifacts(present, inventory()), "changed optional bytes fail");
+    require(QFile::remove(path), "remove optional fixture");
+    require(!evidence::same_artifacts(present, inventory()), "optional disappearance fails");
+    for (const auto& target : {QString("left.png"), QString("missing.png")}) {
+      require(QFile::link(directory.filePath(target), path), "create optional leaf symlink");
+      const auto linked = inventory();
+      require(
+          linked[name].toObject()["state"] == "unverified" && !evidence::same_artifacts(linked, linked) &&
+              !evidence::same_artifacts(baseline, linked) && !evidence::same_artifacts(present, linked),
+          "optional regular and dangling symlinks cannot establish content or absence");
+      require(QFile::remove(path), "remove optional symlink");
+    }
+  }
+  const auto expired =
+      evidence::artifact_inventory(directory.path(), names, required, 1024, std::chrono::steady_clock::now());
+  require(
+      expired["panorama.tif"].toObject()["state"] == "unverified" && !evidence::same_artifacts(expired, expired),
+      "optional absence cannot bypass the shared deadline");
+  auto changed_catalog = baseline;
+  changed_catalog.remove("panorama.tif");
+  require(!evidence::same_artifacts(baseline, changed_catalog), "catalog changes fail");
+  auto optional = baseline["panorama.tif"].toObject();
+  optional["required"] = true;
+  changed_catalog = baseline;
+  changed_catalog["panorama.tif"] = optional;
+  require(!evidence::same_artifacts(baseline, changed_catalog), "requirement changes fail");
+}
 } // namespace
 int main(int argc, char** argv) {
   QCoreApplication application(argc, argv);
   QTemporaryDir root;
   try {
     require(root.isValid(), "temporary root");
+    test_artifact_inventory(root);
     const auto config = root.filePath("config.yaml");
     put(config, "original\n");
     require(evidence::snapshot(root.filePath("absent")).absent(), "absence is explicit");
@@ -196,7 +259,7 @@ int main(int argc, char** argv) {
     env.insert("HSTREAM_UI_E2E_ACTIVE_SAVE", "1");
     require(evidence::flags(env).isEmpty(), "valid active save variant");
     std::cout
-        << "Fresh calibration evidence CPU checks passed: bounded files, real guard, launch timing, retirement ordering, missing proof, launch failure, flags\n";
+        << "Fresh calibration evidence CPU checks passed: artifact inventory, bounded files, real guard, launch timing, retirement ordering, missing proof, launch failure, flags\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
