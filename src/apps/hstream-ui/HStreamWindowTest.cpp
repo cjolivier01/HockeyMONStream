@@ -1691,6 +1691,42 @@ for line in sys.stdin:
         {"eligibility", eligibility}};
   }
 
+  // Freeze the pre-Play displayed calibration projection, independently of
+  // active_* members. Only native's two deliberately sparse defaults may be
+  // omitted; every other field must be present in the Starting config bytes.
+  static QJsonObject freshCalibrationExpectedConfig(const HStreamWindow* window) {
+    YAML::Node required, inherited;
+    const auto reference = window->stitchFrameTime().toStdString();
+    (window->stitchFrameTime() == window->default_stitch_frame_time_ ? inherited
+                                                                     : required)["stitching"]["stitch_frame_time"] =
+        reference;
+    const int width = window->stitchingMaxOutputWidth();
+    (width == window->default_stitch_max_output_width_ ? inherited : required)["stitching"]["max_output_width"] =
+        width > 0 ? YAML::Node(width) : YAML::Node(YAML::NodeType::Null);
+    required["stitching"]["calibration_frame_count"] = window->stitchingCalibrationFrameCount();
+    required["hstream_ui"]["stitching_calibration"]["control_points"] = window->stitchingCalibrationControlPoints();
+    required["hstream_ui"]["stitching_calibration"]["frame_count"] = window->stitchingCalibrationFrameCount();
+    const auto iteration = window->stitchingIterationSettings();
+    required["stitching"]["sync_method"] = iteration.sync_method.toStdString();
+    required["hstream_ui"]["show_crop_dialog"] = iteration.show_crop_dialog;
+    required["hstream_ui"]["show_leveling_dialog"] = iteration.show_leveling_dialog;
+    required["playback"]["start_seconds"] = window->playback_start_time_edit_->time().msecsSinceStartOfDay() / 1000.0;
+    required["stitching"]["control_point_matcher"] = window->controlPointMatcher().toStdString();
+    required["stitching"]["control_point_resolution"] = window->control_point_resolution_.toStdString();
+    hm::stitching::write_control_point_filtering(required, window->control_point_filtering_);
+    required["stitching"]["mapping_backend"] = window->mappingBackend().toStdString();
+    required["stitching"]["run_autooptimizer"] = window->runAutooptimizer();
+    hm::stitching::write_stitch_camera_selection(required, window->stitchCameraSelection());
+    required["stitching"]["projection"] = window->stitchProjection().toStdString();
+    const auto projection = hm::stitching::ParseStitchProjection(window->stitchProjection().toStdString());
+    if (projection.ok())
+      hm::stitching::write_stitch_projection_parameters(required, *projection, window->stitchProjectionParameters());
+    hm::stitching::write_stitch_projection_framing(required, window->stitchProjectionFraming());
+    return {
+        {"required_yaml", QString::fromStdString(YAML::Dump(required))},
+        {"allowed_inherited_yaml", QString::fromStdString(YAML::Dump(inherited))}};
+  }
+
   static QJsonObject freshCalibrationLayers(const HStreamWindow* window) {
     return {
         {"baseline_yaml", QString::fromStdString(YAML::Dump(window->baseline_layer_))},
@@ -18400,6 +18436,231 @@ QString native_preview_report_line(const QString& name, const NativePreviewCaptu
       .arg(capture.luminance_range);
 }
 
+bool fresh_config_projection_matches(const YAML::Node& actual, const YAML::Node& expected, bool allow_absent = false) {
+  if (!actual.IsDefined())
+    return allow_absent;
+  if (expected.IsMap()) {
+    if (!actual.IsMap())
+      return false;
+    for (const auto& entry : expected) {
+      const auto key = entry.first.as<std::string>();
+      // Camera maps are source-bound whole prescriptions, including empty starts.
+      // Additional/missing sources must not disappear behind a leaf comparison.
+      if (key == "input_cameras" || key == "input_start_times") {
+        if (YAML::Dump(actual[key]) != YAML::Dump(entry.second))
+          return false;
+      } else if (!fresh_config_projection_matches(actual[key], entry.second, allow_absent))
+        return false;
+    }
+    return true;
+  }
+  return YAML::Dump(actual) == YAML::Dump(expected);
+}
+
+bool fresh_admitted_calibration_matches(const QByteArray& captured, const QJsonObject& expected) {
+  try {
+    const auto actual = YAML::Load(captured.toStdString());
+    const auto required = YAML::Load(expected["required_yaml"].toString().toStdString());
+    const auto inherited = YAML::Load(expected["allowed_inherited_yaml"].toString().toStdString());
+    return required.IsMap() && fresh_config_projection_matches(actual, required) &&
+        (!inherited.IsMap() || fresh_config_projection_matches(actual, inherited, true));
+  } catch (const YAML::Exception&) {
+    return false;
+  }
+}
+
+bool fresh_control_visible(const QWidget* widget) {
+  return widget && widget->isVisible() && widget->isEnabled() && !widget->rect().isEmpty() &&
+      QRegion(widget->rect()).subtracted(widget->visibleRegion()).isEmpty();
+}
+
+// Reveal existing tabs/drawers/scroll panes. Never show a hidden field or enable
+// a disabled one: a Defaults-only or unavailable control must remain rejected.
+bool reveal_fresh_control(HStreamWindow* window, QWidget* widget) {
+  const auto unavailable = [&](const char* stage) {
+    std::cerr << "Fresh control unavailable: " << (widget ? widget->objectName().toStdString() : "missing")
+              << " stage=" << stage << " visible=" << (widget && widget->isVisible())
+              << " enabled=" << (widget && widget->isEnabled());
+    if (widget)
+      std::cerr << " size=" << widget->width() << 'x' << widget->height()
+                << " visible=" << widget->visibleRegion().boundingRect().width() << 'x'
+                << widget->visibleRegion().boundingRect().height();
+    std::cerr << '\n';
+    return false;
+  };
+  if (!widget || !window->isVisible() || QApplication::activeModalWidget())
+    return unavailable("window/modal");
+  std::vector<QTabWidget*> ancestors;
+  for (auto* parent = widget->parentWidget(); parent; parent = parent->parentWidget())
+    if (auto* tabs = qobject_cast<QTabWidget*>(parent))
+      ancestors.push_back(tabs);
+  std::reverse(ancestors.begin(), ancestors.end());
+  for (auto* tabs : ancestors) {
+    if (tabs->objectName() == "stitchedControlTabs") {
+      auto* drawer = window->findChild<QToolButton*>("stitchedControlsToggle");
+      if (!drawer || !fresh_control_visible(drawer))
+        return unavailable("drawer");
+      if (!drawer->isChecked()) {
+        QTest::mouseClick(drawer, Qt::LeftButton);
+        QApplication::processEvents();
+      }
+    }
+    int index = -1;
+    for (int i = 0; i < tabs->count(); ++i)
+      if (tabs->widget(i) == widget || tabs->widget(i)->isAncestorOf(widget))
+        index = i;
+    auto* bar = tabs->tabBar();
+    if (index < 0 || !tabs->isTabVisible(index) || !tabs->isTabEnabled(index) || !bar->isVisible())
+      return unavailable("tab availability");
+    const auto reachable = [&] {
+      const auto rect = bar->tabRect(index);
+      return bar->rect().contains(rect) && bar->tabAt(rect.center()) == index && !bar->childAt(rect.center());
+    };
+    for (int attempt = 0; !reachable() && attempt < 2 * tabs->count(); ++attempt) {
+      const auto desired = bar->tabRect(index).center().x() < 0 ? Qt::LeftArrow : Qt::RightArrow;
+      QToolButton* arrow = nullptr;
+      for (auto* button : bar->findChildren<QToolButton*>())
+        if (button->isVisible() && button->isEnabled() && button->arrowType() == desired)
+          arrow = button;
+      if (!arrow)
+        return unavailable("tab scroll arrow");
+      QTest::mouseClick(arrow, Qt::LeftButton);
+      QApplication::processEvents();
+    }
+    if (!reachable())
+      return unavailable("tab clipped");
+    QTest::mouseClick(bar, Qt::LeftButton, Qt::NoModifier, bar->tabRect(index).center());
+    QApplication::processEvents();
+    if (tabs->currentIndex() != index)
+      return unavailable("tab selection");
+  }
+  for (auto* parent = widget->parentWidget(); parent; parent = parent->parentWidget())
+    if (auto* scroll = qobject_cast<QScrollArea*>(parent)) {
+      // A field can be wider than the initial narrow controls pane. Resize its
+      // ordinary splitter pane before scrolling; never certify a clipped edit.
+      for (int attempt = 0; widget->width() > scroll->viewport()->width() && attempt < 3; ++attempt) {
+        QSplitter* splitter = nullptr;
+        int pane = -1;
+        for (auto* ancestor = scroll->parentWidget(); ancestor && !splitter; ancestor = ancestor->parentWidget())
+          if (auto* candidate = qobject_cast<QSplitter*>(ancestor);
+              candidate && candidate->orientation() == Qt::Horizontal)
+            for (int i = 1; i < candidate->count(); ++i)
+              if (candidate->widget(i)->isAncestorOf(widget)) {
+                splitter = candidate;
+                pane = i;
+                break;
+              }
+        if (!splitter)
+          break;
+        auto sizes = splitter->sizes();
+        const int extra = widget->width() - scroll->viewport()->width() + 24;
+        if (sizes[pane - 1] <= extra + 80)
+          break;
+        sizes[pane - 1] -= extra;
+        sizes[pane] += extra;
+        splitter->setSizes(sizes);
+        QApplication::processEvents();
+      }
+      // ensureWidgetVisible follows QLineEdit's input-method cursor rectangle,
+      // which can leave the rest of the field clipped. Scroll its full bounds.
+      const QRect field(widget->mapTo(scroll->widget(), QPoint()), widget->size());
+      scroll->ensureVisible(field.center().x(), field.center().y(), field.width() / 2 + 8, field.height() / 2 + 8);
+      QApplication::processEvents();
+    }
+  return fresh_control_visible(widget) || unavailable("field clipped or disabled");
+}
+
+bool fresh_camera_profiles(HStreamWindow* window, const QString& requested, bool edit) {
+  const auto selection = HStreamWindowTestAccess::currentCameraSelection(window);
+  if (selection.input_cameras.size() != 2)
+    return false;
+  for (int i = 1; i <= 2; ++i) {
+    auto* editor = window->findChild<QWidget*>(QString("camera%1OpticsControls").arg(i));
+    auto* profile = editor ? editor->findChild<QComboBox*>("cameraProfileCombo") : nullptr;
+    if (!profile || !reveal_fresh_control(window, profile))
+      return false;
+    const int index = profile->findData(requested);
+    if (index < 0)
+      return false;
+    if (edit)
+      profile->setCurrentIndex(index);
+    if (!fresh_control_visible(profile) || profile->currentData().toString() != requested)
+      return false;
+  }
+  const auto current = HStreamWindowTestAccess::currentCameraSelection(window);
+  return current.input_cameras.size() == 2 &&
+      std::all_of(current.input_cameras.begin(), current.input_cameras.end(), [&](const auto& source) {
+           return current.for_source(source.first).configuration == requested.toStdString();
+         });
+}
+
+bool test_fresh_calibration_evidence_controls(HStreamWindow* window) {
+  window->resize(1600, 1100);
+  auto* reference = window->findChild<QLineEdit*>("stitchFrameTimeEdit");
+  auto* blend = window->findChild<QComboBox*>("blendModeCombo");
+  auto* tabs = window->findChild<QTabWidget*>("previewTabs");
+  if (!reference || !blend || !tabs)
+    return false;
+  tabs->setCurrentIndex(0);
+  QApplication::processEvents();
+  if (!expect(
+          !fresh_control_visible(reference) && !fresh_control_visible(blend),
+          "Evidence must reject enabled editors hidden behind another preview tab"))
+    return false;
+  if (!expect(reveal_fresh_control(window, reference), "Reference must be rendered in Stitched Alignment"))
+    return false;
+  set_calibration_time(reference, QTime(0, 0, 5));
+  if (!expect(
+          reveal_fresh_control(window, blend) && !fresh_control_visible(reference),
+          "Blend must be rendered in Color & Precision and hidden Alignment must be rejected"))
+    return false;
+  blend->setEnabled(false);
+  const bool rejected_disabled = !reveal_fresh_control(window, blend);
+  blend->setEnabled(true);
+  if (!expect(
+          rejected_disabled &&
+              !reveal_fresh_control(window, window->findChild<QWidget*>("stitchCameraConfigurationCombo")),
+          "Evidence navigation cannot enable controls or reveal the Defaults-only global profile"))
+    return false;
+  auto expected = HStreamWindowTestAccess::freshCalibrationExpectedConfig(window);
+  auto captured = YAML::Load(expected["required_yaml"].toString().toStdString());
+  // Explicit CPU fixture: changed reference, source-bound starts and optics.
+  captured["stitching"]["stitch_frame_time"] = "00:00:05";
+  captured["stitching"]["input_start_times"] = YAML::Load("{left.mp4: 3.25, right.mp4: 7.5}");
+  captured["stitching"]["input_cameras"] =
+      YAML::Load("{left.mp4: {horizontal_fov: 119}, right.mp4: {horizontal_fov: 121}}");
+  expected["required_yaml"] = QString::fromStdString(YAML::Dump(captured));
+  if (!expect(
+          fresh_admitted_calibration_matches(QByteArray::fromStdString(YAML::Dump(captured)), expected),
+          "Complete captured calibration subset must match its frozen draft"))
+    return false;
+  for (const char* field :
+       {"stitch_frame_time",
+        "input_start_times",
+        "input_cameras",
+        "calibration_frame_count",
+        "control_point_matcher",
+        "control_point_filtering",
+        "projection_framing",
+        "sync_method"}) {
+    auto missing = YAML::Clone(captured);
+    missing["stitching"].remove(field);
+    if (!expect(
+            !fresh_admitted_calibration_matches(QByteArray::fromStdString(YAML::Dump(missing)), expected),
+            "Missing admitted reference/starts/optics/calibration fields cannot pass"))
+      return false;
+  }
+  for (const char* field : {"stitch_frame_time", "input_start_times", "input_cameras"}) {
+    auto wrong = YAML::Clone(captured);
+    wrong["stitching"][field] = "wrong";
+    if (!expect(
+            !fresh_admitted_calibration_matches(QByteArray::fromStdString(YAML::Dump(wrong)), expected),
+            "Wrong captured reference or source prescription cannot pass"))
+      return false;
+  }
+  return true;
+}
+
 bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& game_id) {
   namespace evidence = fresh_calibration_evidence;
   const bool unsaved = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_FRESH_UNSAVED");
@@ -18445,7 +18706,7 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
   const QString config_path = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_id + "/_hockeymon/config.yaml");
   std::unique_ptr<evidence::Observer> observer;
   evidence::File saved_baseline;
-  QJsonObject effective_baseline, draft, layers, phases, original_sources;
+  QJsonObject effective_baseline, draft, layers, phases, original_sources, expected_config;
   const auto sources = [&] {
     QJsonObject result;
     const auto deadline = std::min(overall_deadline, std::chrono::steady_clock::now() + std::chrono::seconds(120));
@@ -18612,17 +18873,28 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       auto* blend = require_child<QComboBox>(window, "blendModeCombo");
       auto* playback = require_child<QTimeEdit>(window, "playbackStartTimeEdit");
       if (!expect(
-              blend && playback && reference->isEnabled() && blend->isEnabled() && playback->isEnabled() &&
-                  effective_baseline["blend"] == "laplacian" &&
+              blend && playback && effective_baseline["blend"] == "laplacian" &&
                   calibration_time(reference) != QTime::fromMSecsSinceStartOfDay(reference_ms) &&
                   (!calibration || (!calibration["status"] && !calibration["backend_generation"])),
               "Fresh fixture must have inherited laplacian, a different reference and no calibration"))
         return false;
       outcome["fresh"] = "pass";
+      if (!expect(reveal_fresh_control(window, playback), "Playback start must be visible and enabled before editing"))
+        return false;
       playback->setTime(QTime(0, 0));
+      if (!expect(
+              reveal_fresh_control(window, reference),
+              "Reference must be visible and enabled in Stitched Alignment before editing"))
+        return false;
+      set_calibration_time(reference, QTime::fromMSecsSinceStartOfDay(reference_ms));
+      if (!expect(
+              reveal_fresh_control(window, blend),
+              "Blend must be visible and enabled in Stitched Color & Precision before editing"))
+        return false;
       blend->setCurrentIndex(blend->findData("alpha"));
+    } else {
+      set_calibration_time(reference, QTime::fromMSecsSinceStartOfDay(reference_ms));
     }
-    set_calibration_time(reference, QTime::fromMSecsSinceStartOfDay(reference_ms));
     report += QString("fresh-imports=%1 frame-count=%2 reference-ms=%3\n")
                   .arg(window->videoSetCount())
                   .arg(frames->value())
@@ -18630,30 +18902,20 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     if (!expect(window->videoSetCount() == 2, "Fresh calibration must use exactly the two imported camera recordings"))
       return false;
     if (!requested_camera_profile.isEmpty()) {
-      auto* profile = require_child<QComboBox>(window, "stitchCameraConfigurationCombo");
-      if (!profile)
-        return false;
-      const int index = profile->findData(requested_camera_profile);
-      if (!expect(index >= 0, "The requested fresh-calibration camera profile must exist in the native selector"))
-        return false;
-      profile->setCurrentIndex(index);
-      expected_camera = HStreamWindowTestAccess::currentCameraSelection(window);
       if (!expect(
-              profile->currentData().toString() == requested_camera_profile &&
-                  expected_camera->configuration == requested_camera_profile.toStdString(),
-              "Fresh calibration must select the requested camera profile through the ordinary control"))
+              fresh_camera_profiles(window, requested_camera_profile, true),
+              "Fresh profiles must be selected through each visible enabled camera Optics editor"))
         return false;
+      expected_camera = HStreamWindowTestAccess::currentCameraSelection(window);
       YAML::Node selected;
       hm::stitching::write_stitch_camera_selection(selected, *expected_camera);
       artifacts_saved = write_e2e_text(
                             QDir(artifact_dir).filePath("selected-camera-optics.yaml"),
                             QString::fromStdString(YAML::Dump(selected))) &&
           artifacts_saved;
-      report += QString("camera-profile=%1 input-projection=%2 input-optimization=%3\n")
-                    .arg(
-                        requested_camera_profile,
-                        QString::fromStdString(expected_camera->input_lens.projection),
-                        QString::fromStdString(expected_camera->input_lens.optimization));
+      report += QString("source-camera-profiles=%1 source-count=%2\n")
+                    .arg(requested_camera_profile)
+                    .arg(expected_camera->input_cameras.size());
     }
   }
   const YAML::Node initial_config =
@@ -18670,17 +18932,28 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
           mode_index >= 0 && (run_mode == "program" || run_mode == "stitch-calibration"),
           "Calibration completion E2E requires Program or Stitching Calibration mode"))
     return false;
+  if (unsaved && mode->currentIndex() != mode_index &&
+      !expect(reveal_fresh_control(window, mode), "Run mode must be visible and enabled before editing"))
+    return false;
   mode->setCurrentIndex(mode_index);
   const bool stitching_only = run_mode == "stitch-calibration";
   const QString completion_message = stitching_only
       ? "one-pass stitching calibration complete; continuous stitched preview running"
       : "one-pass stitching calibration complete; continuous program playback running";
+  if (unsaved &&
+      ((!render->isChecked() && !reveal_fresh_control(window, render)) ||
+       (archive->isChecked() && !reveal_fresh_control(window, archive))))
+    return false;
   render->setChecked(true);
   archive->setChecked(false);
   if (fresh_calibration) {
     for (auto* toggle : window->findChildren<QCheckBox*>())
-      if (toggle->objectName().startsWith("outputToggle_"))
+      if (toggle->objectName().startsWith("outputToggle_") && toggle->isChecked()) {
+        if (unsaved &&
+            !expect(reveal_fresh_control(window, toggle), "Changed output selection must be visible and enabled"))
+          return false;
         toggle->setChecked(false);
+      }
     for (const auto& choice :
          {std::pair{"drivegptCsvCheck", false},
           {"realtimePlaybackCheck", true},
@@ -18688,6 +18961,9 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
           {"showCropDialogCheck", true}}) {
       auto* toggle = require_child<QCheckBox>(window, choice.first);
       if (!toggle)
+        return false;
+      if (unsaved && toggle->isChecked() != choice.second &&
+          !expect(reveal_fresh_control(window, toggle), "Changed execution toggle must be visible and enabled"))
         return false;
       toggle->setChecked(choice.second);
     }
@@ -18700,6 +18976,9 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       return false;
     if (unsaved) {
       draft = HStreamWindowTestAccess::freshCalibrationControls(window);
+      expected_config = HStreamWindowTestAccess::freshCalibrationExpectedConfig(window);
+      if (!evidence::write(QDir(artifact_dir).filePath("expected-calibration-config.json"), expected_config))
+        return false;
       expected_camera = HStreamWindowTestAccess::currentCameraSelection(window);
       const auto current = evidence::snapshot(config_path);
       const auto current_layers = HStreamWindowTestAccess::freshCalibrationLayers(window);
@@ -18812,9 +19091,10 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     const auto admitted = YAML::Load(observer->admitted.bytes.toStdString());
     const auto original = YAML::Load(saved_baseline.bytes.toStdString());
     if (!expect(
-            YAML::Dump(admitted["stitching"]["blend_mode"]) == YAML::Dump(original["stitching"]["blend_mode"]) &&
-                admitted["playback"]["start_seconds"].as<double>(-1) == 0 && save_clicks == 0,
-            "Play must persist calibration starts without saving the ordinary blend draft"))
+            fresh_admitted_calibration_matches(observer->admitted.bytes, expected_config) &&
+                YAML::Dump(admitted["stitching"]["blend_mode"]) == YAML::Dump(original["stitching"]["blend_mode"]) &&
+                save_clicks == 0,
+            "Captured Starting config must persist the exact reference, starts, optics and calibration subset without saving blend"))
       return false;
     outcome["calibration_commit_subset"] = "pass";
   }
@@ -19007,12 +19287,38 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
         games->setCurrentIndex(selected);
         const bool reopened =
             QTest::qWaitFor([&] { return window->gameIdText() == game_id && start->isEnabled(); }, remaining(30000));
+        const auto visible_value = [&](const char* name, const std::function<bool()>& matches) {
+          auto* widget = window->findChild<QWidget*>(name);
+          return reveal_fresh_control(window, widget) && matches();
+        };
+        const bool visible_reopen = reopened &&
+            visible_value("stitchFrameTimeEdit",
+                          [&] {
+                            return HStreamWindowTestAccess::freshCalibrationControls(window)["reference"] ==
+                                draft["reference"];
+                          }) &&
+            visible_value("calibrationFrameCountSpin",
+                          [&] {
+                            return HStreamWindowTestAccess::freshCalibrationControls(window)["frame_count"] ==
+                                draft["frame_count"];
+                          }) &&
+            visible_value("playbackStartTimeEdit",
+                          [&] {
+                            return HStreamWindowTestAccess::freshCalibrationControls(window)["playback_start"] ==
+                                draft["playback_start"];
+                          }) &&
+            visible_value("blendModeCombo",
+                          [&] {
+                            return HStreamWindowTestAccess::freshCalibrationControls(window)["blend"].toString() ==
+                                (active_save ? "alpha" : "laplacian");
+                          }) &&
+            (requested_camera_profile.isEmpty() || fresh_camera_profiles(window, requested_camera_profile, false));
         const auto controls = HStreamWindowTestAccess::freshCalibrationControls(window);
         const auto reloaded_file = evidence::snapshot(config_path);
         const auto reloaded = reloaded_file.valid() ? YAML::Load(reloaded_file.bytes.toStdString()) : YAML::Node();
         const auto camera = HStreamWindowTestAccess::currentCameraSelection(window);
         passed = expect(
-                     reopened && record("06-reopened") && controls["reference"] == draft["reference"] &&
+                     visible_reopen && record("06-reopened") && controls["reference"] == draft["reference"] &&
                          controls["frame_count"] == draft["frame_count"] &&
                          controls["playback_start"] == draft["playback_start"] &&
                          controls["blend"].toString() == (active_save ? "alpha" : "laplacian") &&
@@ -23469,7 +23775,7 @@ int main(int argc, char** argv) {
     HStreamWindow window;
     window.show();
     return test_blend_mode() && test_preset_reload_with_missing_tracker() &&
-            test_game_setup(&window, source_root.path()) &&
+            test_game_setup(&window, source_root.path()) && test_fresh_calibration_evidence_controls(&window) &&
             test_stitching_iteration_controls(window.gameDirectoryText())
         ? 0
         : 1;
