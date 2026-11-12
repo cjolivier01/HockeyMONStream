@@ -19,8 +19,10 @@ not required. The browser contract and Qt controls read those same keys.
 The four `rink.camera.max_speed_ratio_*` / `max_accel_ratio_*` keys remain
 multipliers. They affect translation and resizing before absolute per-box native
 limits. Motion overrides affect translation only, on the selected fast/follower
-roles. Explicit native tracker-file values retain same-layer precedence; a
-higher-layer canonical limit overrides them. Zero inherits the native value.
+roles. Positive canonical motion limits win same-layer ties with native tracker-file
+values; a higher native layer still wins. Other camera mappings retain native
+same-layer precedence. Zero inherits the native value, including during live
+playback: startup overrides remain separate from the per-box reset limits.
 
 `common/RuntimeControlConfig` normalizes old UI and AMD aliases within each input
 layer before merging. A legacy game preset therefore overrides canonical user

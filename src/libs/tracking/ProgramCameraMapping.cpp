@@ -261,6 +261,10 @@ absl::StatusOr<YAML::Node> ResolveProgramCameraConfig(
       "rink.camera.follower_box_scale_height",
       ScalarType::kDouble,
       follower_path + "scale-dest-height"));
+  // Retain native box tuning so zero live overrides can restore it. The
+  // separate startup map is consumed by both backend camera constructors.
+  for (auto box : live_boxes)
+    box.remove("hstream-motion-overrides");
   // Absolute translation limits are runtime inputs, independent of any UI.
   const auto motion = get_node(effective_config, "rink.camera.motion_overrides");
   if (!motion || !motion->IsMap())
@@ -284,7 +288,13 @@ absl::StatusOr<YAML::Node> ResolveProgramCameraConfig(
         if (!target.first)
           continue;
         auto box = live_boxes[target.second];
-        HM_RETURN_IF_ERROR(copy_required(box, key.second, path.c_str(), ScalarType::kDouble, key.second));
+        const auto current = box[key.second];
+        const auto rank = canonical_value_ranks.find(path);
+        const int source_rank = rank == canonical_value_ranks.end() ? 0 : rank->second;
+        if (!current.IsDefined() || current.IsNull() || source_rank >= native_base_rank)
+          box["hstream-motion-overrides"][key.second] = value;
+        else
+          HM_RETURN_IF_ERROR(validate_scalar(current, ScalarType::kDouble, key.second));
       }
     }
   } catch (const YAML::Exception& error) {

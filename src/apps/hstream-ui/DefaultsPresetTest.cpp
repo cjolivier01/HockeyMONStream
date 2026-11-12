@@ -83,7 +83,9 @@ int main(int argc, char** argv) {
   QDir().mkpath(games.filePath("override"));
   QDir().mkpath(games.filePath("Defaults"));
   Write(games.filePath("inherit/_hockeymon/config.yaml"), "{}\n");
-  Write(games.filePath("override/_hockeymon/config.yaml"), "stitching: {max_output_width: 6200}\n");
+  Write(
+      games.filePath("override/_hockeymon/config.yaml"),
+      "stitching: {max_output_width: 6200}\nplayback: {realtime: true}\ntelemetry: {enabled: false}\n");
   Write(games.filePath("Defaults/_hockeymon/config.yaml"), "stitching: {max_output_width: 6400}\n");
   auto original_game = Read(games.filePath("override/_hockeymon/config.yaml"));
   QDir().mkpath(home.filePath(".hstream"));
@@ -133,6 +135,10 @@ int main(int argc, char** argv) {
       "Game did not inherit defaults or old native blend alias overrode Defaults");
   selector->setCurrentIndex(selector->findText("override"));
   Require(width->value() == 6200, "Game override must outrank defaults");
+  Require(
+      Find<QCheckBox>(window, "realtimePlaybackCheck")->isChecked() &&
+          !Find<QCheckBox>(window, "drivegptCsvCheck")->isChecked(),
+      "Game runtime preferences must initialize pacing and telemetry controls");
   Require(output_map->isChecked() && output_size->currentData() == "large", "Game did not inherit output map");
   output_map->setChecked(false);
   Require(save->isEnabled() && HStreamWindowTestAccess::Save(window), "Cannot save game map override");

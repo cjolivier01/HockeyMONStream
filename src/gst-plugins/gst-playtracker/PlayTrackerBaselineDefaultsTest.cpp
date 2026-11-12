@@ -204,6 +204,25 @@ live-boxes:
   size_yaml["ignore-largest-bbox-count"] = 3;
   size_yaml["ignore-oversized-bboxes"] = true;
   size_yaml["oversized-bbox-percent"] = 150;
+  auto startup_motion = YAML::Clone(yaml);
+  startup_motion["live-boxes"][1]["max-speed-x"] = 40;
+  startup_motion["live-boxes"][1]["hstream-motion-overrides"]["max-speed-x"] = 12.3;
+  auto startup_tracker = DsPlayTrackerCreateCpuTracker(hm::BBox(0, 0, 2000, 1000), startup_motion);
+  ok &= expect(startup_tracker.ok(), "Canonical motion startup must create a tracker");
+  if (startup_tracker.ok()) {
+    ok &= expect(
+        near(startup_tracker->play_tracker_config.living_boxes[1].max_speed_x, 12.3f) &&
+            near(startup_tracker->base_play_tracker_config.living_boxes[1].max_speed_x, 40.f),
+        "Startup motion must retain its distinct native reset limit");
+    DsPlayTrackerRuntimeTuning reset_motion;
+    reset_motion.apply_to_fast_box = false;
+    reset_motion.apply_to_follower_box = true;
+    reset_motion.max_speed_x = 0;
+    ok &= expect(
+        DsPlayTrackerApplyCpuRuntimeTuning(&*startup_tracker, reset_motion).ok() &&
+            near(startup_tracker->play_tracker_config.living_boxes[1].max_speed_x, 40.f),
+        "Clearing startup motion live must restore native tuning");
+  }
   const auto size_config = gst_hm_playtracker::create_play_tracker_config(hm::BBox(0, 0, 2000, 1000), size_yaml);
   ok &= expect(
       size_config.ignore_largest_bbox_count == 3 && size_config.ignore_oversized_bboxes &&

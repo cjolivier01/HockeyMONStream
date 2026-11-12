@@ -20913,6 +20913,9 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     hm::stitching::restore_generated_rink_mask_frame_time(config);
     std::map<QString, double> staged_controls;
     const QString staged_resolution = controlPointResolutionFromGameConfig(config);
+    const auto effective_preferences = merge_yaml_maps(baseline_config_, config);
+    const bool staged_realtime = hm::get_node(effective_preferences, "playback.realtime")->as<bool>();
+    const bool staged_telemetry = hm::get_node(effective_preferences, "telemetry.enabled")->as<bool>();
     const auto staged_filtering = controlPointFilteringFromGameConfig(config);
     QString staged_high_bit_depth_mode = highBitDepthMode();
     bool native_high_bit_depth_mode_present = false;
@@ -21401,6 +21404,14 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       }
     }
     setStitchingIterationSettings(staged_iteration_settings);
+    if (realtime_playback_toggle_) {
+      const QSignalBlocker blocker(realtime_playback_toggle_);
+      realtime_playback_toggle_->setChecked(staged_realtime);
+    }
+    if (drivegpt_csv_toggle_) {
+      const QSignalBlocker blocker(drivegpt_csv_toggle_);
+      drivegpt_csv_toggle_->setChecked(staged_telemetry);
+    }
     show_scoreboard_dialog_ = staged_show_scoreboard_dialog;
     if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
       staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
