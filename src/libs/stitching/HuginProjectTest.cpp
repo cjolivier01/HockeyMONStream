@@ -1689,6 +1689,71 @@ int main(int argc, char** argv) {
         "Hugin publication must atomically install its private right input");
   }
 
+  // Explicit camera prescriptions must initialize relative poses before the
+  // full fit, without handing lens-variable selection back to Hugin -a.
+  const fs::path pairwise_optimizer = root / "pairwise-autooptimiser";
+  const fs::path pairwise_input = root / "pairwise-input.pto";
+  ok &= expect(
+      write_tool(
+          pairwise_optimizer,
+          "test \"$*\" = '-p -l -s -q -o autooptimiser_out.pto hm_project.pto'\n"
+          "cp hm_project.pto '" +
+              pairwise_input.string() +
+              "'\n"
+              "cp hm_project.pto autooptimiser_out.pto\n"
+              "printf '%s\\n' 'after 3 iteration(s): 1.25 units'\n"),
+      "pairwise optimizer fixture must exist");
+  ::setenv("HM_AUTOOPTIMISER", pairwise_optimizer.c_str(), 1);
+  for (const auto& policies : {std::array<std::string, 2>{"auto", "auto"}, {"fixed", "refine"}, {"refine", "fixed"}}) {
+    auto explicit_options = options;
+    std::array<hm::stitching::StitchCameraOptics, 2> cameras{{{108, 90, {}}, {97, 75, {}}}};
+    std::string variables = "v r0 p0 r1 p1 y1";
+    for (size_t i = 0; i < cameras.size(); ++i) {
+      cameras[i].input_lens.optimization = policies[i];
+      if (policies[i] != "fixed") {
+        const auto index = std::to_string(i);
+        variables += " v" + index + " b" + index + " d" + index + " e" + index;
+        if (policies[i] == "auto")
+          variables += " a" + index + " c" + index;
+      }
+    }
+    explicit_options.input_cameras = {{"left.png", cameras[0]}, {"right.png", cameras[1]}};
+    explicit_options.ordered_input_cameras = cameras;
+    const auto game = root / ("pairwise-" + policies[0] + "-" + policies[1]);
+    fs::create_directory(game);
+    const auto aligned = hm::stitching::HuginProject::Configure(
+        game,
+        root / "private-inputs" / "left.png",
+        root / "private-inputs" / "right.png",
+        matches,
+        explicit_options);
+    if (!aligned.ok())
+      std::cerr << aligned << '\n';
+    const auto input = read_text_file(pairwise_input);
+    ok &= expect(
+        aligned.ok() && input.find(variables + "\nv\n") != std::string::npos &&
+            input.find("v=0") == std::string::npos && input.find("a=0") == std::string::npos &&
+            input.find("v97 ") != std::string::npos,
+        "pairwise alignment must retain distinct source optics and each Fixed/Refine/Auto variable selection");
+  }
+  for (const std::string policy : {"fixed", "refine"}) {
+    auto explicit_options = options;
+    explicit_options.input_lens.optimization = policy;
+    const auto game = root / ("pairwise-shared-" + policy);
+    fs::create_directory(game);
+    const auto aligned = hm::stitching::HuginProject::Configure(
+        game,
+        root / "private-inputs" / "left.png",
+        root / "private-inputs" / "right.png",
+        matches,
+        explicit_options);
+    const auto variables = policy == "fixed" ? "v r0 p0 r1 p1 y1\nv\n" : "v r0 p0 r1 p1 y1 v0 b0 d0 e0\nv\n";
+    ok &= expect(
+        aligned.ok() && read_text_file(pairwise_input).find(variables) != std::string::npos,
+        "shared explicit optics must retain their fitting policy through pairwise initialization");
+  }
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
+
   ok &= test_owned_solve_publication(root, matches, options);
 
   const fs::path leveling_selection_game = root / "leveling-selection-game";
