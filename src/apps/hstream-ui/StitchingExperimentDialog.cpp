@@ -1,9 +1,10 @@
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
-#include "src/apps/hstream-ui/CameraChapterWarning.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/CalibrationFrameView.h"
+#include "src/apps/hstream-ui/CameraChapterWarning.h"
 #include "src/apps/hstream-ui/CameraOpticsWidget.h"
 #include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/LogTextEdit.h"
@@ -3816,7 +3817,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   s.environment = environment;
   s.initial_settings = {control_points, frame_count, stitch_frame_time.toStdString(), std::nullopt};
   s.initial_settings.player_scan_playback_start = playback_start_time.isEmpty()
-      ? experiment_baseline->values["hstream_ui"]["playback_start_time"].as<std::string>()
+      ? hm::config::PlaybackStartTime(experiment_baseline->values)
       : playback_start_time.toStdString();
   if (hm::stitch_frame_time_to_nanoseconds(*s.initial_settings.player_scan_playback_start) < 0)
     throw std::runtime_error("Playback start must be nonnegative");

@@ -8,6 +8,7 @@
 
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 
 namespace hm::tracking {
 namespace {
@@ -29,10 +30,11 @@ YAML::Node NativeValue(const CameraSliderSpec& spec, double value) {
 } // namespace
 
 absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(
-    const YAML::Node& resolved,
+    const YAML::Node& input,
     const YAML::Node* materialized_tracker) {
   CameraControlValues result;
   try {
+    const auto resolved = hm::config::NormalizeRuntimeControlLayer(input);
     const auto required = [&](const std::string& path) -> YAML::Node {
       const auto value = get_node(resolved, path);
       if (!value || !value->IsScalar())
@@ -71,7 +73,7 @@ absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(
           "Max_Speed_Y_x10",
           "Max_Accel_X_x10",
           "Max_Accel_Y_x10"})
-      result[id] = required(std::string("hstream_ui.camera_controls.") + id).as<int>();
+      result[id] = hm::config::RuntimeControlPresentationValue(resolved, id);
     for (auto& [id, value] : result) {
       const auto override = get_node(resolved, "hstream_ui.camera_controls." + id);
       if (override)

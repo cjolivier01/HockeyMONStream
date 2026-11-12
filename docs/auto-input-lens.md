@@ -72,7 +72,11 @@ when the other automatic component refreshes or falls back.
 The NONA path writes independent PTO `f/v/a/b/c/d/e` values and explicit
 optimizer variables for each camera. Fixed preserves its intrinsics; Refine
 fits FOV, b and center; Auto can fit all lens terms. Existing Hugin tools support
-this without a fork. Other mapping backends and rectified AKAZE profiles reject
+this without a fork. Explicit optics use Hugin's pairwise pose initialization
+before fitting the selected variables. Fitting all lens terms from coincident
+camera poses can collapse FOV despite a low control-point error. The FOV and
+lens-center validation still rejects degenerate solutions before rendering.
+Other mapping backends and rectified AKAZE profiles reject
 differing prescriptions or non-default lens correction. Identical neutral
 per-camera defaults retain their existing backend compatibility. Provenance versions 16/17 retain both source-bound
 prescriptions through generation checks, experiments and reframing; versions

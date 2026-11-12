@@ -32,6 +32,7 @@ cc_library(
     deps = [
         ":camera_control_specs",
         "//src/libs/common:config_path",
+        "//src/libs/common:runtime_control_config",
         "//src/libs/common:playtracker_config_roles",
         "@com_google_absl//absl/status:statusor",
         "@yaml-cpp",

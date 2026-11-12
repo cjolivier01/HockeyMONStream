@@ -659,6 +659,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:runtime_control_config",
         ":camera_chapter_warning",
         ":log_text_edit",
         ":supervised_process",
@@ -984,6 +985,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:config_path",
+        "//src/libs/common:runtime_control_config",
         "//src/libs/stitching:calibration_failure_protocol",
         ":camera_chapter_warning",
         ":log_text_edit",
@@ -1203,6 +1206,7 @@ cc_test(
         "//src/libs/publication",
         "//src/libs/stitching:canvas_constraint_check",
         "//src/libs/stitching:player_frame_selection",
+        "//src/libs/stitching:video_discovery",
         "@com_google_absl//absl/cleanup",
         "@qt//:qt_network",
         "@qt//:qt_test",
@@ -1584,6 +1588,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:runtime_control_config",
         ":source_camera_track",
         "//src/libs/stitching:calibration_failure_protocol",
         ":experiment_task_runtime","//src/libs/common:game_storage",

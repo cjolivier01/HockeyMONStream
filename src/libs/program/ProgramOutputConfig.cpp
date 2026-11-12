@@ -102,8 +102,8 @@ absl::StatusOr<ProgramOutputConfig> ResolveProgramOutputConfig(const Configurati
       result.bitrate_kbps = (uint64_t(bits) + 999) / 1000;
     }
     result.keyframe_interval = Positive(Required(config, root + "keyframe_interval"), root + "keyframe_interval");
-    result.realtime = Boolean(Required(config, root + "realtime"));
-    const double start = Required(config, "runtime.amd.playback_start_seconds").as<double>();
+    result.realtime = Boolean(Required(config, "playback.realtime"));
+    const double start = Required(config, "playback.start_seconds").as<double>();
     if (!std::isfinite(start) || start < 0 || static_cast<long double>(start) * 1000000000 > INT64_MAX)
       return absl::InvalidArgumentError("AMD playback start must fit nonnegative nanoseconds");
     result.start_ns = static_cast<uint64_t>(static_cast<long double>(start) * 1000000000);
@@ -143,7 +143,8 @@ absl::StatusOr<ProgramOutputConfig> ResolveProgramOutputConfig(const Configurati
     }
     const auto tone = [&](const char* ui, const char* native, const char* fallback) {
       const std::string path = std::string("hstream_ui.camera_controls.") + ui;
-      Choice choice{Required(config, root + fallback), root + fallback, Rank(config, root + fallback), 0};
+      const std::string canonical = std::string("video_out.tone.") + fallback;
+      Choice choice{Required(config, canonical), canonical, Rank(config, canonical), 4};
       choice.Consider(config, path, 3);
       choice.Consider(config, std::string("pipeline.hmplaycropper.properties.") + native, 1);
       choice.Consider(config, std::string("pipeline.hmstitcher.properties.") + native, 2);

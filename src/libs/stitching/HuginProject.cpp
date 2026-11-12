@@ -1509,8 +1509,13 @@ absl::Status run_autooptimiser(
     const HuginProject::Options& options) {
   const auto& cameras = options.ordered_input_cameras;
   const auto& input_lens = options.input_lens;
+  // Explicit optics still need an initial relative camera pose. Starting the
+  // full lens fit with both cameras facing forward lets it shrink the FOV
+  // instead of aligning the views. Hugin -p first aligns poses pairwise, then
+  // fits the PTO's explicit variables; unlike -a it preserves each camera's
+  // Fixed/Refine/Auto policy and independent lens parameters.
   std::vector<std::string> command = {
-      autooptimiser, !cameras && input_lens.optimization == "auto" ? "-a" : "-n", "-l", "-s", "-q"};
+      autooptimiser, !cameras && input_lens.optimization == "auto" ? "-a" : "-p", "-l", "-s", "-q"};
   command.insert(command.end(), {"-o", "autooptimiser_out.pto", "hm_project.pto"});
   std::string output;
   auto status = run_checked(command, directory, &output, options.is_cancelled);
