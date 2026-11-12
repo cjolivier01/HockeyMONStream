@@ -12854,6 +12854,16 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     pipeline_inspector_->setPipelineRunning(false);
   const bool stopped_by_user = pipeline_stop_requested_;
   const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
+  const auto terminal_diagnosis = calibration_failure_session_.Analyze(calibration_failure_message_.toStdString());
+  const bool native_verdict_available =
+      calibration_failure_session_.has_context() && calibration_failure_session_.error().empty();
+  const bool calibration_failure_applicable = !native_verdict_available ||
+      terminal_diagnosis.applicability == "calibration" || terminal_diagnosis.applicability == "playback-restart";
+  // Waiting for restart remains a completion/publication fence. It does not
+  // establish a calibration failure when the shared native verdict excludes
+  // one. Preserve an already-reported local save/ownership failure separately.
+  const bool calibration_failure_needed =
+      calibration_ended_incomplete && (calibration_dialog_failed_ || calibration_failure_applicable);
   const bool completed_successfully =
       exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
   bool archive_completed = completed_successfully;
@@ -12948,14 +12958,16 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   }
   pipeline_stop_requested_ = false;
   pipeline_publish_partial_ = false;
-  if (calibration_pending_ && !stopped_by_user) {
+  if (calibration_failure_needed) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
     if (!calibration_dialog_failed_) {
       failStitchingCalibration(QString("The calibration process ended before it finished (exit %1, %2).")
                                    .arg(exit_code)
                                    .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed"));
     }
-  } else if (calibration_pending_ && stopped_by_user) {
+  } else if (calibration_pending_) {
+    if (!stopped_by_user)
+      appendLog("native calibration outcome does not establish a failure; saved calibration state retained");
     closeStitchingCalibrationDialog();
   }
   rollbackActiveLiveRotationAuthorization("pipeline finished");
@@ -12999,7 +13011,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   } else if (stopped_by_user) {
     setPlaybackProgressState(PlaybackProgressState::kStopped);
   } else {
-    const bool calibration_cuda_oom = calibration_ended_incomplete &&
+    const bool calibration_cuda_oom = calibration_failure_needed &&
         (calibration_failure_session_.evidence().CudaOutOfMemory() ||
          is_cuda_out_of_memory_diagnostic(calibration_failure_message_));
     const QString terminal_detail = calibration_cuda_oom

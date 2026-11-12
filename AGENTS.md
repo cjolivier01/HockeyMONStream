@@ -296,3 +296,5 @@ Qt merges the main runner's descriptors before reading generation-bound evidence
 merged log entries retain text severity but do not claim stdout/stderr provenance.
 Failure stage recognition includes native projection/materialization substeps
 without adding progress rows.
+Qt terminal synthesis honors the shared scoped applicability: an unconfirmed
+restart cannot mark a completed solve failed or establish successful publication.

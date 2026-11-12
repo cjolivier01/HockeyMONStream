@@ -835,10 +835,7 @@ for line in sys.stdin:
   static void refreshCameraDefaults(HStreamWindow* window) {
     window->applyCameraConfigurationDefaults();
   }
-  static bool prepareStitchingRun(HStreamWindow* window) {
-    const QString prior_game = window->active_run_game_id_;
-    window->active_run_game_id_ = window->game_id_edit_->text().trimmed();
-    window->active_force_reconfigure_ = false;
+  static void freezeCalibrationControls(HStreamWindow* window) {
     window->active_calibration_control_points_ = window->stitchingCalibrationControlPoints();
     window->active_calibration_frame_count_ = window->stitchingCalibrationFrameCount();
     window->active_stitch_max_output_width_ = window->stitchingMaxOutputWidth();
@@ -855,6 +852,13 @@ for line in sys.stdin:
     window->storeProjectionParameterControls();
     window->active_projection_parameters_ = window->stitchProjectionParameters();
     window->active_projection_framing_ = window->stitchProjectionFraming();
+  }
+
+  static bool prepareStitchingRun(HStreamWindow* window) {
+    const QString prior_game = window->active_run_game_id_;
+    window->active_run_game_id_ = window->game_id_edit_->text().trimmed();
+    window->active_force_reconfigure_ = false;
+    freezeCalibrationControls(window);
     bool required = false;
     const bool prepared = window->prepareStitchingCalibrationRun(
         "/bin/true", window->pipelineWorkingDirectory(), QProcessEnvironment::systemEnvironment(), &required);
@@ -1062,6 +1066,134 @@ for line in sys.stdin:
 
   static hm::stitching::failure::Diagnosis calibrationDiagnosis(HStreamWindow* window) {
     return window->calibration_failure_session_.Analyze("INTERNAL: App run failed");
+  }
+
+  static bool calibrationTerminalOutcomeChecks() {
+    namespace failure = hm::stitching::failure;
+    const std::string binding(64, 'a'), invocation(32, 'b');
+    failure::Context context;
+    context.matcher = "akaze-hamming";
+    context.mapping_backend = "opencv-magsac";
+    context.projection = "rectilinear";
+    context.frame_count = 4;
+    context.control_point_limit = context.default_control_point_limit = 1500;
+    context.max_output_width = 8192;
+    context.camera = context.default_camera = {"gopro-mission-1", 127.2, 95};
+    context.calibration_required = true;
+    context.calibration_start_stage = "input";
+    const std::string scoped = *failure::ScopeRecord(binding, invocation, 1, 0, 1) + "\n" +
+        *failure::ContextRecord(binding, invocation, 1, context) + "\n";
+    const std::string solved = "HSTREAM_CALIBRATION stage=calibration status=complete\n";
+    const std::string restart_failed =
+        "HSTREAM_CALIBRATION stage=playback-restart status=failed message=Playback could not restart\n";
+    const std::string output_failed = "PERMISSION_DENIED: post-solve output setup failed\n";
+    struct Case {
+      const char* name;
+      std::string evidence;
+      const char* saved_before;
+      const char* saved_after;
+      bool failure;
+      bool cancel{};
+      int exit_code{7};
+    };
+    const std::vector<Case> cases{
+        {"pending-restart", scoped + solved + output_failed, "pending", "pending", false},
+        {"unconfirmed-success", scoped + solved, "pending", "pending", false, false, 0},
+        {"published-solve", scoped + solved + output_failed, "complete", "complete", false},
+        {"restart-failed", scoped + solved + restart_failed, "pending", "failed", true},
+        {"published-restart-failed", scoped + solved + restart_failed, "complete", "complete", true},
+        {"blender-failed",
+         scoped + solved + "CUDA error at cudaBlend.cu:875: out of memory\n",
+         "pending",
+         "failed",
+         true},
+        {"later-output",
+         scoped + solved + "HSTREAM_CALIBRATION stage=playback-restart status=complete\n" + output_failed,
+         "pending",
+         "complete",
+         false},
+        {"solve-failed",
+         scoped + "HSTREAM_CALIBRATION stage=features status=started\nINTERNAL: matching failed\n",
+         "pending",
+         "failed",
+         true},
+        {"cancelled", scoped + solved, "pending", "pending", false, true},
+        {"unscoped", solved + output_failed, "pending", "failed", true},
+        {"malformed", scoped + "HSTREAM_FAILURE_CONTEXT {}\n" + solved + output_failed, "pending", "failed", true},
+    };
+    bool passed = true;
+    for (const auto& item : cases) {
+      HStreamWindow window;
+      const QString game = "failure-lifecycle-" + QString::fromLatin1(item.name);
+      const QString directory = window.gameDirectory(game);
+      if (!QDir().mkpath(directory + "/_hockeymon"))
+        return false;
+      window.game_id_edit_->setText(game);
+      window.active_run_game_id_ = game;
+      freezeCalibrationControls(&window);
+      window.active_calibration_start_stage_ = "input";
+      window.active_calibration_invalidation_id_ = "failure-lifecycle-owner";
+      if (!window.saveStitchingCalibrationState(
+              game,
+              window.active_calibration_control_points_,
+              QString::fromLatin1(item.saved_before),
+              "input",
+              window.active_calibration_invalidation_id_,
+              true,
+              false))
+        return false;
+      const auto config_path = (directory + "/_hockeymon/config.yaml").toStdString();
+      const auto original_state = YAML::Dump(YAML::LoadFile(config_path)["hstream_ui"]["stitching_calibration"]);
+      window.calibration_pending_ = true;
+      window.calibration_failure_session_ = failure::Session(binding);
+      window.show();
+      window.showStitchingCalibrationDialog();
+      // Exercise the actual connected QProcess read/error/finished lifecycle,
+      // including its terminal drain. No direct output or finish injection.
+      const QString child =
+          "import os, sys\n"
+          "os.write(1, bytes.fromhex(sys.argv[1]))\n"
+          "os.write(1, b'FAILURE_LIFECYCLE ready\\n')\n"
+          "if sys.argv[2] == 'cancel': sys.stdin.readline()\n"
+          "sys.exit(int(sys.argv[3]))\n";
+      QSignalSpy finished(window.pipeline_process_, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished));
+      window.pipeline_process_->start(
+          "python3",
+          {"-u",
+           "-c",
+           child,
+           QByteArray::fromStdString(item.evidence).toHex(),
+           item.cancel ? "cancel" : "exit",
+           QString::number(item.exit_code)});
+      if (!window.pipeline_process_->waitForStarted(5000))
+        return false;
+      if (item.cancel) {
+        if (!QTest::qWaitFor([&] { return window.logText().contains("FAILURE_LIFECYCLE ready"); }, 5000))
+          return false;
+        window.stopPipeline(false);
+      }
+      if (!QTest::qWaitFor([&] { return !finished.isEmpty(); }, 5000))
+        return false;
+      if (!item.failure)
+        (void)QTest::qWaitFor([&] { return !window.calibration_dialog_->isVisible(); }, 500);
+      const auto calibration = YAML::LoadFile(config_path)["hstream_ui"]["stitching_calibration"];
+      const bool unchanged =
+          std::string(item.saved_before) != item.saved_after || YAML::Dump(calibration) == original_state;
+      const bool valid = window.calibration_dialog_->isVisible() == item.failure &&
+          window.calibration_dialog_failed_ == item.failure &&
+          calibration["status"].as<std::string>() == item.saved_after && unchanged && !window.calibration_pending_ &&
+          !window.calibration_waiting_for_playback_restart_ &&
+          window.playback_progress_state_ ==
+              (item.cancel ? HStreamWindow::PlaybackProgressState::kStopped
+                           : HStreamWindow::PlaybackProgressState::kError);
+      passed &= valid;
+      if (!valid)
+        std::cerr << "Lifecycle " << item.name << ": visible=" << window.calibration_dialog_->isVisible()
+                  << " failed=" << window.calibration_dialog_failed_
+                  << " state=" << calibration["status"].as<std::string>()
+                  << " diagnosis=" << window.calibration_failure_session_.Analyze("").applicability << '\n';
+    }
+    return passed;
   }
 
   static QDialog* showCalibrationFailureArtifact(HStreamWindow* window, const QString& message) {
@@ -22872,9 +23004,11 @@ int main(int argc, char** argv) {
     window.show();
     const bool process_order = test_calibration_failure_process_order(&window);
     const bool native_substeps = test_calibration_failure_native_substeps(&window);
+    const bool terminal_outcomes = HStreamWindowTestAccess::calibrationTerminalOutcomeChecks();
     return test_wheel_routing_log_follow_and_calibration_analysis(&window) &&
             test_cuda_oom_calibration_failure_analysis(&window) && test_scoped_calibration_failure_analysis(&window) &&
-            test_stall_watchdog_calibration_failure_analysis(&window) && process_order && native_substeps
+            test_stall_watchdog_calibration_failure_analysis(&window) && process_order && native_substeps &&
+            terminal_outcomes
         ? 0
         : 1;
   }
@@ -23112,6 +23246,8 @@ int main(int argc, char** argv) {
   }
 
   if (!test_calibration_failure_process_order(&window) || !test_calibration_failure_native_substeps(&window))
+    return 1;
+  if (!HStreamWindowTestAccess::calibrationTerminalOutcomeChecks())
     return 1;
   if (!test_stall_watchdog_calibration_failure_analysis(&window)) {
     std::cerr << "test_stall_watchdog_calibration_failure_analysis failed\n";

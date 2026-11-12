@@ -193,6 +193,15 @@ def test(binary, root):
     result = run(binary, root, "later-output", completed)
     assert result["applicability"] == "none" and result["restart_outcome"] == "complete"
 
+    pending = (
+        records()
+        + b"HSTREAM_CALIBRATION stage=calibration status=complete\n"
+        + b"PERMISSION_DENIED: post-solve output setup failed\n"
+    )
+    result = run(binary, root, "unconfirmed-restart", pending)
+    assert result["solve_outcome"] == "complete"
+    assert result["restart_outcome"] == "pending" and result["applicability"] == "none"
+
     for stage, label in (
         ("projection", "Apply panorama projection"),
         ("materialize", "Prepare selected calibration frames"),

@@ -886,6 +886,14 @@ successful solve. Successful solve and restart prevent an unrelated later output
 failure from reopening the calibration failure dialog. The returned
 `applicability` is `calibration`, `playback-restart`, `runtime`, or `none`.
 
+Qt uses that scoped verdict before synthesizing a calibration failure at process
+exit. A completed solve with an unconfirmed restart closes progress without
+marking the saved calibration failed or inferring that playback restarted. The
+pending restart still fences successful completion and output publication.
+Explicit native solve/restart failures and already-reported local save/ownership
+errors remain failures; cancellation closes progress and retains saved state.
+Missing or invalid native context retains the legacy terminal-error fallback.
+
 Failure stage recognition covers native substeps as well as the visible progress
 rows, including Hugin's `projection` and selected-frame `materialize`. An emitted
 projection failure therefore names projection even after optimizer completion;
