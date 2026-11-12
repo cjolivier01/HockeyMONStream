@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 // Thin headless owners of the same native libraries used by the desktop dialogs.
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
@@ -743,7 +744,7 @@ QJsonObject experiments(const Request& request, QJsonArray& artifacts) {
           YAML::LoadFile((source_game / "_hockeymon/config.yaml").string()));
       if (!candidate_settings.player_scan_playback_start)
         candidate_settings.player_scan_playback_start =
-            take(hm::baseline_config::load()).values["hstream_ui"]["playback_start_time"].as<std::string>();
+            hm::config::PlaybackStartTime(take(hm::baseline_config::load()).values);
       created = take(CreateStagedStitchingExperimentWorkspace(
           source_game,
           request.root / "experiments",

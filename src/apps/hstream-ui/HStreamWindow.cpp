@@ -1,10 +1,12 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
-#include "src/apps/hstream-ui/CameraChapterWarning.h"
+
+#include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/program/RotationControls.h"
 #include "hstream/src/libs/program/ToneControls.h"
@@ -17,6 +19,7 @@
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/BackendPreview.h"
+#include "src/apps/hstream-ui/CameraChapterWarning.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/SupervisedProcess.h"
 #ifndef HSTREAM_USE_HIP
@@ -4134,7 +4137,9 @@ YAML::Node map_value(YAML::Node parent, const char* key) {
   return YAML::Node();
 }
 
-YAML::Node merge_yaml_maps(const YAML::Node& base, const YAML::Node& overlay) {
+YAML::Node merge_yaml_maps(const YAML::Node& input_base, const YAML::Node& input_overlay) {
+  const auto base = hm::config::NormalizeRuntimeControlLayer(input_base);
+  const auto overlay = hm::config::NormalizeRuntimeControlLayer(input_overlay);
   if (!overlay.IsMap())
     return YAML::Clone(overlay);
   YAML::Node result = base.IsMap() ? YAML::Clone(base) : YAML::Node(YAML::NodeType::Map);
@@ -4751,11 +4756,13 @@ hm::ui_internal::StitchingIterationSettings read_stitching_iteration_settings(
     settings.show_crop_dialog = node.as<bool>();
   if (lookup_yaml_path(config, "hstream_ui.show_leveling_dialog", &node))
     settings.show_leveling_dialog = node.as<bool>();
-  if (lookup_yaml_path(config, "hstream_ui.playback_start_time", &node)) {
-    const auto parsed = parse_stitch_frame_time(QString::fromStdString(node.as<std::string>()));
-    if (!parsed.has_value())
-      throw std::invalid_argument("hstream_ui.playback_start_time must be HH:MM:SS or HH:MM:SS.mmm");
-    settings.playback_start_time = format_stitch_frame_time(*parsed);
+  const auto canonical = hm::config::NormalizeRuntimeControlLayer(config);
+  if (lookup_yaml_path(canonical, "playback.start_seconds", &node)) {
+    const double seconds = node.as<double>();
+    if (!std::isfinite(seconds) || seconds < 0 || seconds >= 86400)
+      throw std::invalid_argument("playback.start_seconds must be within one day");
+    settings.playback_start_time =
+        format_stitch_frame_time(QTime::fromMSecsSinceStartOfDay(std::llround(seconds * 1000)));
   }
   return settings;
 }
@@ -4771,7 +4778,8 @@ void write_stitching_iteration_settings(
   config["stitching"]["sync_method"] = settings.sync_method.toStdString();
   config["hstream_ui"]["show_crop_dialog"] = settings.show_crop_dialog;
   config["hstream_ui"]["show_leveling_dialog"] = settings.show_leveling_dialog;
-  config["hstream_ui"]["playback_start_time"] = settings.playback_start_time.toStdString();
+  config["playback"]["start_seconds"] =
+      parse_stitch_frame_time(settings.playback_start_time)->msecsSinceStartOfDay() / 1000.0;
 }
 
 QString resolve_config_path(const QString& path, const QString& base_dir) {
@@ -5170,7 +5178,7 @@ void HStreamWindow::loadBaselineDefaults() {
   baseline_config_ = merge_yaml_maps(loaded->values, user_overlay);
   hm::stitching::PreserveLegacyInputLensSelection(baseline_config_, user_overlay);
   baseline_layer_ = YAML::Clone(loaded->values);
-  user_layer_ = YAML::Clone(user_overlay);
+  user_layer_ = hm::config::NormalizeRuntimeControlLayer(user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
 
   auto require = [this](const QString& path) {
@@ -5222,7 +5230,7 @@ void HStreamWindow::loadBaselineDefaults() {
   };
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
-  require("hstream_ui.playback_start_time");
+  require("playback.start_seconds");
   require("stitching.sync_method");
   hm::ui_internal::StitchingIterationSettings iteration_defaults;
   iteration_defaults.show_crop_dialog = boolean("hstream_ui.show_crop_dialog");
@@ -5230,8 +5238,8 @@ void HStreamWindow::loadBaselineDefaults() {
   default_show_scoreboard_dialog_ = boolean("hstream_ui.show_scoreboard_dialog");
   static_cast<void>(hm::ui::ReadInt8PreparationDefaults(baseline_config_));
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_, iteration_defaults);
-  default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
-  default_playback_realtime_ = boolean("hstream_ui.playback_realtime");
+  default_drivegpt_database_enabled_ = boolean("telemetry.enabled");
+  default_playback_realtime_ = boolean("playback.realtime");
   const auto control_points_default = hm::stitching::read_control_point_limit(baseline_config_);
   if (!control_points_default.ok())
     throw std::runtime_error(control_points_default.status().ToString());
@@ -5441,9 +5449,8 @@ void HStreamWindow::loadBaselineDefaults() {
         std::string("Invalid rink.camera.fixed_edge_rotation_angle in bundled baseline: ") + error.what());
   }
 
-  // These selectors describe where a UI edit is applied, rather than a
-  // HockeyMOM config value. A zero speed/acceleration means no UI override, so
-  // the effective values continue to come from the baseline-backed pipeline.
+  // Target selectors and absolute motion limits share the runtime configuration.
+  // Zero inherits each box's configured translation limit.
   for (const char* id :
        {"Apply_To_Fast_Box",
         "Apply_To_Follower_Box",
@@ -5451,9 +5458,9 @@ void HStreamWindow::loadBaselineDefaults() {
         "Max_Speed_Y_x10",
         "Max_Accel_X_x10",
         "Max_Accel_Y_x10"})
-    camera_defaults_[id] = integer(QString("hstream_ui.camera_controls.%1").arg(id));
+    camera_defaults_[id] = hm::config::RuntimeControlPresentationValue(baseline_config_, id);
   for (const auto& spec : hm::program::kToneControls) {
-    const int value = integer(QString("hstream_ui.camera_controls.%1").arg(spec.id));
+    const int value = std::lround(hm::config::RuntimeControlPresentationValue(baseline_config_, spec.id));
     if (value < spec.minimum || value > spec.maximum)
       throw std::runtime_error(std::string("Invalid baseline tone value: ") + spec.id);
     camera_defaults_[spec.id] = value;
@@ -11692,6 +11699,11 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
   }
   const auto iteration = standalone ? stitchingIterationSettings() : active_iteration_settings_;
   args << QString("--start-time=%1").arg(iteration.playback_start_time);
+  args << QString("--options=playback.realtime=%1")
+              .arg(
+                  !standalone && render_video && realtime_playback_toggle_ && realtime_playback_toggle_->isChecked()
+                      ? "true"
+                      : "false");
   args << QString("--options=stitching.sync_method=%1").arg(iteration.sync_method);
   const QString frame_time = standalone ? stitchFrameTime() : active_stitch_frame_time_;
   if (!frame_time.isEmpty() && frame_time != default_stitch_frame_time_) {
@@ -11750,11 +11762,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
              : QString());
   if (!gpu_memory_profile.isEmpty())
     args << QString("--options=runtime.gpu_memory_profile=%1").arg(gpu_memory_profile);
-  args << QString("--options=hstream_ui.camera_controls.Bring_Up_Shadows=%1")
-              .arg(cameraControlValue("Bring_Up_Shadows"));
-  args << QString("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=%1")
-              .arg(cameraControlValue("Lift_Shadow_Black_Point"));
-  args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
+  args << QString("--options=video_out.tone.shadow_lift_percent=%1").arg(cameraControlValue("Bring_Up_Shadows"));
+  args << QString("--options=video_out.tone.lift_shadow_black_point=%1")
+              .arg(cameraControlValue("Lift_Shadow_Black_Point") != 0 ? "true" : "false");
+  args << QString("--options=video_out.tone.exposure=%1").arg(cameraControlValue("Exposure_x100") / 100.0);
   if (!calibration_only) {
     if (rink_framing_controls_)
       args
@@ -20908,6 +20919,9 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     hm::stitching::restore_generated_rink_mask_frame_time(config);
     std::map<QString, double> staged_controls;
     const QString staged_resolution = controlPointResolutionFromGameConfig(config);
+    const auto effective_preferences = merge_yaml_maps(baseline_config_, config);
+    const bool staged_realtime = hm::get_node(effective_preferences, "playback.realtime")->as<bool>();
+    const bool staged_telemetry = hm::get_node(effective_preferences, "telemetry.enabled")->as<bool>();
     const auto staged_filtering = controlPointFilteringFromGameConfig(config);
     QString staged_high_bit_depth_mode = highBitDepthMode();
     bool native_high_bit_depth_mode_present = false;
@@ -21313,6 +21327,13 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
               QStringLiteral("pipeline.hmstitcher.properties"), QStringLiteral("pipeline.hmplaycropper.properties")};
     const auto tone_value = [&](const QString& property) -> std::optional<std::pair<QString, YAML::Node>> {
       for (const YAML::Node& layer : {config, user_layer_}) {
+        const auto canonical = hm::config::NormalizeRuntimeControlLayer(layer);
+        const std::string key = std::string("video_out.tone.") +
+            (property == "shadow-lift"                   ? "shadow_lift_percent"
+                 : property == "shadow-lift-black-point" ? "lift_shadow_black_point"
+                                                         : "exposure");
+        if (const auto value = hm::get_node(canonical, key))
+          return std::make_pair(QString::fromStdString(key), *value);
         for (const QString& owner : tone_property_owners) {
           const QString path = owner + "." + property;
           YAML::Node value;
@@ -21336,7 +21357,25 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       }
       stage_control("Exposure_x100", setting_x100);
     }
-    YAML::Node controls = config["hstream_ui"]["camera_controls"];
+    const auto canonical_controls = hm::config::NormalizeRuntimeControlLayer(config);
+    for (const auto& key : hm::config::kRuntimeControlKeys) {
+      if (hm::get_node(canonical_controls, key.path)) {
+        const double value = hm::config::RuntimeControlPresentationValue(canonical_controls, key.id);
+        const QString id = QString::fromLatin1(key.id);
+        int maximum = key.boolean ? 1 : 100;
+        if (id.startsWith("Max_Speed_"))
+          maximum = 2000;
+        if (id.startsWith("Max_Accel_"))
+          maximum = 1000;
+        if (id == "Exposure_x100")
+          maximum = 130;
+        const int rounded = rounded_control(QString::fromLatin1(key.path), value);
+        if (value < 0 || value > maximum || std::abs(value - rounded) > 1e-6)
+          throw std::invalid_argument(std::string("Invalid saved camera control ") + key.path);
+        stage_control(id, rounded);
+      }
+    }
+    YAML::Node controls = hm::get_node(canonical_controls, "hstream_ui.camera_controls").value_or(YAML::Node());
     int loaded = 0;
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
@@ -21371,6 +21410,14 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       }
     }
     setStitchingIterationSettings(staged_iteration_settings);
+    if (realtime_playback_toggle_) {
+      const QSignalBlocker blocker(realtime_playback_toggle_);
+      realtime_playback_toggle_->setChecked(staged_realtime);
+    }
+    if (drivegpt_csv_toggle_) {
+      const QSignalBlocker blocker(drivegpt_csv_toggle_);
+      drivegpt_csv_toggle_->setChecked(staged_telemetry);
+    }
     show_scoreboard_dialog_ = staged_show_scoreboard_dialog;
     if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
       staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
@@ -21823,6 +21870,8 @@ bool HStreamWindow::applySavedControlConfig(
     }
   };
 
+  for (const auto& key : hm::config::kRuntimeControlKeys)
+    remove_yaml_path(config, QString::fromLatin1(key.path));
   YAML::Node controls(YAML::NodeType::Map);
   int changed = 0;
   for (const auto& [id, default_value] : camera_defaults_) {
@@ -22056,8 +22105,6 @@ bool HStreamWindow::applySavedControlConfig(
   }
   const QString high_bit_depth_mode = highBitDepthMode();
   const bool use_high_bit_grading = high_bit_depth_mode == "1";
-  const char* tone_element = use_high_bit_grading ? "hmstitcher" : "hmplaycropper";
-  const QString tone_path_prefix = QString("pipeline.%1.properties").arg(tone_element);
   if (high_bit_depth_mode != "auto") {
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = use_high_bit_grading;
     mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
@@ -22068,19 +22115,7 @@ bool HStreamWindow::applySavedControlConfig(
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = "auto";
     mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
   }
-  if (has_control(controls, "Bring_Up_Shadows")) {
-    config["pipeline"][tone_element]["properties"]["shadow-lift"] = slider_value("Bring_Up_Shadows");
-    mark_runtime_key(tone_path_prefix + ".shadow-lift");
-  }
-  if (has_control(controls, "Lift_Shadow_Black_Point")) {
-    config["pipeline"][tone_element]["properties"]["shadow-lift-black-point"] =
-        slider_value("Lift_Shadow_Black_Point") != 0;
-    mark_runtime_key(tone_path_prefix + ".shadow-lift-black-point");
-  }
-  if (has_control(controls, "Exposure_x100")) {
-    config["pipeline"][tone_element]["properties"]["exposure"] = slider_value("Exposure_x100") / 100.0;
-    mark_runtime_key(tone_path_prefix + ".exposure");
-  }
+
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
       has_control(controls, "Right_Fixed_Edge_Rotation_Angle_x10");
@@ -22195,9 +22230,7 @@ bool HStreamWindow::applySavedControlConfig(
       has_control(controls, "Stop_Cancel_Hysteresis_Frames") || has_control(controls, "Stop_Delay_Cooldown_Frames") ||
       has_control(controls, "Time_To_Dest_Speed_Limit_Frames") ||
       has_control(controls, "Overshoot_Stop_Delay_Frames") || has_control(controls, "Post_Nonstop_Stop_Delay_Frames") ||
-      has_control(controls, "Overshoot_Speed_Ratio_x100") || has_control(controls, "Max_Speed_X_x10") ||
-      has_control(controls, "Max_Speed_Y_x10") || has_control(controls, "Max_Accel_X_x10") ||
-      has_control(controls, "Max_Accel_Y_x10");
+      has_control(controls, "Overshoot_Speed_Ratio_x100");
   const QStringList tracker_control_ids = {
       "Ignore_Largest_Count",
       "Ignore_Referees",
@@ -22313,18 +22346,6 @@ bool HStreamWindow::applySavedControlConfig(
           if (has_control(controls, "Post_Nonstop_Stop_Delay_Frames")) {
             live_boxes[index]["post-nonstop-stop-delay-count"] = slider_value("Post_Nonstop_Stop_Delay_Frames");
           }
-          if (has_control(controls, "Max_Speed_X_x10")) {
-            live_boxes[index]["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
-          }
-          if (has_control(controls, "Max_Speed_Y_x10")) {
-            live_boxes[index]["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
-          }
-          if (has_control(controls, "Max_Accel_X_x10")) {
-            live_boxes[index]["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
-          }
-          if (has_control(controls, "Max_Accel_Y_x10")) {
-            live_boxes[index]["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
-          }
         };
         if (slider_value("Apply_To_Fast_Box") != 0) {
           apply_live_box(live_box_roles->fast_index);
@@ -22362,15 +22383,6 @@ bool HStreamWindow::applySavedControlConfig(
         return false;
       }
     }
-  }
-  if (has_control(controls, "Apply_To_Fast_Box")) {
-    config["hstream_ui"]["camera_control_targets"]["apply_to_fast_box"] = slider_value("Apply_To_Fast_Box") != 0;
-    mark_runtime_key("hstream_ui.camera_control_targets.apply_to_fast_box");
-  }
-  if (has_control(controls, "Apply_To_Follower_Box")) {
-    config["hstream_ui"]["camera_control_targets"]["apply_to_follower_box"] =
-        slider_value("Apply_To_Follower_Box") != 0;
-    mark_runtime_key("hstream_ui.camera_control_targets.apply_to_follower_box");
   }
   if (!unavailable_playtracker_config_error_.isEmpty()) {
     // Native defaults are unknown, so retain untouched tracker overrides
@@ -22443,6 +22455,7 @@ bool HStreamWindow::applySavedControlConfig(
     config["stitching"]["calibration_frame_count"] = selected_frame_count;
   }
   appendLog(QString("preset captured %1 non-default camera controls").arg(changed));
+  config = hm::config::NormalizeRuntimeControlLayer(config);
   return true;
 }
 

@@ -765,7 +765,7 @@ absl::StatusOr<DsPlayTrackerCtx::PlayTracker> DsPlayTrackerCreateCpuTracker(
     // Archived replay configs predate role filtering; their observations were already selected.
     result.ignore_referees = yaml["ignore-referees"] && yaml["ignore-referees"].as<bool>();
     result.ignore_goalies = yaml["ignore-goalies"] && yaml["ignore-goalies"].as<bool>();
-    result.base_play_tracker_config = result.play_tracker_config;
+    result.base_play_tracker_config = gst_hm_playtracker::create_play_tracker_config(arena, yaml, false);
     if (!result.base_play_tracker_config.living_boxes.empty()) {
       const int zoom = yaml["zoom-in-aggressiveness"]
           ? yaml["zoom-in-aggressiveness"].as<int>() : kDefaultZoomInAggressiveness;
