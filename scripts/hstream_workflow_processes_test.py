@@ -166,7 +166,7 @@ class ProcessesTest(unittest.TestCase):
             try:
                 # Model a scan that misses the child. No signal can establish
                 # shutdown either: the kernel still reports a live child.
-                processes.descendants = lambda: {}
+                processes.descendants = lambda **_kwargs: {}
                 assert not processes.retire(.05), 'An empty scan was treated as shutdown proof'
                 assert not processes.reap(), 'A live child was treated as reaped'
             finally:
@@ -186,6 +186,212 @@ class ProcessesTest(unittest.TestCase):
             side_effect=[InterruptedError(), (123, 0), ChildProcessError()],
         ):
             self.assertTrue(processes.reap())
+
+    def test_retirement_bounds_interrupted_and_continuously_reapable_waits(self):
+        self.isolated("""
+            import time
+            from unittest.mock import patch
+            from hstream_workflow import processes
+            for observation in (InterruptedError, (123, 0)):
+                arguments = ({'side_effect': observation} if observation is InterruptedError
+                             else {'return_value': observation})
+                started = time.monotonic()
+                with patch.object(processes.os, 'waitpid', **arguments), \\
+                     patch.object(processes, 'signal_descendants'):
+                    assert not processes.retire(.03), 'Unproved reaping became success'
+                assert time.monotonic() - started < .5, 'Inner reaping exceeded both phase budgets'
+            """)
+
+    def test_zero_budget_permits_only_one_kernel_proof_check(self):
+        from unittest.mock import patch
+
+        from hstream_workflow import processes
+
+        for value, expected in (
+            (ChildProcessError, True),
+            (InterruptedError, False),
+            ((0, 0), False),
+            ((123, 0), False),
+        ):
+            arguments = (
+                {"side_effect": value}
+                if isinstance(value, type)
+                else {"return_value": value}
+            )
+            with (
+                self.subTest(value=value),
+                patch.object(processes.os, "waitpid", **arguments) as wait,
+                patch.object(processes, "signal_descendants") as send,
+            ):
+                self.assertEqual(processes.retire(0), expected)
+                wait.assert_called_once_with(-1, os.WNOHANG)
+                send.assert_not_called()
+
+    def test_expiry_during_pin_or_identity_read_closes_without_signaling(self):
+        from unittest.mock import patch
+
+        from hstream_workflow import processes
+
+        saved = {"pid": 123, "parent": os.getpid(), "start_time": 1}
+        for expire_at in ("pin", "identity"):
+            clock = [0]
+
+            def pin(_pid, expire=expire_at, moment=clock):
+                if expire == "pin":
+                    moment[0] = 2
+                return 42
+
+            def identity(_pid, moment=clock):
+                moment[0] = 2
+                return saved
+
+            with (
+                self.subTest(expire_at=expire_at),
+                patch.object(
+                    processes.time,
+                    "monotonic",
+                    side_effect=lambda moment=clock: moment[0],
+                ),
+                patch.object(processes, "descendants", return_value={123: saved}),
+                patch.object(processes, "pidfd_open", side_effect=pin),
+                patch.object(processes, "process_identity", side_effect=identity),
+                patch.object(processes, "pidfd_send_signal") as send,
+                patch.object(processes.os, "close") as close,
+            ):
+                processes.signal_descendants(15, deadline=1)
+                send.assert_not_called()
+                close.assert_called_once_with(42)
+
+    def test_unreadable_observation_cannot_replace_kernel_proof(self):
+        self.isolated("""
+            import os, signal, subprocess
+            from unittest.mock import patch
+            from hstream_workflow import processes
+            processes.become_subreaper()
+            child = subprocess.Popen(['sleep', '60'])
+            pin = processes.pidfd_open(child.pid)
+            try:
+                assert not processes.retire(0), 'Zero budget invented shutdown'
+                with patch.object(processes, 'descendants', side_effect=PermissionError('unreadable')):
+                    assert not processes.retire(.03), 'Live child disappeared from ownership'
+                assert child.poll() is None
+            finally:
+                processes.pidfd_send_signal(pin, signal.SIGKILL)
+                child.wait(timeout=5)
+                os.close(pin)
+            with patch.object(processes, 'descendants', side_effect=PermissionError('unreadable')):
+                assert processes.retire(.03), 'Observation error defeated genuine ECHILD'
+            assert processes.retire(0), 'Zero budget ignored genuine ECHILD'
+            """)
+
+    def test_kernel_proof_after_observation_failure_remains_authoritative(self):
+        from unittest.mock import patch
+
+        from hstream_workflow import processes
+
+        with (
+            patch.object(
+                processes.os, "waitpid", side_effect=[(0, 0), ChildProcessError()]
+            ),
+            patch.object(
+                processes,
+                "signal_descendants",
+                side_effect=PermissionError("unreadable"),
+            ) as send,
+        ):
+            self.assertTrue(processes.retire(0.03))
+            send.assert_called_once()
+
+    def test_term_ignoring_detached_child_is_killed_and_reaped(self):
+        self.isolated("""
+            import os, signal, subprocess, sys, tempfile, time
+            from pathlib import Path
+            from hstream_workflow import processes
+            processes.become_subreaper()
+            code = 'import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);print("ready",flush=True);time.sleep(60)'
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                launcher = subprocess.Popen([
+                    sys.executable, '-c',
+                    'import subprocess,sys;from pathlib import Path;'
+                    'p=subprocess.Popen([sys.executable,"-c",sys.argv[2]],start_new_session=True,stdout=subprocess.PIPE);'
+                    'assert p.stdout.readline()==b"ready\\\\n";Path(sys.argv[1]).write_text(str(p.pid))',
+                    str(root/'pid'),code,
+                ])
+                pin = None
+                try:
+                    launcher.wait(timeout=5)
+                    pid = int((root/'pid').read_text())
+                    pin = processes.pidfd_open(pid)
+                    assert processes.process_identity(pid)['parent'] == os.getpid()
+                    assert processes.retire(.2), 'TERM-ignoring adopted child was not retired'
+                    assert processes.process_identity(pid) is None
+                finally:
+                    if pin is not None:
+                        try:
+                            processes.pidfd_send_signal(pin,signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        os.close(pin)
+                    assert processes.retire(.2), 'Fixture cleanup failed'
+            """)
+
+    def test_deadlines_bound_enumeration_ancestry_and_signal_batches(self):
+        from unittest.mock import patch
+
+        from hstream_workflow import processes
+
+        count = 1000
+        clock = [0.0]
+
+        def now():
+            clock[0] += 0.001
+            return clock[0]
+
+        # Reversed ancestry requires repeated expansion passes; no per-pass
+        # deadline alone can bound the work once a very large scan is returned.
+        rows = {
+            pid: {"pid": pid, "parent": pid - 1, "start_time": 1}
+            for pid in range(count, 0, -1)
+        }
+        rows[1]["parent"] = os.getpid()
+        paths = [Path(str(pid)) for pid in rows]
+        with (
+            patch.object(processes.time, "monotonic", side_effect=now),
+            patch.object(processes.Path, "iterdir", return_value=iter(paths)),
+            patch.object(
+                processes, "process_identity", side_effect=rows.get
+            ) as identity,
+        ):
+            partial = processes.descendants(deadline=0.01)
+            self.assertLess(identity.call_count, count)
+            self.assertLess(len(partial), count)
+        clock[0] = 0
+        with (
+            patch.object(processes.time, "monotonic", side_effect=now),
+            patch.object(processes.Path, "iterdir", return_value=iter(paths)),
+            patch.object(
+                processes, "process_identity", side_effect=rows.get
+            ) as identity,
+        ):
+            partial = processes.descendants(deadline=1.1)
+            self.assertEqual(identity.call_count, count)
+            self.assertLess(len(partial), count)
+            self.assertLess(clock[0], 1.2)
+        clock[0] = 0
+        direct = {pid: dict(row, parent=os.getpid()) for pid, row in rows.items()}
+        with (
+            patch.object(processes.time, "monotonic", side_effect=now),
+            patch.object(processes, "descendants", return_value=direct),
+            patch.object(processes, "process_identity", side_effect=direct.get),
+            patch.object(processes, "pidfd_open", return_value=42) as pin,
+            patch.object(processes, "pidfd_send_signal") as send,
+            patch.object(processes.os, "close") as close,
+        ):
+            processes.signal_descendants(15, deadline=0.01)
+            self.assertLess(send.call_count, count)
+            self.assertEqual(close.call_count, pin.call_count)
+            self.assertLess(clock[0], 0.02)
 
 
 if __name__ == "__main__":
