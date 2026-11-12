@@ -91,7 +91,7 @@ def main():
     ui.pop("job", None)
     ui["show_crop_dialog"] = False
     ui["show_leveling_dialog"] = False
-    ui["drivegpt_database"] = {"enabled": False}
+    config["telemetry"] = {"enabled": False}
     config.setdefault("pipeline", {}).setdefault("hmplaycropper", {})[
         "show-scoreboard"
     ] = 0
@@ -125,17 +125,22 @@ def main():
         )
     exit_code = result.returncode
     saved = yaml.safe_load(config_path.read_text())
-    controls = saved.get("hstream_ui", {}).get("camera_controls", {})
+    controls = saved.get("video_out", {}).get("tone", {})
     baseline_controls = yaml.safe_load((native / "configs/baseline.yaml").read_text())[
-        "hstream_ui"
-    ]["camera_controls"]
+        "video_out"
+    ]["tone"]
     expected = {
         "Bring_Up_Shadows": 0,
         "Lift_Shadow_Black_Point": 1,
         "Exposure_x100": 73,
     }
     saved_controls = {
-        name: controls.get(name, baseline_controls[name]) for name in expected
+        identifier: round(controls.get(key, baseline_controls[key]) * divisor)
+        for identifier, key, divisor in (
+            ("Bring_Up_Shadows", "shadow_lift_percent", 1),
+            ("Lift_Shadow_Black_Point", "lift_shadow_black_point", 1),
+            ("Exposure_x100", "exposure", 100),
+        )
     }
     saved_precision = (
         saved.get("pipeline", {})

@@ -7349,6 +7349,11 @@ absl::Status Configurator::configure_source_bit_depth(
         candidates.push_back({YAML::Clone(*value), path, std::max(0, explicit_value_rank(path)), priority, ui_value});
       }
     };
+    const std::string tone_key = std::string("video_out.tone.") +
+        (std::string(spec.ui_name) == "Bring_Up_Shadows"              ? "shadow_lift_percent"
+             : std::string(spec.ui_name) == "Lift_Shadow_Black_Point" ? "lift_shadow_black_point"
+                                                                      : "exposure");
+    add_candidate(tone_key, 4, false);
     add_candidate(ui_path, 3, true);
     add_candidate(stitcher_path, high_bit_depth ? 2 : 1, false);
     add_candidate(cropper_path, high_bit_depth ? 1 : 2, false);
@@ -7456,7 +7461,7 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
 
 absl::Status Configurator::configure_job_telemetry(YAML::Node& pipeline, bool stitching_calibration_only) {
   bool capture = true;
-  HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.drivegpt_database.enabled", true));
+  HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "telemetry.enabled", true));
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.job.capture_telemetry", capture));
   if (stitching_calibration_only)
     capture = false;
@@ -9235,7 +9240,7 @@ absl::Status Configurator::apply_settings_overlay(const fs::path& path) {
     document["values"] = YAML::Clone(overlay);
     recording_config_documents_.push_back(document);
     return absl::OkStatus();
-  } catch (const YAML::Exception& exception) {
+  } catch (const std::exception& exception) {
     return absl::InvalidArgumentError("Invalid runtime settings overlay: " + std::string(exception.what()));
   }
 }
@@ -9963,17 +9968,24 @@ absl::Status Configurator::complete_configuration(
 }
 
 absl::Status Configurator::apply_config_item(const std::string& key, const std::string& value) {
-  if (is_video_converter_config_option(key)) {
-    return absl::InvalidArgumentError("Video converter selection must be set in YAML config files");
+  return apply_config_options({{key, value}});
+}
+
+absl::Status Configurator::apply_config_options(const std::map<std::string, std::string>& options) {
+  try {
+    YAML::Node overlay(YAML::NodeType::Map);
+    for (const auto& [key, value] : options) {
+      if (is_video_converter_config_option(key))
+        return absl::InvalidArgumentError("Video converter selection must be set in YAML config files");
+      overlay = set_node_value(overlay, key, value);
+    }
+    const auto merged = merge_nodes(config_, overlay, /*warn_if_key_not_in_dest=*/false);
+    record_explicit_overlay(overlay, {}, 3);
+    config_ = merged;
+    return absl::OkStatus();
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid runtime options: ") + error.what());
   }
-  YAML::Node overlaid_config = YAML::Node(YAML::NodeType::Map);
-  overlaid_config = set_node_value(overlaid_config, key, value);
-  // std::cout << overlaid_config << std::endl;
-  //  std::cout << config_ << std::endl;
-  config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
-  record_explicit_overlay(overlaid_config, {}, 3);
-  // std::cout << config_ << std::endl;
-  return absl::OkStatus();
 }
 
 absl::Status Configurator::prepare_initial_pipeline_position(
