@@ -9291,6 +9291,46 @@ absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_d
   return false;
 }
 
+absl::StatusOr<stitching::failure::Context> Configurator::calibration_failure_context(bool calibration_only) const {
+  try {
+    stitching::failure::Context result;
+    for (const auto& values : {config_, lower_layer_config_}) {
+      const auto canonical = get_node(values, "stitching.control_point_limit");
+      const auto saved = get_node(values, "hstream_ui.stitching_calibration.control_points");
+      const auto cameras = get_node(values, "stitching.camera_configs");
+      if ((!canonical.has_value() && !saved.has_value()) || !cameras.has_value() || !cameras->IsMap())
+        return absl::InvalidArgumentError("Failure context requires frozen native control-point and camera defaults");
+    }
+    stitching::ControlPointMatcher matcher;
+    HM_ASSIGN_OR_RETURN(matcher, stitching::resolve_control_point_matcher(config_, lower_layer_config_));
+    result.matcher = stitching::ControlPointMatcherName(matcher);
+    stitching::MappingBackend backend;
+    HM_ASSIGN_OR_RETURN(
+        backend, stitching::ParseMappingBackend(config_["stitching"]["mapping_backend"].as<std::string>()));
+    result.mapping_backend = stitching::MappingBackendName(backend);
+    stitching::StitchProjection projection;
+    HM_ASSIGN_OR_RETURN(
+        projection, stitching::ParseStitchProjection(config_["stitching"]["projection"].as<std::string>()));
+    result.projection = stitching::StitchProjectionName(projection);
+    HM_ASSIGN_OR_RETURN(result.control_point_limit, stitching::read_control_point_limit(config_));
+    HM_ASSIGN_OR_RETURN(result.default_control_point_limit, stitching::read_control_point_limit(lower_layer_config_));
+    result.frame_count = config_["pipeline"]["hmstitcher"]["calibration-frame-count"].as<int>();
+    HM_ASSIGN_OR_RETURN(result.max_output_width, effective_hmstitcher_max_output_width(config_["pipeline"]));
+    stitching::StitchCameraSelection camera, defaults;
+    HM_ASSIGN_OR_RETURN(camera, stitching::read_stitch_camera_selection(config_));
+    HM_ASSIGN_OR_RETURN(defaults, stitching::read_stitch_camera_selection(lower_layer_config_));
+    result.camera = {camera.configuration, camera.horizontal_fov, camera.vertical_fov};
+    result.default_camera = {defaults.configuration, defaults.horizontal_fov, defaults.vertical_fov};
+    result.camera_differs_from_defaults = camera != defaults;
+    result.calibration_required = stitching_calibration_required_;
+    result.calibration_only = calibration_only;
+    result.calibration_start_stage = stitching_calibration_start_stage_;
+    return result;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(std::string("Calibration failure context is unavailable: ") + error.what());
+  }
+}
+
 absl::Status Configurator::complete_configuration(
     bool force,
     bool clean_stitching_artifacts,

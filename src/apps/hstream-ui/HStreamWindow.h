@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hstream/src/libs/stitching/CalibrationFailureProtocol.h"
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
 #include "src/apps/hstream-ui/DetectorOptions.h"
@@ -455,7 +456,7 @@ class HStreamWindow : public QMainWindow {
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
   void addRtspOutput();
-  void appendLog(const QString& message, bool stderr_output = false);
+  void appendLog(const QString& message, bool stderr_output = false, const char* diagnostic_source = nullptr);
   void recordStitchingCalibrationDiagnostic(const QString& line);
   QString stitchingCalibrationFailureAnalysis(const QString& message) const;
   QString writePlaytrackerRuntimeConfig();
@@ -896,14 +897,8 @@ class HStreamWindow : public QMainWindow {
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   QString calibration_failure_message_;
-  QStringList calibration_diagnostic_lines_;
-  bool calibration_cuda_out_of_memory_{false};
-  bool calibration_hmstitcher_input_pool_failure_{false};
-  bool calibration_stitch_blender_oom_{false};
-  /** First no-progress watchdog expiry seen this run; it outranks the generic terminal status in the failure dialog. */
-  QString calibration_stall_watchdog_message_;
-  int calibration_rejected_hypotheses_{0};
-  int calibration_rejected_candidates_{0};
+  std::string calibration_failure_binding_;
+  hm::stitching::failure::Session calibration_failure_session_;
   bool calibration_waiting_for_playback_restart_{false};
   bool calibration_playback_restart_observed_{false};
   bool preview_focus_mode_{false};

@@ -25,6 +25,7 @@
 #include "src/apps/hstream-ui/SourceCameraTrack.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/WebCalibrationControls.h"
+#include "src/apps/hstream-ui/WebCalibrationFailure.h"
 #include "src/apps/hstream-ui/WebCameraExperiment.h"
 #include "src/apps/hstream-ui/WebExperimentFrames.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
@@ -1180,6 +1181,8 @@ QJsonObject detector_state(const YAML::Node& game, bool hockeymon) {
 }
 
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "calibration-failure-diagnose")
+    return hm::web::DiagnoseCalibrationFailure(request, [] { return interrupted != 0; });
   if (request.operation == "detector-controls-read") {
     require(request.payload.size() == 1 && request.payload.value("backend").isString(), "Expected detector backend");
     const auto backend = request.payload.value("backend").toString();

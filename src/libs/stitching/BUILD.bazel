@@ -1,6 +1,30 @@
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
 cc_library(
+    name = "calibration_failure",
+    srcs = ["CalibrationFailure.cpp"],
+    hdrs = ["CalibrationFailure.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":stitching_algorithms"],
+)
+
+cc_library(
+    name = "calibration_failure_protocol",
+    srcs = ["CalibrationFailureProtocol.cpp"],
+    hdrs = ["CalibrationFailureProtocol.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":calibration_failure", "@json_glib", "@com_google_absl//absl/status:statusor"],
+)
+
+cc_test(
+    name = "calibration_failure_test",
+    srcs = ["CalibrationFailureTest.cpp"],
+    deps = [":calibration_failure_protocol"],
+)
+
+cc_library(
   name = "scoreboard_proposal",
   srcs = ["ScoreboardProposal.cpp"],
   hdrs = ["ScoreboardProposal.h"],

@@ -32,6 +32,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/stitching:calibration_failure_protocol",
     "//src/libs/detection:tile_inference_config",
     "//src/libs/common:game_storage",
     "//src/libs/common:game_operation_owner",
@@ -236,6 +237,14 @@ cc_test(
         "configurator.h",
         "deepstream_app.h",
     ],
+    copts = HSTREAM_CLI_COPTS,
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = HSTREAM_CLI_DEPS,
+)
+
+cc_test(
+    name = "configurator_failure_context_test",
+    srcs = ["ConfiguratorFailureContextTest.cpp", "StitcherOnePassConfig.h", "StitchingCalibrationMode.h", "configurator.cpp", "configurator.h", "deepstream_app.h"],
     copts = HSTREAM_CLI_COPTS,
     linkopts = HSTREAM_CLI_LINKOPTS,
     deps = HSTREAM_CLI_DEPS,
