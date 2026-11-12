@@ -261,6 +261,35 @@ absl::StatusOr<YAML::Node> ResolveProgramCameraConfig(
       "rink.camera.follower_box_scale_height",
       ScalarType::kDouble,
       follower_path + "scale-dest-height"));
+  // Absolute translation limits are runtime inputs, independent of any UI.
+  const auto motion = get_node(effective_config, "rink.camera.motion_overrides");
+  if (!motion || !motion->IsMap())
+    return absl::InvalidArgumentError("Missing rink.camera.motion_overrides");
+  try {
+    const bool fast = (*motion)["apply_to_fast_box"].as<bool>();
+    const bool follower = (*motion)["apply_to_follower_box"].as<bool>();
+    for (const auto& key :
+         {std::pair{"max_speed_x", "max-speed-x"},
+          std::pair{"max_speed_y", "max-speed-y"},
+          std::pair{"max_accel_x", "max-accel-x"},
+          std::pair{"max_accel_y", "max-accel-y"}}) {
+      const std::string path = std::string("rink.camera.motion_overrides.") + key.first;
+      const double value = (*motion)[key.first].as<double>();
+      if (!std::isfinite(value) || value < 0)
+        return absl::InvalidArgumentError(path + " must be finite and nonnegative");
+      // Zero retains the native, camera/arena-derived or per-box limit.
+      if (value == 0)
+        continue;
+      for (const auto& target : {std::pair{fast, roles.fast_index}, std::pair{follower, roles.follower_index}}) {
+        if (!target.first)
+          continue;
+        auto box = live_boxes[target.second];
+        HM_RETURN_IF_ERROR(copy_required(box, key.second, path.c_str(), ScalarType::kDouble, key.second));
+      }
+    }
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid motion overrides: ") + error.what());
+  }
   std::vector<size_t> normalized_order;
   HM_ASSIGN_OR_RETURN(normalized_order, normalized_playtracker_live_box_order(live_boxes));
   YAML::Node normalized_boxes(YAML::NodeType::Sequence);

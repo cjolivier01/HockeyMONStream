@@ -184,5 +184,30 @@ play-tracker:
         "Zoom aggressiveness must accept both boundaries and reject values below zero or above one hundred");
   }
 
+  // Editing only the bundled baseline must change real startup tuning, with
+  // no UI or generated sidecar. Both GPU backends use this mapper.
+  auto motion_config = YAML::Clone(bundled_baseline->values);
+  motion_config["rink"]["camera"]["motion_overrides"]["max_speed_x"] = 12.3;
+  motion_config["rink"]["camera"]["motion_overrides"]["max_accel_y"] = 4.5;
+  auto motion = hm::tracking::ResolveProgramCameraConfig(motion_config, {}, 0, playtracker_base);
+  ok &= expect(motion.ok(), "Canonical baseline motion was rejected");
+  if (motion.ok()) {
+    auto boxes = (*motion)["play-tracker"]["live-boxes"];
+    ok &= expect(
+        !boxes[0]["max-speed-x"].IsDefined() && boxes[1]["max-speed-x"].as<double>() == 12.3 &&
+            boxes[1]["max-accel-y"].as<double>() == 4.5,
+        "Baseline absolute motion must reach only the selected native box");
+  }
+  motion_config["rink"]["camera"]["motion_overrides"]["apply_to_fast_box"] = true;
+  motion = hm::tracking::ResolveProgramCameraConfig(motion_config, {}, 0, playtracker_base);
+  ok &= expect(
+      motion.ok() && (*motion)["play-tracker"]["live-boxes"][0]["max-speed-x"].as<double>() == 12.3,
+      "Canonical fast target did not receive motion");
+  motion_config["rink"]["camera"]["motion_overrides"]["apply_to_fast_box"] = false;
+  motion_config["rink"]["camera"]["motion_overrides"]["apply_to_follower_box"] = false;
+  motion_config["rink"]["camera"]["motion_overrides"]["max_speed_x"] = -1;
+  ok &= expect(
+      !hm::tracking::ResolveProgramCameraConfig(motion_config, {}, 0, playtracker_base).ok(),
+      "Invalid motion limit was accepted");
   return ok ? 0 : 1;
 }

@@ -172,6 +172,7 @@ int main(int argc, char** argv) {
       "Game overrides were removed because they equal the shipped baseline");
   saved_game["pipeline"]["hmplaycropper"]["properties"]["exposure"] = 0.9;
   saved_game["hstream_ui"].remove("camera_controls");
+  saved_game["video_out"].remove("tone");
   Write(games.filePath("inherit/_hockeymon/config.yaml"), QByteArray::fromStdString(YAML::Dump(saved_game)));
   selector->setCurrentIndex(0);
   selector->setCurrentIndex(selector->findText("inherit"));
@@ -201,15 +202,17 @@ int main(int argc, char** argv) {
   Require(
       YAML::LoadFile(defaults_path.toStdString())["stitching"]["max_output_width"].as<int>() == 5800,
       "Reset discarded subsequent edits");
-  // Tracker controls need a native config too; it must be user-owned, not game-local.
+  // Motion limits save native units directly, without materializing a tracker sidecar.
   HStreamWindowTestAccess::Set(window, "Max_Speed_X_x10", 20);
   Require(HStreamWindowTestAccess::Save(window), "Cannot save native tracker defaults");
   defaults = YAML::LoadFile(defaults_path.toStdString());
-  const auto tracker = defaults["pipeline"]["ds-playtracker"]["config-file"].as<std::string>();
   Require(
-      QString::fromStdString(tracker).startsWith(home.filePath(".config/hstream-ui/")),
-      "Default tracker file escaped the user config directory");
-  Require(QFile::exists(QString::fromStdString(tracker)), "Default tracker reference is missing");
+      defaults["rink"]["camera"]["motion_overrides"]["max_speed_x"].as<double>() == 2,
+      "Defaults did not save native-unit motion");
+  Require(
+      !defaults["pipeline"] || !defaults["pipeline"]["ds-playtracker"] ||
+          !defaults["pipeline"]["ds-playtracker"]["config-file"],
+      "Motion settings still require a generated tracker sidecar");
   Require(Read(games.filePath("override/_hockeymon/config.yaml")) == original_game, "Defaults edits modified a game");
   Require(Read(baseline_path) == original_baseline, "Defaults/reset modified baseline.yaml");
   // A fresh window must load the same settings.

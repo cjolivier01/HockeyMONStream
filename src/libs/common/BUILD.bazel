@@ -576,7 +576,7 @@ cc_library(
     hdrs = ["ConfigLayers.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":config_path", "@yaml-cpp", "@com_google_absl//absl/status:statusor", "@com_google_absl//absl/strings"],
+    deps = [":config_path", ":runtime_control_config", "@yaml-cpp", "@com_google_absl//absl/status:statusor", "@com_google_absl//absl/strings"],
 )
 
 cc_test(
@@ -644,4 +644,19 @@ cc_test(
     args = ["$(location //src/apps/hstream-process-guard:hstream-process-guard)"],
     data = ["//src/apps/hstream-process-guard:hstream-process-guard"],
     deps = [":game_operation_owner"],
+)
+
+cc_library(
+    name = "runtime_control_config",
+    srcs = ["RuntimeControlConfig.cpp"],
+    hdrs = ["RuntimeControlConfig.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [":config_path", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "runtime_control_config_test",
+    srcs = ["RuntimeControlConfigTest.cpp"],
+    deps = [":runtime_control_config", ":config_layers", ":config_path"],
 )
