@@ -282,7 +282,7 @@ absl::StatusOr<VideoChapter> collect_lr_chapters(const std::string& directory, b
  * @brief Collect and order chapter files inside a directory.
  *
  * Strategy: prefer vendor-specific patterns (GoPro, Insta360) if found;
- * otherwise fall back to left/right patterns. Output keys are 1..N in
+ * otherwise fall back to left/right patterns or one unnumbered video. Output keys are 1..N in
  * the discovered order.
  */
 absl::StatusOr<VideoChapter> collect_chapters_for_dir(const std::string& directory) {
@@ -300,6 +300,19 @@ absl::StatusOr<VideoChapter> collect_chapters_for_dir(const std::string& directo
     return chapter_map;
   }
   HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/false, /*renumber=*/true));
+  if (!chapter_map.empty()) {
+    return chapter_map;
+  }
+  // Add imports each unnumbered file into its own camN directory. Do not infer
+  // a chapter order if a manually assembled directory contains several files.
+  for (const auto& entry : fs::directory_iterator(directory)) {
+    if (entry.is_regular_file() && IsStandaloneCameraFile(entry.path().filename().string())) {
+      if (!chapter_map.empty()) {
+        return absl::InvalidArgumentError("Auto requires one unnumbered recording per camera directory: " + directory);
+      }
+      chapter_map[1] = entry.path().string();
+    }
+  }
   return chapter_map;
 }
 
@@ -321,6 +334,11 @@ int cam_index(const std::string& name) {
 }
 
 } // namespace
+
+bool IsStandaloneCameraFile(const std::string& filename) {
+  static const std::regex pattern(kStandaloneCameraFilePattern, std::regex::icase);
+  return std::regex_match(filename, pattern);
+}
 
 absl::Status ValidateCameraChapters(const std::map<std::string, std::vector<std::string>>& cameras) {
   using Chapters = std::map<std::pair<size_t, int>, std::string>;

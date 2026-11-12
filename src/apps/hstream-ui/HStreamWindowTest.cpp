@@ -11,6 +11,7 @@
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/LiveStitchingGeneration.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
+#include "hstream/src/libs/stitching/VideoDiscovery.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/CameraOpticsWidget.h"
 #include "src/apps/hstream-ui/InputLensWidget.h"
@@ -3735,7 +3736,7 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
   }
 
   activate(automatic);
-  const QString undiscoverable_auto = source_dir + "/clip.mov";
+  const QString undiscoverable_auto = source_dir + "/clip01.mov";
   const QString undiscoverable_part = source_dir + "/left-10.mp4";
   if (!write_fake_video(undiscoverable_auto) || !write_fake_video(undiscoverable_part)) {
     return false;
@@ -4547,6 +4548,29 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
           "Private-config save failure must remove the new copied file and its ownership metadata")) {
     return false;
   }
+
+  game_id->setText("ui-standalone-auto-game");
+  activate(create);
+  activate(automatic);
+  for (const auto* name : {"one.mp4", "two.MP4"}) {
+    const QString path = source_dir + "/" + name;
+    if (!write_fake_video(path))
+      return false;
+    video_path->setText(path);
+    activate(add_video);
+  }
+  // Re-adding the exact same source must reuse its camera identity.
+  video_path->setText(source_dir + "/one.mp4");
+  activate(add_video);
+  activate(create);
+  const auto standalone = hm::stitching::get_available_videos(window->gameDirectoryText().toStdString());
+  if (!expect(
+          list->count() == 2 && list_contains(list, "Auto  cam1/one.mp4") &&
+              list_contains(list, "Auto  cam2/two.MP4") && standalone.ok() && standalone->size() == 2 &&
+              standalone->count("cam1") && standalone->count("cam2") && !standalone->count("left") &&
+              !standalone->count("right"),
+          "Unnumbered Auto imports must survive refresh as separate cameras awaiting native orientation"))
+    return false;
 
   game_id->setText("ui-empty-auto-game");
   activate(create);
