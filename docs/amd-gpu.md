@@ -1468,3 +1468,16 @@ inherits Playback start, while nonzero references retain their sign. The shared
 CPU reference sampler wraps end-relative samples to the frozen Playback start.
 Fresh automatic AMD calibration remains unavailable; this does not add an AMD
 pipeline calibration path or change saved calibration validation.
+
+Canonical control configuration now resolves `video_out.tone` and `playback`
+instead of independent AMD tone/start/pacing defaults. Legacy AMD keys normalize
+within their original layer, and the shared camera mapper consumes
+`rink.camera.motion_overrides` without a UI-generated file. This does not add
+any live-control capability or close the outstanding backend workflow gaps above.
+See [canonical-runtime-controls.md](canonical-runtime-controls.md).
+
+Validation for this consolidation: the shared runtime-control, camera-mapping,
+Program output and GPU tests passed on `ripper` with ROCm. The full AMD CLI/UI
+build stopped in the existing `VaDetectorImage.cpp` toolchain include chain
+(`/usr/include/c++/12/cstdlib` could not find `stdlib.h`); full application
+validation remains incomplete on that host.

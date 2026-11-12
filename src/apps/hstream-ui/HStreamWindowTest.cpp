@@ -902,7 +902,7 @@ for line in sys.stdin:
     return result;
   }
   static bool configuredDrivegptDatabaseDefault(HStreamWindow* window) {
-    return window->baseline_config_["hstream_ui"]["drivegpt_database"]["enabled"].as<bool>();
+    return window->baseline_config_["telemetry"]["enabled"].as<bool>();
   }
   static hm::stitching::StitchCameraSelection defaultCameraSelection(HStreamWindow* window) {
     return window->default_camera_selection_;
@@ -12418,9 +12418,9 @@ bool test_camera_controls(HStreamWindow* window) {
   const QStringList high_bit_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   if (!expect(
           high_bit_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=1") &&
-              high_bit_arguments.contains("--options=hstream_ui.camera_controls.Bring_Up_Shadows=35") &&
-              high_bit_arguments.contains("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1") &&
-              high_bit_arguments.contains("--options=hstream_ui.camera_controls.Exposure_x100=60"),
+              high_bit_arguments.contains("--options=video_out.tone.shadow_lift_percent=35") &&
+              high_bit_arguments.contains("--options=video_out.tone.lift_shadow_black_point=true") &&
+              high_bit_arguments.contains("--options=video_out.tone.exposure=0.6"),
           "A forced high-bit launch should let the CLI route canonical tone controls to the FP16 stitcher")) {
     return false;
   }
@@ -12428,9 +12428,9 @@ bool test_camera_controls(HStreamWindow* window) {
   const QStringList forced_8_bit_arguments = HStreamWindowTestAccess::pipelineArguments(window);
   if (!expect(
           forced_8_bit_arguments.contains("--options=pipeline.hmstitcher.properties.high-bit-depth=0") &&
-              forced_8_bit_arguments.contains("--options=hstream_ui.camera_controls.Bring_Up_Shadows=35") &&
-              forced_8_bit_arguments.contains("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1") &&
-              forced_8_bit_arguments.contains("--options=hstream_ui.camera_controls.Exposure_x100=60"),
+              forced_8_bit_arguments.contains("--options=video_out.tone.shadow_lift_percent=35") &&
+              forced_8_bit_arguments.contains("--options=video_out.tone.lift_shadow_black_point=true") &&
+              forced_8_bit_arguments.contains("--options=video_out.tone.exposure=0.6"),
           "A forced standard launch should preserve the explicit off state and canonical tone controls")) {
     return false;
   }
@@ -12756,11 +12756,10 @@ bool test_camera_controls(HStreamWindow* window) {
               stitched_lift_shadow_black_point->isChecked() && exposure->value() == 30 &&
               stitched_exposure->value() == 30 &&
               HStreamWindowTestAccess::pipelineArguments(window).contains(
-                  "--options=hstream_ui.camera_controls.Bring_Up_Shadows=25") &&
+                  "--options=video_out.tone.shadow_lift_percent=25") &&
               HStreamWindowTestAccess::pipelineArguments(window).contains(
-                  "--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1") &&
-              HStreamWindowTestAccess::pipelineArguments(window).contains(
-                  "--options=hstream_ui.camera_controls.Exposure_x100=30") &&
+                  "--options=video_out.tone.lift_shadow_black_point=true") &&
+              HStreamWindowTestAccess::pipelineArguments(window).contains("--options=video_out.tone.exposure=0.3") &&
               !save->isEnabled(),
           "Automatic precision should load and launch native stitcher tones without becoming a forced override")) {
     return false;
@@ -12837,13 +12836,11 @@ bool test_camera_controls(HStreamWindow* window) {
               &saved_high_bit_enabled) &&
               saved_high_bit_enabled.as<bool>() &&
               lookup_yaml_path(
-                  saved_high_bit_color,
-                  {"pipeline", "hmstitcher", "properties", "shadow-lift"},
-                  &saved_high_bit_shadow) &&
+                  saved_high_bit_color, {"video_out", "tone", "shadow_lift_percent"}, &saved_high_bit_shadow) &&
               saved_high_bit_shadow.as<int>() == 45 &&
               !lookup_yaml_path(
                   saved_high_bit_color, {"pipeline", "hmplaycropper", "properties", "shadow-lift"}, nullptr),
-          "Saving high-bit grading should persist one tone owner and remove stale playcropper grading")) {
+          "Saving high-bit grading should persist canonical tone and remove stale plugin grading")) {
     return false;
   }
 
@@ -13402,22 +13399,23 @@ bool test_camera_controls(HStreamWindow* window) {
   const bool saved_controls_ok = saved_int("Stop_Direction_Change_Delay_Frames", 14) &&
       saved_int("Stitch_Rotate_Degrees", 72) && saved_int("Link_Fixed_Edge_Rotation_Left_Right", 0) &&
       saved_int("Left_Fixed_Edge_Rotation_Angle_x10", 250) && saved_int("Right_Fixed_Edge_Rotation_Angle_x10", 750) &&
-      saved_int("Bring_Up_Shadows", 35) && saved_int("Lift_Shadow_Black_Point", 1) && saved_int("Exposure_x100", 60);
+      !saved["hstream_ui"]["camera_controls"]["Bring_Up_Shadows"].IsDefined() &&
+      saved["video_out"]["tone"]["shadow_lift_percent"].as<int>() == 35 &&
+      saved["video_out"]["tone"]["lift_shadow_black_point"].as<bool>() &&
+      saved["video_out"]["tone"]["exposure"].as<double>() == 0.6;
   YAML::Node saved_rotation;
   const bool has_saved_rotation = lookup_yaml_path(saved, {"stitching", "post_stitch_rotate_degrees"}, &saved_rotation);
   const bool saved_rotation_ok = saved_rotation && saved_rotation.IsScalar() && saved_rotation.as<int>() == 18;
   YAML::Node saved_shadow_lift;
   const bool saved_shadow_lift_ok =
-      lookup_yaml_path(saved, {"pipeline", "hmplaycropper", "properties", "shadow-lift"}, &saved_shadow_lift) &&
+      lookup_yaml_path(saved, {"video_out", "tone", "shadow_lift_percent"}, &saved_shadow_lift) &&
       saved_shadow_lift.IsScalar() && saved_shadow_lift.as<int>() == 35;
   YAML::Node saved_shadow_black_point;
   const bool saved_shadow_black_point_ok =
-      lookup_yaml_path(
-          saved, {"pipeline", "hmplaycropper", "properties", "shadow-lift-black-point"}, &saved_shadow_black_point) &&
+      lookup_yaml_path(saved, {"video_out", "tone", "lift_shadow_black_point"}, &saved_shadow_black_point) &&
       saved_shadow_black_point.IsScalar() && saved_shadow_black_point.as<bool>();
   YAML::Node saved_exposure;
-  const bool saved_exposure_ok =
-      lookup_yaml_path(saved, {"pipeline", "hmplaycropper", "properties", "exposure"}, &saved_exposure) &&
+  const bool saved_exposure_ok = lookup_yaml_path(saved, {"video_out", "tone", "exposure"}, &saved_exposure) &&
       saved_exposure.IsScalar() && std::abs(saved_exposure.as<double>() - 0.6) < 1e-9;
   YAML::Node saved_stitch_frame_time;
   const bool saved_stitch_frame_time_ok =
@@ -13467,7 +13465,8 @@ bool test_camera_controls(HStreamWindow* window) {
   YAML::Node follower_max_accel_y;
   YAML::Node fast_max_speed_x;
   const bool saved_follower_max_speed_x = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
-      lookup_yaml_key(live_boxes[1], "max-speed-x", &follower_max_speed_x) && follower_max_speed_x.IsScalar() &&
+      !lookup_yaml_key(live_boxes[1], "max-speed-x", nullptr) &&
+      lookup_yaml_path(saved, {"rink", "camera", "motion_overrides", "max_speed_x"}, &follower_max_speed_x) &&
       follower_max_speed_x.as<double>() == 45.0;
   const bool saved_follower_max_speed_y = has_live_boxes && live_boxes.IsSequence() && live_boxes.size() > 1 &&
       lookup_yaml_key(live_boxes[1], "max-speed-y", &follower_max_speed_y);
@@ -13764,6 +13763,7 @@ bool test_camera_controls(HStreamWindow* window) {
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift"] = 35;
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["shadow-lift-black-point"] = false;
   relative_runtime_config["pipeline"]["hmplaycropper"]["properties"]["exposure"] = 0.6;
+  relative_runtime_config["video_out"].remove("tone"); // Exercise an old preset with only legacy tone aliases.
   relative_runtime_config["hstream_ui"]["camera_controls"]["Bring_Up_Shadows"] = 45;
   relative_runtime_config["hstream_ui"]["camera_controls"]["Lift_Shadow_Black_Point"] = 1;
   relative_runtime_config["hstream_ui"]["camera_controls"]["Exposure_x100"] = 30;
@@ -13776,7 +13776,7 @@ bool test_camera_controls(HStreamWindow* window) {
   if (!expect(
           bring_up_shadows->value() == 45 && lift_shadow_black_point->isChecked() && exposure->value() == 30 &&
               !save->isEnabled(),
-          "Reload should select companion color controls over stale canonical values before launch")) {
+          "Reload should select legacy UI tone over stale plugin properties before launch")) {
     return false;
   }
   mode->setCurrentIndex(mode->findData("program"));
@@ -13795,19 +13795,19 @@ bool test_camera_controls(HStreamWindow* window) {
     return false;
   }
   if (!expect(
-          window->logText().contains("--options=hstream_ui.camera_controls.Bring_Up_Shadows=45"),
+          window->logText().contains("--options=video_out.tone.shadow_lift_percent=45"),
           "Program launch should override stale canonical shadow lift with the effective UI value")) {
     activate(stop);
     return false;
   }
   if (!expect(
-          window->logText().contains("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=1"),
+          window->logText().contains("--options=video_out.tone.lift_shadow_black_point=true"),
           "Program launch should override stale canonical black-point lift with the effective checkbox value")) {
     activate(stop);
     return false;
   }
   if (!expect(
-          window->logText().contains("--options=hstream_ui.camera_controls.Exposure_x100=30"),
+          window->logText().contains("--options=video_out.tone.exposure=0.3"),
           "Program launch should override stale canonical exposure with the effective UI value")) {
     activate(stop);
     return false;
@@ -14454,9 +14454,11 @@ bool test_camera_controls(HStreamWindow* window) {
       preserved_custom_tracker_value.IsScalar() && preserved_custom_tracker_value.as<double>() == 9.5;
   YAML::Node saved_playtracker_base;
   const bool remembered_custom_tracker_base =
-      lookup_yaml_path(same_prefix, {"hstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
-      saved_playtracker_base.IsScalar() &&
-      saved_playtracker_base.as<std::string>() == custom_playtracker_config.string();
+      (has_same_prefix_tracker_path &&
+       same_prefix_tracker_path.as<std::string>() == custom_playtracker_config.string()) ||
+      (lookup_yaml_path(same_prefix, {"hstream_ui", "playtracker_config_base"}, &saved_playtracker_base) &&
+       saved_playtracker_base.IsScalar() &&
+       saved_playtracker_base.as<std::string>() == custom_playtracker_config.string());
   if (!expect(preserved_custom_tracker_config, "Generated playtracker config should preserve custom base config") ||
       !expect(remembered_custom_tracker_base, "Generated playtracker config should remember custom base path")) {
     std::cerr << same_prefix << '\n';
@@ -14526,7 +14528,7 @@ bool test_camera_controls(HStreamWindow* window) {
           saved_one_box_sequence.IsSequence() && saved_one_box_sequence.size() == 1 &&
               saved_one_box_sequence[0]["name"].as<std::string>() == "operator_only" &&
               saved_one_box_sequence[0]["sticky-translation-gaussian-mult"].as<double>() == 8.5 &&
-              saved_one_box_sequence[0]["max-speed-x"].as<double>() == 33.3,
+              saved_one_box_game["rink"]["camera"]["motion_overrides"]["max_speed_x"].as<double>() == 33.3,
           "Saving a one-box tracker preset must tune its shared role without silently adding a second box")) {
     std::cerr << saved_one_box << '\n';
     return false;
@@ -15991,7 +15993,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
   activate(save);
   config = YAML::LoadFile(config_path.string());
   if (!expect(
-          config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:13:45.250" &&
+          config["playback"]["start_seconds"].as<double>() == 825.25 &&
               config["stitching"]["stitch_frame_time"].as<std::string>() == "00:00:07" &&
               config["stitching"]["calibration_frame_count"].as<int>() == 3 &&
               !config["stitching"]["calibration_frame_selection"].IsDefined(),
@@ -16022,7 +16024,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
           config["stitching"]["sync_method"].as<std::string>() == "imu" &&
               !config["hstream_ui"]["show_crop_dialog"].as<bool>() &&
               !config["hstream_ui"]["show_leveling_dialog"].as<bool>() &&
-              config["hstream_ui"]["playback_start_time"].as<std::string>() == "00:12:30.125" && !save->isEnabled(),
+              config["playback"]["start_seconds"].as<double>() == 750.125 && !save->isEnabled(),
           "Saving workflow preferences must preserve strict YAML IMU and fractional playback time"))
     return false;
   // A synchronization-method change invalidates input-dependent calibration,
@@ -16105,8 +16107,8 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     const auto launched_config = YAML::LoadFile(config_path.string());
     ok &= expect(
         args.contains("--start-time=" + selected_playback) && args.contains("--options=stitching.sync_method=auto") &&
-            QString::fromStdString(launched_config["hstream_ui"]["playback_start_time"].as<std::string>()) ==
-                selected_playback &&
+            launched_config["playback"]["start_seconds"].as<double>() ==
+                playback->time().msecsSinceStartOfDay() / 1000.0 &&
             launched_config["stitching"]["calibration_frame_count"].as<int>() == frames->value() &&
             !launched_config["stitching"]["calibration_frame_selection"].IsDefined() &&
             QString::fromStdString(launched_config["stitching"]["stitch_frame_time"].as<std::string>("00:00:00")) ==
@@ -16186,7 +16188,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
        {YAML::Load("{stitching: {sync_method: invalid}}"),
         YAML::Load("{hstream_ui: {show_crop_dialog: maybe}}"),
         YAML::Load("{hstream_ui: {show_leveling_dialog: []}}"),
-        YAML::Load("{hstream_ui: {playback_start_time: '00:99:00'}}")}) {
+        YAML::Load("{playback: {start_seconds: -1}}")}) {
     YAML::Node bad = YAML::Clone(config);
     const YAML::Node retained_plan = test_selected_frame_plan(5);
     const std::string retained_fingerprint = retained_plan["fingerprint"].as<std::string>();
@@ -16255,7 +16257,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
     bad["stitching"]["sync_method"] = "audio";
     bad["hstream_ui"]["show_crop_dialog"] = false;
     bad["hstream_ui"]["show_leveling_dialog"] = false;
-    bad["hstream_ui"]["playback_start_time"] = "00:00:00";
+    bad["playback"]["start_seconds"] = 0;
     std::ofstream(config_path) << YAML::Dump(bad) << '\n';
     game_id->setText("ui-stitching-iterations");
     activate(create);
@@ -16267,7 +16269,7 @@ bool test_stitching_iteration_controls(const QString& source_game_directory) {
                 YAML::Dump(repaired["stitching"]["calibration_frame_selection"]) == YAML::Dump(retained_plan) &&
                 repaired["stitching"]["calibration_frame_inputs_fingerprint"].as<std::string>() ==
                     retained_fingerprint &&
-                repaired["hstream_ui"]["playback_start_time"].as<std::string>() == "00:00:01",
+                repaired["playback"]["start_seconds"].as<double>() == 1,
             "Repairing and reloading YAML must restore the retained count and permit unrelated saves"))
       return false;
   }
@@ -16359,8 +16361,8 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
   YAML::Node baseline = YAML::LoadFile(source_baseline->string());
   // These fake runs exercise configuration inheritance, not publication. Keep
   // the isolated baseline consistent with the suite's no-output runner setup.
-  baseline["hstream_ui"]["drivegpt_database"]["enabled"] = false;
-  baseline["hstream_ui"]["playback_start_time"] = "01:02:03.456";
+  baseline["telemetry"]["enabled"] = false;
+  baseline["playback"]["start_seconds"] = 3723.456;
   baseline["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = YAML::Node(YAML::NodeType::Null);
   baseline["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1234;
   {
@@ -17075,14 +17077,14 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     std::cerr << "FAIL: Older baseline UI startup threw: " << error.what() << '\n';
     ok = false;
   }
-  baseline["hstream_ui"].remove("playback_start_time");
+  baseline["playback"].remove("start_seconds");
   std::ofstream(QDir(baseline_root.path()).filePath("baseline.yaml").toStdString()) << baseline << '\n';
   try {
     HStreamWindow missing_playback_baseline;
-    ok &= expect(false, "A baseline without playback_start_time must fail instead of choosing a literal default");
+    ok &= expect(false, "A baseline without playback.start_seconds must fail instead of choosing a literal default");
   } catch (const std::exception& error) {
     ok &= expect(
-        std::string(error.what()).find("hstream_ui.playback_start_time") != std::string::npos,
+        std::string(error.what()).find("playback.start_seconds") != std::string::npos,
         "Missing playback baseline must identify its required key");
   }
   if (original_home.isEmpty())
@@ -21844,15 +21846,17 @@ bool test_realtime_playback_selection() {
   auto* realtime = require_child<QCheckBox>(&window, "realtimePlaybackCheck");
   if (!render || !realtime)
     return false;
-  const auto original = HStreamWindowTestAccess::pipelineArguments(&window);
+  auto original = HStreamWindowTestAccess::pipelineArguments(&window);
   if (!expect(
           realtime->isEnabled() && !realtime->isChecked() && !original.contains("--render-realtime"),
           "Normal-speed playback must be opt-in"))
     return false;
   realtime->setChecked(true);
   auto paced = HStreamWindowTestAccess::pipelineArguments(&window);
+  const bool explicit_pacing = original.removeAll("--options=playback.realtime=false") == 1 &&
+      paced.removeAll("--options=playback.realtime=true") == 1;
   if (!expect(
-          paced.removeAll("--render-realtime") == 1 && paced == original,
+          explicit_pacing && paced.removeAll("--render-realtime") == 1 && paced == original,
           "Pacing must leave archive selection and native encoding options unchanged") ||
       !expect(
           !HStreamWindowTestAccess::standaloneArguments(&window).contains("--render-realtime"),

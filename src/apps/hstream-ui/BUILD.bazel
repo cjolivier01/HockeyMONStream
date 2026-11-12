@@ -659,6 +659,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:runtime_control_config",
         ":camera_chapter_warning",
         ":log_text_edit",
         ":supervised_process",
@@ -984,6 +985,8 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:config_path",
+        "//src/libs/common:runtime_control_config",
         ":camera_chapter_warning",
         ":log_text_edit",
         ":supervised_process",
@@ -1583,6 +1586,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        "//src/libs/common:runtime_control_config",
         ":source_camera_track",
         ":experiment_task_runtime","//src/libs/common:game_storage",
         ":web_scoreboard_preview",

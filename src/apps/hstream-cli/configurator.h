@@ -111,6 +111,7 @@ class Configurator {
   // Root-level one-run settings, distinct from structural app pipeline files.
   absl::Status apply_settings_overlay(const std::filesystem::path& path);
 
+  absl::Status apply_config_options(const std::map<std::string, std::string>& options);
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
   void set_encode_job(bool enabled) {

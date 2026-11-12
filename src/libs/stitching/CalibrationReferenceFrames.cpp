@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/CalibrationReferenceFrames.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 
 #include <algorithm>
 #include <chrono>
@@ -245,17 +246,13 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
       std::array<CameraRecordingWindow, 2> cameras;
       HM_ASSIGN_OR_RETURN(cameras, RecordingWindows(game, config));
       if (!playback_start_ns) {
-        const auto ui = config["hstream_ui"];
-        auto playback = ui ? ui["playback_start_time"] : YAML::Node();
-        if (!playback || playback.IsNull()) {
+        auto canonical = hm::config::NormalizeRuntimeControlLayer(config);
+        if (!canonical["playback"] || !canonical["playback"]["start_seconds"]) {
           hm::baseline_config::BaselineConfig baseline;
           HM_ASSIGN_OR_RETURN(baseline, hm::baseline_config::load());
-          playback.reset(baseline.values["hstream_ui"]["playback_start_time"]);
+          canonical["playback"] = baseline.values["playback"];
         }
-        const auto parsed = hm::stitch_frame_time_to_nanoseconds(playback.as<std::string>());
-        if (parsed < 0)
-          return absl::InvalidArgumentError("Playback start must be nonnegative");
-        playback_start_ns = parsed;
+        playback_start_ns = hm::config::PlaybackStartNanoseconds(canonical);
       }
       HM_ASSIGN_OR_RETURN(planned, PlanCalibrationReferenceFrames(cameras, reference, count, *playback_start_ns));
     }
