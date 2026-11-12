@@ -116,6 +116,8 @@ class PipelineApplication {
   absl::Status stopPipeline(std::shared_ptr<HmApp> app_context) const;
 
  private:
+  std::string failure_binding_, failure_invocation_;
+  unsigned failure_generation_{};
   friend struct PipelineToneControlsTestAccess;
   friend struct PipelineSeekAdmissionTestAccess;
   // Callback and helper functions.

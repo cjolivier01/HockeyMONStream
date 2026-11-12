@@ -110,6 +110,8 @@
 #include "absl/strings/string_view.h"
 #include "nvds_version.h"
 
+#include "hstream/src/libs/stitching/CalibrationFailureProtocol.h"
+
 namespace fs = std::filesystem;
 
 //------------------------------------------------------------------------------
@@ -1348,6 +1350,23 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& cleanup_stac
 absl::Status PipelineApplication::configureInstances(
     size_t stage_index,
     std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+  auto emit_failure_record = [](const absl::StatusOr<std::string>& record, const char* prefix) {
+    std::cout.flush();
+    std::cerr.flush();
+    // A malformed marker invalidates optional diagnosis instead of allowing an
+    // older context to explain a later configuration generation.
+    if (record.ok())
+      g_print("%s\n", record->c_str());
+    else
+      g_print("%sinvalid\n", prefix);
+    std::fflush(stdout);
+  };
+  if (!failure_binding_.empty()) {
+    emit_failure_record(
+        hm::stitching::failure::ScopeRecord(
+            failure_binding_, failure_invocation_, ++failure_generation_, current_stage_, app_contexts.size()),
+        hm::stitching::failure::kScopePrefix);
+  }
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
   std::vector<double> stage_stitch_output_rotations;
   std::optional<std::string> stage_video_converter;
@@ -1589,6 +1608,14 @@ absl::Status PipelineApplication::configureInstances(
       }
       if (rink_mask_prepared_ && !app_ctx->configurator().rink_mask_required())
         HM_RETURN_IF_ERROR(app_ctx->configurator().accept_prepared_rink_mask());
+      if (!failure_binding_.empty() && app_contexts.size() == 1) {
+        const auto context = app_ctx->configurator().calibration_failure_context(stitching_calibration_only_);
+        emit_failure_record(
+            context.ok() ? hm::stitching::failure::ContextRecord(
+                               failure_binding_, failure_invocation_, failure_generation_, *context)
+                         : absl::StatusOr<std::string>(context.status()),
+            hm::stitching::failure::kContextPrefix);
+      }
       // Matcher graphs are optional and large. Provision them only after
       // configuration inspection proves that this launch will regenerate
       // control points. Honor explicit local overrides before fetching an
@@ -3517,6 +3544,14 @@ absl::StatusOr<std::vector<std::set<E_TYPE>>> parse_types(
 // Main run function.
 //------------------------------------------------------------------------------
 absl::Status PipelineApplication::run(int argc, char* argv[]) {
+  const char* failure_binding = g_getenv(hm::stitching::failure::kBindingEnvironment);
+  failure_binding_ = failure_binding && hm::stitching::failure::HexIdentity(failure_binding, 64) ? failure_binding : "";
+  failure_generation_ = 0;
+  gchar* invocation = g_uuid_string_random();
+  failure_invocation_ = invocation;
+  g_free(invocation);
+  failure_invocation_.erase(
+      std::remove(failure_invocation_.begin(), failure_invocation_.end(), '-'), failure_invocation_.end());
   // Library callers get the same fail-closed launch-only validation as main.
   try {
     (void)hm::preview::ProcessCapturePlan();

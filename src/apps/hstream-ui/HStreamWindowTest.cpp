@@ -1006,11 +1006,24 @@ for line in sys.stdin:
   }
 
   static void clearCalibrationDiagnostics(HStreamWindow* window) {
-    window->calibration_diagnostic_lines_.clear();
-    window->calibration_cuda_out_of_memory_ = false;
-    window->calibration_hmstitcher_input_pool_failure_ = false;
-    window->calibration_stitch_blender_oom_ = false;
-    window->calibration_stall_watchdog_message_.clear();
+    window->calibration_failure_session_ = hm::stitching::failure::Session();
+  }
+
+  static void bindCalibrationDiagnostics(HStreamWindow* window, const std::string& binding) {
+    window->calibration_failure_session_ = hm::stitching::failure::Session(binding);
+  }
+
+  static QDialog* showCalibrationFailureArtifact(HStreamWindow* window, const QString& message) {
+    showCalibrationProgress(window, "matching");
+    window->failStitchingCalibration(message);
+    window->calibration_dialog_->resize(1100, 920);
+    return window->calibration_dialog_;
+  }
+
+  static void closeCalibrationFailureArtifact(HStreamWindow* window) {
+    window->closeStitchingCalibrationDialog();
+    window->calibration_pending_ = false;
+    window->calibration_failure_message_.clear();
   }
 
   static void prepareRinkLevelingProtocol(
@@ -3154,6 +3167,61 @@ bool test_cuda_oom_calibration_failure_analysis(HStreamWindow* window) {
   HStreamWindowTestAccess::setActiveStitchMaxOutputWidth(window, 0);
   return generic_valid && width_16384_valid && width_8192_valid && width_6000_valid && width_4096_valid &&
       width_2048_valid && odd_width_valid;
+}
+
+bool test_scoped_calibration_failure_analysis(HStreamWindow* window) {
+  namespace failure = hm::stitching::failure;
+  const std::string binding(64, 'a'), invocation(32, 'b');
+  failure::Context context;
+  context.matcher = "akaze-hamming";
+  context.mapping_backend = "opencv-magsac";
+  context.projection = "rectilinear";
+  context.frame_count = 4;
+  context.control_point_limit = context.default_control_point_limit = 1500;
+  context.max_output_width = 16384;
+  context.camera = context.default_camera = {"gopro-mission-1", 127.2, 95};
+  context.calibration_required = true;
+  context.calibration_start_stage = "input";
+  failure::Session shared(binding);
+  HStreamWindowTestAccess::bindCalibrationDiagnostics(window, binding);
+  // Deliberately disagree with both the admitted native width and CP settings.
+  HStreamWindowTestAccess::setActiveStitchMaxOutputWidth(window, 2048);
+  HStreamWindowTestAccess::setActiveCalibrationControlPoints(window, 250);
+  const std::vector<std::string> lines{
+      *failure::ScopeRecord(binding, invocation, 1, 0, 1),
+      *failure::ContextRecord(binding, invocation, 1, context),
+      "HSTREAM_CALIBRATION stage=matching status=started",
+      "Cuda failure: status=2",
+      "HSTREAM_CALIBRATION stage=calibration status=failed message=Pipeline failed during stitching calibration"};
+  for (const auto& line : lines) {
+    if (!shared.Record(line).ok())
+      return false;
+    HStreamWindowTestAccess::recordCalibrationDiagnostic(window, QString::fromStdString(line));
+  }
+  const QString terminal("Pipeline failed during stitching calibration");
+  const QString analysis = HStreamWindowTestAccess::calibrationFailureAnalysis(window, terminal);
+  const bool valid = expect(
+      analysis == QString::fromStdString(shared.Analyze(terminal.toStdString()).rendered_text) &&
+          analysis.contains("try 8192 pixels (half)") && !analysis.contains("2048") &&
+          analysis.contains("Failed stage: Match control points"),
+      "Qt and CPU analysis must render identical native context despite changed Qt controls");
+  bool captured = true;
+  if (!qEnvironmentVariable("HSTREAM_UI_X11_ARTIFACT_DIR").isEmpty()) {
+    captured = capture_widget_artifact(
+        HStreamWindowTestAccess::showCalibrationFailureArtifact(window, terminal), "d1-qt-native-context.png");
+    HStreamWindowTestAccess::closeCalibrationFailureArtifact(window);
+  }
+  HStreamWindowTestAccess::bindCalibrationDiagnostics(window, binding);
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(window, "HSTREAM_FAILURE_CONTEXT {}");
+  HStreamWindowTestAccess::recordCalibrationDiagnostic(window, "Cuda failure: status=2");
+  const QString malformed = HStreamWindowTestAccess::calibrationFailureAnalysis(window, terminal);
+  const bool rejected = expect(
+      malformed.contains("Native launch context unavailable") && !malformed.contains("2048"),
+      "Malformed native context must not inherit Qt settings guidance");
+  HStreamWindowTestAccess::clearCalibrationDiagnostics(window);
+  HStreamWindowTestAccess::setActiveStitchMaxOutputWidth(window, 0);
+  HStreamWindowTestAccess::resetActiveCalibrationSettings(window);
+  return valid && rejected && captured;
 }
 
 // A watchdog expiry arrives as a bare GStreamer error with no absl status
@@ -22668,6 +22736,16 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAILURE_ONLY")) {
+    HStreamWindow window;
+    window.show();
+    return test_wheel_routing_log_follow_and_calibration_analysis(&window) &&
+            test_cuda_oom_calibration_failure_analysis(&window) &&
+            test_scoped_calibration_failure_analysis(&window) &&
+            test_stall_watchdog_calibration_failure_analysis(&window)
+        ? 0
+        : 1;
+  }
   if (!HStreamWindowTestAccess::playbackSeekTooltipChecks())
     return 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_SEEK_TOOLTIP_ONLY"))
@@ -22896,6 +22974,10 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  if (!test_scoped_calibration_failure_analysis(&window)) {
+    std::cerr << "test_scoped_calibration_failure_analysis failed\n";
+    return 1;
+  }
   if (!test_stall_watchdog_calibration_failure_analysis(&window)) {
     std::cerr << "test_stall_watchdog_calibration_failure_analysis failed\n";
     return 1;

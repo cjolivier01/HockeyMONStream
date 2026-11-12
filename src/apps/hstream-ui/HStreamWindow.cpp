@@ -270,7 +270,6 @@ double nonnegative_percentage(const YAML::Node& node) {
 
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationFrameCount = 4;
-constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
@@ -283,75 +282,7 @@ constexpr char kStitchedPreviewPipelineOptions[] =
 constexpr char kExternalStitchedPreviewRenderScale[] = "0.3012048193";
 
 bool is_cuda_out_of_memory_diagnostic(const QString& diagnostic) {
-  static const QRegularExpression cuda_status_2(R"(cuda failure:\s*status=2(?:[^0-9]|$))");
-  const QString normalized = diagnostic.toLower();
-  return cuda_status_2.match(normalized).hasMatch() || normalized.contains("cudaerrormemoryallocation") ||
-      normalized.contains("cuda_error_out_of_memory") ||
-      (normalized.startsWith("cuda error at ") && normalized.contains(": out of memory"));
-}
-
-// The source-bin no-progress watchdog reports through GST_ELEMENT_ERROR, which
-// carries no absl status prefix, so calibration_status_detail() cannot see it
-// and the line would be discarded as uninteresting. It is the most specific
-// cause there is when it fires, so match it by its own wording.
-bool is_stall_watchdog_diagnostic(const QString& diagnostic) {
-  return diagnostic.contains("no-progress watchdog expired", Qt::CaseInsensitive);
-}
-
-QString calibration_status_detail(const QString& message) {
-  static const QRegularExpression status(
-      R"(\b(?:CANCELLED|UNKNOWN|INVALID_ARGUMENT|DEADLINE_EXCEEDED|NOT_FOUND|ALREADY_EXISTS|PERMISSION_DENIED|)"
-      R"(RESOURCE_EXHAUSTED|FAILED_PRECONDITION|ABORTED|OUT_OF_RANGE|UNIMPLEMENTED|INTERNAL|UNAVAILABLE|DATA_LOSS|UNAUTHENTICATED):\s*)");
-  // Candidate-exhaustion summaries can wrap another status. The innermost
-  // status tells us whether the final message already supplies a concrete cause.
-  auto matches = status.globalMatch(message);
-  qsizetype detail_begin = -1;
-  while (matches.hasNext())
-    detail_begin = matches.next().capturedEnd();
-  return detail_begin < 0 ? QString() : message.mid(detail_begin).trimmed();
-}
-
-bool is_specific_calibration_status_detail(const QString& detail) {
-  const QString normalized = detail.toLower();
-  return !normalized.isEmpty() && normalized != "app run failed" &&
-      normalized != "pipeline failed during stitching calibration" &&
-      !normalized.startsWith("no stitching calibration frame pair");
-}
-
-QString stitching_oom_width_guidance(int current_max_output_width) {
-  if (current_max_output_width <= 0) {
-    return QString(
-               "Max stitched width was Auto, so HStream does not have a numeric stitched-width limit to halve. "
-               "Set Max stitched width to %1 pixels and press Play to retry; %1 is the lowest reasonable value.")
-        .arg(kMinimumReasonableStitchMaxOutputWidth);
-  }
-  if (current_max_output_width <= kMinimumReasonableStitchMaxOutputWidth) {
-    const QString position =
-        current_max_output_width == kMinimumReasonableStitchMaxOutputWidth ? "already at" : "already below";
-    return QString(
-               "This run used Max stitched width %1 pixels, which is %2 the %3-pixel lowest reasonable value; do "
-               "not reduce it further.")
-        .arg(current_max_output_width)
-        .arg(position)
-        .arg(kMinimumReasonableStitchMaxOutputWidth);
-  }
-
-  const int half_width = current_max_output_width / 2;
-  const int suggested_width = std::max(kMinimumReasonableStitchMaxOutputWidth, half_width);
-  const QString suggestion = suggested_width == half_width
-      ? QString("%1 pixels (half%2)")
-            .arg(suggested_width)
-            .arg(current_max_output_width % 2 == 0 ? "" : ", rounded down")
-      : QString("%1 pixels (the lowest reasonable value)").arg(suggested_width);
-  const QString retry_guidance = suggested_width == kMinimumReasonableStitchMaxOutputWidth
-      ? QString("%1 is the lowest reasonable value; do not reduce it further.")
-            .arg(kMinimumReasonableStitchMaxOutputWidth)
-      : QString("If another stitching OOM occurs, halve it again, stopping at %1 pixels.")
-            .arg(kMinimumReasonableStitchMaxOutputWidth);
-  return QString("This run used Max stitched width %1 pixels. Set it below %1 and press Play to retry; try %2. %3")
-      .arg(current_max_output_width)
-      .arg(suggestion)
-      .arg(retry_guidance);
+  return hm::stitching::failure::IsCudaOutOfMemory(diagnostic.toStdString());
 }
 
 template <typename Receiver, typename Slot>
@@ -11182,287 +11113,55 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
 }
 
 void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
-  const QString diagnostic = line.trimmed();
-  if (diagnostic.isEmpty())
-    return;
-  if (diagnostic.startsWith("HSTREAM_ONNX_FALLBACK provider=cpu reason=cuda-out-of-memory ")) {
-    // A recovered inference OOM must not override a later CPU/model/geometry
-    // error in the failure dialog. The complete runtime log retains the event.
-    calibration_cuda_out_of_memory_ = false;
-    calibration_hmstitcher_input_pool_failure_ = false;
-    calibration_stitch_blender_oom_ = false;
-    calibration_diagnostic_lines_.clear();
-    return;
-  }
-  const QString normalized = diagnostic.toLower();
-  const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(diagnostic);
-  const bool gpu_buffer_allocation_failure = normalized.contains("gst_nvds_buffer_pool_alloc_buffer") ||
-      normalized.contains("failed to activate bufferpool") || normalized.contains("error(-1) in buffer allocation");
-  const bool hmstitcher_input_pool_failure =
-      normalized.contains("hmstitcher_conv0") && normalized.contains("failed to activate bufferpool");
-  const bool stall_watchdog = is_stall_watchdog_diagnostic(diagnostic);
-  calibration_cuda_out_of_memory_ = calibration_cuda_out_of_memory_ || cuda_out_of_memory;
-  calibration_hmstitcher_input_pool_failure_ =
-      calibration_hmstitcher_input_pool_failure_ || hmstitcher_input_pool_failure;
-  calibration_stitch_blender_oom_ =
-      calibration_stitch_blender_oom_ || (cuda_out_of_memory && normalized.contains("cudablend"));
-  // Keep the first expiry: the budget runs out once, then teardown can emit
-  // further stall errors from the other barrier waiters as the pipeline unwinds.
-  if (stall_watchdog && calibration_stall_watchdog_message_.isEmpty())
-    calibration_stall_watchdog_message_ = diagnostic;
-  const bool rejected_hypothesis = diagnostic.startsWith("Rejected calibrated MAGSAC hypothesis");
-  const bool rejected_candidate = diagnostic.startsWith("Skipping pooled stitching calibration") ||
-      diagnostic.startsWith("Skipping stitching calibration frame pair");
-  const bool useful = cuda_out_of_memory || gpu_buffer_allocation_failure || rejected_hypothesis ||
-      rejected_candidate || stall_watchdog || diagnostic.startsWith("Trying ") ||
-      diagnostic.startsWith("OpenCV mapping backend ") || !calibration_status_detail(diagnostic).isEmpty() ||
-      diagnostic.contains("HSTREAM_CALIBRATION") || diagnostic.contains("enblend", Qt::CaseInsensitive) ||
-      diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
-  if (!useful)
-    return;
-  if (rejected_hypothesis)
-    ++calibration_rejected_hypotheses_;
-  if (rejected_candidate)
-    ++calibration_rejected_candidates_;
-  if (calibration_diagnostic_lines_.isEmpty() || calibration_diagnostic_lines_.back() != diagnostic)
-    calibration_diagnostic_lines_.append(diagnostic);
-  constexpr int kMaximumCalibrationDiagnostics = 24;
-  while (calibration_diagnostic_lines_.size() > kMaximumCalibrationDiagnostics)
-    calibration_diagnostic_lines_.removeFirst();
-
-  if (calibration_dialog_failed_ && calibration_detail_ && !calibration_failure_message_.isEmpty()) {
+  const auto& evidence = calibration_failure_session_.evidence();
+  const unsigned hypotheses = evidence.rejected_hypotheses();
+  const unsigned candidates = evidence.rejected_candidates();
+  // Protocol rejection disables frozen-context advice but does not mutate the
+  // processing outcome. The complete runtime log remains available.
+  (void)calibration_failure_session_.Record(line.toStdString());
+  if (calibration_dialog_failed_ && calibration_detail_ && !calibration_failure_message_.isEmpty())
     calibration_detail_->setText(stitchingCalibrationFailureAnalysis(calibration_failure_message_));
-  }
-
-  if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && calibration_pending_ &&
-      !calibration_dialog_failed_ && !pipeline_stop_requested_ && !calibration_waiting_for_playback_restart_) {
+  if ((hypotheses != evidence.rejected_hypotheses() || candidates != evidence.rejected_candidates()) &&
+      calibration_detail_ && calibration_pending_ && !calibration_dialog_failed_ && !pipeline_stop_requested_ &&
+      !calibration_waiting_for_playback_restart_) {
     calibration_detail_->setText(
         QString(
             "An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
             "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
-            .arg(calibration_rejected_hypotheses_)
-            .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
-            .arg(calibration_rejected_candidates_)
-            .arg(calibration_rejected_candidates_ == 1 ? "" : "s"));
+            .arg(evidence.rejected_hypotheses())
+            .arg(evidence.rejected_hypotheses() == 1 ? "" : "s")
+            .arg(evidence.rejected_candidates())
+            .arg(evidence.rejected_candidates() == 1 ? "" : "s"));
   }
 }
 
 QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& message) const {
-  QString root_cause = message.trimmed();
-  const QString normalized_message = root_cause.toLower();
-  const bool cuda_out_of_memory = calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(root_cause);
-  const bool hmstitcher_input_pool_failure = calibration_hmstitcher_input_pool_failure_ ||
-      (normalized_message.contains("hmstitcher_conv0") && normalized_message.contains("failed to activate bufferpool"));
-  const bool stitch_blender_oom = calibration_stitch_blender_oom_ ||
-      (is_cuda_out_of_memory_diagnostic(root_cause) && normalized_message.contains("cudablend"));
-  const bool stall_watchdog =
-      !calibration_stall_watchdog_message_.isEmpty() || is_stall_watchdog_diagnostic(root_cause);
-  if (cuda_out_of_memory) {
-    root_cause = stitch_blender_oom ? "CUDA out of memory while allocating the live stitching blender's GPU buffers."
-        : hmstitcher_input_pool_failure
-        ? "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while activating hmstitcher's pre-stitch "
-          "input-conversion buffer pool."
-        : "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while allocating a calibration GPU buffer.";
-  } else if (stall_watchdog && !calibration_stall_watchdog_message_.isEmpty()) {
-    // The terminal status is the generic "Pipeline failed during stitching
-    // calibration"; the watchdog line is the one that says what actually ended
-    // the run, so promote it over the fallback search below.
-    root_cause = calibration_stall_watchdog_message_;
-  } else if (!is_specific_calibration_status_detail(calibration_status_detail(root_cause))) {
-    QString fallback;
-    for (auto diagnostic = calibration_diagnostic_lines_.crbegin(); diagnostic != calibration_diagnostic_lines_.crend();
-         ++diagnostic) {
-      if (diagnostic->startsWith("HSTREAM_CALIBRATION"))
-        continue;
-      const QString detail = calibration_status_detail(*diagnostic);
-      if (detail.isEmpty())
-        continue;
-      if (fallback.isEmpty())
-        fallback = *diagnostic;
-      // Generic runner/teardown summaries must not hide a more useful error.
-      if (is_specific_calibration_status_detail(detail)) {
-        fallback = *diagnostic;
-        break;
-      }
-    }
-    if (!fallback.isEmpty())
-      root_cause = fallback;
-  }
-  if (root_cause.isEmpty())
-    root_cause = "The calibration process ended without reporting a specific cause.";
-
-  const QString evidence = root_cause.toLower();
-  const int active_control_points =
+  // Older/unscoped desktop launchers retain their existing frozen UI context.
+  // An admitted native context is authoritative and never inherits UI drafts.
+  hm::stitching::failure::Context fallback;
+  fallback.matcher = active_control_point_matcher_.toStdString();
+  fallback.mapping_backend = active_mapping_backend_.toStdString();
+  fallback.projection = active_projection_.toStdString();
+  fallback.frame_count = active_calibration_frame_count_;
+  fallback.control_point_limit =
       active_calibration_control_points_ > 0 ? active_calibration_control_points_ : stitchingCalibrationControlPoints();
-  const bool reduced_control_point_limit =
-      active_control_points > 0 && active_control_points < default_stitch_control_points_;
-  const bool nondefault_camera_profile = active_camera_selection_ != default_camera_selection_;
-  const bool generic_geometry_failure = evidence.contains("no stitching calibration frame pair") ||
-      evidence.contains("usable solution") || evidence.contains("usable hugin solution") ||
-      evidence.contains("usable opencv solution");
-  const bool invalid_hugin_executable_override = evidence.contains("hm_pto_gen is not executable") ||
-      evidence.contains("hm_autooptimiser is not executable") ||
-      evidence.contains("hm_pano_modify is not executable") || evidence.contains("hm_nona is not executable") ||
-      evidence.contains("hm_enblend is not executable");
-  const bool missing_hugin_executable =
-      evidence.contains("required hugin executable not found") || invalid_hugin_executable_override;
-  QString explanation;
-  QString action;
-  if (stitch_blender_oom) {
-    explanation =
-        "The GPU ran out of VRAM during live video blending after the stitch maps were loaded. CPU fallback covers "
-        "control-point and ice-detection models; live video blending still requires GPU memory.";
-    action = QString("Close other GPU-intensive applications. %1")
-                 .arg(stitching_oom_width_guidance(active_stitch_max_output_width_));
-  } else if (cuda_out_of_memory) {
-    explanation = hmstitcher_input_pool_failure
-        ? "The GPU ran out of VRAM while preparing the native-resolution camera frames for stitching. This happened "
-          "before frame matching, NONA, or optional rink leveling began."
-        : "The GPU ran out of VRAM while calibration was allocating a required GPU buffer.";
-    const QString width_guidance = stitching_oom_width_guidance(active_stitch_max_output_width_);
-    action = hmstitcher_input_pool_failure
-        ? QString(
-              "Close other GPU-intensive applications and press Play to retry. If VRAM is still insufficient, set "
-              "10-bit / FP16 mode to Force off or use lower-resolution source video. %1 This setting reduces later "
-              "stitched-canvas memory; it does not reduce the pre-stitch native-resolution allocation that failed "
-              "here.")
-              .arg(width_guidance)
-        : QString(
-              "Close other GPU-intensive applications and press Play to retry. %1 If the failure occurred before "
-              "canvas generation, also set 10-bit / FP16 mode to Force off or use lower-resolution source video.")
-              .arg(width_guidance);
-  } else if (stall_watchdog) {
-    explanation =
-        "A timeout ended this run because neither camera stream made progress within the watchdog budget. "
-        "Calibration work and operator review suspend this watchdog. This message alone cannot identify "
-        "which part of the pipeline stopped advancing.";
-    action =
-        "Press Play to retry. If it keeps happening at the same point, start HStream with "
-        "HM_URI_PLAYLIST_BARRIER_STALL_SECONDS set to a larger number of seconds, or to 0 to disable the watchdog, "
-        "and report the run: a stall during calibration is a bug in the watchdog's suspension, not a setting you "
-        "should have to change.";
-  } else if (missing_hugin_executable) {
-    explanation = "Calibration found control points, but the Hugin/NONA command-line toolchain is incomplete.";
-    action =
-        "Install the Hugin command-line tools or set HM_PTO_GEN, HM_AUTOOPTIMISER, HM_PANO_MODIFY, HM_NONA, and "
-        "HM_ENBLEND to valid executables, then press Play to retry.";
-  } else if (
-      evidence.contains("enblend") || evidence.contains("seam_file") || evidence.contains("seam file") ||
-      evidence.contains("artifact publication") || evidence.contains("publish stitch artifact")) {
-    explanation = "Alignment completed, but the seam/panorama generation or artifact publication step failed.";
-    action = "Check the reported diagnostic, available disk space, and write access to the game directory.";
-  } else if (evidence.contains("autooptimiser")) {
-    explanation = "Hugin's panorama optimizer rejected the selected control-point geometry.";
-    action =
-        "Try a frame with clearer overlap or use AKAZE + MAGSAC++ + Rectilinear, which does not depend on Hugin "
-        "autooptimization.";
-  } else if (
-      evidence.contains("unsafe") || evidence.contains("pole") || evidence.contains("canvas extent") ||
-      evidence.contains("canvas dimension") || evidence.contains("output surface is smaller")) {
-    explanation =
-        "The fitted transform projected the cameras to an unsafe or implausibly large canvas. HStream rejected it "
-        "instead of allocating that canvas.";
-    action =
-        "Choose a frame with more unique overlap detail or increase Frames. Also verify the Mission lens profile; "
-        "Max stitched width can limit memory, but it cannot repair an incorrect transform.";
-  } else if (
-      evidence.contains("left_calibration.json") || evidence.contains("lens profile") || evidence.contains("kb4") ||
-      evidence.contains("calibrated akaze")) {
-    explanation = "The calibrated AKAZE path could not load or consistently apply both camera lens profiles.";
-    action =
-        "Verify left_calibration.json is a regular, readable Mission KB4 profile for these recordings and that "
-        "AKAZE is paired with MAGSAC++ and Rectilinear.";
-  } else if (
-      evidence.contains("resource_exhausted") || evidence.contains("allocate") || evidence.contains("out of memory") ||
-      (evidence.contains("cuda") && evidence.contains("memory"))) {
-    explanation = "Calibration exhausted CPU/GPU memory while building the mapping canvas.";
-    action = "Set a lower Max stitched width, close other GPU workloads, and press Play to retry.";
-  } else if (generic_geometry_failure && (reduced_control_point_limit || nondefault_camera_profile)) {
-    QStringList settings;
-    if (reduced_control_point_limit) {
-      settings << QString("CP limit is %1; the default calibration limit is %2")
-                      .arg(active_control_points)
-                      .arg(default_stitch_control_points_);
-    }
-    if (nondefault_camera_profile) {
-      settings << QString("lens profile is %1 (HFOV %2, VFOV %3); default is %4 (HFOV %5, VFOV %6)")
-                      .arg(QString::fromStdString(active_camera_selection_.configuration))
-                      .arg(active_camera_selection_.horizontal_fov, 0, 'g', 6)
-                      .arg(active_camera_selection_.vertical_fov, 0, 'g', 6)
-                      .arg(QString::fromStdString(default_camera_selection_.configuration))
-                      .arg(default_camera_selection_.horizontal_fov, 0, 'g', 6)
-                      .arg(default_camera_selection_.vertical_fov, 0, 'g', 6);
-    }
-    explanation =
-        "Calibration could not produce a safe geometry with the selected calibration settings. This does not by itself "
-        "prove that the camera views lack overlap.";
-    action = QString(
-                 "Restore the known-good stitching settings and retry: %1. If it still fails, choose a frame with more "
-                 "unique overlap detail or increase Frames.")
-                 .arg(settings.join("; "));
-  } else if (
-      evidence.contains("insufficient consensus") || evidence.contains("usable match") ||
-      evidence.contains("control point") || evidence.contains("control-point") ||
-      evidence.contains("no stitching calibration frame pair")) {
-    explanation =
-        "The cameras did not produce enough geometrically consistent overlap. Repeated rink markings can create "
-        "many descriptor matches while still leaving too few matches for one safe transform.";
-    action =
-        "Choose a stitch frame with players, boards, or other unique detail in the overlap; increase Frames; verify "
-        "the Left/Right assignments and lens profile; then press Play to retry.";
-  } else {
-    explanation = "The active calibration stage returned a terminal error.";
-    action =
-        "Review the diagnostic lines below, correct the reported input/configuration problem, and press Play to retry.";
-  }
-
-  QString stage = active_calibration_stage_.isEmpty() ? QString("calibration") : active_calibration_stage_;
-  const auto stage_label = calibration_stage_labels_.find(stage);
-  if (stage_label != calibration_stage_labels_.end() && stage_label->second)
-    stage = stage_label->second->text();
-  if (stitch_blender_oom)
-    stage = "Live stitching blend";
-  auto selected_label = [](QComboBox* combo, const QString& value) {
-    if (!combo)
-      return value;
-    const int index = combo->findData(value);
-    return index >= 0 ? combo->itemText(index) : value;
-  };
-  const QString matcher = selected_label(control_point_matcher_combo_, active_control_point_matcher_);
-  const QString backend = selected_label(mapping_backend_combo_, active_mapping_backend_);
-  const QString projection = selected_label(projection_combo_, active_projection_);
-
-  QString result = QString(
-                       "Failed stage: %1\nConfiguration: %2 · %3 · %4 · %5 sampled frame%6\n\n"
-                       "Why it failed\n%7\n\nReported cause\n%8\n\nWhat to try\n%9")
-                       .arg(stage)
-                       .arg(matcher.isEmpty() ? "unknown matcher" : matcher)
-                       .arg(backend.isEmpty() ? "unknown mapping backend" : backend)
-                       .arg(projection.isEmpty() ? "unknown projection" : projection)
-                       .arg(active_calibration_frame_count_)
-                       .arg(active_calibration_frame_count_ == 1 ? "" : "s")
-                       .arg(explanation, root_cause, action);
-  if (calibration_rejected_hypotheses_ > 0 || calibration_rejected_candidates_ > 0) {
-    result += QString(
-                  "\n\nBounded fallback search\nHStream rejected %1 projective hypothesis%2 and %3 frame-set "
-                  "candidate%4 before stopping. These rejections are expected safety fallbacks, not automatic "
-                  "restarts; pressing Play is required for a new calibration run.")
-                  .arg(calibration_rejected_hypotheses_)
-                  .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
-                  .arg(calibration_rejected_candidates_)
-                  .arg(calibration_rejected_candidates_ == 1 ? "" : "s");
-  }
-  QStringList recent;
-  for (auto diagnostic = calibration_diagnostic_lines_.crbegin();
-       diagnostic != calibration_diagnostic_lines_.crend() && recent.size() < 6;
-       ++diagnostic) {
-    if (!diagnostic->startsWith("HSTREAM_CALIBRATION"))
-      recent.prepend(*diagnostic);
-  }
-  if (!recent.isEmpty())
-    result += "\n\nRecent diagnostics\n• " + recent.join("\n• ");
-  result += "\n\nThe runtime log contains the complete output.";
-  return result;
+  fallback.default_control_point_limit = default_stitch_control_points_;
+  fallback.max_output_width = active_stitch_max_output_width_;
+  fallback.camera = {
+      active_camera_selection_.configuration,
+      active_camera_selection_.horizontal_fov,
+      active_camera_selection_.vertical_fov};
+  fallback.default_camera = {
+      default_camera_selection_.configuration,
+      default_camera_selection_.horizontal_fov,
+      default_camera_selection_.vertical_fov};
+  fallback.camera_differs_from_defaults = active_camera_selection_ != default_camera_selection_;
+  fallback.calibration_required = calibration_pending_;
+  const bool unscoped =
+      calibration_failure_session_.invocation().empty() && calibration_failure_session_.error().empty();
+  const auto diagnosis = calibration_failure_session_.Analyze(
+      message.toStdString(), unscoped ? &fallback : nullptr, unscoped ? active_calibration_stage_.toStdString() : "");
+  return QString::fromStdString(diagnosis.rendered_text);
 }
 
 void HStreamWindow::completeStitchingCalibration() {
@@ -12350,13 +12049,9 @@ void HStreamWindow::startPipeline() {
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
   calibration_failure_message_.clear();
-  calibration_diagnostic_lines_.clear();
-  calibration_cuda_out_of_memory_ = false;
-  calibration_hmstitcher_input_pool_failure_ = false;
-  calibration_stitch_blender_oom_ = false;
-  calibration_stall_watchdog_message_.clear();
-  calibration_rejected_hypotheses_ = 0;
-  calibration_rejected_candidates_ = 0;
+  calibration_failure_binding_ =
+      (QUuid::createUuid().toString(QUuid::Id128) + QUuid::createUuid().toString(QUuid::Id128)).toStdString();
+  calibration_failure_session_ = hm::stitching::failure::Session(calibration_failure_binding_);
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
   calibration_restart_requested_ = false;
   scoreboard_selector_url_.clear();
@@ -12382,6 +12077,7 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   applyScoreboardPromptEnvironment(env);
+  env.remove(hm::stitching::failure::kBindingEnvironment);
   const QString working_dir = pipelineWorkingDirectory();
   env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   if (!baseline_config_root_.isEmpty())
@@ -12781,6 +12477,7 @@ void HStreamWindow::startPipeline() {
   }
   env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
   env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
+  env.insert(hm::stitching::failure::kBindingEnvironment, QString::fromStdString(calibration_failure_binding_));
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
   const bool test_without_setsid =
@@ -13299,13 +12996,16 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     setPlaybackProgressState(PlaybackProgressState::kStopped);
   } else {
     const bool calibration_cuda_oom = calibration_ended_incomplete &&
-        (calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(calibration_failure_message_));
+        (calibration_failure_session_.evidence().CudaOutOfMemory() ||
+         is_cuda_out_of_memory_diagnostic(calibration_failure_message_));
     const QString terminal_detail = calibration_cuda_oom
-        ? (calibration_stitch_blender_oom_ ? QString("GPU out of memory in the live stitching blender")
-               : calibration_hmstitcher_input_pool_failure_
+        ? (calibration_failure_session_.evidence().BlenderOutOfMemory()
+               ? QString("GPU out of memory in the live stitching blender")
+               : calibration_failure_session_.evidence().InputPoolFailure()
                ? QString("GPU out of memory in the pre-stitch input-conversion buffer pool")
                : QString("GPU out of memory during stitching calibration"))
-        : !calibration_stall_watchdog_message_.isEmpty() ? QString("Timed out: the camera no-progress watchdog expired")
+        : !calibration_failure_session_.evidence().Watchdog().empty()
+        ? QString("Timed out: the camera no-progress watchdog expired")
         : !backend_publication_error_.isEmpty()
         ? backend_publication_error_
         : QString("Pipeline exited with code %1 (%2)")
@@ -13651,17 +13351,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
     if (message >= 0)
       rink_framing_controls_->showRunStatus(trimmed.mid(message + 8));
   }
-  const bool calibration_preamble = trimmed.startsWith("Rejected calibrated MAGSAC hypothesis") ||
-      trimmed.startsWith("Skipping pooled stitching calibration") ||
-      trimmed.startsWith("Skipping stitching calibration frame pair") ||
-      trimmed.startsWith("Trying pooled stitching calibration") ||
-      trimmed.startsWith("Trying stitching calibration frame pair");
-  // The stall watchdog is recorded whether or not a calibration is pending: it
-  // can also end an ordinary playback run, and the timeout is the only useful
-  // thing to say about that exit code either way.
-  if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION") || calibration_preamble ||
-      is_stall_watchdog_diagnostic(trimmed))
-    recordStitchingCalibrationDiagnostic(trimmed);
+  recordStitchingCalibrationDiagnostic(trimmed);
   if (handleProcessPauseOutput(trimmed) || handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
       handlePreviewOverlayDiagnostic(trimmed) || handlePreviewOverlayResponse(trimmed) ||

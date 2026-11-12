@@ -280,3 +280,15 @@ All tests should pass before and after each review round.
 
 - The optional iter-487500 hockey-role detector uses `configs/config_infer_yolov8m_hockey_roles*.yaml` and pinned release assets. `common/PersonRoles.h` identifies semantic NVIDIA roles; AMD receives model-owned indices through `ProgramLaunchConfig`. Camera-only exclusions are mapped by `ProgramCameraMapping` and applied before camera observations; role tracks remain available to overlays/telemetry. See `docs/hockey-roles-detector.md`.
 - Optional `pipeline.primary-gie.tiled-inference` uses two full-height overlapping crops in one detector batch. `apps-common/TiledInference` supplies temporary untracked NVIDIA ROIs and merges/removes them before tracking; `detection/HipDetector` submits a batch-two tensor on AMD. `detection/TileInference` shares aligned crop geometry and class-aware cross-tile suppression. The configurator selects batch two before engine-cache resolution; baseline defaults keep the ordinary path unchanged. See `docs/tiled-inference.md` for geometry, limits and qualification tools.
+
+`stitching/CalibrationFailure` and its JSON-GLib protocol share Qt and CPU web
+failure synthesis without adding Qt to the CLI. Configurator emits a compact
+invocation-bound context after `accept_prepared_rink_mask`, before model
+provisioning, from resolved configuration and frozen lower-layer defaults.
+Preserve native width alias/rank semantics, full-camera comparison and cause
+context generations. Evidence resets per admitted invocation, not ordinary
+stages or timed mask passes. Solve completion and `playback-restart` completion
+are separate: an explicit failed restart still needs diagnosis. The web helper
+reads one pinned complete original log in a separate root, never a retained tail
+or live preferences; helper failure cannot replace the original failure. See
+`docs/web-workflows.md` for the bounded internal protocol and unqualified scopes.

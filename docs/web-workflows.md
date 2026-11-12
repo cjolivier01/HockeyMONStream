@@ -831,3 +831,79 @@ upload-to-alias mapping. Idle browser camera playback waits for this verified
 metadata, seeks physical video timestamps, and ends chapters before audio tails.
 Missing timing from an older native deployment leaves camera playback unavailable
 with an explicit error; optics controls still work.
+
+## Native failure diagnosis
+
+`calibration-failure-diagnose` is an internal CPU postmortem operation, advertised
+by `calibration-failure-diagnosis-v1`. It shares `stitching/CalibrationFailure`
+with Qt. The library keeps CUDA allocation and first-watchdog evidence across
+bounded log trimming, distinguishes the pre-stitch input pool from the live
+blender, and retires recovered inference OOM evidence on the exact native CPU
+fallback marker. Native configuration and diagnostic text are interpreted once;
+the browser displays the verified native result as text.
+
+The supervisor issues `HSTREAM_FAILURE_BINDING`, a 64-character lowercase hex
+correlation token, only to the admitted main invocation. Qt issues the same kind
+of token to its native process. The NVIDIA CLI writes two bounded JSON records:
+
+- `HSTREAM_FAILURE_SCOPE` carries `version: 1`, `binding`, native `invocation`
+  (32 lowercase hex characters), increasing `generation`, `native_stage`, and
+  `instances: 1`. A new scope starts at each `configureInstances` entry.
+- `HSTREAM_FAILURE_CONTEXT` carries the same version, binding, invocation and
+  generation, plus `context`. Configurator emits it after configuration and
+  `accept_prepared_rink_mask`, immediately before matcher provisioning. It uses
+  the already-resolved configuration and frozen lower-layer defaults. The
+  context records selected matcher/backend/projection, frame and point counts,
+  actual mapped maximum width, bounded camera display values, default point and
+  camera values, the native full-camera inequality boolean, and calibration
+  required/start-stage/mode. It contains no source paths or complete-config hash.
+
+The shared standard-C++ analyzer and JSON-GLib protocol have no Qt or GPU
+initialization dependency. Qt converts native strings at its boundary. Native
+width aliases and layer ranks resolve before context emission. Reading context
+never reloads a current preference file, replays configuration, changes settings,
+or provisions a model. Multiple simultaneous application instances are outside
+this first diagnosis protocol; malformed, ambiguous or missing context leaves the
+original processing failure available without a synthesized replacement.
+
+One invocation retains evidence and solve/restart outcome across preparation
+passes. Each cause retains its context generation; evidence from different
+generations cannot combine into a pre-stitch input-pool OOM. Evidence preceding
+its context remains unbound even if a context arrives later; its result uses
+cause generation zero without configuration-specific advice. `calibration`
+completion means the solve is ready. Native `playback-restart` completion and
+failure are separate outcomes: a failed restart still needs diagnosis after a
+successful solve. Successful solve and restart prevent an unrelated later output
+failure from reopening the calibration failure dialog. The returned
+`applicability` is `calibration`, `playback-restart`, `runtime`, or `none`.
+
+Only after the original descendants, bridge helpers and log writers stop may the
+supervisor copy the pinned complete original log into a fresh private diagnosis
+root. Managed runs' original log is `work/game/runs/<native_run_id>/pipeline.log`;
+`native.log` is a tail and cannot establish evidence ordering. The helper root
+contains an empty `game` directory, its own request/receipts, and `pipeline.log`.
+It must never be the original run's operation root or game directory.
+
+The exact operation payload has `version: 1`, `binding`, `terminal`, and `log`.
+Binding contains `parent_run_id`, `native_run_id`, `binding_token`,
+`deployment_digest`, `supervisor_request_sha256`, `admission_digest`, and
+`workflow` (null for the initial main-Studio integration). Terminal contains the
+original `returncode`, `message`, and `cancelled: false`. Log contains
+`path: "pipeline.log"`, `size`, `sha256`, `complete: true`, and
+`original_identity` with decimal-string device/inode/size/mtime_ns/ctime_ns.
+The ordinary operation receipt binds the request hash and one
+`operation-data.json` artifact. Its result echoes the binding/log and returns
+native invocation, cause generation, context-record hash, separate solve/restart
+outcomes, applicability, category, stage, configuration, reported cause,
+explanation, action, six recent diagnostics, rejection counts and rendered text.
+
+The helper rejects linked/nonregular/replaced inputs, incomplete logs, logs above
+16 MiB, ordinary lines above 64 KiB, protocol records above 4 KiB, and more than
+32 configuration generations. The supervisor additionally bounds runtime and
+output, verifies the exact deployed helper and receipt, and proves helper
+retirement. Helper failure preserves the original failure; uncertain retirement
+retains recovery ownership. The service commits a redacted diagnosis, including
+an authoritative non-applicable verdict, in its locked terminal transaction
+before cleanup. Cancellation wins. HTTP reads are cache-only and never invoke
+native work. Distributed experiment diagnosis and AMD context emission remain
+outside this initial NVIDIA main-Studio qualification.
