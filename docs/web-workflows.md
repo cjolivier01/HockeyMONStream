@@ -133,6 +133,26 @@ contract, then testing both interfaces against the same native checkout.
 | `camera-replay` | `database`, `run_id`, bounded `start_seconds` and `duration_seconds`, native `tuning`, and optional fast/follower target booleans. Returns original, baseline and trial trajectories from `ReplaySession`. This operation does not encode a moving camera-preview video. |
 | `camera-experiment` | A completed `database`/`run_id`, `media_kind` (`original-cameras` or `panorama`), bounded `start_seconds`, `duration_seconds` (0.1–120), `playback_start_seconds`, `video_origin_seconds`, and explicit source-confirmation/playback/overlay booleans. Original cameras use the worker-staged game calibration; panoramas use `archive_path` and validated media dimensions when selected. An empty `archive_path` with omitted dimensions prepares trajectories without video (`camera-optional-panorama-v1`). Uses the shared `ReplaySession`, decoder/cropper and preview worker with hardware WebRTC output. The supervisor assigns `--preview-port=N`. |
 
+The Camera command adapter advertises `camera-save-cancel-v1`. Ordinary `save`
+commands include `save_token` (32 lowercase hexadecimal characters) and `view`,
+in addition to the run, generation and request sequence. The selected view must
+still match when the native adapter admits the operation. Repeating a token with
+the same binding returns its retained terminal outcome; another view is rejected.
+At most 256 token bindings are retained for one session, without eviction.
+
+The separate `cancel-save` envelope contains only `run`, `generation`, `action`
+and `save_token`. It has no ordinary request sequence and cannot advance or release
+that command slot. Native reads it while Save runs, including when Save and
+cancellation share an input read; other ordinary commands remain queued. The
+`save-cancel` event echoes the token and `status: ok/rejected` and only acknowledges
+the cancellation request. The ordinary Save `ack` echoes `save_token` and reports
+either `saved` plus its `artifact`, `cancelled: true` after worker retirement, or
+`status: rejected` with an error. A commit racing cancellation still returns its
+saved receipt. The outer supervisor owns durable token admission, cancellation
+before delayed admission and recovery independently of the latest command ACK.
+Whole-session interruption or command-owner EOF cancels the active worker and
+waits for retirement before releasing the session.
+
 The outer Camera selector may bind either a published panorama artifact or one
 completed owner-scoped upload. Uploaded bytes are frozen by file identity and
 SHA-256, copied through a pinned descriptor within the run storage reservation,
