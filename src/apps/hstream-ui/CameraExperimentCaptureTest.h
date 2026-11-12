@@ -22,6 +22,7 @@ Controls read_controls(const QString& path);
 void write_json(const QString& path, const QJsonObject& value);
 int confirmed_frame(const QString& label, int frame_count, bool screenshot_ready);
 QString seek_phase(int frame, int sequence);
+QJsonObject capture_identity(QJsonObject value);
 
 class Handshake {
  public:
