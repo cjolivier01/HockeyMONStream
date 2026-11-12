@@ -110,6 +110,29 @@ int main() {
     Check(
         selected.ok() && !hm::stitching::ValidateDiscoveredCameraChapters(*selected).ok(),
         "Gaps in the selected Left/Right playlists must still warn");
+    const auto standalone_root = root / "standalone";
+    std::filesystem::create_directories(standalone_root / "cam1");
+    std::filesystem::create_directories(standalone_root / "cam2");
+    std::ofstream(standalone_root / "cam1/one.mp4").put('x');
+    std::ofstream(standalone_root / "cam2/two.MP4").put('x');
+    auto standalone = hm::stitching::get_available_videos(standalone_root.string());
+    Check(standalone.ok() && standalone->size() == 2, "Unnumbered files must remain separate Auto cameras");
+    Check(
+        standalone->at("cam1").at(1) == (standalone_root / "cam1/one.mp4").string() &&
+            standalone->at("cam2").at(1) == (standalone_root / "cam2/two.MP4").string() && !standalone->count("left") &&
+            !standalone->count("right"),
+        "Standalone discovery must preserve original filenames and leave orientation to rink inspection");
+    std::ofstream(standalone_root / "cam1/extra.mp4").put('x');
+    Check(
+        !hm::stitching::get_available_videos(standalone_root.string()).ok(),
+        "Several unnumbered files in one camera directory must not acquire an invented chapter order");
+    for (const auto* name : {"clip1.mp4", "clip-01.mov", "clip_2.MP4", "notes.txt"})
+      Check(!hm::stitching::IsStandaloneCameraFile(name), "Ambiguous numbered filenames must not be standalone");
+    const auto outputs_root = root / "outputs";
+    std::filesystem::create_directories(outputs_root);
+    std::ofstream(outputs_root / "one.mp4").put('x');
+    auto outputs = hm::stitching::get_available_videos(outputs_root.string());
+    Check(outputs.ok() && outputs->empty(), "Arbitrary root outputs must not become camera inputs");
     std::filesystem::remove_all(root);
     std::cout << "Camera chapter validation passed\n";
     return 0;

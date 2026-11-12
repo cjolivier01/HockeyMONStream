@@ -260,7 +260,11 @@ cc_library(
   ],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
-  implementation_deps = ["//src/libs/common:game_storage", ":orientation_internal"],
+  implementation_deps = [
+    "//src/libs/common:runtime_control_config",
+    "//src/libs/common:game_storage",
+    ":orientation_internal",
+  ],
   deps = [
     ":scoreboard_proposal",
     ":stitching_reframe",

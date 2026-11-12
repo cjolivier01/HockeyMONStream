@@ -5,9 +5,11 @@
 
 #include "absl/strings/str_split.h"
 #include "hstream/src/libs/common/ConfigPath.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 
 namespace hm::config {
-YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
+namespace {
+YAML::Node MergeRaw(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
   if (!overlay.IsMap()) {
     return base;
   }
@@ -26,7 +28,7 @@ YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool wa
     // If both are maps, recursively merge
     if (key != "input_cameras" && key != "input_start_times" && pair.second.IsMap() && base[key].IsDefined() &&
         base[key].IsMap()) {
-      result[key] = MergeNodes(base[key], pair.second, warn_if_key_not_in_dest);
+      result[key] = MergeRaw(base[key], pair.second, warn_if_key_not_in_dest);
     } else {
       result[key] = pair.second;
     }
@@ -35,7 +37,17 @@ YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool wa
   return result;
 }
 
-void RecordLeafRanks(const YAML::Node& overlay, const std::string& prefix, int rank, LeafRanks& ranks) {
+} // namespace
+YAML::Node MergeNodes(const YAML::Node& base, const YAML::Node& overlay, bool warn_if_key_not_in_dest) {
+  // Existing runtime callers retain handles into base while applying options.
+  // Normalize without detaching those handles; immutable callers clone base.
+  const auto normalized_overlay = NormalizeRuntimeControlLayer(overlay);
+  NormalizeRuntimeControlLayerInPlace(base);
+  return MergeRaw(base, normalized_overlay, warn_if_key_not_in_dest);
+}
+
+void RecordLeafRanks(const YAML::Node& input, const std::string& prefix, int rank, LeafRanks& ranks) {
+  const YAML::Node overlay = prefix.empty() ? NormalizeRuntimeControlLayer(input) : input;
   if (!overlay.IsMap() || (prefix == "stitching.input_cameras" || prefix == "stitching.input_start_times")) {
     if (!prefix.empty())
       ranks[prefix] = rank;
@@ -138,12 +150,12 @@ absl::StatusOr<ProgramConfiguration> ResolveProgramConfiguration(
         options.emplace(pair[0], pair[1]);
       }
       for (const auto& [path, value] : options) {
-        result.values = hm::set_node_value(result.values, path, value);
         layer = hm::set_node_value(layer, path, value);
-        result.ranks[path] = 3;
       }
     }
-    result.layers.push_back(std::move(layer));
+    result.values = MergeNodes(result.values, layer, false);
+    RecordLeafRanks(layer, {}, 3, result.ranks);
+    result.layers.push_back(NormalizeRuntimeControlLayer(layer));
     return result;
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(std::string("Cannot resolve Program configuration: ") + error.what());

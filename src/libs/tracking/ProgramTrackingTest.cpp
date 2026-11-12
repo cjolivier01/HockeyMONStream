@@ -62,6 +62,18 @@ live-boxes:
     scale-dest-width: 1.45
     scale-dest-height: 1.45
 )");
+    auto motion_yaml = YAML::Clone(yaml);
+    motion_yaml["live-boxes"][1]["max-speed-x"] = 40;
+    motion_yaml["live-boxes"][1]["hstream-motion-overrides"]["max-speed-x"] = 12.3;
+    const hm::BBox motion_arena(0, 0, 2000, 1000);
+    const auto active_motion = gst_hm_playtracker::create_play_tracker_config(motion_arena, motion_yaml);
+    const auto base_motion = gst_hm_playtracker::create_play_tracker_config(motion_arena, motion_yaml, false);
+    Check(
+        std::abs(active_motion.living_boxes[1].max_speed_x - 12.3f) < 0.0001f &&
+            base_motion.living_boxes[1].max_speed_x == 40.f &&
+            active_motion.living_boxes[0].max_speed_x == base_motion.living_boxes[0].max_speed_x &&
+            active_motion.living_boxes[1].max_speed_w == base_motion.living_boxes[1].max_speed_w,
+        "Shared camera startup overrides must preserve per-box reset and resize tuning");
 
     for (int role : {1, 2}) {
       for (bool excluded : {false, true}) {

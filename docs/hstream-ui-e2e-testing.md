@@ -68,6 +68,14 @@ reopen the last selected video folder, which is also remembered across UI runs.
 Cancel leaves the selection and remembered folder unchanged. Failed imports
 remain selected for retry; successfully imported files are retained.
 
+Auto keeps recognized GoPro, Insta360 and left/right chapters together. Each
+otherwise unnumbered filename, such as `one.mp4` or `two.mp4`, becomes its own
+`camN` input; the native rink inspection still determines Left/Right. Unknown
+names ending in digits require an explicit role. Arbitrary videos at the game
+root remain excluded so published outputs cannot become camera inputs.
+`HSTREAM_UI_TEST_GAME_SETUP_ONLY=1` covers these imports, re-add and refresh;
+`//src/libs/stitching:video_discovery_test` checks their native discovery.
+
 Focused checks: `QT_QPA_PLATFORM=offscreen HSTREAM_UI_TEST_PATHS_ONLY=1
 bazel-bin/src/apps/hstream-ui/hstream_ui_test` covers root switching and
 persistence, environment precedence, and multi-file selection/import/reopening.

@@ -1403,6 +1403,7 @@ absl::Status PipelineApplication::configureInstances(
         if (pipeline_options_.empty()) {
           return absl::OkStatus();
         }
+        std::map<std::string, std::string> layer;
         for (const std::map<std::string, std::string>& options : pipeline_options_) {
           for (const auto& kv_item : options) {
             // Legacy stage -1 deliberately ignores playback overrides, but
@@ -1411,10 +1412,10 @@ absl::Status PipelineApplication::configureInstances(
                 kv_item.first != "runtime.gpu-memory-profile") {
               continue;
             }
-            HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+            layer[kv_item.first] = kv_item.second;
           }
         }
-        return absl::OkStatus();
+        return app_ctx->configurator().apply_config_options(layer);
       };
 
       if (clean_only_requested) {
@@ -1485,6 +1486,42 @@ absl::Status PipelineApplication::configureInstances(
       // clean-only eligible context reapplies them here so CLI source/sink
       // values still win over loaded subconfigs.
       HM_RETURN_IF_ERROR(apply_pipeline_options());
+      if (!playback_defaults_resolved_ && current_stage_ >= 0) {
+        const auto playback = app_ctx->configurator().config()["playback"];
+        try {
+          const double seconds = playback["start_seconds"].as<double>();
+          if (!std::isfinite(seconds) || seconds < 0 ||
+              static_cast<long double>(seconds) * GST_SECOND > std::numeric_limits<int64_t>::max())
+            return absl::InvalidArgumentError("playback.start_seconds must fit nonnegative nanoseconds");
+          if (!explicit_start_time_)
+            start_time_ns_ = static_cast<uint64_t>(static_cast<long double>(seconds) * GST_SECOND);
+          const bool paced_default = playback["realtime"].as<bool>();
+          ui_preview_realtime_ = ui_preview_realtime_ || (!encode_job_ && !headless_render_video_ && paced_default);
+          if (clip_end_time_ns_ > 0) {
+            if (clip_end_time_ns_ <= start_time_ns_) {
+              return absl::InvalidArgumentError("--clip-end-time must be later than --start-time");
+            }
+            const uint64_t duration_ns = clip_end_time_ns_ - start_time_ns_;
+            const uint64_t watchdog_seconds = duration_ns / GST_SECOND + 3;
+            if (watchdog_seconds > G_MAXINT) {
+              return absl::InvalidArgumentError("--clip-end-time exceeds the supported timed-run duration");
+            }
+            if (time_limit_seconds_ > 0 && static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND < duration_ns) {
+              return absl::InvalidArgumentError("--time-limit ends before --clip-end-time");
+            }
+            if (time_limit_seconds_ <= 0) {
+              time_limit_seconds_ = static_cast<gint>(watchdog_seconds);
+            }
+          }
+          set_embedded_gpu_preview_video_mode(
+              headless_render_video_ || !ui_preview_window_ids_.empty(),
+              (stitching_calibration_only_ || ui_preview_realtime_) && !headless_render_video_ &&
+                  !ui_preview_window_ids_.empty());
+          playback_defaults_resolved_ = true;
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError(std::string("Invalid playback settings: ") + error.what());
+        }
+      }
 
       app_ctx->configurator().set_encode_job(encode_job_);
 
@@ -4146,6 +4183,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
 
   if (start_time) {
+    explicit_start_time_ = true;
     const auto parsed_start_time = parse_time_option("--start-time", start_time);
     g_free(start_time);
     if (!parsed_start_time.ok()) {
@@ -4161,21 +4199,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     if (!parsed_clip_end_time.ok()) {
       return parsed_clip_end_time.status();
     }
-    if (*parsed_clip_end_time <= start_time_ns_) {
-      return absl::InvalidArgumentError("--clip-end-time must be later than --start-time");
+    if (*parsed_clip_end_time == 0) {
+      return absl::InvalidArgumentError("--clip-end-time must be positive");
     }
     clip_end_time_ns_ = *parsed_clip_end_time;
-    const uint64_t duration_ns = clip_end_time_ns_ - start_time_ns_;
-    const uint64_t watchdog_seconds = duration_ns / GST_SECOND + 3;
-    if (watchdog_seconds > G_MAXINT) {
-      return absl::InvalidArgumentError("--clip-end-time exceeds the supported timed-run duration");
-    }
-    if (time_limit_seconds_ > 0 && static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND < duration_ns) {
-      return absl::InvalidArgumentError("--time-limit ends before --clip-end-time");
-    }
-    if (time_limit_seconds_ <= 0) {
-      time_limit_seconds_ = static_cast<gint>(watchdog_seconds);
-    }
   }
   if (stitch_frame_time) {
     const auto parsed_stitch_frame_time = parse_stitch_frame_time_option("--stitch-frame-time", stitch_frame_time);
