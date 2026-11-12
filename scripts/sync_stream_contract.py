@@ -1355,6 +1355,10 @@ def generate(root, *, native_revision=None, include_revision=True):
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in (
                 "src/apps/hstream-ui/HStreamWindow.cpp",
+                "src/libs/stitching/CalibrationFailure.h",
+                "src/libs/stitching/CalibrationFailure.cpp",
+                "src/libs/stitching/CalibrationFailureProtocol.h",
+                "src/libs/stitching/CalibrationFailureProtocol.cpp",
                 "src/apps/hstream-ui/CameraChapterWarning.cpp",
                 "src/apps/hstream-ui/CameraChapterWarning.h",
                 "src/libs/stitching/VideoDiscovery.cpp",
@@ -1385,6 +1389,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "src/apps/hstream-ui/HighlightsDialog.cpp",
                 "src/apps/hstream-ui/HighlightItemEditor.cpp",
                 "src/apps/hstream-ui/StitchingExperimentDialog.cpp",
+                "src/apps/hstream-ui/CameraExperimentDialog.cpp",
                 "src/apps/hstream-ui/StitchingWorkflow.cpp",
                 "src/apps/hstream-ui/LogTextEdit.h",
                 "src/apps/hstream-ui/Int8PreparationDialog.cpp",

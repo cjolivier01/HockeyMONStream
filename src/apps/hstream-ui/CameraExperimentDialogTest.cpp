@@ -1,6 +1,9 @@
 #include "src/apps/hstream-ui/CameraExperimentDialog.h"
+#include "src/apps/hstream-ui/CameraControlSpecs.h"
+#include "src/apps/hstream-ui/CameraExperimentCaptureTest.h"
 #include "src/apps/hstream-ui/CameraExperimentPreviewWorker.h"
 
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
@@ -8,6 +11,7 @@
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
@@ -24,6 +28,7 @@
 #include <QtWidgets/QLineEdit>
 #include <QtWidgets/QProgressBar>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSizeGrip>
 #include <QtWidgets/QSlider>
 #include <QtWidgets/QTabWidget>
@@ -37,6 +42,7 @@
 #include <functional>
 #include <future>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,6 +99,88 @@ bool save_trial_dialog(QPushButton* button, const QString& path, bool accept) {
   deadline.start(5000);
   button->click();
   return seen && handled;
+}
+
+bool close_save_probe(CameraExperimentDialog& dialog, const QString& path, const QString& expected_path) {
+  const QFileInfo destination(path);
+  const QDir parent = destination.dir();
+  const QStringList partial_pattern{destination.fileName() + ".tmp-*"};
+  auto* save = widget<QPushButton>(dialog, "experimentSave");
+  auto* cancel = widget<QPushButton>(dialog, "experimentCancel");
+  const QString selected_trial = widget<QComboBox>(dialog, "experimentComparison")->currentText();
+  if (QFileInfo::exists(path) || !parent.entryList(partial_pattern, QDir::Files).isEmpty() ||
+      !save_trial_dialog(save, path, true))
+    throw std::runtime_error("Cannot start the independent Close-during-Save probe");
+  const bool admitted = !save->isEnabled() && cancel->isEnabled() && cancel->text() == "Cancel saving";
+  QElapsedTimer elapsed;
+  elapsed.start();
+  QStringList partials;
+  while (elapsed.elapsed() < 60000) {
+    QCoreApplication::processEvents();
+    partials = parent.entryList(partial_pattern, QDir::Files);
+    if (!partials.isEmpty() || save->isEnabled() || QFileInfo::exists(path))
+      break;
+    QThread::msleep(1);
+  }
+  const bool committed_before_close = QFileInfo::exists(path);
+  const bool pending_before_close = !save->isEnabled();
+  if (!pending_before_close && !committed_before_close)
+    throw std::runtime_error("Save ended without an output before the Close probe could act");
+  const bool uncommitted_output_observed = !partials.isEmpty() && !committed_before_close;
+  const qint64 before_close_ms = elapsed.elapsed();
+  dialog.reject();
+  const bool visible_closing = dialog.isVisible();
+  if (pending_before_close && !visible_closing)
+    throw std::runtime_error("Close did not remain visible while its Save future was outstanding");
+  if (!wait_until([&] { return !dialog.isVisible(); }, 60000))
+    throw std::runtime_error("Close-during-Save did not drain background work");
+  QElapsedTimer retired;
+  retired.start();
+  while (retired.elapsed() < 100) {
+    QCoreApplication::processEvents();
+    if (dialog.isVisible())
+      throw std::runtime_error("A late Save completion reopened Camera");
+    QThread::msleep(1);
+  }
+  if (!parent.entryList(partial_pattern, QDir::Files).isEmpty())
+    throw std::runtime_error("Close-during-Save retained a partial output");
+  if (widget<QComboBox>(dialog, "experimentComparison")->currentText() != selected_trial)
+    throw std::runtime_error("Close-during-Save changed the selected trial");
+  const bool committed = QFileInfo::exists(path);
+  if (committed) {
+    const auto digest = [](const QString& source) {
+      QFile file(source);
+      if (!file.open(QIODevice::ReadOnly) || file.size() > 128 * 1024 * 1024)
+        throw std::runtime_error("Close/Save output is unavailable or too large");
+      QCryptographicHash hash(QCryptographicHash::Sha256);
+      if (!hash.addData(&file))
+        throw std::runtime_error("Cannot verify committed Close/Save output");
+      return hash.result();
+    };
+    if (digest(path) != digest(expected_path))
+      throw std::runtime_error("A Save committed during Close but differs from the prepared trial");
+  }
+  camera_capture_test::write_json(
+      path + ".close.json",
+      {{"ui_save_admitted", admitted},
+       {"outstanding_ui_future_before_close", pending_before_close},
+       {"temporary_outputs_observed", QJsonArray::fromStringList(partials)},
+       {"uncommitted_output_observed", uncommitted_output_observed},
+       {"committed_before_close", committed_before_close},
+       {"visible_while_closing", visible_closing},
+       {"committed_after_close", committed},
+       {"partial_output_remaining", false},
+       {"late_reopen", false},
+       {"wait_before_close_ms", before_close_ms},
+       {"serialization_boundary", "unrun: no serializer barrier; UI admission is not evidence of active serialization"},
+       {"output_boundary",
+        uncommitted_output_observed ? "observed temporary output before Close; commit may race"
+                                    : "unrun: no uncommitted output observed before Close"},
+       {"outcome", committed ? "committed result validated" : "no committed or partial output"}});
+  std::cout << "Close Save: " << (committed ? "validated committed result" : "no output")
+            << "; uncommitted temporary output observed=" << uncommitted_output_observed
+            << "; active serialization boundary UNRUN (no barrier)\n";
+  return true;
 }
 
 bool screenshot_export_inventory() {
@@ -255,6 +343,22 @@ bool smoke() {
     return false;
   }
   auto* maximize_window = widget<QToolButton>(first, "maximizeCameraExperimentWindowButton");
+  const auto usable_geometry = [&] {
+    auto* plot = widget<QWidget>(first, "experimentCameraPlot");
+    auto* pane = widget<QWidget>(first, "experimentControlsPanel");
+    auto* target = widget<QWidget>(first, "experimentVideoTarget");
+    const QPoint preview_at = target->mapTo(&first, QPoint());
+    const QPoint controls_at = pane->mapTo(&first, QPoint());
+    const bool usable = plot->isVisible() && pane->isVisible() && plot->height() >= 190 && pane->width() >= 390 &&
+        target->width() >= 480 && target->height() >= 270 && controls_at.x() >= preview_at.x() + target->width();
+    if (!usable)
+      std::cerr << "Camera plot/pane/preview geometry is unusable: plot=" << plot->width() << 'x' << plot->height()
+                << " pane=" << pane->width() << 'x' << pane->height() << " preview=" << target->width() << 'x'
+                << target->height() << '\n';
+    return usable;
+  };
+  if (!usable_geometry())
+    return false;
   auto* resize_grip = first.findChild<QSizeGrip*>();
   if (!first.windowFlags().testFlag(Qt::WindowMaximizeButtonHint) || !first.isSizeGripEnabled() || !resize_grip ||
       !resize_grip->isVisible()) {
@@ -268,16 +372,22 @@ bool smoke() {
               << ", got " << first.width() << 'x' << first.height() << '\n';
     return false;
   }
+  if (!usable_geometry())
+    return false;
   maximize_window->click();
   if (!wait_until([&] { return first.isMaximized() && maximize_window->text() == "Restore window"; }, 2000)) {
     std::cerr << "Camera experiments window did not maximize\n";
     return false;
   }
+  if (!usable_geometry())
+    return false;
   maximize_window->click();
   if (!wait_until([&] { return !first.isMaximized() && maximize_window->text() == "Maximize window"; }, 2000)) {
     std::cerr << "Camera experiments window did not restore\n";
     return false;
   }
+  if (!usable_geometry())
+    return false;
   auto* preview_focus = widget<QToolButton>(first, "maximizeCameraExperimentPreviewButton");
   auto* preview_stop = widget<QPushButton>(first, "experimentStopPreview");
   auto* realtime = widget<QCheckBox>(first, "experimentRealtimePlayback");
@@ -540,7 +650,8 @@ bool confirmation(const QString& manifest) {
 
 // Exercise the real dense serializer without requiring a video renderer. This
 // isolates Save/Cancel/Close responsiveness from compositor and decoder checks.
-bool save_trial_workflow(const QStringList& args) {
+bool save_trial_workflow(QStringList args) {
+  const bool observe_close = args.removeAll("--close-during-save") > 0;
   if (args.size() != 7 || !QDir().mkpath(args[3])) {
     std::cerr << "Usage: --save-trial MANIFEST ARTIFACT_DIR DURATION ARENA CONFIG\n";
     return false;
@@ -589,11 +700,16 @@ bool save_trial_workflow(const QStringList& args) {
   if (!save_trial_dialog(save, path("saved.yaml"), true) || !wait_until([&] { return save->isEnabled(); }) ||
       !QFileInfo::exists(path("saved.yaml")) || !status->text().contains("Trial saved without a video binding"))
     return false;
-  if (!save_trial_dialog(save, path("closed.yaml"), true) || save->isEnabled())
-    return false;
-  dialog.reject();
-  if (!wait_until([&] { return !dialog.isVisible(); }) || QFileInfo::exists(path("closed.yaml")))
-    return false;
+  if (observe_close) {
+    if (!close_save_probe(dialog, path("closed.yaml"), path("saved.yaml")))
+      return false;
+  } else {
+    if (!save_trial_dialog(save, path("closed.yaml"), true) || save->isEnabled())
+      return false;
+    dialog.reject();
+    if (!wait_until([&] { return !dialog.isVisible(); }) || QFileInfo::exists(path("closed.yaml")))
+      return false;
+  }
   responsiveness.stop();
   longest_gap = std::max(longest_gap, heartbeat.elapsed());
   const auto exported = YAML::LoadFile(path("saved.yaml").toStdString());
@@ -717,11 +833,49 @@ bool rink_comparison(const QStringList& args) {
   return true;
 }
 
+QJsonObject camera_control_snapshot(CameraExperimentDialog& dialog) {
+  QJsonArray controls;
+  const auto unused = [](const char*) { return 0; };
+  for (const auto& group :
+       {tracking_control_specs(unused), motion_control_specs(unused), player_control_specs(unused)}) {
+    for (const auto& spec : group) {
+      if (!spec.runtime_key)
+        continue;
+      const QByteArray id(spec.id);
+      auto* value = widget<QDoubleSpinBox>(dialog, ("experimentValue_" + id).constData());
+      auto* enabled = widget<QCheckBox>(dialog, ("experimentOverride_" + id).constData());
+      controls.append(
+          QJsonObject{
+              {"id", spec.id},
+              {"raw_value", value->value() * spec.divisor},
+              {"value", value->value()},
+              {"divisor", spec.divisor},
+              {"override_checked", enabled->isChecked()},
+              {"override_enabled", enabled->isEnabled()},
+              {"value_enabled", value->isEnabled()}});
+    }
+  }
+  return {
+      {"controls", controls},
+      {"fast", widget<QCheckBox>(dialog, "experimentFastBox")->isChecked()},
+      {"follower", widget<QCheckBox>(dialog, "experimentFollowerBox")->isChecked()},
+      {"playback_start_ms", widget<QDoubleSpinBox>(dialog, "experimentPlaybackStart")->value() * 1000}};
+}
+
+int confirmed_camera_frame(CameraExperimentDialog& dialog) {
+  return camera_capture_test::confirmed_frame(
+      widget<QLabel>(dialog, "experimentFrameStatus")->text(),
+      widget<QSlider>(dialog, "experimentTimeline")->maximum() + 1,
+      widget<QPushButton>(dialog, "experimentScreenshot")->isEnabled());
+}
+
 bool e2e(const QStringList& raw_args) {
   QStringList args;
   // Optional test-driver probes leave ordinary e2e coverage unchanged.
   int requested_overlay_frame = -1, expected_frame_count = -1;
   QList<int> exact_seek_frames;
+  QString handshake_directory, control_snapshot_path;
+  bool close_during_save = false;
   for (const QString& argument : raw_args) {
     const auto parse_nonnegative = [](const QString& value) {
       bool valid = false;
@@ -730,7 +884,13 @@ bool e2e(const QStringList& raw_args) {
         throw std::runtime_error("Expected a nonnegative test frame/count");
       return number;
     };
-    if (argument.startsWith("--overlay-frame="))
+    if (argument.startsWith("--capture-handshake-dir="))
+      handshake_directory = argument.mid(QString("--capture-handshake-dir=").size());
+    else if (argument.startsWith("--control-snapshot="))
+      control_snapshot_path = argument.mid(QString("--control-snapshot=").size());
+    else if (argument == "--close-during-save")
+      close_during_save = true;
+    else if (argument.startsWith("--overlay-frame="))
       requested_overlay_frame = parse_nonnegative(argument.mid(QString("--overlay-frame=").size()));
     else if (argument.startsWith("--expect-frame-count="))
       expected_frame_count = parse_nonnegative(argument.mid(QString("--expect-frame-count=").size()));
@@ -742,12 +902,18 @@ bool e2e(const QStringList& raw_args) {
   }
   if (args.size() < 8) {
     std::cerr
-        << "Usage: --e2e MANIFEST PANORAMA ARTIFACT_DIR OFFSET DURATION VIDEO_OFFSET [ARENA] [CONFIG] [PLAYBACK_START] [--overlay-frame=N] [--exact-seek-frames=N,...] [--expect-frame-count=N]\n";
+        << "Usage: --e2e MANIFEST PANORAMA ARTIFACT_DIR OFFSET DURATION VIDEO_OFFSET [ARENA] [CONFIG] [PLAYBACK_START] [--overlay-frame=N] [--exact-seek-frames=N,...] [--expect-frame-count=N] [--capture-handshake-dir=DIR] [--control-snapshot=JSON] [--close-during-save]\n";
     return false;
   }
   const QString artifacts = args[4];
   if (!QDir().mkpath(artifacts))
     return false;
+  camera_capture_test::Handshake handshake(handshake_directory);
+  const auto initial = control_snapshot_path.isEmpty() ? camera_capture_test::Controls{}
+                                                       : camera_capture_test::read_controls(control_snapshot_path);
+  const qint64 playback_ms = args.size() > 10 ? std::llround(args[10].toDouble() * 1000) : initial.playback_start_ms;
+  if (!control_snapshot_path.isEmpty() && playback_ms != initial.playback_start_ms)
+    throw std::runtime_error("Positional Playback start differs from the supplied control snapshot");
   QElapsedTimer heartbeat;
   heartbeat.start();
   qint64 longest_gap = 0;
@@ -755,8 +921,31 @@ bool e2e(const QStringList& raw_args) {
   const auto record_heartbeat = [&] { longest_gap = std::max(longest_gap, heartbeat.restart()); };
   QObject::connect(&responsiveness, &QTimer::timeout, record_heartbeat);
   responsiveness.start(10);
-  CameraExperimentDialog dialog(
-      QFileInfo(args[2]).absolutePath(), nullptr, {}, args.size() > 10 ? std::llround(args[10].toDouble() * 1000) : 0);
+  CameraExperimentDialog dialog(QFileInfo(args[2]).absolutePath(), nullptr, initial.values, playback_ms);
+  const auto constructor_controls = camera_control_snapshot(dialog);
+  if (constructor_controls.value("playback_start_ms").toDouble() != playback_ms)
+    throw std::runtime_error("The supplied Playback start cannot be represented by the Camera control");
+  for (const auto& target :
+       {std::make_pair("Apply_To_Fast_Box", "fast"), std::make_pair("Apply_To_Follower_Box", "follower")}) {
+    const auto supplied = initial.values.find(target.first);
+    if (supplied != initial.values.end() &&
+        constructor_controls.value(target.second).toBool() != (supplied->second != 0))
+      throw std::runtime_error("Camera did not inherit the supplied target choice");
+  }
+  for (const auto& item : constructor_controls.value("controls").toArray()) {
+    const auto actual = item.toObject();
+    const auto supplied = initial.values.find(actual.value("id").toString());
+    if (supplied != initial.values.end() &&
+        (!actual.value("override_checked").toBool() ||
+         std::abs(actual.value("raw_value").toDouble() - supplied->second) >
+             1e-12 * std::max(1.0, std::abs(supplied->second))))
+      throw std::runtime_error("The initial control snapshot cannot be represented without changing its raw value");
+  }
+  camera_capture_test::write_json(
+      QDir(artifacts).filePath("control-context-initial.json"),
+      {{"supplied_path", control_snapshot_path},
+       {"complete_applicable_map", initial.complete},
+       {"actual", constructor_controls}});
   // The GPU test shares the desktop; only its synthetic clicks should seek.
   dialog.setWindowFlag(Qt::WindowTransparentForInput);
   dialog.setAttribute(Qt::WA_ShowWithoutActivating);
@@ -787,11 +976,18 @@ bool e2e(const QStringList& raw_args) {
   }
   if (!require_confirmation(dialog))
     return false;
+  for (auto* control : dialog.findChildren<QCheckBox*>())
+    if (control->objectName().startsWith("experimentOverride_"))
+      control->setChecked(false);
+  widget<QCheckBox>(dialog, "experimentFastBox")->setChecked(false);
+  widget<QCheckBox>(dialog, "experimentFollowerBox")->setChecked(true);
   widget<QCheckBox>(dialog, "experimentOverride_Max_Speed_X_x10")->setChecked(true);
   widget<QDoubleSpinBox>(dialog, "experimentValue_Max_Speed_X_x10")->setValue(1.5);
   widget<QCheckBox>(dialog, "experimentOverride_Max_Accel_X_x10")->setChecked(true);
   widget<QDoubleSpinBox>(dialog, "experimentValue_Max_Accel_X_x10")->setValue(0.2);
   widget<QLineEdit>(dialog, "experimentTrialName")->setText("A · slower pan");
+  camera_capture_test::write_json(
+      QDir(artifacts).filePath("control-context-trial.json"), camera_control_snapshot(dialog));
   apply->click();
   auto* comparison = widget<QComboBox>(dialog, "experimentComparison");
   auto* screenshot = widget<QPushButton>(dialog, "experimentScreenshot");
@@ -806,7 +1002,128 @@ bool e2e(const QStringList& raw_args) {
     std::cerr << "Trial preview failed: " << status->text().toStdString() << '\n';
     return false;
   }
-  const auto capture = [&](const char* name) {
+  std::optional<YAML::Node> reference_trial;
+  QString reference_sha256, reference_path;
+  if (handshake.enabled()) {
+    // A real, separate Save binds the trial's exact immutable sample/PTS rows
+    // without adding an accessor or GPU-generation claim to production code.
+    reference_path = QDir(artifacts).absoluteFilePath("capture-reference-trial.yaml");
+    auto* reference_save = widget<QPushButton>(dialog, "experimentSave");
+    auto* reference_play = widget<QPushButton>(dialog, "experimentPlay");
+    if (reference_play->text() == "Pause")
+      reference_play->click();
+    if (!wait_until([&] {
+          return reference_play->text() != "Pause" && reference_save->isEnabled() &&
+              confirmed_camera_frame(dialog) >= 0;
+        }))
+      throw std::runtime_error("Capture reference Save did not reach a confirmed paused frame");
+    const int paused_reference_frame = confirmed_camera_frame(dialog);
+    if (QFileInfo::exists(reference_path) || !save_trial_dialog(reference_save, reference_path, true) ||
+        !wait_until([&] { return reference_save->isEnabled(); }) || !QFileInfo::exists(reference_path))
+      throw std::runtime_error("Could not save the independent capture reference trial");
+    QFile reference_file(reference_path);
+    if (!reference_file.open(QIODevice::ReadOnly) || reference_file.size() > 128 * 1024 * 1024)
+      throw std::runtime_error("Capture reference trial is unavailable or too large");
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    if (!digest.addData(&reference_file))
+      throw std::runtime_error("Could not hash the capture reference trial");
+    reference_sha256 = QString::fromLatin1(digest.result().toHex());
+    reference_trial.emplace(YAML::LoadFile(reference_path.toStdString()));
+    if ((*reference_trial)["schema"].as<std::string>() != "hstream-camera-experiment-v1" ||
+        (*reference_trial)["frames"].size() !=
+            static_cast<std::size_t>(widget<QSlider>(dialog, "experimentTimeline")->maximum() + 1))
+      throw std::runtime_error("Capture reference trial differs from the prepared sample range");
+    heartbeat.restart(); // Parsing/hash work is test-only; the real Save was measured.
+    reference_play->click();
+    if (!wait_until([&] {
+          const int frame = confirmed_camera_frame(dialog);
+          return reference_play->text() == "Pause" && frame >= 0 && frame != paused_reference_frame;
+        }))
+      throw std::runtime_error("Capture reference Save did not resume verified frame progress");
+    camera_capture_test::write_json(
+        QDir(artifacts).filePath("capture-reference-playback.json"),
+        {{"paused_frame", paused_reference_frame},
+         {"resumed_frame", confirmed_camera_frame(dialog)},
+         {"playing_after_save", reference_play->text() == "Pause"},
+         {"save_enabled_after_resume", reference_save->isEnabled()}});
+  }
+  const auto bounds = [&](const char* object_name) {
+    auto* control = widget<QWidget>(dialog, object_name);
+    const QPoint origin = control->mapTo(&dialog, QPoint());
+    return QJsonArray{origin.x(), origin.y(), control->width(), control->height()};
+  };
+  const auto observation = [&] {
+    const QPoint origin = dialog.mapToGlobal(QPoint());
+    const int confirmed = confirmed_camera_frame(dialog);
+    QJsonArray scroll;
+    for (auto* bar : dialog.findChildren<QScrollBar*>())
+      scroll.append(
+          QJsonObject{
+              {"name", bar->objectName()},
+              {"orientation", int(bar->orientation())},
+              {"value", bar->value()},
+              {"maximum", bar->maximum()}});
+    QJsonObject value{
+        {"device_pixel_ratio", dialog.devicePixelRatioF()},
+        {"dialog_global_origin", QJsonArray{origin.x(), origin.y()}},
+        {"dialog_size", QJsonArray{dialog.width(), dialog.height()}},
+        {"preview", bounds("experimentVideoTarget")},
+        {"timeline", bounds("experimentCameraPlot")},
+        {"control_tabs", bounds("experimentControlTabs")},
+        {"tab", widget<QTabWidget>(dialog, "experimentControlTabs")->currentIndex()},
+        {"controls", camera_control_snapshot(dialog)},
+        {"scroll", scroll},
+        {"view", comparison->currentIndex()},
+        {"view_name", comparison->currentText()},
+        {"manifest", widget<QLineEdit>(dialog, "experimentManifest")->text()},
+        {"media", widget<QLineEdit>(dialog, "experimentMedia")->text()},
+        {"playing", widget<QPushButton>(dialog, "experimentPlay")->text() == "Pause"},
+        {"requested_index", widget<QSlider>(dialog, "experimentTimeline")->value()},
+        {"confirmed_index", confirmed},
+        {"frame_label", widget<QLabel>(dialog, "experimentFrameStatus")->text()},
+        {"screenshot_ready", screenshot->isEnabled()}};
+    for (const char* name : {"experimentDrawPlayers", "experimentDrawPlayTracking", "experimentDrawRinkMask"})
+      value.insert(name, widget<QCheckBox>(dialog, name)->isChecked());
+    QJsonObject layers;
+    for (auto* toggle : dialog.findChildren<QCheckBox*>())
+      if (toggle->objectName().startsWith("experimentPlotLayer_"))
+        layers.insert(toggle->objectName(), toggle->isChecked());
+    value.insert("plot_layers", layers);
+    if (reference_trial && confirmed >= 0) {
+      const auto row = (*reference_trial)["frames"][confirmed];
+      value.insert("trial_sample_id", QString::number(row["sample_id"].as<uint64_t>()));
+      value.insert("trial_pts_ns", QString::number(row["pts_ns"].as<uint64_t>()));
+    }
+    return value;
+  };
+  const auto capture_identity = [](QJsonObject value) {
+    if (value.value("playing").toBool())
+      for (const char* key :
+           {"requested_index", "confirmed_index", "frame_label", "screenshot_ready", "trial_sample_id", "trial_pts_ns"})
+        value.remove(key);
+    return value;
+  };
+  const auto stable_observation = [&] { return capture_identity(observation()); };
+  const auto capture = [&](const char* name, bool handoff = true) {
+    QJsonObject before;
+    if (handshake.enabled() && handoff) {
+      QJsonObject prior;
+      if (!wait_until(
+              [&] {
+                const auto now = stable_observation();
+                const bool stable = !prior.isEmpty() && now == prior && confirmed_camera_frame(dialog) >= 0;
+                prior = now;
+                return stable;
+              },
+              2000))
+        throw std::runtime_error("Camera capture state did not settle");
+      before = observation();
+      if (!before.value("playing").toBool() && before.value("requested_index") != before.value("confirmed_index"))
+        throw std::runtime_error("Paused requested and Poll-confirmed frames differ");
+      handshake.begin(
+          QFileInfo(QString::fromLatin1(name)).completeBaseName().toLower(),
+          {{"state", before}, {"image", QDir(artifacts).absoluteFilePath(name)}});
+    }
     // GPU readback plus full-dialog PNG encoding is an explicit test-driver
     // operation. Count any application gap before it, then exclude only that
     // synchronous capture from the playback responsiveness measurement.
@@ -820,13 +1137,8 @@ bool e2e(const QStringList& raw_args) {
       std::cerr << error.toStdString() << '\n';
       return false;
     }
-    const auto bounds = [&](const char* object_name) {
-      auto* control = widget<QWidget>(dialog, object_name);
-      const QPoint origin = control->mapTo(&dialog, QPoint());
-      return QJsonArray{origin.x(), origin.y(), control->width(), control->height()};
-    };
     const QSize pixels = QImageReader(QDir(artifacts).filePath(name)).size();
-    const QJsonObject geometry{
+    QJsonObject geometry{
         {"device_pixel_ratio", dialog.devicePixelRatioF()},
         {"dialog_size", QJsonArray{dialog.width(), dialog.height()}},
         {"minimum_size", QJsonArray{dialog.minimumWidth(), dialog.minimumHeight()}},
@@ -834,13 +1146,30 @@ bool e2e(const QStringList& raw_args) {
         {"preview", bounds("experimentVideoTarget")},
         {"timeline", bounds("experimentCameraPlot")},
         {"control_tabs", bounds("experimentControlTabs")}};
-    QFile geometry_file(QDir(artifacts).filePath(QString(name) + ".geometry.json"));
-    const QByteArray encoded = QJsonDocument(geometry).toJson();
-    // Repeated captures replace both the PNG and its geometry together.
-    if (!geometry_file.open(QIODevice::WriteOnly | QIODevice::Truncate) ||
-        geometry_file.write(encoded) != encoded.size())
-      return false;
+    const auto after = observation();
+    geometry.insert("before_capture", before);
+    geometry.insert("after_capture", after);
+    geometry.insert("synchronous_capture_ms", screenshot_time.elapsed());
+    camera_capture_test::write_json(QDir(artifacts).filePath(QString(name) + ".geometry.json"), geometry);
     std::cout << "Test screenshot " << name << " took " << screenshot_time.elapsed() << " ms\n";
+    if (handshake.enabled() && handoff) {
+      if (capture_identity(before) != capture_identity(after))
+        throw std::runtime_error("Camera checkpoint identity changed during internal capture");
+      geometry.insert("reference_trial", reference_path);
+      geometry.insert("reference_sha256", reference_sha256);
+      geometry.insert("image", QDir(artifacts).absoluteFilePath(name));
+      geometry.insert(
+          "frame_evidence",
+          "Poll-derived UI label/readiness plus immutable trial sample/PTS; no GPU-generation receipt");
+      geometry.insert(
+          "motion_scope",
+          before.value("playing").toBool()
+              ? "Playing capture records an observed frame interval; compositor frame identity requires independent review"
+              : "Paused index and geometry remain stable through the acknowledged external capture");
+      const QString phase = QFileInfo(QString::fromLatin1(name)).completeBaseName().toLower();
+      handshake.checkpoint(phase, geometry, stable_observation);
+      camera_capture_test::write_json(QDir(artifacts).filePath(phase + ".after-ack.json"), observation());
+    }
     return true;
   };
   // Require visible frame progress before using screenshots as playback evidence.
@@ -858,6 +1187,39 @@ bool e2e(const QStringList& raw_args) {
           10000)) {
     std::cerr << "Video made no presented-frame progress: " << status->text().toStdString() << '\n';
     return false;
+  }
+  if (handshake.enabled() && !args.contains("--unequal-cadence")) {
+    const QSize normal = dialog.size();
+    const auto playing_capture = [&](const char* phase) {
+      QElapsedTimer settling;
+      settling.start();
+      if (!wait_until(
+              [&] { return settling.elapsed() >= 200 && screenshot->isEnabled() && play->text() == "Pause"; }, 5000))
+        throw std::runtime_error("Playing Camera geometry did not settle with a ready frame");
+      return capture(phase);
+    };
+    if (!playing_capture("playing-normal.png"))
+      return false;
+    dialog.resize(normal + QSize(100, 80));
+    if (!playing_capture("playing-resized.png"))
+      return false;
+    dialog.resize(normal);
+    if (!playing_capture("playing-resize-restored.png"))
+      return false;
+    auto* focus = widget<QToolButton>(dialog, "maximizeCameraExperimentPreviewButton");
+    focus->click();
+    if (!playing_capture("playing-preview-maximized.png"))
+      return false;
+    focus->click();
+    if (!playing_capture("playing-preview-restored.png"))
+      return false;
+    auto* maximize = widget<QToolButton>(dialog, "maximizeCameraExperimentWindowButton");
+    maximize->click();
+    if (!playing_capture("playing-window-maximized.png"))
+      return false;
+    maximize->click();
+    if (!playing_capture("playing-window-restored.png"))
+      return false;
   }
   if (args.contains("--unequal-cadence")) {
     auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
@@ -905,60 +1267,83 @@ bool e2e(const QStringList& raw_args) {
   auto* timeline = widget<QSlider>(dialog, "experimentTimeline");
   auto* target = widget<QWidget>(dialog, "experimentVideoTarget");
   auto* plot = widget<QWidget>(dialog, "experimentCameraPlot");
+  if (handshake.enabled() && requested_overlay_frame >= 0) {
+    if (requested_overlay_frame > timeline->maximum())
+      throw std::runtime_error("Paused geometry frame is outside the prepared range");
+    timeline->setValue(requested_overlay_frame);
+    QMetaObject::invokeMethod(timeline, "sliderReleased", Qt::DirectConnection);
+    if (!wait_until([&] { return confirmed_camera_frame(dialog) == requested_overlay_frame; }))
+      throw std::runtime_error("Paused geometry did not confirm the fixed overlay frame");
+  }
   // Inspect the GPU front buffer: QWidget::grab omits native video, and X11
   // screen grabs can be black when this display is locked or composited.
-  const auto visible_preview = [&](const char* action) {
+  const auto visible_preview = [&](const char* phase) {
     QElapsedTimer settle;
     settle.start();
+    const auto has_visible_video = [&](const QString& name) {
+      const QImage screenshot_image(QDir(artifacts).filePath(name));
+      const double scale = double(screenshot_image.width()) / dialog.width();
+      const QPoint origin = target->mapTo(&dialog, QPoint(0, 0));
+      const QImage image = screenshot_image.copy(QRect(
+          qRound(origin.x() * scale),
+          qRound(origin.y() * scale),
+          qRound(target->width() * scale),
+          qRound(target->height() * scale)));
+      int bright = 0, samples = 0;
+      for (int y = 0; y < image.height(); y += 8)
+        for (int x = 0; x < image.width(); x += 8) {
+          bright += qGray(image.pixel(x, y)) > 32;
+          ++samples;
+        }
+      return samples > 0 && bright > samples / 10;
+    };
+    if (handshake.enabled()) {
+      // Every synchronous readback in handoff mode has a pre-capture marker.
+      // A black captured frame fails; do not hide it behind unobserved retries.
+      const QString name = QString::fromLatin1(phase) + ".png";
+      return wait_until([&] { return settle.elapsed() >= 200 && screenshot->isEnabled(); }, 5000) &&
+          capture(name.toUtf8().constData()) && has_visible_video(name);
+    }
+    int attempt = 0;
     if (wait_until(
             [&] {
               if (settle.elapsed() < 200 || !screenshot->isEnabled())
                 return false;
-              if (!capture("paused-preview.png"))
+              const QString probe = QString("%1-probe-%2.png").arg(phase).arg(++attempt);
+              if (!capture(probe.toUtf8().constData(), false))
                 return false;
-              const QImage screenshot_image(QDir(artifacts).filePath("paused-preview.png"));
-              const double scale = double(screenshot_image.width()) / dialog.width();
-              const QPoint origin = target->mapTo(&dialog, QPoint(0, 0));
-              const QImage image = screenshot_image.copy(QRect(
-                  qRound(origin.x() * scale),
-                  qRound(origin.y() * scale),
-                  qRound(target->width() * scale),
-                  qRound(target->height() * scale)));
-              int bright = 0, samples = 0;
-              for (int y = 0; y < image.height(); y += 8)
-                for (int x = 0; x < image.width(); x += 8) {
-                  bright += qGray(image.pixel(x, y)) > 32;
-                  ++samples;
-                }
-              return samples > 0 && bright > samples / 10;
+              return has_visible_video(probe);
             },
             5000))
-      return true;
-    std::cerr << "Native preview lost its image after " << action << '\n';
-    capture("failed-dialog.png");
+      return capture((QString::fromLatin1(phase) + ".png").toUtf8().constData());
+    std::cerr << "Native preview lost its image after " << phase << '\n';
+    capture("failed-dialog.png", false);
     return false;
   };
-  if (!visible_preview("Pause"))
+  if (!visible_preview("paused-normal"))
     return false;
   const int paused_frame = timeline->value();
   const QSize normal_size = dialog.size();
-  for (const QSize size : {normal_size + QSize(100, 80), normal_size}) {
-    dialog.resize(size);
-    if (!visible_preview("paused resize") || timeline->value() != paused_frame)
+  for (int i = 0; i < 2; ++i) {
+    dialog.resize(i == 0 ? normal_size + QSize(100, 80) : normal_size);
+    if (!visible_preview(i == 0 ? "paused-resized" : "paused-resize-restored") || timeline->value() != paused_frame)
       return false;
   }
   auto* focus = widget<QToolButton>(dialog, "maximizeCameraExperimentPreviewButton");
   for (int i = 0; i < 2; ++i) {
     focus->click();
-    if (!visible_preview("paused preview maximize/restore") || timeline->value() != paused_frame)
+    if (!visible_preview(i == 0 ? "paused-preview-maximized" : "paused-preview-restored") ||
+        timeline->value() != paused_frame)
       return false;
   }
   auto* maximize = widget<QToolButton>(dialog, "maximizeCameraExperimentWindowButton");
   for (int i = 0; i < 2; ++i) {
     maximize->click();
-    if (!visible_preview("paused window maximize/restore") || timeline->value() != paused_frame)
+    if (!visible_preview(i == 0 ? "paused-window-maximized" : "paused-window-restored") ||
+        timeline->value() != paused_frame)
       return false;
   }
+  int plot_seek_sequence = 0;
   const auto click_plot_frame = [&](int frame) {
     const QPointF position(14.0 + (plot->width() - 28.0) * frame / timeline->maximum(), plot->height() / 2.0);
     QMouseEvent press(
@@ -983,7 +1368,7 @@ bool e2e(const QStringList& raw_args) {
                 << '\n';
       return false;
     }
-    return visible_preview("visual timeline seek");
+    return visible_preview(camera_capture_test::seek_phase(frame, ++plot_seek_sequence).toUtf8().constData());
   };
   if (plot->accessibleName() != "Visual timeline")
     return false;
@@ -1086,6 +1471,22 @@ bool e2e(const QStringList& raw_args) {
   }
   // The plot paints on the CPU, so its layers can be checked directly: flipping
   // one must change what the plot draws on the same paused frame.
+  if (handshake.enabled()) {
+    std::vector<std::pair<QCheckBox*, bool>> previous;
+    for (auto* toggle : dialog.findChildren<QCheckBox*>())
+      if (toggle->objectName().startsWith("experimentPlotLayer_")) {
+        previous.emplace_back(toggle, toggle->isChecked());
+        toggle->setChecked(true);
+      }
+    if (!capture("plot-all-layers.png"))
+      return false;
+    for (const auto& [toggle, checked] : previous)
+      toggle->setChecked(false);
+    if (!capture("plot-no-layers.png"))
+      return false;
+    for (const auto& [toggle, checked] : previous)
+      toggle->setChecked(checked);
+  }
   for (const char* name :
        {"experimentPlotLayer_Recorded",
         "experimentPlotLayer_Program",
@@ -1099,6 +1500,12 @@ bool e2e(const QStringList& raw_args) {
     toggle->toggle();
     QCoreApplication::processEvents();
     const QImage after = plot->grab().toImage();
+    if (handshake.enabled()) {
+      const QString phase = "plot-layer-" + QString::fromLatin1(name).section('_', -1).toLower() +
+          (toggle->isChecked() ? "-on.png" : "-off.png");
+      if (!capture(phase.toUtf8().constData()))
+        return false;
+    }
     toggle->toggle();
     int different = 0;
     for (int y = 0; y < before.height(); ++y)
@@ -1205,6 +1612,8 @@ bool e2e(const QStringList& raw_args) {
     return false;
   }
   auto* save = widget<QPushButton>(dialog, "experimentSave");
+  if (handshake.enabled() && !capture("end-paused.png"))
+    return false;
   if (!save->isEnabled()) {
     std::cerr << "Prepared candidate cannot be saved\n";
     return false;
@@ -1247,6 +1656,8 @@ bool e2e(const QStringList& raw_args) {
       exported["name"].as<std::string>() != "A · slower pan" ||
       exported["frames"].size() != static_cast<std::size_t>(timeline->maximum() + 1) ||
       tuning["max-speed-x"].as<double>() != 1.5 || std::abs(tuning["max-accel-x"].as<double>() - 0.2) > 1e-7 ||
+      tuning.size() != 2 || exported["tuning"]["play-tracker"]["hstream-apply-to-fast-box"].as<bool>() ||
+      !exported["tuning"]["play-tracker"]["hstream-apply-to-follower-box"].as<bool>() ||
       exported["media"]["kind"].as<std::string>() != (QFileInfo(args[3]).isDir() ? "original-cameras" : "panorama") ||
       exported["frames"][0]["pts_ns"].as<uint64_t>() != exported["in_pts_ns"].as<uint64_t>() ||
       exported["frames"][exported["frames"].size() - 1]["pts_ns"].as<uint64_t>() >=
@@ -1254,10 +1665,20 @@ bool e2e(const QStringList& raw_args) {
     std::cerr << "Saved trial does not retain the selected native range and tuning\n";
     return false;
   }
+  if (reference_trial && YAML::Dump(*reference_trial) != YAML::Dump(exported))
+    throw std::runtime_error("Final trial Save differs from the immutable capture reference");
   heartbeat.restart();
   widget<QPushButton>(dialog, "experimentStopPreview")->click();
   if (!wait_until([&] { return play->isEnabled(); }) || !click_plot_frame(comparison_frame))
     return false;
+  if (handshake.enabled() && !capture("reopened-preview.png"))
+    return false;
+  if (close_during_save) {
+    const bool closed =
+        close_save_probe(dialog, QDir(artifacts).absoluteFilePath("closed-camera-trial.yaml"), saved_path);
+    std::cout << "PASS: separate Close/Save lifecycle probe; stale-source Save invalidation UNRUN in this option\n";
+    return closed;
+  }
   auto* in = widget<QDoubleSpinBox>(dialog, "experimentIn");
   in->setValue(in->value() + 1);
   if (!in->isEnabled()) {
@@ -1295,9 +1716,30 @@ bool e2e(const QStringList& raw_args) {
 } // namespace
 
 int main(int argc, char** argv) {
+  // Qt's default 800px offscreen screen cannot fit the native 480px preview
+  // beside the 390px controls pane. Give CPU geometry checks a real desktop
+  // allocation; explicit caller platform configurations remain authoritative.
+  QTemporaryDir offscreen;
+  if (qgetenv("QT_QPA_PLATFORM") == "offscreen") {
+    if (!offscreen.isValid())
+      return 1;
+    const QString configuration = offscreen.filePath("screen.json");
+    camera_capture_test::write_json(
+        configuration,
+        {{"screens",
+          QJsonArray{QJsonObject{
+              {"name", "camera-test"},
+              {"width", 1920},
+              {"height", 1400},
+              {"logicalDpi", 96},
+              {"devicePixelRatio", 1}}}}});
+    qputenv("QT_QPA_PLATFORM", "offscreen:configfile=" + QFile::encodeName(configuration));
+  }
   QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
   QApplication app(argc, argv);
   try {
+    if (app.arguments().contains("--capture-driver-test"))
+      return camera_capture_test::tests() ? 0 : 1;
     if (app.arguments().contains("--save-trial"))
       return save_trial_workflow(app.arguments()) ? 0 : 1;
     if (app.arguments().contains("--rink-comparison"))
@@ -1306,7 +1748,10 @@ int main(int argc, char** argv) {
       return e2e(app.arguments()) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments()[1] == "--confirmation")
       return confirmation(app.arguments()[2]) ? 0 : 1;
-    return legacy_source_controls() && smoke() && screenshot_export_inventory() && responsive_worker() ? 0 : 1;
+    return camera_capture_test::tests() && legacy_source_controls() && smoke() && screenshot_export_inventory() &&
+            responsive_worker()
+        ? 0
+        : 1;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

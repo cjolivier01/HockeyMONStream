@@ -1082,7 +1082,7 @@ cc_test(
 
 cc_test(
     name = "camera_experiment_dialog_test",
-    srcs = ["CameraExperimentDialogTest.cpp"],
+    srcs = ["CameraExperimentDialogTest.cpp", "CameraExperimentCaptureTest.cpp", "CameraExperimentCaptureTest.h"],
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
