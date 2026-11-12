@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/FreshCalibrationEvidence.h"
 #include "src/apps/hstream-ui/SupervisedProcess.h"
 
 #include "absl/cleanup/cleanup.h"
@@ -1628,6 +1629,76 @@ for line in sys.stdin:
 
   static QStringList launchedArguments(HStreamWindow* window) {
     return window->pipeline_process_ ? window->pipeline_process_->arguments() : QStringList();
+  }
+
+  static QJsonObject freshCalibrationIdentity(const HStreamWindow* window) {
+    YAML::Node camera, framing;
+    hm::stitching::write_stitch_camera_selection(camera, window->active_camera_selection_);
+    hm::stitching::write_stitch_projection_framing(framing, window->active_projection_framing_);
+    QJsonArray parameters;
+    for (double value : window->active_projection_parameters_)
+      parameters.append(value);
+    const auto& iteration = window->active_iteration_settings_;
+    return {
+        {"game", window->active_run_game_id_},
+        {"pipeline_generation", QString::number(window->pipeline_run_generation_)},
+        {"operation_game", QString::fromStdString(window->operation_game_.string())},
+        {"operation_token", QString::fromStdString(window->operation_token_)},
+        {"invalidation_id", window->active_calibration_invalidation_id_},
+        {"frame_count", window->active_calibration_frame_count_},
+        {"control_points", window->active_calibration_control_points_},
+        {"max_output_width", window->active_stitch_max_output_width_},
+        {"reference", window->active_stitch_frame_time_},
+        {"matcher", window->active_control_point_matcher_},
+        {"resolution", window->active_control_point_resolution_},
+        {"mapping_backend", window->active_mapping_backend_},
+        {"camera_yaml", QString::fromStdString(YAML::Dump(camera))},
+        {"projection", window->active_projection_},
+        {"projection_parameters", parameters},
+        {"framing_yaml", QString::fromStdString(YAML::Dump(framing))},
+        {"start_stage", window->active_calibration_start_stage_},
+        {"sync_method", iteration.sync_method},
+        {"playback_start", iteration.playback_start_time},
+        {"show_leveling", iteration.show_leveling_dialog},
+        {"show_crop", iteration.show_crop_dialog},
+        {"pipeline_proof_pending", window->pipeline_completion_proof_pending_},
+        {"archive_proof_pending", window->archive_completion_proof_pending_}};
+  }
+
+  static QJsonObject freshCalibrationControls(const HStreamWindow* window) {
+    YAML::Node camera, framing;
+    hm::stitching::write_stitch_camera_selection(camera, window->stitchCameraSelection());
+    hm::stitching::write_stitch_projection_framing(framing, window->stitchProjectionFraming());
+    const auto iteration = window->stitchingIterationSettings();
+    QJsonObject eligibility;
+    for (const char* name : {"stitchFrameTimeEdit", "playbackStartTimeEdit", "blendModeCombo", "savePresetButton"}) {
+      const auto* widget = window->findChild<QWidget*>(name);
+      eligibility[name] =
+          QJsonObject{{"enabled", widget && widget->isEnabled()}, {"visible", widget && widget->isVisible()}};
+    }
+    return {
+        {"reference", window->stitchFrameTime()},
+        {"frame_count", window->stitchingCalibrationFrameCount()},
+        {"blend", window->blendMode()},
+        {"feather", window->blendFeatherFraction()},
+        {"camera_yaml", QString::fromStdString(YAML::Dump(camera))},
+        {"framing_yaml", QString::fromStdString(YAML::Dump(framing))},
+        {"projection", window->stitchProjection()},
+        {"sync_method", iteration.sync_method},
+        {"playback_start", iteration.playback_start_time},
+        {"show_leveling", iteration.show_leveling_dialog},
+        {"show_crop", iteration.show_crop_dialog},
+        {"eligibility", eligibility}};
+  }
+
+  static QJsonObject freshCalibrationLayers(const HStreamWindow* window) {
+    return {
+        {"baseline_yaml", QString::fromStdString(YAML::Dump(window->baseline_layer_))},
+        {"user_yaml", QString::fromStdString(YAML::Dump(window->user_layer_))},
+        {"effective_defaults_yaml", QString::fromStdString(YAML::Dump(window->baseline_config_))},
+        {"baseline_root", window->baseline_config_root_},
+        {"user_source", window->user_config_source_},
+        {"user_file", fresh_calibration_evidence::snapshot(window->user_config_source_).json()}};
   }
 
   static bool pipelineRetired(HStreamWindow* window) {
@@ -18330,6 +18401,18 @@ QString native_preview_report_line(const QString& name, const NativePreviewCaptu
 }
 
 bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& game_id) {
+  namespace evidence = fresh_calibration_evidence;
+  const bool unsaved = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_FRESH_UNSAVED");
+  const bool active_save = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_ACTIVE_SAVE");
+  const auto overall_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4500);
+  const auto remaining = [&](int phase_limit) {
+    if (!unsaved)
+      return phase_limit;
+    const auto available =
+        std::chrono::duration_cast<std::chrono::milliseconds>(overall_deadline - std::chrono::steady_clock::now())
+            .count();
+    return int(std::max<int64_t>(1, std::min<int64_t>(phase_limit, available)));
+  };
   const bool fresh_calibration = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_FRESH_CALIBRATION");
   const QString requested_camera_profile = qEnvironmentVariable("HSTREAM_UI_E2E_CAMERA_PROFILE");
   std::optional<hm::stitching::StitchCameraSelection> expected_camera;
@@ -18359,6 +18442,122 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
               !QFileInfo::exists(QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_id)),
           "Fresh calibration requires X11, a new game and a new evidence directory"))
     return false;
+  const QString config_path = QDir(qEnvironmentVariable("HM_GAME_DIR")).filePath(game_id + "/_hockeymon/config.yaml");
+  std::unique_ptr<evidence::Observer> observer;
+  evidence::File saved_baseline;
+  QJsonObject effective_baseline, draft, layers, phases, original_sources;
+  const auto sources = [&] {
+    QJsonObject result;
+    const auto deadline = std::min(overall_deadline, std::chrono::steady_clock::now() + std::chrono::seconds(120));
+    for (const char* role : {"LEFT", "RIGHT"}) {
+      const auto path = qEnvironmentVariable((QString("HSTREAM_UI_E2E_FRESH_") + role).toUtf8());
+      // The operator's input may be a symlink; freeze its resolved physical file
+      // explicitly, never treating the game's source alias as an owned artifact.
+      result[role] = evidence::fingerprint(QFileInfo(path).canonicalFilePath(), 1LL << 40, deadline);
+    }
+    return result;
+  };
+  const auto geometry = [&] {
+    QJsonObject result;
+    const auto deadline = std::min(overall_deadline, std::chrono::steady_clock::now() + std::chrono::seconds(30));
+    for (const char* name :
+         {"hm_project.pto",
+          "autooptimiser_out.pto",
+          "mapping_0000.tif",
+          "mapping_0000_x.tif",
+          "mapping_0000_y.tif",
+          "mapping_0001.tif",
+          "mapping_0001_x.tif",
+          "mapping_0001_y.tif",
+          "seam_file.png",
+          "stitching_generation_id",
+          "stitching_canvas_provenance"})
+      result[name] =
+          evidence::fingerprint(QFileInfo(config_path).dir().filePath(name), 2LL * 1024 * 1024 * 1024, deadline);
+    return result;
+  };
+  const auto contents_equal = [&](const QJsonObject& first, const QJsonObject& second) {
+    if (first.isEmpty() || first.keys() != second.keys())
+      return false;
+    for (const auto& key : first.keys())
+      if (!evidence::same_content(first[key].toObject(), second[key].toObject()))
+        return false;
+    return true;
+  };
+  QJsonObject outcome{{"variant", active_save ? "save-admitted-draft" : "unsaved"}, {"result", "FAIL"}};
+  for (const char* assertion :
+       {"fresh",
+        "unsaved_before_admission",
+        "admitted_A",
+        "calibration_commit_subset",
+        "genuine_solve",
+        "completed_preview",
+        "ordinary_stop",
+        "descendants_retired",
+        "adoption",
+        "reopen",
+        "sources_unchanged"})
+    outcome[assertion] = "unrun";
+  outcome["active_save"] = active_save ? "unrun" : "not-requested";
+  outcome["overall_timeout_ms"] = 4500000;
+  outcome["preview_evidence"] = "native rendered frame; no compositor claim";
+  const auto save_log = [&] {
+    const auto bytes = window->completeLogText().toUtf8();
+    outcome["log_bytes"] = bytes.size();
+    outcome["log_truncated"] = bytes.size() > 32 * 1024 * 1024;
+    return evidence::writeBytes(QDir(artifact_dir).filePath("pipeline.log"), bytes.left(32 * 1024 * 1024));
+  };
+  QJsonArray events;
+  int save_clicks = 0;
+  bool final_written = false;
+  QObject save_scope;
+  const auto record = [&](const QString& phase) {
+    const auto config = evidence::snapshot(config_path);
+    QJsonObject state{
+        {"controls", HStreamWindowTestAccess::freshCalibrationControls(window)},
+        {"identity", HStreamWindowTestAccess::freshCalibrationIdentity(window)},
+        {"config", config.json()},
+        {"save_clicks", save_clicks}};
+    phases[phase] = state;
+    events.append(
+        QJsonObject{{"phase", phase}, {"observed_ns", evidence::timestamp()}, {"identity", state["identity"]}});
+    artifacts_saved =
+        evidence::write(QDir(artifact_dir).filePath("phase-events.json"), {{"events", events}}) && artifacts_saved;
+    const bool written = evidence::write(QDir(artifact_dir).filePath("snapshots/" + phase + ".json"), state);
+    artifacts_saved = written && artifacts_saved;
+    return config.valid() && written && std::chrono::steady_clock::now() < overall_deadline;
+  };
+  // The fallback runs on every early return and while the receipt observer is
+  // still alive. It never releases an owner or manufactures retirement proof.
+  auto finish_evidence = absl::MakeCleanup([&] {
+    if (!unsaved)
+      return;
+    const bool fallback_attempted = window->pipelineStateText() != "STOPPED" && stop->isEnabled();
+    if (fallback_attempted) {
+      activate(stop);
+      outcome["fallback_stop_completed"] =
+          QTest::qWaitFor([&] { return window->pipelineStateText() == "STOPPED"; }, 30000);
+    }
+    if (!final_written || fallback_attempted) {
+      outcome["result"] = "FAIL";
+      outcome["fallback_retirement_verified"] = observer && observer->verified;
+      outcome["phase_names"] = QJsonArray::fromStringList(phases.keys());
+      outcome["final_identity"] = HStreamWindowTestAccess::freshCalibrationIdentity(window);
+      outcome["save_clicks"] = save_clicks;
+      if (observer) {
+        evidence::write(QDir(artifact_dir).filePath("launch.json"), observer->launch);
+        evidence::write(QDir(artifact_dir).filePath("retirement.json"), observer->retirement);
+      }
+      save_log();
+      evidence::write(QDir(artifact_dir).filePath("result.json"), outcome);
+    }
+  });
+  if (unsaved) {
+    auto* save = require_child<QPushButton>(window, "savePresetButton");
+    if (!save)
+      return false;
+    QObject::connect(save, &QPushButton::clicked, &save_scope, [&] { ++save_clicks; });
+  }
   game->setText(game_id);
   activate(create);
   if (fresh_calibration) {
@@ -18385,6 +18584,44 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
             reference_valid && reference_ms >= 0 && reference_ms < 86400000,
             "Fresh calibration requires an explicit recording reference in milliseconds"))
       return false;
+    if (unsaved) {
+      if (!expect(
+              QTest::qWaitFor(
+                  [&] {
+                    return HStreamWindowTestAccess::freshCalibrationIdentity(window)["operation_token"]
+                               .toString()
+                               .isEmpty() &&
+                        start->isEnabled();
+                  },
+                  remaining(120000)),
+              "Imported metadata operations must retire before S0"))
+        return false;
+      original_sources = sources();
+      if (!expect(
+              contents_equal(original_sources, original_sources) &&
+                  evidence::write(QDir(artifact_dir).filePath("sources-before.json"), original_sources),
+              "Physical sources must have bounded pinned content hashes"))
+        return false;
+      saved_baseline = evidence::snapshot(config_path);
+      effective_baseline = HStreamWindowTestAccess::freshCalibrationControls(window);
+      layers = HStreamWindowTestAccess::freshCalibrationLayers(window);
+      if (!record("00-saved") || !evidence::write(QDir(artifact_dir).filePath("defaults.json"), layers))
+        return false;
+      const auto saved = YAML::Load(saved_baseline.bytes.toStdString());
+      const auto calibration = saved["hstream_ui"]["stitching_calibration"];
+      auto* blend = require_child<QComboBox>(window, "blendModeCombo");
+      auto* playback = require_child<QTimeEdit>(window, "playbackStartTimeEdit");
+      if (!expect(
+              blend && playback && reference->isEnabled() && blend->isEnabled() && playback->isEnabled() &&
+                  effective_baseline["blend"] == "laplacian" &&
+                  calibration_time(reference) != QTime::fromMSecsSinceStartOfDay(reference_ms) &&
+                  (!calibration || (!calibration["status"] && !calibration["backend_generation"])),
+              "Fresh fixture must have inherited laplacian, a different reference and no calibration"))
+        return false;
+      outcome["fresh"] = "pass";
+      playback->setTime(QTime(0, 0));
+      blend->setCurrentIndex(blend->findData("alpha"));
+    }
     set_calibration_time(reference, QTime::fromMSecsSinceStartOfDay(reference_ms));
     report += QString("fresh-imports=%1 frame-count=%2 reference-ms=%3\n")
                   .arg(window->videoSetCount())
@@ -18461,7 +18698,32 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     auto* save = require_child<QPushButton>(window, "savePresetButton");
     if (!save)
       return false;
-    activate(save);
+    if (unsaved) {
+      draft = HStreamWindowTestAccess::freshCalibrationControls(window);
+      expected_camera = HStreamWindowTestAccess::currentCameraSelection(window);
+      const auto current = evidence::snapshot(config_path);
+      const auto current_layers = HStreamWindowTestAccess::freshCalibrationLayers(window);
+      if (!expect(
+              save_clicks == 0 && current.valid() && current.bytes == saved_baseline.bytes &&
+                  draft["blend"] == "alpha" && draft["feather"] == effective_baseline["feather"] &&
+                  draft["reference"] != effective_baseline["reference"] &&
+                  current_layers["user_yaml"] == layers["user_yaml"] &&
+                  current_layers["baseline_yaml"] == layers["baseline_yaml"] &&
+                  current_layers["user_file"].toObject()["state"] == layers["user_file"].toObject()["state"] &&
+                  current_layers["user_file"].toObject()["bytes_base64"] ==
+                      layers["user_file"].toObject()["bytes_base64"] &&
+                  record("01-draft"),
+              "Draft A must leave S0 and inherited feather unchanged without Save"))
+        return false;
+      outcome["unsaved_before_admission"] = "pass";
+      auto* process = HStreamWindowTestAccess::ownedProcess(window, false);
+      if (!process)
+        return false;
+      observer = std::make_unique<evidence::Observer>(
+          *process, config_path, [window] { return HStreamWindowTestAccess::freshCalibrationIdentity(window); });
+    } else {
+      activate(save);
+    }
     artifacts_saved = QFile::copy(
                           QDir(window->gameDirectoryText()).filePath("_hockeymon/config.yaml"),
                           QDir(artifact_dir).filePath("calibration-config-before.yaml")) &&
@@ -18528,7 +18790,34 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     });
     selection_timer.start(200);
   }
+  if (unsaved && !expect(start->isVisible() && start->isEnabled(), "Play must be ordinarily eligible"))
+    return false;
   activate(start);
+  if (unsaved) {
+    if (!expect(
+            QTest::qWaitFor([&] { return observer->started; }, remaining(5000)),
+            "Supervised launch must actually start"))
+      return false;
+    const auto identity = observer->launch["identity"].toObject();
+    if (!expect(
+            observer->launches == 1 && observer->started && observer->admitted.valid() &&
+                !identity["operation_token"].toString().isEmpty() &&
+                !identity["invalidation_id"].toString().isEmpty() && identity["reference"] == draft["reference"] &&
+                identity["frame_count"] == draft["frame_count"] &&
+                observer->launch["child_argv"].toArray().contains("--options=stitching.blend_mode=alpha") &&
+                record("02-admitted") && evidence::write(QDir(artifact_dir).filePath("launch.json"), observer->launch),
+            "Admission must capture the actual supervised launch and frozen calibration draft"))
+      return false;
+    outcome["admitted_A"] = "pass";
+    const auto admitted = YAML::Load(observer->admitted.bytes.toStdString());
+    const auto original = YAML::Load(saved_baseline.bytes.toStdString());
+    if (!expect(
+            YAML::Dump(admitted["stitching"]["blend_mode"]) == YAML::Dump(original["stitching"]["blend_mode"]) &&
+                admitted["playback"]["start_seconds"].as<double>(-1) == 0 && save_clicks == 0,
+            "Play must persist calibration starts without saving the ordinary blend draft"))
+      return false;
+    outcome["calibration_commit_subset"] = "pass";
+  }
   QElapsedTimer timer;
   timer.start();
   qint64 completed_at = -1;
@@ -18536,7 +18825,8 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
   const int configured_timeout = qEnvironmentVariableIntValue("HSTREAM_UI_E2E_TIMEOUT_MS");
   const int timeout =
       fresh_calibration && configured_timeout > 0 ? configured_timeout : (clean_calibration ? 300000 : 180000);
-  while (timer.elapsed() < timeout && window->pipelineStateText() != "STOPPED") {
+  while (timer.elapsed() < timeout && window->pipelineStateText() != "STOPPED" &&
+         (!unsaved || std::chrono::steady_clock::now() < overall_deadline)) {
     QTest::qWait(50);
     auto* dialog = window->findChild<QDialog*>("stitchCalibrationDialog");
     const QString log = window->completeLogText();
@@ -18586,6 +18876,8 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     }
   }
   selection_timer.stop();
+  if (unsaved)
+    outcome["genuine_solve"] = passed ? "pass" : "fail";
   if (fresh_calibration) {
     screenshot(window, "04-completed-playback.png");
     const QString path = QDir(artifact_dir).filePath("stitched-preview.png");
@@ -18599,6 +18891,62 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
     const auto preview = captured ? inspect_native_preview_capture(path) : NativePreviewCapture{};
     report += native_preview_report_line("stitched", preview);
     passed = passed && preview.passed;
+    if (unsaved)
+      outcome["completed_preview"] = preview.passed ? "pass" : "fail";
+  }
+  if (unsaved) {
+    const auto complete = evidence::snapshot(config_path);
+    const auto completed_config = complete.valid() ? YAML::Load(complete.bytes.toStdString()) : YAML::Node();
+    const auto calibration = completed_config["hstream_ui"]["stitching_calibration"];
+    const auto completed_identity = HStreamWindowTestAccess::freshCalibrationIdentity(window);
+    const auto launched_owner = observer->launch["identity"].toObject();
+    const bool accepted = observer->commandUnchanged() &&
+        window->completeLogText().contains("HSTREAM_RINK_LEVELING status=skipped") &&
+        window->completeLogText().contains("Calibration accepted the crop choice");
+    passed = expect(
+                 accepted && complete.valid() && record("03-complete") &&
+                     calibration["invalidation_id"].as<std::string>("") ==
+                         launched_owner["invalidation_id"].toString().toStdString() &&
+                     completed_identity["operation_token"] == launched_owner["operation_token"],
+                 "Native accepted Skip/Full crop and completed the admitted owner") &&
+        passed;
+    outcome["accepted_leveling_skip_and_full_crop"] = accepted;
+    if (active_save && passed) {
+      auto* save = require_child<QPushButton>(window, "savePresetButton");
+      auto* process = HStreamWindowTestAccess::ownedProcess(window, false);
+      auto* dialog = window->findChild<QDialog*>("stitchCalibrationDialog");
+      const auto before_command = evidence::command(*process);
+      const std::string generation = YAML::Dump(calibration);
+      const auto before_geometry = geometry();
+      if (!expect(
+              contents_equal(before_geometry, before_geometry) &&
+                  evidence::write(QDir(artifact_dir).filePath("geometry-before-save.json"), before_geometry),
+              "Completed geometry must be independently hashed before active Save"))
+        return false;
+      outcome["active_save"] = "unavailable";
+      if (!expect(
+              save && save->isVisible() && save->isEnabled() && process->state() == QProcess::Running &&
+                  !QApplication::activeModalWidget() && (!dialog || !dialog->isVisible()),
+              "Active Save requires the ordinary enabled button and closed calibration dialogs"))
+        return false;
+      activate(save);
+      const bool saved = QTest::qWaitFor([&] { return !save->isEnabled(); }, remaining(30000));
+      const auto after_file = evidence::snapshot(config_path);
+      const auto after = after_file.valid() ? YAML::Load(after_file.bytes.toStdString()) : YAML::Node();
+      const auto after_geometry = geometry();
+      passed =
+          expect(
+              contents_equal(before_geometry, after_geometry) &&
+                  evidence::write(QDir(artifact_dir).filePath("geometry-after-save.json"), after_geometry) && saved &&
+                  save_clicks == 1 && after_file.valid() &&
+                  after["stitching"]["blend_mode"].as<std::string>("") == "alpha" &&
+                  YAML::Dump(after["hstream_ui"]["stitching_calibration"]) == generation &&
+                  evidence::command(*process) == before_command && observer->commandUnchanged() &&
+                  HStreamWindowTestAccess::freshCalibrationIdentity(window) == completed_identity && record("04-saved"),
+              "Ordinary active Save must save alpha without changing the admitted command or completed owner") &&
+          passed;
+      outcome["active_save"] = passed ? "pass" : "fail";
+    }
   }
   std::cout << "Real " << (fresh_calibration ? "fresh" : "cached") << " calibration UI completion ("
             << run_mode.toStdString() << "): " << (passed ? "PASS" : "FAIL") << '\n';
@@ -18628,7 +18976,71 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       }
     }
     artifacts_saved =
-        write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), window->completeLogText()) && artifacts_saved;
+        (unsaved ? save_log()
+                 : write_e2e_text(QDir(artifact_dir).filePath("pipeline.log"), window->completeLogText())) &&
+        artifacts_saved;
+    if (unsaved) {
+      const bool retired = QTest::qWaitFor(
+          [&] {
+            const auto identity = HStreamWindowTestAccess::freshCalibrationIdentity(window);
+            return identity["operation_token"].toString().isEmpty() && !identity["pipeline_proof_pending"].toBool() &&
+                !identity["archive_proof_pending"].toBool();
+          },
+          30000);
+      passed = expect(
+                   retired && observer->verified && ordinary_stop && record("05-stopped"),
+                   "Normal Stop requires validated exact guard proof and released operation") &&
+          passed;
+      artifacts_saved =
+          evidence::write(QDir(artifact_dir).filePath("retirement.json"), observer->retirement) && artifacts_saved;
+      if (passed) {
+        const auto stopped_file = evidence::snapshot(config_path);
+        const auto stopped_config = YAML::Load(stopped_file.bytes.toStdString());
+        auto* games = require_child<QComboBox>(window, "gameSelector");
+        const int selected = games ? games->findText(game_id) : -1;
+        if (!expect(
+                games && games->isEnabled() && selected > 0 && games->currentIndex() == selected,
+                "Reopen requires the ordinarily enabled game selector"))
+          return false;
+        games->setCurrentIndex(0); // Defaults, then the actual saved game: two real loading transitions.
+        QApplication::processEvents();
+        games->setCurrentIndex(selected);
+        const bool reopened =
+            QTest::qWaitFor([&] { return window->gameIdText() == game_id && start->isEnabled(); }, remaining(30000));
+        const auto controls = HStreamWindowTestAccess::freshCalibrationControls(window);
+        const auto reloaded_file = evidence::snapshot(config_path);
+        const auto reloaded = reloaded_file.valid() ? YAML::Load(reloaded_file.bytes.toStdString()) : YAML::Node();
+        const auto camera = HStreamWindowTestAccess::currentCameraSelection(window);
+        passed = expect(
+                     reopened && record("06-reopened") && controls["reference"] == draft["reference"] &&
+                         controls["frame_count"] == draft["frame_count"] &&
+                         controls["playback_start"] == draft["playback_start"] &&
+                         controls["blend"].toString() == (active_save ? "alpha" : "laplacian") &&
+                         controls["feather"] == effective_baseline["feather"] && expected_camera &&
+                         camera == *expected_camera && camera.same_automation(*expected_camera) &&
+                         save_clicks == (active_save ? 1 : 0) &&
+                         YAML::Dump(reloaded["hstream_ui"]["stitching_calibration"]) ==
+                             YAML::Dump(stopped_config["hstream_ui"]["stitching_calibration"]),
+                     "Reopen must retain completed calibration and only explicitly saved ordinary controls") &&
+            passed;
+        outcome["reopen"] = passed ? "pass" : "fail";
+        outcome["adoption"] = passed ? "pass" : "fail";
+        screenshot(window, "07-reopened.png");
+      }
+      const auto final_sources = sources();
+      passed = expect(
+                   contents_equal(original_sources, final_sources) &&
+                       evidence::write(QDir(artifact_dir).filePath("sources-after.json"), final_sources),
+                   "Physical source bytes must remain unchanged") &&
+          passed;
+      outcome["sources_unchanged"] = contents_equal(original_sources, final_sources) ? "pass" : "fail";
+      outcome["ordinary_stop"] = ordinary_stop ? "pass" : "fail";
+      outcome["descendants_retired"] = observer->verified && retired ? "pass" : "fail";
+      outcome["save_clicks"] = save_clicks;
+      passed = passed && std::chrono::steady_clock::now() < overall_deadline;
+      outcome["result"] = passed && artifacts_saved ? "PASS" : "FAIL";
+      outcome["phase_names"] = QJsonArray::fromStringList(phases.keys());
+    }
     report += QString("leveling-skip=%1 full-canvas=%2 ordinary-stop=%3 artifacts=%4 result=%5\n")
                   .arg(observed_leveling_dialog)
                   .arg(observed_crop_dialog)
@@ -18637,6 +19049,11 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
                   .arg(passed && ordinary_stop && artifacts_saved ? "PASS" : "FAIL");
     artifacts_saved =
         write_e2e_text(QDir(artifact_dir).filePath("fresh-calibration-report.txt"), report) && artifacts_saved;
+    if (unsaved) {
+      outcome["result"] = passed && ordinary_stop && artifacts_saved ? "PASS" : "FAIL";
+      final_written = evidence::write(QDir(artifact_dir).filePath("result.json"), outcome);
+      artifacts_saved = final_written && artifacts_saved;
+    }
     std::cout << report.toStdString();
     return passed && ordinary_stop && artifacts_saved;
   }
@@ -22693,6 +23110,18 @@ bool test_active_process_destruction() {
 }
 
 int main(int argc, char** argv) {
+  const QString fresh_flags_error = fresh_calibration_evidence::flags(QProcessEnvironment::systemEnvironment());
+  if (!fresh_flags_error.isEmpty()) {
+    std::cerr << fresh_flags_error.toStdString() << '\n';
+    const QString output = qEnvironmentVariable("HSTREAM_UI_E2E_ARTIFACT_DIR");
+    const QString games = QDir::cleanPath(qEnvironmentVariable("HM_GAME_DIR"));
+    if (QFileInfo(output).isAbsolute() && !QFileInfo::exists(output) && QDir::cleanPath(output) != games &&
+        !QDir::cleanPath(output).startsWith(games + "/"))
+      fresh_calibration_evidence::write(
+          QDir(output).filePath("result.json"),
+          {{"result", "FAIL"}, {"phase", "prelaunch-validation"}, {"error", fresh_flags_error}});
+    return 1;
+  }
   hm::ui_internal::configure_application_identity();
   // Opt-in save check for an isolated copy of a completed calibration.
   if (argc == 3 && QByteArray(argv[1]) == "--leveling-save-preflight") {
@@ -23035,6 +23464,16 @@ int main(int argc, char** argv) {
   qputenv("HSTREAM_UI_SYNC", fake_sync.toLocal8Bit());
   QApplication app(argc, argv);
   app.setAttribute(Qt::AA_DontUseNativeDialogs);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FRESH_PRESET_CONTROLS_ONLY")) {
+    // CPU preset behavior only: skip the unrelated hardware memory probe.
+    HStreamWindow window;
+    window.show();
+    return test_blend_mode() && test_preset_reload_with_missing_tracker() &&
+            test_game_setup(&window, source_root.path()) &&
+            test_stitching_iteration_controls(window.gameDirectoryText())
+        ? 0
+        : 1;
+  }
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FAILURE_ONLY")) {
     HStreamWindow window;
     window.show();

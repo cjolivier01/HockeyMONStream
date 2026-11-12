@@ -1165,7 +1165,7 @@ cc_binary(
 
 cc_test(
     name = "hstream_ui_test",
-    srcs = ["HStreamWindowTest.cpp"],
+    srcs = ["HStreamWindowTest.cpp", "FreshCalibrationEvidence.h"],
     # Drives the whole window through several thousand assertions, including
     # fake pipeline processes and crop-dialog round trips; the medium default
     # implied by size is not enough.
@@ -1851,5 +1851,18 @@ cc_test(
         ":value_control_wheel",
         "@qt//:qt_widgets",
         "@yaml-cpp",
+    ],
+)
+
+# CPU-only regression for live-driver evidence timing and real guard retirement.
+cc_test(
+    name = "fresh_calibration_evidence_test",
+    srcs = ["FreshCalibrationEvidenceTest.cpp", "FreshCalibrationEvidence.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":supervised_process",
+        "//src/libs/common:game_operation_owner",
+        "@qt//:qt_core",
     ],
 )
