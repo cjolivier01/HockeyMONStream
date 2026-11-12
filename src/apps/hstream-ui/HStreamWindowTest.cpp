@@ -4408,6 +4408,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
               "Video-list snapshot fixture must restore its original config"))
         return false;
     }
+    if (!expect(
+            QTest::qWaitFor([&] { return create->isEnabled() && remove_video->isEnabled(); }, 5000),
+            "Game editing must recover after the snapshot fixture releases its transaction"))
+      return false;
     activate(create);
   }
   if (!select_list_item(list, "Right  _hockeymon/hstream-ui/right/GX010002.MP4")) {
@@ -4471,6 +4475,10 @@ bool test_game_setup(HStreamWindow* window, const QString& source_dir) {
     std::ofstream out(config);
     out << generated << "\n";
   }
+  if (!expect(
+          QTest::qWaitFor([&] { return create->isEnabled() && remove_video->isEnabled(); }, 5000),
+          "Game editing must recover after the concurrent deletion fixture releases its transaction"))
+    return false;
   activate(create);
   if (!expect(
           list_match_count(list, "GX010001.MP4") == 1,
