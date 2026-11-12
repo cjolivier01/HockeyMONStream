@@ -86,18 +86,26 @@ def become_subreaper():
     )
 
 
-def descendants():
+def _within_deadline(deadline):
+    return deadline is None or time.monotonic() < deadline
+
+
+def descendants(*, deadline=None):
     processes = {}
     for path in Path("/proc").iterdir():
+        if not _within_deadline(deadline):
+            break
         if path.name.isdigit():
             current = process_identity(int(path.name))
             if current:
                 processes[current["pid"]] = current
     parents, result = {os.getpid()}, {}
     changed = True
-    while changed:
+    while changed and _within_deadline(deadline):
         changed = False
         for pid, current in processes.items():
+            if not _within_deadline(deadline):
+                break
             if pid not in parents and current["parent"] in parents:
                 parents.add(pid)
                 result[pid] = current
@@ -105,8 +113,10 @@ def descendants():
     return result
 
 
-def signal_descendants(number):
-    for pid, saved in descendants().items():
+def signal_descendants(number, *, deadline=None):
+    for pid, saved in descendants(deadline=deadline).items():
+        if not _within_deadline(deadline):
+            break
         # Direct children remain ours until reaped. Detached grandchildren
         # become direct children when their parent exits; later passes retire
         # them. Pin before checking identity so PID reuse cannot redirect a kill.
@@ -117,11 +127,14 @@ def signal_descendants(number):
         except ProcessLookupError:
             continue
         try:
+            if not _within_deadline(deadline):
+                break
             current = process_identity(pid)
             if (
                 current is not None
                 and current["start_time"] == saved["start_time"]
                 and current["parent"] == os.getpid()
+                and _within_deadline(deadline)
             ):
                 try:
                     pidfd_send_signal(descriptor, number)
@@ -131,13 +144,14 @@ def signal_descendants(number):
             os.close(descriptor)
 
 
-def reap():
+def reap(*, deadline=None):
     """Reap exited children and return whether the kernel proves none remain.
 
     The task supervisor becomes a subreaper before launching any task. A live
     descendant therefore retains a direct child, including after reparenting.
     An empty /proc scan cannot establish this: a child can fork and exit between
     directory enumeration and its stat read, hiding the new adopted child.
+    Even an expired deadline permits one nonblocking kernel check, but no retry.
     """
     while True:
         try:
@@ -147,22 +161,29 @@ def reap():
         except ChildProcessError:
             return True
         except InterruptedError:
-            continue
+            pass
+        if not _within_deadline(deadline):
+            return False
 
 
 def retire(grace_seconds):
-    deadline = time.monotonic() + grace_seconds
-    signal_descendants(signal.SIGTERM)
-    while time.monotonic() < deadline:
-        if reap():
+    if grace_seconds <= 0:
+        return reap(deadline=time.monotonic())
+    for number in (signal.SIGTERM, signal.SIGKILL):
+        deadline = time.monotonic() + grace_seconds
+        if reap(deadline=deadline):
             return True
-        time.sleep(0.05)
-    signal_descendants(signal.SIGKILL)
+        while _within_deadline(deadline):
+            try:
+                signal_descendants(number, deadline=deadline)
+            except (OSError, ValueError):
+                # Observation/signaling failure is not shutdown proof. Still
+                # ask the kernel: all children may have exited independently.
+                pass
+            if reap(deadline=deadline):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.05, remaining))
     # Killing a process in uninterruptible sleep does not prove it stopped.
-    deadline = time.monotonic() + grace_seconds
-    while time.monotonic() < deadline:
-        if reap():
-            return True
-        signal_descendants(signal.SIGKILL)
-        time.sleep(0.05)
     return False

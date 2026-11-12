@@ -388,7 +388,15 @@ children remain after reaping; an empty process-directory scan is not shutdown
 proof because a child can fork during the scan. Python supervisors signal pinned
 process descriptors and check kernel pidfd support before launching work. Python
 builds without pidfd wrappers use the same libc interfaces; there is no numeric
-PID signaling fallback. Native ownership checks keep
+PID signaling fallback. Standalone workflow retirement passes absolute TERM and
+KILL deadlines through process enumeration, ancestry expansion, descriptor
+signaling and reaping, including interrupted kernel waits. Observation errors
+cannot override a subsequent kernel `ECHILD` result. A zero helper budget makes
+one nonretrying proof check and sends no signals; deployed workflow profiles
+require a positive shutdown budget. These deadlines bound repeated operations,
+not an individual blocked filesystem or kernel call. The supervisor's captured
+exit code and cancellation/timeout fallback remain authoritative.
+Native ownership checks keep
 the CLI inside its own subreaper scope. Qt commands use the installed
 `hstream-process-guard` and exact token-bound completion receipts, so unrelated Qt
 children remain under their normal QProcess owners. Descendants that detach,
