@@ -476,9 +476,40 @@ bool test_mapping_operation_fence() {
       "Mapping waits must not block route retirement or assign a retired operation's frame to its successor");
 }
 
+bool retained_media_epoch() {
+  Fixture fixture;
+  hm::preview::selected_stream_set_presentation_mapper(
+      fixture.stream,
+      [](const GstSegment&, GstClockTime pts, const std::atomic<bool>&, GstClockTime* out) {
+        *out = pts;
+        return GST_FLOW_OK;
+      },
+      [] {});
+  fixture.headers(0, 2);
+  if (!hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 1) ||
+      fixture.push(0, 60 * GST_SECOND) != GST_FLOW_OK ||
+      !hm::preview::selected_stream_select(fixture.stream, nullptr, 2) ||
+      gst_element_set_state(fixture.stream, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE ||
+      gst_element_set_state(fixture.stream, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
+    return false;
+  fixture.headers(0, 2);
+  if (!hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 3) || fixture.push(0, 0) != GST_FLOW_OK ||
+      fixture.push(0, GST_SECOND / 30) != GST_FLOW_OK || fixture.frames.size() != 3)
+    return false;
+  const auto* first = hm::preview::frame_identity(fixture.frames[1]);
+  const auto* next = hm::preview::frame_identity(fixture.frames[2]);
+  return expect(
+      first && next && first->presentation_pts == 0 && next->presentation_pts == GST_SECOND / 30 &&
+          first->sequence == 2 && next->sequence == 3 && first->operation == 3 && next->operation == 3 &&
+          fixture.stream_ids.size() == 2 && fixture.widths.size() == 2 && fixture.segments == 2 &&
+          !hm::preview::selected_stream_select(fixture.stream, fixture.routes[0], 1),
+      "Retained seek must reset media timing/headers without resetting sequence or operation fences");
+}
+
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
-  if (!preroll_and_paused_clock() || !test_admission_operation_fence() || !test_mapping_operation_fence())
+  if (!preroll_and_paused_clock() || !test_admission_operation_fence() || !test_mapping_operation_fence() ||
+      !retained_media_epoch())
     return 1;
   return switching_and_memory() && inactive_eos_and_output_eof() && replacement_and_failure() && source_pool_lifetime()
       ? 0
