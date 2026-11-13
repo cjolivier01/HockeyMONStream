@@ -12,7 +12,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="team-calibration-") as directory:
         root = Path(directory)
         game = root / "games" / "test"
-        game.mkdir(parents=True)
+        (game / "_hockeymon").mkdir(parents=True)
         saved = game / "_hockeymon/config.yaml"
         saved.write_text("team: {enabled: true}\n")
         environment = dict(os.environ)

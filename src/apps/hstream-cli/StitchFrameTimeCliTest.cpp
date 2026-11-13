@@ -97,10 +97,10 @@ int main(int argc, char** argv) {
     fs::remove_all(root);
     return 1;
   }
-  fs::create_directories(game_dir);
-  fs::create_directories(conflict_game_dir);
-  fs::create_directories(configured_game_dir);
-  fs::create_directories(canonical_zero_game_dir);
+  fs::create_directories(game_dir / "_hockeymon");
+  fs::create_directories(conflict_game_dir / "_hockeymon");
+  fs::create_directories(configured_game_dir / "_hockeymon");
+  fs::create_directories(canonical_zero_game_dir / "_hockeymon");
   std::ofstream(game_dir / "_hockeymon/config.yaml") << "stitching:\n  stitch_frame_time:\n    - 00:00:07\n";
   std::ofstream(pipeline_config) << "application:\n  stage: 0\n";
   std::ofstream(nonstitch_pipeline_config) << "application:\n"
@@ -108,7 +108,8 @@ int main(int argc, char** argv) {
                                            << "  complete-configuration: 1\n"
                                            << "primary-gie:\n"
                                            << "  enable: 1\n"
-                                           << "  config-file: deliberately-missing-model-config.txt\n";
+                                           << "  config-file: deliberately-missing-model-config.txt\n"
+                                           << "hmstitcher: {enable: 0}\n";
   std::ofstream(disabled_stitch_pipeline_config) << "application:\n"
                                                  << "  stage: 0\n"
                                                  << "  complete-configuration: 1\n"
@@ -306,9 +307,11 @@ int main(int argc, char** argv) {
     return 1;
   }
   std::ofstream(rotation_zero_config)
-      << "application:\n  stage: 0\nhmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: 0\n";
+      << "application:\n  stage: 0\nprimary-gie: {enable: 0}\n"
+         "hmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: 0\n";
   std::ofstream(rotation_ten_config)
-      << "application:\n  stage: 0\nhmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: 10\n";
+      << "application:\n  stage: 0\nprimary-gie: {enable: 0}\n"
+         "hmstitcher:\n  enable: 1\n  post-stitch-rotate-degrees: 10\n";
   if (!exits_with_argument_error(
           argv[1],
           {"--cfg-file=" + rotation_zero_config.string(), "--cfg-file=" + rotation_ten_config.string()},

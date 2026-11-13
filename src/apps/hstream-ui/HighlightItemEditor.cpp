@@ -329,7 +329,7 @@ class Editor : public QDialog {
     if (!matchup->isChecked())
       return true;
     const QDir game(game_dir);
-    const QString store = game.absoluteFilePath("highlight-assets");
+    const QString store = game.absoluteFilePath("_hockeymon/highlight-assets");
     for (QLineEdit* field : {la, lb}) {
       const QString entered = field->text().trimmed();
       const QString absolute = game.absoluteFilePath(entered);
