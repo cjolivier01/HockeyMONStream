@@ -933,3 +933,9 @@ an authoritative non-applicable verdict, in its locked terminal transaction
 before cleanup. Cancellation wins. HTTP reads are cache-only and never invoke
 native work. Distributed experiment diagnosis and AMD context emission remain
 outside this initial NVIDIA main-Studio qualification.
+
+Retained experiment materialization checks the exact pending or completed
+invalidation owner and native selected-frame bundle before reuse. This lets a
+completed serial candidate feed a later distributed batch without rerunning a
+pending-only calibration transaction. Missing or changed inputs still fail;
+ordinary solves continue to require pending invalidation ownership.

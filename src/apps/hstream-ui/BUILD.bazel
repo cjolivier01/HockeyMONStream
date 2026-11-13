@@ -1569,6 +1569,15 @@ cc_library(
         "@qt//:qt_core", "@yaml-cpp"],
 )
 
+cc_test(
+    name = "experiment_task_runtime_test",
+    srcs = ["ExperimentTaskRuntimeTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":experiment_task_runtime", "//src/libs/stitching:player_frame_input_store",
+        "//src/libs/stitching:player_frame_selection", "@opencv_linux//:opencv", "@qt//:qt_core", "@yaml-cpp"],
+)
+
 cc_binary(
     name = "hstream-experiment-task",
     srcs = ["ExperimentTaskMain.cpp"],
