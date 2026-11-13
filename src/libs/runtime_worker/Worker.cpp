@@ -88,7 +88,7 @@ void WriteAll(int descriptor, const std::string& value) {
     offset += count;
   }
 }
-std::string Read(const fs::path& path, size_t maximum = kDocumentLimit) {
+std::string Read(const fs::path& path, size_t maximum = kDocumentLimit, bool snapshot = false) {
   Fd fd(::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
   struct stat info {};
   Require(
@@ -110,10 +110,13 @@ std::string Read(const fs::path& path, size_t maximum = kDocumentLimit) {
   struct stat after {
   }, named{};
   Require(
-      ::fstat(fd.value, &after) == 0 && ::lstat(path.c_str(), &named) == 0 && after.st_dev == info.st_dev &&
-          after.st_ino == info.st_ino && after.st_size == info.st_size && after.st_mtim.tv_sec == info.st_mtim.tv_sec &&
-          after.st_mtim.tv_nsec == info.st_mtim.tv_nsec && after.st_ctim.tv_sec == info.st_ctim.tv_sec &&
-          after.st_ctim.tv_nsec == info.st_ctim.tv_nsec && named.st_dev == info.st_dev && named.st_ino == info.st_ino,
+      ::fstat(fd.value, &after) == 0 && after.st_dev == info.st_dev && after.st_ino == info.st_ino &&
+          after.st_size == info.st_size && after.st_mtim.tv_sec == info.st_mtim.tv_sec &&
+          after.st_mtim.tv_nsec == info.st_mtim.tv_nsec &&
+          (snapshot ||
+           (::lstat(path.c_str(), &named) == 0 && after.st_ctim.tv_sec == info.st_ctim.tv_sec &&
+            after.st_ctim.tv_nsec == info.st_ctim.tv_nsec && named.st_dev == info.st_dev &&
+            named.st_ino == info.st_ino)),
       "Protocol file changed while reading");
   return result;
 }
@@ -446,7 +449,9 @@ class Worker {
     Require(Clock::now() < deadline_, "Runtime session deadline exceeded");
     if (lease_started_ && client_ms_) {
       if (fs::exists(root_ / "client.json")) {
-        const auto client = Json::Parse(Read(root_ / "client.json", 4096));
+        // Atomic lease replacement may unlink the opened version. Its stable
+        // bytes remain a valid snapshot; token and sequence still fence it.
+        const auto client = Json::Parse(Read(root_ / "client.json", 4096, true));
         Require(client.Text("token") == token_, "Controller lease binding changed");
         const auto sequence = client.Integer("sequence", 0, INT64_MAX);
         if (sequence > client_sequence_) {

@@ -37,6 +37,9 @@ The `cancel` marker, a signal, expired controller lease or expired session cause
 bounded descendant retirement. The heartbeat is an execution lease, not user
 authentication. Controllers own user authorization and must keep these directories
 inaccessible to other accounts.
+Lease reads consume a stable opened snapshot across atomic replacement; token
+and increasing-sequence checks still apply. Immutable protocol documents retain
+strict pathname and inode checks.
 
 Operations:
 

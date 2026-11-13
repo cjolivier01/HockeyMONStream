@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -178,6 +179,31 @@ while not os.path.exists('descendant'): time.sleep(.01)
         result = json.loads((self.root / "result.json").read_text())
         self.assertTrue(result["stopped"])
         self.assertIn("lease expired", result["error"])
+
+    def test_atomic_heartbeat_replacement_preserves_the_session(self):
+        self.request["limits"]["client_timeout_ms"] = 1000
+        done = threading.Event()
+
+        def heartbeat():
+            sequence = 0
+            while not done.is_set():
+                sequence += 1
+                self.write(
+                    self.root / "client.json",
+                    {"token": self.request["token"], "sequence": sequence},
+                )
+                done.wait(0.0005)
+
+        thread = threading.Thread(target=heartbeat)
+        thread.start()
+        try:
+            self.start()
+            task = self.launch("import time; time.sleep(1.5)")
+            self.assertEqual(self.completed(task)["returncode"], 0)
+            self.finish()
+        finally:
+            done.set()
+            thread.join(timeout=2)
 
     def test_task_deadline_is_distinct_from_exit_success(self):
         self.start()
