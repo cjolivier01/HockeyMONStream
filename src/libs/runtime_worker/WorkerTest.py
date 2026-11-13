@@ -71,12 +71,13 @@ class WorkerTest(unittest.TestCase):
             time.sleep(0.01)
         self.fail("Native runtime operation timed out")
 
-    def start(self):
+    def start(self, *, environment=None):
         self.write(self.root / "request.json", self.request)
         self.process = subprocess.Popen(
             [str(WORKER), "--request", str(self.root / "request.json")],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=environment,
         )
         self.until(
             lambda: (self.root / "state.json").exists()
@@ -339,6 +340,105 @@ while not os.path.exists('descendant'): time.sleep(.01)
         self.assertIn("lease expired", response["error"])
         self.assertEqual(self.process.wait(timeout=5), 1)
         self.assertTrue(json.loads((self.root / "result.json").read_text())["stopped"])
+
+    def test_inspection_keeps_enforcing_task_deadlines(self):
+        path = self.workspace / "sparse-artifact"
+        with path.open("wb") as output:
+            output.truncate(512 * 1024**2)
+        self.start()
+        task = self.launch(
+            "import time; time.sleep(.5); print('too late')", timeout=150
+        )
+        self.assertTrue(self.call("inspect", path=str(path), maximum=1024**3)["ok"])
+        state = self.completed(task)
+        self.assertTrue(state["timed_out"], state)
+        self.assertNotEqual(state["returncode"], 0)
+        self.assertNotIn("too late", (self.workspace / (task + ".log")).read_text())
+        self.finish()
+
+    def test_http_keeps_enforcing_other_task_deadlines(self):
+        self.start()
+        server = self.launch(
+            """from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+import time
+class Slow(BaseHTTPRequestHandler):
+    def do_GET(self):
+        time.sleep(1)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'ok')
+http = HTTPServer(('127.0.0.1', 0), Slow)
+Path('port').write_text(str(http.server_port))
+http.handle_request()
+http.server_close()
+"""
+        )
+        self.until(lambda: (self.workspace / "port").exists())
+        port = int((self.workspace / "port").read_text())
+        task = self.launch(
+            "import time; time.sleep(.5); print('too late')", timeout=150
+        )
+        response = self.call("http", port=port, path="/", method="GET", timeout_ms=3000)
+        self.assertTrue(response["ok"], response)
+        state = self.completed(task)
+        self.assertTrue(state["timed_out"], state)
+        self.assertNotEqual(state["returncode"], 0)
+        self.assertEqual(self.completed(server)["returncode"], 0)
+        self.finish()
+
+    def test_accounting_tolerates_concurrent_directory_cleanup(self):
+        self.request["limits"]["max_bytes"] = 1024**3
+        self.start()
+        task = self.launch("""from pathlib import Path
+import time
+root = Path('transient')
+root.mkdir()
+deadline = time.monotonic() + 2.5
+while time.monotonic() < deadline:
+    for i in range(250): (root / str(i)).mkdir()
+    for i in range(250): (root / str(i)).rmdir()
+root.rmdir()
+""")
+        self.assertEqual(self.completed(task)["returncode"], 0)
+        self.finish()
+
+    def test_compute_tool_alias_executes_pinned_shebang_and_rejects_replacement(self):
+        binaries = self.workspace / "compute-bin"
+        binaries.mkdir()
+        script = binaries / "test-tool"
+        script.write_text("#!/bin/sh\nprintf 'compute utility\\n'\n")
+        script.chmod(0o700)
+        self.request["tools"] = ["test-tool"]
+        self.start(environment={**os.environ, "PATH": str(binaries)})
+        self.until(
+            lambda: json.loads((self.root / "state.json").read_text())["status"]
+            == "ready"
+        )
+
+        def launch():
+            return self.call(
+                "launch",
+                spec={
+                    "id": uuid.uuid4().hex,
+                    "argv": ["test-tool"],
+                    "cwd": str(self.workspace),
+                    "environment": {},
+                    "timeout_ms": 1000,
+                    "stdout": str(self.workspace / "out"),
+                    "stderr": str(self.workspace / "err"),
+                },
+            )
+
+        response = launch()
+        self.assertTrue(response["ok"], response)
+        self.assertEqual(self.completed(response["result"]["id"])["returncode"], 0)
+        self.assertEqual((self.workspace / "out").read_text(), "compute utility\n")
+        script.write_text("#!/bin/sh\nprintf 'changed\\n'\n")
+        response = launch()
+        self.assertFalse(response["ok"], response)
+        self.assertIn("executable changed", response["error"])
+        self.finish()
 
 
 if __name__ == "__main__":

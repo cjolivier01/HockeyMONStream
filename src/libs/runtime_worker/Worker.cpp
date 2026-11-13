@@ -332,6 +332,33 @@ class Worker {
                 runtime_.Text(path.c_str()),
             "Pinned runtime file changed: " + path);
       }
+      if (request_.Has("tools")) {
+        const auto tools = request_.Get("tools").Items();
+        Require(tools.size() <= 64, "Too many compute tool aliases");
+        for (const auto& tool : tools) {
+          const auto name = tool.Text();
+          Require(std::regex_match(name, std::regex("[A-Za-z0-9_+.-]{1,128}")), "Invalid compute tool alias");
+          const char* search = ::getenv("PATH");
+          Require(search != nullptr, "Compute tool search path is unavailable");
+          std::istringstream paths(search);
+          std::string item, resolved;
+          while (std::getline(paths, item, ':')) {
+            if (!fs::path(item).is_absolute())
+              continue;
+            const auto candidate = fs::path(item) / name;
+            if (::access(candidate.c_str(), X_OK) == 0 && fs::is_regular_file(candidate)) {
+              resolved = fs::canonical(candidate).string();
+              break;
+            }
+          }
+          Require(!resolved.empty(), "Compute tool is unavailable: " + name);
+          const auto digest = File(resolved, 8LL * 1024 * 1024 * 1024, [&] { CheckDeadline(); }).Text("sha256");
+          if (runtime_.Has(resolved.c_str()))
+            Require(runtime_.Text(resolved.c_str()) == digest, "Qualified compute tool changed: " + name);
+          runtime_.Set(resolved.c_str(), digest);
+          tools_.Set(name.c_str(), resolved);
+        }
+      }
       if (request_.Has("tcp_port"))
         ReservePort(request_.Get("tcp_port"));
       State("ready", false, "");
@@ -375,19 +402,7 @@ class Worker {
         if (Clock::now() >= accounting) {
           if (max_bytes_) {
             int64_t bytes = 0;
-            for (const auto& entry : fs::recursive_directory_iterator(workspace_)) {
-              CheckDeadline();
-              struct stat info {};
-              if (::lstat(entry.path().c_str(), &info) != 0 && errno == ENOENT)
-                continue;
-              Require(
-                  S_ISREG(info.st_mode) || S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode),
-                  "Invalid workspace file type");
-              if (S_ISREG(info.st_mode)) {
-                Require(info.st_size <= max_bytes_ - bytes, "Workspace storage allowance exceeded");
-                bytes += info.st_size;
-              }
-            }
+            Account(Fd(::open(workspace_.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)), bytes);
           }
           accounting = Clock::now() + std::chrono::seconds(1);
         }
@@ -441,6 +456,45 @@ class Worker {
       }
       Require(Clock::now() - last_client_ < std::chrono::milliseconds(client_ms_), "Controller lease expired");
     }
+    // Hashing, HTTP and accounting must not suspend per-task supervision.
+    Poll();
+  }
+  void Account(Fd directory, int64_t& bytes) {
+    DIR* opened = ::fdopendir(directory.value);
+    Require(opened != nullptr, "Cannot inspect workspace directory");
+    directory.value = -1;
+    const auto close_directory = [](DIR* value) { ::closedir(value); };
+    std::unique_ptr<DIR, decltype(close_directory)> stream(opened, close_directory);
+    for (;;) {
+      CheckDeadline();
+      errno = 0;
+      const auto* entry = ::readdir(stream.get());
+      if (!entry) {
+        Require(errno == 0, "Cannot enumerate workspace directory");
+        return;
+      }
+      const std::string name(entry->d_name);
+      if (name == "." || name == "..")
+        continue;
+      struct stat info {};
+      if (::fstatat(::dirfd(stream.get()), name.c_str(), &info, AT_SYMLINK_NOFOLLOW) != 0) {
+        if (errno == ENOENT)
+          continue; // Native finalization and preview cleanup remove entries.
+        throw std::runtime_error("Cannot inspect workspace entry");
+      }
+      if (S_ISREG(info.st_mode)) {
+        Require(info.st_size >= 0 && info.st_size <= max_bytes_ - bytes, "Workspace storage allowance exceeded");
+        bytes += info.st_size;
+      } else if (S_ISDIR(info.st_mode)) {
+        const int child =
+            ::openat(::dirfd(stream.get()), name.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (child < 0 && errno == ENOENT)
+          continue;
+        Account(Fd(child), bytes);
+      } else {
+        Require(S_ISLNK(info.st_mode), "Invalid workspace file type");
+      }
+    }
   }
   fs::path Confined(const std::string& value, bool exists = true) const {
     fs::path path(value);
@@ -464,6 +518,7 @@ class Worker {
     for (const auto& entry : tasks_)
       tasks.Set(entry.first.c_str(), TaskState(entry.second));
     value.Set("tasks", tasks);
+    value.Set("tools", tools_);
     if (port_)
       value.Set("port", static_cast<int64_t>(port_));
     Atomic(root_ / "state.json", value);
@@ -582,6 +637,8 @@ class Worker {
       Require(arg.size() <= 65536, "Native argument too large");
       argv.push_back(arg);
     }
+    if (!argv.empty() && tools_.Has(argv[0].c_str()))
+      argv[0] = tools_.Text(argv[0].c_str());
     Require(
         !argv.empty() && argv.size() <= 4096 && fs::path(argv[0]).is_absolute(),
         "Native command requires bounded argv and absolute executable");
@@ -755,11 +812,37 @@ class Worker {
       curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
       curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(body.size()));
     }
-    const auto result = curl_easy_perform(curl);
+    auto* multi = curl_multi_init();
+    CURLcode result = CURLE_FAILED_INIT;
+    std::string failure;
+    try {
+      Require(multi != nullptr && curl_multi_add_handle(multi, curl) == CURLM_OK, "Cannot start loopback request");
+      int running = 0;
+      do {
+        CheckDeadline();
+        Require(curl_multi_perform(multi, &running) == CURLM_OK, "Cannot advance loopback request");
+        if (running)
+          Require(
+              curl_multi_poll(multi, nullptr, 0, static_cast<int>(poll_ms_), nullptr) == CURLM_OK,
+              "Cannot wait for loopback request");
+      } while (running);
+      int remaining = 0;
+      while (auto* message = curl_multi_info_read(multi, &remaining)) {
+        if (message->msg == CURLMSG_DONE)
+          result = message->data.result;
+      }
+    } catch (const std::exception& error) {
+      failure = error.what();
+    }
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    if (multi) {
+      curl_multi_remove_handle(multi, curl);
+      curl_multi_cleanup(multi);
+    }
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+    Require(failure.empty(), failure);
     Require(result == CURLE_OK && !output.overflow, "Bounded loopback request failed");
     Json response;
     response.Set("status", static_cast<int64_t>(status));
@@ -849,7 +932,7 @@ class Worker {
     throw std::runtime_error("Unsupported runtime operation");
   }
   fs::path root_, workspace_;
-  Json request_, runtime_, identity_;
+  Json request_, runtime_, identity_, tools_;
   std::string id_, token_;
   int64_t poll_ms_, grace_ms_, timeout_ms_, client_ms_, max_bytes_, max_log_, max_tasks_, next_ = 1;
   int64_t started_ms_ = WallTimeMs();

@@ -16,6 +16,11 @@ Optional `tcp_port` supplies an owned `lease_root` and a half-open port range.
 Optional `read_files` grants bounded inspection of exact external files, for
 example a controller's explicit compute readiness check. It never grants execute
 permission; launch still requires the pinned `files` map.
+Optional `tools` lists explicit utility aliases to resolve from the allocated
+host's absolute PATH entries. The worker records their canonical paths in state,
+pins their bytes before becoming ready, and checks those bytes again at launch.
+An existing qualified file pin must agree. This supports compute-only native
+dependencies without requiring the controller to install them.
 There are no implicit processing defaults in the worker.
 
 The request lives one directory below the workspace. That directory must be
@@ -36,7 +41,8 @@ inaccessible to other accounts.
 Operations:
 
 - `launch`: unique 32-hex task ID, absolute pinned executable argv, confined cwd,
-  stdout/stderr paths, environment overrides and explicit timeout.
+  stdout/stderr paths, environment overrides and explicit timeout. An explicitly
+  admitted compute utility alias may replace the absolute executable name.
 - `stdin`, `stdin-close`: bounded base64 input and end-of-input. `accepted` is the
   number of bytes queued, not a native application acknowledgment.
 - `signal`, `poll`, `retire-task`: task control and exact retirement state.
@@ -52,11 +58,14 @@ Operations:
 
 Each native task has a dedicated `ProcessGuard` subreaper. The executable is
 hashed through a pinned descriptor and executed with `fexecve`; original argv
-semantics remain available to native resource discovery. Forked guards close
+semantics remain available to native resource discovery. The execution child
+keeps that descriptor available for shebang interpreters. Forked guards close
 other tasks' pipe ends and the outer lock. Guard completion requires root status
 and kernel `ECHILD`, so new sessions and detached descendants do not escape
 ownership. Missing task evidence triggers outer containment and fails the session.
 Task deadline expiry remains distinguishable from ordinary process exit.
+Hashing, loopback HTTP and storage accounting continue task supervision. Storage
+traversal pins directory descriptors and tolerates concurrent native cleanup.
 
 `state.json` includes host, boot, PID/start identity, architecture, allocated node,
 tasks and optional leased port. `result.json` binds terminal success/error and

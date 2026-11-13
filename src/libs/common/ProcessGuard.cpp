@@ -290,9 +290,14 @@ absl::StatusOr<int> Run(
       ::_exit(127);
     for (const int number : {SIGINT, SIGTERM, SIGHUP})
       ::signal(number, SIG_DFL);
-    if (executable_descriptor >= 0)
+    if (executable_descriptor >= 0) {
+      // A shebang interpreter reopens /dev/fd/N after exec. Keep this pinned
+      // descriptor available in the execution child, without reopening its path.
+      const int flags = ::fcntl(executable_descriptor, F_GETFD);
+      if (flags < 0 || ::fcntl(executable_descriptor, F_SETFD, flags & ~FD_CLOEXEC) != 0)
+        ::_exit(127);
       ::fexecve(executable_descriptor, arguments.data(), environ);
-    else
+    } else
       ::execvp(arguments.front(), arguments.data());
     ::_exit(127);
   }
