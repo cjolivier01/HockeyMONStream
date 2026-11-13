@@ -25,6 +25,7 @@ namespace hm::preview {
 struct WebPreviewSession::RouteState {
   GstElement *ingress{nullptr}, *drain{nullptr};
   GstPad* input{nullptr};
+  std::unique_ptr<RouteBridge> bridge;
   uint64_t operation{0};
   std::atomic<unsigned> width{0}, height{0};
   ~RouteState() {
@@ -422,6 +423,7 @@ absl::Status WebPreviewSession::AddRoute(const std::string& channel, RouteTap ta
             });
       }))
     return absl::InternalError("Could not publish shared preview route " + channel);
+  state->bridge = attachment->TakeBridge();
   channels_.emplace(channel, state);
   paint_->channels.emplace(channel, std::move(state));
   return absl::OkStatus();
@@ -504,6 +506,17 @@ absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_ov
     if (!status.ok())
       return status;
   }
+  status = AddSources();
+  if (!status.ok())
+    return status;
+  const auto selected = routes_.select_current(
+      options_.initial_channel, 1, [this] { overlays_ready_ = reconcile_overlays_ && reconcile_overlays_(); });
+  if (selected.status != RouteOwner::Status::kActivated && selected.status != RouteOwner::Status::kDeactivated)
+    return absl::FailedPreconditionError("Initial browser route is unavailable: " + selected.reason);
+  return StartCallbacks();
+}
+
+absl::Status WebPreviewSession::AddSources() {
   auto& sources = app_.pipeline.multi_src_bin;
   if (sources.num_bins > 128)
     return absl::InvalidArgumentError("Selectable preview supports at most 128 sources");
@@ -511,7 +524,7 @@ absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_ov
     auto& source = sources.sub_bins[index];
     if (!source.bin || !source.tee || !source.fakesink_queue || !source.fakesink)
       continue;
-    status = AddRoute(
+    const auto status = AddRoute(
         "source" + std::to_string(index),
         {RouteTap::Kind::kReplaceDrain, source.bin, source.tee, source.fakesink_queue, source.fakesink});
     if (!status.ok())
@@ -519,10 +532,10 @@ absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_ov
     // The source drain now ends at the shared target, not a per-source sink.
     source.fakesink = nullptr;
   }
-  const auto selected = routes_.select_current(
-      options_.initial_channel, 1, [this] { overlays_ready_ = reconcile_overlays_ && reconcile_overlays_(); });
-  if (selected.status != RouteOwner::Status::kActivated && selected.status != RouteOwner::Status::kDeactivated)
-    return absl::FailedPreconditionError("Initial browser route is unavailable: " + selected.reason);
+  return absl::OkStatus();
+}
+
+absl::Status WebPreviewSession::StartCallbacks() {
   signaling_ = target_->Signaling({routes_.session(), options_.poll_interval_ms, options_.events_per_batch});
   if (!signaling_ || !start_webrtc_signaling_for_preview(target_->endpoint(), sink_config_, signaling_))
     return absl::InternalError("Could not start selectable preview signaling");
@@ -542,6 +555,80 @@ absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_ov
       this,
       nullptr);
   return absl::OkStatus();
+}
+
+absl::Status WebPreviewSession::BeginSourceSeek() {
+  if (!available() || source_seek_pending_ ||
+      routes_.operation_generation() >= std::numeric_limits<uint64_t>::max() - 1)
+    return absl::FailedPreconditionError("Browser preview cannot begin a source seek");
+  seek_selection_ = selection();
+  RetireCallbacks();
+  signaling_.reset();
+  const auto closed = routes_.select_current("none", routes_.operation_generation() + 1, [] {});
+  if (closed.status != RouteOwner::Status::kDeactivated)
+    return absl::FailedPreconditionError("Could not close browser preview for seek: " + closed.reason);
+  source_seek_pending_ = true;
+  return absl::OkStatus();
+}
+
+absl::Status WebPreviewSession::DetachSeekSources() {
+  if (!source_seek_pending_)
+    return absl::FailedPreconditionError("No browser source seek is pending");
+  // The source generation is NULL, all routes are closed, and downstream
+  // FLUSH_START has released old buffers. Reset only this small encoder path.
+  if (gst_element_set_state(target_->bin(), GST_STATE_READY) == GST_STATE_CHANGE_FAILURE)
+    return absl::InternalError("Could not reset browser preview for seek");
+  for (auto it = channels_.begin(); it != channels_.end();) {
+    if (it->first.rfind("source", 0) != 0) {
+      ++it;
+      continue;
+    }
+    if (!it->second->bridge || !it->second->bridge->Retire())
+      return absl::InternalError("Could not retire a browser source bridge");
+    routes_.forget_route(it->first);
+    target_->RemoveRoute(it->second->input);
+    paint_->channels.erase(it->first);
+    it = channels_.erase(it);
+  }
+  return absl::OkStatus();
+}
+
+bool WebPreviewSession::OwnsSourceBridge(GstPad* pad) const {
+  for (const auto& [channel, state] : channels_) {
+    if (channel.rfind("source", 0) == 0 && state->bridge && state->bridge->Owns(pad))
+      return true;
+  }
+  return false;
+}
+
+absl::Status WebPreviewSession::AttachSeekSources(RouteOwner::Session identity) {
+  if (!source_seek_pending_ || identity.run != routes_.session().run || identity.stage != routes_.session().stage ||
+      identity.topology <= routes_.session().topology)
+    return absl::FailedPreconditionError("Browser seek requires a newer matching topology");
+  auto status = AddSources();
+  if (!status.ok())
+    return status;
+  routes_.bind_session(identity);
+  paint_->session = std::move(identity);
+  const auto selected = routes_.select_current(seek_selection_, routes_.operation_generation() + 1, [this] {
+    overlays_ready_ = reconcile_overlays_ && reconcile_overlays_();
+  });
+  if (selected.status != RouteOwner::Status::kActivated)
+    return absl::FailedPreconditionError("Could not restore browser preview after seek: " + selected.reason);
+  if (!gst_element_sync_state_with_parent(target_->bin()))
+    return absl::InternalError("Could not restore browser encoder state after seek");
+  return absl::OkStatus();
+}
+
+absl::Status WebPreviewSession::ResumeSourceSeek() {
+  if (!source_seek_pending_)
+    return absl::OkStatus();
+  auto status = StartCallbacks();
+  if (status.ok()) {
+    source_seek_pending_ = false;
+    seek_selection_.clear();
+  }
+  return status;
 }
 
 void WebPreviewSession::RetireCallbacks() {

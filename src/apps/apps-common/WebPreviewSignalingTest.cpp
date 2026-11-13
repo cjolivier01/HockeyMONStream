@@ -237,6 +237,9 @@ int main(int argc, char** argv) {
   check(
       observer->dropped_events() == dropped && !monitor->TakeEvents().empty(),
       "Stopped signaling retained its frame-drain source");
+  std::weak_ptr<hm::preview::WebPreviewSignaling> retired = preview;
+  preview.reset();
+  check(retired.expired(), "Stopped async connections retained the old topology observer");
   soup_session_abort(session);
   g_object_unref(session);
   gst_element_set_state(pipeline, GST_STATE_NULL);

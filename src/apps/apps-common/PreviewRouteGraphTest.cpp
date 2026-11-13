@@ -177,11 +177,22 @@ void bridge() {
       "Rollback retained cross-bin ghost or request pads");
   attach = RouteAttachment::Create({RouteTap::Kind::kExistingTee, camera, tee}, path(nullptr, false), input, &error);
   check(attach && attach->Commit([] { return true; }), "Shared target commit failed");
+  auto bridge_receipt = attach->TakeBridge();
+  auto* source_bridge = gst_pad_get_peer(input);
+  check(
+      bridge_receipt && bridge_receipt->Owns(source_bridge) && !bridge_receipt->Owns(input),
+      "Bridge receipt did not distinguish its exact source link");
   attach.reset();
   check(
       gst_pad_is_linked(input) && pads(camera, true) == 1 && pads(sources, true) == 1,
       "Commit removed required source bridge");
+  check(bridge_receipt->Retire() && bridge_receipt->Retire(), "Committed bridge retirement was not repeatable");
+  check(
+      !gst_pad_is_linked(input) && pads(camera, true) == 0 && pads(sources, true) == 0,
+      "Committed bridge retirement retained cross-bin pads");
+  gst_object_unref(source_bridge);
   gst_object_unref(pipeline);
+  check(bridge_receipt->Retire(), "Retirement after parent disposal retained graph ownership");
 }
 void moved_source_eos() {
   auto* pipeline = gst_pipeline_new("moved-source-eos");

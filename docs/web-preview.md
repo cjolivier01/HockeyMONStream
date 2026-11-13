@@ -6,6 +6,15 @@ server sources must not race that context from the reconstruction worker. The
 worker still owns native gate and pipeline teardown; its repeated signaling
 retirement is inert. A replacement graph publishes a fresh preview generation.
 
+Monitor-only browser seeks with source-linked audio now use the same source
+replacement path as Qt. They retain stitching, inference and tracking resources,
+close the preview gates, and retire only the exact source bridges after the old
+decoders stop. The small preview encoder resets while replacement sources and
+audio start their new epoch. A new topology and observer fence all prior frame
+receipts. Signaling resumes on the main context before playback is published.
+Unsupported source/audio layouts keep the full reconstruction path. Public-site
+latency and audio continuity qualification of this retained path is pending.
+
 The remaining work to share Qt's selectable preview routes and playback controls
 with the browser is described in [web-preview-parity-design.md](web-preview-parity-design.md).
 The route activation owner is shared native code. An explicit private
