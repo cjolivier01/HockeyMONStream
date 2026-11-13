@@ -98,8 +98,10 @@ std::optional<std::string> WebPreviewObserver::Poll() {
   sequence(builder, "topology", config_.session.topology);
   sequence(builder, "peer", peer_);
   const auto batch = ++next_batch_;
-  outstanding_batches_.emplace_back(batch, events.size());
-  outstanding_events_ += events.size();
+  // Reserve a full batch even when polling produces only a few events. This
+  // bounds batch envelopes and the acknowledgment burst as well as payloads.
+  outstanding_batches_.emplace_back(batch, capacity);
+  outstanding_events_ += capacity;
   sequence(builder, "batch", batch);
   json_builder_set_member_name(builder, "events");
   json_builder_begin_array(builder);

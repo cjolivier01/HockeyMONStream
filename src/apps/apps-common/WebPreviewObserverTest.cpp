@@ -174,5 +174,20 @@ int main(int argc, char** argv) {
   passed &= expect(
       deliver(*monitor, wrapped, 3) && handle(observer, receipt(wrapped, 2, 3)) == Message::kPresented,
       "RTP timestamp wrap lost exact identity");
+  auto sparse_monitor = std::make_shared<TransportMonitor>(4, 8, 3);
+  WebPreviewObserver sparse(sparse_monitor, {{"test-run", 0, 9007199254740993ULL}, 10, 3});
+  passed &= expect(
+      sparse.Retire(1) && sparse_monitor->SetPeer(1) && sparse.Activate(1) && sparse_monitor->Select("program", 1),
+      "Sparse observer binding failed");
+  for (std::uint64_t sequence = 1; sequence <= 4; ++sequence) {
+    passed &= expect(deliver(*sparse_monitor, sequence), "Sparse frame failed");
+    passed &= expect(
+        sparse.Poll().has_value() == (sequence <= 3),
+        "Sparse batches did not reserve full capacity, including the final partial credit");
+  }
+  passed &= expect(
+      handle(sparse, base("preview-frames-ack") + ",\"batch\":\"1\"}") == Message::kAcknowledged &&
+          deliver(*sparse_monitor, 5) && sparse.Poll().has_value() && deliver(*sparse_monitor, 6) && !sparse.Poll(),
+      "Sparse acknowledgment did not restore exactly its reserved capacity");
   return passed ? 0 : 1;
 }

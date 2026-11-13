@@ -475,10 +475,11 @@ The optional `WebPreviewTarget::Signaling` adapter delegates peer changes throug
 those lifecycle methods. `start_webrtc_signaling_for_preview` uses the existing
 Soup server and one periodic source attached to its signaling context. The
 source drains bounded `PreviewTransportMonitor` events; no streaming thread
-creates per-frame idle callbacks. `WebPreviewObserver` emits at most one
-unacknowledged metadata batch. While a client withholds credit, subsequent
-sender events are discarded with a counter, bounding the outgoing metadata
-backlog as well as the native queue. Poll cadence and event budget are explicit
+creates per-frame idle callbacks. `WebPreviewObserver` bounds unacknowledged
+metadata by the monitor's configured event capacity across all outstanding
+batches. Once that window fills, subsequent sender events are discarded with a
+counter, bounding the outgoing metadata backlog as well as the native queue.
+Poll cadence and event budget are explicit
 constructor inputs resolved from the opt-in session baseline.
 
 `PreviewPresentationHistory` retains completed RTP identities independently of
@@ -509,8 +510,11 @@ The version-1 optional metadata protocol is:
   `ontrack`, `playing`, or a successful credit acknowledgment are insufficient.
 
 Outstanding batches share the transport monitor's `web_preview.pending_events`
-budget. Each accepted acknowledgment releases only the oldest exact batch's
-event count. A network round trip therefore does not suppress intervening frame
+budget. Each batch reserves its full `events_per_batch` capacity even when it
+contains fewer events; the defaults permit eight outstanding batches. This also
+bounds envelopes and the acknowledgment burst after a stalled reader resumes.
+Each accepted acknowledgment releases only the oldest exact batch's reserved
+capacity. A network round trip therefore does not suppress intervening frame
 receipts while credit remains. Exhaustion discards bounded metadata until credit
 returns; peer retirement clears all credit. This queue contains metadata only
 and does not retain video frames or establish presentation.

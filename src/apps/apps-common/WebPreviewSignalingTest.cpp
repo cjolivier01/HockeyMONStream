@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   auto monitor = std::make_shared<hm::preview::TransportMonitor>(4, 8, 8);
   auto observer = std::make_shared<hm::preview::WebPreviewObserver>(
-      monitor, hm::preview::WebPreviewObserverConfig{{"signal-test", 0, 1}, 5, 8});
+      monitor, hm::preview::WebPreviewObserverConfig{{"signal-test", 0, 1}, 5, 2});
   auto preview = std::make_shared<hm::preview::WebPreviewSignaling>();
   preview->observer = observer;
   preview->initial_peer_generation = 40;
@@ -195,13 +195,17 @@ int main(int argc, char** argv) {
       "Unexpected metadata message");
   for (unsigned index = 0; index < 20; ++index) {
     deliver(*monitor, ++last_sequence);
-    pump([] { return false; }, 6);
+    check(
+        pump([&] {
+          return index < 3 ? first.messages.size() == index + 2 : observer->dropped_events() == 2 * (index - 2);
+        }),
+        "Observer did not dispatch or discard the pending frame within its deadline");
   }
   check(
       first.messages.size() == 4 && observer->dropped_events() == 34,
       "Unacknowledged client grew the outgoing metadata queue");
   first.Send(envelope("preview-frames-ack", peer) + ",\"batch\":\"1\"}");
-  pump([] { return false; }, 20);
+  check(pump([&] { return observer->acknowledged_batches() == 1; }), "Observer did not receive batch credit");
   deliver(*monitor, ++last_sequence);
   check(pump([&] { return first.messages.size() == 5; }), "Acknowledgment did not restore one batch of credit");
   first.Send(receipt(last_sequence, peer));
