@@ -1171,6 +1171,8 @@ cc_test(
     # implied by size is not enough.
     timeout = "long",
     data = [
+        "//src/apps/hstream-cli:hstream-cli",
+        "//src/apps/hstream-job:hstream-job",
         "//configs:play_tracker_config.yaml",
         "//configs:ds_hockey_app_config.yaml",
         "//configs:ds_hockey_configure_stitching.yaml",
