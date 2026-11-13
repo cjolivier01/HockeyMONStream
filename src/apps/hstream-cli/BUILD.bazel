@@ -626,6 +626,7 @@ cc_test(
         "//src/apps/apps-common:deepstream_apps_common",
         "//src/libs/common:baseline_config",
         "//src/libs/common:utils",
+        "//src/libs/stitching:calibration_failure",
         "@com_google_absl//absl/status:statusor",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
