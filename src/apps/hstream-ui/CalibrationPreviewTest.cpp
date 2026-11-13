@@ -55,7 +55,8 @@ bool test_snapshot_paths() {
   QImage image(800, 400, QImage::Format_RGB32);
   image.fill(Qt::gray);
   if (!expect(
-          game.isValid() && tools.isValid() && image.save(game.filePath("_hockeymon/left.png")) &&
+          game.isValid() && tools.isValid() && QDir(game.path()).mkpath("_hockeymon") &&
+              image.save(game.filePath("_hockeymon/left.png")) &&
               image.save(game.filePath("_hockeymon/right.png")),
           "Cannot create camera image fixtures"))
     return false;
@@ -90,7 +91,7 @@ bool test_snapshot_paths() {
   bool ok = true;
   const hm::stitching::StitchCameraSelection camera{"gopro-hero-11", 108, 90};
   for (bool absolute : {false, true}) {
-    const QByteArray prefix = absolute ? game.path().toUtf8() + '/' : QByteArray();
+    const QByteArray prefix = absolute ? game.filePath("_hockeymon/").toUtf8() : QByteArray();
     const QByteArray project =
         "p f1 w800 h400 v180 S0,800,120,360 n\"PNG\"\n"
         "i w800 h400 f0 v90 y-30 p0 r0 n\"" +
@@ -99,16 +100,17 @@ bool test_snapshot_paths() {
         "i w800 h400 f0 v90 y30 p0 r0 n\"" +
         prefix + "right.png\"\n";
     ok &= write(game.filePath("_hockeymon/autooptimiser_out.pto"), project);
-    ok &= write(game.filePath(".autooptimiser_out.aligned.pto"), project);
+    ok &= write(game.filePath("_hockeymon/.autooptimiser_out.aligned.pto"), project);
     for (bool in_progress : {false, true}) {
-      ProjectionCropDialog crop(game.path(), {}, "cylindrical", {}, camera, {}, nullptr, in_progress);
+      const auto preview_directory = in_progress ? game.filePath("_hockeymon") : game.path();
+      ProjectionCropDialog crop(preview_directory, {}, "cylindrical", {}, camera, {}, nullptr, in_progress);
       ok &= expect(wait_for_preview(&crop), "Relative and absolute projects must render saved and in-progress crops");
       RinkLevelingDialog leveling(
-          game.path(), {}, nullptr, camera, in_progress, hm::stitching::StitchProjection::kCylindrical);
+          preview_directory, {}, nullptr, camera, in_progress, hm::stitching::StitchProjection::kCylindrical);
       ok &= expect(leveling.loadError().isEmpty(), "Relative and absolute projects must load for rink leveling");
       ok &= expect(
           read(game.filePath("_hockeymon/autooptimiser_out.pto")) == project &&
-              read(game.filePath(".autooptimiser_out.aligned.pto")) == project,
+              read(game.filePath("_hockeymon/.autooptimiser_out.aligned.pto")) == project,
           "Preview preparation must preserve the published calibration projects");
     }
   }

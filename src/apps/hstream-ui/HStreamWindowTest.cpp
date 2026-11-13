@@ -1233,6 +1233,15 @@ for line in sys.stdin:
   }
 
   static bool cancelledReviewRetainsSavedFraming(HStreamWindow* window) {
+    auto* original_process = window->pipeline_process_;
+    if (original_process->state() != QProcess::NotRunning || !window->operation_token_.empty() ||
+        window->pipeline_completion_proof_pending_)
+      return false;
+    // This synthetic completion has no admitted command. A previous real run
+    // can leave its retired supervisor adapter attached to the reused process.
+    QProcess synthetic_process;
+    window->pipeline_process_ = &synthetic_process;
+    const absl::Cleanup restore_process = [&] { window->pipeline_process_ = original_process; };
     const auto saved = window->saved_projection_framing_;
     const auto displayed = window->stitchProjectionFraming();
     prepareRinkLevelingProtocol(window, window->game_id_edit_->text(), displayed.rotation_degrees);
@@ -5692,6 +5701,10 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  const QString discovery_analysis =
+      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture");
+  const QString discovery_cause =
+      discovery_analysis.section("\nReported cause\n", 1, 1).section("\n\nWhat to try\n", 0, 0);
   const bool program_discovery_visible =
       expect(dialog->isVisible(), "Program playback should show calibration discovered by the running pipeline") &&
       expect(
@@ -5701,11 +5714,10 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
           window->logText().contains("running pipeline discovered stitching calibration"),
           "Program playback should log why it opened the calibration progress popup") &&
       expect(
-          HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
-                  .contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent") &&
-              !HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
-                   .contains("unrelated pre-calibration runtime status"),
-          "Runtime-discovered calibration must preserve stderr diagnostics received before its first milestone");
+          discovery_cause ==
+              "Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent" &&
+              discovery_analysis.contains("INVALID_ARGUMENT: unrelated pre-calibration runtime status"),
+          "Runtime-discovered calibration must select its pre-milestone cause while retaining earlier diagnostics");
   for (int i = 0; i < 400 &&
        (dialog->isVisible() ||
         !window->logText().contains("one-pass stitching calibration complete; continuous program playback running"));
@@ -7207,6 +7219,9 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!expect(log->toPlainText().isEmpty(), "Clear Log must remove the visible runtime log output")) {
     return false;
   }
+  // Calibration/preset reloads above can restore the capture preference. The
+  // transport cases require a local render without lossless telemetry capture.
+  drivegpt_csv->setChecked(false);
   const int fresh_program_clean_commands = window->logText().count("stitching calibration clean command");
   qputenv("HSTREAM_UI_TEST_COMPLETE_CALIBRATION", "1");
   qputenv("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW", "1");
@@ -24126,7 +24141,11 @@ int main(int argc, char** argv) {
     std::cerr << "test_leveled_crop_rotation failed\n";
     return 1;
   }
-  if (!test_promoted_stitching_leveling(&window) || !test_rink_leveling_save_retry(&window)) {
+  if (!test_promoted_stitching_leveling(&window)) {
+    std::cerr << "test_promoted_stitching_leveling failed\n";
+    return 1;
+  }
+  if (!test_rink_leveling_save_retry(&window)) {
     std::cerr << "test_rink_leveling_save_retry failed\n";
     return 1;
   }

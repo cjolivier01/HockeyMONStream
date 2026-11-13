@@ -27,7 +27,7 @@
 using namespace hm::ui;
 namespace {
 int assets(const QString& game) {
-  return QDir(game + "/highlight-assets").entryList(QDir::Files).size();
+  return QDir(game + "/_hockeymon/highlight-assets").entryList(QDir::Files).size();
 }
 // The controls are the point of the dialog, so they must open at the width the
 // form prefers -- not merely the width it can survive -- or half the screen
@@ -170,7 +170,7 @@ int main(int argc, char** argv) {
     }
   });
   if (!EditHighlightItem(&logo, dir.path(), "game", {}, {}, 0, {}, nullptr) || !valid ||
-      !logo.card.logo_a.startsWith("highlight-assets/") || QFileInfo(logo.card.logo_a).isAbsolute())
+      !logo.card.logo_a.startsWith("_hockeymon/highlight-assets/") || QFileInfo(logo.card.logo_a).isAbsolute())
     return 1;
   if (!QFile::remove(source))
     return 1;
@@ -208,9 +208,10 @@ int main(int argc, char** argv) {
       QFileInfo(retained).lastModified() != retained_time)
     return 1;
   QTemporaryDir moved;
-  if (!QDir().rename(dir.filePath("highlight-assets"), moved.filePath("highlight-assets")) ||
+  QDir(moved.path()).mkpath("_hockeymon");
+  if (!QDir().rename(dir.filePath("_hockeymon/highlight-assets"), moved.filePath("_hockeymon/highlight-assets")) ||
       !RasterHighlightCard(logo.card, moved.path(), &rendered, &error) ||
-      !QDir().rename(moved.filePath("highlight-assets"), dir.filePath("highlight-assets")))
+      !QDir().rename(moved.filePath("_hockeymon/highlight-assets"), dir.filePath("_hockeymon/highlight-assets")))
     return 1;
   // Opening a card and cancelling must not write into the game. Importing from
   // the shared read path left an orphan behind every time an author looked at a
@@ -240,7 +241,8 @@ int main(int argc, char** argv) {
   // An unreadable source can stay broken, but a readable source whose retained
   // copy could not be written must not silently remain dependent on Pictures.
   QTemporaryDir blocked;
-  QFile obstacle(blocked.filePath("highlight-assets"));
+  QDir(blocked.path()).mkpath("_hockeymon");
+  QFile obstacle(blocked.filePath("_hockeymon/highlight-assets"));
   if (!obstacle.open(QIODevice::WriteOnly))
     return 1;
   obstacle.close();
@@ -266,7 +268,7 @@ int main(int argc, char** argv) {
     }
   });
   if (!EditHighlightItem(&unretained, blocked.path(), "game", {}, {}, 0, {}, nullptr) || !valid ||
-      !unretained.card.logo_a.startsWith("highlight-assets/")) {
+      !unretained.card.logo_a.startsWith("_hockeymon/highlight-assets/")) {
     std::cout << "readable artwork retention failure was not recoverable\n";
     return 1;
   }

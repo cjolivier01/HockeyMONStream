@@ -4,6 +4,7 @@
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtCore/QTemporaryDir>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QCheckBox>
@@ -37,6 +38,7 @@ void SelectModel(PlayerAnalyticsControls& widget, const char* name, const char* 
   control->setCurrentIndex(index);
 }
 void Write(const QString& path, const QByteArray& text) {
+  QDir().mkpath(QFileInfo(path).absolutePath());
   QFile file(path);
   Require(file.open(QIODevice::WriteOnly) && file.write(text) == text.size(), "Cannot create test configuration");
 }
