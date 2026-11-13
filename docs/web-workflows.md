@@ -180,7 +180,11 @@ lease sends abandoned sessions through the same supervised cleanup.
 The native adapter writes a revisioned trajectory catalog separately from its
 frequent state messages. Save publishes `camera-trial-N.yaml` with an exact
 file-identity receipt, allowing an immediate authenticated download before Close;
-final publication rechecks the same artifacts. A CPU-only trial can also be
+final publication rechecks the same artifacts. Distributed requests use schema-2
+content receipts for every trajectory chunk, view, history page and saved trial,
+bound to the admitted storage namespace (`camera-portable-receipts-v1`). The
+browser service verifies those exact bytes across qualified shared mounts; local
+legacy requests retain their strict file-identity receipts. A CPU-only trial can also be
 saved without a selected panorama: `media.kind: none` retains the recorded canvas
 and telemetry origin, with no claimed video path, identity or time mapping.
 Partially specified media bindings still fail. Both interfaces resolve defaults

@@ -26,7 +26,8 @@ void PublishCameraExperimentCatalog(
     QJsonObject metadata,
     const std::vector<CameraExperimentCatalogView>& views,
     std::size_t& published_views,
-    std::uint64_t& revision);
+    std::uint64_t& revision,
+    const QJsonObject& workflow = {});
 
 // Publication must accept the complete batch before any new trial is selectable.
 // A size or storage failure retains the preceding native/rink comparison views.

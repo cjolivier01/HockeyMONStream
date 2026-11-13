@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/WebCameraExperiment.h"
 
+#include <QtCore/QCryptographicHash>
+#include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 
 #include <fstream>
@@ -69,6 +71,32 @@ int main() {
     for (auto& frame : trajectory)
       frame.overlays = overlay;
     std::vector<CameraExperimentCatalogView> views(2, {"Comparison", &trajectory});
+    const auto portable = catalog.parent_path() / "portable";
+    std::filesystem::create_directory(portable);
+    std::size_t portable_views = 0;
+    std::uint64_t portable_revision = 0;
+    PublishCameraExperimentCatalog(
+        portable, "run", {}, views, portable_views, portable_revision, {{"storage_namespace", "qualified"}});
+    const auto check_portable = [&](const QJsonObject& receipt) {
+      const auto path = portable / receipt.value("path").toString().toStdString();
+      QFile file(QString::fromStdString(path.string()));
+      if (!file.open(QIODevice::ReadOnly))
+        throw std::runtime_error("Cannot read portable camera fixture");
+      const auto bytes = file.readAll();
+      if (receipt.value("identity_schema").toInt() != 2 ||
+          receipt.value("storage_namespace").toString() != "qualified" || receipt.contains("device") ||
+          receipt.value("size").toDouble() != bytes.size() ||
+          receipt.value("sha256").toString() != QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())
+        throw std::runtime_error("Camera page lost its portable content receipt");
+      return ReadObject(path);
+    };
+    const auto portable_history =
+        check_portable(ReadObject(portable / "camera-experiment-catalog.json").value("history").toObject());
+    for (const auto& view : portable_history.value("views").toArray()) {
+      const auto portable_manifest = check_portable(view.toObject().value("artifact").toObject());
+      for (const auto& chunk : portable_manifest.value("chunks").toArray())
+        check_portable(chunk.toObject().value("artifact").toObject());
+    }
     std::size_t published = 0;
     std::uint64_t revision = 0;
     PublishCameraExperimentCatalog(paged, "run", {}, views, published, revision);
