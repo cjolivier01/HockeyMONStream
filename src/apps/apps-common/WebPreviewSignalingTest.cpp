@@ -226,6 +226,11 @@ int main(int argc, char** argv) {
   check(pump([&] { return monitor->counters().presented == 2; }), "Replacement exact receipt failed");
   prepare_webrtc_sinks_for_stop(pipeline);
   check(detachments == 3 && !observer->TakePresented(), "Stop did not retire peer/receipts");
+  // Seek admission retires Soup on its context before graph reconstruction.
+  // The worker's ordinary teardown must find nothing left to close or drain.
+  std::thread reconstruction([&] { prepare_webrtc_sinks_for_stop(pipeline); });
+  reconstruction.join();
+  check(detachments == 3, "Worker teardown repeated a retired signaling mutation");
   const auto dropped = observer->dropped_events();
   deliver(*monitor, ++last_sequence);
   pump([] { return false; }, 30);

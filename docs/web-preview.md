@@ -1,5 +1,11 @@
 # WebRTC preview lifecycle
 
+Seek admission retires the browser signaling server and preview status sources
+on the main context before starting graph reconstruction. Soup's connection and
+server sources must not race that context from the reconstruction worker. The
+worker still owns native gate and pipeline teardown; its repeated signaling
+retirement is inert. A replacement graph publishes a fresh preview generation.
+
 The remaining work to share Qt's selectable preview routes and playback controls
 with the browser is described in [web-preview-parity-design.md](web-preview-parity-design.md).
 The route activation owner is shared native code. An explicit private

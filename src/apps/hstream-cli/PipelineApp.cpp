@@ -7519,6 +7519,12 @@ bool PipelineApplication::seek_runtime_impl(
   }
   app_context->defer_bus_watch = TRUE;
   detach_pipeline_bus_watch(app_context);
+  // Soup owns main-context sources internally. Closing its connection/server
+  // from the reconstruction worker can race their dispatch and corrupt source
+  // reference counts. Retire them here, along with preview status callbacks,
+  // before handing the graph to that worker.
+  if (web_preview_)
+    web_preview_->RetireCallbacks();
   try {
     if (g_getenv("HM_TEST_RUNTIME_SEEK_WORKER_UNAVAILABLE")) {
       throw std::runtime_error("injected runtime seek worker construction failure");

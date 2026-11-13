@@ -544,16 +544,20 @@ absl::Status WebPreviewSession::Attach(const std::function<bool()>& reconcile_ov
   return absl::OkStatus();
 }
 
-void WebPreviewSession::Stop() {
-  if (stopped_)
-    return;
-  stopped_ = true;
+void WebPreviewSession::RetireCallbacks() {
   if (overlay_status_source_) {
     g_source_remove(overlay_status_source_);
     overlay_status_source_ = 0;
   }
   if (app_.pipeline.pipeline)
     prepare_webrtc_sinks_for_stop(app_.pipeline.pipeline);
+}
+
+void WebPreviewSession::Stop() {
+  if (stopped_)
+    return;
+  stopped_ = true;
+  RetireCallbacks();
   // Shutdown must close every borrowed gate even after failed rearming or the
   // largest valid operation number. Closing within the current operation is
   // permitted by the target; there is no counter increment to overflow.

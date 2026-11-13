@@ -40,6 +40,9 @@ class WebPreviewSession {
   void SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation);
   // Called after publishing a matching query acknowledgment, including paused readback.
   void RefreshOverlayStatus(const RouteOwner::Session& session);
+  // Retire signaling and status callbacks on their main context before a seek
+  // worker can replace the graph. Stop remains responsible for native gates.
+  void RetireCallbacks();
   void Stop();
   std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays, bool seek) const;
   void SetPlayerDrawingLayers(unsigned layers);
