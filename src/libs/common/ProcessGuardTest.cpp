@@ -1,3 +1,4 @@
+#include "hstream/src/libs/common/ProcessGuard.h"
 #include "hstream/src/libs/common/GameOperationOwner.h"
 
 #include <fcntl.h>
@@ -56,7 +57,9 @@ struct Pipe {
   }
   template <typename T>
   T receive() {
-    struct pollfd ready{descriptors[0], POLLIN, 0};
+    struct pollfd ready {
+      descriptors[0], POLLIN, 0
+    };
     int status;
     do {
       status = ::poll(&ready, 1, 5000);
@@ -156,7 +159,7 @@ int worker(int argc, char** argv) {
   ::signal(SIGTERM, signal_fixture);
   if (argc > 3 && std::string(argv[1]) == "--worker-wait") {
     resume_receipt = ::open(argv[3], O_RDONLY);
-    struct stat metadata{};
+    struct stat metadata {};
     require(
         resume_receipt >= 0 && ::fstat(resume_receipt, &metadata) == 0 && metadata.st_size > 0,
         "cannot open fixture receipt for Resume ordering check");
@@ -433,7 +436,7 @@ int main(int argc, char** argv) {
     }
     {
       Admission admission(root / "many-sequential-commands");
-      struct rlimit original{};
+      struct rlimit original {};
       require(::getrlimit(RLIMIT_NOFILE, &original) == 0, "cannot inspect descriptor limit");
       struct RestoreLimit {
         struct rlimit value;
@@ -441,7 +444,9 @@ int main(int argc, char** argv) {
           ::setrlimit(RLIMIT_NOFILE, &value);
         }
       } restore{original};
-      struct rlimit limited{64, original.rlim_max};
+      struct rlimit limited {
+        64, original.rlim_max
+      };
       require(::setrlimit(RLIMIT_NOFILE, &limited) == 0, "cannot bound descriptor fixture");
       for (int index = 0; index < 80; ++index) {
         const auto command = admission.prepare({"/bin/true"});
@@ -452,6 +457,32 @@ int main(int argc, char** argv) {
         require(take(op::SupervisedCommandStopped(admission.owner.token, command.id)), "exact command proof missing");
       }
       admission.release();
+    }
+    {
+      // argv[0] can name a replaced installation path. Execute the inode the
+      // caller actually verified, retaining the original name as argv[0].
+      const auto receipt = root / "descriptor-execution";
+      const std::string token(32, 'a'), nonce(32, 'b');
+      const auto header = hm::process_guard::ReceiptHeader(token, nonce);
+      std::ofstream(receipt) << header << "0P";
+      require(::chmod(receipt.c_str(), 0600) == 0, "cannot prepare descriptor receipt");
+      const int executable = ::open("/bin/true", O_RDONLY | O_CLOEXEC);
+      require(executable >= 0, "cannot pin fixture executable");
+      const auto parent = ::getpid();
+      Child child;
+      child.pid = ::fork();
+      require(child.pid >= 0, "cannot launch descriptor fixture");
+      if (!child.pid) {
+        const auto result = hm::process_guard::Run(receipt, token, nonce, parent, 100, 10, {"/bin/false"}, executable);
+        ::_exit(result.ok() ? *result : 125);
+      }
+      ::close(executable);
+      const int status = child.wait_bounded();
+      require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "guard executed pathname instead of pinned inode");
+      const int proof = ::open(receipt.c_str(), O_RDONLY | O_CLOEXEC);
+      require(proof >= 0, "cannot read descriptor retirement proof");
+      require(take(hm::process_guard::ReadReceipt(proof, receipt, header)) == 'C', "descriptor task did not retire");
+      ::close(proof);
     }
     std::cout << "Process guard kernel shutdown and receipt checks passed\n";
     return 0;

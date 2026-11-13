@@ -587,6 +587,10 @@ class Controller:
             "submitted_after": timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
             "device": reservation["device"],
         }
+        require(
+            profile["executor"] != "slurm" or profile["runtime"].get("python"),
+            "The standalone workflow executor needs runtime.python; worker-only profiles belong to the service executor",
+        )
         write_json(root / "submission.json", intent, exclusive=True)
         command = [
             (
@@ -900,9 +904,11 @@ class Controller:
                         # Keep the actual native failure beside scheduler status
                         # so both UI monitors can explain a failed stage.
                         try:
-                            tail = read_tail(root / "task.log", 4096).decode(
-                                "utf-8", errors="replace"
-                            ).strip()
+                            tail = (
+                                read_tail(root / "task.log", 4096)
+                                .decode("utf-8", errors="replace")
+                                .strip()
+                            )
                             if tail:
                                 details["reason"] = (
                                     details["reason"][:2048]

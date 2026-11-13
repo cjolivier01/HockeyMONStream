@@ -377,3 +377,9 @@ with the actual Dagster run ID; Qt and the browser consume those records.
 `HSTREAM_DAGSTER_URL` can override the web-visible origin when a browser deployment
 requires a different route. None of these service addresses are per-job processing
 controls. Changing the operator configuration does not require recompiling the UI.
+
+The native package also installs [hstream-runtime-worker](runtime-worker.md) for
+service-side controllers. HockeyMONWeb uses that C++ worker on compute and keeps
+its Python coordinator on the service host. No web application install belongs
+on a GPU node. The standalone native workflow executor described above retains
+its existing Python supervisor contract.

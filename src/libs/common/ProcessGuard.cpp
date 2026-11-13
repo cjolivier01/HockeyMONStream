@@ -80,7 +80,7 @@ absl::Status Enable() {
     return absl::FailedPreconditionError("Child proof must be established before any command is launched");
   if (::prctl(PR_SET_CHILD_SUBREAPER, 1) != 0)
     return error("Cannot establish process descendant ownership");
-  struct sigaction child_status{};
+  struct sigaction child_status {};
   child_status.sa_handler = SIG_DFL;
   ::sigemptyset(&child_status.sa_mask);
   if (::sigaction(SIGCHLD, &child_status, nullptr) != 0)
@@ -169,7 +169,8 @@ std::string ReceiptHeader(const std::string& token, const std::string& nonce) {
 }
 
 absl::StatusOr<char> ReadReceipt(int descriptor, const std::filesystem::path& path, const std::string& header) {
-  struct stat pinned{}, named{};
+  struct stat pinned {
+  }, named{};
   if (::fstat(descriptor, &pinned) != 0 || ::lstat(path.c_str(), &named) != 0 || !S_ISREG(pinned.st_mode) ||
       !S_ISREG(named.st_mode) || pinned.st_uid != ::geteuid() || (pinned.st_mode & 0777) != 0600 ||
       pinned.st_dev != named.st_dev || pinned.st_ino != named.st_ino ||
@@ -220,7 +221,8 @@ absl::StatusOr<int> Run(
     int64_t parent_pid,
     int64_t grace_ms,
     int64_t poll_ms,
-    const std::vector<std::string>& command) {
+    const std::vector<std::string>& command,
+    int executable_descriptor) {
   if (command.empty() || command.front().empty() || grace_ms <= 0 || poll_ms <= 0 || poll_ms > grace_ms ||
       grace_ms > 24 * 60 * 60 * 1000LL)
     return absl::InvalidArgumentError("Invalid process guard command or explicit cleanup timing");
@@ -252,7 +254,7 @@ absl::StatusOr<int> Run(
   }
   // The proof descriptor is CLOEXEC and is explicitly closed in the worker.
   // Only this subreaper can acknowledge the kernel's final ECHILD result.
-  struct sigaction action{};
+  struct sigaction action {};
   action.sa_handler = stop;
   ::sigemptyset(&action.sa_mask);
   for (const int number : {SIGINT, SIGTERM, SIGHUP}) {
@@ -288,7 +290,15 @@ absl::StatusOr<int> Run(
       ::_exit(127);
     for (const int number : {SIGINT, SIGTERM, SIGHUP})
       ::signal(number, SIG_DFL);
-    ::execvp(arguments.front(), arguments.data());
+    if (executable_descriptor >= 0) {
+      // A shebang interpreter reopens /dev/fd/N after exec. Keep this pinned
+      // descriptor available in the execution child, without reopening its path.
+      const int flags = ::fcntl(executable_descriptor, F_GETFD);
+      if (flags < 0 || ::fcntl(executable_descriptor, F_SETFD, flags & ~FD_CLOEXEC) != 0)
+        ::_exit(127);
+      ::fexecve(executable_descriptor, arguments.data(), environ);
+    } else
+      ::execvp(arguments.front(), arguments.data());
     ::_exit(127);
   }
   int root_status = 0;

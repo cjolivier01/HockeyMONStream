@@ -13,6 +13,14 @@
 - `git worktree add` does not populate submodules; run `git submodule update --init --recursive` in the new worktree when `external/hm` is needed.
 - Remove the worktree once its branch merges (`git worktree remove ../hstream-<task>`), and run `git worktree prune` if the directory was deleted by hand, otherwise the stale entry keeps its branch locked.
 
+## Native runtime execution
+
+- `src/libs/runtime_worker/` and `src/apps/hstream-runtime-worker/` own the generic
+  versioned shared-storage execution protocol. Keep it independent of Qt, Django,
+  browser controls and service database models. `common/ProcessGuard` owns each
+  task's descendants; descriptor-bound execution and kernel retirement receipts
+  precede artifact adoption. See `docs/runtime-worker.md`.
+
 ## Project Structure & Modules
 - Code: `src/` with libraries in `src/libs/*`, apps in `src/apps`, optional plugins in `src/gst-plugins`.
 - Build files: `BUILD.bazel` next to sources; external repos in `WORKSPACE.bazel` and `buildfiles/`.

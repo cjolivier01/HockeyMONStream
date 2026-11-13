@@ -139,6 +139,7 @@ fi
 HSTREAM_CLI="${TOPDIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 HSTREAM_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-job/hstream-job"
 HSTREAM_PROCESS_GUARD="${TOPDIR}/bazel-bin/src/apps/hstream-process-guard/hstream-process-guard"
+HSTREAM_RUNTIME_WORKER="${TOPDIR}/bazel-bin/src/apps/hstream-runtime-worker/hstream-runtime-worker"
 HSTREAM_FINALIZE="${TOPDIR}/bazel-bin/src/apps/hstream-finalize/hstream-finalize"
 HSTREAM_CALIBRATION_EXPORT="${TOPDIR}/bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export"
 HSTREAM_PREPARED_MODEL_VALIDATE="${TOPDIR}/bazel-bin/src/apps/hstream-prepared-model-validate/hstream-prepared-model-validate"
@@ -167,6 +168,10 @@ if [[ ! -f "${HSTREAM_JOB}" ]]; then
 fi
 if [[ ! -f "${HSTREAM_PROCESS_GUARD}" ]]; then
   echo "ERROR: ${HSTREAM_PROCESS_GUARD} not found. Run make hstream-process-guard first." >&2
+  exit 1
+fi
+if [[ ! -f "${HSTREAM_RUNTIME_WORKER}" ]]; then
+  echo "ERROR: ${HSTREAM_RUNTIME_WORKER} not found. Run make hstream-runtime-worker first." >&2
   exit 1
 fi
 if [[ ! -f "${HSTREAM_FINALIZE}" ]]; then
@@ -399,8 +404,11 @@ cp "${HSTREAM_JOB}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-job"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-job"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-job")
 cp "${HSTREAM_PROCESS_GUARD}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-process-guard"
+cp "${HSTREAM_RUNTIME_WORKER}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-runtime-worker"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-process-guard"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-runtime-worker"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-process-guard")
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-runtime-worker")
 cp "${HSTREAM_FINALIZE}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-finalize")
@@ -1161,6 +1169,7 @@ install -m 0755 \
 ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream-cli"
 ln -s "${INSTALL_PREFIX}/bin/hstream-job" "${STAGING}/usr/bin/hstream-job"
 ln -s "${INSTALL_PREFIX}/bin/hstream-process-guard" "${STAGING}/usr/bin/hstream-process-guard"
+ln -s "${INSTALL_PREFIX}/bin/hstream-runtime-worker" "${STAGING}/usr/bin/hstream-runtime-worker"
 ln -s "${INSTALL_PREFIX}/bin/hstream-finalize" "${STAGING}/usr/bin/hstream-finalize"
 ln -s "${INSTALL_PREFIX}/bin/hstream-calibration-export" "${STAGING}/usr/bin/hstream-calibration-export"
 ln -s "${INSTALL_PREFIX}/bin/hstream-prepared-model-validate" "${STAGING}/usr/bin/hstream-prepared-model-validate"
