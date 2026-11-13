@@ -90,6 +90,7 @@ QJsonObject Capabilities() {
       "calibration-still-read",
       "detector-controls-read",
       "camera-optics-read",
+      "source-camera-preview",
       "calibration-view-read",
       "calibration-view-estimate",
       "calibration-view-landmarks",
@@ -133,6 +134,7 @@ QJsonObject Capabilities() {
       {"operations", operations},
       {"features",
        QJsonArray{
+           "source-camera-preview-v1",
            "calibration-failure-diagnosis-v1",
            "runtime-defaults-v1",
            "detector-controls-v1",

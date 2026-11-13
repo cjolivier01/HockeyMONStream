@@ -939,3 +939,32 @@ invalidation owner and native selected-frame bundle before reuse. This lets a
 completed serial candidate feed a later distributed batch without rerunning a
 pending-only calibration transaction. Missing or changed inputs still fail;
 ordinary solves continue to require pending invalidation ownership.
+
+
+### Standalone source camera playback
+
+`source-camera-preview-v1` exposes `SourceCameraPlayer` without a native window,
+stitching, calibration, inference or a Program graph. The outer web service owns
+one Slurm allocation and one selected camera playlist. Runtime inputs bind owned
+immutable uploads by their authorized absolute names and portable inode/size/time
+metadata; the adapter pins every descriptor and adds the compute-local device
+identity before decoding. Shared mounts must preserve those inode/time semantics.
+No full-file copy or hash is needed on every Play.
+
+The optional headless output keeps video in NVMM, converts/scales it on the GPU,
+and sends the baseline H.264 preview plus Opus audio through the existing exact
+frame receipt transport. Source and transport graphs use the same system clock;
+PCM timestamps translate their base times. Bounded silence keeps actual Opus caps
+available for SDP during paused opens. This does not advance source time.
+The default Qt renderer/audio path remains selected when no output is supplied.
+
+`HSTREAM_SOURCE_CAMERA` session/state events identify run, topology and operation.
+One typed stdin command at a time supports play, pause and seek. State precedes
+its matching acknowledgment, after the graph settles. Chapter changes and HEVC
+decoder resets advance presentation operations; browser peer renewal discards
+queued media before Resume/Seek. The supervisor owns client expiry, Stop,
+process retirement and signaling leases. Browser closure alone is not stop proof.
+
+This browser transport uses the existing NVIDIA encoder/preview implementation.
+AMD browser output and Jetson web-adapter builds remain unqualified; a profile
+must advertise this operation only on nodes tested with its exact runtime.

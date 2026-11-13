@@ -220,6 +220,24 @@ class ObserverTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowError, "earlier workflow epoch"):
             self.publish()
 
+    def test_short_observation_retains_scheduler_start_and_end(self):
+        observation = self.publish()
+        dagster = FakeDagster()
+        reconcile_observation(
+            self.root, observation, "http://localhost:3001", request=dagster
+        )
+        dagster.runs[observation].update(
+            status="SUCCESS", creationTime=1000.0, startTime=1001.0, endTime=1002.0
+        )
+        receipt = reconcile_observation(
+            self.root, observation, "http://localhost:3001", request=dagster
+        )
+        self.assertEqual(
+            receipt["lifecycle"],
+            {"queued_at": 1000.0, "started_at": 1001.0, "ended_at": 1002.0},
+        )
+        self.assertEqual(dagster.launches, 1)
+
     def test_accepted_launch_response_loss_reconciles_exact_run(self):
         observation = self.publish()
         dagster = FakeDagster()

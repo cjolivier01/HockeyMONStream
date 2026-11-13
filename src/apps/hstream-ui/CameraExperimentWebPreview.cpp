@@ -2,6 +2,7 @@
 
 #include "hstream/src/apps/apps-common/PreviewOverlayPainter.h"
 #include "hstream/src/apps/apps-common/WebPreviewTarget.h"
+#include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
 #include "hstream/src/apps/apps-common/WebRtcSignaling.h"
 
 #include <gst/app/gstappsink.h>
@@ -62,6 +63,9 @@ class WebOutput final : public CameraExperimentPreviewOutput {
     appsrc_ = gst_element_factory_make("appsrc", "camera-preview-input");
     if (!graph_ || !appsrc_)
       return Fail(error, "Camera preview requires GStreamer appsrc");
+    auto* clock = gst_system_clock_obtain();
+    gst_pipeline_use_clock(GST_PIPELINE(graph_), clock);
+    gst_object_unref(clock);
     gst_bin_add(GST_BIN(graph_), appsrc_);
     g_object_set(
         appsrc_,
@@ -119,6 +123,8 @@ class WebOutput final : public CameraExperimentPreviewOutput {
     }
     if (!linked)
       return Fail(error, "Could not connect camera browser target");
+    if (config_.source_audio && !StartAudio(error))
+      return false;
     auto signaling = target_->Signaling({{config_.run, 0, 1}, o.poll_interval_ms, o.events_per_batch});
     if (!signaling)
       return Fail(error, "Could not prepare camera browser signaling");
@@ -185,7 +191,55 @@ class WebOutput final : public CameraExperimentPreviewOutput {
     gst_app_sink_set_callbacks(GST_APP_SINK(sink_), &callbacks, this, nullptr);
     return sink_;
   }
+  GstElement* CreateAudioSink(std::string* error) override {
+    if (!audio_input_) {
+      Fail(error, "Camera audio transport is unavailable");
+      return nullptr;
+    }
+    auto* sink = gst_element_factory_make("appsink", "source-camera-audio");
+    if (!sink) {
+      Fail(error, "Camera audio requires GStreamer appsink");
+      return nullptr;
+    }
+    auto* caps = gst_caps_from_string("audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2");
+    g_object_set(
+        sink,
+        "caps",
+        caps,
+        "sync",
+        TRUE,
+        "async",
+        FALSE,
+        "max-buffers",
+        config_.source_audio->audio_queue_buffers,
+        "drop",
+        TRUE,
+        "wait-on-eos",
+        FALSE,
+        "enable-last-sample",
+        FALSE,
+        nullptr);
+    gst_caps_unref(caps);
+    GstAppSinkCallbacks callbacks{};
+    callbacks.new_sample = [](GstAppSink* sink, gpointer pointer) {
+      return static_cast<WebOutput*>(pointer)->AcceptAudio(sink);
+    };
+    gst_app_sink_set_callbacks(GST_APP_SINK(sink), &callbacks, this, nullptr);
+    return sink;
+  }
+  void SetAudioEnabled(bool enabled) override {
+    std::lock_guard<std::mutex> lock(transport_mutex_);
+    if (audio_enabled_ == enabled)
+      return;
+    audio_enabled_ = enabled;
+    if (audio_bin_) {
+      gst_element_set_state(audio_bin_, GST_STATE_READY);
+      if (enabled)
+        gst_element_sync_state_with_parent(audio_bin_);
+    }
+  }
   void SetGeneration(std::uint64_t generation) override {
+    std::lock_guard<std::mutex> transport_lock(transport_mutex_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (source_generation_ == generation)
       return;
@@ -198,6 +252,10 @@ class WebOutput final : public CameraExperimentPreviewOutput {
     presented_generation_ = 0;
     presented_pts_ = GST_CLOCK_TIME_NONE;
     changed_.notify_all();
+    if (audio_bin_) {
+      audio_enabled_ = false;
+      gst_element_set_state(audio_bin_, GST_STATE_READY);
+    }
   }
   bool Presented(std::uint64_t* generation, GstClockTime* pts) override {
     if (const auto frame = observer_->TakePresented()) {
@@ -245,6 +303,8 @@ class WebOutput final : public CameraExperimentPreviewOutput {
       target_->Select(nullptr, generation);
     if (appsrc_)
       gst_element_set_state(appsrc_, GST_STATE_READY);
+    if (audio_bin_)
+      gst_element_set_state(audio_bin_, GST_STATE_READY);
   }
   void ReleaseSink() override {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -253,6 +313,120 @@ class WebOutput final : public CameraExperimentPreviewOutput {
   }
 
  private:
+  bool StartAudio(std::string* error) {
+    audio_bin_ = gst_bin_new("source-camera-audio-transport");
+    audio_input_ = gst_element_factory_make("appsrc", "source-camera-pcm");
+    auto* convert = gst_element_factory_make("audioconvert", nullptr);
+    auto* encoder = gst_element_factory_make("opusenc", nullptr);
+    auto* pay = gst_element_factory_make("rtpopuspay", nullptr);
+    if (!audio_bin_ || !audio_input_ || !convert || !encoder || !pay) {
+      for (auto* item : {audio_input_, convert, encoder, pay})
+        if (item)
+          gst_object_unref(item);
+      if (audio_bin_)
+        gst_object_unref(audio_bin_);
+      audio_bin_ = audio_input_ = nullptr;
+      return Fail(error, "Camera preview requires Opus audio transport");
+    }
+    gst_bin_add(GST_BIN(graph_), audio_bin_);
+    gst_bin_add_many(GST_BIN(audio_bin_), audio_input_, convert, encoder, pay, nullptr);
+    g_object_set(
+        audio_input_,
+        "format",
+        GST_FORMAT_TIME,
+        "is-live",
+        TRUE,
+        "block",
+        FALSE,
+        "max-buffers",
+        guint64(config_.source_audio->audio_queue_buffers),
+        "max-bytes",
+        guint64(config_.source_audio->audio_queue_bytes),
+        "leaky-type",
+        2,
+        nullptr);
+    g_object_set(encoder, "bitrate", config_.options.audio_bitrate, nullptr);
+    g_object_set(pay, "pt", 97u, nullptr);
+    auto* caps = gst_caps_from_string(
+        "application/x-rtp,media=audio,encoding-name=OPUS,payload=97,clock-rate=48000,encoding-params=(string)2");
+    auto* input = hstream::webrtc_endpoint_add_track(target_->endpoint(), caps);
+    gst_caps_unref(caps);
+    auto* target_pad = input ? gst_ghost_pad_new("source_audio", input) : nullptr;
+    if (input)
+      gst_object_unref(input);
+    const bool target_added = target_pad && gst_element_add_pad(target_->bin(), target_pad);
+    if (target_pad && !target_added)
+      gst_object_unref(target_pad);
+    auto* src = gst_element_get_static_pad(pay, "src");
+    auto* output = src ? gst_ghost_pad_new("src", src) : nullptr;
+    if (src)
+      gst_object_unref(src);
+    const bool output_added = output && gst_element_add_pad(audio_bin_, output);
+    if (output && !output_added)
+      gst_object_unref(output);
+    if (!gst_element_link_many(audio_input_, convert, encoder, pay, nullptr) || !target_added || !output_added ||
+        gst_pad_link(output, target_pad) != GST_PAD_LINK_OK)
+      return Fail(error, "Could not link camera audio transport");
+    return true;
+  }
+  GstFlowReturn AcceptAudio(GstAppSink* sink) {
+    auto* sample = gst_app_sink_pull_sample(sink);
+    if (!sample)
+      return GST_FLOW_FLUSHING;
+    std::lock_guard<std::mutex> transport_lock(transport_mutex_);
+    bool admitting;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      admitting = admitting_ && source_generation_;
+    }
+    auto* original = gst_sample_get_buffer(sample);
+    const auto* segment = gst_sample_get_segment(sample);
+    const auto running = segment && original
+        ? gst_segment_to_running_time(segment, GST_FORMAT_TIME, GST_BUFFER_PTS(original))
+        : GST_CLOCK_TIME_NONE;
+    const auto source_base = gst_element_get_base_time(GST_ELEMENT(sink));
+    const auto target_base = gst_element_get_base_time(graph_);
+    if (admitting && audio_enabled_ && GST_CLOCK_TIME_IS_VALID(running) && GST_CLOCK_TIME_IS_VALID(source_base) &&
+        GST_CLOCK_TIME_IS_VALID(target_base) && running <= G_MAXUINT64 - source_base &&
+        running + source_base >= target_base) {
+      // Both pipelines use the system clock. Preserve PCM timing across source
+      // pauses/seeks by translating its segment and current pipeline base time.
+      // Copy the small buffer header only; the immutable PCM memory is shared.
+      auto* buffer = gst_buffer_copy(original);
+      GST_BUFFER_PTS(buffer) = running + source_base - target_base;
+      GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
+      gst_element_sync_state_with_parent(audio_bin_);
+      gst_app_src_set_caps(GST_APP_SRC(audio_input_), gst_sample_get_caps(sample));
+      gst_app_src_push_buffer(GST_APP_SRC(audio_input_), buffer);
+    }
+    gst_sample_unref(sample);
+    return GST_FLOW_OK;
+  }
+  void PrimeSilentAudio() {
+    if (!audio_input_ || audio_enabled_)
+      return;
+    // SDP uses actual encoded caps for both tracks, including an initially
+    // paused video. Bounded silence keeps Opus negotiated while source audio
+    // is paused; it never advances the recording or retains stale PCM.
+    const auto& options = config_.options;
+    const auto frames = gst_util_uint64_scale(48000, options.rate_denominator, options.rate_numerator);
+    auto* clock = gst_element_get_clock(graph_);
+    if (!clock)
+      return;
+    const auto now = gst_clock_get_time(clock), base = gst_element_get_base_time(graph_);
+    gst_object_unref(clock);
+    if (now < base || !frames)
+      return;
+    auto* buffer = gst_buffer_new_allocate(nullptr, frames * 2 * sizeof(float), nullptr);
+    gst_buffer_memset(buffer, 0, 0, frames * 2 * sizeof(float));
+    GST_BUFFER_PTS(buffer) = now - base;
+    GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale(frames, GST_SECOND, 48000);
+    auto* caps = gst_caps_from_string("audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2");
+    gst_app_src_set_caps(GST_APP_SRC(audio_input_), caps);
+    gst_caps_unref(caps);
+    gst_element_sync_state_with_parent(audio_bin_);
+    gst_app_src_push_buffer(GST_APP_SRC(audio_input_), buffer);
+  }
   static bool Fail(std::string* error, const char* message) {
     if (error)
       *error = message;
@@ -363,6 +537,7 @@ class WebOutput final : public CameraExperimentPreviewOutput {
           continue;
         }
       }
+      PrimeSilentAudio();
       if (generation != active_generation_) {
         if (!target_->Select(route_, generation)) {
           gst_sample_unref(sample);
@@ -386,6 +561,8 @@ class WebOutput final : public CameraExperimentPreviewOutput {
 
   hm::ui::HighlightWebPreviewConfig config_;
   GstElement *graph_{nullptr}, *appsrc_{nullptr}, *sink_{nullptr};
+  GstElement *audio_bin_{nullptr}, *audio_input_{nullptr};
+  bool audio_enabled_{false};
   GstPad* route_{nullptr};
   std::unique_ptr<hm::preview::WebPreviewTarget> target_;
   std::shared_ptr<hm::preview::WebPreviewObserver> observer_;

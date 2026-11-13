@@ -3,6 +3,7 @@
 #include <QtCore/QStringList>
 #include <memory>
 
+class CameraExperimentPreviewOutput;
 namespace hm::ui {
 // One camera's original, untrimmed chapter timeline. Owns at most one hardware
 // decoder; Close synchronously retires the graph before another owner starts.
@@ -12,6 +13,7 @@ class SourceCameraPlayer {
     bool open{false};
     bool playing{false};
     bool ready{false};
+    bool seeking{false};
     qint64 position_ms{0};
     qint64 presented_ns{-1};
     qint64 duration_ms{0};
@@ -20,7 +22,12 @@ class SourceCameraPlayer {
   };
   SourceCameraPlayer();
   ~SourceCameraPlayer();
-  bool Open(const QStringList& files, quint64 window, qint64 timeout_ms, QString* error);
+  bool Open(
+      const QStringList& files,
+      quint64 window,
+      qint64 timeout_ms,
+      QString* error,
+      std::shared_ptr<CameraExperimentPreviewOutput> output = {});
   void Play();
   void Pause();
   // Repaint the retained GPU frame after a paused target was remapped/resized.

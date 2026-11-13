@@ -23,6 +23,12 @@ class CameraExperimentPreviewOutput {
   virtual ~CameraExperimentPreviewOutput() = default;
   // Returns an unparented sink. The source graph owns the element reference.
   virtual GstElement* CreateSink(const Settings& settings, std::string* error) = 0;
+  // Optional raw PCM sink for original-camera playback. Camera trajectory
+  // replay has no audio input and leaves this boundary unused.
+  virtual GstElement* CreateAudioSink(std::string* error) {
+    return nullptr;
+  }
+  virtual void SetAudioEnabled(bool enabled) {}
   virtual void SetGeneration(std::uint64_t generation) = 0;
   virtual bool Presented(std::uint64_t* generation, GstClockTime* source_pts) = 0;
   virtual std::uint64_t PresentationOperation() const = 0;
