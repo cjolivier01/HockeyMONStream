@@ -592,6 +592,11 @@ absl::Status WebPreviewSession::DetachSeekSources() {
     paint_->channels.erase(it->first);
     it = channels_.erase(it);
   }
+  // The retained audio route receives FLUSH_STOP while sources are rebuilt.
+  // Reactivate its pads under the paused parent before that event is sent;
+  // source gates stay closed until AttachSeekSources binds the new topology.
+  if (!gst_element_sync_state_with_parent(target_->bin()))
+    return absl::InternalError("Could not reactivate stopped browser preview pads");
   return absl::OkStatus();
 }
 

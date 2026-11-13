@@ -10159,13 +10159,17 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
     const bool linked = pad && gst_pad_link(pad, link.peer) == GST_PAD_LINK_OK;
     if (pad)
       gst_object_unref(pad);
-    if (!linked)
+    if (!linked) {
+      g_printerr("Source seek could not restore link %s\n", link.name.c_str());
       return FALSE;
+    }
     GstEvent* flush = gst_event_new_flush_stop(TRUE);
     gst_structure_set(
         gst_event_writable_structure(flush), "hstream-preserve-playtracker", G_TYPE_BOOLEAN, TRUE, nullptr);
-    if (!gst_pad_send_event(link.peer, flush))
+    if (!gst_pad_send_event(link.peer, flush)) {
+      g_printerr("Source seek flush was rejected by link %s\n", link.name.c_str());
       return FALSE;
+    }
   }
   if (app->config.primary_gie_config.enable && app->config.primary_gie_config.plugin_type == NV_DS_GIE_PLUGIN_INFER &&
       !hm::ArmAsyncInferenceSeekRecovery(app->pipeline.common_elements.primary_gie_bin.primary_gie))
