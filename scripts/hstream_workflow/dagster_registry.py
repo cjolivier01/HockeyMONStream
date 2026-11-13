@@ -9,6 +9,7 @@ in the same native epoch.
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -398,14 +399,14 @@ def graphql(url, query, variables=None):
 
 
 RUN_QUERY = """query($id: ID!) { pipelineRunOrError(runId: $id) {
-  __typename ... on Run { runId status tags { key value } }
+  __typename ... on Run { runId status creationTime startTime endTime tags { key value } }
 } }"""
 RUNS_QUERY = """query($filter: RunsFilter!) { runsOrError(filter: $filter, limit: 2) {
-  __typename ... on Runs { results { runId status tags { key value } } }
+  __typename ... on Runs { results { runId status creationTime startTime endTime tags { key value } } }
 } }"""
 LAUNCH_QUERY = """mutation($params: ExecutionParams!) {
   launchPipelineExecution(executionParams: $params) {
-    __typename ... on LaunchRunSuccess { run { runId status tags { key value } } }
+    __typename ... on LaunchRunSuccess { run { runId status creationTime startTime endTime tags { key value } } }
 } }"""
 
 
@@ -555,7 +556,23 @@ def reconcile_observation(registry, observation_id, url, *, request=graphql):
                 )
             else:
                 run = checked_run(registration, launched["run"])
+        lifecycle = dict((previous or {}).get("lifecycle", {}))
+        for field, key in (
+            ("creationTime", "queued_at"),
+            ("startTime", "started_at"),
+            ("endTime", "ended_at"),
+        ):
+            when = run.get(field)
+            if when is not None:
+                require(
+                    type(when) in (int, float)
+                    and math.isfinite(when)
+                    and 0 < when < 253402300799,
+                    "Invalid Dagster execution timestamp",
+                )
+                lifecycle[key] = when
         record = {
+            "lifecycle": lifecycle,
             "schema": 1,
             "observation_id": observation_id,
             "run_id": run["runId"],

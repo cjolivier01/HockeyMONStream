@@ -1,4 +1,5 @@
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/common/PacedPlaybackConfig.h"
 #include "hstream/src/libs/common/RuntimeControlConfig.h"
 // Thin headless owners of the same native libraries used by the desktop dialogs.
 #include "hstream/src/libs/common/BaselineConfig.h"
@@ -13,6 +14,7 @@
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
+#include "src/apps/hstream-ui/CameraExperimentWebPreview.h"
 #include "src/apps/hstream-ui/DetectorOptions.h"
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
 #include "src/apps/hstream-ui/HighlightPlan.h"
@@ -22,6 +24,7 @@
 #include "src/apps/hstream-ui/HighlightWebPreview.h"
 #include "src/apps/hstream-ui/HighlightsEncodeSettings.h"
 #include "src/apps/hstream-ui/RuntimeOptions.h"
+#include "src/apps/hstream-ui/SourceCameraPlayer.h"
 #include "src/apps/hstream-ui/SourceCameraTrack.h"
 #include "src/apps/hstream-ui/StitchingExperimentBackend.h"
 #include "src/apps/hstream-ui/WebCalibrationControls.h"
@@ -35,6 +38,7 @@
 #include "src/apps/hstream-ui/WebScoreboardPreview.h"
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
@@ -153,7 +157,7 @@ hm::ui::ArchiveMediaInfo probe(const fs::path& archive, bool metadata_only = fal
 // No archive copy, symlink or hardlink is retained by the private run.
 class PinnedArchive {
  public:
-  PinnedArchive(const Request& request, const QString& key) {
+  PinnedArchive(const Request& request, const QString& key, bool portable = false) {
     const auto source = request.runtime.value(key).toObject();
     const auto name = RequiredString(source, "path", 4096);
     const fs::path original(name.toStdString());
@@ -162,7 +166,7 @@ class PinnedArchive {
             request.authorized_media.at(0).isString() && request.authorized_media.at(0).toString() == name,
         "Highlights require exactly their frozen authorized archive");
     expected_ = source.value("identity").toObject();
-    require(expected_.size() == 5, "Archive identity is incomplete");
+    require(expected_.size() == (portable ? 4 : 5), "Archive identity is incomplete");
     int descriptor = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     require(descriptor >= 0, "Cannot open the archive filesystem root");
     require(pinned_.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive root");
@@ -177,11 +181,21 @@ class PinnedArchive {
       pinned_.close();
       require(pinned_.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle), "Cannot own archive input");
     }
+    if (portable) {
+      require(request.operation == "source-camera-preview", "Portable source binding requires camera playback");
+      const auto actual = Identity();
+      auto portable_actual = actual;
+      portable_actual.remove("dev");
+      require(expected_ == portable_actual, "Immutable camera source changed before playback");
+      // Admission owns immutable upload UUID paths on the shared storage namespace.
+      // Bind the exact opened descriptor locally; device numbers differ across mounts.
+      expected_ = actual;
+    }
     Verify();
     path_ = fs::path("/proc") / std::to_string(::getpid()) / "fd" / std::to_string(pinned_.handle());
   }
-  void Verify() const {
-    struct stat info{};
+  QJsonObject Identity() const {
+    struct stat info {};
     require(::fstat(pinned_.handle(), &info) == 0 && S_ISREG(info.st_mode), "Archive is not a regular file");
     const QJsonObject actual{
         {"dev", QString::number(info.st_dev)},
@@ -189,7 +203,10 @@ class PinnedArchive {
         {"size", QString::number(info.st_size)},
         {"mtime_ns", QString::number(qint64(info.st_mtim.tv_sec) * 1000000000 + info.st_mtim.tv_nsec)},
         {"ctime_ns", QString::number(qint64(info.st_ctim.tv_sec) * 1000000000 + info.st_ctim.tv_nsec)}};
-    require(actual == expected_, "Archive identity changed before or during processing");
+    return actual;
+  }
+  void Verify() const {
+    require(Identity() == expected_, "Archive identity changed before or during processing");
   }
   const fs::path& path() const {
     return path_;
@@ -1180,7 +1197,166 @@ QJsonObject detector_state(const YAML::Node& game, bool hockeymon) {
       {"prepared", !selected.prepared_engine.isEmpty()}};
 }
 
+QJsonObject source_camera_preview(const Request& request) {
+  require(
+      preview_port && request.payload.size() == 2 && request.payload.contains("position_ms") &&
+          request.payload.value("playing").isBool(),
+      "Source camera preview requires an assigned port and initial playback state");
+  const auto initial = integer(request.payload, "position_ms", 0, 86400000, 0);
+  const auto sources = request.runtime.value("source_camera_inputs").toArray();
+  require(!sources.isEmpty() && sources.size() <= 128, "Source camera requires a bounded chapter playlist");
+  const auto baseline = take(hm::baseline_config::load()).values;
+  const auto timeout = baseline["hstream_ui"]["runtime_controls"]["stop_timeout_ms"].as<qint64>();
+  const auto state_interval = baseline["workflow"]["poll_interval_ms"].as<int>();
+  require(state_interval > 0, "Source camera requires a positive state interval");
+  require(timeout > 0, "Source camera requires a positive operation timeout");
+  std::vector<std::unique_ptr<PinnedArchive>> owners;
+  QStringList files;
+  const auto directory = request.root / "source-camera-inputs";
+  require(fs::create_directory(directory), "Source camera input directory already exists");
+  for (int i = 0; i < sources.size(); ++i) {
+    require(sources[i].isObject(), "Invalid source camera chapter");
+    const auto source = sources[i].toObject();
+    require(source.size() == 3, "Invalid source camera chapter fields");
+    const auto path = RequiredString(source, "path", 4096);
+    const auto extension = RequiredString(source, "extension", 8);
+    require(
+        extension == ".mp4" || extension == ".m4v" || extension == ".mkv" || extension == ".avi",
+        "Unsupported source camera container");
+    require(request.authorized_media.contains(path), "Source camera chapter is not authorized");
+    auto input = request;
+    input.authorized_media = QJsonArray{path};
+    input.runtime = {{"source_camera", QJsonObject{{"path", path}, {"identity", source.value("identity")}}}};
+    auto owner = std::make_unique<PinnedArchive>(input, "source_camera", true);
+    const auto alias = directory / (std::to_string(i) + extension.toStdString());
+    fs::create_symlink(owner->path(), alias);
+    files.push_back(qs(alias));
+    owners.push_back(std::move(owner));
+  }
+  hm::ui::HighlightWebPreviewConfig config;
+  config.options = take(hm::preview::ReadWebPreviewOptions(baseline));
+  config.run = request.run_id;
+  config.port = preview_port;
+  config.stun_server = config.options.stun_server;
+  config.source_audio = take(hm::gst::ReadPacedPlaybackSettings(baseline));
+  std::string error;
+  auto output = MakeCameraExperimentWebPreviewOutput(config, &error);
+  require(bool(output), error);
+  hm::ui::SourceCameraPlayer player;
+  QString message;
+  require(player.Open(files, 0, timeout, &message, output), message.toStdString());
+  player.Seek(initial);
+  if (request.payload.value("playing").toBool())
+    player.Play();
+  const auto publish = [&](QJsonObject event) {
+    event.insert("version", 1);
+    event.insert("run", text(request.run_id));
+    event.insert("stage", 0);
+    event.insert("generation", 1);
+    std::cout << "HSTREAM_SOURCE_CAMERA " << QJsonDocument(event).toJson(QJsonDocument::Compact).constData()
+              << std::endl;
+  };
+  const auto& o = config.options;
+  publish(
+      {{"kind", "session"},
+       {"presentation",
+        QJsonObject{
+            {"version", 1},
+            {"run", text(request.run_id)},
+            {"stage", 0},
+            {"topology", "1"},
+            {"operation", QString::number(output->PresentationOperation())},
+            {"channel", "program"},
+            {"channels", QJsonArray{"program"}},
+            {"width", int(o.width)},
+            {"height", int(o.height)},
+            {"seek", true},
+            {"receiptLimits",
+             QJsonObject{{"maxFrames", int(o.browser_max_frames)}, {"maxAgeMs", int(o.browser_max_age_ms)}}}}}});
+  std::string incoming;
+  qint64 last_request = 0, pending = 0;
+  auto deadline = std::chrono::steady_clock::now();
+  auto next_state = deadline;
+  while (!interrupted) {
+    const auto state = player.Poll();
+    require(state.error.isEmpty(), state.error.toStdString());
+    const auto now = std::chrono::steady_clock::now();
+    const bool acknowledge = pending && !state.seeking && state.ready;
+    if (acknowledge)
+      next_state = now;
+    require(!pending || now < deadline, "Source camera command timed out");
+    if (now >= next_state) {
+      publish(
+          {{"kind", "state"},
+           {"position_ms", state.position_ms},
+           {"duration_ms", state.duration_ms},
+           {"playing", state.playing},
+           {"seeking", state.seeking},
+           {"ready", state.ready},
+           {"operation", QString::number(output->PresentationOperation())}});
+      next_state = now + std::chrono::milliseconds(state_interval);
+    }
+    if (acknowledge) {
+      publish({{"kind", "ack"}, {"request", pending}, {"status", "ok"}});
+      pending = 0;
+    }
+    pollfd descriptor{STDIN_FILENO, POLLIN, 0};
+    const auto available = ::poll(&descriptor, 1, 10);
+    require(available >= 0 || errno == EINTR, "Source camera command channel failed");
+    if (available <= 0)
+      continue;
+    if (descriptor.revents & (POLLHUP | POLLERR | POLLNVAL))
+      break;
+    if (!(descriptor.revents & POLLIN))
+      continue;
+    char buffer[4096];
+    const auto count = ::read(STDIN_FILENO, buffer, sizeof(buffer));
+    if (count <= 0)
+      break;
+    incoming.append(buffer, count);
+    require(incoming.size() <= 8192, "Source camera command exceeds its bound");
+    while (true) {
+      const auto newline = incoming.find('\n');
+      if (newline == std::string::npos)
+        break;
+      const auto row = incoming.substr(0, newline);
+      incoming.erase(0, newline + 1);
+      QJsonParseError parsed;
+      const auto document = QJsonDocument::fromJson(QByteArray::fromStdString(row), &parsed);
+      require(parsed.error == QJsonParseError::NoError && document.isObject(), "Invalid source camera command");
+      const auto command = document.object();
+      require(
+          command.value("run").toString() == text(request.run_id) && command.value("generation").toInt() == 1,
+          "Source camera command belongs to another run");
+      require(command.contains("request"), "Source camera request sequence is missing");
+      const auto sequence = integer(command, "request", 1, 2147483647, 0);
+      require(sequence > last_request && !pending, "Source camera command ordering changed");
+      const auto action = RequiredString(command, "action", 16);
+      require(command.size() == (action == "seek" ? 5 : 4), "Unexpected source camera command fields");
+      if (action == "play")
+        player.Play();
+      else if (action == "pause")
+        player.Pause();
+      else if (action == "seek") {
+        require(command.contains("position_ms"), "Source camera seek position is missing");
+        player.Seek(integer(command, "position_ms", 0, state.duration_ms - 1, -1));
+      } else
+        throw std::runtime_error("Unsupported source camera command");
+      pending = last_request = sequence;
+      deadline = now + std::chrono::milliseconds(timeout);
+    }
+  }
+  player.Close();
+  output.reset();
+  for (const auto& owner : owners)
+    owner->Verify();
+  fs::remove_all(directory);
+  return {{"closed", true}};
+}
+
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
+  if (request.operation == "source-camera-preview")
+    return source_camera_preview(request);
   if (request.operation == "calibration-failure-diagnose")
     return hm::web::DiagnoseCalibrationFailure(request, [] { return interrupted != 0; });
   if (request.operation == "detector-controls-read") {
@@ -1349,7 +1525,8 @@ int main(int argc, char** argv) {
   try {
     request = hm::web::LoadRequest(argv[2]);
     require(
-        !preview_port || request->operation == "highlight-live-preview" || request->operation == "camera-experiment",
+        !preview_port || request->operation == "highlight-live-preview" || request->operation == "camera-experiment" ||
+            request->operation == "source-camera-preview",
         "Signaling is only available for live highlight or camera preview");
     const auto hash = QCryptographicHash::hash(
                           QJsonDocument(ReadObject(argv[2])).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256)

@@ -9,6 +9,7 @@
 #include <optional>
 #include <vector>
 
+#include "src/apps/hstream-ui/CameraExperimentPreviewOutput.h"
 #include "src/apps/hstream-ui/SourceCameraTrack.h"
 #ifndef HSTREAM_USE_HIP
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
@@ -38,12 +39,17 @@ struct SourceCameraPlayer::Impl {
   bool preroll{false};
   bool seeking{false};
   QElapsedTimer transition;
+  std::shared_ptr<CameraExperimentPreviewOutput> output;
 
   void retire() {
+    if (output)
+      output->RetireSource();
     if (graph)
       gst_element_set_state(graph, GST_STATE_NULL);
+    if (output)
+      output->ReleaseSink();
 #ifndef HSTREAM_USE_HIP
-    if (sink)
+    if (sink && !output)
       hm::gpu_preview::quiesce(sink, 0);
 #endif
     if (bus)
@@ -54,7 +60,7 @@ struct SourceCameraPlayer::Impl {
     bus = nullptr;
     preroll = seeking = false;
     stream_origin = GST_CLOCK_TIME_NONE;
-    status.open = status.ready = false;
+    status.open = status.ready = status.seeking = false;
     status.presented_ns = -1;
   }
   void fail(const QString& error) {
@@ -68,8 +74,9 @@ struct SourceCameraPlayer::Impl {
     if (g_strcmp0(GST_PAD_NAME(pad), "audio_0") == 0) {
       GError* error = nullptr;
       target = gst_parse_bin_from_description(
-          "queue name=camera_audio_input ! decodebin ! audioconvert ! "
-          "audioresample ! autoaudiosink sync=true",
+          self.output
+              ? "queue name=camera_audio_input ! decodebin ! audioconvert ! audioresample ! identity name=camera_audio_output"
+              : "queue name=camera_audio_input ! decodebin ! audioconvert ! audioresample ! autoaudiosink sync=true",
           FALSE,
           &error);
       if (!target || error) {
@@ -83,6 +90,20 @@ struct SourceCameraPlayer::Impl {
             ("%s", error ? error->message : "missing audio elements"));
         g_clear_error(&error);
         return;
+      }
+      if (self.output) {
+        std::string message;
+        auto* audio = self.output->CreateAudioSink(&message);
+        auto* tail = gst_bin_get_by_name(GST_BIN(target), "camera_audio_output");
+        const bool linked = audio && gst_bin_add(GST_BIN(target), audio) && tail && gst_element_link(tail, audio);
+        if (tail)
+          gst_object_unref(tail);
+        if (!linked) {
+          gst_object_unref(target);
+          GST_ELEMENT_ERROR(
+              demux, CORE, MISSING_PLUGIN, ("Cannot create camera audio transport"), ("%s", message.c_str()));
+          return;
+        }
       }
       auto* queue = gst_bin_get_by_name(GST_BIN(target), "camera_audio_input");
       // Encoded audio must buffer ahead of video decoder reorder/preroll. A
@@ -138,6 +159,11 @@ struct SourceCameraPlayer::Impl {
     chapter = index;
     const auto& item = chapters.at(index);
     graph = gst_pipeline_new("source-camera-preview");
+    if (graph && output) {
+      auto* clock = gst_system_clock_obtain();
+      gst_pipeline_use_clock(GST_PIPELINE(graph), clock);
+      gst_object_unref(clock);
+    }
     auto* file = gst_element_factory_make("filesrc", nullptr);
     auto* demux = gst_element_factory_make(item.track.demux, nullptr);
     const bool hevc = item.track.codec == media::VideoCodec::kHevc;
@@ -147,14 +173,18 @@ struct SourceCameraPlayer::Impl {
     decoder = gst_element_factory_make(hevc ? "vah265dec" : "vah264dec", nullptr);
     // VA exports DMABufs directly to EGL/GL. Never negotiate system-memory video.
     auto* convert = gst_element_factory_make("identity", nullptr);
-    sink = gst_element_factory_make("glimagesink", nullptr);
+    sink = output ? nullptr : gst_element_factory_make("glimagesink", nullptr);
     auto* caps = gst_caps_from_string("video/x-raw(memory:DMABuf)");
 #else
     decoder = gst_element_factory_make("nvv4l2decoder", nullptr);
     auto* convert = gst_element_factory_make("nvvideoconvert", nullptr);
-    sink = gst_element_factory_make("hmgpupreviewsink", nullptr);
+    sink = output ? nullptr : gst_element_factory_make("hmgpupreviewsink", nullptr);
     auto* caps = gst_caps_from_string("video/x-raw(memory:NVMM),format=RGBA");
 #endif
+    if (output) {
+      std::string message;
+      sink = output->CreateSink({0, true, true, false, false, false, {}}, &message);
+    }
     auto* filter = gst_element_factory_make("capsfilter", nullptr);
     const std::vector<GstElement*> elements{file, demux, video_input, parser, decoder, convert, filter, sink};
     if (!graph || std::any_of(elements.begin(), elements.end(), [](auto* e) { return !e; })) {
@@ -173,13 +203,17 @@ struct SourceCameraPlayer::Impl {
     g_object_set(video_input, "max-size-buffers", 2U, "max-size-bytes", 0U, "max-size-time", guint64{0}, nullptr);
     g_object_set(filter, "caps", caps, nullptr);
     gst_caps_unref(caps);
-    g_object_set(sink, "sync", TRUE, "async", TRUE, "qos", TRUE, nullptr);
+    g_object_set(sink, "sync", TRUE, "async", TRUE, "qos", TRUE, "enable-last-sample", TRUE, nullptr);
+    if (output) {
+      output->SetGeneration(++generation);
+    } else {
 #ifdef HSTREAM_USE_HIP
-    gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), window);
+      gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), window);
 #else
-    g_object_set(sink, "window-id", window, "channel", "source-camera", "enable-last-sample", TRUE, nullptr);
-    hm::gpu_preview::set_source_geometry(sink, item.track.width, item.track.height);
+      g_object_set(sink, "window-id", window, "channel", "source-camera", "enable-last-sample", TRUE, nullptr);
+      hm::gpu_preview::set_source_geometry(sink, item.track.width, item.track.height);
 #endif
+    }
     g_signal_connect(demux, "pad-added", G_CALLBACK(padAdded), this);
     if (!gst_element_link(file, demux) ||
         !gst_element_link_many(video_input, parser, decoder, convert, filter, sink, nullptr)) {
@@ -205,7 +239,12 @@ SourceCameraPlayer::~SourceCameraPlayer() {
   Close();
 }
 
-bool SourceCameraPlayer::Open(const QStringList& files, quint64 window, qint64 timeout_ms, QString* error) {
+bool SourceCameraPlayer::Open(
+    const QStringList& files,
+    quint64 window,
+    qint64 timeout_ms,
+    QString* error,
+    std::shared_ptr<CameraExperimentPreviewOutput> output) {
   Close();
   auto& s = *impl_;
   const auto fail = [&](const QString& message) {
@@ -214,15 +253,17 @@ bool SourceCameraPlayer::Open(const QStringList& files, quint64 window, qint64 t
       *error = message;
     return false;
   };
-  if (files.isEmpty() || !window || timeout_ms <= 0 || timeout_ms > std::numeric_limits<qint64>::max() / GST_MSECOND)
+  if (files.isEmpty() || (!window && !output) || timeout_ms <= 0 ||
+      timeout_ms > std::numeric_limits<qint64>::max() / GST_MSECOND)
     return fail("Camera preview needs original recordings, a native window and a positive timeout.");
   gst_init(nullptr, nullptr);
 #ifndef HSTREAM_USE_HIP
   gst_registry_scan_path(gst_registry_get(), "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
-  if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements())
+  if (!output && (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()))
     return fail("Camera preview requires a GPU renderer and an X11 display.");
 #endif
   s.window = window;
+  s.output = std::move(output);
   s.timeout_ms = timeout_ms;
   QElapsedTimer probe;
   probe.start();
@@ -252,6 +293,8 @@ void SourceCameraPlayer::Play() {
   if (!s.graph)
     return;
   s.status.playing = true;
+  if (s.output && s.status.ready && !s.seek_ms && !s.seeking)
+    s.output->SetAudioEnabled(true);
   if (s.status.position_ms >= s.status.duration_ms)
     Seek(0);
   if (s.status.ready && !s.seek_ms && !s.seeking &&
@@ -261,6 +304,8 @@ void SourceCameraPlayer::Play() {
 void SourceCameraPlayer::Pause() {
   auto& s = *impl_;
   s.status.playing = false;
+  if (s.output)
+    s.output->SetAudioEnabled(false);
   if (s.graph && gst_element_set_state(s.graph, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE)
     s.fail("Could not pause the camera recording.");
 }
@@ -268,6 +313,10 @@ bool SourceCameraPlayer::Redraw() {
   auto& s = *impl_;
   if (!s.sink || !s.status.ready || s.status.playing || s.seeking || s.seek_ms)
     return false;
+  if (s.output) {
+    s.output->Redraw();
+    return true;
+  }
 #ifdef HSTREAM_USE_HIP
   gst_video_overlay_expose(GST_VIDEO_OVERLAY(s.sink));
   return true;
@@ -284,6 +333,14 @@ void SourceCameraPlayer::Seek(qint64 position_ms) {
   while (index + 1 < s.chapters.size() && s.chapters[index + 1].start_ms <= target)
     ++index;
   s.seek_ms = target;
+  s.status.seeking = true;
+  if (s.output) {
+    s.output->SetAudioEnabled(false);
+    if (gst_element_set_state(s.graph, GST_STATE_PAUSED) == GST_STATE_CHANGE_FAILURE) {
+      s.fail("Could not pause the camera before seeking.");
+      return;
+    }
+  }
   s.status.position_ms = target;
   if (index != s.chapter)
     s.openChapter(index);
@@ -293,6 +350,7 @@ void SourceCameraPlayer::Close() {
   impl_->chapters.clear();
   impl_->status = {};
   impl_->seek_ms.reset();
+  impl_->output.reset();
 }
 SourceCameraPlayer::Status SourceCameraPlayer::GetStatus() const {
   return impl_->status;
@@ -348,11 +406,18 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
     return s.status;
   }
   if (s.status.ready && !s.seeking && s.seek_ms) {
+    if (s.output && !settled) {
+      s.status.seeking = true;
+      return s.status;
+    }
     const auto target = *s.seek_ms;
     s.seek_ms.reset();
     const auto& item = s.chapters[s.chapter];
+    if (s.output)
+      s.output->SetGeneration(++s.generation);
 #ifndef HSTREAM_USE_HIP
-    hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
+    else
+      hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
 #endif
     s.status.presented_ns = -1;
     const auto seek = [&] {
@@ -382,7 +447,10 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
         return s.status;
       }
       // Any picture from the positioning seek belongs to the retired decoder.
-      hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
+      if (s.output)
+        s.output->SetGeneration(++s.generation);
+      else
+        hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
       if (!seek()) {
         s.fail("Camera recording rejected the seek after decoder restart.");
         return s.status;
@@ -402,6 +470,8 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
       s.status.position_ms = s.status.duration_ms;
     }
   } else if (s.status.ready && !s.seeking && !s.seek_ms) {
+    if (s.output)
+      s.output->SetAudioEnabled(s.status.playing);
     if (s.status.playing && gst_element_set_state(s.graph, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE)
       s.fail("Could not resume the camera recording.");
     gint64 position = 0;
@@ -413,22 +483,31 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
               std::max<qint64>(0, position - qint64(s.stream_origin)) / qint64(GST_MSECOND));
   }
   if (s.sink && s.status.ready && !s.seeking && !s.seek_ms) {
+    if (s.output) {
+      std::uint64_t generation = 0;
+      GstClockTime pts = GST_CLOCK_TIME_NONE;
+      if (s.output->Presented(&generation, &pts) && generation == s.generation)
+        s.status.presented_ns = pts;
+    } else {
 #ifdef HSTREAM_USE_HIP
-    GstSample* sample = nullptr;
-    g_object_get(s.sink, "last-sample", &sample, nullptr);
-    if (sample) {
-      auto* buffer = gst_sample_get_buffer(sample);
-      if (buffer && GST_BUFFER_PTS_IS_VALID(buffer))
-        s.status.presented_ns = GST_BUFFER_PTS(buffer);
-      gst_sample_unref(sample);
-    }
+      GstSample* sample = nullptr;
+      g_object_get(s.sink, "last-sample", &sample, nullptr);
+      if (sample) {
+        auto* buffer = gst_sample_get_buffer(sample);
+        if (buffer && GST_BUFFER_PTS_IS_VALID(buffer))
+          s.status.presented_ns = GST_BUFFER_PTS(buffer);
+        gst_sample_unref(sample);
+      }
 #else
-    std::uint64_t generation = 0;
-    GstClockTime pts = GST_CLOCK_TIME_NONE;
-    if (hm::gpu_preview::presented_frame(s.sink, &generation, &pts) && generation == s.generation)
-      s.status.presented_ns = pts;
+      std::uint64_t generation = 0;
+      GstClockTime pts = GST_CLOCK_TIME_NONE;
+      if (hm::gpu_preview::presented_frame(s.sink, &generation, &pts) && generation == s.generation)
+        s.status.presented_ns = pts;
 #endif
+    }
   }
+  s.status.seeking = s.preroll || s.seeking || s.seek_ms.has_value() ||
+      (s.graph && gst_element_get_state(s.graph, nullptr, nullptr, 0) != GST_STATE_CHANGE_SUCCESS);
   return s.status;
 }
 } // namespace hm::ui

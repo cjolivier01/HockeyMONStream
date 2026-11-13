@@ -439,6 +439,12 @@ cc_test(
 )
 
 cc_library(
+    name = "camera_preview_output",
+    hdrs = ["CameraExperimentPreviewOutput.h"],
+    deps = ["//src/apps/apps-common:rink_mask_image", "@gstreamer"],
+)
+
+cc_library(
     name = "camera_experiment_web_preview",
     srcs = ["CameraExperimentWebPreview.cpp"],
     hdrs = ["CameraExperimentWebPreview.h"],
@@ -451,6 +457,7 @@ cc_library(
         "//src/apps/apps-common:preview_overlay_scene_data",
         "//src/apps/apps-common:web_preview_target",
         "//src/apps/apps-common:webrtc_signaling",
+        "//src/apps/apps-common:webrtc_endpoint",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],
@@ -459,12 +466,13 @@ cc_library(
 cc_library(
     name = "camera_experiment_preview",
     srcs = ["CameraExperimentPreview.cpp", "CameraExperimentPreviewOutput.cpp", "CameraExperimentPreviewWorker.cpp"],
-    hdrs = ["CameraExperimentPreview.h", "CameraExperimentPreviewOutput.h", "CameraExperimentPreviewWorker.h"],
+    hdrs = ["CameraExperimentPreview.h", "CameraExperimentPreviewWorker.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
     deps = [
+        ":camera_preview_output",
         "//src/apps/apps-common:rink_mask_image",
         "//src/libs/common:preview_overlay_meta",
         ":camera_experiment_source",
@@ -852,6 +860,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/common:paced_playback",
         "//src/apps/hstream-cli:web_preview_options",
         "//src/apps/apps-common:web_preview_target",
         "//src/apps/apps-common:webrtc_signaling",
@@ -1599,6 +1608,9 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":source_camera_player",
+        ":camera_experiment_web_preview",
+        "//src/libs/common:paced_playback_config",
         "//src/libs/common:runtime_control_config",
         ":source_camera_track",
         "//src/libs/stitching:calibration_failure_protocol",
@@ -1803,7 +1815,7 @@ cc_library(
     srcs = ["SourceCameraPlayer.cpp"],
     hdrs = ["SourceCameraPlayer.h"],
     copts = COMMON_COPTS,
-    deps = [":source_camera_track", "@qt//:qt_core", "@gstreamer"] + select({
+    deps = [":source_camera_track", ":camera_preview_output", "@qt//:qt_core", "@gstreamer"] + select({
         "//:use_hip": [],
         "//conditions:default": ["//src/apps/apps-common:hm_gpu_preview"],
     }),
