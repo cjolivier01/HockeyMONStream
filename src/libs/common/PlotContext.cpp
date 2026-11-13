@@ -1,6 +1,8 @@
 #include "hstream/src/libs/common/PlotContext.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <iostream>
 #include <stdexcept>
 
@@ -84,12 +86,35 @@ void PlotContext::plot_rect(
 }
 
 void PlotContext::plot_line(const Point& from, const Point& to, int thickness, const ColorT& color) {
+  // DeepStream's line coordinates are unsigned. Camera tracking guides can
+  // legitimately extend beyond the source canvas; converting a negative
+  // endpoint directly wraps it into an enormous, invalid preview coordinate.
+  // Clip the segment before encoding the shared Qt/browser drawing metadata.
+  if (!frame_meta_->source_frame_width || !frame_meta_->source_frame_height || thickness <= 0 ||
+      !std::isfinite(from.x) || !std::isfinite(from.y) || !std::isfinite(to.x) || !std::isfinite(to.y))
+    return;
+  const double left = from.x, top = from.y;
+  const double dx = double(to.x) - left, dy = double(to.y) - top;
+  const double right = frame_meta_->source_frame_width - 1, bottom = frame_meta_->source_frame_height - 1;
+  double enter = 0, leave = 1;
+  auto clip = [&](double direction, double distance) {
+    if (direction == 0)
+      return distance >= 0;
+    const double crossing = distance / direction;
+    if (direction < 0)
+      enter = std::max(enter, crossing);
+    else
+      leave = std::min(leave, crossing);
+    return enter <= leave;
+  };
+  if (!clip(-dx, left) || !clip(dx, right - left) || !clip(-dy, top) || !clip(dy, bottom - top))
+    return;
   std::pair<NvDsDisplayMeta*, size_t> meta = allocate_display_meta(PLOT_TYPE::LINE);
   NvOSD_LineParams& line_params = meta.first->line_params[meta.second];
-  line_params.x1 = from.x;
-  line_params.y1 = from.y;
-  line_params.x2 = to.x;
-  line_params.y2 = to.y;
+  line_params.x1 = std::clamp(left + enter * dx, 0.0, right);
+  line_params.y1 = std::clamp(top + enter * dy, 0.0, bottom);
+  line_params.x2 = std::clamp(left + leave * dx, 0.0, right);
+  line_params.y2 = std::clamp(top + leave * dy, 0.0, bottom);
   line_params.line_width = thickness;
   line_params.line_color = to_color_params(color);
 }
