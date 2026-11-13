@@ -30,6 +30,17 @@ void TransportMonitor::Recover() {
   presented_.reset();
 }
 
+bool TransportMonitor::ResetMediaEpoch() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!channel_.empty())
+    return false;
+  frames_.ResetMediaEpoch();
+  events_.clear();
+  history_.Clear();
+  presented_.reset();
+  return true;
+}
+
 bool TransportMonitor::Select(const std::string& channel, std::uint64_t operation) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!operation || operation < operation_ || channel.size() > 64)

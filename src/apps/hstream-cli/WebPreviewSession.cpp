@@ -578,6 +578,8 @@ absl::Status WebPreviewSession::DetachSeekSources() {
   // FLUSH_START has released old buffers. Reset only this small encoder path.
   if (gst_element_set_state(target_->bin(), GST_STATE_READY) == GST_STATE_CHANGE_FAILURE)
     return absl::InternalError("Could not reset browser preview for seek");
+  if (!target_->ResetMediaEpoch())
+    return absl::InternalError("Could not reset stopped browser preview clock");
   for (auto it = channels_.begin(); it != channels_.end();) {
     if (it->first.rfind("source", 0) != 0) {
       ++it;

@@ -33,6 +33,9 @@ class TransportMonitor {
   // A newly connected transport must start from a newly admitted IDR; frames
   // encoded while its endpoint was gated did not establish decoder references.
   void Recover();
+  // Caller must stop and drain the encoder/payloader first. Requires a closed
+  // route and retains sequence/operation/peer admission fences.
+  bool ResetMediaEpoch();
   // Called after closing route gates, before opening a replacement. Empty
   // channel disables admission immediately, including delayed encoder output.
   bool Select(const std::string& channel, std::uint64_t operation);

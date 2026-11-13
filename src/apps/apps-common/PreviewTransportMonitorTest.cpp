@@ -138,5 +138,27 @@ int main(int argc, char** argv) {
       events.size() == 2 && events.back().frame.sequence == 33 &&
           events.back().kind == hm::preview::TransportEvent::Kind::kPacketized,
       "Mixed-list delivery lost its accepted IDR identity");
+  hm::preview::TransportMonitor epochs(4, 8, 8);
+  auto before = identity("program", 1, 1);
+  before.presentation_pts = 60 * GST_SECOND;
+  passed &= expect(
+      epochs.SetPeer(1) && epochs.Select("program", 1) && epochs.Admit(&before).accepted &&
+          encode(epochs, 60000, true) && packet(epochs, 60000) && !epochs.ResetMediaEpoch(),
+      "Active preview epoch reset was admitted");
+  passed &= expect(
+      epochs.Select("", 2) && epochs.ResetMediaEpoch() && epochs.TakeEvents().empty() && !packet(epochs, 60000) &&
+          epochs.SetPeer(2) && epochs.Select("program", 3) && !epochs.Admit(&before).accepted,
+      "Stopped media reset retained old output or lost identity fences");
+  auto after = identity("program", 3, 2);
+  after.presentation_pts = 0;
+  passed &= expect(
+      epochs.Admit(&after).force_keyframe && !encode(epochs, 0, false),
+      "New media clock was rejected or old decoder references survived reset");
+  after.sequence = 3;
+  after.presentation_pts = 33 * GST_MSECOND;
+  passed &= expect(
+      epochs.Admit(&after).force_keyframe && encode(epochs, 33, true) && packet(epochs, 33) && !epochs.SetPeer(1) &&
+          !epochs.Select("program", 1),
+      "Replacement media did not resume through exact encoded/RTP boundaries");
   return passed ? 0 : 1;
 }
