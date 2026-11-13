@@ -20,7 +20,11 @@ int main(int argc, char** argv) {
       "python3",
       "HM_PYTHON",
       "PYTHONPATH",
+      "Python.h",
+      "pybind11",
+      "Py_Initialize",
       "setup_pretrained_assets.py",
+      "hstream-workflow",
       "hmlib.cli",
       "hmorientation",
       "hmcreate_control_points",
@@ -29,6 +33,8 @@ int main(int argc, char** argv) {
   bool ok = argc > 1;
   bool audited_int8_launcher = false;
   bool ui_binary_python = false;
+  bool audited_workflow_launcher = false;
+  bool ui_binary_workflow = false;
   bool audited_backend_module = false;
   bool ui_binary_backend_module = false;
   for (int i = 1; i < argc; ++i) {
@@ -74,6 +80,41 @@ int main(int argc, char** argv) {
               }
             }
           }
+          if (token == "hstream-workflow") {
+            // The Stitching Experiments pane resolves the distributed workflow
+            // controller, whose installed launcher execs Python. Audit those
+            // exact lines; any other use is a new launcher and must fail.
+            // Resolution is the choke point this scan can hold: once the path
+            // is in a variable, a start() call naming that variable carries no
+            // token. WorkflowSetupDialog.cpp runs the resolved launcher that
+            // way for `setup --request`. Keep both execution sites listed in
+            // AGENTS.md, because only the two lines below are enforceable here.
+            if (ends_with(path, "src/apps/hstream-ui/StitchingWorkflow.cpp")) {
+              if (trimmed(line) == "const QString source = QDir(working_directory).filePath(\"scripts/hstream-workflow\");" ||
+                  trimmed(line) ==
+                      "s.launcher = QFileInfo(source).isExecutable() ? source : QStandardPaths::findExecutable(\"hstream-workflow\");") {
+                audited_workflow_launcher = true;
+                continue;
+              }
+              // The submitted plan's temporary file only borrows the name.
+              if (trimmed(line) ==
+                  "auto temporary = std::make_shared<QTemporaryFile>(QDir::tempPath() + \"/hstream-workflow-XXXXXX.json\");")
+                continue;
+            }
+            // The UI binary embeds those literals. Keep every other native
+            // source and binary in scope for this token.
+            if (elf && ends_with(path, "src/apps/hstream-ui/hstream-ui")) {
+              ui_binary_workflow = true;
+              continue;
+            }
+            // Packaging stages the launcher for operators who deploy a
+            // workflow registry. Installing a script is not running one.
+            if (ends_with(path, "scripts/make_deb.sh") &&
+                (trimmed(line) ==
+                     "install -m 0755 \"${TOPDIR}/scripts/hstream-workflow\" \"${STAGING}${INSTALL_PREFIX}/scripts/hstream-workflow\"" ||
+                 trimmed(line) == "ln -s \"${INSTALL_PREFIX}/scripts/hstream-workflow\" \"${STAGING}/usr/bin/hstream-workflow\""))
+              continue;
+          }
           if (token == "python3") {
             // Explicit source-checkout INT8 preparation is offline. Audit the
             // one launcher exactly; every other UI source stays in scope.
@@ -103,6 +144,10 @@ int main(int argc, char** argv) {
   }
   if (ui_binary_python && !audited_int8_launcher) {
     std::cerr << "FAIL: UI interpreter literal requires the audited offline INT8 launcher source\n";
+    ok = false;
+  }
+  if (ui_binary_workflow && !audited_workflow_launcher) {
+    std::cerr << "FAIL: UI workflow launcher literal requires the audited controller resolution source\n";
     ok = false;
   }
   if (ui_binary_backend_module && !audited_backend_module) {
