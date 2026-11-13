@@ -1645,6 +1645,8 @@ cc_test(
     name = "web_job_spec_test",
     srcs = ["WebJobSpecTest.cpp"],
     copts = COMMON_COPTS,
+    linkopts = ["-Wl,--wrap=fsync", "-Wl,--wrap=read"],
+    linkstatic = True,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":web_job_spec", "@qt//:qt_core"],
 )
