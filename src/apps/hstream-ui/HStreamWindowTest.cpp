@@ -5692,6 +5692,10 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QApplication::processEvents();
     QTest::qWait(10);
   }
+  const QString discovery_analysis =
+      HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture");
+  const QString discovery_cause =
+      discovery_analysis.section("\nReported cause\n", 1, 1).section("\n\nWhat to try\n", 0, 0);
   const bool program_discovery_visible =
       expect(dialog->isVisible(), "Program playback should show calibration discovered by the running pipeline") &&
       expect(
@@ -5701,11 +5705,10 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
           window->logText().contains("running pipeline discovered stitching calibration"),
           "Program playback should log why it opened the calibration progress popup") &&
       expect(
-          HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
-                  .contains("FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent") &&
-              !HStreamWindowTestAccess::calibrationFailureAnalysis(window, "runtime-discovery fixture")
-                   .contains("unrelated pre-calibration runtime status"),
-          "Runtime-discovered calibration must preserve stderr diagnostics received before its first milestone");
+          discovery_cause ==
+              "Skipping pooled stitching calibration: FAILED_PRECONDITION: OpenCV transform has unsafe canvas extent" &&
+              discovery_analysis.contains("INVALID_ARGUMENT: unrelated pre-calibration runtime status"),
+          "Runtime-discovered calibration must select its pre-milestone cause while retaining earlier diagnostics");
   for (int i = 0; i < 400 &&
        (dialog->isVisible() ||
         !window->logText().contains("one-pass stitching calibration complete; continuous program playback running"));
