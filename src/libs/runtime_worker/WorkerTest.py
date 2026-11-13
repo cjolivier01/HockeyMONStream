@@ -249,6 +249,34 @@ while not os.path.exists('descendant'): time.sleep(.01)
         )
         self.finish()
 
+    def test_fifo_reads_and_logs_cannot_block_supervision(self):
+        fifo = self.workspace / "fifo"
+        os.mkfifo(fifo)
+        self.start()
+        response = self.call("inspect", path=str(fifo), maximum=1024)
+        self.assertFalse(response["ok"], response)
+        response = self.call(
+            "launch",
+            spec={
+                "id": uuid.uuid4().hex,
+                "argv": [self.python, "-c", "print('must not run')"],
+                "cwd": str(self.workspace),
+                "environment": {},
+                "timeout_ms": 1000,
+                "stdout": str(fifo),
+                "stderr": str(self.workspace / "err"),
+            },
+        )
+        self.assertFalse(response["ok"], response)
+        self.finish()
+        result = subprocess.run(
+            [str(WORKER), "--request", str(fifo)],
+            capture_output=True,
+            timeout=2,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 125)
+
     def test_missing_retirement_receipt_never_establishes_success(self):
         self.start()
         task = self.launch("import time; time.sleep(100)")

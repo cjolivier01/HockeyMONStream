@@ -89,7 +89,7 @@ void WriteAll(int descriptor, const std::string& value) {
   }
 }
 std::string Read(const fs::path& path, size_t maximum = kDocumentLimit, bool snapshot = false) {
-  Fd fd(::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
+  Fd fd(::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK));
   struct stat info {};
   Require(
       ::fstat(fd.value, &info) == 0 && S_ISREG(info.st_mode) && info.st_size >= 0 &&
@@ -186,7 +186,7 @@ Json File(
     const std::function<void()>& checkpoint,
     Fd* retained = nullptr,
     std::string* contents = nullptr) {
-  Fd fd(::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
+  Fd fd(::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK));
   struct stat before {
   }, after{}, named{};
   Require(
@@ -675,8 +675,8 @@ class Worker {
     Require(::pipe2(pipes, O_CLOEXEC) == 0, "Cannot create native command pipe");
     Fd input(pipes[0]);
     task.pipe = Fd(pipes[1]);
-    Fd out(::open(output.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600));
-    Fd err(::open(errors.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600));
+    Fd out(::open(output.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
+    Fd err(::open(errors.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
     for (const int descriptor : {out.value, err.value}) {
       struct stat info {};
       Require(::fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode), "Native logs require regular files");
