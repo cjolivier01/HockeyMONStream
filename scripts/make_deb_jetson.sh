@@ -221,6 +221,7 @@ bazelisk --batch --output_base="${output_base}" build \
   //src/apps/hstream-assets:hstream-assets \
   //src/apps/hstream-job:hstream-job \
   //src/apps/hstream-process-guard:hstream-process-guard \
+  //src/apps/hstream-runtime-worker:hstream-runtime-worker \
   //src/apps/hstream-finalize:hstream-finalize \
   //src/apps/hstream-calibration-export:hstream-calibration-export \
   //src/apps/hstream-prepared-model-validate:hstream-prepared-model-validate \

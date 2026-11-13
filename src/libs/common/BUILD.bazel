@@ -643,7 +643,7 @@ cc_test(
     srcs = ["ProcessGuardTest.cpp"],
     args = ["$(location //src/apps/hstream-process-guard:hstream-process-guard)"],
     data = ["//src/apps/hstream-process-guard:hstream-process-guard"],
-    deps = [":game_operation_owner"],
+    deps = [":game_operation_owner", ":process_guard"],
 )
 
 cc_library(

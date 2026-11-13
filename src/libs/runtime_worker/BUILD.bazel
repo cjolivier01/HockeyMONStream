@@ -1,0 +1,18 @@
+INCLUDE_PREFIX = "hstream/src/libs/runtime_worker"
+
+cc_library(
+    name = "runtime_worker",
+    srcs = ["Worker.cpp"],
+    hdrs = ["Json.h", "Worker.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/common:process_guard", "@json_glib", "@glib"],
+    linkopts = ["-lcurl"],
+)
+
+py_test(
+    name = "runtime_worker_test",
+    srcs = ["WorkerTest.py"],
+    main = "WorkerTest.py",
+    data = ["//src/apps/hstream-runtime-worker:hstream-runtime-worker"],
+)

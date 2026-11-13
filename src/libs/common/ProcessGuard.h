@@ -30,5 +30,6 @@ absl::StatusOr<int> Run(
     int64_t parent_pid,
     int64_t grace_ms,
     int64_t poll_ms,
-    const std::vector<std::string>& command);
+    const std::vector<std::string>& command,
+    int executable_descriptor = -1);
 } // namespace hm::process_guard

@@ -1,0 +1,6 @@
+cc_binary(
+    name = "hstream-runtime-worker",
+    srcs = ["main.cpp"],
+    visibility = ["//visibility:public"],
+    deps = ["//src/libs/runtime_worker:runtime_worker"],
+)
