@@ -233,6 +233,7 @@ class WebOutput final : public CameraExperimentPreviewOutput {
       return;
     audio_enabled_ = enabled;
     if (audio_bin_) {
+      audio_primed_ = false;
       gst_element_set_state(audio_bin_, GST_STATE_READY);
       if (enabled)
         gst_element_sync_state_with_parent(audio_bin_);
@@ -254,6 +255,7 @@ class WebOutput final : public CameraExperimentPreviewOutput {
     changed_.notify_all();
     if (audio_bin_) {
       audio_enabled_ = false;
+      audio_primed_ = false;
       gst_element_set_state(audio_bin_, GST_STATE_READY);
     }
   }
@@ -398,16 +400,18 @@ class WebOutput final : public CameraExperimentPreviewOutput {
       gst_element_sync_state_with_parent(audio_bin_);
       gst_app_src_set_caps(GST_APP_SRC(audio_input_), gst_sample_get_caps(sample));
       gst_app_src_push_buffer(GST_APP_SRC(audio_input_), buffer);
+      audio_primed_ = true;
     }
     gst_sample_unref(sample);
     return GST_FLOW_OK;
   }
   void PrimeSilentAudio() {
-    if (!audio_input_ || audio_enabled_)
+    if (!audio_input_ || (audio_enabled_ && audio_primed_))
       return;
-    // SDP uses actual encoded caps for both tracks, including an initially
-    // paused video. Bounded silence keeps Opus negotiated while source audio
-    // is paused; it never advances the recording or retains stale PCM.
+    // SDP requires encoded caps on every advertised track. Prime once even
+    // while playing: a valid source or chapter may contain no audio at all.
+    // While paused, bounded silence keeps Opus negotiated without advancing
+    // the recording or retaining stale PCM.
     const auto& options = config_.options;
     const auto frames = gst_util_uint64_scale(48000, options.rate_denominator, options.rate_numerator);
     auto* clock = gst_element_get_clock(graph_);
@@ -426,6 +430,7 @@ class WebOutput final : public CameraExperimentPreviewOutput {
     gst_caps_unref(caps);
     gst_element_sync_state_with_parent(audio_bin_);
     gst_app_src_push_buffer(GST_APP_SRC(audio_input_), buffer);
+    audio_primed_ = true;
   }
   static bool Fail(std::string* error, const char* message) {
     if (error)
@@ -563,6 +568,7 @@ class WebOutput final : public CameraExperimentPreviewOutput {
   GstElement *graph_{nullptr}, *appsrc_{nullptr}, *sink_{nullptr};
   GstElement *audio_bin_{nullptr}, *audio_input_{nullptr};
   bool audio_enabled_{false};
+  bool audio_primed_{false};
   GstPad* route_{nullptr};
   std::unique_ptr<hm::preview::WebPreviewTarget> target_;
   std::shared_ptr<hm::preview::WebPreviewObserver> observer_;
