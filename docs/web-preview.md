@@ -508,6 +508,13 @@ The version-1 optional metadata protocol is:
   `requestVideoFrameCallback` RTP metadata to a signaled packetized identity.
   `ontrack`, `playing`, or a successful credit acknowledgment are insufficient.
 
+Outstanding batches share the transport monitor's `web_preview.pending_events`
+budget. Each accepted acknowledgment releases only the oldest exact batch's
+event count. A network round trip therefore does not suppress intervening frame
+receipts while credit remains. Exhaustion discards bounded metadata until credit
+returns; peer retirement clears all credit. This queue contains metadata only
+and does not retain video frames or establish presentation.
+
 Unsigned 64-bit identities/timestamps use decimal strings to avoid JavaScript
 number truncation; 32-bit RTP fields and the signed stage use JSON integers.
 Receipts are bounded to 4096 bytes; the optional connection's overall incoming
@@ -521,8 +528,8 @@ parity remain separate gates; preserve their explicit limits.
 `web_preview_observer_test` checks history after marker retirement, loss/overflow,
 RTP wrap, exact 64-bit identities, strict receipts, Render off, peer retirement
 and reconnect recovery. `web_preview_signaling_test` connects real Soup
-WebSocket clients to the production handlers, checks one outstanding metadata
-batch, delegated replacement ordering and removal of the single drain source
+WebSocket clients to the production handlers, checks a bounded outstanding
+event window, ordered credit, delegated replacement ordering and removal of the single drain source
 on stop. Its frame identities and receipts are synthetic; it is a signaling
 ownership test, not browser decoding qualification.
 

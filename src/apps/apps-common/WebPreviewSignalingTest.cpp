@@ -198,12 +198,12 @@ int main(int argc, char** argv) {
     pump([] { return false; }, 6);
   }
   check(
-      first.messages.size() == 1 && observer->dropped_events() >= 40,
+      first.messages.size() == 4 && observer->dropped_events() == 34,
       "Unacknowledged client grew the outgoing metadata queue");
   first.Send(envelope("preview-frames-ack", peer) + ",\"batch\":\"1\"}");
   pump([] { return false; }, 20);
   deliver(*monitor, ++last_sequence);
-  check(pump([&] { return first.messages.size() == 2; }), "Acknowledgment did not restore one batch of credit");
+  check(pump([&] { return first.messages.size() == 5; }), "Acknowledgment did not restore one batch of credit");
   first.Send(receipt(last_sequence, peer));
   check(pump([&] { return monitor->counters().presented == 1; }), "Actual WebSocket handler rejected exact receipt");
   deliver(*monitor, ++last_sequence);

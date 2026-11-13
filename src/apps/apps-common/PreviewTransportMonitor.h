@@ -50,6 +50,9 @@ class TransportMonitor {
   std::optional<PacketFrame> Presented(const PacketFrame& receipt);
   std::optional<PacketFrame> TakePresented();
   TransportCounters counters() const;
+  std::size_t event_capacity() const {
+    return event_capacity_;
+  }
 
  private:
   void Push(TransportEvent event);

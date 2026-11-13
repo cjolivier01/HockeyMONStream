@@ -6,8 +6,10 @@
 #include <json-glib/json-glib.h>
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <memory>
+#include <utility>
 
 namespace hm::preview {
 
@@ -18,8 +20,9 @@ struct WebPreviewObserverConfig {
 };
 
 // Mutations belong to the signaling context. Its single periodic source
-// polls the monitor; streaming threads never schedule context work. At most one
-// frame batch awaits acknowledgment, bounding Soup's outgoing metadata backlog.
+// polls the monitor; streaming threads never schedule context work. Outstanding
+// batches share the monitor's configured event budget, so ordinary network RTT
+// does not discard the receipts needed to expose decoded video.
 class WebPreviewObserver {
  public:
   WebPreviewObserver(std::shared_ptr<TransportMonitor> monitor, WebPreviewObserverConfig config);
@@ -49,7 +52,9 @@ class WebPreviewObserver {
   bool Matches(JsonObject* object) const;
   std::shared_ptr<TransportMonitor> monitor_;
   const WebPreviewObserverConfig config_;
-  std::uint64_t peer_{0}, next_batch_{0}, outstanding_batch_{0}, dropped_events_{0};
+  std::uint64_t peer_{0}, next_batch_{0}, dropped_events_{0};
+  std::deque<std::pair<std::uint64_t, std::size_t>> outstanding_batches_;
+  std::size_t outstanding_events_{0};
   std::uint64_t rejected_messages_{0};
   std::atomic<std::uint64_t> acknowledged_batches_{0};
   bool active_{false};
