@@ -97,10 +97,18 @@ int main(int argc, char** argv) {
       presented && presented->source_pts == 3600 * GST_SECOND + GST_MSECOND && !observer.TakePresented(),
       "Presented receipt lost native source identity or was consumed twice");
   for (std::uint64_t sequence = 2; sequence < 10; ++sequence) {
-    passed &= expect(deliver(*monitor, sequence) && !observer.Poll(), "Slow metadata reader grew outgoing backlog");
+    passed &= expect(deliver(*monitor, sequence), "Delayed-credit frame failed");
+    const auto pending = observer.Poll();
+    passed &= expect(
+        pending.has_value() == (sequence <= 4),
+        "Network RTT discarded receipts before the configured event window filled, or exceeded its bound");
+    if (pending)
+      passed &= expect(
+          pending->find("\"sequence\":\"" + std::to_string(sequence) + "\"") != std::string::npos,
+          "Delayed-credit batch omitted its current frame");
   }
   passed &= expect(
-      observer.dropped_events() == 16 && monitor->counters().history_evicted == 5 &&
+      observer.dropped_events() == 10 && monitor->counters().history_evicted == 5 &&
           handle(observer, receipt(2)) == Message::kRejected && handle(observer, receipt(9)) == Message::kPresented,
       "Bounded history did not evict old frames or retain latest receipt");
   const auto presentations_before_ack = monitor->counters().presented;
@@ -119,16 +127,28 @@ int main(int argc, char** argv) {
           batch->find("\"sequence\":\"10\"") == std::string::npos,
       "Frame batch budget did not retain latest events");
   passed &= expect(
+      handle(observer, base("preview-frames-ack") + ",\"batch\":\"5\"}") == Message::kRejected &&
+          handle(observer, base("preview-frames-ack") + ",\"batch\":\"2\"}") == Message::kAcknowledged &&
+          handle(observer, base("preview-frames-ack") + ",\"batch\":\"3\"}") == Message::kAcknowledged &&
+          handle(observer, base("preview-frames-ack") + ",\"batch\":\"4\"}") == Message::kAcknowledged,
+      "Outstanding batch credit was not ordered and exact");
+  passed &= expect(
+      handle(observer, base("preview-frames-ack") + ",\"batch\":\"4\"}") == Message::kRejected,
+      "Duplicate credit was accepted");
+  passed &= expect(
       observer.Retire(2) && !observer.Retire(1) && !observer.Poll() &&
           handle(observer, receipt(12)) == Message::kRejected && !observer.TakePresented(),
       "Peer retirement preserved events or receipt before endpoint replacement");
   passed &= expect(
       handle(observer, base("preview-frames-ack") + ",\"batch\":\"2\"}") == Message::kRejected &&
-          observer.acknowledged_batches() == 1,
+          observer.acknowledged_batches() == 4,
       "Retired peer refreshed receiver liveness");
   passed &= expect(
       monitor->SetPeer(2) && observer.Activate(2) && !observer.Activate(1) && deliver(*monitor, 13),
       "Replacement observer could not admit fresh IDR");
+  passed &= expect(
+      handle(observer, base("preview-frames-ack", 2) + ",\"batch\":\"5\"}") == Message::kRejected,
+      "Replacement retained the previous peer's outstanding credit");
   monitor->Recover();
   passed &= expect(handle(observer, receipt(13, 2)) == Message::kRejected, "Reconnect retained pre-recovery history");
   passed &= expect(
@@ -154,5 +174,20 @@ int main(int argc, char** argv) {
   passed &= expect(
       deliver(*monitor, wrapped, 3) && handle(observer, receipt(wrapped, 2, 3)) == Message::kPresented,
       "RTP timestamp wrap lost exact identity");
+  auto sparse_monitor = std::make_shared<TransportMonitor>(4, 8, 3);
+  WebPreviewObserver sparse(sparse_monitor, {{"test-run", 0, 9007199254740993ULL}, 10, 3});
+  passed &= expect(
+      sparse.Retire(1) && sparse_monitor->SetPeer(1) && sparse.Activate(1) && sparse_monitor->Select("program", 1),
+      "Sparse observer binding failed");
+  for (std::uint64_t sequence = 1; sequence <= 4; ++sequence) {
+    passed &= expect(deliver(*sparse_monitor, sequence), "Sparse frame failed");
+    passed &= expect(
+        sparse.Poll().has_value() == (sequence <= 3),
+        "Sparse batches did not reserve full capacity, including the final partial credit");
+  }
+  passed &= expect(
+      handle(sparse, base("preview-frames-ack") + ",\"batch\":\"1\"}") == Message::kAcknowledged &&
+          deliver(*sparse_monitor, 5) && sparse.Poll().has_value() && deliver(*sparse_monitor, 6) && !sparse.Poll(),
+      "Sparse acknowledgment did not restore exactly its reserved capacity");
   return passed ? 0 : 1;
 }

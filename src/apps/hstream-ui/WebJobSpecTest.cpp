@@ -1,4 +1,6 @@
 #include "src/apps/hstream-ui/WebJobSpec.h"
+#include <sys/stat.h>
+#include <unistd.h>
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QFile>
@@ -9,6 +11,17 @@
 
 namespace fs = std::filesystem;
 namespace {
+bool finalize_timestamp_on_sync = false;
+bool mutate_timestamp_on_read = false;
+void change_timestamp(int fd) {
+  struct stat info {};
+  if (::fstat(fd, &info) != 0)
+    throw std::runtime_error("Cannot inspect timestamp fixture");
+  struct timespec times[] = {info.st_atim, info.st_mtim};
+  ++times[1].tv_sec;
+  if (::futimens(fd, times) != 0)
+    throw std::runtime_error("Cannot finalize timestamp fixture");
+}
 void require(bool value, const char* reason) {
   if (!value)
     throw std::runtime_error(reason);
@@ -23,6 +36,24 @@ void rejected(Function function) {
   throw std::runtime_error("Expected invalid request to be rejected");
 }
 } // namespace
+extern "C" int __real_fsync(int fd);
+extern "C" ssize_t __real_read(int fd, void* buffer, size_t size);
+extern "C" int __wrap_fsync(int fd) {
+  const int result = __real_fsync(fd);
+  if (result == 0 && finalize_timestamp_on_sync) {
+    finalize_timestamp_on_sync = false;
+    change_timestamp(fd);
+  }
+  return result;
+}
+extern "C" ssize_t __wrap_read(int fd, void* buffer, size_t size) {
+  const ssize_t result = __real_read(fd, buffer, size);
+  if (result > 0 && mutate_timestamp_on_read) {
+    mutate_timestamp_on_read = false;
+    change_timestamp(fd);
+  }
+  return result;
+}
 int main(int argc, char** argv) {
   QCoreApplication app(argc, argv);
   require(
@@ -80,6 +111,24 @@ int main(int argc, char** argv) {
           portable.value("storage_namespace").toString() == "shared-games" &&
           portable.value("sha256").toString() == QString::fromLatin1(digest) && !portable.contains("inode"),
       "Portable artifacts must bind bytes and namespace without host-local inode authority");
+  finalize_timestamp_on_sync = true;
+  const auto synchronized = hm::web::Artifact(distributed, root / "result.json", "metadata");
+  require(
+      !finalize_timestamp_on_sync && synchronized == portable,
+      "Storage timestamp finalization must preserve the synchronized byte receipt");
+  finalize_timestamp_on_sync = true;
+  const auto synchronized_local = hm::web::Artifact(request, root / "result.json", "metadata");
+  struct stat synchronized_info {};
+  require(::stat((root / "result.json").c_str(), &synchronized_info) == 0, "Cannot inspect synchronized fixture");
+  require(
+      !finalize_timestamp_on_sync &&
+          synchronized_local.value("mtime_ns").toString() ==
+              QString::number(
+                  qint64(synchronized_info.st_mtim.tv_sec) * 1000000000 + synchronized_info.st_mtim.tv_nsec),
+      "Local artifacts must bind the synchronized file timestamps");
+  mutate_timestamp_on_read = true;
+  rejected([&] { hm::web::Artifact(distributed, root / "result.json", "metadata"); });
+  require(!mutate_timestamp_on_read, "Mutation during hashing was not exercised");
   document.insert("schema", 1);
   document.insert("workflow", distributed.workflow);
   hm::web::WriteObject(request_path, document);

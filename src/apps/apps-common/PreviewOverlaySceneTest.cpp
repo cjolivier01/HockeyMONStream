@@ -1,9 +1,10 @@
 #include "hstream/src/apps/apps-common/PreviewOverlayScene.h"
 
+#include "hstream/src/libs/common/PlotContext.h"
 #include "hstream/src/libs/draw_display/RinkMiniMap.h"
+#include "hstream/src/libs/player_analytics/FrameMeta.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
-#include "hstream/src/libs/player_analytics/FrameMeta.h"
 
 #include <gst/gst.h>
 
@@ -321,11 +322,55 @@ void RoleAndSemanticLabels() {
     }
   }
 }
+void ClippedTrackingGuides() {
+  Frame owner;
+  {
+    hm::utils::PlotContext plot(owner.frame);
+    const hm::utils::ColorRGB white{255, 255, 255};
+    plot.plot_line({-100, 100}, {100, 300}, 2, white);
+    plot.plot_line({-100, -100}, {900, 900}, 3, white);
+    plot.plot_line({900, 200}, {700, 200}, 4, white);
+    plot.plot_line({20, 30}, {40, 50}, 5, white);
+    plot.plot_line({-100, 0}, {-10, 100}, 2, white);
+    plot.plot_line({0, std::numeric_limits<float>::quiet_NaN()}, {100, 100}, 2, white);
+    plot.plot_line({0, 0}, {std::numeric_limits<float>::infinity(), 100}, 2, white);
+  }
+  auto* meta = static_cast<NvDsDisplayMeta*>(owner.frame->display_meta_list->data);
+  Check(meta->num_lines == 4, "off-canvas or nonfinite tracking guides were admitted");
+  const auto& first = meta->line_params[0];
+  Check(
+      first.x1 == 0 && first.y1 == 200 && first.x2 == 100 && first.y2 == 300,
+      "negative endpoint was not clipped along its segment");
+  const auto& diagonal = meta->line_params[1];
+  Check(
+      diagonal.x1 == 0 && diagonal.y1 == 0 && diagonal.x2 == 599 && diagonal.y2 == 599,
+      "diagonal guide escaped the source canvas");
+  const auto& reverse = meta->line_params[2];
+  Check(
+      reverse.x1 == 799 && reverse.y1 == 200 && reverse.x2 == 700 && reverse.y2 == 200,
+      "reverse guide changed direction while clipping");
+  const auto& inside = meta->line_params[3];
+  Check(
+      inside.x1 == 20 && inside.y1 == 30 && inside.x2 == 40 && inside.y2 == 50 && inside.line_width == 5,
+      "valid tracking guide changed");
+  Check(preview::add_overlay_snapshot_meta(owner.frame), "could not freeze clipped drawing metadata");
+  analytics::CommandList commands;
+  const auto rendered = scene::BuildPreviewOverlayScene(
+      owner.frame, {"stitched", 800, 600, 800, 600, false, true, 0, 0}, commands, nullptr);
+  Check(rendered.paths.size() == 4, "frozen guides did not reach the shared preview scene");
+  for (const auto& path : rendered.paths)
+    for (const auto& point : path.points)
+      Check(
+          point.x >= 0 && point.x < 800 && point.y >= 0 && point.y < 600,
+          "shared preview received a wrapped unsigned tracking coordinate");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   try {
+    ClippedTrackingGuides();
     GeometryAndFrozenMetadata();
     MissingAndAlreadyTransformedGeometry();
     ExactArtifactGeometry();

@@ -7519,7 +7519,23 @@ bool PipelineApplication::seek_runtime_impl(
   }
   app_context->defer_bus_watch = TRUE;
   detach_pipeline_bus_watch(app_context);
+  // Soup owns main-context sources internally. Closing its connection/server
+  // from the reconstruction worker can race their dispatch and corrupt source
+  // reference counts. Retire them here, along with preview status callbacks,
+  // before handing the graph to that worker.
   try {
+    if (web_preview_) {
+      bool source_linked_audio = true;
+      for (const auto& audio : app_context->config.hmaudio_config)
+        source_linked_audio = source_linked_audio && (!audio.enable || audio.src == SRC_SOURCE_BIN);
+      if (source_render_window_ids_.empty() && !app_context->config.use_nvmultiurisrcbin && source_linked_audio) {
+        const auto status = web_preview_->BeginSourceSeek();
+        if (!status.ok())
+          throw std::runtime_error(status.ToString());
+      } else {
+        web_preview_->RetireCallbacks();
+      }
+    }
     if (g_getenv("HM_TEST_RUNTIME_SEEK_WORKER_UNAVAILABLE")) {
       throw std::runtime_error("injected runtime seek worker construction failure");
     }
@@ -9991,6 +10007,12 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   GValue item = G_VALUE_INIT;
   while (gst_iterator_next(iterator, &item) == GST_ITERATOR_OK) {
     auto* pad = GST_PAD(g_value_get_object(&item));
+    // These exact bridges belong to the browser target, not the retained
+    // processing/audio graph. Retire them after stopping the old sources.
+    if (web_preview_ && web_preview_->OwnsSourceBridge(pad)) {
+      g_value_reset(&item);
+      continue;
+    }
     GstPad* peer = gst_pad_get_peer(pad);
     if (peer) {
       int audio_source = -1;
@@ -10036,6 +10058,13 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   cancel_uri_playlist_frame_barrier(&sources);
   if (!stop_sources_for_seek(app))
     return FALSE;
+  if (web_preview_) {
+    const auto status = web_preview_->DetachSeekSources();
+    if (!status.ok()) {
+      g_printerr("Browser source retirement failed: %s\n", status.ToString().c_str());
+      return FALSE;
+    }
+  }
   // A flushed ALSA ring buffer can retain its old hardware sample cursor while
   // the new stream starts at zero. Its clock then stays stopped until enough
   // audio arrives to refill that old cursor, while exact-pair audio gating is
@@ -10130,13 +10159,17 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
     const bool linked = pad && gst_pad_link(pad, link.peer) == GST_PAD_LINK_OK;
     if (pad)
       gst_object_unref(pad);
-    if (!linked)
+    if (!linked) {
+      g_printerr("Source seek could not restore link %s\n", link.name.c_str());
       return FALSE;
+    }
     GstEvent* flush = gst_event_new_flush_stop(TRUE);
     gst_structure_set(
         gst_event_writable_structure(flush), "hstream-preserve-playtracker", G_TYPE_BOOLEAN, TRUE, nullptr);
-    if (!gst_pad_send_event(link.peer, flush))
+    if (!gst_pad_send_event(link.peer, flush)) {
+      g_printerr("Source seek flush was rejected by link %s\n", link.name.c_str());
       return FALSE;
+    }
   }
   if (app->config.primary_gie_config.enable && app->config.primary_gie_config.plugin_type == NV_DS_GIE_PLUGIN_INFER &&
       !hm::ArmAsyncInferenceSeekRecovery(app->pipeline.common_elements.primary_gie_bin.primary_gie))
@@ -10156,6 +10189,14 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   if (!preview_status.ok()) {
     g_printerr("Source preview seek failed: %s\n", preview_status.ToString().c_str());
     return FALSE;
+  }
+  if (web_preview_) {
+    const auto status = web_preview_->AttachSeekSources(
+        {web_preview_run_id_, static_cast<int>(current_stage_), inspector_topology_generation_ + 1});
+    if (!status.ok()) {
+      g_printerr("Browser source attachment failed: %s\n", status.ToString().c_str());
+      return FALSE;
+    }
   }
   // The replacement source PTS starts at zero. Resume the retained audio and
   // display sinks against that new clock origin as well.
@@ -10180,7 +10221,8 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
     bool source_linked_audio = true;
     for (const auto& audio : app_ctx->config.hmaudio_config)
       source_linked_audio = source_linked_audio && (!audio.enable || audio.src == SRC_SOURCE_BIN);
-    if (web_preview_run_id_.empty() && source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin &&
+    if ((web_preview_run_id_.empty() || (web_preview_ && web_preview_->source_seek_pending())) &&
+        source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin &&
         source_linked_audio) {
       topology_changed = true;
       success = seek_runtime_sources(app_ctx, target_ns);
@@ -10226,6 +10268,16 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     runtime_seek_recreation_thread_.join();
   }
   result.app_ctx->defer_bus_watch = FALSE;
+
+  // Signaling owns main-context sources. The worker only reattaches stopped
+  // graph routes; renew its observer here before the new topology is exposed.
+  if (result.success && !runtime_seek_shutdown_requested_ && web_preview_) {
+    const auto status = web_preview_->ResumeSourceSeek();
+    if (!status.ok()) {
+      g_printerr("Browser seek signaling failed: %s\n", status.ToString().c_str());
+      result.success = false;
+    }
+  }
 
   const bool recreation_timed_out = runtime_seek_recreation_timed_out_;
   const bool shutdown_requested = runtime_seek_shutdown_requested_;

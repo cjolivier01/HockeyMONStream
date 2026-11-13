@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   auto monitor = std::make_shared<hm::preview::TransportMonitor>(4, 8, 8);
   auto observer = std::make_shared<hm::preview::WebPreviewObserver>(
-      monitor, hm::preview::WebPreviewObserverConfig{{"signal-test", 0, 1}, 5, 8});
+      monitor, hm::preview::WebPreviewObserverConfig{{"signal-test", 0, 1}, 5, 2});
   auto preview = std::make_shared<hm::preview::WebPreviewSignaling>();
   preview->observer = observer;
   preview->initial_peer_generation = 40;
@@ -195,15 +195,19 @@ int main(int argc, char** argv) {
       "Unexpected metadata message");
   for (unsigned index = 0; index < 20; ++index) {
     deliver(*monitor, ++last_sequence);
-    pump([] { return false; }, 6);
+    check(
+        pump([&] {
+          return index < 3 ? first.messages.size() == index + 2 : observer->dropped_events() == 2 * (index - 2);
+        }),
+        "Observer did not dispatch or discard the pending frame within its deadline");
   }
   check(
-      first.messages.size() == 1 && observer->dropped_events() >= 40,
+      first.messages.size() == 4 && observer->dropped_events() == 34,
       "Unacknowledged client grew the outgoing metadata queue");
   first.Send(envelope("preview-frames-ack", peer) + ",\"batch\":\"1\"}");
-  pump([] { return false; }, 20);
+  check(pump([&] { return observer->acknowledged_batches() == 1; }), "Observer did not receive batch credit");
   deliver(*monitor, ++last_sequence);
-  check(pump([&] { return first.messages.size() == 2; }), "Acknowledgment did not restore one batch of credit");
+  check(pump([&] { return first.messages.size() == 5; }), "Acknowledgment did not restore one batch of credit");
   first.Send(receipt(last_sequence, peer));
   check(pump([&] { return monitor->counters().presented == 1; }), "Actual WebSocket handler rejected exact receipt");
   deliver(*monitor, ++last_sequence);
@@ -222,12 +226,20 @@ int main(int argc, char** argv) {
   check(pump([&] { return monitor->counters().presented == 2; }), "Replacement exact receipt failed");
   prepare_webrtc_sinks_for_stop(pipeline);
   check(detachments == 3 && !observer->TakePresented(), "Stop did not retire peer/receipts");
+  // Seek admission retires Soup on its context before graph reconstruction.
+  // The worker's ordinary teardown must find nothing left to close or drain.
+  std::thread reconstruction([&] { prepare_webrtc_sinks_for_stop(pipeline); });
+  reconstruction.join();
+  check(detachments == 3, "Worker teardown repeated a retired signaling mutation");
   const auto dropped = observer->dropped_events();
   deliver(*monitor, ++last_sequence);
   pump([] { return false; }, 30);
   check(
       observer->dropped_events() == dropped && !monitor->TakeEvents().empty(),
       "Stopped signaling retained its frame-drain source");
+  std::weak_ptr<hm::preview::WebPreviewSignaling> retired = preview;
+  preview.reset();
+  check(retired.expired(), "Stopped async connections retained the old topology observer");
   soup_session_abort(session);
   g_object_unref(session);
   gst_element_set_state(pipeline, GST_STATE_NULL);

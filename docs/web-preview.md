@@ -1,5 +1,20 @@
 # WebRTC preview lifecycle
 
+Seek admission retires the browser signaling server and preview status sources
+on the main context before starting graph reconstruction. Soup's connection and
+server sources must not race that context from the reconstruction worker. The
+worker still owns native gate and pipeline teardown; its repeated signaling
+retirement is inert. A replacement graph publishes a fresh preview generation.
+
+Monitor-only browser seeks with source-linked audio now use the same source
+replacement path as Qt. They retain stitching, inference and tracking resources,
+close the preview gates, and retire only the exact source bridges after the old
+decoders stop. The small preview encoder resets while replacement sources and
+audio start their new epoch. A new topology and observer fence all prior frame
+receipts. Signaling resumes on the main context before playback is published.
+Unsupported source/audio layouts keep the full reconstruction path. Public-site
+latency and audio continuity qualification of this retained path is pending.
+
 The remaining work to share Qt's selectable preview routes and playback controls
 with the browser is described in [web-preview-parity-design.md](web-preview-parity-design.md).
 The route activation owner is shared native code. An explicit private
@@ -475,10 +490,11 @@ The optional `WebPreviewTarget::Signaling` adapter delegates peer changes throug
 those lifecycle methods. `start_webrtc_signaling_for_preview` uses the existing
 Soup server and one periodic source attached to its signaling context. The
 source drains bounded `PreviewTransportMonitor` events; no streaming thread
-creates per-frame idle callbacks. `WebPreviewObserver` emits at most one
-unacknowledged metadata batch. While a client withholds credit, subsequent
-sender events are discarded with a counter, bounding the outgoing metadata
-backlog as well as the native queue. Poll cadence and event budget are explicit
+creates per-frame idle callbacks. `WebPreviewObserver` bounds unacknowledged
+metadata by the monitor's configured event capacity across all outstanding
+batches. Once that window fills, subsequent sender events are discarded with a
+counter, bounding the outgoing metadata backlog as well as the native queue.
+Poll cadence and event budget are explicit
 constructor inputs resolved from the opt-in session baseline.
 
 `PreviewPresentationHistory` retains completed RTP identities independently of
@@ -508,6 +524,16 @@ The version-1 optional metadata protocol is:
   `requestVideoFrameCallback` RTP metadata to a signaled packetized identity.
   `ontrack`, `playing`, or a successful credit acknowledgment are insufficient.
 
+Outstanding batches share the transport monitor's `web_preview.pending_events`
+budget. Each batch reserves its full `events_per_batch` capacity even when it
+contains fewer events; the defaults permit eight outstanding batches. This also
+bounds envelopes and the acknowledgment burst after a stalled reader resumes.
+Each accepted acknowledgment releases only the oldest exact batch's reserved
+capacity. A network round trip therefore does not suppress intervening frame
+receipts while credit remains. Exhaustion discards bounded metadata until credit
+returns; peer retirement clears all credit. This queue contains metadata only
+and does not retain video frames or establish presentation.
+
 Unsigned 64-bit identities/timestamps use decimal strings to avoid JavaScript
 number truncation; 32-bit RTP fields and the signed stage use JSON integers.
 Receipts are bounded to 4096 bytes; the optional connection's overall incoming
@@ -521,8 +547,8 @@ parity remain separate gates; preserve their explicit limits.
 `web_preview_observer_test` checks history after marker retirement, loss/overflow,
 RTP wrap, exact 64-bit identities, strict receipts, Render off, peer retirement
 and reconnect recovery. `web_preview_signaling_test` connects real Soup
-WebSocket clients to the production handlers, checks one outstanding metadata
-batch, delegated replacement ordering and removal of the single drain source
+WebSocket clients to the production handlers, checks a bounded outstanding
+event window, ordered credit, delegated replacement ordering and removal of the single drain source
 on stop. Its frame identities and receipts are synthetic; it is a signaling
 ownership test, not browser decoding qualification.
 

@@ -173,9 +173,11 @@ void write_trajectory(
     const std::string& run,
     std::size_t view,
     const std::vector<replay::Frame>& frames,
-    std::vector<std::filesystem::path>& created) {
+    std::vector<std::filesystem::path>& created,
+    const QJsonObject& workflow) {
   Request request;
   request.root = root;
+  request.workflow = workflow;
   QJsonArray chunks, items;
   std::size_t bytes = 0;
   int first = 0, last = 0;
@@ -324,7 +326,8 @@ void PublishCameraExperimentCatalog(
     QJsonObject metadata,
     const std::vector<CameraExperimentCatalogView>& views,
     std::size_t& published_views,
-    std::uint64_t& revision) {
+    std::uint64_t& revision,
+    const QJsonObject& workflow) {
   require(views.size() >= 2 && views.size() <= std::numeric_limits<int>::max(), "Invalid camera view count");
   require(published_views <= views.size(), "Camera history cannot remove published views");
   const auto frame_count = views.front().frames ? views.front().frames->size() : 0;
@@ -333,10 +336,11 @@ void PublishCameraExperimentCatalog(
   try {
     Request request;
     request.root = root;
+    request.workflow = workflow;
     for (std::size_t view = published_views; view < views.size(); ++view) {
       const auto& item = views[view];
       require(item.frames && item.frames->size() == frame_count, "Camera comparisons must share the recorded range");
-      write_trajectory(root, run, view, *item.frames, created);
+      write_trajectory(root, run, view, *item.frames, created, workflow);
     }
     // Full history pages never change. An appended partial page gets a new end
     // count in its name, so readers of the previous head keep their exact page.
@@ -566,7 +570,8 @@ QJsonObject RunCameraExperiment(
          {"rink_reason", QString::fromStdString(rink_reason)}},
         views,
         published_views,
-        catalog_revision);
+        catalog_revision,
+        request.workflow);
     PublishEvent(request, {{"kind", "catalog"}, {"revision", QString::number(catalog_revision)}});
   };
   const auto seek = [&](std::size_t frame, bool playing, bool replace) {

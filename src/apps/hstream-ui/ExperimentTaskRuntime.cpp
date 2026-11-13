@@ -271,6 +271,14 @@ void run_experiment(
   {
     const auto lock = take(hm::stitching::GameConfigTransactionLock::Acquire(saved.game_directory));
     auto config = YAML::LoadFile((saved.game_directory / "_hockeymon/config.yaml").string());
+    if (materialize) {
+      // A serial solve can already own the verified selected images when a
+      // later distributed batch reuses its selection. Do not restart that
+      // completed calibration's pending-only extraction transaction.
+      check(hm::stitching::validate_stitching_generation_owner(config, saved.invalidation_id));
+      if (hm::experiment::materialized(saved))
+        return;
+    }
     check(hm::stitching::validate_pending_stitching_invalidation(config, saved.invalidation_id));
     YAML::Node arguments(YAML::NodeType::Sequence);
     for (const auto& argument : std::vector<std::string>{

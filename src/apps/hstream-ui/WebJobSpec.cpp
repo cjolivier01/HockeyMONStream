@@ -154,6 +154,7 @@ QJsonObject Capabilities() {
            "highlight-card-without-archive-v1",
            "camera-legacy-recording-v1",
            "camera-view-catalog-v3",
+           "camera-portable-receipts-v1",
            "camera-optional-panorama-v1",
            "camera-save-cancel-v1",
            "saved-calibration-view-v1",
@@ -230,6 +231,14 @@ QJsonObject Artifact(const Request& request, const fs::path& path, const QString
       "Artifact changed before synchronization");
   const int result = ::fsync(fd);
   require(result == 0, "Cannot synchronize artifact");
+  // Shared storage can finalize timestamps during fsync. Establish the byte
+  // snapshot after that flush, while keeping the opened inode and size pinned.
+  struct stat synchronized{};
+  require(
+      ::fstat(fd, &synchronized) == 0 && synchronized.st_dev == pinned.st_dev && synchronized.st_ino == pinned.st_ino &&
+          synchronized.st_size == pinned.st_size,
+      "Artifact changed during synchronization");
+  pinned = synchronized;
   if (!request.workflow.isEmpty()) {
     QCryptographicHash hash(QCryptographicHash::Sha256);
     char buffer[1024 * 1024];
@@ -250,7 +259,7 @@ QJsonObject Artifact(const Request& request, const fs::path& path, const QString
     };
     require(
         ::fstat(fd, &after) == 0 && ::lstat(path.c_str(), &named) == 0 && same(pinned, after) && same(after, named),
-        "Artifact changed while publishing its portable identity");
+        "Artifact changed while publishing its portable identity: " + relative);
     require(pinned.st_size <= 9007199254740991LL, "Artifact size exceeds exact JSON integer range");
     return {
         {"identity_schema", 2},
@@ -265,9 +274,9 @@ QJsonObject Artifact(const Request& request, const fs::path& path, const QString
   return {
       {"path", QString::fromStdString(relative)},
       {"kind", kind},
-      {"size", QString::number(info.st_size)},
-      {"device", QString::number(info.st_dev)},
-      {"inode", QString::number(info.st_ino)},
-      {"mtime_ns", QString::number(qint64(info.st_mtim.tv_sec) * 1000000000 + info.st_mtim.tv_nsec)}};
+      {"size", QString::number(pinned.st_size)},
+      {"device", QString::number(pinned.st_dev)},
+      {"inode", QString::number(pinned.st_ino)},
+      {"mtime_ns", QString::number(qint64(pinned.st_mtim.tv_sec) * 1000000000 + pinned.st_mtim.tv_nsec)}};
 }
 } // namespace hm::web

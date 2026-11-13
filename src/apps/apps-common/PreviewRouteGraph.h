@@ -28,6 +28,21 @@ struct RouteTap {
 // calibration and exported jobs retain their existing unrestricted behavior.
 bool AttachPlaybackClock(RouteTap program, std::string* error);
 
+// Exact ghost pads created to bridge one route across nested bins. Graph
+// parents own their lifetime; this receipt retains pads, not parent bins.
+// Retire only after the route gates close and the source parent stops. Dropping
+// the receipt alone leaves the committed graph unchanged for normal teardown.
+class RouteBridge {
+ public:
+  ~RouteBridge();
+  bool Retire();
+  bool Owns(GstPad* pad) const;
+
+ private:
+  friend class RouteAttachment;
+  std::vector<GstPad*> pads_;
+};
+
 // Transactional construction at a stopped native graph tap. No window IDs,
 // rendering, encoding, defaults or frame memory live here. The owner serializes
 // graph mutations and keeps the tap's parent at NULL/READY during attachment.
@@ -55,6 +70,7 @@ class RouteAttachment {
   // Publish borrowed route callbacks only after all links/configuration exist.
   // publish must leave no state behind on false. It cannot throw.
   bool Commit(const std::function<bool()>& publish);
+  std::unique_ptr<RouteBridge> TakeBridge();
 
  private:
   struct State;

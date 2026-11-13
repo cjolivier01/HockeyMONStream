@@ -297,9 +297,20 @@ void finalize(GObject* object) noexcept {
   G_OBJECT_CLASS(gst_hm_preview_gpu_surface_parent_class)->finalize(object);
 }
 
+GstStateChangeReturn change_state(GstElement* element, GstStateChange transition) noexcept {
+  const auto result = GST_ELEMENT_CLASS(gst_hm_preview_gpu_surface_parent_class)->change_state(element, transition);
+  if (result != GST_STATE_CHANGE_FAILURE && transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
+    // The parent has drained/deactivated streaming. Retain the GPU allocations,
+    // but allow the first frame in a new media epoch even in the same rate slot.
+    reinterpret_cast<GstHmPreviewGpuSurface*>(element)->state->last_slot = GST_CLOCK_TIME_NONE;
+  }
+  return result;
+}
+
 void gst_hm_preview_gpu_surface_class_init(GstHmPreviewGpuSurfaceClass* klass) {
   G_OBJECT_CLASS(klass)->finalize = finalize;
   auto* element = GST_ELEMENT_CLASS(klass);
+  element->change_state = change_state;
   gst_element_class_set_static_metadata(
       element, "HStream owned GPU preview surface", "Filter/Video", "Bounded GPU letterbox and drawing", "HStream");
   gst_element_class_add_static_pad_template(element, &sink_template);

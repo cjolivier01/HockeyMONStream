@@ -482,6 +482,7 @@ cc_test(
     srcs = ["PreviewOverlaySceneTest.cpp"],
     deps = [
         ":preview_overlay_scene",
+        "//src/libs/common:utils",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/draw_display:rink_mini_map",
         "//src/libs/player_analytics:frame_meta",

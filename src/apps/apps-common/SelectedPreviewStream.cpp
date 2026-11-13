@@ -420,9 +420,27 @@ void finalize(GObject* object) noexcept {
   G_OBJECT_CLASS(gst_hm_selected_preview_parent_class)->finalize(object);
 }
 
+GstStateChangeReturn change_state(GstElement* element, GstStateChange transition) noexcept {
+  const auto result = GST_ELEMENT_CLASS(gst_hm_selected_preview_parent_class)->change_state(element, transition);
+  if (result != GST_STATE_CHANGE_FAILURE && transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
+    auto* state = reinterpret_cast<GstHmSelectedPreview*>(element)->state;
+    std::lock_guard<std::mutex> lock(state->flow);
+    // READY deactivates the output pad and clears its sticky events. A retained
+    // seek target must publish new headers and start at its new running time.
+    // Keep sequence and operation identities monotonic, and failures sticky.
+    state->last_pts = GST_CLOCK_TIME_NONE;
+    gst_caps_replace(&state->output_caps, nullptr);
+    state->started = false;
+    state->segmented = false;
+    state->ended = false;
+  }
+  return result;
+}
+
 void gst_hm_selected_preview_class_init(GstHmSelectedPreviewClass* klass) {
   G_OBJECT_CLASS(klass)->finalize = finalize;
   auto* element = GST_ELEMENT_CLASS(klass);
+  element->change_state = change_state;
   gst_element_class_set_static_metadata(
       element,
       "HStream selected preview stream",

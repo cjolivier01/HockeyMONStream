@@ -59,7 +59,8 @@ bool WebPreviewObserver::Retire(std::uint64_t peer) {
     return false;
   peer_ = peer;
   active_ = false;
-  outstanding_batch_ = 0;
+  outstanding_batches_.clear();
+  outstanding_events_ = 0;
   monitor_->Recover();
   return true;
 }
@@ -73,16 +74,18 @@ bool WebPreviewObserver::Activate(std::uint64_t peer) {
 
 std::optional<std::string> WebPreviewObserver::Poll() {
   auto events = monitor_->TakeEvents();
-  if (!active_ || outstanding_batch_ || next_batch_ == std::numeric_limits<std::uint64_t>::max()) {
+  if (!active_ || outstanding_events_ >= monitor_->event_capacity() ||
+      next_batch_ == std::numeric_limits<std::uint64_t>::max()) {
     dropped_events_ += events.size();
     return {};
   }
   events.erase(
       std::remove_if(events.begin(), events.end(), [&](const auto& event) { return event.frame.peer != peer_; }),
       events.end());
-  if (events.size() > config_.events_per_batch) {
-    dropped_events_ += events.size() - config_.events_per_batch;
-    events.erase(events.begin(), events.end() - config_.events_per_batch);
+  const auto capacity = std::min(config_.events_per_batch, monitor_->event_capacity() - outstanding_events_);
+  if (events.size() > capacity) {
+    dropped_events_ += events.size() - capacity;
+    events.erase(events.begin(), events.end() - capacity);
   }
   if (events.empty())
     return {};
@@ -94,8 +97,12 @@ std::optional<std::string> WebPreviewObserver::Poll() {
   number(builder, "stage", config_.session.stage);
   sequence(builder, "topology", config_.session.topology);
   sequence(builder, "peer", peer_);
-  outstanding_batch_ = ++next_batch_;
-  sequence(builder, "batch", outstanding_batch_);
+  const auto batch = ++next_batch_;
+  // Reserve a full batch even when polling produces only a few events. This
+  // bounds batch envelopes and the acknowledgment burst as well as payloads.
+  outstanding_batches_.emplace_back(batch, capacity);
+  outstanding_events_ += capacity;
+  sequence(builder, "batch", batch);
   json_builder_set_member_name(builder, "events");
   json_builder_begin_array(builder);
   for (const auto& event : events) {
@@ -147,9 +154,11 @@ WebPreviewObserver::Message WebPreviewObserver::Handle(JsonObject* object) {
     return rejected();
   if (!strcmp(type, "preview-frames-ack")) {
     std::uint64_t batch;
-    if (json_object_get_size(object) != 7 || !decimal(object, "batch", &batch) || batch != outstanding_batch_)
+    if (json_object_get_size(object) != 7 || !decimal(object, "batch", &batch) || outstanding_batches_.empty() ||
+        batch != outstanding_batches_.front().first)
       return rejected();
-    outstanding_batch_ = 0;
+    outstanding_events_ -= outstanding_batches_.front().second;
+    outstanding_batches_.pop_front();
     acknowledged_batches_.fetch_add(1, std::memory_order_relaxed);
     return Message::kAcknowledged;
   }

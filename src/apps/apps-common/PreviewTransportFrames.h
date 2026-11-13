@@ -40,6 +40,9 @@ class TransportFrames {
   // Route deactivation must retire delayed encoder/RTP output even when no
   // replacement raw frame will arrive. Preserve monotonic admission bounds.
   void DiscardPending();
+  // Only after the encoder/payloader stop and old packets drain. Preserve
+  // identity fences while allowing the replacement media clock to start at 0.
+  void ResetMediaEpoch();
   struct Admission {
     bool accepted{false};
     bool force_keyframe{false};
