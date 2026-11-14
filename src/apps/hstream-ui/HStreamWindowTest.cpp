@@ -464,8 +464,16 @@ while True:
       return false;
     ::kill(-worker_pid, SIGKILL);
     const auto owner = hm::game_operation::Inspect(directory.toStdString());
+    bool inspected = false;
+    QTimer::singleShot(0, [&] {
+      auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
+      inspected = dialog && dialog->isVisible();
+      if (dialog)
+        dialog->reject();
+    });
+    window.start_button_->click();
     return owner.ok() && owner->has_value() && (**owner).token == token && !window.save_preset_button_->isEnabled() &&
-        !window.start_button_->isEnabled() && window.pipeline_state_->text().startsWith("RECOVERY REQUIRED:");
+        window.start_button_->isEnabled() && inspected && window.pipeline_state_->text().startsWith("RECOVERY REQUIRED:");
   }
 
   static bool pausedGuardDestructionChecks() {
