@@ -1142,7 +1142,9 @@ finally:
             write_json(root / "worker/result.json", result)
             state = self.controller.tick(self.plan["workflow_id"])
             self.assertEqual(state["state"], "failed")
-            self.assertTrue(state["owner_released"])
+            self.assertTrue(
+                self.controller.status(self.plan["workflow_id"])["owner_released"]
+            )
             self.assertEqual(self.controller.registry.read()["reservations"], {})
             self.assertFalse((root / "runtime").exists())
             self.assertFalse((root / "completion.json").exists())
