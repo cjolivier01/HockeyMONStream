@@ -310,6 +310,20 @@ os.write(1, b'ack\\n')
         self.assertEqual(log.read_bytes(), b"ready\ndiagnostic\nack\n")
         self.finish()
 
+    def test_batch_capture_does_not_synchronize_inside_supervisor(self):
+        self.batch("import time; print('ready', flush=True); time.sleep(1)")
+        self.start()
+        log = self.workspace / "task.log"
+        self.until(lambda: log.exists() and log.read_bytes() == b"ready\n")
+        descriptors = Path(f"/proc/{self.process.pid}/fd")
+        captures = [fd for fd in descriptors.iterdir() if fd.resolve() == log]
+        self.assertTrue(captures)
+        for fd in captures:
+            info = (descriptors.parent / "fdinfo" / fd.name).read_text()
+            fields = dict(line.split(":", 1) for line in info.splitlines())
+            self.assertFalse(int(fields["flags"], 8) & os.O_DSYNC)
+        self.assertTrue(self.batch_result()["ok"])
+
     def test_detached_resistant_descendant_is_reaped(self):
         self.start()
         task = self.launch("""import os, signal, time

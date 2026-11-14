@@ -818,7 +818,8 @@ class Worker {
     // expose an advanced file size before the payload reaches that client,
     // which then consumes holes and permanently skips readiness/ack records.
     // Complete direct writes on shared storage before the producer continues.
-    const int log_flags = O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | O_DSYNC;
+    const int log_flags =
+        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | (task.rotate_log ? 0 : O_DSYNC);
     Fd out(::open(output.c_str(), log_flags, 0600));
     Fd err(::open(errors.c_str(), log_flags, 0600));
     for (const int descriptor : {out.value, err.value}) {
