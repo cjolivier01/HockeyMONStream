@@ -21,7 +21,7 @@ bool expect(bool condition, const char* message) {
 } // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 13) {
+  if (argc != 12) {
     std::cerr << "FAIL: expected desktop/Jetson/Windows build and release policy inputs\n";
     return 1;
   }
@@ -32,11 +32,10 @@ int main(int argc, char** argv) {
   const std::string docker_runner = read(argv[5]);
   const std::string installer = read(argv[6]);
   const std::string jetson_builder = read(argv[7]);
-  const std::string hugin_builder = read(argv[8]);
-  const std::string publisher = read(argv[9]);
-  const std::string windows_builder = read(argv[10]);
-  const std::string windows_nsis = read(argv[11]);
-  const std::string windows_powershell = read(argv[12]);
+  const std::string publisher = read(argv[8]);
+  const std::string windows_builder = read(argv[9]);
+  const std::string windows_nsis = read(argv[10]);
+  const std::string windows_powershell = read(argv[11]);
   bool ok = true;
   ok &= expect(
       contains(packager, " perl,") && contains(packager, "${HSTREAM_CLI}.runfiles/exiftool") &&
@@ -111,15 +110,17 @@ int main(int argc, char** argv) {
   ok &= expect(
       contains(packager, "nvidia-l4t-cuda | libcuda.so.1") &&
           contains(packager, "libopencv (>= %s), libopencv (<< %s)") &&
-          contains(packager, "jetson_opencv_upper_version") && contains(packager, "HSTREAM_HUGIN_TOOLS_DIR") &&
-          contains(hugin_builder, "HUGIN_SHA256=") && contains(hugin_builder, "VIGRA_SHA256=") &&
-          contains(hugin_builder, "--export-sources") && contains(hugin_builder, "autooptimiser") &&
-          contains(hugin_builder, "pano_modify") && contains(hugin_builder, "nona"),
-      "Jetson packages must use L4T/OpenCV dependencies and pinned source-built Hugin calibration tools");
+          contains(packager, "jetson_opencv_upper_version") && !contains(packager, "HSTREAM_HUGIN_TOOLS_DIR") &&
+          contains(packager, "hugin-tools") && contains(packager, "enblend") &&
+          contains(packager, "libmosquitto1, libcufft-dev-13-2, libcublas-dev-13-2") &&
+          contains(jetson_builder, "HSTREAM_TARGET_UBUNTU=24.04") &&
+          contains(jetson_builder, "HM_REQUIRE_CUDA_TESTS=1") &&
+          contains(jetson_builder, "ONNX Runtime CUDA provider lacks native Orin kernels"),
+      "Jetson packages must use Noble Hugin tools, L4T/OpenCV and tracker dependencies, and test Orin inference");
   ok &= expect(
       contains(publisher, "X-HStream-Source-Commit") && contains(publisher, "--repo \"${repository}\"") &&
           contains(publisher, "git remote get-url --push --all origin") &&
-          contains(publisher, "hugin_2022.0.0+dfsg.orig.tar.xz") && contains(publisher, "10#${patch}") &&
+          contains(publisher, "jetson-ubuntu24.04_arm64.deb") && contains(publisher, "10#${patch}") &&
           contains(publisher, "(0|[1-9][0-9]*)") && contains(publisher, "windows-wsl-setup.exe") &&
           contains(publisher, "staged_assets+=(\"hstream_${release_tag}_windows-wsl-setup.exe\")") &&
           contains(publisher, "checksum_names+=(\"./${asset}\")") &&
@@ -134,16 +135,13 @@ int main(int argc, char** argv) {
       "release publication must verify provenance/source compliance, increment strict semver, and publish Windows setup");
   // A release may omit a platform whose hardware or toolchain is unavailable.
   // Hashing and uploading an explicit staged list rather than globbing the
-  // staging directory is what keeps that safe, so pin the two couplings an
-  // exclusion must not break.
+  // staging directory is what keeps that safe. Preserve the Windows coupling.
   ok &= expect(
       contains(publisher, "RELEASE_PLATFORMS=(ubuntu24 ubuntu26 jetson windows)") &&
-          contains(publisher, "if publishing jetson; then\n  hugin_build_script_asset=") &&
-          contains(publisher, "\"${hugin_build_script_asset}\" --export-sources=\"${release_dir}\"") &&
+          !contains(publisher, "hugin_build_script_asset") &&
           contains(publisher, "so excluding ubuntu24 also requires excluding windows.") &&
           contains(publisher, "every platform was excluded"),
-      "excluding a platform must keep Jetson's GPLv2 corresponding source with the package that ships those "
-      "binaries, keep the Windows installer with the Ubuntu 24.04 package it downloads, and refuse an empty release");
+      "releases must omit unbundled Hugin sources, keep Windows with its Ubuntu payload, and refuse empty releases");
   ok &= expect(
       contains(windows_builder, "makensis") && contains(windows_builder, "rsvg-convert") &&
           contains(windows_builder, "icotool") && contains(windows_builder, "PE32 executable") &&

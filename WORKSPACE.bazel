@@ -140,15 +140,16 @@ onnxruntime_gpu_arm64_repository(
     wheel_sha256 = "6c70b83afd6bfcc34b4b58d6a41f8c439c96811bbb7fe9fb1d2c2c9dd9c881b5",
 )
 
+# The official 1.30 ARM64 wheel omits Orin (sm_87); 1.32 restores its CUDA kernels.
 onnxruntime_gpu_arm64_repository(
     name = "onnxruntime_linux_jetson",
     build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
-    version = "1.30.0",
-    headers_version = "1.30.0",
-    headers_url = "https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-aarch64-1.30.0.tgz",
-    headers_sha256 = "e16a27a8ed330bbc698df7330b0cf56e722f354e3bcc92118682c74ef3c3e3da",
-    wheel_url = "https://files.pythonhosted.org/packages/54/21/81371bce6071c18a65c99f20a7943048146a46256aa34b318a21e057d75c/onnxruntime_gpu-1.30.0-cp311-cp311-manylinux_2_34_aarch64.whl",
-    wheel_sha256 = "6c70b83afd6bfcc34b4b58d6a41f8c439c96811bbb7fe9fb1d2c2c9dd9c881b5",
+    version = "1.32.0",
+    headers_version = "1.32.0",
+    headers_url = "https://github.com/microsoft/onnxruntime/releases/download/v1.32.0/onnxruntime-linux-aarch64-1.32.0.tgz",
+    headers_sha256 = "81a46251dd90da4122f4b9ceb4433f836fbc79ee1eddffca7c09033af81a1939",
+    wheel_url = "https://files.pythonhosted.org/packages/f8/42/0992a15c84e0e344da6b176736c27010131e398bfba993b8077077bb6e43/onnxruntime_gpu-1.32.0-cp311-cp311-manylinux_2_34_aarch64.whl",
+    wheel_sha256 = "959ad743219892960dda2feb99429472d7e3c9e90ea0a32a4accdc3366ed029a",
 )
 
 # The Python parity test reconstructs the exact eager-PyTorch pipeline from

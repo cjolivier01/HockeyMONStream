@@ -77,9 +77,9 @@ sudo ./install-hstream-deb.sh \
       <p>Use the actual release version and switch <code>ubuntu24.04</code> to <code>ubuntu26.04</code> on an Ubuntu 26.04 host. The helper validates package metadata, configures the NVIDIA repositories, and applies the required Ubuntu 26.04 compatibility handling. Do not install a package built for the other Ubuntu release.</p>
 
       <h2>NVIDIA Jetson</h2>
-      <p>For Jetson Linux 39 Jetson systems with DeepStream 9.1, download and verify the release asset ending in <code>_jetson-ubuntu24.04_arm64.deb</code>, then install it through APT:</p>
+      <p>For Jetson Linux 39 systems with DeepStream 9.1, download and verify the release asset ending in <code>_jetson-ubuntu24.04_arm64.deb</code>, then install it through APT:</p>
       <pre><code>sudo apt install ./hstream_vX.Y.Z_jetson-ubuntu24.04_arm64.deb</code></pre>
-      <p>The release also contains a Hugin build script and corresponding source archives used for the Jetson calibration toolchain.</p>
+      <p>APT installs Ubuntu’s arm64 Hugin calibration tools and the CUDA/MQTT dependencies required by DeepStream tracking.</p>
 
       <h2>Prepare camera footage</h2>
       <p>By default, games live under <code>$HOME/Videos/&lt;game_id&gt;</code>. Put each camera’s clips in a separate directory:</p>

@@ -1385,12 +1385,16 @@ if ! dpkg-query -W -f='${Status}' "${CUDNN_PACKAGE}" 2>/dev/null | grep -qx 'ins
   exit 1
 fi
 SHLIB_DEPENDS="${SHLIB_DEPENDS}, ${CUDNN_PACKAGE}"
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  # DeepStream 9.1's tracker needs MQTT and unversioned CUDA aliases, but
+  # its package omits these dependencies. The aliases belong to -dev packages.
+  SHLIB_DEPENDS="${SHLIB_DEPENDS}, libmosquitto1, libcufft-dev-13-2, libcublas-dev-13-2"
+fi
 SHLIB_DEPENDS="${SHLIB_DEPENDS//, /,$'\n' }"
 # Keep the DeepStream relationship explicit below and avoid emitting it twice
 # when dependency-only DeepStream runtime ELFs also resolve to that package.
 SHLIB_DEPENDS="$(printf '%s\n' "${SHLIB_DEPENDS}" | sed "/^ ${DEEPSTREAM_PACKAGE//./[.]} /d")"
-if [[ "${TARGET_PLATFORM}" == "desktop" ]] &&
-   ! grep -Eq '(^|[[:space:]])libmosquitto1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
+if ! grep -Eq '(^|[[:space:]])libmosquitto1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
   echo "ERROR: nvtracker dependency analysis did not emit libmosquitto1." >&2
   exit 1
 fi

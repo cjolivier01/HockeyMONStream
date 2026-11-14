@@ -278,8 +278,9 @@ the UI identifies the live blending stage and recommends reducing Max stitched
 width or closing other GPU-intensive applications. Reducing control-point counts
 does not reduce those panorama buffers.
 
-Desktop x86_64, ARM64/SBSA and Jetson Linux 39 use ONNX Runtime 1.30.0
-with CUDA 13 and cuDNN 9. The ARM wheels supply only
+Desktop x86_64 and ARM64/SBSA use ONNX Runtime 1.30.0. Jetson Linux 39 uses
+1.32.0, whose CUDA provider includes native Orin (`sm_87`) kernels. Both use
+CUDA 13 and cuDNN 9. The ARM wheels supply only
 native libraries; Python and TensorRT execution providers are not packaged.
 Bazel, the CLI/UI/exported-job launch caches, and installed packages keep the
 CUDA/shared provider libraries beside the core runtime for dynamic loading.

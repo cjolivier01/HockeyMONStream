@@ -226,6 +226,7 @@ bazelisk --batch --output_base="${output_base}" build \
   --action_env=TMPDIR=/var/tmp \
   --sandbox_tmpfs_path=/var/tmp \
   --config=opt --config=deb_jetson \
+  //src/libs/onnx:session_test \
   //src/apps/hstream-cli:hstream-cli \
   //src/apps/hstream-assets:hstream-assets \
   //src/apps/hstream-job:hstream-job \
@@ -248,6 +249,15 @@ if [[ ! -x "${cuobjdump}" ]]; then
   echo "ERROR: Jetson CUDA binary inspector is missing: ${cuobjdump}" >&2
   exit 1
 fi
+# Imported GPU runtimes need Orin kernels too; link success cannot prove this.
+onnx_cuda_provider="${output_base}/external/onnxruntime_linux_jetson/lib/libonnxruntime_providers_cuda.so"
+onnx_cubins="$("${cuobjdump}" --all-fatbin --list-elf "${onnx_cuda_provider}")"
+if ! grep -q '[.]sm_87[.]cubin$' <<< "${onnx_cubins}"; then
+  echo "ERROR: ONNX Runtime CUDA provider lacks native Orin kernels." >&2
+  exit 1
+fi
+HM_REQUIRE_CUDA_TESTS=1 bazel-bin/src/libs/onnx/session_test
+
 cuda_elfs=(
   bazel-bin/src/apps/hstream-cli/hstream-cli
   bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export
