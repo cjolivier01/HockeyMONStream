@@ -407,20 +407,39 @@ int main(int argc, char** argv) {
       script += "# Repeating this script resumes the same explicitly managed run.\n";
     script += "set -euo pipefail\numask 077\n";
     if (portable) {
-      // Slurm executes a spool copy; its submission directory replaces the
-      // script directory. Explicit runtime HM_GAME_DIR works in either case.
-      const auto relative_game = fs::relative(game, output.parent_path());
+      // A script beside its game follows that directory, including its logical
+      // alias. For external scripts, anchor both ends at physical parent paths
+      // but retain the game's final component: it may itself be a named alias.
+      const auto script_parent = fs::canonical(output.parent_path());
+      const bool beside_game = script_parent == fs::canonical(game);
+      const auto relative_game = beside_game
+          ? fs::path(".")
+          : (fs::canonical(game.parent_path()) / game.filename()).lexically_relative(script_parent);
       script += "game_id=" + quote(game.filename().string()) + "\n";
       script += R"JOB(if [ -n "${HM_GAME_DIR:-}" ]; then
   game_dir="${HM_GAME_DIR}/${game_id}"
 else
-  script_dir="$(dirname -- "${BASH_SOURCE[0]}")"
-  if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+  script_path="${BASH_SOURCE[0]}"
+  script_dir="${script_path%/*}"
+  if [ "${script_dir}" = "${script_path}" ]; then script_dir=.; fi
+  # An allocation also exports these variables to directly invoked scripts.
+  # Only Slurm's job<ID>/slurm_script spool copy needs the submission directory.
+  if [ "${script_path##*/}" = slurm_script ] && [ -n "${SLURM_JOB_ID:-}" ] &&
+     [ -n "${SLURM_SUBMIT_DIR:-}" ] &&
+     [[ "${script_dir##*/}" =~ ^job0*([1-9][0-9]*|0)([.][0-9]+)?$ ]] &&
+     [ "${BASH_REMATCH[1]}" = "${SLURM_JOB_ID}" ]; then
     script_dir="${SLURM_SUBMIT_DIR}"
   fi
 )JOB";
+      if (!beside_game)
+        script += R"JOB(  script_dir="$(CDPATH= cd -P -- "${script_dir}" && printf '%s/' "$PWD")"
+  script_dir="${script_dir%/}"
+)JOB";
       script += "  game_dir=\"${script_dir}/\"" + quote(relative_game.string()) + "\nfi\n";
-      script += R"JOB(game_dir="$(CDPATH= cd -- "${game_dir}" && pwd -L)"
+      // A trailing slash sentinel preserves newlines at the end of a name;
+      // ordinary command substitution of pwd/dirname would select its sibling.
+      script += R"JOB(game_dir="$(CDPATH= cd -L -- "${game_dir}" && printf '%s/' "$PWD")"
+game_dir="${game_dir%/}"
 game_id="${game_dir##*/}"
 game_root="${game_dir%/*}"
 export HM_GAME_DIR="${game_root:-/}"
