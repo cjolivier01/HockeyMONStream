@@ -23,6 +23,18 @@ An existing qualified file pin must agree. This supports compute-only native
 dependencies without requiring the controller to install them.
 There are no implicit processing defaults in the worker.
 
+`compute-files-v1` in `--capabilities` permits an explicit `resolve_files` list
+of absolute installed paths. The worker resolves configured symlinks on its own
+host, pins the canonical regular files before readiness, and reports the exact
+hashes in `state.json`'s `files` map and the path aliases in `tools`. Existing
+qualified hashes always win: discovery cannot replace a conflicting pin.
+Controllers use this for explicit deployment qualification across different OS
+builds, verify the native contract and recheck the captured bytes before adopting
+the result. Subsequent sessions send the qualified `files` hashes and node and
+architecture constraints; they do not rediscover or silently adopt replacements.
+Artifact inspection still rejects leaf symlinks. Executables still run through
+their verified descriptors and are checked again before each launch.
+
 The request lives one directory below the workspace. That directory must be
 private to the service account. Before accepting commands, the worker validates
 the runtime file hashes and allocation identity and takes an exclusive session

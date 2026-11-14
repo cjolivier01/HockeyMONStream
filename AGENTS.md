@@ -19,7 +19,10 @@
   versioned shared-storage execution protocol. Keep it independent of Qt, Django,
   browser controls and service database models. `common/ProcessGuard` owns each
   task's descendants; descriptor-bound execution and kernel retirement receipts
-  precede artifact adoption. See `docs/runtime-worker.md`.
+  precede artifact adoption. `compute-files-v1` resolves explicitly requested
+  installed paths on compute and exposes canonical hashes for qualification;
+  later sessions retain those exact pins across dispatcher OS differences.
+  See `docs/runtime-worker.md`.
 
 ## Project Structure & Modules
 - Code: `src/` with libraries in `src/libs/*`, apps in `src/apps`, optional plugins in `src/gst-plugins`.
