@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build an immutable Jetson/JetPack 6 arm64 Debian package on a native Jetson
+# Build an immutable Jetson Linux 39 arm64 Debian package on a native Jetson
 # build host and copy the completed artifact back to this checkout.
 set -euo pipefail
 
@@ -12,7 +12,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/make_deb_jetson.sh [--host=HOST] [--version=vX.Y.Z] [--output-dir=DIR]
 
-The host must be a JetPack 6 / Ubuntu 22.04 arm64 Jetson with DeepStream 7.1.
+The host must be a Jetson Linux 39 / Ubuntu 24.04 arm64 Jetson with DeepStream 9.1.
 The source is transferred as an immutable git archive; local tracked changes
 are never included.
 USAGE
@@ -103,9 +103,12 @@ git -C "${TOPDIR}" archive --format=tar "${source_revision}" | tar -xf - -C "${l
 printf '%s %s\n' "${source_revision}" "${source_epoch}" > "${local_snapshot}/.hstream-package-source"
 
 remote_identity="$(ssh -o BatchMode=yes "${JETSON_HOST}" \
-  'source /etc/os-release; printf "%s %s %s %s\n" "$(uname -m)" "${ID:-}" "${VERSION_ID:-}" "$(dpkg-query -W -f='"'"'${Version}'"'"' deepstream-7.1 2>/dev/null || true)"')"
-if [[ "${remote_identity}" != "aarch64 ubuntu 22.04 7.1.0-1" ]]; then
-  echo "ERROR: ${JETSON_HOST} is not the required JetPack 6 build host." >&2
+  'source /etc/os-release; printf "%s %s %s %s\n" "$(uname -m)" "${ID:-}" "${VERSION_ID:-}" "$(dpkg-query -W -f='"'"'${Version}'"'"' deepstream-9.1 2>/dev/null || true)"')"
+read -r remote_arch remote_os remote_release remote_deepstream <<< "${remote_identity}"
+if [[ "${remote_arch} ${remote_os} ${remote_release}" != "aarch64 ubuntu 24.04" ]] ||
+   ! dpkg --compare-versions "${remote_deepstream:-0}" ge 9.1.0-1 ||
+   ! dpkg --compare-versions "${remote_deepstream:-0}" lt '9.2~'; then
+  echo "ERROR: ${JETSON_HOST} is not the required Jetson Linux 39 build host." >&2
   echo "Detected: ${remote_identity:-unknown}" >&2
   exit 1
 fi
@@ -140,6 +143,8 @@ cd "${source_dir}"
 # Generate the web catalog at build time and compile the pinned Hugin tools
 # which Jammy arm64 does not provide as a package.
 build_packages=(
+  cuda-toolkit-13-2
+  libopencv-dev
   python3
   python3-yaml
   cmake
@@ -156,7 +161,7 @@ build_packages=(
   libpano13-dev
   libpng-dev
   libtiff-dev
-  libwxgtk3.0-gtk3-dev
+  libwxgtk3.2-dev
   ninja-build
   zlib1g-dev
 )
@@ -168,6 +173,10 @@ for package_name in "${build_packages[@]}"; do
 done
 if [[ "${#missing_build_packages[@]}" -gt 0 ]]; then
   sudo -n apt-get install -y --no-install-recommends "${missing_build_packages[@]}"
+fi
+# Native Jetson uses its installed SDK as the sysroot.
+if [[ ! -e /opt/jetson-sysroot ]]; then
+  sudo -n ln -s / /opt/jetson-sysroot
 fi
 scripts/build_hugin_tools_jetson.sh \
   --cache-dir="${persistent_cache_root}/hugin-tools" \
@@ -273,7 +282,7 @@ if [[ "${cuda_elf_count}" -eq 0 ]]; then
 fi
 
 HSTREAM_IMMUTABLE_SOURCE=1 \
-HSTREAM_TARGET_UBUNTU=22.04 \
+HSTREAM_TARGET_UBUNTU=24.04 \
 HSTREAM_TARGET_PLATFORM=jetson \
 HSTREAM_BAZEL_OUTPUT_BASE="${output_base}" \
 HSTREAM_HUGIN_TOOLS_DIR="${remote_root}/hugin-tools" \

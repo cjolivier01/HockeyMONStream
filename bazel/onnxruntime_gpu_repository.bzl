@@ -24,7 +24,7 @@ def _impl(ctx):
     ctx.symlink("lib/" + runtime, "lib/libonnxruntime.so.1")
     ctx.symlink("lib/" + runtime, "lib/libonnxruntime.so")
     # Use the notices accompanying the binary, and expose its actual version
-    # to packaging (Jetson's ABI-24 binary uses the ABI-24 SDK headers).
+    # to packaging.
     for notice in ["LICENSE", "ThirdPartyNotices.txt"]:
         ctx.delete(notice)
         ctx.symlink("wheel/onnxruntime/" + notice, notice)

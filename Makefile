@@ -297,7 +297,7 @@ print_targets:
 		'deepstream-deb Prepare the downloaded DeepStream amd64 package for TARGET_UBUNTU (override DEB_OUTPUT_DIR).' \
 		'deepstream-deb-ubuntu24 Copy the original DeepStream package to dist/ubuntu24.04.' \
 		'deepstream-deb-ubuntu26 Write the dependency-relaxed DeepStream package to dist/ubuntu26.04.' \
-		'deb-jetson     Build the Ubuntu 22.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
+		'deb-jetson     Build the Ubuntu 24.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
 		'deploy         Detect, build, and force-install on comma-separated NODES (default: current hostname).' \
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \

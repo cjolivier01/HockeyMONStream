@@ -40,7 +40,7 @@ Usage:
 
 The deployment runner detects each node over SSH, builds one package for each
 distinct supported target, and force-installs the matching package. Supported
-targets are Ubuntu 24.04/26.04 amd64 desktops and Ubuntu 22.04 arm64 Jetsons.
+targets are Ubuntu 24.04/26.04 amd64 desktops and Ubuntu 24.04 arm64 Jetsons.
 Ubuntu derivatives (KDE neon, Pop!_OS, ...) are matched on their Ubuntu base
 release, taken from UBUNTU_CODENAME in /etc/os-release.
 make deploy defaults to the current hostname when NODES is undefined.
@@ -141,7 +141,7 @@ classify_target() {
   case "${platform}:${os_id}:${os_version}:${architecture}" in
     desktop:ubuntu:24.04:x86_64) printf 'desktop-ubuntu24.04-amd64' ;;
     desktop:ubuntu:26.04:x86_64) printf 'desktop-ubuntu26.04-amd64' ;;
-    jetson:ubuntu:22.04:aarch64) printf 'jetson-ubuntu22.04-arm64' ;;
+    jetson:ubuntu:24.04:aarch64) printf 'jetson-ubuntu24.04-arm64' ;;
     *) return 1 ;;
   esac
 }
@@ -160,7 +160,7 @@ target_description() {
   case "$1" in
     desktop-ubuntu24.04-amd64) printf 'desktop/amd64' ;;
     desktop-ubuntu26.04-amd64) printf 'desktop/amd64' ;;
-    jetson-ubuntu22.04-arm64) printf 'jetson/arm64' ;;
+    jetson-ubuntu24.04-arm64) printf 'jetson/arm64' ;;
     *) printf 'unsupported' ;;
   esac
 }
@@ -396,7 +396,7 @@ build_target() {
       TARGET_DEB["${target_key}"]="${deb}"
       TARGET_INSTALLER["${target_key}"]="${installer}"
       ;;
-    jetson-ubuntu22.04-arm64)
+    jetson-ubuntu24.04-arm64)
       output_dir="${DEPLOY_OUTPUT_DIR}/jetson"
       deb="${output_dir}/hstream_${PACKAGE_VERSION_NORMALIZED}_arm64.deb"
       build_host="${TARGET_BUILD_HOST[${target_key}]}"
@@ -409,7 +409,7 @@ build_target() {
         TARGET_BUILD_ERROR["${target_key}"]="package build failed on ${build_host}"
         return 1
       fi
-      if ! verify_built_package "${deb}" 22.04 jetson arm64; then
+      if ! verify_built_package "${deb}" 24.04 jetson arm64; then
         TARGET_BUILD_ERROR["${target_key}"]="package artifact validation failed"
         return 1
       fi

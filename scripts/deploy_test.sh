@@ -21,8 +21,11 @@ expect_equal "$(classify_target ubuntu 24.04 x86_64 desktop)" "desktop-ubuntu24.
   "Ubuntu 24 desktop classification"
 expect_equal "$(classify_target ubuntu 26.04 x86_64 desktop)" "desktop-ubuntu26.04-amd64" \
   "Ubuntu 26 desktop classification"
-expect_equal "$(classify_target ubuntu 22.04 aarch64 jetson)" "jetson-ubuntu22.04-arm64" \
+expect_equal "$(classify_target ubuntu 24.04 aarch64 jetson)" "jetson-ubuntu24.04-arm64" \
   "Jetson classification"
+if classify_target ubuntu 22.04 aarch64 jetson >/dev/null; then
+  fail "obsolete Jetson baseline was accepted"
+fi
 if classify_target ubuntu 22.04 x86_64 desktop >/dev/null; then
   fail "unsupported Ubuntu 22 desktop was accepted"
 fi

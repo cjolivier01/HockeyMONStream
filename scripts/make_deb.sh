@@ -25,10 +25,10 @@ case "${TARGET_PLATFORM}" in
     EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
     ;;
   jetson)
-    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-7.1}"
-    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-7.1.0-1}"
-    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-7.2~}"
-    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-12}"
+    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-9.1}"
+    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-9.1.0-1}"
+    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-9.2~}"
+    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
     ;;
   *) echo "ERROR: HSTREAM_TARGET_PLATFORM must be desktop or jetson." >&2; exit 1 ;;
 esac
@@ -73,13 +73,13 @@ if [[ -z "${TARGET_UBUNTU}" && -r /etc/os-release ]]; then
   fi
 fi
 case "${TARGET_PLATFORM}:${TARGET_UBUNTU}" in
-  desktop:24.04|desktop:26.04|jetson:22.04) ;;
+  desktop:24.04|desktop:26.04|jetson:24.04) ;;
   desktop:*)
     echo "ERROR: desktop packages require Ubuntu 24.04 or 26.04." >&2
     exit 1
     ;;
   jetson:*)
-    echo "ERROR: Jetson packages require the JetPack 6 Ubuntu 22.04 baseline." >&2
+    echo "ERROR: Jetson packages require the Jetson Linux 39 Ubuntu 24.04 baseline." >&2
     exit 1
     ;;
 esac
@@ -1251,7 +1251,7 @@ dependency_elfs=("${package_elfs[@]}")
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   # Desktop DeepStream's package metadata does not expose every dependency of
   # its dlopen'd tracker implementation (notably MQTT), so include that ELF in
-  # dependency discovery. JetPack's deepstream-7.1 package already declares
+  # dependency discovery. JetPack's deepstream-9.1 package already declares
   # the tracker/VPI runtime graph; asking dpkg-shlibdeps to analyze NVIDIA's
   # private tracker ELF there fails because libnvvpi3 ships no shlibs metadata.
   dependency_elfs+=("${DEEPSTREAM_TRACKER_RUNTIME}")

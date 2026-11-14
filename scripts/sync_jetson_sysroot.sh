@@ -41,6 +41,13 @@ if ! "${SSH_BASE[@]}" "${JETSON_HOST}" 'sudo -n true' >/dev/null 2>&1; then
   exit 1
 fi
 
+# Use the same toolkit release for the host compiler and target headers.
+REMOTE_CUDA_ROOT="$("${SSH_BASE[@]}" "${JETSON_HOST}" readlink -f /usr/local/cuda)"
+HOST_CUDA_ROOT="${JETSON_HOST_CUDA_ROOT:-${REMOTE_CUDA_ROOT}}"
+if [[ ! -x "${HOST_CUDA_ROOT}/bin/nvcc" ]]; then
+  echo "Matching host CUDA compiler is missing: ${HOST_CUDA_ROOT}/bin/nvcc" >&2
+  exit 1
+fi
 sudo mkdir -p "${SYSROOT}"
 
 copy_path() {
@@ -71,7 +78,7 @@ fi
 
 # Create a local hybrid CUDA toolkit view for rules_cuda:
 # - aarch64 target libs/headers from sysroot
-# - host x86_64 nvcc tooling from local /usr/local/cuda
+# - host x86_64 nvcc tooling from the matching local toolkit
 CUDA_ROOT="${SYSROOT}/usr/local/cuda"
 if [[ -d "${CUDA_ROOT}/targets/aarch64-linux" ]]; then
   sudo mkdir -p "${CUDA_ROOT}/targets"
@@ -81,28 +88,15 @@ if [[ -d "${CUDA_ROOT}/targets/aarch64-linux" ]]; then
   if [[ ! -e "${CUDA_ROOT}/lib64" && -d "${CUDA_ROOT}/targets/aarch64-linux/lib" ]]; then
     sudo ln -s "targets/aarch64-linux/lib" "${CUDA_ROOT}/lib64"
   fi
-  if [[ ! -e "${CUDA_ROOT}/bin" && -d /usr/local/cuda/bin ]]; then
-    sudo ln -s "/usr/local/cuda/bin" "${CUDA_ROOT}/bin"
-  fi
-  if [[ ! -e "${CUDA_ROOT}/nvvm" && -d /usr/local/cuda/nvvm ]]; then
-    sudo ln -s "/usr/local/cuda/nvvm" "${CUDA_ROOT}/nvvm"
-  fi
-  if [[ ! -e "${CUDA_ROOT}/targets/x86_64-linux" && -d /usr/local/cuda/targets/x86_64-linux ]]; then
-    sudo ln -s "/usr/local/cuda/targets/x86_64-linux" "${CUDA_ROOT}/targets/x86_64-linux"
-  fi
+  sudo ln -sfn "${HOST_CUDA_ROOT}/bin" "${CUDA_ROOT}/bin"
+  sudo ln -sfn "${HOST_CUDA_ROOT}/nvvm" "${CUDA_ROOT}/nvvm"
+  sudo ln -sfn "${HOST_CUDA_ROOT}/targets/x86_64-linux" "${CUDA_ROOT}/targets/x86_64-linux"
 fi
 
-# Keep local x86_64 builds working when repositories point at the synced sysroot.
-sudo mkdir -p "${SYSROOT}/usr/lib" "${SYSROOT}/lib"
-if [[ ! -e "${SYSROOT}/usr/lib/x86_64-linux-gnu" && -d /usr/lib/x86_64-linux-gnu ]]; then
-  sudo ln -s "/usr/lib/x86_64-linux-gnu" "${SYSROOT}/usr/lib/x86_64-linux-gnu"
-fi
-if [[ ! -e "${SYSROOT}/lib/x86_64-linux-gnu" && -d /lib/x86_64-linux-gnu ]]; then
-  sudo ln -s "/lib/x86_64-linux-gnu" "${SYSROOT}/lib/x86_64-linux-gnu"
-fi
-if [[ -d /usr/include/glib-2.0 ]]; then
-  sudo mkdir -p "${SYSROOT}/usr/include/glib-2.0"
-  sudo rsync -a /usr/include/glib-2.0/ "${SYSROOT}/usr/include/glib-2.0/"
-fi
+# Preserve the target's GLib headers. Host builds select host repositories;
+# mixing host headers into this sysroot breaks target ABI consistency.
+sudo mkdir -p "${SYSROOT}/etc"
+sudo rsync -a -e "${RSYNC_SSH_CMD}" \
+  "${JETSON_HOST}:/etc/os-release" "${JETSON_HOST}:/etc/nv_tegra_release" "${SYSROOT}/etc/"
 
 echo "Jetson sysroot synced to ${SYSROOT}"
