@@ -639,6 +639,14 @@ cc_test(
 )
 
 cc_test(
+    name = "process_guard_deadline_test",
+    srcs = ["ProcessGuardDeadlineTest.cpp"],
+    linkstatic = True,
+    linkopts = ["-Wl,--wrap=waitpid"],
+    deps = [":process_guard"],
+)
+
+cc_test(
     name = "process_guard_test",
     srcs = ["ProcessGuardTest.cpp"],
     args = ["$(location //src/apps/hstream-process-guard:hstream-process-guard)"],

@@ -383,7 +383,6 @@ class Worker {
       lease_started_ = true;
       while (!finished_) {
         CheckDeadline();
-        Require(!fs::exists(root_ / "cancel"), "cancelled");
         Poll();
         if (request_.Has("batch")) {
           const auto& task = tasks_.begin()->second;
@@ -709,7 +708,7 @@ class Worker {
       for (const auto& entry : tasks_)
         done &= entry.second.stopped && entry.second.capture.value < 0;
       if (done) {
-        const auto proof = process_guard::Reap();
+        const auto proof = process_guard::Reap(deadline);
         Check(proof.status());
         if (*proof)
           return true;

@@ -141,10 +141,7 @@ class Controller:
         game = validate_game(self.config, game)
         for key, profile in plan["profiles"].items():
             validate_profile(profile)
-            require(
-                profile["runtime"].get("worker") in profile["runtime"]["files"],
-                "Standalone execution needs a pinned runtime.worker",
-            )
+            executor.limits(profile, self.defaults)
             require(
                 key in self.config["profiles"]
                 and digest(profile) == digest(self.config["profiles"][key]),

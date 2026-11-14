@@ -990,6 +990,24 @@ finally:
         self.wait()
         self.assertEqual(self.wait(second["workflow_id"])["state"], "succeeded")
 
+    def test_worker_limits_are_rejected_before_admission(self):
+        config = read_json(self.registry / "config.json")
+        for shutdown, duration, message in (
+            (601, 30, "at most 600"),
+            (1, 30 * 24 * 3600, "within 30 days"),
+        ):
+            with self.subTest(shutdown=shutdown, duration=duration):
+                config["defaults"]["shutdown_timeout_seconds"] = shutdown
+                config["profiles"]["cpu"]["resources"]["time_seconds"] = duration
+                self.plan["profiles"]["cpu"] = copy.deepcopy(config["profiles"]["cpu"])
+                write_json(self.registry / "config.json", config)
+                self.controller = Controller(self.registry)
+                with self.assertRaisesRegex(WorkflowError, message):
+                    self.controller.register(self.plan, self.game)
+                self.assertEqual(self.controller.registry.read()["reservations"], {})
+                self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+                self.assertFalse((self.game / "_hockeymon/workflows").exists())
+
     def test_compute_execution_needs_no_controller_package(self):
         profile = copy.deepcopy(self.profile)
         for path in controller_files():

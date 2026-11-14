@@ -107,3 +107,11 @@ continues during retirement and must reach EOF before completion. Explicit
 Run `bazelisk test --config=opt //src/libs/runtime_worker:runtime_worker_test`
 for the Linux process/protocol integration tests. These tests use CPU helpers;
 GPU playback qualification still belongs to the Slurm deployment checks.
+
+Standalone admission validates the worker's translated time limits before
+reserving a task: shutdown allowance is at most 600 seconds, and task time plus
+both retirement phases and the command allowance must fit within 30 days.
+The shared process guard passes absolute phase deadlines through repeated reap
+and process-signaling passes. Interrupted waits and continuously exiting children
+cannot starve cancellation; an expired proof pass makes one nonretrying kernel
+observation and never infers shutdown from an empty process scan.

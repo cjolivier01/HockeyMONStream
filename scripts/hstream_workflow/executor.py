@@ -15,12 +15,45 @@ SCHEMA = "hstream-runtime-worker-v1"
 LOG_SEGMENT_BYTES = 8 * 1024 * 1024
 
 
+def limits(profile, settings):
+    """Reject incompatible native bounds before reserving or dispatching work."""
+    worker = profile["runtime"].get("worker")
+    require(
+        isinstance(worker, str)
+        and Path(worker).is_absolute()
+        and worker in profile["runtime"]["files"],
+        "Standalone execution needs a pinned absolute runtime.worker",
+    )
+    poll_ms = min(settings["poll_interval_ms"], 1000)
+    retire_ms = settings["shutdown_timeout_seconds"] * 1000
+    require(
+        poll_ms <= retire_ms <= 600000,
+        "Native worker shutdown_timeout_seconds must be at most 600",
+    )
+    timeout_ms = (
+        profile["resources"]["time_seconds"] * 1000
+        + 2 * retire_ms
+        + settings["command_timeout_seconds"] * 1000
+    )
+    require(
+        1 <= timeout_ms <= 30 * 24 * 3600 * 1000,
+        "Native worker task, shutdown and command timeouts must fit within 30 days",
+    )
+    return {
+        "poll_ms": poll_ms,
+        "retire_ms": retire_ms,
+        "timeout_ms": timeout_ms,
+        "client_timeout_ms": 0,
+        "max_bytes": 0,
+        "max_log_bytes": LOG_SEGMENT_BYTES,
+        "max_tasks": 1,
+    }
+
+
 def prepare(root, request, profile, settings, intent):
     runtime = profile["runtime"]
-    worker = runtime.get("worker")
-    require(
-        worker in runtime["files"], "Standalone execution needs a pinned runtime.worker"
-    )
+    worker_limits = limits(profile, settings)
+    worker = runtime["worker"]
     directory = private_directory(root / "worker", create=True)
     scratch = private_directory(root / "runtime", create=True)
     environment = {
@@ -49,8 +82,6 @@ def prepare(root, request, profile, settings, intent):
         else:
             environment.update(ROCR_VISIBLE_DEVICES=device, HIP_VISIBLE_DEVICES="0")
     workflow_cancel = root.parent.parent / "cancel-intent.json"
-    poll_ms = min(settings["poll_interval_ms"], 1000)
-    retire_ms = settings["shutdown_timeout_seconds"] * 1000
     task_ms = profile["resources"]["time_seconds"] * 1000
     spec = {
         "id": request["attempt_id"].replace("-", ""),
@@ -89,17 +120,7 @@ def prepare(root, request, profile, settings, intent):
                 },
             },
         ],
-        "limits": {
-            "poll_ms": poll_ms,
-            "retire_ms": retire_ms,
-            "timeout_ms": task_ms
-            + 2 * retire_ms
-            + settings["command_timeout_seconds"] * 1000,
-            "client_timeout_ms": 0,
-            "max_bytes": 0,
-            "max_log_bytes": LOG_SEGMENT_BYTES,
-            "max_tasks": 1,
-        },
+        "limits": worker_limits,
         "batch": {
             "spec": spec,
             "artifacts": [
@@ -109,6 +130,7 @@ def prepare(root, request, profile, settings, intent):
     }
     if profile["executor"] == "slurm":
         value["nodes"] = profile["resources"]["nodes"]
+    require(len(files) <= 4096, "Native worker accepts at most 4096 pinned files")
     path = directory / "request.json"
     write_json(path, value, exclusive=True)
     intent["worker_request_sha256"] = file_digest(path, 4 * 1024 * 1024)["sha256"]
