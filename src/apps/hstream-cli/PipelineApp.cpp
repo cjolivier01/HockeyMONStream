@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/common/PacedPlaybackConfig.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/common/RuntimeConsole.h"
 #include "hstream/src/libs/program/ToneControlCommand.h"
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
@@ -10437,10 +10438,7 @@ int main(int argc, char* argv[]) {
   hm::diagnostics::Initialize("hstream-cli", argc ? argv[0] : nullptr);
   g_set_print_handler(+[](const gchar* message) {
     hm::diagnostics::Log("stdout", message ? message : "");
-    if (message) {
-      std::fputs(message, stdout);
-      std::fflush(stdout);
-    }
+    hm::WriteRuntimeConsole(message);
   });
   g_set_printerr_handler(+[](const gchar* message) {
     hm::diagnostics::Log("stderr", message ? message : "");

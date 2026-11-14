@@ -814,8 +814,14 @@ class Worker {
     Require(::pipe2(pipes, O_CLOEXEC) == 0, "Cannot create native command pipe");
     Fd input(pipes[0]);
     task.pipe = Fd(pipes[1]);
-    Fd out(::open(output.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
-    Fd err(::open(errors.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600));
+    // Live protocol readers run on another NFS client. Buffered writes can
+    // expose an advanced file size before the payload reaches that client,
+    // which then consumes holes and permanently skips readiness/ack records.
+    // Complete direct writes on shared storage before the producer continues.
+    const int log_flags =
+        O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | (task.rotate_log ? 0 : O_DSYNC);
+    Fd out(::open(output.c_str(), log_flags, 0600));
+    Fd err(::open(errors.c_str(), log_flags, 0600));
     for (const int descriptor : {out.value, err.value}) {
       struct stat info {};
       Require(::fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode), "Native logs require regular files");

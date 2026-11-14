@@ -24,6 +24,10 @@
   later sessions retain those exact pins across dispatcher OS differences.
   See `docs/runtime-worker.md`.
 
+- `common/RuntimeConsole` frames native `HSTREAM_` stdout records against
+  fragmented SDK stderr diagnostics. Both NVIDIA and AMD CLI GLib stdout
+  handlers use it; preserve complete protocol lines for Qt and web readers.
+
 ## Project Structure & Modules
 - Code: `src/` with libraries in `src/libs/*`, apps in `src/apps`, optional plugins in `src/gst-plugins`.
 - Build files: `BUILD.bazel` next to sources; external repos in `WORKSPACE.bazel` and `buildfiles/`.

@@ -508,6 +508,21 @@ cc_library(
     visibility = ["//visibility:public"],
 )
 
+cc_library(
+    name = "runtime_console",
+    srcs = ["RuntimeConsole.cpp"],
+    hdrs = ["RuntimeConsole.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_test(
+    name = "runtime_console_test",
+    srcs = ["RuntimeConsoleTest.cpp"],
+    linkopts = ["-pthread"],
+    deps = [":runtime_console"],
+)
+
 # Process-local crash reports; no dependency on GUI, GPU, or GStreamer.
 cc_library(
     name = "process_diagnostics",
