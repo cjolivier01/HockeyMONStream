@@ -35,6 +35,7 @@
 #include <png.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/vfs.h>
 #include <tiffio.h>
 #include <unistd.h>
@@ -44,6 +45,49 @@
 #include "absl/status/status.h"
 
 namespace hm::stitching {
+namespace {
+int fresh_stitch_stat_at(int descriptor, const char* path, int flags, struct stat* metadata) {
+  if (metadata == nullptr) {
+    errno = EFAULT;
+    return -1;
+  }
+  struct statx current {};
+  if (::statx(descriptor, path, flags | AT_STATX_FORCE_SYNC, STATX_BASIC_STATS, &current) != 0)
+    return -1;
+  if ((current.stx_mask & STATX_BASIC_STATS) != STATX_BASIC_STATS) {
+    errno = EOPNOTSUPP;
+    return -1;
+  }
+  *metadata = {};
+  metadata->st_dev = makedev(current.stx_dev_major, current.stx_dev_minor);
+  metadata->st_ino = current.stx_ino;
+  metadata->st_mode = current.stx_mode;
+  metadata->st_nlink = current.stx_nlink;
+  metadata->st_uid = current.stx_uid;
+  metadata->st_gid = current.stx_gid;
+  metadata->st_rdev = makedev(current.stx_rdev_major, current.stx_rdev_minor);
+  metadata->st_size = current.stx_size;
+  metadata->st_blksize = current.stx_blksize;
+  metadata->st_blocks = current.stx_blocks;
+  metadata->st_atim = {current.stx_atime.tv_sec, current.stx_atime.tv_nsec};
+  metadata->st_mtim = {current.stx_mtime.tv_sec, current.stx_mtime.tv_nsec};
+  metadata->st_ctim = {current.stx_ctime.tv_sec, current.stx_ctime.tv_nsec};
+  return 0;
+}
+} // namespace
+
+int fresh_stitch_fstat(int descriptor, struct stat* metadata) {
+  return fresh_stitch_stat_at(descriptor, "", AT_EMPTY_PATH, metadata);
+}
+
+int fresh_stitch_stat(const char* path, struct stat* metadata) {
+  return fresh_stitch_stat_at(AT_FDCWD, path, 0, metadata);
+}
+
+int fresh_stitch_lstat(const char* path, struct stat* metadata) {
+  return fresh_stitch_stat_at(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, metadata);
+}
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -140,7 +184,8 @@ absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const cha
   } cleanup{descriptor};
   struct stat metadata{};
   uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 || maximum_bytes == 0)
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      maximum_bytes == 0)
     return absl::FailedPreconditionError("Invalid stitch artifact: " + path.string());
   if (static_cast<uint64_t>(metadata.st_size) > maximum_bytes)
     return absl::ResourceExhaustedError("Oversized stitch artifact: " + path.string());
@@ -150,7 +195,7 @@ absl::Status validate_stitch_artifact_bounds(const fs::path& game_dir, const cha
       return tiff_maximum.status();
     maximum_bytes = *tiff_maximum;
     struct stat verified{};
-    if (::fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev ||
+    if (fresh_stitch_fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev ||
         metadata.st_ino != verified.st_ino || metadata.st_mode != verified.st_mode ||
         metadata.st_size != verified.st_size || metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
         metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec || metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec ||
@@ -711,7 +756,7 @@ absl::StatusOr<std::string> read_bounded_stitch_file(
     }
   } close{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     return absl::FailedPreconditionError("Invalid " + std::string(description));
   }
@@ -999,7 +1044,7 @@ absl::StatusOr<std::string> stitch_artifact_stat_id(const fs::path& game_dir, St
   const auto append = [&](const char* name, bool required) -> absl::Status {
     struct stat metadata{};
     const fs::path path = game_dir / name;
-    if (::stat(path.c_str(), &metadata) != 0) {
+    if (fresh_stitch_stat(path.c_str(), &metadata) != 0) {
       if (!required && errno == ENOENT)
         return absl::OkStatus();
       return absl::NotFoundError("Hugin generation artifact is missing: " + path.string());
@@ -1050,7 +1095,7 @@ absl::StatusOr<std::string> read_stitch_generation_artifact(const fs::path& path
   } close{descriptor};
   struct stat metadata{};
   constexpr size_t kMaximumGenerationIdentityBytes = 16 * 1024;
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
       static_cast<uint64_t>(metadata.st_size) > kMaximumGenerationIdentityBytes) {
     return absl::FailedPreconditionError("Invalid Hugin generation identity artifact");
   }
@@ -1306,13 +1351,13 @@ absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
       }
     } close{descriptor};
     struct stat before{};
-    if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0)
+    if (fresh_stitch_fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0)
       return absl::FailedPreconditionError("Invalid Hugin artifact while fingerprinting: " + path.string());
     if (retain_descriptors) {
       // Generated maps can still have pending NFS writes after their producer
       // closes them. Commit those writes before capturing the publication pin;
       // otherwise later writeback changes mtime during hashing or rename.
-      if (::fsync(descriptor) != 0 || ::fstat(descriptor, &before) != 0)
+      if (::fsync(descriptor) != 0 || fresh_stitch_fstat(descriptor, &before) != 0)
         return absl::InternalError("Unable to settle Hugin artifact before fingerprinting: " + path.string());
     }
     uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
@@ -1353,7 +1398,7 @@ absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
       offset += static_cast<uint64_t>(count);
     }
     struct stat after{};
-    if (::fstat(descriptor, &after) != 0 || !stitch_stat_matches(before, after))
+    if (fresh_stitch_fstat(descriptor, &after) != 0 || !stitch_stat_matches(before, after))
       return absl::AbortedError("Hugin artifact changed while fingerprinting: " + path.string());
     if (retain_descriptors) {
       result.artifacts.emplace_back(name, descriptor, before);
@@ -1439,7 +1484,7 @@ absl::StatusOr<std::string> read_stitch_transaction_state(const fs::path& transa
     }
   } close{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable stitch transaction state file");
   }
@@ -1483,7 +1528,7 @@ absl::StatusOr<bool> has_current_stitch_transaction_protocol(const fs::path& tra
     return absl::FailedPreconditionError("Unable to open stitch transaction journal version");
   }
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size != 2) {
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size != 2) {
     ::close(descriptor);
     return absl::FailedPreconditionError("Invalid stitch transaction journal version file");
   }
@@ -1583,7 +1628,7 @@ absl::Status clone_or_copy_stitch_rollback_file(const fs::path& source, const fs
 
 absl::StatusOr<bool> regular_stitch_file_exists_no_follow(const fs::path& path) {
   struct stat metadata{};
-  if (::lstat(path.c_str(), &metadata) == 0) {
+  if (fresh_stitch_lstat(path.c_str(), &metadata) == 0) {
     if (!S_ISREG(metadata.st_mode))
       return absl::FailedPreconditionError("Stitch artifact is not a regular file: " + path.string());
     return true;
@@ -1608,7 +1653,7 @@ absl::Status write_stitch_transaction_file(const fs::path& path, const std::stri
 absl::Status publish_stitch_file_atomically(const fs::path& path, const std::string& contents) {
   mode_t published_mode = 0644;
   struct stat existing{};
-  if (::lstat(path.c_str(), &existing) == 0) {
+  if (fresh_stitch_lstat(path.c_str(), &existing) == 0) {
     if (!S_ISREG(existing.st_mode))
       return absl::FailedPreconditionError("Existing Hugin publication target is not a regular file");
     published_mode = existing.st_mode & 07777;
@@ -1644,7 +1689,7 @@ absl::Status publish_stitch_file_atomically(const fs::path& path, const std::str
         "Unable to set temporary Hugin file permissions: " + std::string(std::strerror(saved_errno)));
   }
   struct stat temporary_metadata{};
-  if (::fstat(descriptor, &temporary_metadata) != 0 || !S_ISREG(temporary_metadata.st_mode)) {
+  if (fresh_stitch_fstat(descriptor, &temporary_metadata) != 0 || !S_ISREG(temporary_metadata.st_mode)) {
     const int saved_errno = errno;
     ::close(descriptor);
     return absl::InternalError("Unable to validate temporary Hugin file: " + std::string(std::strerror(saved_errno)));
@@ -1753,7 +1798,7 @@ absl::Status rebind_published_stitch_generation_artifact(
     const fs::path path = game_dir / artifact.name;
     if (artifact.descriptor < 0) {
       struct stat metadata{};
-      if (::lstat(path.c_str(), &metadata) == 0)
+      if (fresh_stitch_lstat(path.c_str(), &metadata) == 0)
         return absl::AbortedError("Absent optional Hugin artifact appeared during publication: " + path.string());
       if (errno != ENOENT) {
         return absl::InternalError(
@@ -1762,11 +1807,11 @@ absl::Status rebind_published_stitch_generation_artifact(
       continue;
     }
     struct stat pinned{};
-    if (::fstat(artifact.descriptor, &pinned) != 0 || !stitch_stat_matches(artifact.metadata, pinned)) {
+    if (fresh_stitch_fstat(artifact.descriptor, &pinned) != 0 || !stitch_stat_matches(artifact.metadata, pinned)) {
       return absl::AbortedError("Hugin artifact changed during publication: " + path.string());
     }
     struct stat published{};
-    if (::lstat(path.c_str(), &published) != 0) {
+    if (fresh_stitch_lstat(path.c_str(), &published) != 0) {
       return absl::AbortedError("Hugin artifact is missing after publication: " + path.string());
     }
     if (!S_ISREG(published.st_mode) || !stitch_stat_matches(artifact.metadata, published)) {
@@ -1798,8 +1843,9 @@ absl::Status validate_prepared_stitch_generation_artifact(
     return absl::AbortedError("Optional Hugin artifact appeared after publication preparation: " + name);
   struct stat pinned{};
   struct stat staged{};
-  if (::fstat(artifact->descriptor, &pinned) != 0 || ::lstat((staging / name).c_str(), &staged) != 0 ||
-      !stitch_stat_matches(artifact->metadata, pinned) || !stitch_stat_matches(pinned, staged)) {
+  if (fresh_stitch_fstat(artifact->descriptor, &pinned) != 0 ||
+      fresh_stitch_lstat((staging / name).c_str(), &staged) != 0 || !stitch_stat_matches(artifact->metadata, pinned) ||
+      !stitch_stat_matches(pinned, staged)) {
     return absl::AbortedError("Hugin artifact changed before publication: " + (staging / name).string());
   }
   return absl::OkStatus();
@@ -1832,9 +1878,9 @@ absl::Status record_published_stitch_generation_artifact(
   struct stat pinned{};
   struct stat published{};
   struct stat named{};
-  const bool pinned_read = ::fstat(artifact->descriptor, &pinned) == 0;
-  const bool published_read = ::fstat(published_descriptor, &published) == 0;
-  const bool named_read = ::lstat(path.c_str(), &named) == 0;
+  const bool pinned_read = fresh_stitch_fstat(artifact->descriptor, &pinned) == 0;
+  const bool published_read = fresh_stitch_fstat(published_descriptor, &published) == 0;
+  const bool named_read = fresh_stitch_lstat(path.c_str(), &named) == 0;
   if (!pinned_read || !published_read || !named_read || !S_ISREG(published.st_mode) || !S_ISREG(named.st_mode) ||
       !stitch_file_metadata_matches_without_ctime(artifact->metadata, pinned) ||
       !stitch_stat_matches(pinned, published) || !stitch_stat_matches(published, named)) {

@@ -132,7 +132,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
     }
   } cleanup{descriptor};
   struct stat before{};
-  if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
+  if (fresh_stitch_fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
       static_cast<uint64_t>(before.st_size) > kMaximumAkazeCalibrationBytes) {
     return absl::FailedPreconditionError(
         "AKAZE lens calibration must be a non-empty bounded regular file: " + path.string());
@@ -152,7 +152,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
     offset += static_cast<size_t>(count);
   }
   struct stat after{};
-  if (::fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+  if (fresh_stitch_fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
       before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
       before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
       before.st_ctim.tv_nsec != after.st_ctim.tv_nsec) {
@@ -400,7 +400,7 @@ absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
     }
   } close_descriptor{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0)
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0)
     return absl::InternalError("Unable to inspect the rink leveling response: " + std::string(std::strerror(errno)));
   if (!S_ISREG(metadata.st_mode))
     return absl::FailedPreconditionError("Rink leveling response must be a regular file");
@@ -729,7 +729,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
   opened->descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (opened->descriptor < 0)
     return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
-  if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
+  if (fresh_stitch_fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
       opened->metadata.st_size <= 0)
     return absl::FailedPreconditionError(TO_STRING("TIFF is not a non-empty regular file: " << path.string()));
   if (static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
@@ -739,7 +739,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
   }
   // TIFF snapshots take this branch before the generic artifact pinning path.
   // Settle their exact descriptor before the parser captures any metadata.
-  if (::fsync(opened->descriptor) != 0 || ::fstat(opened->descriptor, &opened->metadata) != 0)
+  if (::fsync(opened->descriptor) != 0 || fresh_stitch_fstat(opened->descriptor, &opened->metadata) != 0)
     return absl::InternalError("Unable to settle TIFF before inspection: " + path.string());
   if (!S_ISREG(opened->metadata.st_mode) || opened->metadata.st_size <= 0 ||
       static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes)
@@ -758,7 +758,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
   struct stat verified{};
-  if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
+  if (fresh_stitch_fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
       opened.metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
@@ -858,14 +858,14 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
     return absl::FailedPreconditionError("Unable to pin stitch snapshot artifact: " + path.string());
   }
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     ::close(descriptor);
     return absl::FailedPreconditionError("Invalid or oversized stitch snapshot artifact: " + path.string());
   }
   // Finish pending shared-filesystem writeback before freezing the source
   // identity. All comparisons after this point still reject any mutation.
-  if (::fsync(descriptor) != 0 || ::fstat(descriptor, &metadata) != 0) {
+  if (::fsync(descriptor) != 0 || fresh_stitch_fstat(descriptor, &metadata) != 0) {
     ::close(descriptor);
     return absl::InternalError("Unable to settle stitch snapshot artifact: " + path.string());
   }
@@ -957,7 +957,8 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
     }
   }
   struct stat verified{};
-  if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
+  if (fresh_stitch_fstat(artifact->descriptor, &verified) != 0 ||
+      !same_load_artifact_snapshot(artifact->metadata, verified)) {
     return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
   }
   // Preserve timestamps only after the copy's data writes have reached the
@@ -1000,7 +1001,7 @@ absl::Status verify_pinned_load_artifacts(
   for (const PinnedLoadArtifact& artifact : artifacts) {
     struct stat descriptor_metadata{};
     struct stat path_metadata{};
-    if (::fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
+    if (fresh_stitch_fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
         !same_load_artifact_snapshot(artifact.metadata, descriptor_metadata)) {
       return absl::AbortedError("Control-mask artifact changed while being loaded: " + artifact.name);
     }
@@ -3802,7 +3803,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
     }
   } cleanup{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
   }
@@ -4370,7 +4371,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
     }
   } cleanup{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
     return absl::FailedPreconditionError("Invalid field-mask PNG: " + path);
 
   std::array<unsigned char, 29> header_bytes{};
@@ -4441,7 +4442,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
     offset += static_cast<size_t>(count);
   }
   struct stat verified_metadata{};
-  if (::fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
+  if (fresh_stitch_fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
       metadata.st_ino != verified_metadata.st_ino || metadata.st_mode != verified_metadata.st_mode ||
       metadata.st_size != verified_metadata.st_size || metadata.st_mtim.tv_sec != verified_metadata.st_mtim.tv_sec ||
       metadata.st_mtim.tv_nsec != verified_metadata.st_mtim.tv_nsec ||
