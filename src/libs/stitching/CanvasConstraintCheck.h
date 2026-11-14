@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sys/stat.h>
 #include <cstddef>
 #include <filesystem>
 #include <memory>
@@ -48,6 +49,12 @@ struct CanvasConstraintCompatibility {
 
 inline constexpr char kStitchCanvasProvenanceArtifact[] = "stitching_canvas_provenance";
 inline constexpr char kStitchGenerationArtifact[] = "stitching_generation_id";
+
+// Identity checks must fetch current NFS attributes, including after fsync.
+// These preserve stat/fstat/lstat follow semantics and errno on failure.
+int fresh_stitch_fstat(int descriptor, struct stat* metadata);
+int fresh_stitch_stat(const char* path, struct stat* metadata);
+int fresh_stitch_lstat(const char* path, struct stat* metadata);
 
 // Returns the effective platform/runtime canvas limit. Malformed environment
 // overrides are ignored consistently by generation and validation paths.

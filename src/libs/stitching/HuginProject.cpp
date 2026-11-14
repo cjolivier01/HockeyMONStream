@@ -88,7 +88,7 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
     }
   } close{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     return absl::FailedPreconditionError("Invalid or oversized Hugin file: " + path.string());
   }
@@ -103,10 +103,11 @@ absl::StatusOr<std::string> read_bounded_hugin_file(const fs::path& path, size_t
     offset += static_cast<size_t>(count);
   }
   struct stat verified{};
-  if (::fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev || metadata.st_ino != verified.st_ino ||
-      metadata.st_mode != verified.st_mode || metadata.st_size != verified.st_size ||
-      metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec || metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
-      metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec || metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
+  if (fresh_stitch_fstat(descriptor, &verified) != 0 || metadata.st_dev != verified.st_dev ||
+      metadata.st_ino != verified.st_ino || metadata.st_mode != verified.st_mode ||
+      metadata.st_size != verified.st_size || metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
+      metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec || metadata.st_ctim.tv_sec != verified.st_ctim.tv_sec ||
+      metadata.st_ctim.tv_nsec != verified.st_ctim.tv_nsec) {
     return absl::AbortedError("Hugin file changed while being read: " + path.string());
   }
   return contents;
@@ -294,7 +295,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
   opened->descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (opened->descriptor < 0)
     return absl::NotFoundError("Unable to open Hugin TIFF: " + path.string());
-  if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
+  if (fresh_stitch_fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
       opened->metadata.st_size <= 0)
     return absl::FailedPreconditionError("Hugin TIFF is not a non-empty regular file: " + path.string());
   if (static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes)
@@ -315,7 +316,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
   struct stat verified{};
-  if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
+  if (fresh_stitch_fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
       opened.metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
@@ -944,7 +945,7 @@ absl::Status publish_normalized_seam(
   } cleanup{descriptor, temporary};
 
   struct stat source_metadata{};
-  if (::stat((source_mode_path.empty() ? path : source_mode_path).c_str(), &source_metadata) != 0)
+  if (fresh_stitch_stat((source_mode_path.empty() ? path : source_mode_path).c_str(), &source_metadata) != 0)
     return absl::InternalError("Unable to read normalized seam source mode: " + std::string(std::strerror(errno)));
   if (!S_ISREG(source_metadata.st_mode))
     return absl::FailedPreconditionError("Normalized seam source is not a regular file: " + path.string());
@@ -1778,6 +1779,12 @@ absl::Status run_nona(
       directory,
       nullptr,
       is_cancelled));
+  // Nona's close does not finish NFS writeback. Inspection must see settled
+  // timestamps as well as complete pixels, before normalization or hashing.
+  for (const char* prefix : {"mapping_0000", "mapping_0001"}) {
+    for (const char* suffix : {".tif", "_x.tif", "_y.tif"})
+      HM_RETURN_IF_ERROR(fsync_stitch_path(directory / (std::string(prefix) + suffix)));
+  }
   return normalize_nona_coordinate_maps(directory, is_cancelled);
 }
 
@@ -1808,7 +1815,7 @@ absl::Status publish_artifacts(
     return status;
   for (const std::string& name : names) {
     struct stat metadata{};
-    if (::lstat((hm::game_storage::StateDirectory(game_dir) / name).c_str(), &metadata) == 0) {
+    if (fresh_stitch_lstat((hm::game_storage::StateDirectory(game_dir) / name).c_str(), &metadata) == 0) {
       if (!S_ISREG(metadata.st_mode)) {
         return absl::FailedPreconditionError("Previous stitch artifact is not a regular file: " + name);
       }
@@ -1860,7 +1867,7 @@ absl::Status publish_artifacts(
   size_t backup_count = 0;
   for (const std::string& name : names) {
     struct stat metadata{};
-    if (::lstat((hm::game_storage::StateDirectory(game_dir) / name).c_str(), &metadata) != 0) {
+    if (fresh_stitch_lstat((hm::game_storage::StateDirectory(game_dir) / name).c_str(), &metadata) != 0) {
       if (errno != ENOENT) {
         return rollback_error(
             "Unable to inspect old stitch artifact " + name + ": " + std::string(std::strerror(errno)));
@@ -3132,6 +3139,8 @@ absl::Status render_staged_project(
         staging,
         nullptr,
         options.is_cancelled);
+    if (status.ok())
+      status = fsync_stitch_path(staging / "seam_file.tif");
     if (status.ok()) {
       // Enblend can crop its mask more tightly than the output panorama. PNG
       // drops the explicit zero origin, making that crop indistinguishable from
