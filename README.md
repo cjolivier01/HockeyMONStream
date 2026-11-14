@@ -139,7 +139,7 @@ contains installers/packages for these targets:
 | --- | --- | --- |
 | Windows 11 | `*_windows-wsl-setup.exe` | Installs the app in a dedicated WSL 2 environment; requires an NVIDIA GPU and DeepStream package. |
 | Ubuntu 24.04 / 26.04 x86_64 | `*_amd64.deb` | Use with the matching NVIDIA DeepStream installation. |
-| NVIDIA Jetson (Ubuntu 22.04 arm64) | `*_jetson-ubuntu22.04_arm64.deb` | Built for JetPack 6-class Jetson systems. |
+| NVIDIA Jetson (Ubuntu 24.04 arm64) | `*_jetson-ubuntu24.04_arm64.deb` | Built for Jetson Linux 39 Jetson systems. |
 
 A release occasionally omits a platform whose build hardware was unavailable;
 its notes say which, and the most recent release listing that asset is the one

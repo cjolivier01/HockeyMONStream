@@ -75,7 +75,7 @@ build:deb_ubuntu24 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_10
 build:deb_ubuntu26 --repo_env=CUDA_PATH=/usr/local/cuda-13.2
 build:deb_ubuntu26 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_100;sm_120
 
-# JetPack 6 release packages target Orin. Ship native sm_87 SASS instead of
+# Jetson Linux 39 release packages target Orin. Ship native sm_87 SASS instead of
 # relying on runtime PTX compilation on every installation.
 build:deb_jetson --config=jetson
 build:deb_jetson --@rules_cuda//cuda:archs=sm_87
@@ -102,4 +102,6 @@ build:jetson --linkopt=-l:libsystemd.so.0
 build:jetson --linkopt=-lm
 build:jetson --repo_env=OPENCV_ROOT=/opt/jetson-sysroot/usr
 build:jetson --repo_env=CUDA_PATH=/opt/jetson-sysroot/usr/local/cuda
+# x86 nvcc otherwise assumes the pre-CUDA-13 aarch64-linux target directory.
+build:jetson --@rules_cuda//cuda:copts=--target-directory=sbsa-linux
 build:jetson --repo_env=HM_BAZEL_PREFER_FIRST_LOCAL_PATH=1

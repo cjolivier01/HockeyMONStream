@@ -25,10 +25,10 @@ case "${TARGET_PLATFORM}" in
     EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
     ;;
   jetson)
-    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-7.1}"
-    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-7.1.0-1}"
-    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-7.2~}"
-    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-12}"
+    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-9.1}"
+    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-9.1.0-1}"
+    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-9.2~}"
+    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
     ;;
   *) echo "ERROR: HSTREAM_TARGET_PLATFORM must be desktop or jetson." >&2; exit 1 ;;
 esac
@@ -73,13 +73,13 @@ if [[ -z "${TARGET_UBUNTU}" && -r /etc/os-release ]]; then
   fi
 fi
 case "${TARGET_PLATFORM}:${TARGET_UBUNTU}" in
-  desktop:24.04|desktop:26.04|jetson:22.04) ;;
+  desktop:24.04|desktop:26.04|jetson:24.04) ;;
   desktop:*)
     echo "ERROR: desktop packages require Ubuntu 24.04 or 26.04." >&2
     exit 1
     ;;
   jetson:*)
-    echo "ERROR: Jetson packages require the JetPack 6 Ubuntu 22.04 baseline." >&2
+    echo "ERROR: Jetson packages require the Jetson Linux 39 Ubuntu 24.04 baseline." >&2
     exit 1
     ;;
 esac
@@ -115,7 +115,7 @@ case "${TARGET_PLATFORM}:${PKG_ARCH}" in
     ;;
   jetson:arm64)
     DEB_MULTIARCH=aarch64-linux-gnu
-    CUDA_TARGET_TRIPLE=aarch64-linux
+    CUDA_TARGET_TRIPLE=sbsa-linux
     ;;
   *)
     echo "ERROR: unsupported HStream package platform/architecture: ${TARGET_PLATFORM}/${PKG_ARCH}" >&2
@@ -150,7 +150,6 @@ HSTREAM_PLAYER_MODEL_BUILDER="${TOPDIR}/bazel-bin/src/apps/player-model-builder/
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
 HSTREAM_WEB_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-web-job"
 HSTREAM_EXPERIMENT_TASK="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-experiment-task"
-HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
@@ -213,21 +212,6 @@ fi
 if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_EXPERIMENT_TASK}" ]]; then
   echo "ERROR: ${HSTREAM_EXPERIMENT_TASK} not found. Build hstream-experiment-task for the target platform first." >&2
   exit 1
-fi
-if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
-  for required_hugin_file in \
-    bin/autooptimiser \
-    bin/pano_modify \
-    bin/nona \
-    lib/libhuginbase.so.0.0 \
-    lib/libvigraimpex.so.11.1.11.1 \
-    licenses/hugin/COPYING.txt \
-    licenses/vigra/LICENSE.txt; do
-    if [[ -z "${HSTREAM_HUGIN_TOOLS_DIR}" || ! -f "${HSTREAM_HUGIN_TOOLS_DIR}/${required_hugin_file}" ]]; then
-      echo "ERROR: pinned Jetson Hugin artifact is missing: ${required_hugin_file}" >&2
-      exit 1
-    fi
-  done
 fi
 for plugin in "${HSTREAM_GST_PLUGINS[@]}"; do
   if [[ ! -f "${plugin}" ]]; then
@@ -293,10 +277,8 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/bin" \
   "${STAGING}${INSTALL_PREFIX}/lib/gst-plugins" \
   "${STAGING}${INSTALL_PREFIX}/configs" \
-  "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/native-calibration-models" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime" \
-  "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra" \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
   "${STAGING}/usr/share/applications" \
   "${STAGING}/usr/share/doc/${PKG_NAME}" \
@@ -452,31 +434,6 @@ fi
 mkdir -p "${STAGING}${INSTALL_PREFIX}/share/exiftool"
 cp -L "${exiftool_runtime}/exiftool" "${exiftool_runtime}/LICENSE" "${STAGING}${INSTALL_PREFIX}/share/exiftool/"
 cp -RL "${exiftool_runtime}/lib" "${STAGING}${INSTALL_PREFIX}/share/exiftool/"
-
-# Ubuntu 22.04 arm64 publishes no hugin-tools package. Jetson releases include
-# pinned source-built copies of the required commands and their private
-# Hugin/VIGRA libraries, with upstream licenses, so clean-state calibration is
-# available without an unsatisfiable package dependency.
-if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
-  for hugin_tool in autooptimiser pano_modify nona; do
-    hugin_source="${HSTREAM_HUGIN_TOOLS_DIR}/bin/${hugin_tool}"
-    hugin_destination="${STAGING}${INSTALL_PREFIX}/bin/${hugin_tool}"
-    validate_elf_arch "${hugin_source}"
-    install -m 0755 "${hugin_source}" "${hugin_destination}"
-    patchelf_rpath "${hugin_destination}"
-    package_elfs+=("${hugin_destination}")
-  done
-  install_lib "${HSTREAM_HUGIN_TOOLS_DIR}/lib/libhuginbase.so.0.0" "${STAGING}${INSTALL_PREFIX}/lib"
-  install_lib "${HSTREAM_HUGIN_TOOLS_DIR}/lib/libvigraimpex.so.11.1.11.1" "${STAGING}${INSTALL_PREFIX}/lib"
-  install -m 0644 "${HSTREAM_HUGIN_TOOLS_DIR}/licenses/hugin/COPYING.txt" \
-    "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin/COPYING.txt"
-  install -m 0644 "${HSTREAM_HUGIN_TOOLS_DIR}/licenses/vigra/LICENSE.txt" \
-    "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra/LICENSE.txt"
-  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/autooptimiser" \
-    --help >/dev/null
-  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/pano_modify" --help >/dev/null
-  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/nona" --help >/dev/null
-fi
 
 # ---------- bundled private shared libs ----------
 echo "[make_deb] Collecting bundled shared libs..."
@@ -753,7 +710,7 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
-prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
+prepend_path LD_LIBRARY_PATH "/usr/local/cuda/lib64"
 
 # Managed jobs already select their sources, encoders and config overrides.
 # The native CLI discovers its bundled default config and runtime itself.
@@ -1130,7 +1087,7 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
-prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
+prepend_path LD_LIBRARY_PATH "/usr/local/cuda/lib64"
 exec "${INSTALL_DIR}/bin/hstream-ui" "$@"
 UISH
   chmod 755 "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh"
@@ -1251,9 +1208,9 @@ dependency_elfs=("${package_elfs[@]}")
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   # Desktop DeepStream's package metadata does not expose every dependency of
   # its dlopen'd tracker implementation (notably MQTT), so include that ELF in
-  # dependency discovery. JetPack's deepstream-7.1 package already declares
-  # the tracker/VPI runtime graph; asking dpkg-shlibdeps to analyze NVIDIA's
-  # private tracker ELF there fails because libnvvpi3 ships no shlibs metadata.
+  # dependency discovery. Jetson's DeepStream package declares the VPI
+  # runtime; NVIDIA's private tracker ELF cannot be analyzed here because
+  # libnvvpi4 ships no shlibs metadata.
   dependency_elfs+=("${DEEPSTREAM_TRACKER_RUNTIME}")
   shlibdeps_elf_args+=("-e${DEEPSTREAM_TRACKER_RUNTIME}")
 fi
@@ -1428,12 +1385,16 @@ if ! dpkg-query -W -f='${Status}' "${CUDNN_PACKAGE}" 2>/dev/null | grep -qx 'ins
   exit 1
 fi
 SHLIB_DEPENDS="${SHLIB_DEPENDS}, ${CUDNN_PACKAGE}"
+if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
+  # DeepStream 9.1's tracker needs MQTT and unversioned CUDA aliases, but
+  # its package omits these dependencies. The aliases belong to -dev packages.
+  SHLIB_DEPENDS="${SHLIB_DEPENDS}, libmosquitto1, libcufft-dev-13-2, libcublas-dev-13-2"
+fi
 SHLIB_DEPENDS="${SHLIB_DEPENDS//, /,$'\n' }"
 # Keep the DeepStream relationship explicit below and avoid emitting it twice
 # when dependency-only DeepStream runtime ELFs also resolve to that package.
 SHLIB_DEPENDS="$(printf '%s\n' "${SHLIB_DEPENDS}" | sed "/^ ${DEEPSTREAM_PACKAGE//./[.]} /d")"
-if [[ "${TARGET_PLATFORM}" == "desktop" ]] &&
-   ! grep -Eq '(^|[[:space:]])libmosquitto1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
+if ! grep -Eq '(^|[[:space:]])libmosquitto1([[:space:](,]|$)' <<< "${SHLIB_DEPENDS}"; then
   echo "ERROR: nvtracker dependency analysis did not emit libmosquitto1." >&2
   exit 1
 fi
@@ -1464,18 +1425,18 @@ if grep -Eiq '(^|[[:space:]])(libnccl[^,[:space:]]*|python[^,[:space:]]*|onnxrun
 fi
 rm -rf "${SHLIBDEPS_WORK_DIR}"
 
+# Ubuntu 24.04 provides these tools on both amd64 and arm64.
+RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend,\n gstreamer1.0-libav'
 INSTALLED_SIZE=$(du -sk "${STAGING}" | awk '{print $1}')
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   PACKAGE_DESCRIPTION="HStream video pipeline application and UI"
   PACKAGE_CONTENTS="Installs the HStream CLI/UI binaries"
   UI_LAUNCH_HELP="Launch the UI with: ${INSTALL_PREFIX}/hstream-ui.sh
  or via the hstream-ui wrapper in /usr/bin/hstream-ui."
-  RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend,\n gstreamer1.0-libav'
 else
   PACKAGE_DESCRIPTION="HStream video pipeline application for Jetson"
-  PACKAGE_CONTENTS="Installs the HStream CLI and pinned native Hugin calibration tools"
+  PACKAGE_CONTENTS="Installs the HStream CLI binaries"
   UI_LAUNCH_HELP="The Qt desktop UI is not part of the Jetson package."
-  RUNTIME_TOOL_DEPENDS=""
 fi
 cat > "${STAGING}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}

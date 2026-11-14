@@ -14,7 +14,7 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/publish_release.sh [--dry-run] [--exclude=PLATFORMS]
 
-Builds Ubuntu 24.04 amd64, Ubuntu 26.04 amd64, Jetson Ubuntu 22.04 arm64, and
+Builds Ubuntu 24.04 amd64, Ubuntu 26.04 amd64, Jetson Ubuntu 24.04 arm64, and
 Windows WSL packages. The first release is v0.1.0; later releases increment the
 patch component of the highest existing strict vMAJOR.MINOR.PATCH tag.
 
@@ -33,7 +33,7 @@ platform_label() {
   case "$1" in
     ubuntu24) printf 'Ubuntu 24.04 amd64\n' ;;
     ubuntu26) printf 'Ubuntu 26.04 amd64\n' ;;
-    jetson) printf 'NVIDIA Jetson Ubuntu 22.04 arm64\n' ;;
+    jetson) printf 'NVIDIA Jetson Ubuntu 24.04 arm64\n' ;;
     windows) printf 'Windows 11 WSL installer\n' ;;
     *) return 1 ;;
   esac
@@ -219,10 +219,7 @@ echo "Artifacts:"
 publishing ubuntu24 && echo "  hstream_${release_tag}_ubuntu24.04_amd64.deb"
 publishing ubuntu26 && echo "  hstream_${release_tag}_ubuntu26.04_amd64.deb"
 if publishing jetson; then
-  echo "  hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
-  echo "  hugin_2022.0.0+dfsg.orig.tar.xz"
-  echo "  libvigraimpex_1.11.1+dfsg.orig.tar.xz"
-  echo "  hstream_${release_tag}_jetson-hugin-build.sh"
+  echo "  hstream_${release_tag}_jetson-ubuntu24.04_arm64.deb"
 fi
 publishing windows && echo "  hstream_${release_tag}_windows-wsl-setup.exe"
 echo "  install-hstream-deb.sh"
@@ -369,7 +366,7 @@ fi
 if publishing jetson; then
   validate_and_stage_deb \
     "${build_dir}/jetson/hstream_${package_version}_arm64.deb" \
-    arm64 22.04 jetson "hstream_${release_tag}_jetson-ubuntu22.04_arm64.deb"
+    arm64 24.04 jetson "hstream_${release_tag}_jetson-ubuntu24.04_arm64.deb"
 fi
 if publishing windows; then
   windows_installer="${build_dir}/windows/hstream_${release_tag}_windows-wsl-setup.exe"
@@ -397,23 +394,6 @@ desktop_installer_asset="${release_dir}/install-hstream-deb.sh"
 git show "${source_revision}:scripts/install_deb.sh" > "${desktop_installer_asset}"
 chmod 0755 "${desktop_installer_asset}"
 staged_assets+=("install-hstream-deb.sh")
-
-# The Jetson package redistributes GPLv2 Hugin binaries. Accompany them with
-# the exact verified corresponding-source archive and the build-control script
-# used by this tag. VIGRA's verified source is included as well so the complete
-# native calibration toolchain can be reconstructed from release assets. A
-# release without the Jetson package distributes no Hugin binary, so it carries
-# no corresponding source either.
-if publishing jetson; then
-  hugin_build_script_asset="${release_dir}/hstream_${release_tag}_jetson-hugin-build.sh"
-  git show "${source_revision}:scripts/build_hugin_tools_jetson.sh" > "${hugin_build_script_asset}"
-  chmod 0755 "${hugin_build_script_asset}"
-  "${hugin_build_script_asset}" --export-sources="${release_dir}"
-  staged_assets+=("hstream_${release_tag}_jetson-hugin-build.sh")
-  for exported_source in "${release_dir}"/*.tar.xz; do
-    staged_assets+=("$(basename "${exported_source}")")
-  done
-fi
 
 if [[ "${#staged_assets[@]}" -eq 0 ]]; then
   echo "ERROR: no release assets were staged." >&2
