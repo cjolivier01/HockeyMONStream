@@ -737,6 +737,13 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
         "TIFF exceeds the " << maximum_bytes << "-byte encoded-file safety limit (" << opened->metadata.st_size
                             << " bytes): " << path.string()));
   }
+  // TIFF snapshots take this branch before the generic artifact pinning path.
+  // Settle their exact descriptor before the parser captures any metadata.
+  if (::fsync(opened->descriptor) != 0 || ::fstat(opened->descriptor, &opened->metadata) != 0)
+    return absl::InternalError("Unable to settle TIFF before inspection: " + path.string());
+  if (!S_ISREG(opened->metadata.st_mode) || opened->metadata.st_size <= 0 ||
+      static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes)
+    return absl::FailedPreconditionError("Invalid or oversized settled TIFF: " + path.string());
   const int tiff_descriptor = ::dup(opened->descriptor);
   if (tiff_descriptor < 0)
     return absl::InternalError(TO_STRING("Could not duplicate TIFF descriptor: " << path.string()));
