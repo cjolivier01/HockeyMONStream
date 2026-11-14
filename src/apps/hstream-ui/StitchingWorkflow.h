@@ -38,7 +38,9 @@ class StitchingWorkflow : public QWidget {
   void start(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);
   void exportBatch(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);
   void cancel(std::function<void(bool)> completed = {});
-  void attach(const QString& workflow_id);
+  // Inactive catalog history can be inspected without claiming active work
+  // while its first status request is unavailable. Current owners use true.
+  void attach(const QString& workflow_id, bool active = true);
   void selectCandidate(const QString& catalog_key);
   void showLog();
   void restoreMonitor();

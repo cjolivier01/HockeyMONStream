@@ -28,6 +28,14 @@ window open, with logs and an explicit retry available. A terminal job status
 alone does not authorize closing. The desktop and browser use the same graph states
 and preserve successful siblings when a different solve fails.
 
+Reopening inactive experiment history does not start or claim a workflow. When
+the catalog marks that history inactive and no current workflow owns the game,
+an unavailable controller or obsolete registry must not turn the history into
+active work. Close, the window close button and Escape still dismiss the dialog;
+saved experiments and any unrelated game owner remain intact. A current workflow
+owner takes precedence over historical catalog flags, and a fresh status showing
+active work restores the normal cancellation and cleanup requirements.
+
 Unexpected application termination or browser-tab closure cannot prove that
 remote jobs stopped. Durable recording ownership remains in place; reopening
 the recording restores the monitor so the workflow can be cancelled and cleaned

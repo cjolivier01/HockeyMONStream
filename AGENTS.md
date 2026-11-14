@@ -135,6 +135,11 @@ Native preview widgets share `NativePreviewSurface`: while an external sink owns
 
 ## Architecture Overview
 
+- `src/apps/hstream-ui/StitchingWorkflow.*` distinguishes inactive experiment history from
+  an active workflow attachment before the first status response. The current
+  game owner overrides saved history; failed history lookups do not require
+  cancellation to close the dialog. See `docs/distributed-workflows.md`.
+
 - `common/RuntimeControlConfig.*` normalizes legacy UI/AMD aliases per input layer. Canonical motion overrides live under `rink.camera.motion_overrides`, tone under `video_out.tone`, launch preferences under `playback`, and capture under `telemetry.enabled`. `ProgramCameraMapping` applies motion at startup on both GPU backends; Qt/browser retain presentation IDs and scaling but save canonical values. See `docs/canonical-runtime-controls.md`.
 
 - `scripts/hstream_workflow/` owns standalone distributed execution and the pure schema/state kernel synchronized into HockeyMONWeb. Its `dispatch.py` routes checkout clients to the installed controller pinned consistently by all registry profiles, preserving process identity and isolating Python imports; admitted supervisors retain their original deployment. `GameOperationOwner.*` fences recording ownership across main jobs, INT8 and experiment workflows; `ExperimentTaskMain.cpp` and `ExperimentTaskRuntime.*` execute typed private stages and adopt verified results. Slurm contains allocations; optional Dagster modules observe sanitized state and never submit, cancel or adopt compute. Preserve immutable defaults/runtime inputs, epoch-fenced controls, unresolved-acceptance recovery and Qt/web graph behavior. See `docs/distributed-workflows.md` and `docs/workflow-deployment.md`.

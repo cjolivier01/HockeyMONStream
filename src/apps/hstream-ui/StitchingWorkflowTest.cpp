@@ -228,6 +228,8 @@ from pathlib import Path
 root=Path(os.environ['WORKFLOW_TEST_ROOT']); args=sys.argv[1:]; operation=args[0]
 def option(name): return args[args.index(name)+1]
 with (root/'calls').open('a') as f: f.write(operation+'\n')
+if (root/'legacy-profile').exists():
+ print('Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles',file=sys.stderr); raise SystemExit(2)
 if operation=='profiles': value=json.loads((root/'profiles.json').read_text())
 elif operation=='submit':
  plan=json.loads(Path(option('--plan')).read_text())
@@ -2031,6 +2033,128 @@ void dialogOwnership(const QString& root) {
   dialogCancelLifecycle(root, game, runner, environment);
 }
 
+void dialogHistoricalWorkflow(const QString& root) {
+  const QString failure = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles";
+  for (const QString route : {"button", "window", "escape"}) {
+    const auto fixture = root + "/history-" + route;
+    const auto game = fixture + "/game";
+    require(
+        QDir().mkpath(fixture + "/scripts") && QDir().mkpath(game + "/_hockeymon"), "Cannot create history fixture");
+    write(fixture + "/scripts/hstream-workflow", kController);
+    QFile::setPermissions(
+        fixture + "/scripts/hstream-workflow",
+        QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    write(fixture + "/profiles.json", QJsonDocument(profiles()).toJson());
+    write(
+        game + "/_hockeymon/config.yaml",
+        ("game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\nworkflow:\n  registry: " + fixture +
+         "\n  poll_interval_ms: 100\n")
+            .toUtf8());
+    write(game + "/left.mp4", "left");
+    write(game + "/right.mp4", "right");
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.insert("WORKFLOW_TEST_ROOT", fixture);
+    {
+      StitchingExperimentDialog queued(
+          game, "/bin/false", fixture, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+      queued.show();
+      widget<QPushButton>(queued, "addStitchExperimentsToBatchButton")->click();
+      require(
+          wait([&] { return widget<QPushButton>(queued, "startStitchExperimentBatchButton")->isEnabled(); }),
+          "Cannot prepare historical experiment");
+      queued.reject();
+      require(wait([&] { return !queued.isVisible(); }), "Cannot close history preparation");
+    }
+    const auto store = OpenStitchingExperimentStore(game.toStdString());
+    require(store.ok(), "Cannot open historical experiments");
+    auto catalog = LoadStitchingExperimentStore(*store);
+    require(catalog.ok() && catalog->experiments.size() == 1, "Missing historical experiment");
+    auto row = catalog->experiments.front();
+    row.workflow_id = "finished-history";
+    row.workflow_directory = store->game_directory / "_hockeymon/workflows" / row.workflow_id;
+    row.workflow_active = false;
+    row.state = "failed";
+    row.failure = "Retained result";
+    auto completed_owner = hm::game_operation::LocalOwner("workflow", row.workflow_id, "history-token");
+    completed_owner.workflow_directory = row.workflow_directory.string();
+    {
+      auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+      require(lock.ok() && (*lock)->Claim(completed_owner).ok(), "Cannot claim history fixture");
+    }
+    hm::game_operation::RegisterAuthorization(store->game_directory, completed_owner.token);
+    const auto saved = SaveStitchingExperiment(*store, row);
+    if (!saved.ok())
+      std::cerr << saved << '\n';
+    require(saved.ok(), "Cannot save inactive workflow history");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+      require(
+          lock.ok() && (*lock)->Release(completed_owner.token, completed_owner.revision, true).ok(),
+          "Cannot retire history fixture");
+    }
+    hm::game_operation::ForgetAuthorization(store->game_directory, completed_owner.token);
+    auto owner = hm::game_operation::LocalOwner("pipeline", "old-pipeline", "old-pipeline-token");
+    owner.process_id = 0;
+    {
+      auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+      require(lock.ok() && (*lock)->Claim(owner).ok(), "Cannot retain unrelated pipeline owner");
+    }
+    write(fixture + "/legacy-profile", "legacy");
+    QMainWindow parent;
+    parent.setCentralWidget(new QPushButton("Main window remains available", &parent));
+    parent.resize(800, 600);
+    parent.show();
+    QPointer<StitchingExperimentDialog> dialog = new StitchingExperimentDialog(
+        game, "/bin/false", fixture, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00", &parent);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::WindowModal);
+    dialog->show();
+    require(
+        wait([&] { return widget<QLabel>(*dialog, "stitchExperimentStatus")->text().contains(failure); }),
+        "Historical profile error was not displayed");
+    const auto screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_HISTORY_SCREENSHOT_DIR");
+    if (!screenshots.isEmpty()) {
+      QDir().mkpath(screenshots);
+      require(dialog->grab().save(screenshots + "/history-" + route + ".png"), "Cannot capture history dialog");
+    }
+    closeWorkflow(*dialog, route, false, false);
+    require(
+        wait([&] { return !dialog || !dialog->isVisible(); }),
+        "Inactive history with unavailable status prevented closing");
+    waitForDeleted(dialog);
+    require(!QApplication::activeModalWidget() && parent.isEnabled(), "History close left the main window blocked");
+    if (!screenshots.isEmpty())
+      require(parent.grab().save(screenshots + "/closed-" + route + ".png"), "Cannot capture closed history dialog");
+    require(controllerCalls(fixture, "cancel") == 0, "Closing inactive history sent cancellation");
+    const auto retained = hm::game_operation::Inspect(store->game_directory);
+    require(
+        retained.ok() && retained->has_value() && (**retained).token == owner.token,
+        "Closing history released unrelated game ownership");
+    const auto after = LoadStitchingExperimentStore(*store);
+    require(
+        after.ok() && after->experiments.size() == 1 && after->experiments.front().revision == row.revision,
+        "Closing history changed retained experiments");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+      require(
+          lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok() && (*lock)->Claim(completed_owner).ok(),
+          "Cannot model a current workflow owner over inactive history");
+    }
+    StitchingExperimentDialog current(
+        game, "/bin/false", fixture, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    current.show();
+    require(
+        wait([&] { return widget<QLabel>(current, "stitchExperimentStatus")->text().contains(failure); }),
+        "Current workflow did not expose its monitoring failure");
+    auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(current, "stitchingWorkflowPane"));
+    require(workflow->active(), "Inactive catalog flags overrode current workflow ownership");
+    closeWorkflow(current, route, false);
+    require(
+        current.isVisible() && controllerCalls(fixture, "cancel") == 0,
+        "Current workflow closed without confirmed cancellation");
+  }
+}
+
 void killedExperimentGuard(const QString& root) {
   const auto game = root + "/lost-guard-game";
   QDir().mkpath(game + "/_hockeymon");
@@ -2108,6 +2232,11 @@ int main(int argc, char** argv) {
     qputenv("HSTREAM_JOB_MANAGED_RUNTIME", "1");
     auto baseline = hm::baseline_config::load();
     require(baseline.ok(), "Cannot load baseline");
+    if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_HISTORY_ONLY") != 0) {
+      dialogHistoricalWorkflow(temporary.path());
+      std::cout << "Inactive workflow history closes through button, window and Escape with unavailable monitoring\n";
+      return 0;
+    }
     if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_RECOVERY_ONLY") != 0) {
       dialogSubmissionRecovery(temporary.path());
       std::cout << "Workflow submission diagnostics and dialog recovery passed\n";
@@ -2124,6 +2253,7 @@ int main(int argc, char** argv) {
     dialogCloseDuringSubmission(temporary.path());
     dialogCloseDuringRetry(temporary.path());
     dialogSubmissionRecovery(temporary.path());
+    dialogHistoricalWorkflow(temporary.path());
     killedExperimentGuard(temporary.path());
     std::cout
         << "Workflow DAG, async UI, retry/log history, wheel routing, close confirmation and verified cancellation passed\n";
