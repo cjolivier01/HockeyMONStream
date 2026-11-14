@@ -334,6 +334,32 @@ class JobScriptTest(unittest.TestCase):
                 self.assertEqual(actual["env"]["HM_GAME_DIR"], str(game.parent))
                 self.assertFalse((decoy / "_hockeymon").exists())
 
+    def test_symlink_parent_traversal_cannot_select_a_sibling_game(self):
+        actual = self.root / "actual"
+        (actual / "child").mkdir(parents=True)
+        game = actual / self.game.name
+        self.game.rename(game)
+        layout = self.root / "layout"
+        layout.mkdir()
+        alias = layout / "alias"
+        alias.symlink_to(actual / "child", target_is_directory=True)
+        decoy = layout / game.name
+        decoy.mkdir()
+        script = alias / ".." / game.name / "job.sh"
+        exported = self.generate("--game-dir", str(game), "--output", str(script))
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        for override in (False, True):
+            with self.subTest(environment_root=override):
+                environment = dict(self.env)
+                if override:
+                    environment["HM_GAME_DIR"] = str(alias / "..")
+                run = subprocess.run([str(script)], env=environment, cwd="/", text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                observed = json.loads(self.output.read_text())
+                self.assertEqual(observed["env"]["HM_GAME_DIR"], str(actual))
+                self.assertEqual(observed["argv"][:2], ["-g", game.name])
+                self.assertFalse((decoy / "_hockeymon").exists())
+
     def test_finalizer_rejects_conflicting_fresh_and_resume_modes(self):
         finalizer = self.runtime_bin / "hstream-finalize"
         for options in (["--new-run", "--run-id", "explicit-run-id"],
@@ -956,7 +982,8 @@ class JobScriptTest(unittest.TestCase):
     def test_rejected_concurrent_launch_creates_no_runtime_scratch(self):
         self.runner.write_text(
             "#!/usr/bin/env python3\nimport json, os, time\n"
-            "with open(os.environ['JOB_TEST_OUTPUT'], 'w') as f: json.dump(dict(os.environ), f)\n"
+            "with open(os.environ['JOB_TEST_OUTPUT']+'.tmp', 'w') as f: json.dump(dict(os.environ), f)\n"
+            "os.replace(os.environ['JOB_TEST_OUTPUT']+'.tmp', os.environ['JOB_TEST_OUTPUT'])\n"
             "time.sleep(60)\n"
         )
         self.assertEqual(self.generate("--run-id", "explicit-concurrent-run").returncode, 0)

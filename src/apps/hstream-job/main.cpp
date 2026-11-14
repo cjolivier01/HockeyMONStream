@@ -436,13 +436,30 @@ else
   script_dir="${script_dir%/}"
 )JOB";
       script += "  game_dir=\"${script_dir}/\"" + quote(relative_game.string()) + "\nfi\n";
-      // A trailing slash sentinel preserves newlines at the end of a name;
-      // ordinary command substitution of pwd/dirname would select its sibling.
-      script += R"JOB(game_dir="$(CDPATH= cd -L -- "${game_dir}" && printf '%s/' "$PWD")"
-game_dir="${game_dir%/}"
+      // Resolve parent traversal physically, retaining the final named game
+      // alias. Logical cd would collapse symlink/.. onto an unrelated sibling.
+      // Slash sentinels preserve trailing newlines through command substitution.
+      script += R"JOB(while [ "${game_dir}" != / ]; do
+  case "${game_dir}" in
+    */) game_dir="${game_dir%/}" ;;
+    */.) game_dir="${game_dir%/.}" ;;
+    *) break ;;
+  esac
+done
+case "${game_dir}" in
+  .) game_dir="$PWD" ;;
+  ..|*/..)
+    game_dir="$(CDPATH= cd -P -- "${game_dir}" && printf '%s/' "$PWD")"
+    game_dir="${game_dir%/}"
+    ;;
+esac
 game_id="${game_dir##*/}"
 game_root="${game_dir%/*}"
-export HM_GAME_DIR="${game_root:-/}"
+if [ "${game_root}" = "${game_dir}" ]; then game_root=.; fi
+game_root="$(CDPATH= cd -P -- "${game_root:-/}" && printf '%s/' "$PWD")"
+game_root="${game_root%/}"
+game_dir="${game_root%/}/${game_id}"
+export HM_GAME_DIR="${game_root}"
 )JOB";
     }
     if (!working.empty())
