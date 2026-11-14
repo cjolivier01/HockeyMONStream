@@ -856,6 +856,17 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
     ::close(descriptor);
     return absl::FailedPreconditionError("Invalid or oversized stitch snapshot artifact: " + path.string());
   }
+  // Finish pending shared-filesystem writeback before freezing the source
+  // identity. All comparisons after this point still reject any mutation.
+  if (::fsync(descriptor) != 0 || ::fstat(descriptor, &metadata) != 0) {
+    ::close(descriptor);
+    return absl::InternalError("Unable to settle stitch snapshot artifact: " + path.string());
+  }
+  if (!S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    ::close(descriptor);
+    return absl::FailedPreconditionError("Invalid or oversized settled stitch snapshot artifact: " + path.string());
+  }
   return PinnedLoadArtifact(name, descriptor, metadata);
 }
 
@@ -943,9 +954,15 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
   if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
     return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
   }
+  // Preserve timestamps only after the copy's data writes have reached the
+  // filesystem; delayed NFS writes would otherwise overwrite the saved mtime.
+  if (::fsync(destination_descriptor) != 0)
+    return absl::InternalError("Unable to flush stitch validation snapshot artifact");
   const timespec times[2] = {artifact->metadata.st_atim, artifact->metadata.st_mtim};
   if (::futimens(destination_descriptor, times) != 0)
     return absl::InternalError("Unable to preserve stitch validation snapshot timestamps");
+  if (::fsync(destination_descriptor) != 0)
+    return absl::InternalError("Unable to flush stitch validation snapshot timestamps");
   if (::close(destination_descriptor) != 0) {
     cleanup.descriptor = -1;
     return absl::InternalError("Unable to close stitch validation snapshot artifact");

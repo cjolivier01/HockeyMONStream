@@ -1778,6 +1778,12 @@ absl::Status run_nona(
       directory,
       nullptr,
       is_cancelled));
+  // Nona's close does not finish NFS writeback. Inspection must see settled
+  // timestamps as well as complete pixels, before normalization or hashing.
+  for (const char* prefix : {"mapping_0000", "mapping_0001"}) {
+    for (const char* suffix : {".tif", "_x.tif", "_y.tif"})
+      HM_RETURN_IF_ERROR(fsync_stitch_path(directory / (std::string(prefix) + suffix)));
+  }
   return normalize_nona_coordinate_maps(directory, is_cancelled);
 }
 
@@ -3132,6 +3138,8 @@ absl::Status render_staged_project(
         staging,
         nullptr,
         options.is_cancelled);
+    if (status.ok())
+      status = fsync_stitch_path(staging / "seam_file.tif");
     if (status.ok()) {
       // Enblend can crop its mask more tightly than the output panorama. PNG
       // drops the explicit zero origin, making that crop indistinguishable from

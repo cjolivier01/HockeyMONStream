@@ -2649,11 +2649,23 @@ bool expect_validation_copy_offload_outcomes(const fs::path& tmpdir) {
     fs::remove_all(dir);
     if (!write_valid_stitching_artifacts(dir))
       return false;
+    if (std::string(outcome) == "partial") {
+      std::ofstream output(saved_state(dir) / "mapping_0000.tif", std::ios::binary | std::ios::app);
+      const std::string padding(1024 * 1024, 'x');
+      for (int index = 0; index < 32; ++index)
+        output.write(padding.data(), padding.size());
+      if (!output.good())
+        return false;
+    }
     ::setenv("HM_TEST_STITCH_UNRELIABLE_METADATA", "1", 1);
     ::setenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE", "1", 1);
     ::setenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT", outcome, 1);
     auto load = hm::stitching::lock_stitching_artifacts_for_load(dir.string());
-    const bool verified = load.ok() && load->artifact_lock && load->load_snapshot && load->load_snapshot->verify().ok();
+    const bool verified = load.ok() && load->artifact_lock && load->load_snapshot &&
+        hm::stitching::fsync_stitch_path(load->load_snapshot->directory() / "mapping_0000.tif").ok() &&
+        fs::last_write_time(load->load_snapshot->directory() / "mapping_0000.tif") ==
+            fs::last_write_time(saved_state(dir) / "mapping_0000.tif") &&
+        load->load_snapshot->verify().ok();
     ::unsetenv("HM_TEST_STITCH_COPY_FILE_RANGE_RESULT");
     ::unsetenv("HM_TEST_STITCH_DISABLE_VALIDATION_CLONE");
     ::unsetenv("HM_TEST_STITCH_UNRELIABLE_METADATA");
