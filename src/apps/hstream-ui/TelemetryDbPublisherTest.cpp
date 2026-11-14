@@ -15,6 +15,7 @@
 #include <iostream>
 #include <stdexcept>
 #include "hstream/src/gst-plugins/gst-videoprep/playtracker/PlayTrackerTelemetryDb.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/recording/Database.h"
 using namespace hm::playtracker;
 using namespace hm::ui_internal;
@@ -139,6 +140,24 @@ int main(int argc, char** argv) {
     hm::recording::Database original(source.toStdString());
     hm::recording::Statement a(copy.get(), "SELECT run_id FROM runs"), b(original.get(), "SELECT run_id FROM runs");
     check(a.Next() && b.Next() && a.Text(0) == b.Text(0), "publication preserves recording GUID");
+    namespace op = hm::game_operation;
+    const auto revoked_game = root.filePath("revoked-game").toStdString();
+    QDir().mkpath(QString::fromStdString(revoked_game));
+    auto owner = op::LocalOwner("pipeline", "db-owner", "db-owner-token");
+    {
+      auto lock = op::Lock::Acquire(revoked_game);
+      check(lock.ok() && (*lock)->Claim(owner).ok(), "Claim database owner");
+      check((*lock)->Recover(owner.token, owner.revision, true, "test").ok(), "Revoke database owner");
+    }
+    op::RegisterAuthorization(revoked_game, owner.token);
+    check(
+        !publish_telemetry_database(source, QString::fromStdString(revoked_game)).ok,
+        "Revoked database publication refused");
+    check(
+        QDir(QString::fromStdString(revoked_game)).entryList({"*.db"}, QDir::Files).empty(),
+        "No revoked database published");
+    check(QFileInfo::exists(source), "Revoked database source retained");
+    op::ForgetAuthorization(revoked_game, owner.token);
     std::cout << "Database publication tests passed\n";
     return 0;
   } catch (const std::exception& e) {

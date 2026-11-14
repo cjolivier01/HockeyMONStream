@@ -1,4 +1,5 @@
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/publication/Cleanup.h"
 #include "hstream/src/libs/recording/Database.h"
 
@@ -409,6 +410,61 @@ int main(int argc, char** argv) {
       }
       require(refused && count(game, ".mp4") == 0, "admission locator cannot authorize unconfirmed runner success");
     }
+    for (const bool successor : {false, true}) {
+      namespace op = hm::game_operation;
+      const auto game = base / (successor ? "revoked-successor" : "revoked-unowned") / "game";
+      const auto root = game.parent_path() / "work";
+      fs::create_directories(game);
+      auto owner = op::LocalOwner("pipeline", "producer", "producer-token");
+      {
+        auto lock = op::Lock::Acquire(game);
+        require(lock.ok() && (*lock)->Claim(owner).ok(), "claim finalizer fixture");
+      }
+      op::RegisterAuthorization(game, owner.token);
+      setenv("HSTREAM_GAME_OPERATION_GAME", game.c_str(), 1);
+      setenv("HSTREAM_GAME_OPERATION_TOKEN", owner.token.c_str(), 1);
+      setenv("HSTREAM_TEST_PUBLICATION_STOP", "after-runner-success", 1);
+      try {
+        pub::RunJob(game, root, "revoked-run", command);
+      } catch (const std::exception&) {
+      }
+      unsetenv("HSTREAM_TEST_PUBLICATION_STOP");
+      unsetenv("HSTREAM_GAME_OPERATION_GAME");
+      unsetenv("HSTREAM_GAME_OPERATION_TOKEN");
+      const auto manifest = root / "game/runs/revoked-run/run.yaml";
+      require(YAML::LoadFile(manifest.string())["state"].as<std::string>() == "encoded", "encoded fixture exists");
+      auto next = op::LocalOwner("pipeline", "successor", "successor-token");
+      bool revoked = false, refused = false;
+      try {
+        pub::Finalize(manifest, [&](const std::string& message) {
+          if (revoked || message.rfind("Preparing ", 0) != 0)
+            return;
+          auto lock = op::Lock::Acquire(game, false);
+          require(lock.ok(), "long remux leaves admission available for recovery");
+          require((*lock)->Recover(owner.token, owner.revision, true, "release during remux").ok(), "revoke finalizer");
+          if (successor)
+            require((*lock)->Claim(next).ok(), "claim successor during remux");
+          revoked = true;
+        });
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(
+          revoked && refused && count(game, ".mp4") == 0 && fs::exists(manifest.parent_path() / "program.mkv"),
+          "revoked finalizer preserves working output without publication");
+      op::ForgetAuthorization(game, owner.token);
+      refused = false;
+      try {
+        pub::Finalize(manifest);
+      } catch (const std::exception&) {
+        refused = true;
+      }
+      require(refused, "separate retry retains producer revocation even without inherited authorization");
+      const auto current = op::Inspect(game);
+      require(
+          current.ok() && (successor ? current->has_value() && (**current).token == next.token : !*current),
+          "revoked finalizer leaves successor authority unchanged");
+    }
     for (const std::string resume : {"job", "manifest", "receipt"}) {
       const auto game = base / ("prepublication-" + resume) / "game";
       const auto root = game.parent_path() / "work";
@@ -437,8 +493,7 @@ int main(int argc, char** argv) {
       require(count(game, ".mp4") == 3 && count(game, ".db") == 1, "prepublication retry publishes once");
       require(
           fs::exists(game / "game-program_8k_output-with-audio-1.mp4") &&
-              fs::exists(game / "game-program_4k_output-with-audio-1.mp4") &&
-              fs::exists(game / "game_telemetry-1.db"),
+              fs::exists(game / "game-program_4k_output-with-audio-1.mp4") && fs::exists(game / "game_telemetry-1.db"),
           "Program archives must publish their resolution names with the shared telemetry generation");
       require(pub::RunJob(game, changed_root, id, {"/bin/false"}) == 0, "completed binding remains idempotent");
     }

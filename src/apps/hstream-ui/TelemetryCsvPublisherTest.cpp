@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -95,7 +96,8 @@ bool archive_generation_test(const QString& root) {
     ok &= write_file(QDir(game).filePath(name), "old video");
   ok &= expect(next_archive_generation(game) == 5, "tracking and stitched archives must share a high watermark");
   ok &= write_file(QDir(game).filePath("game-program_8k_output-with-audio-7.mp4"), "new Program video");
-  ok &= expect(next_archive_generation(game) == 8, "8K Program archives must reserve generations alongside legacy files");
+  ok &=
+      expect(next_archive_generation(game) == 8, "8K Program archives must reserve generations alongside legacy files");
   ok &= write_file(QDir(game).filePath("camera-12.csv"), "old CSV");
   ok &= expect(next_archive_generation(game) == 13, "orphan companion must reserve its generation");
   ok &= QFile::link(QDir(game).filePath("missing"), QDir(game).filePath("rink_mask_0-17.png"));
@@ -287,6 +289,38 @@ int main(int argc, char** argv) {
       "an unused telemetry suffix must be available before archive publication");
   hm::ui_internal::TelemetryCsvPublicationTestHooks named_fallback;
   named_fallback.force_named_temporary_files = true;
+  {
+    namespace op = hm::game_operation;
+    const auto revoked_game = QDir(root.path()).filePath("revoked-game").toStdString();
+    QDir().mkpath(QString::fromStdString(revoked_game));
+    struct Recovery {
+      std::string game;
+      op::Owner owner;
+      bool revoked{false};
+    } recovery{revoked_game, op::LocalOwner("pipeline", "csv-owner", "csv-owner-token")};
+    {
+      auto lock = op::Lock::Acquire(revoked_game);
+      if (!expect(lock.ok() && (*lock)->Claim(recovery.owner).ok(), "Claim CSV owner"))
+        return 1;
+    }
+    op::RegisterAuthorization(revoked_game, recovery.owner.token);
+    auto hooks = named_fallback;
+    hooks.callback_context = &recovery;
+    hooks.after_staging_copy = [](void* context) {
+      auto& recovery = *static_cast<Recovery*>(context);
+      auto lock = op::Lock::Acquire(recovery.game, false);
+      recovery.revoked =
+          lock.ok() && (*lock)->Recover(recovery.owner.token, recovery.owner.revision, true, "after copy").ok();
+    };
+    const auto denied =
+        hm::ui_internal::publish_telemetry_csvs(manifest_path, QString::fromStdString(revoked_game), "-1", &hooks);
+    valid &= expect(recovery.revoked && !denied.ok, "Revocation during CSV copy denies publication");
+    valid &= expect(
+        QDir(QString::fromStdString(revoked_game)).entryList({"*.csv"}, QDir::Files).empty(),
+        "Revoked CSVs stay unpublished");
+    valid &= expect(QFileInfo::exists(manifest_path), "Revoked CSV working inputs retained");
+    op::ForgetAuthorization(revoked_game, recovery.owner.token);
+  }
   const auto published = hm::ui_internal::publish_telemetry_csvs(manifest_path, game, "-2");
   valid &= expect(published.ok, published.error.toStdString().c_str()) &&
       expect(published.published_paths.size() == 6, "all six CSVs must be copied");

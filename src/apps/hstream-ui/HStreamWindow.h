@@ -1,5 +1,6 @@
 #pragma once
 
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/stitching/CalibrationFailureProtocol.h"
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
@@ -294,6 +295,8 @@ class HStreamWindow : public QMainWindow {
       quint64 expected_inode = 0);
   void finishArchiveJobLog(bool retire_identity_guard = true);
   void finishArchiveJobLogAfterFinalizationFailure();
+  std::unique_ptr<hm::game_operation::Lock> archiveCompletion(const QString& game_id);
+  void retainArchiveFinalization(const QString& detail);
   void startArchiveFinalization(
       const QString& source_path,
       const QString& game_id,

@@ -297,7 +297,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = ["//src/libs/common:game_storage", "@qt//:qt_core", "//src/libs/recording", "//src/libs/publication"],
+    deps = ["//src/libs/common:game_operation_owner", "//src/libs/common:game_storage", "@qt//:qt_core", "//src/libs/recording", "//src/libs/publication"],
 )
 
 cc_library(
@@ -1108,6 +1108,7 @@ cc_test(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/common:game_operation_owner",
         ":telemetry_csv_publisher",
         "@qt//:qt_core",
     ],
@@ -1287,6 +1288,7 @@ cc_test(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/common:game_operation_owner",
         ":telemetry_csv_publisher",
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_db",
         "//src/libs/recording",
@@ -1512,7 +1514,7 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local"],
-    deps = [":hstream_window", "//src/libs/publication", "//src/libs/recording", "@qt//:qt_test", "@qt//:qt_widgets"],
+    deps = ["//src/libs/common:game_operation_owner", ":hstream_window", "//src/libs/publication", "//src/libs/recording", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
 
 # Headless workflows share the native dialog libraries, without desktop windows.

@@ -108,6 +108,20 @@ int main(int argc, char** argv) {
     require(
         stops == 1 && (**hm::game_operation::Inspect(game)).cancel_requested,
         "Refreshed successor receives its own cancellation instead of the old local callback");
+    for (const auto* kind : {"int8", "experiment", "workflow", "mutation"}) {
+      {
+        auto lock = hm::game_operation::Lock::Acquire(game);
+        auto current = (*lock)->Read();
+        require(
+            lock.ok() && current.ok() && current->has_value() &&
+                (*lock)->Release((**current).token, (**current).revision, true).ok(),
+            "Release previous fixture");
+        auto unsupported = hm::game_operation::LocalOwner(kind, kind, std::string(kind) + "-token");
+        require((*lock)->Claim(unsupported).ok(), "Claim unsupported remote stop fixture");
+      }
+      GameOwnershipDialog unsupported(game);
+      require(!button(unsupported, "stopOwnerButton")->isEnabled(), "Unsupported owner has no ineffective Stop action");
+    }
     std::cout << "Ownership dialog checks passed\n";
     return 0;
   } catch (const std::exception& error) {

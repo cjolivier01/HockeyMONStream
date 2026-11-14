@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/TelemetryCsvPublisher.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "src/apps/hstream-ui/TelemetryDbPublisher.h"
 
@@ -1355,16 +1356,29 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
   }
   if (test_hooks && test_hooks->after_publication_lock)
     test_hooks->after_publication_lock(test_hooks->callback_context);
+  auto authority = hm::game_operation::Completion(game_directory.toStdString());
+  if (!authority.ok()) {
+    result.error = QString::fromStdString(authority.status().ToString());
+    return result;
+  }
   QString recovery_error;
   if (!recover_owned_staging_areas(game_directory_fd.get(), &recovery_error)) {
     result.error = recovery_error;
     return result;
   }
 
+  authority->reset();
   std::vector<CopiedArtifact> copied;
   copied.reserve(artifacts.size());
   NamedStagingArea staging_area;
   auto cleanup_staging = [&]() -> QString {
+    std::unique_ptr<hm::game_operation::Lock> cleanup_authority;
+    if (!authority.ok() || !*authority) {
+      auto allowed = hm::game_operation::Completion(game_directory.toStdString());
+      if (!allowed.ok())
+        return QString::fromStdString(allowed.status().ToString());
+      cleanup_authority = std::move(*allowed);
+    }
     QString cleanup_error;
     cleanup_named_staging_area(game_directory_fd.get(), &staging_area, &copied, test_hooks, &cleanup_error);
     return cleanup_error;
@@ -1474,6 +1488,11 @@ TelemetryCsvPublicationResult publish_telemetry_csvs(
       return revalidate_open_file(source_directory_fd.get(), artifact.source);
     });
   };
+  authority = hm::game_operation::Completion(game_directory.toStdString());
+  if (!authority.ok()) {
+    result.error = QString::fromStdString(authority.status().ToString());
+    return result;
+  }
   if (!sources_are_stable()) {
     result.error = "telemetry working files changed before publication";
     append_error(&result.error, cleanup_staging());

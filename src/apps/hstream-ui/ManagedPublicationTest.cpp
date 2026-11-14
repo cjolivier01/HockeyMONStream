@@ -21,6 +21,51 @@
 
 namespace fs = std::filesystem;
 struct HStreamWindowTestAccess {
+  static void revokedFinalization(HStreamWindow& window) {
+    namespace op = hm::game_operation;
+    const fs::path game = window.gameDirectory("revoked-finalizer").toStdString();
+    fs::create_directories(game);
+    const auto source = game / "retained.mkv", partial = game / "retained.part", log = game / "retained.log";
+    std::ofstream(source) << "source";
+    std::ofstream(partial) << "partial";
+    std::ofstream(log) << "log";
+    auto owner = op::LocalOwner("pipeline", "retired-finalizer", "retired-finalizer-token");
+    auto successor = op::LocalOwner("pipeline", "successor", "successor-finalizer-token");
+    {
+      auto lock = op::Lock::Acquire(game);
+      if (!lock.ok() || !(*lock)->Claim(owner).ok() ||
+          !(*lock)->Recover(owner.token, owner.revision, true, "finalizer test").ok() ||
+          !(*lock)->Claim(successor).ok())
+        throw std::runtime_error("Cannot prepare revoked finalizer fixture");
+    }
+    op::RegisterAuthorization(game, owner.token);
+    window.operation_game_ = game;
+    window.operation_token_ = owner.token;
+    window.archive_finalize_game_id_ = "revoked-finalizer";
+    window.archive_finalize_source_path_ = QString::fromStdString(source.string());
+    window.archive_finalize_partial_path_ = QString::fromStdString(partial.string());
+    window.archive_finalize_target_path_ = QString::fromStdString((game / "published.mp4").string());
+    for (int phase = 0; phase < 3; ++phase) {
+      window.archive_finalize_failed_ = false;
+      window.archive_finalize_stage_ = HStreamWindow::ArchiveFinalizeStage::kRemux;
+      window.archive_job_log_stale_paths_.append(QString::fromStdString(log.string()));
+      if (phase == 0)
+        window.finishArchiveFinalization(0, QProcess::NormalExit);
+      if (phase == 1)
+        window.completeArchiveFinalization();
+      if (phase == 2)
+        window.failArchiveFinalization("delayed helper failure");
+      if (!fs::exists(source) || !fs::exists(partial) || !fs::exists(log) || fs::exists(game / "published.mp4") ||
+          !window.archive_finalize_failed_ || !window.pending_archive_finalizations_.empty())
+        throw std::runtime_error("Revoked finalization published or discarded retained work");
+    }
+    if ((**op::Inspect(game)).token != successor.token)
+      throw std::runtime_error("Revoked finalizer modified successor ownership");
+    op::ForgetAuthorization(game, owner.token);
+    window.operation_game_.clear();
+    window.operation_token_.clear();
+  }
+
   static bool stopChoice(
       HStreamWindow& window,
       const fs::path& helper,
@@ -370,6 +415,7 @@ int main(int argc, char** argv) {
       require(!fs::exists(log + ".hstream-pin"), "publication removes external log identity guard");
       require(fs::exists(hm::publication::ReceiptPath(game, id)), "durable result receipt retained");
     }
+    HStreamWindowTestAccess::revokedFinalization(window);
     std::cout << "Managed UI publication tests passed\n";
     return 0;
   } catch (const std::exception& error) {

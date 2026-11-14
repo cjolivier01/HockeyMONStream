@@ -95,8 +95,9 @@ void GameOwnershipDialog::refresh() {
   if (!owner_) {
     details_->clear();
     status_->setText(
-        allow_force_ ? "Ownership has been released. Close this dialog and click Play again."
-                     : "The durable owner is gone, but this window still needs to finish supervised cleanup.");
+        allow_force_
+            ? "Ownership has been released. Close this dialog and click Play again."
+            : "The durable owner is gone. Close this dialog; Play becomes available after any remaining cleanup.");
     return;
   }
   const auto& owner = *owner_;
@@ -125,7 +126,11 @@ void GameOwnershipDialog::refresh() {
   stop_->setEnabled(
       !owner.cancel_requested &&
       ((stop_owned_run_ && owner.token == stop_owned_token_) ||
-       (owner.started_unix_ms > 0 && owner.kind != "workflow")));
+       (owner.started_unix_ms > 0 && owner.kind == "pipeline")));
+  stop_->setToolTip(
+      owner.cancel_requested   ? "Stop was requested; waiting for supervised cleanup."
+          : stop_->isEnabled() ? "Request cancellation and wait for supervised cleanup."
+                               : "Use the owning workflow or preparation dialog to stop this operation.");
   recover_->setEnabled(info->verified_reboot);
   force_->setEnabled(allow_force_);
   force_->setToolTip(
@@ -144,7 +149,8 @@ void GameOwnershipDialog::release(bool force) {
         QMessageBox::Warning,
         "Force release ownership",
         "This does not prove the old run has stopped. A surviving process could conflict with a new run.\n\n"
-        "The ownership record, logs and unfinished outputs will be retained. This action does not publish outputs.\n\n"
+        "The ownership record, logs and existing working files will be retained. Unnamed partial encodes "
+        "(including active AMD output) are discarded when the old process stops. This action does not publish outputs.\n\n"
         "Force release the displayed owner?",
         QMessageBox::NoButton,
         this);

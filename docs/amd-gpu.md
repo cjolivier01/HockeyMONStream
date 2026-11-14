@@ -1487,3 +1487,5 @@ Program output and GPU tests passed on `ripper` with ROCm. The full AMD CLI/UI
 build stopped in the existing `VaDetectorImage.cpp` toolchain include chain
 (`/usr/include/c++/12/cstdlib` could not find `stdlib.h`); full application
 validation remains incomplete on that host.
+
+Ownership Request stop and explicit force release use the abort path, never graceful partial publication. Completion checks durable ownership again before standalone file links and managed completion. AMD in-progress video uses an unnamed temporary inode; abort closes and discards it. Named working files and logs remain subject to the shared retention rules in `ownership-recovery.md`.

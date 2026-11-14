@@ -149,6 +149,8 @@ int main() {
       lock.reset();
       op::RegisterAuthorization(recover_game, owner.token);
       require(op::CancellationRequested(), "a remote stop intent must reach the owning timer");
+      require(!op::Completion(recover_game).ok(), "cancelled owner cannot commit outputs");
+      require(op::Mutation(recover_game).ok(), "cancelled owner can still perform supervised cleanup");
       const auto state = hm::game_storage::StateDirectory(recover_game);
       std::ofstream(state / "unfinished.mkv") << "retained-output";
       std::ofstream(state / "config.yaml") << "retained-config";
@@ -163,6 +165,19 @@ int main() {
           "recovery must preserve unfinished outputs and configuration");
       require(!lock->Authorize(owner.token).ok(), "abandoned tokens must remain revoked with no successor");
       require(!lock->Claim(owner).ok(), "an abandoned controller cannot reacquire with the same token");
+      lock.reset();
+      op::ForgetAuthorization(recover_game, owner.token);
+      ::setenv("HSTREAM_GAME_OPERATION_GAME", recover_game.c_str(), 1);
+      ::setenv("HSTREAM_GAME_OPERATION_TOKEN", owner.token.c_str(), 1);
+      require(!op::Mutation(recover_game).ok(), "delayed child cannot reacquire after inherited token revocation");
+      ::unsetenv("HSTREAM_GAME_OPERATION_GAME");
+      ::unsetenv("HSTREAM_GAME_OPERATION_TOKEN");
+      op::RegisterAuthorization(recover_game, owner.token);
+      require(!op::Completion(recover_game).ok(), "revoked finalizer cannot commit without a successor");
+      require(
+          !op::PrepareSupervisedCommand(recover_game, owner.token, 1000, 10, {"/bin/true"}).ok(),
+          "revoked owner cannot issue a later helper permit");
+      lock = take(op::Lock::Acquire(recover_game));
       auto next = op::LocalOwner("pipeline", "next", take(op::NewToken()));
       check(lock->Claim(next));
       require(

@@ -71,6 +71,9 @@ struct RecoveryInfo {
 // Read-only observations. A missing PID or an old timestamp is never proof.
 absl::StatusOr<RecoveryInfo> InspectRecovery(const std::filesystem::path& game);
 absl::StatusOr<std::unique_ptr<Lock>> Mutation(const std::filesystem::path& game, bool wait = true);
+// Hold through publication and destructive completion cleanup. Cancellation
+// permits ordinary cleanup mutations, but must never authorize successful output.
+absl::StatusOr<std::unique_ptr<Lock>> Completion(const std::filesystem::path& game, bool wait = true);
 absl::StatusOr<std::string> NewToken();
 Owner LocalOwner(const std::string& kind, const std::string& id, const std::string& token);
 

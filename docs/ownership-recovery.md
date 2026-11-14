@@ -14,7 +14,8 @@ unreachable hosts do not automatically release ownership.
 
 - **Refresh** rereads the record and available local evidence.
 - **Request stop** uses this window's ordinary Stop when it supervises the run,
-  or records cancellation for a newer non-workflow owner. NVIDIA and AMD CLI
+  or records cancellation for a newer pipeline owner. INT8 and experiments
+  use Stop in their owning preparation/workflow dialog. NVIDIA and AMD CLI
   control loops observe cancellation; a paused, hung or legacy process may not.
   The claim remains until the supervisor proves descendant shutdown and cleanup.
   Distributed workflows retain their existing monitor cancellation flow.
@@ -33,9 +34,18 @@ admission lock. A changed owner requires a fresh inspection. They first persist
 reason, actor and timestamp, then unlink the active claim. An interrupted release
 can retry against that same audit. Audit failures retain the claim. Revoked
 tokens cannot authorize mutations, claim again, or hand off to a successor.
+Delayed child admission and later helper permits check the durable authority.
+Cancellation cannot mark a partial run successfully encoded. Managed receipts
+retain the producer token so a separate finalizer cannot resume a revoked run.
+Publication and destructive completion cleanup hold admission authority; long
+remux/copy work releases it and checks again before committing. Legacy desktop
+archive and telemetry finalizers follow the same rule. If authority was revoked
+or cancellation requested, they leave named working files in place.
 Ordinary completion still requires exact process-guard/kernel proof; recovery is
-a separate operator action. Logs, configuration and unfinished outputs are never
-deleted or published by recovery. Releasing does not automatically start Play.
+a separate operator action. Recovery does not delete or publish existing logs,
+configuration or named working outputs. Active AMD encodes use unnamed temporary
+files: cancellation closes and discards those incomplete encodes; force release
+cannot retain them. Releasing does not automatically start Play.
 
 New owner records use schema 2, adding `started_unix_ms` and
 `process_start_ticks`. Schema 1 remains readable, with unknown start identity.

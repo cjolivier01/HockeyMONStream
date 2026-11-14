@@ -323,3 +323,5 @@ Failure stage recognition includes native projection/materialization substeps
 without adding progress rows.
 Qt terminal synthesis honors the shared scoped applicability: an unconfirmed
 restart cannot mark a completed solve failed or establish successful publication.
+
+Ownership recovery fences delayed CLI admission and helper permits against durable revocation. `game_operation::Completion` guards publication and destructive completion cleanup; long remux/copy work rechecks before commit. Managed manifests retain the producer token across separate finalizer processes. A denied completion leaves named work in place, without entering legacy failure relocation or deletion. See `docs/ownership-recovery.md`.

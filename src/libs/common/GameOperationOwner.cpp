@@ -528,6 +528,18 @@ absl::StatusOr<std::unique_ptr<Lock>> Mutation(const std::filesystem::path& game
   return std::move(*lock);
 }
 
+absl::StatusOr<std::unique_ptr<Lock>> Completion(const std::filesystem::path& game, bool wait) {
+  auto lock = Mutation(game, wait);
+  if (!lock.ok())
+    return lock.status();
+  const auto owner = (*lock)->Read();
+  if (!owner.ok())
+    return owner.status();
+  if (*owner && (**owner).cancel_requested)
+    return absl::CancelledError("Game operation cancelled; working outputs retained");
+  return std::move(*lock);
+}
+
 absl::StatusOr<std::string> NewToken() {
   unsigned char bytes[24];
   size_t offset = 0;
@@ -738,6 +750,11 @@ absl::StatusOr<SupervisedCommand> PrepareSupervisedCommand(
   for (const auto& argument : command)
     if (argument.find('\0') != std::string::npos)
       return absl::InvalidArgumentError("Command contains NUL");
+  // Check durable authority before issuing any new helper permit. Existing
+  // permits remain supervised; publication checks authority again at commit.
+  auto authority = Completion(game);
+  if (!authority.ok())
+    return authority.status();
   std::lock_guard<std::mutex> lock(authorizations_mutex);
   const auto admission = local_admission(token);
   if (!admission.ok())

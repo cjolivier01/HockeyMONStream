@@ -4,7 +4,7 @@ cc_library(
     hdrs = ["Cleanup.h", "Publication.h"],
     include_prefix = "hstream/src/libs/publication",
     visibility = ["//visibility:public"],
-    deps = ["//src/libs/common:game_storage", "//src/libs/recording", "//src/libs/common:pinned_file", "@yaml-cpp"],
+    deps = ["//src/libs/common:game_operation_owner", "//src/libs/common:game_storage", "//src/libs/recording", "//src/libs/common:pinned_file", "@yaml-cpp"],
 )
 
 cc_test(
@@ -12,7 +12,7 @@ cc_test(
     srcs = ["PublicationTest.cpp"],
     tags = ["local"],
     visibility = ["//src/apps/hstream-job:__pkg__"],
-    deps = [":publication", "//src/libs/recording", "@yaml-cpp"],
+    deps = [":publication", "//src/libs/common:game_operation_owner", "//src/libs/recording", "@yaml-cpp"],
 )
 
 cc_test(

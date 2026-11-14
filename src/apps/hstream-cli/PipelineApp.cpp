@@ -1275,7 +1275,7 @@ PipelineApplication::~PipelineApplication() {
 absl::Status PipelineApplication::initializeInstances(CleanupStack& cleanup_stack) {
   if (game_id_ && *game_id_) {
     const auto game = hm::Configurator::get_game_dir(*game_id_);
-    auto admission = hm::game_operation::Lock::Acquire(game);
+    auto admission = hm::game_operation::Mutation(game);
     if (!admission.ok())
       return admission.status();
     auto current = (*admission)->Read();
@@ -5020,8 +5020,10 @@ gboolean PipelineApplication::check_for_interrupt_static(gpointer data) {
 gboolean PipelineApplication::check_for_interrupt() {
   if (quit_)
     return FALSE;
-  if (hm::game_operation::CancellationRequested())
+  if (hm::game_operation::CancellationRequested()) {
+    player_scan_interrupted_ = TRUE;
     cintr_ = TRUE;
+  }
   if (cintr_) {
     cintr_ = FALSE;
     if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {
