@@ -85,8 +85,12 @@ Previously admitted batches retain their frozen limits and runtime.
 When candidates already have materialized saved player frames, no new baseline,
 scan or materialization node is needed. Preparation copies verified inputs into
 each candidate's private workspace; it does not search the video again. The
-desktop graph labels this step `Set up retained frames (CPU)`; browser candidate
-preparation finishes before the distributed batch starts.
+desktop graph labels this step `Set up retained frames (CPU)`. New browser batches
+defer candidate preparation until explicit Start and include it as a CPU stage.
+Add only saves frozen queue entries, so subsequent additions remain available.
+Web batches require Slurm execution and configured Dagster observation; the
+desktop's qualified local execution remains available. An observer outage does
+not take scheduling or cancellation ownership away from HStream.
 Candidates with the same selection fingerprint use the same selected frame pairs,
 even when their control-point budgets differ. A running solve keeps the
 `Player-rich (saved)` label while ownership still prevents conflicting actions.
