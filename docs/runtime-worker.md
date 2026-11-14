@@ -78,9 +78,31 @@ receipts after descendant retirement. Loss of proof must retain reservations.
 
 HockeyMONWeb uses the protocol from a service-side coordinator. The worker knows
 no Django models, browser commands or camera concepts. It sends no video bytes
-through these control documents: native WebRTC owns streaming. Other controllers
-can use the same API. The existing standalone `hstream-workflow` Python supervisor
-is unchanged and still requires its legacy interpreter profile.
+through these control documents: native WebRTC owns streaming. Standalone `hstream-workflow` uses the same worker in batch mode. Its Python
+controller remains on the service/controller host; compute needs only the native
+package and the task's own dependencies.
+
+Optional `batch` admits exactly one task using the ordinary launch `spec` and a
+bounded `artifacts` list of `{path, maximum}` declarations. Set `max_tasks` to one
+and `client_timeout_ms` to zero: the frozen task runs to completion without a
+live controller. Mailbox commands are disabled in this mode. The worker closes
+stdin, supervises the same process guards, and hashes declared result files only
+after all descendants retire successfully. Task errors, deadlines and cancellation
+never publish successful artifact receipts. `--capabilities` advertises
+`batch: native-batch-v1`; qualify this version before enabling standalone batches.
+
+Optional `cancel_files` declares exact paths and scalar `match` fields. A matching
+document cancels execution; a stale epoch does not. Paths outside the workspace
+require an explicit `read_files` grant. Checks continue during startup hashing,
+execution and artifact hashing. `cancelled` in the result distinguishes this from
+other failures. Every state/result binds `request_sha256` to the exact request
+bytes consumed at startup, in addition to the session ID and token.
+
+A launch spec can set `rotate_log: true` with a single combined stdout/stderr path.
+The native owner drains a pipe into the current log and one previous `.1` segment,
+each bounded by `max_log_bytes`. The child never opens those log paths. Capture
+continues during retirement and must reach EOF before completion. Explicit
+`unset_environment` names clear inherited settings before applying frozen overrides.
 
 Run `bazelisk test --config=opt //src/libs/runtime_worker:runtime_worker_test`
 for the Linux process/protocol integration tests. These tests use CPU helpers;

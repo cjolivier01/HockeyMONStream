@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+from hstream_workflow import executor
 from hstream_workflow.controller import Controller, SubmissionRejected
 from hstream_workflow.files import file_digest, locked, read_json, write_json
 from hstream_workflow.profiles import controller_files
@@ -87,14 +88,36 @@ class ControllerTest(unittest.TestCase):
         self.task = self.root / "task.py"
         self.task.write_text(TASK)
         python = str(Path(sys.executable).resolve())
+        workspace = Path(__file__).resolve().parents[1]
+        built = (
+            workspace
+            / "bazel-bin/src/apps/hstream-runtime-worker/hstream-runtime-worker"
+        )
+        packaged = workspace / "src/apps/hstream-runtime-worker/hstream-runtime-worker"
+        worker = str(
+            Path(
+                os.environ.get(
+                    "HSTREAM_RUNTIME_WORKER",
+                    str(packaged if packaged.is_file() else built),
+                )
+            ).resolve()
+        )
+        if not Path(worker).is_file():
+            self.fail("Build hstream-runtime-worker or set HSTREAM_RUNTIME_WORKER")
         self.profile = {
             "executor": "local",
             "pool": "cpu",
             "task_command": [python, str(self.task)],
             "runtime": {
+                "worker": worker,
                 "files": {
                     path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
-                    for path in (python, str(self.task), *map(str, controller_files()))
+                    for path in (
+                        python,
+                        worker,
+                        str(self.task),
+                        *map(str, controller_files()),
+                    )
                 },
                 "storage_namespace": "fixture",
                 "backend": "cpu",
@@ -523,8 +546,10 @@ finally:
     def test_failure_diagnostic_is_bounded_and_keeps_final_native_error(self):
         self.plan["stages"] = [
             self.stage(
-                "a", fail=True,
-                failure_message="x" * 20000 + "\nHugin artifact changed while being published",
+                "a",
+                fail=True,
+                failure_message="x" * 20000
+                + "\nHugin artifact changed while being published",
             )
         ]
         self.controller.register(self.plan, self.game)
@@ -540,11 +565,12 @@ finally:
         self.plan["stages"] = [self.stage("a", fail=True)]
         self.controller.register(self.plan, self.game)
         with patch(
-            "hstream_workflow.controller.read_tail", side_effect=OSError("Log unavailable")
+            "hstream_workflow.controller.read_tail",
+            side_effect=OSError("Log unavailable"),
         ):
             result = self.wait()
         self.assertEqual(result["state"], "failed")
-        self.assertEqual(result["nodes"][0]["reason"], "Native task did not succeed")
+        self.assertEqual(result["nodes"][0]["reason"], "Native task failed with exit 9")
         self.assertTrue(result["owner_released"])
         self.assertEqual(self.controller.registry.read()["reservations"], {})
 
@@ -601,7 +627,7 @@ finally:
         directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
         root = next((directory / "attempts").iterdir())
         until = time.monotonic() + 10
-        while not (root / "completion.json").exists() and time.monotonic() < until:
+        while executor.completion(root) is None and time.monotonic() < until:
             time.sleep(0.02)
         self.assertTrue((root / "completion.json").exists())
         return directory, root
@@ -833,7 +859,7 @@ finally:
         directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
         root = next((directory / "attempts").iterdir())
         deadline = time.monotonic() + 5
-        while not (root / "completion.json").exists() and time.monotonic() < deadline:
+        while executor.completion(root) is None and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertTrue((root / "completion.json").exists())
         release = self.orphan_control("adopt", "reconcile")
@@ -862,7 +888,7 @@ finally:
         directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
         root = next((directory / "attempts").iterdir())
         deadline = time.monotonic() + 5
-        while not (root / "completion.json").exists() and time.monotonic() < deadline:
+        while executor.completion(root) is None and time.monotonic() < deadline:
             time.sleep(0.01)
         self.assertTrue((root / "completion.json").exists())
         release = self.orphan_control("release", "reconcile")
@@ -964,12 +990,80 @@ finally:
         self.wait()
         self.assertEqual(self.wait(second["workflow_id"])["state"], "succeeded")
 
+    def test_compute_execution_needs_no_controller_package(self):
+        profile = copy.deepcopy(self.profile)
+        for path in controller_files():
+            profile["runtime"]["files"].pop(str(path))
+        self.plan["profiles"]["cpu"] = profile
+        config = read_json(self.registry / "config.json")
+        config["profiles"] = {"cpu": profile, "helper": self.profile}
+        config["admission_profile"] = "helper"
+        write_json(self.registry / "config.json", config)
+        self.controller = Controller(self.registry)
+        self.controller.register(self.plan, self.game)
+        self.controller.tick(self.plan["workflow_id"])
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        root = next((directory / "attempts").iterdir())
+        command = read_json(root / "worker-command.json")["argv"]
+        self.assertEqual(
+            command,
+            [
+                profile["runtime"]["worker"],
+                "--request",
+                str(root / "worker/request.json"),
+            ],
+        )
+        pins = read_json(root / "worker/request.json")["files"]
+        self.assertFalse(any(str(path) in pins for path in controller_files()))
+        self.assertEqual(self.wait()["state"], "succeeded")
+
+    def test_changed_worker_request_cannot_release_completed_attempt(self):
+        self.plan["stages"] = [self.stage("a")]
+        self.controller.register(self.plan, self.game)
+        self.controller.tick(self.plan["workflow_id"])
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        root = next((directory / "attempts").iterdir())
+        deadline = time.monotonic() + 5
+        while (
+            not (root / "worker/result.json").exists() and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        self.assertTrue((root / "worker/result.json").exists())
+        path = root / "worker/request.json"
+        original = path.read_bytes()
+        path.write_bytes(original + b" ")
+        self.assertEqual(
+            self.controller.tick(self.plan["workflow_id"])["state"], "recovery"
+        )
+        self.assertTrue((root / "runtime").exists())
+        self.assertEqual(len(self.controller.registry.read()["reservations"]), 1)
+        path.write_bytes(original)
+        self.assertEqual(self.wait()["state"], "succeeded")
+
+    def test_busy_controller_does_not_delay_batch_cancellation(self):
+        self.plan["stages"] = [self.stage("a", delay=20)]
+        self.controller.register(self.plan, self.game)
+        self.controller.tick(self.plan["workflow_id"])
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        root = next((directory / "attempts").iterdir())
+        with locked(directory / "controller.lock"):
+            self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+            deadline = time.monotonic() + 5
+            while (
+                not (root / "worker/result.json").exists()
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            result = read_json(root / "worker/result.json")
+            self.assertTrue(result["cancelled"])
+            self.assertTrue(result["stopped"])
+        self.assertEqual(self.wait()["state"], "cancelled")
+
     def test_successful_slurm_job_waits_for_delayed_nfs_receipt(self):
         self.plan["stages"] = [self.stage("a")]
         profile = copy.deepcopy(self.profile)
         profile["executor"] = "slurm"
         profile["pool"] = "cluster"
-        profile["runtime"]["python"] = str(Path(sys.executable).resolve())
         profile["resources"].update(partition="cpu", nodes=["compute"])
         profile["qualified_nodes"] = {
             "compute": {

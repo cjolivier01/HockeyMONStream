@@ -4,13 +4,12 @@ import copy
 import datetime
 import os
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 from uuid import uuid4
 
-from . import events, graph, local, slurm
+from . import events, executor, graph, local, slurm
 from .files import (
     contained,
     file_digest,
@@ -22,7 +21,6 @@ from .files import (
 )
 from .processes import host_identity, process_identity, same_process
 from .profiles import (
-    controller_files,
     load_config,
     preflight_runtime,
     validate_game,
@@ -144,11 +142,8 @@ class Controller:
         for key, profile in plan["profiles"].items():
             validate_profile(profile)
             require(
-                all(
-                    str(path) in profile["runtime"]["files"]
-                    for path in controller_files()
-                ),
-                "Resource profile must pin the installed workflow launcher and Python package",
+                profile["runtime"].get("worker") in profile["runtime"]["files"],
+                "Standalone execution needs a pinned runtime.worker",
             )
             require(
                 key in self.config["profiles"]
@@ -587,25 +582,9 @@ class Controller:
             "submitted_after": timestamp.strftime("%Y-%m-%dT%H:%M:%S"),
             "device": reservation["device"],
         }
-        require(
-            profile["executor"] != "slurm" or profile["runtime"].get("python"),
-            "The standalone workflow executor needs runtime.python; worker-only profiles belong to the service executor",
-        )
+        command = executor.prepare(root, request, profile, self.defaults, intent)
         write_json(root / "submission.json", intent, exclusive=True)
-        command = [
-            (
-                profile["runtime"]["python"]
-                if profile["executor"] == "slurm"
-                else sys.executable
-            ),
-            str(Path(__file__).resolve().parents[1] / "hstream-workflow"),
-            "_supervise",
-            "--root",
-            str(root),
-        ]
-        # Persist the exact installed supervisor command for diagnostics. The
-        # environment is inherited from the fixed controller deployment.
-        write_json(root / "supervisor-command.json", {"argv": command}, exclusive=True)
+        write_json(root / "worker-command.json", {"argv": command}, exclusive=True)
         try:
             if profile["executor"] == "slurm":
                 launched = slurm.submit(
@@ -617,7 +596,7 @@ class Controller:
                 launched = local.submit(root, command)
                 details = {
                     "host": launched["host"],
-                    "reason": "Local supervisor launched",
+                    "reason": "Native worker launched",
                 }
                 outcome = "running"
             state = graph.update_attempt(
@@ -804,11 +783,7 @@ class Controller:
                     cleanup_complete=True,
                 )
                 return state
-            complete = (
-                read_json(root / "completion.json")
-                if (root / "completion.json").exists()
-                else None
-            )
+            complete = executor.completion(root)
             stopped = bool(
                 complete
                 and complete.get("stopped") is True

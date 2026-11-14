@@ -257,7 +257,9 @@ struct Task {
   std::string id, nonce, header, input;
   fs::path receipt;
   fs::path output, errors;
-  Fd proof, pipe;
+  Fd proof, pipe, capture, log;
+  int64_t log_size = 0;
+  bool rotate_log = false;
   pid_t pid = 0;
   std::optional<int> code;
   bool stopped = false;
@@ -268,7 +270,9 @@ struct Task {
 class Worker {
  public:
   explicit Worker(const fs::path& request_path)
-      : root_(fs::absolute(request_path).parent_path()), request_(Json::Parse(Read(request_path))) {
+      : root_(fs::absolute(request_path).parent_path()),
+        request_bytes_(Read(request_path)),
+        request_(Json::Parse(request_bytes_)) {
     Require(root_ == fs::canonical(root_), "Worker coordination root contains a symlink");
     PrivateDirectory(root_, false);
     Require(request_.Text("schema") == kSchema, "Unsupported runtime-worker protocol");
@@ -302,6 +306,9 @@ class Worker {
       for (const auto& node : request_.Get("nodes").Items())
         found |= node.Text() == identity_.Text("node");
       Require(found, "Allocated node is not in the admitted runtime pool");
+    }
+    if (request_.Has("batch")) {
+      Require(client_ms_ == 0 && max_tasks_ == 1, "Batch execution needs one task and no controller lease");
     }
     runtime_ = request_.Get("files");
     Require(runtime_.Keys().size() <= 4096, "Too many pinned runtime files");
@@ -364,6 +371,11 @@ class Worker {
       }
       if (request_.Has("tcp_port"))
         ReservePort(request_.Get("tcp_port"));
+      if (request_.Has("batch")) {
+        CheckDeadline();
+        Launch(request_.Get("batch"));
+        tasks_.begin()->second.close_input = true;
+      }
       State("ready", false, "");
       auto heartbeat = Clock::now();
       auto accounting = Clock::now();
@@ -373,10 +385,19 @@ class Worker {
         CheckDeadline();
         Require(!fs::exists(root_ / "cancel"), "cancelled");
         Poll();
+        if (request_.Has("batch")) {
+          const auto& task = tasks_.begin()->second;
+          if (task.stopped && task.capture.value < 0) {
+            Require(!task.timed_out, "Native task exceeded its time limit");
+            Require(task.code == 0, "Native task failed with exit " + std::to_string(*task.code));
+            finished_ = true;
+            break;
+          }
+        }
         std::ostringstream number;
         number << std::setfill('0') << std::setw(20) << next_ << ".json";
         const auto command_path = root_ / "commands" / number.str();
-        if (fs::exists(command_path)) {
+        if (!request_.Has("batch") && fs::exists(command_path)) {
           const auto command = Json::Parse(Read(command_path));
           Require(
               command.Text("schema") == kSchema && command.Text("token") == token_ &&
@@ -421,6 +442,23 @@ class Worker {
         error += "; cleanup: " + std::string(cleanup.what());
       }
     }
+    Json artifacts;
+    if (stopped && error.empty() && request_.Has("batch")) {
+      try {
+        const auto batch = request_.Get("batch");
+        if (batch.Has("artifacts")) {
+          const auto outputs = batch.Get("artifacts").Items();
+          Require(outputs.size() <= 256, "Too many batch result files");
+          for (const auto& output : outputs) {
+            const auto path = Confined(output.Text("path"));
+            artifacts.Set(path.c_str(), File(path, output.Integer("maximum", 0, INT64_MAX), [&] { CheckDeadline(); }));
+          }
+        }
+      } catch (const std::exception& failure) {
+        artifacts = Json();
+        error = failure.what();
+      }
+    }
     State("finished", stopped, error);
     Json result = Bound();
     result.Set("stopped", stopped);
@@ -430,6 +468,8 @@ class Worker {
     for (const auto& entry : tasks_)
       tasks.Set(entry.first.c_str(), TaskState(entry.second));
     result.Set("tasks", tasks);
+    result.Set("artifacts", artifacts);
+    result.Set("cancelled", cancelled_);
     Atomic(root_ / "result.json", result);
     return stopped && error.empty() ? 0 : 1;
   }
@@ -441,11 +481,39 @@ class Worker {
     value.Set("id", id_);
     value.Set("token", token_);
     value.Set("identity", identity_);
+    auto* hash = g_compute_checksum_for_data(
+        G_CHECKSUM_SHA256, reinterpret_cast<const guchar*>(request_bytes_.data()), request_bytes_.size());
+    value.Set("request_sha256", hash);
+    g_free(hash);
     return value;
   }
   void CheckDeadline() {
-    Require(!interrupted, "cancelled by signal");
-    Require(!fs::exists(root_ / "cancel"), "cancelled");
+    if (interrupted || fs::exists(root_ / "cancel")) {
+      cancelled_ = true;
+      throw std::runtime_error("cancelled");
+    }
+    if (request_.Has("cancel_files")) {
+      const auto watches = request_.Get("cancel_files").Items();
+      Require(watches.size() <= 16, "Too many cancellation watches");
+      for (const auto& watch : watches) {
+        const auto name = watch.Text("path");
+        const auto path = std::find(read_files_.begin(), read_files_.end(), name) != read_files_.end()
+            ? fs::path(name)
+            : Confined(name, false);
+        if (!fs::exists(path))
+          continue;
+        const auto value = Json::Parse(Read(path, 4096, true));
+        const auto match = watch.Get("match");
+        Require(!match.Keys().empty(), "Cancellation watch needs an exact binding");
+        bool matches = true;
+        for (const auto& key : match.Keys())
+          matches &= value.Has(key.c_str()) && value.Get(key.c_str()).Dump() == match.Get(key.c_str()).Dump();
+        if (matches) {
+          cancelled_ = true;
+          throw std::runtime_error("cancelled");
+        }
+      }
+    }
     Require(Clock::now() < deadline_, "Runtime session deadline exceeded");
     if (lease_started_ && client_ms_) {
       if (fs::exists(root_ / "client.json")) {
@@ -545,9 +613,41 @@ class Worker {
     Require(found != tasks_.end(), "Unknown runtime task");
     return found->second;
   }
+  void DrainLog(Task& task) {
+    if (task.capture.value < 0)
+      return;
+    // Bound each pass so a noisy task cannot postpone cancellation or deadlines.
+    std::array<char, 65536> buffer;
+    for (int pass = 0; pass < 16; ++pass) {
+      const auto count = ::read(task.capture.value, buffer.data(), buffer.size());
+      if (count < 0 && (errno == EAGAIN || errno == EINTR))
+        return;
+      Require(count >= 0, "Cannot drain native output");
+      if (!count) {
+        task.capture.Close();
+        task.log.Close();
+        return;
+      }
+      int64_t offset = 0;
+      while (offset < count) {
+        if (task.log_size == max_log_) {
+          task.log.Close();
+          Require(
+              ::rename(task.output.c_str(), (task.output.string() + ".1").c_str()) == 0, "Cannot rotate native log");
+          task.log = Fd(::open(task.output.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
+          task.log_size = 0;
+        }
+        const auto size = std::min<int64_t>(count - offset, max_log_ - task.log_size);
+        WriteAll(task.log.value, std::string(buffer.data() + offset, size));
+        task.log_size += size;
+        offset += size;
+      }
+    }
+  }
   void Poll(bool retiring = false) {
     for (auto& entry : tasks_) {
       auto& task = entry.second;
+      DrainLog(task);
       if (!task.code) {
         int status = 0;
         const auto found = ::waitpid(task.pid, &status, WNOHANG);
@@ -607,7 +707,7 @@ class Worker {
       }
       bool done = true;
       for (const auto& entry : tasks_)
-        done &= entry.second.stopped;
+        done &= entry.second.stopped && entry.second.capture.value < 0;
       if (done) {
         const auto proof = process_guard::Reap();
         Check(proof.status());
@@ -663,6 +763,14 @@ class Worker {
       Require(
           std::regex_match(key, std::regex("[A-Za-z_][A-Za-z0-9_]*")) && environment.Text(key.c_str()).size() <= 65536,
           "Invalid native environment");
+    if (spec.Has("unset_environment")) {
+      const auto keys = spec.Get("unset_environment").Items();
+      Require(keys.size() <= 256, "Too many environment removals");
+      for (const auto& key : keys)
+        Require(std::regex_match(key.Text(), std::regex("[A-Za-z_][A-Za-z0-9_]*")), "Invalid environment removal");
+    }
+    task.rotate_log = spec.Has("rotate_log") && spec.Boolean("rotate_log");
+    Require(!task.rotate_log || output == errors, "Rotating capture needs a combined native log");
     task.deadline = Clock::now() + std::chrono::milliseconds(spec.Integer("timeout_ms", 1, timeout_ms_));
     const auto directory = root_ / "tasks" / task.id;
     Require(::mkdir(directory.c_str(), 0700) == 0, "Task identity already exists");
@@ -681,6 +789,19 @@ class Worker {
       struct stat info {};
       Require(::fstat(descriptor, &info) == 0 && S_ISREG(info.st_mode), "Native logs require regular files");
     }
+    Fd capture_write;
+    if (task.rotate_log) {
+      struct stat info {};
+      Require(
+          ::fstat(out.value, &info) == 0 && info.st_size == 0 && !fs::exists(output.string() + ".1"),
+          "Rotating log must be new");
+      task.log = std::move(out);
+      int capture_pipe[2];
+      Require(::pipe2(capture_pipe, O_CLOEXEC) == 0, "Cannot create native output pipe");
+      task.capture = Fd(capture_pipe[0]);
+      capture_write = Fd(capture_pipe[1]);
+      Require(::fcntl(task.capture.value, F_SETFL, O_NONBLOCK) == 0, "Cannot bound output capture");
+    }
     const auto parent = ::getpid();
     task.pid = ::fork();
     Require(task.pid >= 0, "Cannot launch native task owner");
@@ -688,8 +809,9 @@ class Worker {
       try {
         ::signal(SIGPIPE, SIG_DFL);
         Require(
-            ::dup2(input.value, STDIN_FILENO) >= 0 && ::dup2(out.value, STDOUT_FILENO) >= 0 &&
-                ::dup2(err.value, STDERR_FILENO) >= 0,
+            ::dup2(input.value, STDIN_FILENO) >= 0 &&
+                ::dup2(task.rotate_log ? capture_write.value : out.value, STDOUT_FILENO) >= 0 &&
+                ::dup2(task.rotate_log ? capture_write.value : err.value, STDERR_FILENO) >= 0,
             "Cannot install native task descriptors");
         task.pipe.Close();
         task.proof.Close();
@@ -709,6 +831,9 @@ class Worker {
         }
         ::closedir(descriptors);
         Require(::chdir(cwd.c_str()) == 0, "Cannot enter native workspace");
+        if (spec.Has("unset_environment"))
+          for (const auto& key : spec.Get("unset_environment").Items())
+            Require(::unsetenv(key.Text().c_str()) == 0, "Cannot clear native environment");
         for (const auto& key : environment.Keys())
           Require(
               ::setenv(key.c_str(), environment.Text(key.c_str()).c_str(), 1) == 0, "Cannot set native environment");
@@ -937,7 +1062,9 @@ class Worker {
     throw std::runtime_error("Unsupported runtime operation");
   }
   fs::path root_, workspace_;
+  std::string request_bytes_;
   Json request_, runtime_, identity_, tools_;
+  bool cancelled_ = false;
   std::string id_, token_;
   int64_t poll_ms_, grace_ms_, timeout_ms_, client_ms_, max_bytes_, max_log_, max_tasks_, next_ = 1;
   int64_t started_ms_ = WallTimeMs();
@@ -973,6 +1100,7 @@ Json Capabilities() {
     operations.Append(Json::String(operation));
   result.Set("operations", operations);
   result.Set("retirement", "pidfd-echild-v1");
+  result.Set("batch", "native-batch-v1");
   return result;
 }
 int Run(const fs::path& request) {
