@@ -40,6 +40,17 @@ class WebPreviewSession {
   void SetOverlays(pipeline_internal::PreviewOverlaySelection selection, uint64_t generation);
   // Called after publishing a matching query acknowledgment, including paused readback.
   void RefreshOverlayStatus(const RouteOwner::Session& session);
+  // Retire signaling and status callbacks on their main context before a seek
+  // worker can replace the graph. Stop remains responsible for native gates.
+  void RetireCallbacks();
+  absl::Status BeginSourceSeek();
+  bool OwnsSourceBridge(GstPad* pad) const;
+  absl::Status DetachSeekSources();
+  absl::Status AttachSeekSources(RouteOwner::Session identity);
+  absl::Status ResumeSourceSeek();
+  bool source_seek_pending() const {
+    return source_seek_pending_;
+  }
   void Stop();
   std::string Capability(const pipeline_internal::PreviewOverlayRuntimeState& overlays, bool seek) const;
   void SetPlayerDrawingLayers(unsigned layers);
@@ -67,6 +78,8 @@ class WebPreviewSession {
   void DrainOverlayStatus();
   guint overlay_status_source_{0};
   absl::Status AddRoute(const std::string& channel, RouteTap tap);
+  absl::Status AddSources();
+  absl::Status StartCallbacks();
   AppCtx& app_;
   WebPreviewOptions options_;
   NvDsSinkEncoderConfig* sink_config_{nullptr};
@@ -77,6 +90,8 @@ class WebPreviewSession {
   RouteOwner routes_;
   bool stopped_{false};
   bool overlays_ready_{false};
+  bool source_seek_pending_{false};
+  std::string seek_selection_;
   std::function<bool()> reconcile_overlays_;
 };
 

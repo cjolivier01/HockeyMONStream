@@ -75,7 +75,7 @@ py_test(
     size = "medium",
     srcs = ["hstream_workflow_controller_test.py"],
     main = "hstream_workflow_controller_test.py",
-    data = ["hstream-workflow"],
+    data = ["hstream-workflow", "//src/apps/hstream-runtime-worker:hstream-runtime-worker"],
     deps = [":workflow_library"],
 )
 
@@ -87,7 +87,7 @@ py_test(
         "hstream_workflow_controller_test.py",
     ],
     main = "hstream_workflow_dispatch_test.py",
-    data = ["hstream-workflow"],
+    data = ["hstream-workflow", "//src/apps/hstream-runtime-worker:hstream-runtime-worker"],
     deps = [":workflow_library"],
 )
 
@@ -258,14 +258,6 @@ py_test(
     size = "small",
     srcs = ["hstream_workflow_files_test.py"],
     main = "hstream_workflow_files_test.py",
-    deps = [":workflow_library"],
-)
-
-py_test(
-    name = "workflow_processes_test",
-    size = "small",
-    srcs = ["hstream_workflow_processes_test.py"],
-    main = "hstream_workflow_processes_test.py",
     deps = [":workflow_library"],
 )
 

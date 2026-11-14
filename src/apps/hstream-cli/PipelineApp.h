@@ -116,6 +116,8 @@ class PipelineApplication {
   absl::Status stopPipeline(std::shared_ptr<HmApp> app_context) const;
 
  private:
+  std::string failure_binding_, failure_invocation_;
+  unsigned failure_generation_{};
   friend struct PipelineToneControlsTestAccess;
   friend struct PipelineSeekAdmissionTestAccess;
   // Callback and helper functions.
@@ -412,6 +414,8 @@ class PipelineApplication {
   gboolean rrowsel_, selecting_;
   std::unique_ptr<std::thread> editor_thread_;
   uint64_t start_time_ns_{0};
+  bool explicit_start_time_{false};
+  bool playback_defaults_resolved_{false};
   enum class RinkMaskPreparation { kNone, kAlignment, kMask };
   RinkMaskPreparation rink_mask_preparation_{RinkMaskPreparation::kNone};
   bool rink_mask_preparation_complete_{false};

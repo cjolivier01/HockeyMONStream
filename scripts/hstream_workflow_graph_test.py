@@ -104,6 +104,28 @@ class GraphTest(unittest.TestCase):
         self.finish("baseline", retry)
         self.assertEqual(self.state["nodes"]["scan"]["state"], "ready")
 
+    def test_batch_retry_resumes_parallel_branches_and_preserves_success(self):
+        for key in ("baseline", "scan", "frames"):
+            self.finish(key, self.begin(key))
+        for key in ("a", "b", "ordinary"):
+            self.finish(key, self.begin(key), "failed")
+        previous = copy.deepcopy(self.state)
+        self.state = graph.retry(self.plan, self.state, ["a", "b", "ordinary"])
+        self.assertEqual(self.state["epoch"], 1)
+        for key in ("baseline", "scan", "frames"):
+            self.assertEqual(self.state["nodes"][key], previous["nodes"][key])
+        self.assertEqual(len(graph.ready_stages(self.plan, self.state)), 3)
+        a, b = self.begin("a"), self.begin("b")
+        self.assertEqual(graph.ready_stages(self.plan, self.state), [])
+        self.finish("a", a)
+        self.assertEqual(
+            [s["id"] for s in graph.ready_stages(self.plan, self.state)], ["ordinary"]
+        )
+        self.finish("b", b)
+        self.finish("ordinary", self.begin("ordinary"))
+        self.assertEqual(graph.snapshot(self.plan, self.state)["state"], "succeeded")
+        self.assertEqual(len(self.state["nodes"]["a"]["attempts"]), 2)
+
     def test_cancellation_wins_late_success_and_waits_for_cleanup(self):
         attempt = self.begin("baseline")
         self.state = graph.cancel(self.plan, self.state)

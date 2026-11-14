@@ -134,7 +134,7 @@ size_t countFiles(const fs::path& directory, const std::string& extension) {
   return count;
 }
 int main(int argc, char** argv) {
-  QTemporaryDir root;
+  QTemporaryDir root("/tmp/managed publication's files-XXXXXX");
   if (!root.isValid())
     return 1;
   const auto path = fs::path(root.path().toStdString());
@@ -143,8 +143,8 @@ int main(int argc, char** argv) {
   qputenv("HM_OUTPUT_WORK_DIR", (root.path() + "/work").toUtf8());
   QApplication application(argc, argv);
   try {
-    const auto game = path / "games/game's files";
-    fs::create_directories(game);
+    const auto game = path / "games/game-s-files";
+    fs::create_directories(game / "_hockeymon");
     std::ofstream(game / "_hockeymon/config.yaml") << "{}\n";
     const auto fixture = path / "fixture.mkv";
     require(

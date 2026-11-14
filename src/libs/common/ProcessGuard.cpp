@@ -9,6 +9,7 @@
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -80,7 +81,7 @@ absl::Status Enable() {
     return absl::FailedPreconditionError("Child proof must be established before any command is launched");
   if (::prctl(PR_SET_CHILD_SUBREAPER, 1) != 0)
     return error("Cannot establish process descendant ownership");
-  struct sigaction child_status{};
+  struct sigaction child_status {};
   child_status.sa_handler = SIG_DFL;
   ::sigemptyset(&child_status.sa_mask);
   if (::sigaction(SIGCHLD, &child_status, nullptr) != 0)
@@ -89,32 +90,42 @@ absl::Status Enable() {
   return absl::OkStatus();
 }
 
-absl::StatusOr<bool> Reap() {
+absl::StatusOr<bool> Reap(Deadline deadline) {
   if (!Enabled())
     return absl::FailedPreconditionError("No isolated process descendant scope is active");
   for (;;) {
     const pid_t child = ::waitpid(-1, nullptr, WNOHANG);
-    if (child > 0)
+    if (child > 0) {
+      if (std::chrono::steady_clock::now() >= deadline)
+        return false;
       continue;
+    }
     if (child == 0)
       return false;
-    if (errno == EINTR)
+    if (errno == EINTR) {
+      if (std::chrono::steady_clock::now() >= deadline)
+        return false;
       continue;
+    }
     if (errno == ECHILD)
       return true;
     return error("Cannot prove process descendants stopped");
   }
 }
 
-absl::Status Signal(int number) {
+absl::Status Signal(int number, Deadline deadline) {
   if (!Enabled())
     return absl::FailedPreconditionError("No isolated process descendant scope is active");
 #if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
   try {
+    if (std::chrono::steady_clock::now() >= deadline)
+      return absl::OkStatus();
     // Only direct children need signaling. Escaped grandchildren become direct
     // children when their parent exits, and the next pass discovers them. The
     // kernel ECHILD check, never this enumeration, proves final shutdown.
     for (const auto& entry : std::filesystem::directory_iterator("/proc")) {
+      if (std::chrono::steady_clock::now() >= deadline)
+        break;
       const auto name = entry.path().filename().string();
       if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos)
         continue;
@@ -122,15 +133,21 @@ absl::Status Signal(int number) {
       const auto before = process(pid);
       if (!before.ok() || before->first != ::getpid())
         continue;
+      if (std::chrono::steady_clock::now() >= deadline)
+        break;
       Descriptor pinned{static_cast<int>(::syscall(SYS_pidfd_open, pid, 0))};
       if (pinned.value < 0) {
         if (errno == ESRCH)
           continue;
         return error("Cannot pin process descendant");
       }
+      if (std::chrono::steady_clock::now() >= deadline)
+        break;
       const auto current = process(pid);
       if (!current.ok() || *current != *before)
         continue;
+      if (std::chrono::steady_clock::now() >= deadline)
+        break;
       if (::syscall(SYS_pidfd_send_signal, pinned.value, number, nullptr, 0) != 0 && errno != ESRCH)
         return error("Cannot signal process descendant");
     }
@@ -146,21 +163,24 @@ absl::Status Signal(int number) {
 absl::Status Retire(int64_t grace_ms, int64_t poll_ms) {
   if (grace_ms <= 0 || poll_ms <= 0 || poll_ms > grace_ms || grace_ms > 24 * 60 * 60 * 1000LL)
     return absl::InvalidArgumentError("Invalid explicit process cleanup timing");
-  const auto started = std::chrono::steady_clock::now();
+  using Clock = std::chrono::steady_clock;
+  const auto term_deadline = Clock::now() + std::chrono::milliseconds(grace_ms);
+  const auto kill_deadline = term_deadline + std::chrono::milliseconds(grace_ms);
   for (;;) {
-    const auto stopped = Reap();
+    const auto phase_deadline = Clock::now() < term_deadline ? term_deadline : kill_deadline;
+    const auto stopped = Reap(phase_deadline);
     if (!stopped.ok())
       return stopped.status();
     if (*stopped)
       return absl::OkStatus();
-    const auto elapsed =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-    if (elapsed >= 2 * grace_ms)
+    if (Clock::now() >= kill_deadline)
       return absl::DeadlineExceededError("Cannot prove isolated descendants stopped; game stays reserved");
-    const auto signalled = Signal(elapsed >= grace_ms ? SIGKILL : SIGTERM);
+    const auto signalled = Signal(Clock::now() >= term_deadline ? SIGKILL : SIGTERM, phase_deadline);
     if (!signalled.ok())
       return signalled;
-    ::poll(nullptr, 0, static_cast<int>(poll_ms));
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(phase_deadline - Clock::now()).count();
+    if (remaining > 0)
+      ::poll(nullptr, 0, static_cast<int>(std::min(poll_ms, remaining)));
   }
 }
 
@@ -169,7 +189,8 @@ std::string ReceiptHeader(const std::string& token, const std::string& nonce) {
 }
 
 absl::StatusOr<char> ReadReceipt(int descriptor, const std::filesystem::path& path, const std::string& header) {
-  struct stat pinned{}, named{};
+  struct stat pinned {
+  }, named{};
   if (::fstat(descriptor, &pinned) != 0 || ::lstat(path.c_str(), &named) != 0 || !S_ISREG(pinned.st_mode) ||
       !S_ISREG(named.st_mode) || pinned.st_uid != ::geteuid() || (pinned.st_mode & 0777) != 0600 ||
       pinned.st_dev != named.st_dev || pinned.st_ino != named.st_ino ||
@@ -220,7 +241,8 @@ absl::StatusOr<int> Run(
     int64_t parent_pid,
     int64_t grace_ms,
     int64_t poll_ms,
-    const std::vector<std::string>& command) {
+    const std::vector<std::string>& command,
+    int executable_descriptor) {
   if (command.empty() || command.front().empty() || grace_ms <= 0 || poll_ms <= 0 || poll_ms > grace_ms ||
       grace_ms > 24 * 60 * 60 * 1000LL)
     return absl::InvalidArgumentError("Invalid process guard command or explicit cleanup timing");
@@ -252,7 +274,7 @@ absl::StatusOr<int> Run(
   }
   // The proof descriptor is CLOEXEC and is explicitly closed in the worker.
   // Only this subreaper can acknowledge the kernel's final ECHILD result.
-  struct sigaction action{};
+  struct sigaction action {};
   action.sa_handler = stop;
   ::sigemptyset(&action.sa_mask);
   for (const int number : {SIGINT, SIGTERM, SIGHUP}) {
@@ -288,7 +310,15 @@ absl::StatusOr<int> Run(
       ::_exit(127);
     for (const int number : {SIGINT, SIGTERM, SIGHUP})
       ::signal(number, SIG_DFL);
-    ::execvp(arguments.front(), arguments.data());
+    if (executable_descriptor >= 0) {
+      // A shebang interpreter reopens /dev/fd/N after exec. Keep this pinned
+      // descriptor available in the execution child, without reopening its path.
+      const int flags = ::fcntl(executable_descriptor, F_GETFD);
+      if (flags < 0 || ::fcntl(executable_descriptor, F_SETFD, flags & ~FD_CLOEXEC) != 0)
+        ::_exit(127);
+      ::fexecve(executable_descriptor, arguments.data(), environ);
+    } else
+      ::execvp(arguments.front(), arguments.data());
     ::_exit(127);
   }
   int root_status = 0;
@@ -308,7 +338,16 @@ absl::StatusOr<int> Run(
   int requested = 0;
   for (;;) {
     bool no_children = false;
+    // A busy reaper must yield to cancellation even before retirement starts.
+    const auto now = Clock::now();
+    const auto phase_deadline = retirement ? *retirement +
+            std::chrono::milliseconds(now < *retirement + std::chrono::milliseconds(grace_ms) ? grace_ms : 2 * grace_ms)
+                                           : now + std::chrono::milliseconds(poll_ms);
+    bool observed = false;
     for (;;) {
+      if (observed && Clock::now() >= phase_deadline)
+        break;
+      observed = true;
       int status = 0;
       const pid_t child = ::waitpid(-1, &status, WNOHANG | WUNTRACED | WCONTINUED);
       if (child > 0) {
@@ -377,7 +416,7 @@ absl::StatusOr<int> Run(
       if (root_finished) {
         // Reaping root releases its PID; its former group number could now
         // identify unrelated work. Adopted children remain safe pidfd targets.
-        const auto resumed = Signal(SIGCONT);
+        const auto resumed = Signal(SIGCONT, phase_deadline);
         if (!resumed.ok())
           return resumed;
       } else {
@@ -390,14 +429,14 @@ absl::StatusOr<int> Run(
     }
     if (retirement) {
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - *retirement).count();
-      const int number = requested == SIGKILL || elapsed >= grace_ms ? SIGKILL : requested ? requested : SIGTERM;
-      const auto signalled = Signal(number);
-      if (!signalled.ok())
-        return signalled;
       if (elapsed >= 2 * grace_ms) {
         (void)write_byte(record.value, header.size() + 1, 'F');
         return absl::DeadlineExceededError("Process guard could not prove descendant shutdown; game stays reserved");
       }
+      const int number = requested == SIGKILL || elapsed >= grace_ms ? SIGKILL : requested ? requested : SIGTERM;
+      const auto signalled = Signal(number, phase_deadline);
+      if (!signalled.ok())
+        return signalled;
     }
     ::poll(nullptr, 0, static_cast<int>(poll_ms));
   }

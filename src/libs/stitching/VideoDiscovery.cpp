@@ -5,6 +5,7 @@
 #include <cctype>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <regex>
 #include <vector>
 
@@ -281,7 +282,7 @@ absl::StatusOr<VideoChapter> collect_lr_chapters(const std::string& directory, b
  * @brief Collect and order chapter files inside a directory.
  *
  * Strategy: prefer vendor-specific patterns (GoPro, Insta360) if found;
- * otherwise fall back to left/right patterns. Output keys are 1..N in
+ * otherwise fall back to left/right patterns or one unnumbered video. Output keys are 1..N in
  * the discovered order.
  */
 absl::StatusOr<VideoChapter> collect_chapters_for_dir(const std::string& directory) {
@@ -299,6 +300,19 @@ absl::StatusOr<VideoChapter> collect_chapters_for_dir(const std::string& directo
     return chapter_map;
   }
   HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/false, /*renumber=*/true));
+  if (!chapter_map.empty()) {
+    return chapter_map;
+  }
+  // Add imports each unnumbered file into its own camN directory. Do not infer
+  // a chapter order if a manually assembled directory contains several files.
+  for (const auto& entry : fs::directory_iterator(directory)) {
+    if (entry.is_regular_file() && IsStandaloneCameraFile(entry.path().filename().string())) {
+      if (!chapter_map.empty()) {
+        return absl::InvalidArgumentError("Auto requires one unnumbered recording per camera directory: " + directory);
+      }
+      chapter_map[1] = entry.path().string();
+    }
+  }
   return chapter_map;
 }
 
@@ -320,6 +334,85 @@ int cam_index(const std::string& name) {
 }
 
 } // namespace
+
+bool IsStandaloneCameraFile(const std::string& filename) {
+  static const std::regex pattern(kStandaloneCameraFilePattern, std::regex::icase);
+  return std::regex_match(filename, pattern);
+}
+
+absl::Status ValidateCameraChapters(const std::map<std::string, std::vector<std::string>>& cameras) {
+  using Chapters = std::map<std::pair<size_t, int>, std::string>;
+  std::map<std::string, std::vector<std::pair<std::string, Chapters>>> references;
+  static const std::regex gopro(GOPRO_FILE_PATTERN), insta360(INSTA360_FILE_PATTERN);
+  static const std::regex parts(R"((left|right)-([0-9]+)\.(mp4|mkv|m4v)$)", std::regex::icase);
+  for (const auto& [camera, files] : cameras) {
+    std::map<std::string, std::map<long, std::map<int, std::string>>> recordings;
+    for (const auto& file : files) {
+      const auto name = fs::path(file).filename().string();
+      std::smatch match;
+      if (std::regex_match(name, gopro)) {
+        const auto [recording, chapter] = gopro_get_video_and_chapter(name);
+        recordings["GoPro"][recording][chapter] = name;
+      } else if (std::regex_match(name, insta360)) {
+        long recording;
+        int chapter;
+        if (insta360_get_video_and_chapter(name, recording, chapter))
+          recordings["Insta360"][recording][chapter] = name;
+      } else if (std::regex_search(name, match, parts)) {
+        try {
+          recordings["numbered parts"][0][std::stoi(match[2].str())] = name;
+        } catch (const std::exception&) {
+          return absl::InvalidArgumentError("Invalid chapter number in " + name);
+        }
+      }
+    }
+    for (const auto& [scheme, groups] : recordings) {
+      Chapters chapters;
+      size_t recording = 0;
+      for (const auto& [id, group] : groups) {
+        ++recording;
+        for (const auto& [chapter, name] : group)
+          chapters[{recording, chapter}] = name;
+      }
+      const auto missing = [&](const std::string& absent,
+                               const Chapters& available,
+                               const std::string& present,
+                               const Chapters& expected) {
+        for (const auto& [key, name] : expected) {
+          const auto first = available.lower_bound({key.first, 0});
+          if (first == available.end() || first->first.first != key.first)
+            continue;
+          const auto last = std::prev(available.lower_bound({key.first + 1, 0}));
+          // Cameras can roll chapters at different rates or stop at different
+          // times. Extra trailing chapters do not establish a missing input.
+          if (key.second > last->first.second)
+            continue;
+          if (!available.count(key))
+            return absl::InvalidArgumentError(
+                "Camera " + absent + " is missing " + scheme + " chapter " + std::to_string(key.second) +
+                " in recording " + std::to_string(key.first) + "; camera " + present + " has " + name + ".");
+        }
+        return absl::OkStatus();
+      };
+      for (const auto& [peer, peer_chapters] : references[scheme]) {
+        HM_RETURN_IF_ERROR(missing(camera, chapters, peer, peer_chapters));
+        HM_RETURN_IF_ERROR(missing(peer, peer_chapters, camera, chapters));
+      }
+      references[scheme].emplace_back(camera, std::move(chapters));
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status ValidateDiscoveredCameraChapters(const VideosDict& cameras) {
+  std::map<std::string, std::vector<std::string>> playlists;
+  const bool paired = cameras.count("left") && cameras.count("right");
+  for (const auto& [camera, chapters] : cameras)
+    if (camera != "stitched" && (!paired || camera == "left" || camera == "right"))
+      for (const auto& [number, file] : chapters)
+        playlists[camera].push_back(file);
+  return ValidateCameraChapters(playlists);
+}
 
 /**
  * @brief Retrieves available videos in the given directory.

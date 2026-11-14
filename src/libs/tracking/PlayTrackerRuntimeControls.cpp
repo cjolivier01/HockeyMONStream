@@ -8,11 +8,13 @@
 
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/PlayTrackerConfigRoles.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 
 namespace hm::tracking {
 namespace {
 bool IsBoolean(const std::string& id) {
-  return id == "Cancel_Stop_On_Opposite_Direction" || id == "Ignore_Oversized_Players";
+  return id == "Cancel_Stop_On_Opposite_Direction" || id == "Ignore_Oversized_Players" || id == "Ignore_Referees" ||
+      id == "Ignore_Goalies";
 }
 YAML::Node NativeValue(const CameraSliderSpec& spec, double value) {
   if (std::string(spec.id) == "Oversized_Player_Percent")
@@ -27,9 +29,12 @@ YAML::Node NativeValue(const CameraSliderSpec& spec, double value) {
 }
 } // namespace
 
-absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(const YAML::Node& resolved) {
+absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(
+    const YAML::Node& input,
+    const YAML::Node* materialized_tracker) {
   CameraControlValues result;
   try {
+    const auto resolved = hm::config::NormalizeRuntimeControlLayer(input);
     const auto required = [&](const std::string& path) -> YAML::Node {
       const auto value = get_node(resolved, path);
       if (!value || !value->IsScalar())
@@ -48,6 +53,8 @@ absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(const YAML::Nod
       result[id] = required(path).as<int>();
     result["Cancel_Stop_On_Opposite_Direction"] = required("rink.camera.cancel_stop_on_opposite_dir").as<bool>();
     result["Ignore_Oversized_Players"] = required("rink.tracking.cam_ignore_oversized").as<bool>();
+    result["Ignore_Referees"] = required("rink.tracking.cam_ignore_referees").as<bool>();
+    result["Ignore_Goalies"] = required("rink.tracking.cam_ignore_goalies").as<bool>();
     if (!required("rink.tracking.cam_ignore_largest").as<bool>())
       result["Ignore_Largest_Count"] = 0;
     for (const auto& [id, path, scale] :
@@ -66,11 +73,16 @@ absl::StatusOr<CameraControlValues> ReadPlaytrackerControlValues(const YAML::Nod
           "Max_Speed_Y_x10",
           "Max_Accel_X_x10",
           "Max_Accel_Y_x10"})
-      result[id] = required(std::string("hstream_ui.camera_controls.") + id).as<int>();
+      result[id] = hm::config::RuntimeControlPresentationValue(resolved, id);
     for (auto& [id, value] : result) {
       const auto override = get_node(resolved, "hstream_ui.camera_controls." + id);
       if (override)
         value = override->as<double>();
+    }
+    if (materialized_tracker) {
+      const auto tracker = (*materialized_tracker)["play-tracker"];
+      result["Ignore_Referees"] = tracker["ignore-referees"].as<bool>();
+      result["Ignore_Goalies"] = tracker["ignore-goalies"].as<bool>();
     }
     const auto specs = PlaytrackerControlSpecs(result);
     if (!specs.ok())
@@ -103,7 +115,8 @@ absl::StatusOr<std::vector<CameraSliderSpec>> PlaytrackerControlSpecs(const Came
           static_cast<double>(std::numeric_limits<int>::max())));
     };
     auto specs = tracking_control_specs(lookup);
-    for (const auto& group : {motion_control_specs(lookup), player_control_specs(lookup)})
+    for (const auto& group :
+         {motion_control_specs(lookup), player_control_specs(lookup), role_filter_control_specs(lookup)})
       specs.insert(specs.end(), group.begin(), group.end());
     for (const auto& spec : specs)
       if (!ValidPlaytrackerControlValue(spec, defaults.at(spec.id)))

@@ -42,7 +42,7 @@ def installed_launcher(config):
         expected = pins[str(path)]
         require(
             all(
-                profile["runtime"]["files"].get(str(path)) == expected
+                profile["runtime"]["files"].get(str(path), expected) == expected
                 for profile in profiles.values()
             ),
             "Workflow profiles refer to different controller deployments; "

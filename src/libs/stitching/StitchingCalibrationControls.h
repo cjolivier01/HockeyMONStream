@@ -40,7 +40,8 @@ const char* StitchingCalibrationCleanupName(StitchingCalibrationCleanup cleanup)
 
 struct StitchingCalibrationPlan {
   StitchingCalibrationChanges changes;
-  bool required{false}, alignment_reused{false}, retain_selected_frames{false}, retain_manual_matches{false};
+  bool required{false}, alignment_reused{false}, review_required{false};
+  bool retain_selected_frames{false}, retain_manual_matches{false};
   std::string start_stage, owner;
   StitchingCalibrationCleanup cleanup{StitchingCalibrationCleanup::kNone};
 };

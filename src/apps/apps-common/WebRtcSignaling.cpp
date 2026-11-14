@@ -695,6 +695,9 @@ void Stop(GstElement* pipeline) {
       g_object_unref(connection);
     }
     detach_webrtc_peer(state.get());
+    // Stopped async peer callbacks only observe stopped=true. Release the
+    // retired observer now so a retained target can bind a new seek topology.
+    state->preview.reset();
     if (state->server) {
       soup_server_disconnect(state->server);
       g_object_unref(state->server);

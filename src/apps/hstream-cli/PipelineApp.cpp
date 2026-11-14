@@ -4,6 +4,7 @@
 #include "hstream/src/libs/common/PacedPlayback.h"
 #include "hstream/src/libs/common/PacedPlaybackConfig.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/common/RuntimeConsole.h"
 #include "hstream/src/libs/program/ToneControlCommand.h"
 #include "hstream/src/libs/program/ToneControls.h"
 #include "hstream/src/libs/publication/Publication.h"
@@ -109,6 +110,8 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "nvds_version.h"
+
+#include "hstream/src/libs/stitching/CalibrationFailureProtocol.h"
 
 namespace fs = std::filesystem;
 
@@ -1348,6 +1351,23 @@ absl::Status PipelineApplication::initializeInstances(CleanupStack& cleanup_stac
 absl::Status PipelineApplication::configureInstances(
     size_t stage_index,
     std::vector<std::shared_ptr<HmApp>>& app_contexts) {
+  auto emit_failure_record = [](const absl::StatusOr<std::string>& record, const char* prefix) {
+    std::cout.flush();
+    std::cerr.flush();
+    // A malformed marker invalidates optional diagnosis instead of allowing an
+    // older context to explain a later configuration generation.
+    if (record.ok())
+      g_print("%s\n", record->c_str());
+    else
+      g_print("%sinvalid\n", prefix);
+    std::fflush(stdout);
+  };
+  if (!failure_binding_.empty()) {
+    emit_failure_record(
+        hm::stitching::failure::ScopeRecord(
+            failure_binding_, failure_invocation_, ++failure_generation_, current_stage_, app_contexts.size()),
+        hm::stitching::failure::kScopePrefix);
+  }
   std::vector<std::shared_ptr<HmApp>> valid_app_contexts;
   std::vector<double> stage_stitch_output_rotations;
   std::optional<std::string> stage_video_converter;
@@ -1384,6 +1404,7 @@ absl::Status PipelineApplication::configureInstances(
         if (pipeline_options_.empty()) {
           return absl::OkStatus();
         }
+        std::map<std::string, std::string> layer;
         for (const std::map<std::string, std::string>& options : pipeline_options_) {
           for (const auto& kv_item : options) {
             // Legacy stage -1 deliberately ignores playback overrides, but
@@ -1392,10 +1413,10 @@ absl::Status PipelineApplication::configureInstances(
                 kv_item.first != "runtime.gpu-memory-profile") {
               continue;
             }
-            HM_RETURN_IF_ERROR(app_ctx->configurator().apply_config_item(kv_item.first, kv_item.second));
+            layer[kv_item.first] = kv_item.second;
           }
         }
-        return absl::OkStatus();
+        return app_ctx->configurator().apply_config_options(layer);
       };
 
       if (clean_only_requested) {
@@ -1466,6 +1487,42 @@ absl::Status PipelineApplication::configureInstances(
       // clean-only eligible context reapplies them here so CLI source/sink
       // values still win over loaded subconfigs.
       HM_RETURN_IF_ERROR(apply_pipeline_options());
+      if (!playback_defaults_resolved_ && current_stage_ >= 0) {
+        const auto playback = app_ctx->configurator().config()["playback"];
+        try {
+          const double seconds = playback["start_seconds"].as<double>();
+          if (!std::isfinite(seconds) || seconds < 0 ||
+              static_cast<long double>(seconds) * GST_SECOND > std::numeric_limits<int64_t>::max())
+            return absl::InvalidArgumentError("playback.start_seconds must fit nonnegative nanoseconds");
+          if (!explicit_start_time_)
+            start_time_ns_ = static_cast<uint64_t>(static_cast<long double>(seconds) * GST_SECOND);
+          const bool paced_default = playback["realtime"].as<bool>();
+          ui_preview_realtime_ = ui_preview_realtime_ || (!encode_job_ && !headless_render_video_ && paced_default);
+          if (clip_end_time_ns_ > 0) {
+            if (clip_end_time_ns_ <= start_time_ns_) {
+              return absl::InvalidArgumentError("--clip-end-time must be later than --start-time");
+            }
+            const uint64_t duration_ns = clip_end_time_ns_ - start_time_ns_;
+            const uint64_t watchdog_seconds = duration_ns / GST_SECOND + 3;
+            if (watchdog_seconds > G_MAXINT) {
+              return absl::InvalidArgumentError("--clip-end-time exceeds the supported timed-run duration");
+            }
+            if (time_limit_seconds_ > 0 && static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND < duration_ns) {
+              return absl::InvalidArgumentError("--time-limit ends before --clip-end-time");
+            }
+            if (time_limit_seconds_ <= 0) {
+              time_limit_seconds_ = static_cast<gint>(watchdog_seconds);
+            }
+          }
+          set_embedded_gpu_preview_video_mode(
+              headless_render_video_ || !ui_preview_window_ids_.empty(),
+              (stitching_calibration_only_ || ui_preview_realtime_) && !headless_render_video_ &&
+                  !ui_preview_window_ids_.empty());
+          playback_defaults_resolved_ = true;
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError(std::string("Invalid playback settings: ") + error.what());
+        }
+      }
 
       app_ctx->configurator().set_encode_job(encode_job_);
 
@@ -1589,6 +1646,14 @@ absl::Status PipelineApplication::configureInstances(
       }
       if (rink_mask_prepared_ && !app_ctx->configurator().rink_mask_required())
         HM_RETURN_IF_ERROR(app_ctx->configurator().accept_prepared_rink_mask());
+      if (!failure_binding_.empty() && app_contexts.size() == 1) {
+        const auto context = app_ctx->configurator().calibration_failure_context(stitching_calibration_only_);
+        emit_failure_record(
+            context.ok() ? hm::stitching::failure::ContextRecord(
+                               failure_binding_, failure_invocation_, failure_generation_, *context)
+                         : absl::StatusOr<std::string>(context.status()),
+            hm::stitching::failure::kContextPrefix);
+      }
       // Matcher graphs are optional and large. Provision them only after
       // configuration inspection proves that this launch will regenerate
       // control points. Honor explicit local overrides before fetching an
@@ -1902,6 +1967,16 @@ absl::Status PipelineApplication::createPipelines(
       resolved_stitch_frame_positions_[app.get()] = std::llround(std::min(reference, duration - interval) * GST_SECOND);
     }
   }
+  for (const auto& app : app_contexts) {
+    auto& properties = app->config.hmsticher_config.private_properties;
+    properties.erase(
+        std::remove_if(
+            properties.begin(),
+            properties.end(),
+            [](const auto& property) { return property.name == "calibration-playback-start-ns"; }),
+        properties.end());
+    properties.push_back({"calibration-playback-start-ns", std::to_string(start_time_ns_)});
+  }
   // Section 2: Create pipelines for each instance.
   if (rink_mask_preparation_ == RinkMaskPreparation::kMask) {
     const auto& app = app_contexts.front();
@@ -2069,8 +2144,6 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
     // Timed mask preparation has no Program tracker. Seed its controls when
     // the final graph enables it, retaining live values across later rebuilds.
     if (!web_camera_controls_ && section.IsMap() && section["enable"].IsScalar() && config_section_enabled(section)) {
-      hm::tracking::CameraControlValues values;
-      HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config));
       if (!section["config-file"].IsScalar())
         return absl::InvalidArgumentError("Live camera controls require the resolved native tracker config");
       try {
@@ -2078,6 +2151,8 @@ absl::Status PipelineApplication::prepare_web_preview(HmApp& app) {
       } catch (const YAML::Exception& error) {
         return absl::InvalidArgumentError(std::string("Cannot read native tracker configuration: ") + error.what());
       }
+      hm::tracking::CameraControlValues values;
+      HM_ASSIGN_OR_RETURN(values, hm::tracking::ReadPlaytrackerControlValues(config, &web_camera_base_));
       web_camera_controls_ = std::move(values);
     }
   }
@@ -3510,6 +3585,14 @@ absl::StatusOr<std::vector<std::set<E_TYPE>>> parse_types(
 // Main run function.
 //------------------------------------------------------------------------------
 absl::Status PipelineApplication::run(int argc, char* argv[]) {
+  const char* failure_binding = g_getenv(hm::stitching::failure::kBindingEnvironment);
+  failure_binding_ = failure_binding && hm::stitching::failure::HexIdentity(failure_binding, 64) ? failure_binding : "";
+  failure_generation_ = 0;
+  gchar* invocation = g_uuid_string_random();
+  failure_invocation_ = invocation;
+  g_free(invocation);
+  failure_invocation_.erase(
+      std::remove(failure_invocation_.begin(), failure_invocation_.end(), '-'), failure_invocation_.end());
   // Library callers get the same fail-closed launch-only validation as main.
   try {
     (void)hm::preview::ProcessCapturePlan();
@@ -4104,6 +4187,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
   }
 
   if (start_time) {
+    explicit_start_time_ = true;
     const auto parsed_start_time = parse_time_option("--start-time", start_time);
     g_free(start_time);
     if (!parsed_start_time.ok()) {
@@ -4119,21 +4203,10 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
     if (!parsed_clip_end_time.ok()) {
       return parsed_clip_end_time.status();
     }
-    if (*parsed_clip_end_time <= start_time_ns_) {
-      return absl::InvalidArgumentError("--clip-end-time must be later than --start-time");
+    if (*parsed_clip_end_time == 0) {
+      return absl::InvalidArgumentError("--clip-end-time must be positive");
     }
     clip_end_time_ns_ = *parsed_clip_end_time;
-    const uint64_t duration_ns = clip_end_time_ns_ - start_time_ns_;
-    const uint64_t watchdog_seconds = duration_ns / GST_SECOND + 3;
-    if (watchdog_seconds > G_MAXINT) {
-      return absl::InvalidArgumentError("--clip-end-time exceeds the supported timed-run duration");
-    }
-    if (time_limit_seconds_ > 0 && static_cast<uint64_t>(time_limit_seconds_) * GST_SECOND < duration_ns) {
-      return absl::InvalidArgumentError("--time-limit ends before --clip-end-time");
-    }
-    if (time_limit_seconds_ <= 0) {
-      time_limit_seconds_ = static_cast<gint>(watchdog_seconds);
-    }
   }
   if (stitch_frame_time) {
     const auto parsed_stitch_frame_time = parse_stitch_frame_time_option("--stitch-frame-time", stitch_frame_time);
@@ -7450,7 +7523,23 @@ bool PipelineApplication::seek_runtime_impl(
   }
   app_context->defer_bus_watch = TRUE;
   detach_pipeline_bus_watch(app_context);
+  // Soup owns main-context sources internally. Closing its connection/server
+  // from the reconstruction worker can race their dispatch and corrupt source
+  // reference counts. Retire them here, along with preview status callbacks,
+  // before handing the graph to that worker.
   try {
+    if (web_preview_) {
+      bool source_linked_audio = true;
+      for (const auto& audio : app_context->config.hmaudio_config)
+        source_linked_audio = source_linked_audio && (!audio.enable || audio.src == SRC_SOURCE_BIN);
+      if (source_render_window_ids_.empty() && !app_context->config.use_nvmultiurisrcbin && source_linked_audio) {
+        const auto status = web_preview_->BeginSourceSeek();
+        if (!status.ok())
+          throw std::runtime_error(status.ToString());
+      } else {
+        web_preview_->RetireCallbacks();
+      }
+    }
     if (g_getenv("HM_TEST_RUNTIME_SEEK_WORKER_UNAVAILABLE")) {
       throw std::runtime_error("injected runtime seek worker construction failure");
     }
@@ -9922,6 +10011,12 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   GValue item = G_VALUE_INIT;
   while (gst_iterator_next(iterator, &item) == GST_ITERATOR_OK) {
     auto* pad = GST_PAD(g_value_get_object(&item));
+    // These exact bridges belong to the browser target, not the retained
+    // processing/audio graph. Retire them after stopping the old sources.
+    if (web_preview_ && web_preview_->OwnsSourceBridge(pad)) {
+      g_value_reset(&item);
+      continue;
+    }
     GstPad* peer = gst_pad_get_peer(pad);
     if (peer) {
       int audio_source = -1;
@@ -9967,6 +10062,13 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   cancel_uri_playlist_frame_barrier(&sources);
   if (!stop_sources_for_seek(app))
     return FALSE;
+  if (web_preview_) {
+    const auto status = web_preview_->DetachSeekSources();
+    if (!status.ok()) {
+      g_printerr("Browser source retirement failed: %s\n", status.ToString().c_str());
+      return FALSE;
+    }
+  }
   // A flushed ALSA ring buffer can retain its old hardware sample cursor while
   // the new stream starts at zero. Its clock then stays stopped until enough
   // audio arrives to refill that old cursor, while exact-pair audio gating is
@@ -10061,13 +10163,17 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
     const bool linked = pad && gst_pad_link(pad, link.peer) == GST_PAD_LINK_OK;
     if (pad)
       gst_object_unref(pad);
-    if (!linked)
+    if (!linked) {
+      g_printerr("Source seek could not restore link %s\n", link.name.c_str());
       return FALSE;
+    }
     GstEvent* flush = gst_event_new_flush_stop(TRUE);
     gst_structure_set(
         gst_event_writable_structure(flush), "hstream-preserve-playtracker", G_TYPE_BOOLEAN, TRUE, nullptr);
-    if (!gst_pad_send_event(link.peer, flush))
+    if (!gst_pad_send_event(link.peer, flush)) {
+      g_printerr("Source seek flush was rejected by link %s\n", link.name.c_str());
       return FALSE;
+    }
   }
   if (app->config.primary_gie_config.enable && app->config.primary_gie_config.plugin_type == NV_DS_GIE_PLUGIN_INFER &&
       !hm::ArmAsyncInferenceSeekRecovery(app->pipeline.common_elements.primary_gie_bin.primary_gie))
@@ -10087,6 +10193,14 @@ gboolean PipelineApplication::seek_runtime_sources(AppCtx* app_ctx, uint64_t tar
   if (!preview_status.ok()) {
     g_printerr("Source preview seek failed: %s\n", preview_status.ToString().c_str());
     return FALSE;
+  }
+  if (web_preview_) {
+    const auto status = web_preview_->AttachSeekSources(
+        {web_preview_run_id_, static_cast<int>(current_stage_), inspector_topology_generation_ + 1});
+    if (!status.ok()) {
+      g_printerr("Browser source attachment failed: %s\n", status.ToString().c_str());
+      return FALSE;
+    }
   }
   // The replacement source PTS starts at zero. Resume the retained audio and
   // display sinks against that new clock origin as well.
@@ -10111,7 +10225,8 @@ void PipelineApplication::runtime_seek_recreation_worker(AppCtx* app_ctx, uint64
     bool source_linked_audio = true;
     for (const auto& audio : app_ctx->config.hmaudio_config)
       source_linked_audio = source_linked_audio && (!audio.enable || audio.src == SRC_SOURCE_BIN);
-    if (web_preview_run_id_.empty() && source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin &&
+    if ((web_preview_run_id_.empty() || (web_preview_ && web_preview_->source_seek_pending())) &&
+        source_render_window_ids_.empty() && !app_ctx->config.use_nvmultiurisrcbin &&
         source_linked_audio) {
       topology_changed = true;
       success = seek_runtime_sources(app_ctx, target_ns);
@@ -10157,6 +10272,16 @@ gboolean PipelineApplication::complete_runtime_seek_recreation(RuntimeSeekRecrea
     runtime_seek_recreation_thread_.join();
   }
   result.app_ctx->defer_bus_watch = FALSE;
+
+  // Signaling owns main-context sources. The worker only reattaches stopped
+  // graph routes; renew its observer here before the new topology is exposed.
+  if (result.success && !runtime_seek_shutdown_requested_ && web_preview_) {
+    const auto status = web_preview_->ResumeSourceSeek();
+    if (!status.ok()) {
+      g_printerr("Browser seek signaling failed: %s\n", status.ToString().c_str());
+      result.success = false;
+    }
+  }
 
   const bool recreation_timed_out = runtime_seek_recreation_timed_out_;
   const bool shutdown_requested = runtime_seek_shutdown_requested_;
@@ -10316,10 +10441,7 @@ int main(int argc, char* argv[]) {
   hm::diagnostics::Initialize("hstream-cli", argc ? argv[0] : nullptr);
   g_set_print_handler(+[](const gchar* message) {
     hm::diagnostics::Log("stdout", message ? message : "");
-    if (message) {
-      std::fputs(message, stdout);
-      std::fflush(stdout);
-    }
+    hm::WriteRuntimeConsole(message);
   });
   g_set_printerr_handler(+[](const gchar* message) {
     hm::diagnostics::Log("stderr", message ? message : "");

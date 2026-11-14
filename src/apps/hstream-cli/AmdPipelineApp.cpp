@@ -25,6 +25,7 @@
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/common/RuntimeConsole.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
 #include "hstream/src/libs/media/AudioPlaylist.h"
@@ -271,7 +272,7 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const auto& right = pair->cameras[1].info;
   Require(gst_video_colorimetry_is_equal(&left.colorimetry, &right.colorimetry), "Camera colorimetry differs");
   g_print("HSTREAM_AMD_PREPARATION state=begin\n");
-  const auto detector = Take(hm::program::PrepareProgramDetector(launch.inference_file, launch.inference, {}));
+  const auto detector = Take(hm::program::PrepareProgramDetector(launch.inference_file, launch.inference, {}, launch.tiling));
   const hm::detection::DetectorConfig detector_config{
       detector.onnx,
       detector.input_name,
@@ -287,7 +288,8 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
       detector.symmetric_padding,
       detector.fp16 ? hm::gpu::MigraphxSession::Precision::kFloat16 : hm::gpu::MigraphxSession::Precision::kFloat32,
       launch.amd.maximum_inference_io_bytes,
-      launch.amd.model_cache};
+      launch.amd.model_cache,
+      launch.tiling};
   auto blend = hm::pano::BlendSettings::HardSeam();
   switch (Take(hm::stitching::ParseBlendMode(launch.blend.mode))) {
     case hm::stitching::BlendMode::kLaplacian:
@@ -720,10 +722,7 @@ int main(int argc, char** argv) {
   hm::diagnostics::Initialize("hstream-cli", argc ? argv[0] : nullptr);
   g_set_print_handler(+[](const gchar* message) {
     hm::diagnostics::Log("stdout", message ? message : "");
-    if (message) {
-      std::fputs(message, stdout);
-      std::fflush(stdout);
-    }
+    hm::WriteRuntimeConsole(message);
   });
   g_set_printerr_handler(+[](const gchar* message) {
     hm::diagnostics::Log("stderr", message ? message : "");

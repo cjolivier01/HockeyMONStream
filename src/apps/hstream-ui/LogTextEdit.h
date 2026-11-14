@@ -17,7 +17,7 @@ class LogTextEdit : public QPlainTextEdit {
   explicit LogTextEdit(QWidget* parent = nullptr) : QPlainTextEdit(parent) {
     connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
       if (!updating_)
-        follows_tail_ = value >= verticalScrollBar()->maximum() - std::max(2, verticalScrollBar()->singleStep());
+        follows_tail_ = value == verticalScrollBar()->maximum();
     });
     connect(verticalScrollBar(), &QScrollBar::rangeChanged, this, [this] {
       if (!updating_)

@@ -38,6 +38,7 @@
 #include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
+#include <QtWidgets/QToolButton>
 #include <QtWidgets/QVBoxLayout>
 
 #include <unistd.h>
@@ -272,8 +273,12 @@ elif operation in ('cancel','retry'):
   for node in value['nodes']: node['state']='cancelled'
  else:
   value['epoch']+=1; value['state']='running'; value['owner_released']=False; value.pop('cancel_requested',None)
-  node=next(n for n in value['nodes'] if n['id']==option('--stage')); node['state']='running'
-  node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
+  ids=[args[i+1] for i,arg in enumerate(args) if arg=='--stage']
+  (root/'retry-stages.json').write_text(json.dumps({'ids':ids}))
+  for node in value['nodes']:
+   if node['id'] not in ids: continue
+   node['state']='running'
+   node['attempts'].append(dict(id='attempt-retry',epoch=value['epoch'],state='running',details={}))
  (root/'state.json').write_text(json.dumps(value))
  if operation=='cancel' and (root/'lose-cancel-response').exists():
   print('Cancellation response unavailable',file=sys.stderr); raise SystemExit(1)
@@ -287,6 +292,9 @@ elif operation in ('cancel','retry'):
 elif operation=='log':
  value=dict(text=option('--stage')+' '+option('--attempt')+' retained log')
  if (root/'log.txt').exists(): value['text']+='\n'+(root/'log.txt').read_text()
+ if (root/'hold-log-response').exists():
+  (root/'log-request-started').write_text(option('--stage'))
+  while (root/'hold-log-response').exists(): time.sleep(.01)
 else: raise SystemExit(9)
 print(json.dumps(value))
 )PY";
@@ -679,6 +687,80 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       "Small workflow pane left its retry control unreachable");
   shell.resize(700, 650);
   monitor_scroll->verticalScrollBar()->setValue(0);
+  auto* detail_log = widget<QPlainTextEdit>(*pane, "stitchWorkflowDetails");
+  auto* detail_scroll = detail_log->verticalScrollBar();
+  auto detail_state = read(root + "/state.json");
+  auto detail_nodes = detail_state.value("nodes").toArray();
+  auto detail_node = detail_nodes[0].toObject();
+  QString reason;
+  for (int line = 0; line < 100; ++line)
+    reason += QString("Diagnostic line %1\n").arg(line);
+  const auto update_details = [&](const QString& line) {
+    reason += line;
+    detail_node.insert("reason", reason);
+    detail_nodes[0] = detail_node;
+    detail_state.insert("nodes", detail_nodes);
+    write(root + "/state.json", QJsonDocument(detail_state).toJson());
+    require(wait([&] { return detail_log->toPlainText().contains(line); }), "Workflow detail poll did not arrive");
+  };
+  update_details("Initial diagnostic tail\n");
+  require(
+      detail_scroll->maximum() > 0 && detail_scroll->value() == detail_scroll->maximum(),
+      "Workflow details did not follow the newest diagnostic");
+  update_details("Next diagnostic tail\n");
+  require(detail_scroll->value() == detail_scroll->maximum(), "Workflow detail append reset scrolling");
+  QWheelEvent detail_wheel(
+      QPointF(4, 4),
+      QPointF(detail_log->viewport()->mapToGlobal(QPoint(4, 4))),
+      QPoint(),
+      QPoint(0, 120),
+      Qt::NoButton,
+      Qt::NoModifier,
+      Qt::NoScrollPhase,
+      false);
+  QApplication::sendEvent(detail_log->viewport(), &detail_wheel);
+  require(detail_scroll->value() < detail_scroll->maximum(), "Workflow details ignored wheel scrollback");
+  detail_scroll->setValue(20);
+  update_details("Diagnostic while reading\n");
+  require(detail_scroll->value() == 20, "Workflow detail append moved the reader");
+  QTextCursor detail_selection(detail_log->document());
+  detail_selection.setPosition(10);
+  detail_selection.setPosition(20, QTextCursor::KeepAnchor);
+  detail_log->setTextCursor(detail_selection);
+  detail_scroll->setValue(20);
+  QElapsedTimer detail_poll;
+  detail_poll.start();
+  require(wait([&] { return detail_poll.elapsed() > 400; }), "Workflow detail polling stalled");
+  require(
+      detail_log->textCursor().selectedText() == detail_selection.selectedText() && detail_scroll->value() == 20,
+      "Unchanged workflow details erased selection or reset scrolling");
+  detail_scroll->setValue(detail_scroll->maximum());
+  update_details("Diagnostic following again\n");
+  require(detail_scroll->value() == detail_scroll->maximum(), "Workflow details did not resume following");
+  detail_node.insert("state", "failed");
+  update_details("Calibration failed: inspect retained output\n");
+  stages->setCurrentIndex(1);
+  auto* node_log = widget<QToolButton>(*graph, qPrintable("stitchWorkflowNodeLog_" + first_id));
+  require(!node_log->icon().isNull(), "Workflow node log action has no icon");
+  node_log->click();
+  require(stages->currentData().toString() == first_id, "Node log opened another stage's diagnostics");
+  auto* log_window = widget<QDialog>(*pane, "stitchWorkflowLogWindow");
+  require(
+      wait([&] {
+        return widget<QPlainTextEdit>(*pane, "stitchWorkflowLog")->toPlainText().contains("Calibration failed:");
+      }),
+      "Node log action lost the failure reason");
+  require(
+      log_window->isVisible() && log_window->isSizeGripEnabled() &&
+          log_window->windowFlags().testFlag(Qt::WindowMaximizeButtonHint),
+      "Workflow node log must stay open in a resizable window");
+  detail_poll.restart();
+  require(wait([&] { return detail_poll.elapsed() > 400; }), "Node log polling stalled");
+  require(log_window->isVisible(), "Workflow polling dismissed the node log");
+  const auto log_screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_LOG_SCREENSHOT");
+  if (!log_screenshot.isEmpty())
+    require(log_window->grab().save(log_screenshot), "Could not capture persistent node log");
+  write(root + "/state.json", QJsonDocument(original_state).toJson());
   pane->showLog();
   require(
       wait([&] {
@@ -731,6 +813,36 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
   require(wait([&] { return log->toPlainText().endsWith("Rotated tail\n"); }), "Stage log was not restored");
   require(log_scroll->value() == log_scroll->maximum(), "Selecting an attempt did not start at its tail");
   QFile::remove(root + "/log.txt");
+  write(root + "/hold-log-response", "hold");
+  require(wait([&] { return QFileInfo::exists(root + "/log-request-started"); }), "Log request was not held");
+  auto pending_state = read(root + "/state.json");
+  auto pending_nodes = pending_state.value("nodes").toArray();
+  auto other_node = pending_nodes[1].toObject();
+  other_node.insert("reason", "Diagnostics for the newly selected stage");
+  other_node.insert("attempts", QJsonArray{QJsonObject{{"id", "attempt-other"}, {"epoch", 0}, {"state", "failed"}}});
+  pending_nodes[1] = other_node;
+  pending_state.insert("nodes", pending_nodes);
+  write(root + "/state.json", QJsonDocument(pending_state).toJson());
+  stages->setCurrentIndex(1);
+  require(
+      wait([&] { return attempts->currentData().toString() == "attempt-other"; }), "Other attempt was not observed");
+  require(
+      log->window()->windowTitle().contains(other_node.value("label").toString()) &&
+          log->toPlainText().contains("Diagnostics for the newly selected stage") &&
+          log->toPlainText().endsWith("Loading attempt log…") &&
+          !log->toPlainText().contains("attempt-current retained log"),
+      "Stage selection displayed the previous log under a new title while its request was pending");
+  QFile::remove(root + "/hold-log-response");
+  require(
+      wait([&] { return log->toPlainText().endsWith("attempt-other retained log"); }), "New stage log did not load");
+  require(
+      !log->toPlainText().contains("attempt-current retained log"), "Late response replaced the selected stage log");
+  QFile::remove(root + "/log-request-started");
+  write(root + "/state.json", QJsonDocument(original_state).toJson());
+  stages->setCurrentIndex(0);
+  require(
+      wait([&] { return log->toPlainText().endsWith("attempt-current retained log"); }),
+      "Original log was not restored");
   QJsonObject state = read(root + "/state.json");
   state.insert("state", "failed");
   auto nodes = state.value("nodes").toArray();
@@ -796,6 +908,61 @@ void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node b
       wait([&] { return !pane->active() && !pane->busy(); }), "Explicit cancellation did not use the current epoch");
   delete pane;
 }
+void retryFailedStages(const QString& root, YAML::Node baseline) {
+  auto state = read(root + "/state.json");
+  auto nodes = state.value("nodes").toArray();
+  const QStringList states{"succeeded", "failed", "unavailable", "blocked", "cancelled"};
+  for (int index = 0; index < nodes.size(); ++index) {
+    auto node = nodes[index].toObject();
+    node.insert("state", states[std::min(index, int(states.size()) - 1)]);
+    nodes[index] = node;
+  }
+  state.insert("state", "failed");
+  state.insert("owner_released", false);
+  state.insert("nodes", nodes);
+  write(root + "/state.json", QJsonDocument(state).toJson());
+  baseline["workflow"]["registry"] = root.toStdString();
+  baseline["workflow"]["poll_interval_ms"] = 100;
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", root);
+  StitchingWorkflow pane(root + "/game", root, environment, baseline, nullptr);
+  pane.attach(state.value("workflow_id").toString());
+  auto* retry = widget<QPushButton>(pane, "retryStitchWorkflowStageButton");
+  auto* retry_failed = widget<QPushButton>(pane, "retryFailedStitchWorkflowButton");
+  auto* stages = widget<QComboBox>(pane, "stitchWorkflowStage");
+  require(wait([&] { return stages->count() == nodes.size(); }), "Bulk retry fixture did not attach");
+  require(!retry_failed->isEnabled(), "Bulk retry bypassed pending cleanup");
+  state.insert("owner_released", true);
+  write(root + "/state.json", QJsonDocument(state).toJson());
+  require(wait([&] { return retry_failed->isEnabled(); }), "Bulk retry requires a failed stage selection");
+  require(!retry->isEnabled(), "Successful selected stage became retryable");
+  require(!retry_failed->icon().isNull(), "Bulk retry has no action icon");
+  pane.setEditingEnabled(false, false);
+  require(!retry_failed->isEnabled(), "Bulk retry ignored the dialog editing fence");
+  pane.setEditingEnabled(true, false);
+  write(root + "/lose-retry-response", "lost");
+  QFile calls(root + "/calls");
+  require(calls.open(QIODevice::ReadOnly), "Cannot inspect retry calls");
+  const int before = calls.readAll().count("retry\n");
+  calls.close();
+  retry_failed->click();
+  require(!retry_failed->isEnabled() && !retry->isEnabled(), "In-flight retry allowed another request");
+  retry_failed->click();
+  require(wait([&] { return !pane.busy() && pane.active(); }), "Lost bulk retry response was not reconciled");
+  QFile::remove(root + "/lose-retry-response");
+  require(calls.open(QIODevice::ReadOnly), "Cannot inspect completed retry calls");
+  require(calls.readAll().count("retry\n") == before + 1, "Bulk retry submitted more than one request");
+  const auto ids = read(root + "/retry-stages.json").value("ids").toArray();
+  require(
+      ids == QJsonArray{nodes[1].toObject().value("id"), nodes[2].toObject().value("id")},
+      "Bulk retry did not select exactly the failed and unavailable stages");
+  const auto retried = read(root + "/state.json");
+  require(retried.value("epoch").toInt() == state.value("epoch").toInt() + 1, "Bulk retry split workflow epochs");
+  require(retried.value("limits") == state.value("limits"), "Bulk retry changed the parallel stage limit");
+  require(retried.value("nodes").toArray()[0] == nodes[0], "Bulk retry changed a successful stage");
+  require(!retry_failed->isEnabled(), "Running workflow enabled bulk retry");
+}
+
 int controllerCalls(const QString& root, const QByteArray& operation) {
   QFile calls(root + "/calls");
   require(calls.open(QIODevice::ReadOnly), "Cannot inspect controller calls");
@@ -1951,6 +2118,7 @@ int main(int argc, char** argv) {
     store.directory = store.game_directory / "_hockeymon/stitching-experiments";
     plans(store);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
+    retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
     profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));
     dialogOwnership(temporary.path());
     dialogCloseDuringSubmission(temporary.path());

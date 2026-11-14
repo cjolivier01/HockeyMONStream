@@ -4,7 +4,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .files import read_json, write_json
+from .files import file_digest, read_json, write_json
 from .processes import host_identity, process_identity, same_process
 from .schema import require
 
@@ -105,6 +105,29 @@ def lookup(root):
             "attempt_id": intent["attempt_id"],
             "reason": proof["reason"],
         }
+    worker_state = root / "worker/state.json"
+    if worker_state.exists():
+        state = read_json(worker_state)
+        admitted = read_json(root / "worker/request.json")
+        require(
+            state.get("id") == intent["attempt_id"]
+            and state.get("token") == admitted["token"]
+            and state.get("request_sha256")
+            == intent.get("worker_request_sha256")
+            == file_digest(root / "worker/request.json", 4 * 1024 * 1024)["sha256"],
+            "Native worker identity changed",
+        )
+        identity = state["identity"]
+        if same_process(
+            {**identity, "boot_id": identity["boot"], "start_time": identity["start"]}
+        ):
+            return {
+                "state": "RUNNING",
+                "terminal": False,
+                "host": state["identity"]["host"],
+                "reason": "Native worker is running",
+            }
+    # Read old accepted identities during a rolling controller upgrade.
     for name in ("supervisor.json", "launch.json"):
         path = root / name
         if not path.exists():

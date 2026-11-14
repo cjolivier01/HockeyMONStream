@@ -1334,9 +1334,13 @@ absl::Status StitcherPriv::configure_one_pass_from_frame_pairs(
           return config.ok() ? absl::NotFoundError("Calibration config disappeared") : config.status();
         std::vector<stitching::CalibrationFrameInput> inputs;
         HM_ASSIGN_OR_RETURN(
-            inputs, stitching::EndRelativeCalibrationInputs(config_file_, **config, calibration_frame_count_, [this] {
-              return calibration_cancelled_.load(std::memory_order_acquire);
-            }));
+            inputs,
+            stitching::EndRelativeCalibrationInputs(
+                config_file_,
+                **config,
+                calibration_frame_count_,
+                [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
+                calibration_playback_start_ns_));
         configure_status = stitching::configure_stitching(
             config_file_,
             inputs,
@@ -1698,6 +1702,14 @@ bool StitcherPriv::SetProperty(const Property& prop) {
       return false;
     }
     calibration_frame_count_ = static_cast<size_t>(parsed);
+  } else if (prop.key == "calibration-playback-start-ns") {
+    if (prop.value.empty() || prop.value.find_first_not_of("0123456789") != std::string::npos)
+      return false;
+    try {
+      calibration_playback_start_ns_ = std::stoull(prop.value);
+    } catch (const std::exception&) {
+      return false;
+    }
   } else if (prop.key == "calibration-sample-span-ns" || prop.key == "calibration_sample_span_ns") {
     errno = 0;
     char* end = nullptr;

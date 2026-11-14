@@ -10,5 +10,8 @@ namespace gst_hm_playtracker {
 hm::BBox program_camera_arena(const hm::BBox& frame, const hm::BBox& field);
 bool supported_camera(const std::string& name);
 bool validate_numeric_yaml_fields(const YAML::Node& node, std::string* error);
-hm::play_tracker::PlayTrackerConfig create_play_tracker_config(const hm::BBox& arena_box, const YAML::Node& yaml);
+hm::play_tracker::PlayTrackerConfig create_play_tracker_config(
+    const hm::BBox& arena_box,
+    const YAML::Node& yaml,
+    bool apply_motion_overrides = true);
 } // namespace gst_hm_playtracker

@@ -716,7 +716,7 @@ void TestMinifyYuv(bool ten_bit, Pattern pattern, cudaStream_t stream) {
     for (int x = 0; x < out_size; ++x)
       Check(std::abs(code(uvs, x, y) - std::lround(color.uv_offset)) <= 1, "minifying YUV crop shifted chroma");
 }
-void TestScoreboard(bool ten_bit, cudaStream_t stream) {
+void TestScoreboard(bool ten_bit, double scale, cudaStream_t stream) {
   constexpr int sw = 32, sh = 24, ow = 64, oh = 32;
   constexpr size_t pitch = 160;
   std::vector<cv::float16_t> source(sw * sh * 4);
@@ -740,7 +740,14 @@ void TestScoreboard(bool ten_bit, cudaStream_t stream) {
       luma.data, chroma.data, pitch, pitch, ow, oh, ten_bit ? PixelFormat::kP010 : PixelFormat::kNv12, color};
   const FrameTransformGeometry transform{hm::BBox(0, 0, sw, sh), hm::Point{0, 0}, hm::BBox(4, 4, 28, 20), 0};
   const auto made = hm::scoreboard::MakePlan(
-      {{{2, 2}, {26, 3}, {25, 19}, {3, 18}}}, sw, sh, ow, oh, 25, 17, hm::scoreboard::Position::kUpperRight);
+      {{{2, 2}, {26, 3}, {25, 19}, {3, 18}}},
+      sw,
+      sh,
+      ow,
+      oh,
+      int(25 * scale),
+      int(17 * scale),
+      hm::scoreboard::Position::kUpperRight);
   Check(made.ok(), made.status().ToString().c_str());
   const auto plan = *made;
   Gpu(RenderProgramYuv(image, output, transform, 0, false, 1.3f, stream, &plan));
@@ -860,9 +867,12 @@ int main() {
         TestMinifyRegistration(vertical, angle, 8, 8, stream.value);
       TestMinifyRegistration(vertical, 0, 8, 4, stream.value);
     }
-    TestScoreboard(false, stream.value);
-    TestScoreboard(true, stream.value);
-    std::cout << "2 scoreboard, 30 minifying crop, 8 YUV output and 21 Program crop/rotation/tone format cases passed\n";
+    for (const double scale : {0.5, 1.0, 1.5}) {
+      TestScoreboard(false, scale, stream.value);
+      TestScoreboard(true, scale, stream.value);
+    }
+    std::cout
+        << "6 scoreboard, 30 minifying crop, 8 YUV output and 21 Program crop/rotation/tone format cases passed\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

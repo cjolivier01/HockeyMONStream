@@ -325,6 +325,9 @@ void validate_fresh_inputs(
             (path.filename() == "config.yaml" || path.filename() == "manifest.json" ||
              path.filename() == ".manifest.lock" || path.filename() == ".hstream-stitch.lock" ||
              path.filename() == ".hstream-config.lock" ||
+             // Native config/artifact locking also inspects game ownership.
+             // Its empty advisory lock contains no prior calibration state.
+             (path.filename() == ".game-operation.lock" && entry->file_size() == 0) ||
              (locked &&
               (path.filename() == ".hstream-rink-journal-v1" || path.filename() == ".hstream-stitch-journal-v1" ||
                path.filename() == ".hstream-rink.lock"))),

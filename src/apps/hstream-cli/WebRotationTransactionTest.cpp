@@ -63,7 +63,7 @@ bool write_mapping_tiff(const std::filesystem::path& path, uint32_t width, uint3
 
 absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path& root) {
   for (const char* name : {"hm_project.pto", "autooptimiser_out.pto"}) {
-    std::ofstream(root / name) << name << '\n';
+    std::ofstream(root / "_hockeymon" / name) << name << '\n';
   }
   if (!write_mapping_tiff(root / "_hockeymon/mapping_0000.tif", 64, 32, 0.0f) ||
       !write_mapping_tiff(root / "_hockeymon/mapping_0001.tif", 64, 32, 32.0f)) {
@@ -76,7 +76,7 @@ absl::StatusOr<std::string> create_hugin_generation(const std::filesystem::path&
            "mapping_0001_x.tif",
            "mapping_0001_y.tif",
        }) {
-    if (!cv::imwrite((root / name).string(), remap))
+    if (!cv::imwrite((root / "_hockeymon" / name).string(), remap))
       return absl::InternalError("Unable to write remap TIFF fixtures");
   }
   cv::Mat seam(32, 96, CV_8U, cv::Scalar(0));
@@ -96,7 +96,7 @@ int main() {
   using namespace hm::preview;
   bool ok = true;
   const fs::path root = fs::temp_directory_path() / ("web-rotation-transaction-test-" + std::to_string(::getpid()));
-  fs::create_directories(root);
+  fs::create_directories(root / "_hockeymon");
   const auto hugin = create_hugin_generation(root);
   if (!hugin.ok())
     return 1;

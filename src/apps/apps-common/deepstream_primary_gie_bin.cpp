@@ -18,6 +18,7 @@
 #include <string.h>
 #include "deepstream_common.h"
 #include "deepstream_primary_gie.h"
+#include "hstream/src/apps/apps-common/TiledInference.h"
 
 #if NVDS_VERSION_MAJOR > 6 || (NVDS_VERSION_MAJOR == 6 && NVDS_VERSION_MINOR >= 2)
 #define HAS_INT64
@@ -225,6 +226,20 @@ gboolean create_primary_gie_bin(NvDsGieConfig* config, NvDsPrimaryGieBin* bin) {
   }
 
   g_object_set(G_OBJECT(bin->nvvidconv), "gpu-id", config->gpu_id, NULL);
+
+  if (config->tiled_inference) {
+    if (config->plugin_type != NV_DS_GIE_PLUGIN_INFER || config->input_tensor_meta ||
+        config->processing_width || config->processing_height) {
+      NVGSTDS_ERR_MSG_V("Tiling requires native nvinfer with the original stitched surface");
+      goto done;
+    }
+    const auto status = hm::pipeline::InstallTiledInference(
+        bin->primary_gie, GET_FILE_PATH(config->config_file_path), {config->tile_overlap, config->tile_merge_iou});
+    if (!status.ok()) {
+      NVGSTDS_ERR_MSG_V("%s", status.ToString().c_str());
+      goto done;
+    }
+  }
   g_object_set(G_OBJECT(bin->nvvidconv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
 
   if (bin->capsfilter) {

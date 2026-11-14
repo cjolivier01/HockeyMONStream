@@ -17,7 +17,8 @@ int main(int argc, char** argv) {
                           const YAML::Node& game = YAML::Node(YAML::NodeType::Map)) {
       const auto merged = hm::config::ResolveProgramConfiguration(
           baseline, YAML::Node(YAML::NodeType::Map), game, YAML::Node(YAML::NodeType::Map), options);
-      Check(merged.ok(), merged.status().ToString());
+      if (!merged.ok())
+        return absl::StatusOr<hm::program::ProgramOutputConfig>(merged.status());
       return hm::program::ResolveProgramOutputConfig(*merged);
     };
     auto result = load();

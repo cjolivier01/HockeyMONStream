@@ -1,5 +1,11 @@
 # AMD GPU port
 
+Optional [two-tile detection](tiled-inference.md) uses the shared native
+`pipeline.primary-gie.tiled-inference` settings. HIP preprocesses both crops into
+one batch-two tensor and submits MIGraphX once; shared cross-tile suppression
+returns stitched coordinates before tracking. The default full-frame path is
+unchanged. The same GPU sampling tests cover both modes on CUDA and HIP.
+
 Status: native HIP kernels, VA/HIP video interoperability and MIGraphX inference
 work on AMD. A ROCm build of `hstream-cli` now owns the saved-calibration Program
 video path: stereo decode, stitching, detection, rink filtering, geometric
@@ -835,17 +841,22 @@ owned panorama while producing NV12/P010 Program output. Original video alpha
 cannot erase the overlay. The scoreboard follows the native ordering after
 Program crop/tone and therefore samples the original panorama's colors. There
 is no extra video allocation, upload, download, map, file access or stream wait
-per frame. The direct homography uses one bilinear reconstruction, whereas the
-NVIDIA scoreboard first resizes a cropped image and then warps it; subpixel
-values are not claimed identical to that two-pass reconstruction.
+per frame. Both AMD and NVIDIA now use one bilinear perspective reconstruction
+from original source samples. NVIDIA keeps a GPU-only crop copy to establish
+opaque video alpha without modifying the shared panorama. It no longer resizes
+that crop before warping. Surface formats and floating-point implementations
+still differ, so byte-identical subpixel values are not claimed.
 
 GPU tests use a half-float synthetic panorama and independently verify every
 luma/chroma output value, including mixed overlay/background 2x2 chroma blocks,
 zero source alpha, unaffected crop pixels, row padding and guards. They also
 reject stale dimensions and nonfinite matrices. CPU tests cover generation
 binding, native aliases/layers, disabled sentinel, baseline reset, malformed
-polygons, sizing and all placement modes. Existing NVIDIA scoreboard tests
-remain unchanged.
+polygons, sizing and all placement modes. Scale regressions cover shrinking and
+enlarging the destination rectangle on the shared CUDA/HIP renderer and native
+NVIDIA warp. Qt and browser Scale controls edit the existing baseline-backed
+`rink.scoreboard.scoreboard_scale` for the next playback; both disable editing
+during playback. Interactive AMD selection and live controls remain pending.
 
 The real AMD CLI export with scoreboard enabled completed 120 frames and 2,719
 track observations. Its atomic MP4 is 3840×2160 HEVC Main10, 2.002 seconds; a
@@ -1029,6 +1040,9 @@ Controls become active after preparation and before the first processed pair.
 Queued quit and end-of-recording seeks consume no frames. Model preparation is
 not acknowledged as a paused playback graph. Preview-channel routing uses the
 generation protocol described below; additional runtime mutations remain pending.
+This includes live referee/goalie filters and camera-control resets. AMD startup
+already reads both role filters; the shared runtime catalog and serialization
+tests do not establish live AMD mutation support.
 
 `@seek POSITION_NS GENERATION` seeks local preview/discard runs relative to the
 configured playback start. `@seek-relative DELTA_NS GENERATION` jumps from the
@@ -1426,3 +1440,50 @@ Ampere or newer). AMD Program retains its explicit FP32/FP16 selection and
 MIGraphX cache path; BF16/INT8 remain unsupported there and fail explicitly,
 without substituting another precision. `detector_settings_test` covers that
 boundary. Automatic AMD BF16 preparation remains an existing port gap.
+
+### Independent camera-tab playback
+
+The idle desktop camera transport shares its timeline, ownership, pause/seek and
+teardown code across NVIDIA and AMD. Its AMD branch connects `vah264dec` /
+`vah265dec` DMABuf output directly to `glimagesink`; it never negotiates
+system-memory video or sends VA surfaces through the NVIDIA renderer. This
+source-only player does not add AMD Program source taps, calibration or WebRTC.
+The player retains one GPU sample for paused redraw after a tab return or resize;
+AMD uses `GstVideoOverlay` expose and NVIDIA reuses its retained GPU buffer.
+Unchanged polling never remaps either native target. Container timing and
+MP4/Matroska/AVI demux selection are shared between the two backends.
+
+`source_camera_playback_test` supports both builds with two synthetic chapter
+playlists. The AMD player library builds with `--config=rocm`; NVIDIA playback,
+audio and paused source-frame presentation are verified locally. AMD hardware
+qualification remains pending: `ripper` was unreachable over SSH during this
+change. DMABuf/EGL import, paused seeks and full decoder retirement must pass
+there before claiming AMD runtime parity. The Qt targets retain their existing
+Jetson incompatibility.
+
+The NVIDIA HEVC camera seek workaround restarts NVDEC between identical flushing
+seeks to discard stale 8K HEVC surface regions. VA decoding keeps its existing
+seek implementation. `source_camera_seek_pixels_test` exercises the shared
+player and compares full displayed frames against software decoding, including
+the rightmost strips, repeated seeks and chapter replacement. The AMD branch
+passes a local compile check; this pixel regression still needs AMD hardware
+qualification because `ripper` remains unreachable.
+
+Calibration reference defaults use the shared Qt controls on both backends: zero
+inherits Playback start, while nonzero references retain their sign. The shared
+CPU reference sampler wraps end-relative samples to the frozen Playback start.
+Fresh automatic AMD calibration remains unavailable; this does not add an AMD
+pipeline calibration path or change saved calibration validation.
+
+Canonical control configuration now resolves `video_out.tone` and `playback`
+instead of independent AMD tone/start/pacing defaults. Legacy AMD keys normalize
+within their original layer, and the shared camera mapper consumes
+`rink.camera.motion_overrides` without a UI-generated file. This does not add
+any live-control capability or close the outstanding backend workflow gaps above.
+See [canonical-runtime-controls.md](canonical-runtime-controls.md).
+
+Validation for this consolidation: the shared runtime-control, camera-mapping,
+Program output and GPU tests passed on `ripper` with ROCm. The full AMD CLI/UI
+build stopped in the existing `VaDetectorImage.cpp` toolchain include chain
+(`/usr/include/c++/12/cstdlib` could not find `stdlib.h`); full application
+validation remains incomplete on that host.

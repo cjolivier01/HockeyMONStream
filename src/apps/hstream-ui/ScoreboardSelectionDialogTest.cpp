@@ -3,6 +3,7 @@
 #include <QtTest/qtest_widgets.h>
 #include <QtTest/qtestmouse.h>
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QDir>
 #include <QtCore/QPointer>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTemporaryDir>
@@ -388,6 +389,7 @@ int main(int argc, char** argv) {
   QTemporaryDir directory;
   if (!directory.isValid())
     return 1;
+  QDir(directory.path()).mkpath("_hockeymon");
   const QString image_path = directory.filePath("_hockeymon/s.png");
   QImage image(100, 80, QImage::Format_RGB32);
   image.fill(QColor(35, 80, 110));

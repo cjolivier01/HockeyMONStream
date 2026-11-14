@@ -7,11 +7,9 @@ import shutil
 import subprocess
 import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import hstream_workflow_controller_test as fixtures
-from hstream_workflow.cli import main
 from hstream_workflow.dispatch import installed_launcher
 from hstream_workflow.files import file_digest, read_json, write_json
 from hstream_workflow.profiles import controller_files
@@ -74,6 +72,7 @@ class DispatchTest(unittest.TestCase):
                 "--registry",
                 str(self.fixture.registry),
             ],
+            check=False,
             capture_output=True,
             text=True,
             timeout=45,
@@ -165,16 +164,14 @@ class DispatchTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkflowError, "not executable"):
             installed_launcher(self.config)
 
-    def test_supervisor_never_routes_to_current_registry(self):
-        with patch(
-            "hstream_workflow.cli.dispatch",
-            side_effect=AssertionError("supervisor rerouted"),
-        ):
-            with patch(
-                "hstream_workflow.supervisor.execute", return_value=0
-            ) as execute:
-                self.assertEqual(main(["_supervise", "--root", str(self.root)]), 0)
-                execute.assert_called_once_with(self.root)
+    def test_compute_profile_does_not_need_controller_package(self):
+        profile = copy.deepcopy(self.config["profiles"]["cpu"])
+        for path in self.controller_pins(self.installed):
+            profile["runtime"]["files"].pop(path)
+        self.config["profiles"]["compute"] = profile
+        self.assertEqual(
+            installed_launcher(self.config), self.installed / "hstream-workflow"
+        )
 
 
 if __name__ == "__main__":

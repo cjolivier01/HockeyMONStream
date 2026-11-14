@@ -28,7 +28,7 @@ struct Buffer {
     (void)cudaFree(data);
   }
 };
-void TestImage(PixelFormat format, cudaStream_t stream) {
+void TestImage(PixelFormat format, cudaStream_t stream, bool cropped) {
   constexpr int width = 6, height = 4;
   constexpr size_t pitch = 64;
   std::vector<uint8_t> source(pitch * height, 0xa5), chroma(pitch * height / 2, 0x5a);
@@ -86,10 +86,17 @@ void TestImage(PixelFormat format, cudaStream_t stream) {
             std::clamp(yf + 2.11240179f * uf, 0.f, 255.f));
       }
     }
-  const auto box = MakeLetterbox(width, height, 13, 11, true, true, 1.f / 255);
+  const DetectionTile tile = cropped ? DetectionTile{2, 0, 4, 4} : DetectionTile{0, 0, width, height};
+  const auto box = MakeLetterbox(tile.width, tile.height, 13, 11, true, true, 1.f / 255);
   Check(box.ok(), "letterbox");
   cv::Mat resized;
-  cv::resize(reference, resized, cv::Size(box->resized_width, box->resized_height), 0, 0, cv::INTER_LINEAR);
+  cv::resize(
+      reference(cv::Rect(tile.left, tile.top, tile.width, tile.height)),
+      resized,
+      cv::Size(box->resized_width, box->resized_height),
+      0,
+      0,
+      cv::INTER_LINEAR);
   Buffer input(source.size()), uv(chroma.size()), output(3 * 13 * 11 * sizeof(float) + 64);
   Gpu(cudaMemcpyAsync(input.data, source.data(), source.size(), cudaMemcpyHostToDevice, stream));
   Gpu(cudaMemcpyAsync(uv.data, chroma.data(), chroma.size(), cudaMemcpyHostToDevice, stream));
@@ -110,7 +117,7 @@ void TestImage(PixelFormat format, cudaStream_t stream) {
       -.21324861f / factor,
       -.53290933f / factor,
       2.11240179f / factor};
-  Gpu(PreprocessDetector(image, *box, static_cast<float*>(output.data), stream));
+  Gpu(PreprocessDetectorTile(image, tile, *box, static_cast<float*>(output.data), stream));
   std::vector<float> actual(3 * 13 * 11);
   Gpu(cudaMemcpyAsync(actual.data(), output.data, actual.size() * sizeof(float), cudaMemcpyDeviceToHost, stream));
   std::vector<uint8_t> guard(64);
@@ -188,7 +195,8 @@ int main() {
           PixelFormat::kNv12,
           PixelFormat::kP010,
           PixelFormat::kRgba16Float})
-      TestImage(format, stream);
+      for (bool cropped : {false, true})
+        TestImage(format, stream, cropped);
     TestFiltering(stream);
     Gpu(cudaStreamDestroy(stream));
     std::cout << "Detector RGB8/RGB10/NV12/P010 preprocessing and proposal tests passed\n";

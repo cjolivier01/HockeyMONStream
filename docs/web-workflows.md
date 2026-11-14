@@ -126,12 +126,32 @@ contract, then testing both interfaces against the same native checkout.
 | `experiment-run` | Saved `workspace` and optional `require_ice_mask`. Runs native calibration through `hstream-job --interactive`, then validates native completion before returning success. |
 | `experiment-inspect` | Saved `workspace`. Returns versioned saved-frame inspection, exact source identities, coverage, images and source validation; see below. |
 | `experiment-complete` | Saved `workspace`, optional `require_ice_mask`. Validates already-generated native calibration; it does not run a solve. |
-| `experiment-promote` | Saved `workspace`. Transactionally promotes the candidate's existing native calibration into the run's main game. The web worker controls adoption into the project. |
+| `experiment-promote` | Saved `workspace`. Transactionally promotes the candidate's existing native calibration into the run's main game. The web worker controls adoption into the project. `experiment-promotion-review-v1` retains pending leveling/crop review for the next Play; the shared planner preserves alignment and the existing runtime selectors own the choices. |
 | `track-runs` | `database` and optional `game`; omission enumerates the database's game IDs. Returns native telemetry run IDs. |
 | `track-choices` | `database`, `run_id`, `route` (`program`, `stitched`, `program-full`), `game_ms`, optional `pts_offset_ms`. Returns native segment-bound track choices. |
 | `track-capture` | Track choice fields plus `plan`, `archive_path`, `archive_offset_ms`, `item_index`, `cue_index`, and `choice`. Uses native track capture and returns a portable plan and `tracked-plan.json`. |
 | `camera-replay` | `database`, `run_id`, bounded `start_seconds` and `duration_seconds`, native `tuning`, and optional fast/follower target booleans. Returns original, baseline and trial trajectories from `ReplaySession`. This operation does not encode a moving camera-preview video. |
 | `camera-experiment` | A completed `database`/`run_id`, `media_kind` (`original-cameras` or `panorama`), bounded `start_seconds`, `duration_seconds` (0.1–120), `playback_start_seconds`, `video_origin_seconds`, and explicit source-confirmation/playback/overlay booleans. Original cameras use the worker-staged game calibration; panoramas use `archive_path` and validated media dimensions when selected. An empty `archive_path` with omitted dimensions prepares trajectories without video (`camera-optional-panorama-v1`). Uses the shared `ReplaySession`, decoder/cropper and preview worker with hardware WebRTC output. The supervisor assigns `--preview-port=N`. |
+
+The Camera command adapter advertises `camera-save-cancel-v1`. Ordinary `save`
+commands include `save_token` (32 lowercase hexadecimal characters) and `view`,
+in addition to the run, generation and request sequence. The selected view must
+still match when the native adapter admits the operation. Repeating a token with
+the same binding returns its retained terminal outcome; another view is rejected.
+At most 256 token bindings are retained for one session, without eviction.
+
+The separate `cancel-save` envelope contains only `run`, `generation`, `action`
+and `save_token`. It has no ordinary request sequence and cannot advance or release
+that command slot. Native reads it while Save runs, including when Save and
+cancellation share an input read; other ordinary commands remain queued. The
+`save-cancel` event echoes the token and `status: ok/rejected` and only acknowledges
+the cancellation request. The ordinary Save `ack` echoes `save_token` and reports
+either `saved` plus its `artifact`, `cancelled: true` after worker retirement, or
+`status: rejected` with an error. A commit racing cancellation still returns its
+saved receipt. The outer supervisor owns durable token admission, cancellation
+before delayed admission and recovery independently of the latest command ACK.
+Whole-session interruption or command-owner EOF cancels the active worker and
+waits for retirement before releasing the session.
 
 The outer Camera selector may bind either a published panorama artifact or one
 completed owner-scoped upload. Uploaded bytes are frozen by file identity and
@@ -160,7 +180,11 @@ lease sends abandoned sessions through the same supervised cleanup.
 The native adapter writes a revisioned trajectory catalog separately from its
 frequent state messages. Save publishes `camera-trial-N.yaml` with an exact
 file-identity receipt, allowing an immediate authenticated download before Close;
-final publication rechecks the same artifacts. A CPU-only trial can also be
+final publication rechecks the same artifacts. Distributed requests use schema-2
+content receipts for every trajectory chunk, view, history page and saved trial,
+bound to the admitted storage namespace (`camera-portable-receipts-v1`). The
+browser service verifies those exact bytes across qualified shared mounts; local
+legacy requests retain their strict file-identity receipts. A CPU-only trial can also be
 saved without a selected panorama: `media.kind: none` retains the recorded canvas
 and telemetry origin, with no claimed video path, identity or time mapping.
 Partially specified media bindings still fail. Both interfaces resolve defaults
@@ -636,8 +660,10 @@ empty. The exact hashed initial config contains only `game.videos` and
 `hstream_ui.video_roles`; every admitted source has an unchanged identity/role/alias
 binding. The adapter rejects prior calibration state, artifacts and indirect
 directories before acquiring native transaction locks. It validates again under
-those locks, allowing only the known journal files they create. Explicit Center
-metadata is retained; Auto aliases keep native discovery and orientation instead
+those locks, allowing only the known journal files they create. The regular, empty
+`_hockeymon/.game-operation.lock` created by native ownership checks is also allowed
+before and after locking; a symlink or nonempty file at that path remains invalid.
+Explicit Center metadata is retained; Auto aliases keep native discovery and orientation instead
 of acquiring Left/Right roles from upload order. Automatic optics and input-stage
 planning use the existing native implementations. The ordinary stage receipt
 owns the new invalidation; it does not claim a completed calibration.
@@ -798,3 +824,147 @@ source can supply orientation independently of frozen optics. The private
 `saved_orientation` flag permits reading its saved playlist names; only exact
 admitted relative aliases may label a side. `saved_optics` separately authorizes
 frozen values, preserving source/policy validation and explicit refresh intent.
+
+The same pinned read returns `source_timing` for every admitted chapter alias.
+Each entry contains decimal-string `start_ns` and `duration_ns` for the video
+track, or a bounded advisory error. `SourceCameraTrack` reads headers and bounded
+compressed packet timestamps without decoding video; all timing reads share the
+baseline runtime stop deadline and cancellation signal. The outer service checks
+the exact alias set against the immutable source layout and supplies the
+upload-to-alias mapping. Idle browser camera playback waits for this verified
+metadata, seeks physical video timestamps, and ends chapters before audio tails.
+Missing timing from an older native deployment leaves camera playback unavailable
+with an explicit error; optics controls still work.
+
+## Native failure diagnosis
+
+`calibration-failure-diagnose` is an internal CPU postmortem operation, advertised
+by `calibration-failure-diagnosis-v1`. It shares `stitching/CalibrationFailure`
+with Qt. The library keeps CUDA allocation and first-watchdog evidence across
+bounded log trimming, distinguishes the pre-stitch input pool from the live
+blender, and retires recovered inference OOM evidence on the exact native CPU
+fallback marker. Native configuration and diagnostic text are interpreted once;
+the browser displays the verified native result as text.
+
+Qt merges the main runner's stdout and stderr before reading either descriptor,
+matching the web supervisor's ordered log. The same stream carries native scope
+records, failure evidence and CPU-fallback resets. Buffered GUI delivery cannot
+attach a failure to a preceding or subsequent configuration generation. Merged
+entries use the neutral `runner-output` diagnostic source; their original
+descriptor is unavailable. Error, warning and success colors still come from
+message text, while unmarked lines retain the ordinary color. Trailing fragments
+and the runtime log's following/scroll-position rules remain unchanged.
+
+The supervisor issues `HSTREAM_FAILURE_BINDING`, a 64-character lowercase hex
+correlation token, only to the admitted main invocation. Qt issues the same kind
+of token to its native process. The NVIDIA CLI writes two bounded JSON records:
+
+- `HSTREAM_FAILURE_SCOPE` carries `version: 1`, `binding`, native `invocation`
+  (32 lowercase hex characters), increasing `generation`, `native_stage`, and
+  `instances: 1`. A new scope starts at each `configureInstances` entry.
+- `HSTREAM_FAILURE_CONTEXT` carries the same version, binding, invocation and
+  generation, plus `context`. Configurator emits it after configuration and
+  `accept_prepared_rink_mask`, immediately before matcher provisioning. It uses
+  the already-resolved configuration and frozen lower-layer defaults. The
+  context records selected matcher/backend/projection, frame and point counts,
+  actual mapped maximum width, bounded camera display values, default point and
+  camera values, the native full-camera inequality boolean, and calibration
+  required/start-stage/mode. It contains no source paths or complete-config hash.
+
+The shared standard-C++ analyzer and JSON-GLib protocol have no Qt or GPU
+initialization dependency. Qt converts native strings at its boundary. Native
+width aliases and layer ranks resolve before context emission. Reading context
+never reloads a current preference file, replays configuration, changes settings,
+or provisions a model. Multiple simultaneous application instances are outside
+this first diagnosis protocol; malformed, ambiguous or missing context leaves the
+original processing failure available without a synthesized replacement.
+
+One invocation retains evidence and solve/restart outcome across preparation
+passes. Each cause retains its context generation; evidence from different
+generations cannot combine into a pre-stitch input-pool OOM. Evidence preceding
+its context remains unbound even if a context arrives later; its result uses
+cause generation zero without configuration-specific advice. `calibration`
+completion means the solve is ready. Native `playback-restart` completion and
+failure are separate outcomes: a failed restart still needs diagnosis after a
+successful solve. Successful solve and restart prevent an unrelated later output
+failure from reopening the calibration failure dialog. The returned
+`applicability` is `calibration`, `playback-restart`, `runtime`, or `none`.
+
+Qt uses that scoped verdict before synthesizing a calibration failure at process
+exit. A completed solve with an unconfirmed restart closes progress without
+marking the saved calibration failed or inferring that playback restarted. The
+pending restart still fences successful completion and output publication.
+Explicit native solve/restart failures and already-reported local save/ownership
+errors remain failures; cancellation closes progress and retains saved state.
+Missing or invalid native context retains the legacy terminal-error fallback.
+
+Failure stage recognition covers native substeps as well as the visible progress
+rows, including Hugin's `projection` and selected-frame `materialize`. An emitted
+projection failure therefore names projection even after optimizer completion;
+the main progress row layout is unchanged.
+
+Only after the original descendants, bridge helpers and log writers stop may the
+supervisor copy the pinned complete original log into a fresh private diagnosis
+root. Managed runs' original log is `work/game/runs/<native_run_id>/pipeline.log`;
+`native.log` is a tail and cannot establish evidence ordering. The helper root
+contains an empty `game` directory, its own request/receipts, and `pipeline.log`.
+It must never be the original run's operation root or game directory.
+
+The exact operation payload has `version: 1`, `binding`, `terminal`, and `log`.
+Binding contains `parent_run_id`, `native_run_id`, `binding_token`,
+`deployment_digest`, `supervisor_request_sha256`, `admission_digest`, and
+`workflow` (null for the initial main-Studio integration). Terminal contains the
+original `returncode`, `message`, and `cancelled: false`. Log contains
+`path: "pipeline.log"`, `size`, `sha256`, `complete: true`, and
+`original_identity` with decimal-string device/inode/size/mtime_ns/ctime_ns.
+The ordinary operation receipt binds the request hash and one
+`operation-data.json` artifact. Its result echoes the binding/log and returns
+native invocation, cause generation, context-record hash, separate solve/restart
+outcomes, applicability, category, stage, configuration, reported cause,
+explanation, action, six recent diagnostics, rejection counts and rendered text.
+
+The helper rejects linked/nonregular/replaced inputs, incomplete logs, logs above
+16 MiB, ordinary lines above 64 KiB, protocol records above 4 KiB, and more than
+32 configuration generations. The supervisor additionally bounds runtime and
+output, verifies the exact deployed helper and receipt, and proves helper
+retirement. Helper failure preserves the original failure; uncertain retirement
+retains recovery ownership. The service commits a redacted diagnosis, including
+an authoritative non-applicable verdict, in its locked terminal transaction
+before cleanup. Cancellation wins. HTTP reads are cache-only and never invoke
+native work. Distributed experiment diagnosis and AMD context emission remain
+outside this initial NVIDIA main-Studio qualification.
+
+Retained experiment materialization checks the exact pending or completed
+invalidation owner and native selected-frame bundle before reuse. This lets a
+completed serial candidate feed a later distributed batch without rerunning a
+pending-only calibration transaction. Missing or changed inputs still fail;
+ordinary solves continue to require pending invalidation ownership.
+
+
+### Standalone source camera playback
+
+`source-camera-preview-v1` exposes `SourceCameraPlayer` without a native window,
+stitching, calibration, inference or a Program graph. The outer web service owns
+one Slurm allocation and one selected camera playlist. Runtime inputs bind owned
+immutable uploads by their authorized absolute names and portable inode/size/time
+metadata; the adapter pins every descriptor and adds the compute-local device
+identity before decoding. Shared mounts must preserve those inode/time semantics.
+No full-file copy or hash is needed on every Play.
+
+The optional headless output keeps video in NVMM, converts/scales it on the GPU,
+and sends the baseline H.264 preview plus Opus audio through the existing exact
+frame receipt transport. Source and transport graphs use the same system clock;
+PCM timestamps translate their base times. Bounded silence keeps actual Opus caps
+available for SDP during paused opens. This does not advance source time.
+The default Qt renderer/audio path remains selected when no output is supplied.
+
+`HSTREAM_SOURCE_CAMERA` session/state events identify run, topology and operation.
+One typed stdin command at a time supports play, pause and seek. State precedes
+its matching acknowledgment, after the graph settles. Chapter changes and HEVC
+decoder resets advance presentation operations; browser peer renewal discards
+queued media before Resume/Seek. The supervisor owns client expiry, Stop,
+process retirement and signaling leases. Browser closure alone is not stop proof.
+
+This browser transport uses the existing NVIDIA encoder/preview implementation.
+AMD browser output and Jetson web-adapter builds remain unqualified; a profile
+must advertise this operation only on nodes tested with its exact runtime.

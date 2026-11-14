@@ -15,6 +15,7 @@
 #include "hstream/src/apps/apps-common/deepstream_sources.h"
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
+#include "hstream/src/libs/stitching/CalibrationFailure.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 
 struct NvDsConfig;
@@ -111,6 +112,7 @@ class Configurator {
   // Root-level one-run settings, distinct from structural app pipeline files.
   absl::Status apply_settings_overlay(const std::filesystem::path& path);
 
+  absl::Status apply_config_options(const std::map<std::string, std::string>& options);
   absl::Status apply_config_item(const std::string& key, const std::string& value);
 
   void set_encode_job(bool enabled) {
@@ -159,6 +161,9 @@ class Configurator {
   bool stitching_calibration_required() const {
     return stitching_calibration_required_;
   }
+  // Project the actual completed native configuration without loading files,
+  // changing preferences or provisioning models.
+  absl::StatusOr<stitching::failure::Context> calibration_failure_context(bool calibration_only) const;
   const std::string& stitching_calibration_start_stage() const {
     return stitching_calibration_start_stage_;
   }

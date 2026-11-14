@@ -72,3 +72,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [":placement", "@opencv_linux//:opencv", "@com_google_absl//absl/status:statusor"],
 )
+
+cc_test(
+    name = "scoreboard_warp_cuda_test",
+    srcs = ["ScoreboardWarpCudaTest.cpp"],
+    tags = ["manual", "requires-deepstream-hw"],
+    deps = [":scoreboard", "@opencv_linux//:opencv"],
+)

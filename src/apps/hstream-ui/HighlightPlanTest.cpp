@@ -50,6 +50,7 @@ int main() {
       HighlightPlan initial;
       ok &= expect(initial.base_name == "season-reel", "new plans must resolve their name from the baseline");
       initial.base_name = "Saved reel";
+      QDir(defaults.path()).mkpath("_hockeymon");
       const QString saved_path = defaults.filePath("_hockeymon/highlights.json");
       ok &= expect(SaveHighlightPlan(saved_path, initial, &error), "explicit plan name saved");
       HighlightPlan reopened;
@@ -172,6 +173,7 @@ int main() {
   ok &= expect(directory.isValid(), "temporary test directory must be available");
   if (!directory.isValid())
     return 1;
+  QDir(directory.path()).mkpath("_hockeymon");
   const QString path = directory.filePath("_hockeymon/highlights.json");
   HighlightPlan restored_origin;
   ok &= expect(

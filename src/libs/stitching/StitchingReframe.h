@@ -47,13 +47,16 @@ absl::StatusOr<bool> PrepareStitchingReframeIntentLocked(
 
 // Same transaction with already resolved, frozen effective documents. Does not
 // reopen the process user's mutable defaults. Used by shared launch staging.
+// review_unchanged_view retains the alignment for a promoted experiment whose
+// optional leveling/crop review must run at Play, even without a view edit.
 absl::StatusOr<bool> PrepareResolvedStitchingReframeIntentLocked(
     const std::filesystem::path& game_directory,
     const YAML::Node& before_effective,
     const YAML::Node& desired_effective,
     const std::string& desired_owner,
     YAML::Node& desired_private,
-    bool* solve_inputs_changed = nullptr);
+    bool* solve_inputs_changed = nullptr,
+    bool review_unchanged_view = false);
 
 // Revalidate source artifacts/stills, retained selected inputs, current owner,
 // and the complete solve/view snapshots. Does not decode original recordings

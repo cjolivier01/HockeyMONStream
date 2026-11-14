@@ -28,7 +28,7 @@ class Scoreboard {
   /**
    * @brief Constructs a Scoreboard object.
    *
-   * @param srcPts Vector of four source points (in any order; they will be ordered clockwise starting from top-left).
+   * @param srcPts Four source points ordered top-left, top-right, bottom-right, bottom-left.
    * @param destWidth Desired output width.
    * @param destHeight Desired output height.
    * @param autoAspect If true, adjusts the output dimensions based on the source aspect ratio.
@@ -44,8 +44,7 @@ class Scoreboard {
   /**
    * @brief Applies the perspective warp transformation to the input image.
    *
-   * Extracts the region of interest, resizes it, applies the perspective transform,
-   * and crops to the final output dimensions.
+   * Maps original source pixels directly to the final output dimensions.
    *
    * @param inputImage The input image.
    * @return cv::Mat The warped image.
@@ -98,14 +97,11 @@ class Scoreboard {
   cv::Rect bboxSrc_; ///< Bounding box of the source points.
   int destWidth_{0}; ///< Final output width.
   int destHeight_{0}; ///< Final output height.
-  int destW_{0}; ///< Intermediate width (possibly scaled).
-  int destH_{0}; ///< Intermediate height (possibly scaled).
   cv::Mat perspectiveMatrix_; ///< Perspective transformation matrix.
   cv::Mat inversePerspectiveMatrix_; ///< Inverse of perspectiveMatrix_, precomputed for the warp kernels.
   std::unique_ptr<hm::CudaMat<T_pixel>> working_image_ ABSL_GUARDED_BY(mu_);
   std::unique_ptr<hm::CudaMat<T_pixel>> warped_image_ ABSL_GUARDED_BY(mu_);
 };
-
 
 /**
  * @brief Gets the final output width.

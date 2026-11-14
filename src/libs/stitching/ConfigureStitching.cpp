@@ -132,7 +132,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
     }
   } cleanup{descriptor};
   struct stat before{};
-  if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
+  if (fresh_stitch_fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
       static_cast<uint64_t>(before.st_size) > kMaximumAkazeCalibrationBytes) {
     return absl::FailedPreconditionError(
         "AKAZE lens calibration must be a non-empty bounded regular file: " + path.string());
@@ -152,7 +152,7 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
     offset += static_cast<size_t>(count);
   }
   struct stat after{};
-  if (::fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+  if (fresh_stitch_fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
       before.st_size != after.st_size || before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
       before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
       before.st_ctim.tv_nsec != after.st_ctim.tv_nsec) {
@@ -347,7 +347,8 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
     const fs::path& staging,
     const StitchingBackendChoices& expected_choices,
     const std::string& invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    bool persist_selection = true) {
   const fs::path response_path = staging / ".rink-leveling-response";
   std::error_code error;
   fs::remove(response_path, error);
@@ -369,9 +370,11 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
       return std::optional<std::array<double, 3>>{};
     }
     const std::array<double, 3>& rotation = **selected;
-    auto updated = apply_stitching_leveling_rotation(game_dir, invalidation_id, expected_choices, rotation);
-    if (!updated.ok())
-      return updated.status();
+    if (persist_selection) {
+      auto updated = apply_stitching_leveling_rotation(game_dir, invalidation_id, expected_choices, rotation);
+      if (!updated.ok())
+        return updated.status();
+    }
     std::cout.imbue(std::locale::classic());
     std::cout << std::setprecision(std::numeric_limits<double>::max_digits10)
               << "HSTREAM_RINK_LEVELING status=selected yaw=" << rotation[0] << " pitch=" << rotation[1]
@@ -397,7 +400,7 @@ absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
     }
   } close_descriptor{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0)
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0)
     return absl::InternalError("Unable to inspect the rink leveling response: " + std::string(std::strerror(errno)));
   if (!S_ISREG(metadata.st_mode))
     return absl::FailedPreconditionError("Rink leveling response must be a regular file");
@@ -441,7 +444,8 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
     StitchingBackendChoices expected,
     const StitchProjectionFraming& framing,
     const std::string& invalidation_id,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    bool persist_selection = true) {
   expected.projection_framing = framing; // Leveling may have updated the owner tuple.
   std::ifstream project(staging / "autooptimiser_out.pto");
   const std::string pto((std::istreambuf_iterator<char>(project)), std::istreambuf_iterator<char>());
@@ -454,7 +458,10 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
       return lock.status();
     try {
       const auto config = YAML::LoadFile((hm::game_storage::StateDirectory(game_dir) / "config.yaml").string());
-      HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, invalidation_id, expected));
+      if (persist_selection)
+        HM_RETURN_IF_ERROR(validate_stitching_backend_generation(config, invalidation_id, expected));
+      else
+        HM_RETURN_IF_ERROR(validate_pending_stitching_invalidation(config, invalidation_id));
       if (projection_crop_reviewed(config, geometry))
         return framing;
     } catch (const YAML::Exception& error) {
@@ -491,9 +498,11 @@ absl::StatusOr<StitchProjectionFraming> wait_for_crop_selection(
     if (!input.eof())
       return absl::InvalidArgumentError("Crop selection response has trailing data");
     selected.auto_crop = automatic != 0;
-    auto updated = apply_stitching_crop_selection(game_dir, invalidation_id, expected, selected, geometry);
-    if (!updated.ok())
-      return updated.status();
+    if (persist_selection) {
+      auto updated = apply_stitching_crop_selection(game_dir, invalidation_id, expected, selected, geometry);
+      if (!updated.ok())
+        return updated.status();
+    }
     std::cout.imbue(std::locale::classic());
     std::cout << std::setprecision(std::numeric_limits<double>::max_digits10)
               << "HSTREAM_PROJECTION_CROP status=selected auto=" << automatic;
@@ -720,7 +729,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
   opened->descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (opened->descriptor < 0)
     return absl::NotFoundError(TO_STRING("Could not open TIFF: " << path.string()));
-  if (::fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
+  if (fresh_stitch_fstat(opened->descriptor, &opened->metadata) != 0 || !S_ISREG(opened->metadata.st_mode) ||
       opened->metadata.st_size <= 0)
     return absl::FailedPreconditionError(TO_STRING("TIFF is not a non-empty regular file: " << path.string()));
   if (static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes) {
@@ -728,6 +737,13 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
         "TIFF exceeds the " << maximum_bytes << "-byte encoded-file safety limit (" << opened->metadata.st_size
                             << " bytes): " << path.string()));
   }
+  // TIFF snapshots take this branch before the generic artifact pinning path.
+  // Settle their exact descriptor before the parser captures any metadata.
+  if (::fsync(opened->descriptor) != 0 || fresh_stitch_fstat(opened->descriptor, &opened->metadata) != 0)
+    return absl::InternalError("Unable to settle TIFF before inspection: " + path.string());
+  if (!S_ISREG(opened->metadata.st_mode) || opened->metadata.st_size <= 0 ||
+      static_cast<uint64_t>(opened->metadata.st_size) > maximum_bytes)
+    return absl::FailedPreconditionError("Invalid or oversized settled TIFF: " + path.string());
   const int tiff_descriptor = ::dup(opened->descriptor);
   if (tiff_descriptor < 0)
     return absl::InternalError(TO_STRING("Could not duplicate TIFF descriptor: " << path.string()));
@@ -742,7 +758,7 @@ absl::StatusOr<std::unique_ptr<OpenedTiff>> open_bounded_tiff(const fs::path& pa
 
 absl::Status verify_opened_tiff(const OpenedTiff& opened, const fs::path& path) {
   struct stat verified{};
-  if (::fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
+  if (fresh_stitch_fstat(opened.descriptor, &verified) != 0 || opened.metadata.st_dev != verified.st_dev ||
       opened.metadata.st_ino != verified.st_ino || opened.metadata.st_mode != verified.st_mode ||
       opened.metadata.st_size != verified.st_size || opened.metadata.st_mtim.tv_sec != verified.st_mtim.tv_sec ||
       opened.metadata.st_mtim.tv_nsec != verified.st_mtim.tv_nsec ||
@@ -842,10 +858,20 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
     return absl::FailedPreconditionError("Unable to pin stitch snapshot artifact: " + path.string());
   }
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
       static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     ::close(descriptor);
     return absl::FailedPreconditionError("Invalid or oversized stitch snapshot artifact: " + path.string());
+  }
+  // Finish pending shared-filesystem writeback before freezing the source
+  // identity. All comparisons after this point still reject any mutation.
+  if (::fsync(descriptor) != 0 || fresh_stitch_fstat(descriptor, &metadata) != 0) {
+    ::close(descriptor);
+    return absl::InternalError("Unable to settle stitch snapshot artifact: " + path.string());
+  }
+  if (!S_ISREG(metadata.st_mode) || metadata.st_size <= 0 || static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+    ::close(descriptor);
+    return absl::FailedPreconditionError("Invalid or oversized settled stitch snapshot artifact: " + path.string());
   }
   return PinnedLoadArtifact(name, descriptor, metadata);
 }
@@ -931,12 +957,19 @@ absl::Status expose_regular_snapshot_artifact(PinnedLoadArtifact* artifact, cons
     }
   }
   struct stat verified{};
-  if (::fstat(artifact->descriptor, &verified) != 0 || !same_load_artifact_snapshot(artifact->metadata, verified)) {
+  if (fresh_stitch_fstat(artifact->descriptor, &verified) != 0 ||
+      !same_load_artifact_snapshot(artifact->metadata, verified)) {
     return absl::AbortedError("Stitch validation artifact changed while it was snapshotted: " + artifact->name);
   }
+  // Preserve timestamps only after the copy's data writes have reached the
+  // filesystem; delayed NFS writes would otherwise overwrite the saved mtime.
+  if (::fsync(destination_descriptor) != 0)
+    return absl::InternalError("Unable to flush stitch validation snapshot artifact");
   const timespec times[2] = {artifact->metadata.st_atim, artifact->metadata.st_mtim};
   if (::futimens(destination_descriptor, times) != 0)
     return absl::InternalError("Unable to preserve stitch validation snapshot timestamps");
+  if (::fsync(destination_descriptor) != 0)
+    return absl::InternalError("Unable to flush stitch validation snapshot timestamps");
   if (::close(destination_descriptor) != 0) {
     cleanup.descriptor = -1;
     return absl::InternalError("Unable to close stitch validation snapshot artifact");
@@ -968,7 +1001,7 @@ absl::Status verify_pinned_load_artifacts(
   for (const PinnedLoadArtifact& artifact : artifacts) {
     struct stat descriptor_metadata{};
     struct stat path_metadata{};
-    if (::fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
+    if (fresh_stitch_fstat(artifact.descriptor, &descriptor_metadata) != 0 ||
         !same_load_artifact_snapshot(artifact.metadata, descriptor_metadata)) {
       return absl::AbortedError("Control-mask artifact changed while being loaded: " + artifact.name);
     }
@@ -3770,7 +3803,7 @@ absl::StatusOr<std::string> read_rink_transaction_state(const fs::path& transact
     }
   } cleanup{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 0 ||
       metadata.st_size > 16) {
     return absl::FailedPreconditionError("Invalid durable rink transaction state file");
   }
@@ -4338,7 +4371,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
     }
   } cleanup{descriptor};
   struct stat metadata{};
-  if (::fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
+  if (fresh_stitch_fstat(descriptor, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size < 29)
     return absl::FailedPreconditionError("Invalid field-mask PNG: " + path);
 
   std::array<unsigned char, 29> header_bytes{};
@@ -4409,7 +4442,7 @@ absl::StatusOr<FieldMaskPng> read_field_mask_png(
     offset += static_cast<size_t>(count);
   }
   struct stat verified_metadata{};
-  if (::fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
+  if (fresh_stitch_fstat(descriptor, &verified_metadata) != 0 || metadata.st_dev != verified_metadata.st_dev ||
       metadata.st_ino != verified_metadata.st_ino || metadata.st_mode != verified_metadata.st_mode ||
       metadata.st_size != verified_metadata.st_size || metadata.st_mtim.tv_sec != verified_metadata.st_mtim.tv_sec ||
       metadata.st_mtim.tv_nsec != verified_metadata.st_mtim.tv_nsec ||
@@ -5612,6 +5645,7 @@ absl::Status reframe_stitching(
   const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
   StitchingReframeIntent intent;
   std::string request;
+  bool review_pending = false;
   {
     auto artifacts = HuginProject::RecoverAndLock(game_dir);
     if (!artifacts.ok())
@@ -5623,6 +5657,7 @@ absl::Status reframe_stitching(
       const YAML::Node config = YAML::LoadFile(config_path.string());
       HM_ASSIGN_OR_RETURN(intent, ValidateStitchingReframeIntentLocked(game_dir, config));
       request = YAML::Dump(config["hstream_ui"]["stitching_calibration"]["reframe"]);
+      review_pending = config["hstream_ui"]["stitching_calibration"]["review_pending"].as<bool>(false);
     } catch (const YAML::Exception& error) {
       return absl::InvalidArgumentError("Cannot read saved alignment request: " + std::string(error.what()));
     }
@@ -5630,6 +5665,7 @@ absl::Status reframe_stitching(
   if (intent.desired_owner != expected_invalidation_id || intent.desired_max_output_width != max_output_width)
     return absl::AbortedError("The requested view or calibration owner changed before reusing the saved alignment");
   HuginProject::ReframeOptions options;
+  options.review_saved_view = review_pending;
   options.expected_source_generation = intent.source_generation;
   HM_ASSIGN_OR_RETURN(options.projection, ParseStitchProjection(intent.desired_choices.projection));
   options.projection_parameters = intent.desired_choices.projection_parameters;
@@ -5640,6 +5676,21 @@ absl::Status reframe_stitching(
     options.max_canvas_dimension = intent.desired_max_output_dimension;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
+  // Review choices stay private until the reframe transaction commits. The
+  // immutable request remains authoritative through cancellation and retries.
+  if (review_pending && interactive_rink_leveling_requested()) {
+    options.select_leveling = [&](const fs::path& staging, const StitchProjectionFraming&) {
+      return wait_for_rink_leveling_selection(
+          game_dir, staging, intent.desired_choices, expected_invalidation_id, is_cancelled, false);
+    };
+  }
+  const char* crop_flow = std::getenv("HSTREAM_PROJECTION_CROP_FLOW");
+  if (review_pending && crop_flow && std::string(crop_flow) == "1") {
+    options.select_crop = [&](const fs::path& staging, const StitchProjectionFraming& framing) {
+      return wait_for_crop_selection(
+          game_dir, staging, intent.desired_choices, framing, expected_invalidation_id, is_cancelled, false);
+    };
+  }
   options.validate_source = [&]() -> absl::Status {
     try {
       const YAML::Node current = YAML::LoadFile(config_path.string());
@@ -5652,15 +5703,21 @@ absl::Status reframe_stitching(
       return absl::InvalidArgumentError("Cannot validate saved alignment request: " + std::string(error.what()));
     }
   };
-  options.build_config = [&](const fs::path& staging) -> absl::StatusOr<std::string> {
+  options.build_config = [&](const fs::path& staging,
+                             const StitchProjectionFraming& framing) -> absl::StatusOr<std::string> {
     HM_RETURN_IF_ERROR(options.validate_source());
     try {
       YAML::Node current = YAML::LoadFile(config_path.string());
       std::string pto;
       HM_ASSIGN_OR_RETURN(pto, HuginProject::ReadProject(staging / "autooptimiser_out.pto"));
-      const std::string geometry = projection_crop_geometry(pto, options.projection_framing);
+      const std::string geometry = projection_crop_geometry(pto, framing);
       if (geometry.empty())
         return absl::FailedPreconditionError("Reframed project has no valid crop geometry");
+      // Direct saved-view callers may not have reserved a worker claim yet.
+      // Reserve the original tuple, or validate the existing claim, before edits.
+      HM_RETURN_IF_ERROR(reserve_stitching_backend_generation_in_config(
+          current, expected_invalidation_id, intent.desired_choices));
+      write_stitch_projection_framing(current, framing);
       write_projection_crop_review(current, geometry);
       remove_control_point_dependent_cache_keys(current);
       YAML::Node calibration = current["hstream_ui"]["stitching_calibration"];
@@ -5668,9 +5725,19 @@ absl::Status reframe_stitching(
       calibration["rink_mask_status"] = "pending";
       calibration["artifacts_invalidated"] = true;
       calibration.remove("stale_from");
+      calibration.remove("review_pending");
       ClearStitchingReframeIntent(current);
+      // The review may change rotation and crop within this owned transaction.
+      // Publish its framing and claim together after validating the old tuple.
+      calibration["backend_generation"]["projection_framing"] =
+          YAML::Clone(current["stitching"]["projection_framing"]);
+      // Claims bind resolved angles even when the game inherits its rink preset.
+      calibration["backend_generation"]["projection_framing"]["rotation_degrees"] =
+          std::vector<double>(framing.rotation_degrees.begin(), framing.rotation_degrees.end());
+      auto final_choices = intent.desired_choices;
+      final_choices.projection_framing = framing;
       HM_RETURN_IF_ERROR(
-          reserve_stitching_backend_generation_in_config(current, expected_invalidation_id, intent.desired_choices));
+          reserve_stitching_backend_generation_in_config(current, expected_invalidation_id, final_choices));
       return YAML::Dump(current) + "\n";
     } catch (const YAML::Exception& error) {
       return absl::InvalidArgumentError("Cannot commit edited view settings: " + std::string(error.what()));

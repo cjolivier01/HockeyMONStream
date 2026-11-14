@@ -271,6 +271,14 @@ void run_experiment(
   {
     const auto lock = take(hm::stitching::GameConfigTransactionLock::Acquire(saved.game_directory));
     auto config = YAML::LoadFile((saved.game_directory / "_hockeymon/config.yaml").string());
+    if (materialize) {
+      // A serial solve can already own the verified selected images when a
+      // later distributed batch reuses its selection. Do not restart that
+      // completed calibration's pending-only extraction transaction.
+      check(hm::stitching::validate_stitching_generation_owner(config, saved.invalidation_id));
+      if (hm::experiment::materialized(saved))
+        return;
+    }
     check(hm::stitching::validate_pending_stitching_invalidation(config, saved.invalidation_id));
     YAML::Node arguments(YAML::NodeType::Sequence);
     for (const auto& argument : std::vector<std::string>{
@@ -281,6 +289,8 @@ void run_experiment(
              "--stitch-frame-time=" + saved.settings.stitch_frame_time,
              "-t=1"})
       arguments.push_back(argument);
+    if (saved.settings.player_scan_playback_start)
+      arguments.push_back("--start-time=" + *saved.settings.player_scan_playback_start);
     if (require_mask && !materialize)
       arguments.push_back("--stitching-calibration-with-ice-mask");
     if (!request.workflow.isEmpty())

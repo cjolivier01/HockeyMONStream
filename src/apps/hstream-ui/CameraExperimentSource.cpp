@@ -146,7 +146,12 @@ absl::Status ResolveExperimentStitchingSettings(
     auto tone = [&](const char* ui_name, const char* native_name, bool hundredths = false, bool boolean = false) {
       const std::string active = media->high_bit_depth ? "hmstitcher" : "hmplaycropper";
       const std::string other = media->high_bit_depth ? "hmplaycropper" : "hmstitcher";
+      const std::string tone_key = std::string("video_out.tone.") +
+          (std::string(ui_name) == "Bring_Up_Shadows"              ? "shadow_lift_percent"
+               : std::string(ui_name) == "Lift_Shadow_Black_Point" ? "lift_shadow_black_point"
+                                                                   : "exposure");
       const std::vector<std::string> paths = {
+          tone_key,
           std::string("hstream_ui.camera_controls.") + ui_name,
           "pipeline." + active + ".properties." + native_name,
           "pipeline." + other + ".properties." + native_name};
@@ -163,7 +168,7 @@ absl::Status ResolveExperimentStitchingSettings(
             return 0.0;
           throw std::invalid_argument(paths[i] + " must be true, false, 1, or 0");
         }
-        return value->as<double>() / (i == 0 && hundredths ? 100.0 : 1.0);
+        return value->as<double>() / (i == 1 && hundredths ? 100.0 : 1.0);
       }
       return 0.0;
     };

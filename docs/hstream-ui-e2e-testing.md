@@ -2,8 +2,14 @@
 
 The Game panel shows the current **Game root** (the folder containing game
 directories). **Change root…** chooses another folder and reloads its games;
-it is disabled during playback and archive finalization. The UI remembers the
-selection in `~/.config/hstream-ui/settings.ini`, or
+it is disabled during this window's playback, archive finalization and unresolved
+local shutdown. A game owned by another pipeline or workflow keeps Game selection,
+Refresh and Change root available, while Play, Save, Create / Load, the editable
+game ID and video import remain fenced. Navigation never releases that owner.
+`shared_backend_window_test` covers both native and HockeyMON windows, actual
+selector input, return to the owned game, and retained local admission/proof.
+
+The UI remembers the selection in `~/.config/hstream-ui/settings.ini`, or
 `$XDG_CONFIG_HOME/hstream-ui/settings.ini` when set. At startup, `HM_GAME_DIR`
 takes precedence over this preference, followed by `paths.game-root` in the
 shared `~/.hstream/hstream.yaml` configuration and finally `~/Videos`.
@@ -15,6 +21,12 @@ without a game's settings or recording metadata. **Save Preset** writes that
 user defaults file; selecting a game keeps saving to its `_hockeymon/config.yaml`.
 The application never writes the bundled baseline. The defaults path is fixed
 under `HOME`, independently of the `XDG_CONFIG_HOME` UI preference location.
+
+The recorded-game E2E workflow accepts `HSTREAM_UI_E2E_SCOREBOARD_SCALE=0.75`
+to edit the visible scale before Play. Its report records the selected scale and
+checks that the control is disabled while frames are processed and enabled after
+Stop. This archive workflow explicitly chooses **Publish partial outputs** in
+the Stop dialog, then verifies publication and the encoded frame geometry.
 
 Program → Color and Stitched → Color & Precision share the three-state
 **10-bit / FP16 mode** checkbox. Click or Space cycles Auto, Force on, Force off,
@@ -55,6 +67,14 @@ same multi-file browser. Successful imports clear the selection. Both buttons
 reopen the last selected video folder, which is also remembered across UI runs.
 Cancel leaves the selection and remembered folder unchanged. Failed imports
 remain selected for retry; successfully imported files are retained.
+
+Auto keeps recognized GoPro, Insta360 and left/right chapters together. Each
+otherwise unnumbered filename, such as `one.mp4` or `two.mp4`, becomes its own
+`camN` input; the native rink inspection still determines Left/Right. Unknown
+names ending in digits require an explicit role. Arbitrary videos at the game
+root remain excluded so published outputs cannot become camera inputs.
+`HSTREAM_UI_TEST_GAME_SETUP_ONLY=1` covers these imports, re-add and refresh;
+`//src/libs/stitching:video_discovery_test` checks their native discovery.
 
 Focused checks: `QT_QPA_PLATFORM=offscreen HSTREAM_UI_TEST_PATHS_ONLY=1
 bazel-bin/src/apps/hstream-ui/hstream_ui_test` covers root switching and
@@ -268,11 +288,12 @@ requires its completed run manifest, publishes faststart MP4s and telemetry in t
 directory, and removes owned working files only after all required outputs are saved.
 Both commands come from the execution host's `PATH`, including for scripts exported
 from a development UI. The UI does not export its local CLI, config, working directory
-or baseline override. The selected CLI finds its own bundled config and runtime;
-the script retains game settings and the selected working output location.
-Each export has a fixed run ID: repeating its script resumes finalization/cleanup without
-encoding again; export a new script for another run. Custom working output paths remain
-supported. Stitched jobs retain their independent output path and bitrate. Direct
+or baseline override. Ordinary scripts locate the game relative to the script (or
+execution-time `HM_GAME_DIR`) and resolve working storage on the execution host.
+Each invocation requests `--new-run`, including after earlier scratch was deleted.
+Explicit `--run-id` exports and managed interactive publication retain fixed identities
+and resume finalization/cleanup without encoding again. Custom working output paths
+remain supported. Stitched jobs retain their independent output path and bitrate. Direct
 `hstream-cli --encode-job` without the managed wrapper still writes MP4 in working storage
 without publication or faststart. See [the lifecycle](../LIFECYCLE.md) for staging, receipts,
 failure recovery and cleanup.
@@ -556,3 +577,86 @@ These CPU checks do not qualify actual GPU playback. The failed native scoreboar
 startup remains retained; rerun it against the newly frozen runtime before
 claiming that live case passes. The browser already uses supervised native
 admission and retirement; no browser-side lock or readiness bypass is added.
+
+### Independent source-camera playback
+
+Each source-camera tab has Play/Pause, Stop, a click/drag seek bar and an elapsed /
+total clock. The timeline is the original ordered recording chapters, before
+Input trim, synchronization or Playback start. Only one camera decoder exists.
+Leaving its tab pauses both video and audio; playing or seeking another camera
+retires the previous graph and restores that camera's session position.
+Program/Calibration Play, workflow dialogs, INT8 preparation, source replacement,
+game changes and window close destroy the source graph before admitting other
+work. The retained camera graph holds the ordinary game operation claim, including
+while paused; another window cannot claim the same recording. Stop releases it.
+
+`SourceCameraPlayer` uses local MP4/Matroska/AVI demuxing, a hardware video decoder and native
+GPU renderer, plus local audio when the recording contains it. It creates no
+calibration, inference, output archive or intermediate video file. Polling uses the
+existing UI runtime-control interval; opening/seeking uses the configured pipeline
+stop timeout. Qt's global wheel guard also protects the camera seek bars.
+Recognized chapter names use the same recording/chapter ordering as Program.
+Unknown explicit names retain their selected order. Video-track duration excludes
+audio tails, including during playback and end-of-recording handling.
+
+Unchanged status polls never remap or clear the native target. Pausing retains the
+last presented frame. After a tab return or an actual geometry change, the camera
+player redraws its retained GPU sample without decoding, seeking or CPU readback.
+Left/Right seeks backward/forward 10 seconds while the preview or its transport
+has focus, preserving paused or playing state. Input and optics fields retain
+their normal keyboard editing.
+This is separate from a SIGSTOP-paused external pipeline, which still cannot
+redraw a cleared resized surface until it resumes.
+
+Run the GPU/Qt regression with an X11 display:
+
+```sh
+bazelisk build --config=opt --cpu=k8 //src/apps/hstream-ui:source_camera_playback_test
+QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/source_camera_playback_test
+```
+
+The test generates short chapters in temporary storage and exercises actual GPU
+playback, paused cross-chapter seeking, tab departure, independent positions,
+mutually exclusive decoders and retirement before Program admission. Browser
+counterparts are `test_webapp_stream_source_camera_browser.py` in HockeyMONWeb,
+using original MP4 byte-range responses and the same lifecycle. Browser decoding
+uses the client's media support; an unsupported recording reports an error.
+The native test checks actual X11 front-buffer pixels across pause and tab return,
+and rejects repeated remapping during playback. The browser counterpart checks
+the decoded paused frame and retained pixels. Both readbacks are bounded test
+assertions only. `source_camera_container_test` separately covers H.264 MKV/AVI,
+paused seek/redraw, video duration, audio-tail clipping and decoder retirement.
+Offset MP4/Matroska recordings also verify normalized positions and final-frame
+coverage. The native player translates through the demuxer's actual stream-time
+segment; physical source timestamps remain attached to presented frames.
+
+NVIDIA HEVC camera seeks restart the hardware decoder between two identical accurate
+seeks, matching the recorded-source and Highlights workaround. Without that
+restart, 8K Main 10 HEVC can retain older pixels in the right side of the picture
+even while its PTS and left side advance. This is decoder state, not stitching
+or selection of another camera. AMD retains its VA seek path; the browser uses
+its own media decoder. No CPU video transfer is added to playback.
+
+`source_camera_seek_pixels_test` compares eight vertical strips of the actual
+640×360 X11 preview against a software-decoded reference after repeated paused
+seeks, chapter replacement and retained-frame redraw. Smooth reference regions
+exclude edges where GL and FFmpeg scaling filters differ. It also checks that
+a playing seek preserves Play, then verifies another paused seek. Its default
+fixture is a temporary 8K Main 10 HEVC clip with changing colors. Both GPU
+backends run the same comparison. Readback and software decoding exist only in
+the test. An original recording and chapter-local time can also be supplied:
+
+```sh
+bazelisk build --config=opt --cpu=k8 //src/apps/hstream-ui:source_camera_seek_pixels_test
+QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/source_camera_seek_pixels_test
+# 00:14:16 is 87.232 seconds into the second 768.768-second chapter.
+QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/source_camera_seek_pixels_test \
+  "$HOME/Videos/ccmwi-humber-valley-sharks/GX020116.MP4" 87.232
+```
+
+Local validation passed the full optimized x86_64 build, NVIDIA camera playback
+test, camera-tab preflight and the browser source-camera regressions against the
+generated contract. ARM64/SBSA validation needs a native ARM64 host; this machine
+is x86_64. Jetson validation was unavailable because its local sysroot is absent
+and `stubby` did not respond to SSH. AMD compile and hardware limits are recorded
+in `docs/amd-gpu.md`.

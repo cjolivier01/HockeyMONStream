@@ -1,8 +1,10 @@
 #pragma once
 
+#include "hstream/src/libs/stitching/CalibrationFailureProtocol.h"
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
 #include "src/apps/hstream-ui/DetectorOptions.h"
+#include "src/apps/hstream-ui/SourceCameraPlayer.h"
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -238,6 +240,12 @@ class HStreamWindow : public QMainWindow {
   void applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const;
 
   void startPipeline();
+  void playSourceCamera(int camera, bool play, std::optional<qint64> seek = {});
+  void stopSourceCamera();
+  void pollSourceCamera();
+  void updateSourceCameraControls(bool available);
+  QStringList sourceCameraFiles(int camera) const;
+
   void pauseOrResumePipeline();
   void confirmStopPipeline();
   void stopPipeline(bool publish_partial = false);
@@ -389,6 +397,8 @@ class HStreamWindow : public QMainWindow {
   void resetCameraControls();
   void cleanStitchingCalibration();
   void updateStitchFrameTimeAvailability();
+  void setStitchFrameTime(const QString& value);
+  void updateInheritedStitchFrameTime();
   void updateWindowTitle();
   void captureSavedControlState();
   bool autoInputLensFrozen() const;
@@ -446,7 +456,7 @@ class HStreamWindow : public QMainWindow {
   void toggleOutput(const QString& id, bool enabled);
   void redirectYoutube();
   void addRtspOutput();
-  void appendLog(const QString& message, bool stderr_output = false);
+  void appendLog(const QString& message, bool stderr_output = false, const char* diagnostic_source = nullptr);
   void recordStitchingCalibrationDiagnostic(const QString& line);
   QString stitchingCalibrationFailureAnalysis(const QString& message) const;
   QString writePlaytrackerRuntimeConfig();
@@ -512,7 +522,6 @@ class HStreamWindow : public QMainWindow {
   bool cropRotationSuppressed() const;
   void updateCropRotationControls();
   double cameraPresetControlValue(const QString& id) const;
-  void openPromotedStitchingLeveling(const QString& game_directory);
   void selectRinkLeveling();
   void selectRinkMap();
   void selectProjectionCrop();
@@ -725,6 +734,7 @@ class HStreamWindow : public QMainWindow {
   // only while the effective crop differs from the saved preset.
   QByteArray crop_selection_revision_;
   QLineEdit* stitch_frame_time_edit_{nullptr};
+  bool stitch_frame_time_inherits_playback_{false};
   QTimeEdit* playback_start_time_edit_{nullptr};
   QCheckBox* gyro_sync_check_{nullptr};
   QCheckBox* show_crop_dialog_check_{nullptr};
@@ -769,6 +779,16 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_surfaces_;
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
+  std::unique_ptr<hm::ui::SourceCameraPlayer> source_camera_player_;
+  int source_camera_index_{-1};
+  bool source_camera_available_{false};
+  bool source_camera_redraw_pending_{false};
+  std::array<qint64, 2> source_camera_positions_{};
+  std::array<qint64, 2> source_camera_durations_{};
+  std::vector<QPushButton*> source_camera_play_, source_camera_stop_;
+  std::vector<QSlider*> source_camera_seek_;
+  std::vector<QLabel*> source_camera_time_;
+
   QTabWidget* program_control_tabs_{nullptr};
   PlayerAnalyticsControls* player_analytics_controls_{nullptr};
   RinkFramingControls* rink_framing_controls_{nullptr};
@@ -779,6 +799,8 @@ class HStreamWindow : public QMainWindow {
   bool gpu_memory_profile_user_selected_{false};
   QComboBox* detector_model_combo_{nullptr};
   QComboBox* detector_precision_combo_{nullptr};
+  QCheckBox* tiled_detection_check_{nullptr};
+  bool saved_tiled_detection_{false};
   QLabel* detector_precision_status_{nullptr};
   QString saved_detector_precision_;
   QString saved_detector_model_;
@@ -875,14 +897,8 @@ class HStreamWindow : public QMainWindow {
   bool calibration_pending_{false};
   bool calibration_dialog_failed_{false};
   QString calibration_failure_message_;
-  QStringList calibration_diagnostic_lines_;
-  bool calibration_cuda_out_of_memory_{false};
-  bool calibration_hmstitcher_input_pool_failure_{false};
-  bool calibration_stitch_blender_oom_{false};
-  /** First no-progress watchdog expiry seen this run; it outranks the generic terminal status in the failure dialog. */
-  QString calibration_stall_watchdog_message_;
-  int calibration_rejected_hypotheses_{0};
-  int calibration_rejected_candidates_{0};
+  std::string calibration_failure_binding_;
+  hm::stitching::failure::Session calibration_failure_session_;
   bool calibration_waiting_for_playback_restart_{false};
   bool calibration_playback_restart_observed_{false};
   bool preview_focus_mode_{false};
@@ -1003,6 +1019,7 @@ class HStreamWindow : public QMainWindow {
   bool calibration_restart_requested_{false};
   bool active_force_reconfigure_{false};
   bool active_stitching_reframe_{false};
+  bool active_stitching_review_{false};
   QString pipeline_stdout_buffer_;
   QString pipeline_stderr_buffer_;
   bool capture_complete_log_{false};
@@ -1010,6 +1027,8 @@ class HStreamWindow : public QMainWindow {
   QString scoreboard_selector_url_;
   QPushButton* scoreboard_select_button_{nullptr};
   QComboBox* scoreboard_position_combo_{nullptr};
+  QDoubleSpinBox* scoreboard_scale_spin_{nullptr};
+  double saved_scoreboard_scale_{};
   QLabel* scoreboard_controls_status_{nullptr};
   QString saved_scoreboard_position_{"upper-left"};
   QString pending_scoreboard_property_;

@@ -387,4 +387,39 @@ bool RouteAttachment::Commit(const std::function<bool()>& publish) {
     refresh_sink_ancestors(state_->tap.parent);
   return true;
 }
+
+std::unique_ptr<RouteBridge> RouteAttachment::TakeBridge() {
+  if (!state_->committed)
+    return {};
+  auto bridge = std::make_unique<RouteBridge>();
+  for (const auto& ghost : state_->ghosts) {
+    bridge->pads_.push_back(ghost.pad);
+    gst_object_unref(ghost.parent);
+  }
+  state_->ghosts.clear();
+  return bridge;
+}
+
+RouteBridge::~RouteBridge() {
+  for (auto* pad : pads_)
+    gst_object_unref(pad);
+}
+
+bool RouteBridge::Owns(GstPad* pad) const {
+  return std::find(pads_.begin(), pads_.end(), pad) != pads_.end();
+}
+
+bool RouteBridge::Retire() {
+  bool result = true;
+  for (auto it = pads_.rbegin(); it != pads_.rend(); ++it) {
+    auto* parent = gst_pad_get_parent_element(*it);
+    if (!parent)
+      continue;
+    result = gst_pad_set_active(*it, FALSE) && result;
+    result = gst_ghost_pad_set_target(GST_GHOST_PAD(*it), nullptr) && result;
+    result = gst_element_remove_pad(parent, *it) && result;
+    gst_object_unref(parent);
+  }
+  return result;
+}
 } // namespace hm::preview

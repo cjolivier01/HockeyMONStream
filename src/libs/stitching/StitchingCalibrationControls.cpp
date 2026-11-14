@@ -175,6 +175,7 @@ int RemoveManualStitchingCleanConfigKeys(YAML::Node& config) {
   removed += remove({"hstream_ui", "stitching_calibration", "invalidation_id"}) ? 1 : 0;
   removed += remove({"hstream_ui", "stitching_calibration", "backend_generation"}) ? 1 : 0;
   removed += remove({"hstream_ui", "stitching_calibration", "reframe"}) ? 1 : 0;
+  removed += remove({"hstream_ui", "stitching_calibration", "review_pending"}) ? 1 : 0;
   return removed;
 }
 
@@ -405,6 +406,10 @@ absl::StatusOr<StitchingCalibrationPlan> PrepareStitchingCalibrationControlsLock
           plan.retain_selected_frames,
           ApplyStitchingCalibrationInputEdits(before, desired, force, sources_changed, *config));
     }
+    const auto review = at(staged, {"hstream_ui", "stitching_calibration", "review_pending"});
+    const bool review_requested = desired.backend == "nona" && review.IsScalar() && review.as<bool>() &&
+        (at(effective, {"hstream_ui", "show_leveling_dialog"}).as<bool>() ||
+         at(effective, {"hstream_ui", "show_crop_dialog"}).as<bool>());
     // Synchronization and reference-time edits change alignment inputs even
     // when a simultaneous view edit would otherwise qualify for reframe.
     if (force || release_selection || c.sync_method || c.frame_time) {
@@ -412,8 +417,10 @@ absl::StatusOr<StitchingCalibrationPlan> PrepareStitchingCalibrationControlsLock
     } else {
       HM_ASSIGN_OR_RETURN(
           plan.alignment_reused,
-          PrepareResolvedStitchingReframeIntentLocked(game, before_effective, effective, owner, staged));
+          PrepareResolvedStitchingReframeIntentLocked(
+              game, before_effective, effective, owner, staged, nullptr, review_requested));
     }
+    plan.review_required = review_requested && plan.alignment_reused;
     if (c.geometry()) {
       staged["rink"]["scoreboard"]["perspective_polygon"] = YAML::Node(YAML::NodeType::Null);
       staged["pipeline"]["hmplaycropper"].remove("scoreboard-perspective-polygon");

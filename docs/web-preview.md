@@ -1,5 +1,20 @@
 # WebRTC preview lifecycle
 
+Seek admission retires the browser signaling server and preview status sources
+on the main context before starting graph reconstruction. Soup's connection and
+server sources must not race that context from the reconstruction worker. The
+worker still owns native gate and pipeline teardown; its repeated signaling
+retirement is inert. A replacement graph publishes a fresh preview generation.
+
+Monitor-only browser seeks with source-linked audio now use the same source
+replacement path as Qt. They retain stitching, inference and tracking resources,
+close the preview gates, and retire only the exact source bridges after the old
+decoders stop. The small preview encoder resets while replacement sources and
+audio start their new epoch. A new topology and observer fence all prior frame
+receipts. Signaling resumes on the main context before playback is published.
+Unsupported source/audio layouts keep the full reconstruction path. Public-site
+latency and audio continuity qualification of this retained path is pending.
+
 The remaining work to share Qt's selectable preview routes and playback controls
 with the browser is described in [web-preview-parity-design.md](web-preview-parity-design.md).
 The route activation owner is shared native code. An explicit private
@@ -51,6 +66,25 @@ retirement discard retained commands; confirmed cooperative backend pauses
 keep their existing command handling. The browser already retains route and
 overlay edits until native PLAYING confirmation. CPU tests cover both command
 orderings; displayed-frame and A/V qualification remain separate.
+
+Qt also retains its PAUSED state and queued seek until that matching Resume
+acknowledgement. Sending SIGCONT or writing the command is not confirmation.
+The latest queued seek runs once after confirmation; progress-rate sampling
+resets after that seek completes, or immediately when no seek is queued. A
+cancelled, unacknowledged Pause does not reset progress when its rollback Resume
+is acknowledged. Stop retires pending acknowledgements in both the native and
+cooperative backend paths. This matches the browser's existing correlated
+PLAYING confirmation without changing its signaling or playback commands.
+
+Program's shared camera-control registry includes the referee and goalie filters
+for Qt and browser runtime batches. Reset Controls must publish their explicit
+boolean values together with motion changes; missing registry entries previously
+rejected the entire reset. Required defaults remain in the baseline. Initial
+readback uses the materialized native tracker, preserving a selected tracker's
+precedence over canonical settings. Retained live values survive graph
+reconstruction. These role
+filters stay out of Camera Experiments because its recordings lack role metadata.
+Live AMD camera mutations remain a separate gap in `docs/amd-gpu.md`.
 
 External Qt timing diagnostics may read `hm::gpu_preview::presented_frame` from an
 exactly identified, unstripped executable. The existing getter returns only the last
@@ -456,10 +490,11 @@ The optional `WebPreviewTarget::Signaling` adapter delegates peer changes throug
 those lifecycle methods. `start_webrtc_signaling_for_preview` uses the existing
 Soup server and one periodic source attached to its signaling context. The
 source drains bounded `PreviewTransportMonitor` events; no streaming thread
-creates per-frame idle callbacks. `WebPreviewObserver` emits at most one
-unacknowledged metadata batch. While a client withholds credit, subsequent
-sender events are discarded with a counter, bounding the outgoing metadata
-backlog as well as the native queue. Poll cadence and event budget are explicit
+creates per-frame idle callbacks. `WebPreviewObserver` bounds unacknowledged
+metadata by the monitor's configured event capacity across all outstanding
+batches. Once that window fills, subsequent sender events are discarded with a
+counter, bounding the outgoing metadata backlog as well as the native queue.
+Poll cadence and event budget are explicit
 constructor inputs resolved from the opt-in session baseline.
 
 `PreviewPresentationHistory` retains completed RTP identities independently of
@@ -489,6 +524,16 @@ The version-1 optional metadata protocol is:
   `requestVideoFrameCallback` RTP metadata to a signaled packetized identity.
   `ontrack`, `playing`, or a successful credit acknowledgment are insufficient.
 
+Outstanding batches share the transport monitor's `web_preview.pending_events`
+budget. Each batch reserves its full `events_per_batch` capacity even when it
+contains fewer events; the defaults permit eight outstanding batches. This also
+bounds envelopes and the acknowledgment burst after a stalled reader resumes.
+Each accepted acknowledgment releases only the oldest exact batch's reserved
+capacity. A network round trip therefore does not suppress intervening frame
+receipts while credit remains. Exhaustion discards bounded metadata until credit
+returns; peer retirement clears all credit. This queue contains metadata only
+and does not retain video frames or establish presentation.
+
 Unsigned 64-bit identities/timestamps use decimal strings to avoid JavaScript
 number truncation; 32-bit RTP fields and the signed stage use JSON integers.
 Receipts are bounded to 4096 bytes; the optional connection's overall incoming
@@ -502,8 +547,8 @@ parity remain separate gates; preserve their explicit limits.
 `web_preview_observer_test` checks history after marker retirement, loss/overflow,
 RTP wrap, exact 64-bit identities, strict receipts, Render off, peer retirement
 and reconnect recovery. `web_preview_signaling_test` connects real Soup
-WebSocket clients to the production handlers, checks one outstanding metadata
-batch, delegated replacement ordering and removal of the single drain source
+WebSocket clients to the production handlers, checks a bounded outstanding
+event window, ordered credit, delegated replacement ordering and removal of the single drain source
 on stop. Its frame identities and receipts are synthetic; it is a signaling
 ownership test, not browser decoding qualification.
 

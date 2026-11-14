@@ -39,6 +39,13 @@ void TransportFrames::DiscardPending() {
   need_keyframe_ = true;
 }
 
+void TransportFrames::ResetMediaEpoch() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  frames_.clear();
+  need_keyframe_ = true;
+  last_pts_ = GST_CLOCK_TIME_NONE;
+}
+
 TransportFrames::Admission TransportFrames::Admit(const FrameIdentityMeta& frame) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (!capacity_ || !peer_ || !frame.channel || !*frame.channel || std::strlen(frame.channel) > 64 ||

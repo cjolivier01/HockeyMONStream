@@ -1,4 +1,5 @@
 #include "configurator.h"
+#include "hstream/src/libs/detection/TileInferenceConfig.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/PinnedFile.h"
@@ -1300,8 +1301,7 @@ configurator_internal::ExplicitStitchingVideoSelection configurator_internal::se
   }
 
   if (!ui_left.empty() && !ui_right.empty()) {
-    // Chapter labels describe each camera's physical file boundaries. They are not cross-camera pair IDs: cameras
-    // can split the same frame timeline at different points and therefore have different labels, counts, or schemes.
+    // Chapter gaps are advisory: the UI confirms them and unattended launches log a warning.
     selection.left_is_explicit = true;
     selection.right_is_explicit = true;
   } else if (!ui_left.empty()) {
@@ -6514,7 +6514,33 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   };
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-width", "rink.scoreboard.projected_width"));
   HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-projected-height", "rink.scoreboard.projected_height"));
-  HM_RETURN_IF_ERROR(map_playcropper_scalar("scoreboard-scale", "rink.scoreboard.scoreboard_scale"));
+  YAML::Node scale;
+  int scale_rank = -1;
+  for (const char* path : hm::scoreboard::kScalePaths) {
+    const auto value = get_node(config_, path);
+    if (!value || !value->IsDefined())
+      continue;
+    const int rank = std::max(0, explicit_value_rank(path));
+    if (rank >= scale_rank) {
+      scale.reset(YAML::Clone(*value));
+      scale_rank = rank;
+    }
+  }
+  if (scale.IsNull()) {
+    const auto baseline = get_node(recording_config_layers_, "baseline.rink.scoreboard.scoreboard_scale");
+    if (!baseline)
+      return absl::InvalidArgumentError("Scoreboard scale reset requires its baseline value");
+    scale.reset(YAML::Clone(*baseline));
+  }
+  if (!scale.IsScalar())
+    return absl::InvalidArgumentError("Scoreboard scale must be finite and positive");
+  try {
+    const double value = scale.as<double>();
+    if (!std::isfinite(value) || value <= 0)
+      return absl::InvalidArgumentError("Scoreboard scale must be finite and positive");
+  } catch (const YAML::Exception&) {
+    return absl::InvalidArgumentError("Scoreboard scale must be finite and positive");
+  }
   // Resolve before removing native aliases so game and CLI choices outrank
   // inherited settings, including private property bags applied by the bin.
   std::string position = "upper-left";
@@ -6533,15 +6559,20 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   }
   auto cropper = pipeline["hmplaycropper"];
   cropper.remove("scoreboard_position");
+  cropper.remove("scoreboard_scale");
   for (const char* bag : {"properties", "private-properties"}) {
     auto values = cropper[bag];
     if (values.IsMap()) {
       values.remove("scoreboard-position");
       values.remove("scoreboard_position");
+      values.remove("scoreboard-scale");
+      values.remove("scoreboard_scale");
     }
   }
   cropper["scoreboard-position"] = position;
   explicit_value_ranks_["pipeline.hmplaycropper.scoreboard-position"] = std::max(0, position_rank);
+  cropper["scoreboard-scale"] = scale;
+  explicit_value_ranks_["pipeline.hmplaycropper.scoreboard-scale"] = std::max(0, scale_rank);
 
   const std::string source_path = "rink.scoreboard.perspective_polygon";
   const std::string destination_path = "pipeline.hmplaycropper.scoreboard-perspective-polygon";
@@ -6709,6 +6740,12 @@ absl::Status Configurator::gather_stitching_videos(
     return absl::InvalidArgumentError(
         "Mixed explicit/Auto video selection could not resolve both sides. Select both Left and Right explicitly, or use Auto for all video sets.");
   }
+
+  const auto chapter_warning = !left_files.empty() && !right_files.empty()
+      ? stitching::ValidateCameraChapters({{"left", left_files}, {"right", right_files}})
+      : stitching::ValidateDiscoveredCameraChapters(videos);
+  if (!chapter_warning.ok())
+    std::cerr << "Warning: " << chapter_warning.message() << " Continuing with the selected inputs.\n";
 
   if ((explicit_left || explicit_right) && !left_files.empty() && !right_files.empty()) {
     private_config_["game"]["videos"]["left"] = left_files;
@@ -7312,6 +7349,11 @@ absl::Status Configurator::configure_source_bit_depth(
         candidates.push_back({YAML::Clone(*value), path, std::max(0, explicit_value_rank(path)), priority, ui_value});
       }
     };
+    const std::string tone_key = std::string("video_out.tone.") +
+        (std::string(spec.ui_name) == "Bring_Up_Shadows"              ? "shadow_lift_percent"
+             : std::string(spec.ui_name) == "Lift_Shadow_Black_Point" ? "lift_shadow_black_point"
+                                                                      : "exposure");
+    add_candidate(tone_key, 4, false);
     add_candidate(ui_path, 3, true);
     add_candidate(stitcher_path, high_bit_depth ? 2 : 1, false);
     add_candidate(cropper_path, high_bit_depth ? 1 : 2, false);
@@ -7419,7 +7461,7 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
 
 absl::Status Configurator::configure_job_telemetry(YAML::Node& pipeline, bool stitching_calibration_only) {
   bool capture = true;
-  HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.drivegpt_database.enabled", true));
+  HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "telemetry.enabled", true));
   HM_ASSIGN_OR_RETURN(capture, get_yaml_bool_value(config_, "hstream_ui.job.capture_telemetry", capture));
   if (stitching_calibration_only)
     capture = false;
@@ -9198,7 +9240,7 @@ absl::Status Configurator::apply_settings_overlay(const fs::path& path) {
     document["values"] = YAML::Clone(overlay);
     recording_config_documents_.push_back(document);
     return absl::OkStatus();
-  } catch (const YAML::Exception& exception) {
+  } catch (const std::exception& exception) {
     return absl::InvalidArgumentError("Invalid runtime settings overlay: " + std::string(exception.what()));
   }
 }
@@ -9249,6 +9291,46 @@ absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_d
   return false;
 }
 
+absl::StatusOr<stitching::failure::Context> Configurator::calibration_failure_context(bool calibration_only) const {
+  try {
+    stitching::failure::Context result;
+    for (const auto& values : {config_, lower_layer_config_}) {
+      const auto canonical = get_node(values, "stitching.control_point_limit");
+      const auto saved = get_node(values, "hstream_ui.stitching_calibration.control_points");
+      const auto cameras = get_node(values, "stitching.camera_configs");
+      if ((!canonical.has_value() && !saved.has_value()) || !cameras.has_value() || !cameras->IsMap())
+        return absl::InvalidArgumentError("Failure context requires frozen native control-point and camera defaults");
+    }
+    stitching::ControlPointMatcher matcher;
+    HM_ASSIGN_OR_RETURN(matcher, stitching::resolve_control_point_matcher(config_, lower_layer_config_));
+    result.matcher = stitching::ControlPointMatcherName(matcher);
+    stitching::MappingBackend backend;
+    HM_ASSIGN_OR_RETURN(
+        backend, stitching::ParseMappingBackend(config_["stitching"]["mapping_backend"].as<std::string>()));
+    result.mapping_backend = stitching::MappingBackendName(backend);
+    stitching::StitchProjection projection;
+    HM_ASSIGN_OR_RETURN(
+        projection, stitching::ParseStitchProjection(config_["stitching"]["projection"].as<std::string>()));
+    result.projection = stitching::StitchProjectionName(projection);
+    HM_ASSIGN_OR_RETURN(result.control_point_limit, stitching::read_control_point_limit(config_));
+    HM_ASSIGN_OR_RETURN(result.default_control_point_limit, stitching::read_control_point_limit(lower_layer_config_));
+    result.frame_count = config_["pipeline"]["hmstitcher"]["calibration-frame-count"].as<int>();
+    HM_ASSIGN_OR_RETURN(result.max_output_width, effective_hmstitcher_max_output_width(config_["pipeline"]));
+    stitching::StitchCameraSelection camera, defaults;
+    HM_ASSIGN_OR_RETURN(camera, stitching::read_stitch_camera_selection(config_));
+    HM_ASSIGN_OR_RETURN(defaults, stitching::read_stitch_camera_selection(lower_layer_config_));
+    result.camera = {camera.configuration, camera.horizontal_fov, camera.vertical_fov};
+    result.default_camera = {defaults.configuration, defaults.horizontal_fov, defaults.vertical_fov};
+    result.camera_differs_from_defaults = camera != defaults;
+    result.calibration_required = stitching_calibration_required_;
+    result.calibration_only = calibration_only;
+    result.calibration_start_stage = stitching_calibration_start_stage_;
+    return result;
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(std::string("Calibration failure context is unavailable: ") + error.what());
+  }
+}
+
 absl::Status Configurator::complete_configuration(
     bool force,
     bool clean_stitching_artifacts,
@@ -9290,6 +9372,18 @@ absl::Status Configurator::complete_configuration(
       HM_RETURN_IF_ERROR(configure_job_telemetry(pipeline, stitching_calibration_only));
     }
     HM_RETURN_IF_ERROR(apply_gpu_memory_profile(pipeline));
+    const auto tiling_node = pipeline["primary-gie"]["tiled-inference"];
+    const auto tiling = hm::detection::ReadTileInferenceSettings(tiling_node);
+    if (!tiling.ok())
+      return tiling.status();
+    if (*tiling) {
+      // Select the batch-two engine/cache before model preparation, including
+      // when the automatic low-memory profile normally selects batch one.
+      if (explicit_value_rank("pipeline.primary-gie.batch-size") >= 1 &&
+          pipeline["primary-gie"]["batch-size"].as<int>() != 2)
+        return absl::InvalidArgumentError("Two-tile inference requires primary-gie.batch-size=2");
+      pipeline["primary-gie"]["batch-size"] = 2;
+    }
   }
 
   HM_RETURN_IF_ERROR(ensure_user_config_snapshot());
@@ -9874,17 +9968,24 @@ absl::Status Configurator::complete_configuration(
 }
 
 absl::Status Configurator::apply_config_item(const std::string& key, const std::string& value) {
-  if (is_video_converter_config_option(key)) {
-    return absl::InvalidArgumentError("Video converter selection must be set in YAML config files");
+  return apply_config_options({{key, value}});
+}
+
+absl::Status Configurator::apply_config_options(const std::map<std::string, std::string>& options) {
+  try {
+    YAML::Node overlay(YAML::NodeType::Map);
+    for (const auto& [key, value] : options) {
+      if (is_video_converter_config_option(key))
+        return absl::InvalidArgumentError("Video converter selection must be set in YAML config files");
+      overlay = set_node_value(overlay, key, value);
+    }
+    const auto merged = merge_nodes(config_, overlay, /*warn_if_key_not_in_dest=*/false);
+    record_explicit_overlay(overlay, {}, 3);
+    config_ = merged;
+    return absl::OkStatus();
+  } catch (const std::exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid runtime options: ") + error.what());
   }
-  YAML::Node overlaid_config = YAML::Node(YAML::NodeType::Map);
-  overlaid_config = set_node_value(overlaid_config, key, value);
-  // std::cout << overlaid_config << std::endl;
-  //  std::cout << config_ << std::endl;
-  config_ = merge_nodes(config_, overlaid_config, /*warn_if_key_not_in_dest=*/false);
-  record_explicit_overlay(overlaid_config, {}, 3);
-  // std::cout << config_ << std::endl;
-  return absl::OkStatus();
 }
 
 absl::Status Configurator::prepare_initial_pipeline_position(

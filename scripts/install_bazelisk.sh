@@ -19,11 +19,13 @@ esac
 echo "Downloading bazelisk for $ARCH architecture..."
 curl -fLo bazelisk "https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${BAZEL_ARCH}"
 
+INSTALL_DIR="${HOME}/.local/bin"
+
 # Make it executable and move to a directory in PATH
 chmod +x bazelisk
-sudo mv bazelisk /usr/local/bin/
+mv bazelisk "${INSTALL_DIR}"
 
 # Create symbolic link for bazel
-sudo ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
+sudo ln -sf ${INSTALL_DIR}/bazelisk ${INSTALL_DIR}/bazel
 
-echo "Bazelisk has been installed successfully!"
+echo "Bazelisk has been installed successfully in ${INSTALL_DIR}"

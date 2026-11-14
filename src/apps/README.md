@@ -29,10 +29,10 @@ hstream-job --game-dir "$HOME/Videos/my-game" \
 
 "$HOME/Videos/my-game/hstream-job.sh"
 # Alternatively, submit the same file yourself:
-sbatch "$HOME/Videos/my-game/hstream-job.sh"
+(cd "$HOME/Videos/my-game" && sbatch ./hstream-job.sh)
 ```
 
-The generated Bash script directly executes `hstream-cli`; it never invokes `srun`
+The generated Bash script supervises `hstream-cli` through `hstream-finalize`; it never invokes `srun`
 or `sbatch`. Its `#SBATCH` header requests one node, one task and one GPU. Add
 site-specific account, partition, CPU, memory and wall-time directives with repeated
 `--sbatch` options, or the UI's Slurm options field. No cluster allocation values
@@ -40,20 +40,24 @@ are copied from the exporter's current Slurm session. Use `--output PATH` for an
 filename and `--force` to replace an existing script from the CLI.
 
 The game config's `hstream_ui.job.arguments` records the UI's selected mode,
-outputs and CLI overrides whenever settings are saved. Configs without this recipe
-use the pipeline's configured sink enable flags. The script references the saved
+outputs and CLI overrides whenever settings are saved. With no selected file
+encoder, exports use the baseline's 4K Program archive selection. The script references the saved
 game config, baseline, videos and assets; it does not copy them, so subsequent config
-edits apply on execution. Paths must exist on the execution host. Use `--runner`,
-`--config` and `--working-directory` to override automatically discovered Bazel or
-installed paths. Disable **Render video** before exporting a headless batch job;
-rendering in a script opens a standalone display instead of reusing UI window IDs.
+edits apply on execution. Ordinary exports locate the game relative to the script;
+they can move together. To copy only the script, set `HM_GAME_DIR` to the execution
+host's games root. Slurm spool copies use `SLURM_SUBMIT_DIR` as the script directory,
+so submit from that directory or set `HM_GAME_DIR`. Use `--runner`, `--finalizer`,
+`--config` and `--working-directory` for explicit runtime overrides. Exported
+encoding jobs disable rendering and retain the selected file encoders.
 UI-only preview overlays and interactive UI calibration dialogs are not attached
 to standalone runs. Windows scripts run in the installed HStream WSL distribution.
 
-Output publication differs from Play: the direct CLI leaves archive MKVs and
-DriveGPT databases in working storage, normally `~/hstream_output/<game-id>`.
-Play's subsequent MP4 remux and copying of completed videos/databases into the
-game directory are not performed by an exported script. The export dialog and
-script runtime notice call this out; the CLI logs identify resolved output paths.
-UI exports pin the resolved output root with `HM_OUTPUT_WORK_DIR`, including an
-output root configured in the user's settings. Custom per-output paths still apply.
+Each ordinary script invocation creates a fresh run, publishes completed MP4s and
+DriveGPT databases into the game, and removes that run's scratch after success.
+No previous run directory is required. Working storage comes from the execution
+host's configuration or `HM_OUTPUT_WORK_DIR`; export-host environment paths are
+not saved. The finalizer must support `--new-run`.
+
+For explicit recovery, use `hstream-finalize --manifest RECEIPT.yaml`. Supervised
+exports using `--run-id ID` or `--interactive-publication` keep their fixed identity
+and resume semantics. See [LIFECYCLE.md](../../LIFECYCLE.md).

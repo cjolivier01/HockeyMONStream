@@ -202,7 +202,7 @@ void apply_all_living_box_config(
     AllLivingBoxConfig& config,
     const YAML::Node& yaml,
     std::optional<FloatValue> fixed_aspect_ratio = std::nullopt) {
-  hm::utils::ConfigLocator locator;
+  hm::utils::ConfigLocator locator{.ignored{"hstream-motion-overrides"}};
   SET_LOCATOR(locator, config, name);
   *((ResizingConfig*)&config) = create_resizing_config(config, yaml, locator);
   *((TranslatingBoxConfig*)&config) = create_translating_box_config(arena_box, config, yaml, locator);
@@ -296,7 +296,10 @@ void adjust_config(const BBox& arena_box, PlayTrackerConfig& pt_config, const st
   }
 }
 
-PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::Node& yaml) {
+PlayTrackerConfig create_play_tracker_config(
+    const BBox& arena_box,
+    const YAML::Node& yaml,
+    bool apply_motion_overrides) {
   PlayTrackerConfig config;
   hm::utils::ConfigLocator locator{
       .ignored{
@@ -359,6 +362,26 @@ PlayTrackerConfig create_play_tracker_config(const BBox& arena_box, const YAML::
     const std::optional<FloatValue> fixed_aspect_ratio =
         i + 1 == config.living_boxes.size() ? std::optional<FloatValue>(16.0 / 9.0) : std::nullopt;
     apply_all_living_box_config(arena_box, config.living_boxes[i], live_box_yamls[i], fixed_aspect_ratio);
+    if (apply_motion_overrides) {
+      const auto motion = live_box_yamls[i]["hstream-motion-overrides"];
+      if (motion) {
+        if (!motion.IsMap())
+          throw std::invalid_argument("hstream-motion-overrides must be a map");
+        auto& box = config.living_boxes[i];
+        for (const auto& field :
+             {std::pair{"max-speed-x", &box.max_speed_x},
+              std::pair{"max-speed-y", &box.max_speed_y},
+              std::pair{"max-accel-x", &box.max_accel_x},
+              std::pair{"max-accel-y", &box.max_accel_y}}) {
+          if (!motion[field.first])
+            continue;
+          const float value = motion[field.first].as<float>();
+          if (!std::isfinite(value) || value <= 0)
+            throw std::invalid_argument("Materialized motion overrides must be finite and positive");
+          *field.second = value;
+        }
+      }
+    }
   }
   // The upstream config stores this flag as int. Use a bool locator to accept
   // YAML true/false as well as legacy 0/1 without changing integer parsing.

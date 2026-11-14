@@ -45,7 +45,8 @@ preparation provenance and must be retained to reproduce an export.
 scripts/create_player_model_export_env.sh /path/to/working/python /path/to/new/export-env
 ```
 
-Normal builds and playback require no TensorRT environment override. The build
+Normal builds and playback require no TensorRT environment override. Detector and
+player builders share SDK selection in `bazel/tensorrt_sdk_common.bzl`. The build
 selects the versioned TensorRT libraries required by the configured DeepStream
 installation and checks native header/runtime versions, including the build number.
 Compatible installed development headers are used directly. On Linux x86_64 with

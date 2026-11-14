@@ -184,5 +184,46 @@ play-tracker:
         "Zoom aggressiveness must accept both boundaries and reject values below zero or above one hundred");
   }
 
+  // Editing only the bundled baseline must change real startup tuning, with
+  // no UI or generated sidecar. Both GPU backends use this mapper.
+  auto motion_config = YAML::Clone(bundled_baseline->values);
+  motion_config["rink"]["camera"]["motion_overrides"]["max_speed_x"] = 12.3;
+  motion_config["rink"]["camera"]["motion_overrides"]["max_accel_y"] = 4.5;
+  auto motion = hm::tracking::ResolveProgramCameraConfig(motion_config, {}, 0, playtracker_base);
+  ok &= expect(motion.ok(), "Canonical baseline motion was rejected");
+  if (motion.ok()) {
+    auto boxes = (*motion)["play-tracker"]["live-boxes"];
+    ok &= expect(
+        !boxes[0]["max-speed-x"].IsDefined() &&
+            boxes[1]["hstream-motion-overrides"]["max-speed-x"].as<double>() == 12.3 &&
+            boxes[1]["hstream-motion-overrides"]["max-accel-y"].as<double>() == 4.5,
+        "Baseline absolute motion must reach only the selected native box");
+  }
+  motion_config["rink"]["camera"]["motion_overrides"]["apply_to_fast_box"] = true;
+  motion = hm::tracking::ResolveProgramCameraConfig(motion_config, {}, 0, playtracker_base);
+  ok &= expect(
+      motion.ok() &&
+          (*motion)["play-tracker"]["live-boxes"][0]["hstream-motion-overrides"]["max-speed-x"].as<double>() == 12.3,
+      "Canonical fast target did not receive motion");
+  auto custom = YAML::Clone(playtracker_base);
+  custom["play-tracker"]["live-boxes"][1]["max-speed-x"] = 40;
+  hm::tracking::ConfigLeafRanks ranks{{"rink.camera.motion_overrides.max_speed_x", 2}};
+  auto tied = hm::tracking::ResolveProgramCameraConfig(motion_config, ranks, 2, custom);
+  auto stronger = hm::tracking::ResolveProgramCameraConfig(motion_config, ranks, 3, custom);
+  ok &= expect(tied.ok() && stronger.ok(), "Custom native motion mapping failed");
+  if (tied.ok() && stronger.ok()) {
+    auto tied_box = (*tied)["play-tracker"]["live-boxes"][1];
+    ok &= expect(
+        tied_box["max-speed-x"].as<int>() == 40 &&
+            tied_box["hstream-motion-overrides"]["max-speed-x"].as<double>() == 12.3 &&
+            !(*stronger)["play-tracker"]["live-boxes"][1]["hstream-motion-overrides"]["max-speed-x"].IsDefined(),
+        "Same-layer canonical motion must override custom tuning while retaining its reset base");
+  }
+  motion_config["rink"]["camera"]["motion_overrides"]["apply_to_fast_box"] = false;
+  motion_config["rink"]["camera"]["motion_overrides"]["apply_to_follower_box"] = false;
+  motion_config["rink"]["camera"]["motion_overrides"]["max_speed_x"] = -1;
+  ok &= expect(
+      !hm::tracking::ResolveProgramCameraConfig(motion_config, {}, 0, playtracker_base).ok(),
+      "Invalid motion limit was accepted");
   return ok ? 0 : 1;
 }

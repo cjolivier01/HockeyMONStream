@@ -15,6 +15,15 @@ inline constexpr const char* kPositionPaths[] = {
     "pipeline.hmplaycropper.private-properties.scoreboard_position",
     "pipeline.hmplaycropper.private-properties.scoreboard-position"};
 
+inline constexpr const char* kScalePaths[] = {
+    "rink.scoreboard.scoreboard_scale",
+    "pipeline.hmplaycropper.scoreboard_scale",
+    "pipeline.hmplaycropper.scoreboard-scale",
+    "pipeline.hmplaycropper.properties.scoreboard_scale",
+    "pipeline.hmplaycropper.properties.scoreboard-scale",
+    "pipeline.hmplaycropper.private-properties.scoreboard_scale",
+    "pipeline.hmplaycropper.private-properties.scoreboard-scale"};
+
 enum class Position { kUpperLeft, kUpperCenter, kUpperRight };
 
 inline std::optional<Position> ParsePosition(std::string_view value) {

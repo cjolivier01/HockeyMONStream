@@ -1,9 +1,11 @@
 #pragma once
 
 #include "hstream/src/apps/apps-common/PreviewTransportMonitor.h"
+#include "hstream/src/libs/common/PacedPlayback.h"
 #include "src/apps/hstream-cli/WebPreviewOptions.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace hm::ui {
@@ -13,6 +15,7 @@ struct HighlightWebPreviewConfig {
   std::string run;
   unsigned port{0};
   std::string stun_server;
+  std::optional<hm::gst::PacedPlaybackSettings> source_audio;
 };
 
 // A presentation adapter for the native authored reel. The reel owns and paces

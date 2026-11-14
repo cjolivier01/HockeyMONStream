@@ -7,10 +7,18 @@ recording excludes each camera's effective source start and ends when either
 camera runs out of video. A playback duration limit does not change that end.
 Negative zero is invalid because no frame begins at the recording end.
 
+Zero inherits the main UI's Playback start. The main editor displays that start
+and follows later edits until a nonzero reference is entered; presets retain zero
+as the inheritance marker. Stitching Experiments initializes its matrix from the
+effective reference and freezes both the reference and Playback start when queued.
+Explicit positive and negative references remain unchanged. Entering zero in a
+new matrix also resolves to its frozen Playback start.
+
 For an end-relative reference, the first pair stays at that reference. With
-N pairs, the other positions advance by one Nth of the common duration and
-wrap to its beginning. Chapter boundaries and camera starts are resolved
-independently. Seeking selects the first decodable frame at the requested
+N pairs, the other positions advance by one Nth of the usable interval from
+Playback start to the common end and wrap to Playback start, not zero. A reference
+before Playback start samples only its remaining tail, without revisiting frames.
+Chapter boundaries and camera starts are resolved independently. Seeking selects the first decodable frame at the requested
 time; a position inside the final frame interval uses that last frame.
 Positive references retain their existing forward sampling behavior.
 
@@ -23,7 +31,9 @@ changing Playback start later does not change an existing selection. Without
 player selection, end-relative candidates retain circular sampling.
 
 `PipelineApp` resolves the live initial seek so the calibration preview shows
-the reference pair. `CalibrationReferenceFrames` probes chapter headers and
+the reference pair and supplies the actual launch start to `hmstitcher` through
+`calibration-playback-start-ns`. Both local and distributed experiment calibration
+commands pass their frozen start. `CalibrationReferenceFrames` probes chapter headers and
 supplies lazy image writers to the shared calibration core. Those writers run
 after generation preflight. FFmpeg input seeking starts at the preceding
 keyframe and decodes forward to one PNG; it does not decode from the recording

@@ -63,7 +63,12 @@ verified PNG bundle remains available if a following calibration fails. A failed
 unavailable prerequisite blocks descendants, while unrelated candidates
 continue. Retry creates a new attempt and observation epoch, preserving verified
 successful prerequisites. Retry is available after all attempts have stopped and
-recording ownership has been released.
+recording ownership has been released. **Retry failed** requeues every failed or
+unavailable stage in one request, preserving successful results and attempt
+history. Independent stages resume up to the batch's original parallel-stage
+limit; blocked descendants wait for their prerequisites. **Retry selected stage**
+remains available for a targeted retry. Both actions keep the original execution
+profile, so repair a failing worker before retrying its work.
 
 The desktop and browser show the graph from top to bottom, wrapping sibling
 nodes to fit the available width. Select a node to see its named prerequisites,
@@ -80,16 +85,25 @@ Previously admitted batches retain their frozen limits and runtime.
 When candidates already have materialized saved player frames, no new baseline,
 scan or materialization node is needed. Preparation copies verified inputs into
 each candidate's private workspace; it does not search the video again. The
-desktop graph labels this step `Set up retained frames (CPU)`; browser candidate
-preparation finishes before the distributed batch starts.
+desktop graph labels this step `Set up retained frames (CPU)`. New browser batches
+defer candidate preparation until explicit Start and include it as a CPU stage.
+Add only saves frozen queue entries, so subsequent additions remain available.
+Web batches require Slurm execution and configured Dagster observation; the
+desktop's qualified local execution remains available. An observer outage does
+not take scheduling or cancellation ownership away from HStream.
 Candidates with the same selection fingerprint use the same selected frame pairs,
 even when their control-point budgets differ. A running solve keeps the
 `Player-rich (saved)` label while ownership still prevents conflicting actions.
 
 For a failed stage, select its node and attempt in the workflow pane. The
 reason includes scheduler status and a bounded tail of the native task log when
-available; the Logs control shows the longer attempt log. A successful frame
-selection remains reusable when a later calibration solve fails.
+available. Each node's document icon opens a persistent, scrollable stage log
+with those diagnostics and the longer attempt output; it stays open until
+closed. Stages that failed before an attempt still show their failure reason.
+The workflow details and log windows follow new output at the bottom. Scrolling
+up pauses following; returning to the bottom resumes it. Unchanged status polls
+preserve text selection and scroll position. A successful frame selection
+remains reusable when a later calibration solve fails.
 
 The recording has one durable operation owner. Main playback, INT8 preparation,
 local experiment operations and distributed workflows respect the same owner,
@@ -231,12 +245,11 @@ enable it; first qualify a compatible runtime with actual stitching stages.
 `runtime` identifies `backend` (`nvidia`, `amd`, or metadata-only `cpu`),
 `architecture` (`x86_64` or `aarch64`), `storage_namespace`, and an absolute-path
 `files` map of SHA256 digests. Pin the task executable, exporter, CLI, baseline,
-application configuration, models and supervisor deployment used by that profile.
+application configuration, models and `runtime.worker`, the C++ batch worker.
 Native GPU tasks additionally use `exporter`, `cli`, `config`, and `root` runtime
-paths. Slurm also needs a pinned absolute `python` interpreter available on every
-qualified target. Install the controller package at the same path on compute
-nodes or use a shared installation. The supervisor itself has no Dagster or web
-database dependency.
+paths. The controller package and launcher stay on the controller host and are
+pinned in its local admission profile. Compute profiles need neither those files
+nor a Python executor. Qualify `native-batch-v1` before enabling the new profiles.
 
 For each Slurm node, `qualified_nodes[node].runtime_identity` must equal the exact
 runtime object and `qualified_nodes[node].capabilities` must include the profile's
@@ -375,10 +388,15 @@ can select one stage. `state.json` remains authoritative if a crash interrupts
 a diagnostic append. Metadata and artifact verification also
 have protocol bounds. Local supervisors require the kernel to report that no
 children remain after reaping; an empty process-directory scan is not shutdown
-proof because a child can fork during the scan. Python supervisors signal pinned
-process descriptors and check kernel pidfd support before launching work. Python
-builds without pidfd wrappers use the same libc interfaces; there is no numeric
-PID signaling fallback. Native ownership checks keep
+proof because a child can fork during the scan. Both standalone and web tasks
+use `hstream-runtime-worker` and `common/ProcessGuard`: pidfd signaling, bounded
+TERM/KILL phases, captured root exit status and kernel `ECHILD` proof. Python
+controllers retain reservations when retirement cannot be proved. Batch execution
+and bound cancellation watches continue while a standalone controller restarts.
+The worker captures the bounded log tail and verifies result hashes after retirement;
+the controller then removes private runtime scratch and adopts verified receipts.
+
+Native ownership checks keep
 the CLI inside its own subreaper scope. Qt commands use the installed
 `hstream-process-guard` and exact token-bound completion receipts, so unrelated Qt
 children remain under their normal QProcess owners. Descendants that detach,
@@ -398,8 +416,10 @@ covers observer-only restart, retained historical runs, and installer rollback.
 
 - `scripts/hstream_workflow/schema.py` and `graph.py`: pure plan/state contract,
   byte-synchronized into the web coordinator.
-- `controller.py`, `state.py`, `local.py`, `slurm.py`, `supervisor.py`: standalone
-  admission, shared reservations, execution, reconciliation and containment.
+- `controller.py`, `state.py`, `local.py`, `slurm.py`, `executor.py`: standalone
+  admission, shared reservations, native-worker submission and reconciliation.
+- `runtime_worker/Worker.cpp` and `common/ProcessGuard`: shared C++ execution,
+  bounded log capture and descendant retirement for standalone and web jobs.
 - `GameOperationOwner.*`: reciprocal durable recording ownership.
 - `ExperimentTaskMain.cpp` and `ExperimentTaskRuntime.*`: typed native preparation,
   scan, materialization and solve; exact catalog adoption.

@@ -120,6 +120,26 @@ std::vector<CameraSliderSpec> motion_control_specs(Defaults default_value) {
 }
 
 template <typename Defaults>
+std::vector<CameraSliderSpec> role_filter_control_specs(Defaults default_value) {
+  return {
+      {"Ignore_Referees",
+       "Ignore referees for play tracking",
+       0,
+       1,
+       default_value("Ignore_Referees"),
+       "ignore-referees",
+       1},
+      {"Ignore_Goalies",
+       "Ignore goalies for play tracking",
+       0,
+       1,
+       default_value("Ignore_Goalies"),
+       "ignore-goalies",
+       1},
+  };
+}
+
+template <typename Defaults>
 std::vector<CameraSliderSpec> player_control_specs(Defaults default_value) {
   return {
       {"Ignore_Largest_Count",

@@ -17,6 +17,7 @@
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_config_file_parser.h"
 #include "hstream/src/apps/apps-common/deepstream_config_yaml.h"
+#include "hstream/src/libs/detection/TileInferenceConfig.h"
 
 #include <assert.h>
 
@@ -54,6 +55,17 @@ gboolean parse_gie_yaml(
       config->enable = itr->second.as<gboolean>();
     } else if (paramKey == "input-tensor-meta") {
       config->input_tensor_meta = itr->second.as<gboolean>();
+    } else if (paramKey == "tiled-inference") {
+      const auto tile = hm::detection::ReadTileInferenceSettings(itr->second);
+      if (!tile.ok() || group != "primary-gie") {
+        g_printerr("Invalid primary-gie tiled-inference option: %s\n", tile.status().ToString().c_str());
+        goto done;
+      }
+      config->tiled_inference = tile->has_value();
+      if (*tile) {
+        config->tile_overlap = (**tile).overlap;
+        config->tile_merge_iou = (**tile).merge_iou;
+      }
     } else if (paramKey == "operate-on-class-ids") {
       std::string str = itr->second.as<std::string>();
       std::vector<std::string> vec = split_string(str);

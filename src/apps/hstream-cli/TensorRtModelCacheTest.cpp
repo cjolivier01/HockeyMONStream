@@ -1005,7 +1005,16 @@ int main(int argc, char** argv) {
       hm::pipeline::ReleaseTensorRtModelCacheLocks();
       return status;
     };
+    const auto shared_permissions = fs::perms::owner_all | fs::perms::group_all;
+    fs::permissions(home_models, shared_permissions);
+    const auto unrelated = home_models / (name + "-unrelated.txt");
+    std::ofstream(unrelated) << "retain unrelated contents";
+    const auto planted_temporary = home_models /
+        ("." + engine.filename().string() + ".source.yaml." + std::to_string(::getpid()) + ".tmp");
+    fs::create_symlink(unrelated, planted_temporary);
     ok &= expect(prepare().ok() && builds == 1, "A missing selected BF16 engine must build automatically");
+    ok &= expect(fs::status(home_models).permissions() == shared_permissions,
+                 "BF16 preparation must preserve access to an existing shared engine directory");
     fs::remove(source);
     ok &= expect(prepare().ok() && builds == 1, "A valid engine must start offline without its ONNX");
     write_model(source, name);
@@ -1014,7 +1023,13 @@ int main(int argc, char** argv) {
       const int previous_builds = builds;
       ok &= expect(prepare().ok() && builds == previous_builds + 1,
                    "Empty, damaged, and different-precision cached engines must rebuild as selected BF16");
+      ok &= expect(fs::status(home_models).permissions() == shared_permissions,
+                   "BF16 rebuilds must preserve shared engine directory permissions");
     }
+    std::ifstream unrelated_file(unrelated);
+    const std::string unrelated_contents((std::istreambuf_iterator<char>(unrelated_file)), {});
+    ok &= expect(unrelated_contents == "retain unrelated contents" && fs::is_symlink(planted_temporary),
+                 "BF16 provenance publication must not follow preexisting temporary symlinks");
     multi_source = true;
     for (bool use_secondary : {false, true}) {
       secondary = use_secondary;

@@ -237,7 +237,7 @@ absl::StatusOr<fs::path> cache_root() {
   return private_root / "tensorrt";
 }
 
-absl::Status ensure_private_directory(const fs::path& directory) {
+absl::Status ensure_owned_directory(const fs::path& directory, bool private_cache = true) {
   std::error_code error;
   fs::create_directories(directory, error);
   if (error)
@@ -253,7 +253,7 @@ absl::Status ensure_private_directory(const fs::path& directory) {
     return absl::PermissionDeniedError(
         "TensorRT cache directory is not owned by the current user: " + directory.string());
   }
-  if (::fchmod(descriptor, 0700) != 0) {
+  if (private_cache && ::fchmod(descriptor, 0700) != 0) {
     const std::string message = std::strerror(errno);
     ::close(descriptor);
     return absl::InternalError("Unable to protect TensorRT cache directory: " + message);
@@ -527,11 +527,11 @@ absl::Status publish_yaml(const fs::path& target, const YAML::Node& config) {
   std::ostringstream serialized;
   serialized << config << '\n';
   const std::string contents = serialized.str();
-  const fs::path temporary =
-      target.parent_path() / ("." + target.filename().string() + "." + std::to_string(::getpid()) + ".tmp");
-  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  std::string temporary_pattern = (target.parent_path() / ("." + target.filename().string() + ".XXXXXX")).string();
+  const int fd = ::mkostemp(temporary_pattern.data(), O_CLOEXEC);
   if (fd < 0)
     return absl::InternalError("Unable to create TensorRT runtime config: " + std::string(std::strerror(errno)));
+  const fs::path temporary = temporary_pattern;
   size_t offset = 0;
   while (offset < contents.size()) {
     const ssize_t written = ::write(fd, contents.data() + offset, contents.size() - offset);
@@ -579,11 +579,11 @@ absl::Status publish_relocated_runtime_config(
   auto root = cache_root();
   if (!root.ok())
     return root.status();
-  auto root_status = ensure_private_directory(*root);
+  auto root_status = ensure_owned_directory(*root);
   if (!root_status.ok())
     return root_status;
   const fs::path runtime_configs = *root / "runtime-configs";
-  auto directory_status = ensure_private_directory(runtime_configs);
+  auto directory_status = ensure_owned_directory(runtime_configs);
   if (!directory_status.ok())
     return directory_status;
   std::ostringstream identity;
@@ -647,7 +647,7 @@ absl::Status prepare_bf16_engine(
   auto root = cache_root();
   if (!root.ok())
     return root.status();
-  auto status = ensure_private_directory(*root);
+  auto status = ensure_owned_directory(*root);
   if (!status.ok())
     return status;
   // Private web homes resolve to the same model directory. All GIE builds use
@@ -722,7 +722,9 @@ absl::Status prepare_bf16_engine(
   identity = bf16_source_identity(onnx, declared_sha256, {});
   if (!identity.ok())
     return identity.status();
-  status = ensure_private_directory(engine.parent_path());
+  // A configured engine may live in a shared models/project directory. Keep
+  // its permissions while retaining the ownership and no-follow checks.
+  status = ensure_owned_directory(engine.parent_path(), false);
   if (!status.ok())
     return status;
   YAML::Node record;
@@ -935,7 +937,7 @@ absl::Status prepare_inference_config(
   auto root = cache_root();
   if (!root.ok())
     return root.status();
-  auto root_status = ensure_private_directory(*root);
+  auto root_status = ensure_owned_directory(*root);
   if (!root_status.ok())
     return root_status;
   auto device_name = gpu_name(inference_gpu(properties, section, pipeline));
@@ -943,7 +945,7 @@ absl::Status prepare_inference_config(
     return device_name.status();
   const fs::path model_directory =
       *root / (model_hash->substr(0, 16) + "-" + build_digest->substr(0, 16) + "-" + *device_name);
-  auto directory_status = ensure_private_directory(model_directory);
+  auto directory_status = ensure_owned_directory(model_directory);
   if (!directory_status.ok())
     return directory_status;
 
@@ -1004,7 +1006,7 @@ absl::Status prepare_inference_config(
       return absl::InvalidArgumentError(
           "ONNX external tensor location conflicts with cache output: " + target.string());
     }
-    auto status = ensure_private_directory(target.parent_path());
+    auto status = ensure_owned_directory(target.parent_path());
     if (!status.ok()) {
       release_engine_locks();
       return status;

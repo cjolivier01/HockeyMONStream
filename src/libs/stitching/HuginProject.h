@@ -120,6 +120,7 @@ class HuginProject {
   };
 
   struct ReframeOptions {
+    bool review_saved_view{false};
     std::string expected_source_generation;
     StitchProjection projection{StitchProjection::kGeneralPanini};
     std::vector<double> projection_parameters;
@@ -127,6 +128,8 @@ class HuginProject {
     std::optional<size_t> max_canvas_dimension;
     std::optional<size_t> max_output_width;
     Options::ProgressCallback progress;
+    Options::LevelingSelectionCallback select_leveling;
+    decltype(Options::select_crop) select_crop;
     std::function<bool()> is_cancelled;
     // Both callbacks run with artifact -> config locks already held. They
     // must not reacquire either lock. Source validation runs before staging
@@ -134,7 +137,9 @@ class HuginProject {
     std::function<absl::Status()> validate_source;
     // Called with the fully rendered, validated staging directory. Return a
     // complete calibration config with pending rink work and no reframe intent.
-    std::function<absl::StatusOr<std::string>(const std::filesystem::path& staging)> build_config;
+    std::function<
+        absl::StatusOr<std::string>(const std::filesystem::path& staging, const StitchProjectionFraming& framing)>
+        build_config;
   };
 
   // Pure helpers exposed for focused contract tests.

@@ -121,9 +121,9 @@ bool WebPreviewTarget::Validate(const WebPreviewConfig& c, std::string* error) {
       c.surface.width % 2 || c.surface.height % 2 || !c.surface.rate_numerator || !c.surface.rate_denominator ||
       c.surface.rate_numerator > INT_MAX || c.surface.rate_denominator > 1000000 ||
       double(c.surface.rate_numerator) / c.surface.rate_denominator > 120 || !c.surface.pool_frames ||
-      c.surface.pool_frames > 64 || c.conversion_pool_frames < 8 || !c.bitrate || !c.idr_interval || !c.pending_frames ||
-      !c.pending_events || !c.presentation_history || !c.h264_profile || !c.encoder_tuning || !c.stun_server ||
-      c.rtp_payload < 96 || c.rtp_payload > 127)
+      c.surface.pool_frames > 64 || c.conversion_pool_frames < 8 || !c.bitrate || !c.idr_interval ||
+      !c.pending_frames || !c.pending_events || !c.presentation_history || !c.h264_profile || !c.encoder_tuning ||
+      !c.stun_server || c.rtp_payload < 96 || c.rtp_payload > 127)
     return fail(error, "Preview target requires explicit valid GPU, encoder, RTP and queue configuration");
   if ((*c.h264_profile != 0 && *c.h264_profile != 1 && *c.h264_profile != 2 && *c.h264_profile != 4) ||
       (*c.encoder_tuning != 2 && *c.encoder_tuning != 3))
@@ -132,11 +132,10 @@ bool WebPreviewTarget::Validate(const WebPreviewConfig& c, std::string* error) {
 }
 
 WebPreviewTarget::WebPreviewTarget(const WebPreviewConfig& config)
-    : monitor_(
-          std::make_shared<TransportMonitor>(
-              config.pending_frames,
-              config.pending_events,
-              config.presentation_history)),
+    : monitor_(std::make_shared<TransportMonitor>(
+          config.pending_frames,
+          config.pending_events,
+          config.presentation_history)),
       peer_lifetime_(std::make_shared<PeerLifetime>()) {
   peer_lifetime_->target = this;
 }
@@ -393,6 +392,13 @@ bool WebPreviewTarget::Select(GstPad* route, std::uint64_t operation) {
 bool WebPreviewTarget::Active(GstPad* route, std::uint64_t operation) const {
   const auto found = routes_.find(route);
   return found != routes_.end() && selected_stream_active(selected_, found->second.selected, operation);
+}
+
+bool WebPreviewTarget::ResetMediaEpoch() {
+  GstState state = GST_STATE_VOID_PENDING, pending = GST_STATE_VOID_PENDING;
+  return !active_route_ && signaling_.expired() &&
+      gst_element_get_state(bin_, &state, &pending, 0) == GST_STATE_CHANGE_SUCCESS && state == GST_STATE_READY &&
+      pending == GST_STATE_VOID_PENDING && monitor_->ResetMediaEpoch();
 }
 
 GstElement* WebPreviewTarget::ReplacePeer(std::uint64_t generation) {

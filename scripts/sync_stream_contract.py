@@ -7,6 +7,7 @@ the web service and matching HStream distribution together.
 import argparse
 import hashlib
 import json
+import math
 import re
 import subprocess
 from datetime import time
@@ -185,8 +186,18 @@ def source_set_contract(root):
     extensions = re.findall(r'suffix == "([a-z0-9]+)"', video)
     if not extensions:
         raise ValueError("Native source formats are unavailable.")
+    discovery = (root / "src/libs/stitching/VideoDiscovery.h").read_text()
+    standalone = re.search(
+        r'kStandaloneCameraFilePattern\s*=\s*R"\((.*?)\)";', discovery
+    )
+    if not standalone or any(
+        "hm::stitching::IsStandaloneCameraFile(file_name.toStdString())" not in owner
+        for owner in (block, family)
+    ):
+        raise ValueError("Native standalone camera admission changed; review grouping.")
     return {
         "auto_patterns": patterns,
+        "standalone_pattern": standalone[1],
         "family_slices": slices,
         "extensions": extensions,
     }
@@ -370,6 +381,15 @@ def qt_layout(root):
             "visibility": "selected-sources",
             "order": ["left", "right"],
             "panorama_label": "Panorama",
+            "playback": {
+                "controls": ["Play camera", "Pause camera", "Stop", "Seek"],
+                "timeline": "original-camera-chapters",
+                "exclusive": True,
+                "leave_tab": "pause",
+                "other_work": "destroy-decoder",
+                "positions": "per-camera-session",
+                "keyboard_seek_seconds": 10,
+            },
         },
         "tab_icons": tab_icons,
     }
@@ -524,6 +544,16 @@ def qt_location(key):
     return "program", "Tracking"
 
 
+def playback_start_seconds(value):
+    if (
+        type(value) not in (int, float)
+        or not math.isfinite(value)
+        or not 0 <= value < 86400
+    ):
+        raise ValueError("playback.start_seconds must be within one day")
+    return value
+
+
 def generate(root, *, native_revision=None, include_revision=True):
     # Release builders use git archives without .git; the caller supplies the
     # revision recorded by the immutable snapshot, never a nearby checkout.
@@ -544,6 +574,20 @@ def generate(root, *, native_revision=None, include_revision=True):
         raise ValueError(
             "Native implicit optics policies changed; review legacy inheritance"
         )
+    control_source = (root / "src/libs/common/RuntimeControlConfig.h").read_text()
+    runtime_controls = {
+        identifier: {
+            "path": path,
+            "divisor": int(divisor),
+            "boolean": boolean == "true",
+        }
+        for identifier, path, divisor, boolean in re.findall(
+            r'\{\s*"([^"\n]+)",\s*"([^"\n]+)",\s*(\d+),\s*(true|false)\s*\}',
+            control_source,
+        )
+    }
+    if len(runtime_controls) != 9:
+        raise ValueError("Review canonical runtime control mapping")
     fields = []
     specs = camera_specs(root)
     tones = tone_specs(root)
@@ -602,7 +646,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 qt_control_id=spec["id"],
                 runtime_key=spec["runtime_key"],
                 divisor=spec["divisor"],
-                qt_order=list(specs).index(spec["id"]) + 3,
+                qt_order=list(specs).index(spec["id"]) + 5,
                 qt_slider=not (spec["minimum"] == 0 and spec["maximum"] == 1),
             )
             if kind != "boolean":
@@ -709,6 +753,17 @@ def generate(root, *, native_revision=None, include_revision=True):
             "upper-center": "Upper center",
             "upper-right": "Upper right",
         },
+    )
+
+    add(
+        "rink.scoreboard.scoreboard_scale",
+        "Program scoreboard",
+        minimum=0.1,
+        maximum=4.0,
+        label="Scale (next play)",
+    )
+    fields[-1].update(
+        qt_control_id="scoreboardScaleSpin", qt_stage="program", qt_tab="Runtime"
     )
 
     for key, choices in {
@@ -851,6 +906,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "rink.camera.follower_box_scale_width",
                 "rink.camera.follower_box_scale_height",
                 "rink.camera.fixed_edge_rotation_angle",
+                "rink.camera.motion_overrides",
             }:
                 continue
             if isinstance(val, dict):
@@ -869,17 +925,23 @@ def generate(root, *, native_revision=None, include_revision=True):
     ):
         spec = specs[identifier]
         add(
-            "hstream_ui.camera_controls." + identifier,
+            runtime_controls[identifier]["path"],
             "Tracking and motion",
-            minimum=spec["minimum"],
-            maximum=spec["maximum"],
+            default=(
+                value(runtime_controls[identifier]["path"])
+                if runtime_controls[identifier]["boolean"]
+                else float(value(runtime_controls[identifier]["path"]))
+            ),
+            minimum=spec["minimum"] / runtime_controls[identifier]["divisor"],
+            maximum=spec["maximum"] / runtime_controls[identifier]["divisor"],
             label=spec["label"],
         )
         fields[-1].update(
+            divisor=runtime_controls[identifier]["divisor"],
             qt_control_id=identifier,
             qt_stage="program",
             qt_tab="Motion" if identifier.startswith("Max_") else "Tracking",
-            qt_order=list(specs).index(identifier) + 3,
+            qt_order=list(specs).index(identifier) + 5,
             qt_slider=spec["maximum"] != 1,
         )
         if spec["maximum"] == 1:
@@ -924,6 +986,19 @@ def generate(root, *, native_revision=None, include_revision=True):
         qt_tab="Runtime",
         qt_control_id="gpuMemoryProfileCombo",
         choice_labels=labels,
+    )
+    add(
+        "pipeline.primary-gie.tiled-inference.enable",
+        "Detection",
+        maximum=1,
+        label="Two-tile detection (next run)",
+    )
+    fields[-1].update(
+        qt_stage="program",
+        qt_tab="Detection",
+        qt_control_id="tiledDetectionCheck",
+        qt_order=2,
+        qt_toggle=True,
     )
     for feature in ("pose", "jersey", "action"):
         add(
@@ -1001,15 +1076,17 @@ def generate(root, *, native_revision=None, include_revision=True):
         label="Keep pose visible between updates",
     )
     for spec in tones:
-        key = "hstream_ui.camera_controls." + spec["id"]
+        key = runtime_controls[spec["id"]]["path"]
         add(
             key,
             "Tone controls",
-            minimum=spec["minimum"],
-            maximum=spec["maximum"],
+            default=(float(value(key)) if spec["divisor"] > 1 else value(key)),
+            minimum=spec["minimum"] / spec["divisor"],
+            maximum=spec["maximum"] / spec["divisor"],
             label=spec["label"],
         )
         fields[-1].update(
+            divisor=spec["divisor"],
             qt_control_id=spec["id"],
             qt_stage="program",
             qt_tab="Color",
@@ -1057,6 +1134,18 @@ def generate(root, *, native_revision=None, include_revision=True):
         choice_labels=precision["choices"],
     )
     tracking_extras = {
+        "rink.tracking.cam_ignore_referees": (
+            "Ignore_Referees",
+            "Ignore referees for play tracking",
+            2,
+            None,
+        ),
+        "rink.tracking.cam_ignore_goalies": (
+            "Ignore_Goalies",
+            "Ignore goalies for play tracking",
+            3,
+            None,
+        ),
         "rink.tracking.cam_ignore_largest_count": (
             "Ignore_Largest_Count",
             "Ignore largest players (0 = off)",
@@ -1072,7 +1161,7 @@ def generate(root, *, native_revision=None, include_revision=True):
         "rink.tracking.cam_oversized_percent": (
             "Oversized_Player_Percent",
             "Larger than other players' average (%)",
-            2,
+            4,
             1.7976931348623157e308,
         ),
     }
@@ -1097,6 +1186,7 @@ def generate(root, *, native_revision=None, include_revision=True):
             field["enabled_when"] = dependencies[field["qt_control_id"]]
     sources = [
         "configs/baseline.yaml",
+        "src/libs/common/RuntimeControlConfig.h",
         "src/libs/common/GameStorage.h",
         "src/libs/common/GameStorage.cpp",
         "src/apps/hstream-ui/CameraControlSpecs.h",
@@ -1175,18 +1265,19 @@ def generate(root, *, native_revision=None, include_revision=True):
             "network_routes": value("hstream_ui.network_routes"),
             "archive_routes": value("hstream_ui.archive_routes"),
             "export_archive_routes": value("hstream_ui.export_archive_routes"),
-            "start_seconds": time_seconds("hstream_ui.playback_start_time"),
+            "start_seconds": playback_start_seconds(value("playback.start_seconds")),
             "calibration_seconds": time_seconds("stitching.stitch_frame_time"),
             "crop": boolean_value("hstream_ui.show_crop_dialog"),
             "leveling": boolean_value("hstream_ui.show_leveling_dialog"),
             "scoreboard": boolean_value("hstream_ui.show_scoreboard_dialog"),
-            "playback_realtime": value("hstream_ui.playback_realtime"),
+            "playback_realtime": value("playback.realtime"),
             "blend": value("stitching.blend_mode"),
             "rotation": value("stitching.post_stitch_rotate_degrees"),
             "zoom": value("rink.camera.zoom_in_aggressiveness"),
             "frame_scale": value("rink.camera.follower_box_scale_width"),
-            "telemetry": value("hstream_ui.drivegpt_database.enabled"),
+            "telemetry": value("telemetry.enabled"),
         },
+        "runtime_control_keys": runtime_controls,
         "camera_controls": list(specs.values()),
         "tone_controls": tones,
         "rotation_controls": rotations,
@@ -1236,6 +1327,8 @@ def generate(root, *, native_revision=None, include_revision=True):
             }
             for item in specs.values()
             if item["runtime_key"]
+            # Qt's role filters belong to Program, not Camera Experiments.
+            and item["id"] not in {"Ignore_Referees", "Ignore_Goalies"}
         ],
         "runtime_controls": baseline["hstream_ui"]["runtime_controls"],
         "preview_overlays": baseline["preview_overlays"],
@@ -1262,6 +1355,18 @@ def generate(root, *, native_revision=None, include_revision=True):
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
             for name in (
                 "src/apps/hstream-ui/HStreamWindow.cpp",
+                "src/libs/stitching/CalibrationFailure.h",
+                "src/libs/stitching/CalibrationFailure.cpp",
+                "src/libs/stitching/CalibrationFailureProtocol.h",
+                "src/libs/stitching/CalibrationFailureProtocol.cpp",
+                "src/apps/hstream-ui/CameraChapterWarning.cpp",
+                "src/apps/hstream-ui/CameraChapterWarning.h",
+                "src/libs/stitching/VideoDiscovery.cpp",
+                "src/libs/stitching/VideoDiscovery.h",
+                "src/apps/hstream-ui/SourceCameraPlayer.cpp",
+                "src/apps/hstream-ui/SourceCameraPlayer.h",
+                "src/apps/hstream-ui/SourceCameraTrack.cpp",
+                "src/apps/hstream-ui/SourceCameraTrack.h",
                 "src/apps/hstream-ui/CameraOpticsWidget.cpp",
                 "src/apps/hstream-ui/CameraOpticsWidget.h",
                 "src/apps/hstream-ui/ValueControlWheel.cpp",
@@ -1284,6 +1389,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "src/apps/hstream-ui/HighlightsDialog.cpp",
                 "src/apps/hstream-ui/HighlightItemEditor.cpp",
                 "src/apps/hstream-ui/StitchingExperimentDialog.cpp",
+                "src/apps/hstream-ui/CameraExperimentDialog.cpp",
                 "src/apps/hstream-ui/StitchingWorkflow.cpp",
                 "src/apps/hstream-ui/LogTextEdit.h",
                 "src/apps/hstream-ui/Int8PreparationDialog.cpp",

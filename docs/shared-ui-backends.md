@@ -227,8 +227,8 @@ with `unrepresentable-value`; only floating-point storage roundoff is tolerated.
 Queries do not mutate properties or replay overrides. An old/AMD/HockeyMON
 runner without the advertised version must remain unavailable to the browser.
 
-The synchronized baseline owns `hstream_ui.camera_controls` for all three
-integer slider defaults and `hstream_ui.runtime_controls.debounce_ms` and
+The synchronized baseline owns `video_out.tone` in native units for all three
+tone defaults; the shared presentation contract applies integer slider scaling and `hstream_ui.runtime_controls.debounce_ms` and
 `ack_timeout_ms` for Qt/browser scheduling. Qt resolves these through its normal
 baseline/user layers. The web contract derives the shipped values from the same
 baseline; live edits never rewrite an admitted run or its staged configuration.
@@ -435,3 +435,5 @@ opt-in `//src/apps/hstream-model-infer:model_infer_gpu_test`, with
 `HSTREAM_REID_ENGINE` naming an existing native engine, checks real persistent
 batches, invalid records, EOF, creator-thread exit and parent-process-death
 cleanup without preparing a new model.
+
+Canonical camera and launch configuration is documented in [canonical-runtime-controls.md](canonical-runtime-controls.md).

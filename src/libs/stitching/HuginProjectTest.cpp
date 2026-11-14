@@ -209,13 +209,23 @@ bool test_publication_file_pins(const std::filesystem::path& root, const std::fi
   namespace fs = std::filesystem;
   using namespace hm::stitching;
   bool ok = true;
-  for (const std::string scenario : {"rename", "symlink", "replacement", "write"}) {
+  for (const std::string scenario : {"rename", "buffered", "symlink", "replacement", "write"}) {
     const fs::path game = root / ("publication-pin-" + scenario);
     const fs::path staging = saved_state(game) / "staging";
     fs::create_directory(staging);
     for (const std::string& name : stitch_artifact_names()) {
       if (name != kStitchGenerationArtifact && fs::exists(saved_state(source) / name))
         fs::copy_file(saved_state(source) / name, staging / name);
+    }
+    if (scenario == "buffered") {
+      // Valid TIFF readers ignore trailing padding. Leave a sizeable payload
+      // dirty, as map producers do, so this also exercises NFS writeback when
+      // the test's temporary directory is on the shared deployment mount.
+      std::ofstream output(staging / "mapping_0000.tif", std::ios::binary | std::ios::app);
+      const std::string padding(1024 * 1024, 'x');
+      for (int index = 0; index < 32; ++index)
+        output.write(padding.data(), padding.size());
+      ok &= expect(output.good(), "buffered publication fixture must write its map payload");
     }
     auto prepared = prepare_stitch_generation_publication(staging, game);
     ok &= expect(prepared.ok(), "publication pin fixture must prepare a complete generation");
@@ -238,16 +248,51 @@ bool test_publication_file_pins(const std::filesystem::path& root, const std::fi
     } else if (scenario == "write") {
       std::ofstream(published, std::ios::app) << "changed";
     }
+    if (scenario == "buffered")
+      ok &= expect(fsync_stitch_path(published).ok(), "publication writeback must complete");
     const auto recorded = record_published_stitch_generation_artifact(*prepared, game, name);
+    const bool unchanged = scenario == "rename" || scenario == "buffered";
     ok &= expect(
-        scenario == "rename" ? recorded.ok() : absl::IsAborted(recorded),
+        unchanged ? recorded.ok() : absl::IsAborted(recorded),
         "publication must accept its renamed inode and reject symlinks, same-byte replacements, and changed payloads");
-    if ((scenario == "rename") != recorded.ok())
+    if (unchanged != recorded.ok())
       std::cerr << "Publication pin scenario " << scenario << ": " << recorded << '\n';
     prepared->Reset();
     fs::remove_all(game);
   }
   return ok;
+}
+
+bool test_fresh_metadata_keeps_descriptor_and_symlink_identity(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  using namespace hm::stitching;
+  const fs::path path = root / "fresh-metadata";
+  const fs::path link = root / "fresh-metadata-link";
+  const fs::path moved = root / "fresh-metadata-moved";
+  std::ofstream(path) << "original";
+  fs::create_symlink(path, link);
+  const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0)
+    return false;
+  struct stat pinned {
+  }, followed{}, unfollowed{}, replacement{}, changed{};
+  bool ok = fresh_stitch_fstat(descriptor, &pinned) == 0 && fresh_stitch_stat(link.c_str(), &followed) == 0 &&
+      fresh_stitch_lstat(link.c_str(), &unfollowed) == 0 && S_ISREG(pinned.st_mode) &&
+      pinned.st_ino == followed.st_ino && pinned.st_dev == followed.st_dev && S_ISLNK(unfollowed.st_mode);
+  fs::rename(path, moved);
+  std::ofstream(path) << "replacement";
+  ok &= fresh_stitch_fstat(descriptor, &followed) == 0 && fresh_stitch_stat(path.c_str(), &replacement) == 0 &&
+      followed.st_ino == pinned.st_ino && replacement.st_ino != pinned.st_ino;
+  std::ofstream(moved, std::ios::app) << "changed";
+  ok &= fsync_stitch_path(moved).ok() && fresh_stitch_fstat(descriptor, &changed) == 0 &&
+      changed.st_size > pinned.st_size;
+  ::close(descriptor);
+  errno = 0;
+  ok &= fresh_stitch_fstat(-1, &changed) == -1 && errno == EBADF;
+  fs::remove(path);
+  fs::remove(link);
+  fs::remove(moved);
+  return expect(ok, "fresh metadata must retain descriptor ownership and distinguish symlinks and replacements");
 }
 
 bool test_partial_publication_rollback(const std::filesystem::path& root, const std::filesystem::path& source) {
@@ -859,12 +904,46 @@ bool test_reframe_publication(const std::filesystem::path& root) {
     return absl::OkStatus();
   };
   bool config_saw_final_geometry = false;
-  request.build_config = [&](const fs::path& staging) -> absl::StatusOr<std::string> {
+  request.build_config = [&](const fs::path& staging,
+                             const hm::stitching::StitchProjectionFraming&) -> absl::StatusOr<std::string> {
     const auto pose = HuginProject::ParseCameraPose(read_text_file(staging / "autooptimiser_out.pto"), 0);
     config_saw_final_geometry = pose.ok() && std::abs(pose->yaw - 25) < 1e-9 && fs::exists(staging / "panorama.tif");
     return "hstream_ui:\n  stitching_calibration:\n    invalidation_id: reframe-fixture\n    status: complete\n"
            "    rink_mask_status: pending\n";
   };
+  int review_order = 0;
+  request.select_leveling =
+      [&](const fs::path& staging,
+          const hm::stitching::StitchProjectionFraming&) -> absl::StatusOr<std::optional<std::array<double, 3>>> {
+    const auto neutral = HuginProject::ParseCameraPose(read_text_file(staging / ".autooptimiser_out.aligned.pto"), 0);
+    if (!neutral.ok() || std::abs(neutral->yaw) > 1e-9 ||
+        read_binary_file(staging / "left.png") != original["left.png"] ||
+        read_binary_file(staging / "right.png") != original["right.png"])
+      return absl::FailedPreconditionError("Review dialogs require the neutral alignment and original stills");
+    review_order = 1;
+    return std::optional<std::array<double, 3>>({25, 0, 0});
+  };
+  request.select_crop = [&](const fs::path& staging, const hm::stitching::StitchProjectionFraming& framing)
+      -> absl::StatusOr<hm::stitching::StitchProjectionFraming> {
+    const auto pose = HuginProject::ParseCameraPose(read_text_file(staging / "autooptimiser_out.pto"), 0);
+    if (review_order != 1 || !pose.ok() || std::abs(pose->yaw - 25) > 1e-9 ||
+        framing.rotation_degrees != std::array<double, 3>{25, 0, 0})
+      return absl::FailedPreconditionError("Crop must follow leveling against the selected rotation");
+    review_order = 2;
+    return framing;
+  };
+  auto cancelled_review = request;
+  cancelled_review.projection_framing.rotation_degrees = {0, 0, 0};
+  cancelled_review.select_crop = [&](const fs::path& staging, const hm::stitching::StitchProjectionFraming& framing)
+      -> absl::StatusOr<hm::stitching::StitchProjectionFraming> {
+    const auto checked = request.select_crop(staging, framing);
+    if (!checked.ok())
+      return checked.status();
+    return absl::CancelledError("operator cancelled crop");
+  };
+  ok &= expect(
+      absl::IsCancelled(HuginProject::Reframe(game, cancelled_review)) && review_order == 2 && unchanged(),
+      "Cancelling crop after edited leveling must preserve promoted maps, config and retained review");
   auto rejected = request;
   rejected.projection_framing.auto_canvas = false;
   ok &= expect(
@@ -926,6 +1005,43 @@ bool test_reframe_publication(const std::filesystem::path& root) {
   ok &= expect(
       absl::IsAborted(HuginProject::Reframe(game, request)),
       "a consumed source generation cannot authorize another reframe after commit");
+  auto accept_existing = request;
+  accept_existing.expected_source_generation = *hm::stitching::stitch_artifact_generation_id_locked(game);
+  accept_existing.projection_framing = *(*reframed_provenance)->projection_framing;
+  decltype(original) reviewed_artifacts;
+  for (const auto& [name, bytes] : original)
+    reviewed_artifacts[name] = read_binary_file(saved_state(game) / name);
+  ::setenv("HM_NONA", (root / "forbidden-review-nona").c_str(), 1);
+  const auto accepted_existing = HuginProject::Reframe(game, accept_existing);
+  bool retained = accepted_existing.ok();
+  for (const auto& [name, bytes] : reviewed_artifacts)
+    retained &= read_binary_file(saved_state(game) / name) == bytes;
+  ok &= expect(retained, "Accepting unchanged framing must retain every map, seam and generation without rendering");
+  if (!accepted_existing.ok())
+    std::cerr << accepted_existing << '\n';
+  const auto fixed_game = root / "fixed-review-game";
+  fs::copy(game, fixed_game, fs::copy_options::recursive);
+  auto fixed_provenance = read_text_file(saved_state(fixed_game) / "stitching_canvas_provenance");
+  const auto auto_canvas = fixed_provenance.find("projection-auto-canvas=1");
+  if (!expect(auto_canvas != std::string::npos, "Fixed review must start from valid canvas provenance"))
+    return false;
+  fixed_provenance.replace(auto_canvas, std::string("projection-auto-canvas=1").size(), "projection-auto-canvas=0");
+  std::ofstream(saved_state(fixed_game) / "stitching_canvas_provenance") << fixed_provenance;
+  auto fixed_lock = HuginProject::RecoverAndLock(fixed_game);
+  if (!fixed_lock.ok())
+    return expect(false, "Fixed review fixture must lock");
+  auto fixed_generation = HuginProject::GenerationId(fixed_game, **fixed_lock);
+  fixed_lock->reset();
+  if (!expect(fixed_generation.ok(), "Fixed review must bind a valid source generation"))
+    return false;
+  auto fixed_request = accept_existing;
+  fixed_request.review_saved_view = true;
+  fixed_request.projection_framing.auto_canvas = false;
+  fixed_request.expected_source_generation = *fixed_generation;
+  const auto fixed_result = HuginProject::Reframe(fixed_game, fixed_request);
+  ok &= expect(fixed_result.ok(), "Reviewing an unchanged fixed canvas must provide neutral previews without new maps");
+  if (!fixed_result.ok())
+    std::cerr << fixed_result << '\n';
   ::setenv("HM_PANO_MODIFY", previous_pano.c_str(), 1);
   ::setenv("HM_PTO_GEN", previous_pto.c_str(), 1);
   ::setenv("HM_AUTOOPTIMISER", previous_optimizer.c_str(), 1);
@@ -1136,6 +1252,7 @@ int main(int argc, char** argv) {
   const fs::path root = fs::temp_directory_path() / ("hstream-hugin-test-" + std::to_string(::getpid()));
   fs::remove_all(root);
   fs::create_directories(root / "game");
+  ok &= test_fresh_metadata_keeps_descriptor_and_symlink_identity(root);
   ok &= expect(
       cv::imwrite((saved_state(root / "game") / "left.png").string(), cv::Mat(48, 64, CV_8UC3, cv::Scalar(1, 2, 3))),
       "left source fixture must exist");
@@ -1496,6 +1613,41 @@ int main(int argc, char** argv) {
   ok &= expect(
       absl::IsCancelled(cancelled_optimizer) && cancellation_elapsed < std::chrono::seconds(5),
       "optimizer cancellation must terminate the Hugin process group before pipeline shutdown times out");
+  const fs::path inaccurate_autooptimiser = root / "inaccurate-autooptimiser";
+  ok &= expect(
+      write_tool(inaccurate_autooptimiser, "printf '%s\\n' 'after 14 iteration(s): 100.549635 units'\n"),
+      "inaccurate optimizer fixture must exist");
+  ::setenv("HM_AUTOOPTIMISER", inaccurate_autooptimiser.c_str(), 1);
+  for (bool manual : {false, true}) {
+    for (bool epipolar : {false, true}) {
+      for (bool homography : {false, true}) {
+        auto rejected_options = options;
+        rejected_options.control_point_filtering = {epipolar, homography};
+        if (manual)
+          rejected_options.manual_control_point_fingerprint = std::string(64, 'a');
+        bool alignment_complete = false;
+        rejected_options.alignment_complete = [&] { alignment_complete = true; };
+        const auto rejected = hm::stitching::HuginProject::Configure(
+            root / "game",
+            root / "private-inputs" / "left.png",
+            root / "private-inputs" / "right.png",
+            matches,
+            rejected_options);
+        const std::string message(rejected.message());
+        ok &= expect(
+            absl::IsFailedPrecondition(rejected) && !alignment_complete &&
+                message.find("RMS is too large: 100.549635 pixels") != std::string::npos,
+            "inaccurate alignment must retain its failure and must not accept geometry");
+        ok &= expect(
+            (message.find("Epipolar RANSAC") != std::string::npos) == (!manual && !epipolar) &&
+                (message.find("Homography consistency check") != std::string::npos) == (!manual && !homography) &&
+                (message.find("under Advanced geometric filtering") != std::string::npos) ==
+                    (!manual && (!epipolar || !homography)),
+            "alignment failure must suggest only disabled automatic filters, never manual-match filtering");
+      }
+    }
+  }
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
   options.camera_configuration = "gopro-mission-1";
   options.horizontal_fov = 127.2;
   options.vertical_fov = 95.0;
@@ -1582,6 +1734,71 @@ int main(int argc, char** argv) {
         !published_right.empty() && published_right.at<cv::Vec3b>(0, 0) == cv::Vec3b(21, 22, 23),
         "Hugin publication must atomically install its private right input");
   }
+
+  // Explicit camera prescriptions must initialize relative poses before the
+  // full fit, without handing lens-variable selection back to Hugin -a.
+  const fs::path pairwise_optimizer = root / "pairwise-autooptimiser";
+  const fs::path pairwise_input = root / "pairwise-input.pto";
+  ok &= expect(
+      write_tool(
+          pairwise_optimizer,
+          "test \"$*\" = '-p -l -s -q -o autooptimiser_out.pto hm_project.pto'\n"
+          "cp hm_project.pto '" +
+              pairwise_input.string() +
+              "'\n"
+              "cp hm_project.pto autooptimiser_out.pto\n"
+              "printf '%s\\n' 'after 3 iteration(s): 1.25 units'\n"),
+      "pairwise optimizer fixture must exist");
+  ::setenv("HM_AUTOOPTIMISER", pairwise_optimizer.c_str(), 1);
+  for (const auto& policies : {std::array<std::string, 2>{"auto", "auto"}, {"fixed", "refine"}, {"refine", "fixed"}}) {
+    auto explicit_options = options;
+    std::array<hm::stitching::StitchCameraOptics, 2> cameras{{{108, 90, {}}, {97, 75, {}}}};
+    std::string variables = "v r0 p0 r1 p1 y1";
+    for (size_t i = 0; i < cameras.size(); ++i) {
+      cameras[i].input_lens.optimization = policies[i];
+      if (policies[i] != "fixed") {
+        const auto index = std::to_string(i);
+        variables += " v" + index + " b" + index + " d" + index + " e" + index;
+        if (policies[i] == "auto")
+          variables += " a" + index + " c" + index;
+      }
+    }
+    explicit_options.input_cameras = {{"left.png", cameras[0]}, {"right.png", cameras[1]}};
+    explicit_options.ordered_input_cameras = cameras;
+    const auto game = root / ("pairwise-" + policies[0] + "-" + policies[1]);
+    fs::create_directory(game);
+    const auto aligned = hm::stitching::HuginProject::Configure(
+        game,
+        root / "private-inputs" / "left.png",
+        root / "private-inputs" / "right.png",
+        matches,
+        explicit_options);
+    if (!aligned.ok())
+      std::cerr << aligned << '\n';
+    const auto input = read_text_file(pairwise_input);
+    ok &= expect(
+        aligned.ok() && input.find(variables + "\nv\n") != std::string::npos &&
+            input.find("v=0") == std::string::npos && input.find("a=0") == std::string::npos &&
+            input.find("v97 ") != std::string::npos,
+        "pairwise alignment must retain distinct source optics and each Fixed/Refine/Auto variable selection");
+  }
+  for (const std::string policy : {"fixed", "refine"}) {
+    auto explicit_options = options;
+    explicit_options.input_lens.optimization = policy;
+    const auto game = root / ("pairwise-shared-" + policy);
+    fs::create_directory(game);
+    const auto aligned = hm::stitching::HuginProject::Configure(
+        game,
+        root / "private-inputs" / "left.png",
+        root / "private-inputs" / "right.png",
+        matches,
+        explicit_options);
+    const auto variables = policy == "fixed" ? "v r0 p0 r1 p1 y1\nv\n" : "v r0 p0 r1 p1 y1 v0 b0 d0 e0\nv\n";
+    ok &= expect(
+        aligned.ok() && read_text_file(pairwise_input).find(variables) != std::string::npos,
+        "shared explicit optics must retain their fitting policy through pairwise initialization");
+  }
+  ::setenv("HM_AUTOOPTIMISER", autooptimiser.c_str(), 1);
 
   ok &= test_owned_solve_publication(root, matches, options);
 

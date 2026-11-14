@@ -78,7 +78,14 @@ class SlurmTest(unittest.TestCase):
         self.errors["sbatch"] = subprocess.TimeoutExpired("sbatch", 1)
         with self.assertRaises(subprocess.TimeoutExpired):
             slurm.submit(
-                self.root, self.profile, ["/usr/bin/python3", "supervisor.py"], 1
+                self.root,
+                self.profile,
+                [
+                    "/opt/hstream/bin/hstream-runtime-worker",
+                    "--request",
+                    "/shared/request.json",
+                ],
+                1,
             )
         result = slurm.lookup(self.root, 1)
         self.assertEqual(result["scheduler_id"], "42")

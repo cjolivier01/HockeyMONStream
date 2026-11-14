@@ -65,6 +65,32 @@ int main(int argc, char** argv) {
             result->chapters[0][1] == game_dir / "left1.mp4" && result->frame_offsets[0] == 2.5,
         "Saved chapters or fractional synchronization changed");
     Check(result->camera["zoom-in-aggressiveness"].as<int>() == 61, "Game camera tuning did not override user tuning");
+    Check(!result->tiling, "Baseline must leave two-half detection disabled");
+    // Filename gaps are advisory. UI confirmation must remain usable on AMD;
+    // unattended runners keep their existing noninteractive launch behavior.
+    auto missing_chapter = YAML::Clone(game);
+    missing_chapter["game"]["videos"]["left"] = YAML::Load("[GX010001.MP4, GX020001.MP4, GX030001.MP4]");
+    missing_chapter["game"]["videos"]["right"] = YAML::Load("[GH010002.MP4, GH030002.MP4]");
+    Write(game_dir / "_hockeymon" / "config.yaml", missing_chapter);
+    const auto warned = load();
+    Check(warned.ok() && warned->chapters[1].size() == 2, "Chapter warnings must not reject an AMD launch");
+    Write(game_dir / "_hockeymon" / "config.yaml", game);
+
+    game["pipeline"]["primary-gie"]["tiled-inference"] =
+        YAML::Load("{enable: 1, tiles: 4, overlap: 0.3, merge-iou: 0.6}");
+    Write(game_dir / "_hockeymon" / "config.yaml", game);
+    const auto restored_tiling = load();
+    Check(
+        restored_tiling.ok() && restored_tiling->tiling && restored_tiling->tiling->overlap == 0.3 &&
+            restored_tiling->tiling->merge_iou == 0.6f,
+        "Saved quadrant selector must retain the two-half enable/overlap/merge preferences");
+    const auto disabled_tiling = load({"pipeline.primary-gie.tiled-inference.enable=0"});
+    Check(disabled_tiling.ok() && !disabled_tiling->tiling, "Explicit launch override must disable saved tiling");
+    Check(load({"pipeline.primary-gie.batch-size=2"}).ok(), "Two-half batch override rejected");
+    for (const char* conflict : {"pipeline.primary-gie.batch-size=1", "pipeline.primary-gie.batch-size=4"})
+      Check(!load({conflict}).ok(), "Conflicting saved tiling batch accepted");
+    game.remove("pipeline");
+    Write(game_dir / "_hockeymon" / "config.yaml", game);
     auto overridden = load({"rink.camera.zoom_in_aggressiveness=83"});
     Check(
         overridden.ok() && overridden->camera["zoom-in-aggressiveness"].as<int>() == 83,

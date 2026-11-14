@@ -19,8 +19,21 @@ def fail(message):
     raise RuntimeError(message)
 
 
-RULE = {"fail": fail, "repository_rule": lambda **kwargs: kwargs}
-exec(Path(__file__).with_name("player_tensorrt_sdk_repository.bzl").read_text(), RULE)
+def load_rule(filename):
+    rule = {"fail": fail, "repository_rule": lambda **kwargs: kwargs}
+
+    def load(label, *symbols):
+        dependency = load_rule(label.split(":")[1])
+        rule.update({symbol: dependency[symbol] for symbol in symbols})
+
+    rule["load"] = load
+    exec(Path(__file__).with_name(filename).read_text(), rule)
+    return rule
+
+
+COMMON = load_rule("tensorrt_sdk_common.bzl")
+PLAYER = load_rule("player_tensorrt_sdk_repository.bzl")
+DETECTOR = load_rule("tensorrt_sdk_repository.bzl")
 
 
 class RepoPath:
@@ -75,7 +88,7 @@ class Context:
 
     def download(self, *, url, output, sha256):
         self.downloads.append((url, sha256))
-        if not url.startswith(RULE["_NVIDIA_PACKAGES"]) or len(sha256) != 64:
+        if not url.startswith(COMMON["_NVIDIA_PACKAGES"]) or len(sha256) != 64:
             raise AssertionError("unbounded/unverified download")
         destination = self.path(output).path
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -119,11 +132,15 @@ def library(directory, name, version, build=11):
 
 
 class SdkSelectionTest(unittest.TestCase):
+    rule = staticmethod(PLAYER["_player_tensorrt_sdk_impl"])
+    override_name = "HSTREAM_PLAYER_TENSORRT_SDK_ROOT"
+    other_override_name = "HSTREAM_TENSORRT_SDK_ROOT"
+
     @classmethod
     def setUpClass(cls):
         cls.package_tmp = tempfile.TemporaryDirectory(prefix="hstream-sdk-packages-")
         cls.archives = {}
-        for index, (filename, _) in enumerate(RULE["_TRT_10_16_HEADERS"]):
+        for index, (filename, _) in enumerate(COMMON["_TRT_10_16_HEADERS"]):
             package = Path(cls.package_tmp.name) / str(index)
             (package / "DEBIAN").mkdir(parents=True)
             (package / "DEBIAN/control").write_text(
@@ -159,7 +176,7 @@ class SdkSelectionTest(unittest.TestCase):
                        input="int ds_test;\n", text=True, check=True, capture_output=True)
 
     def select(self):
-        RULE["_player_tensorrt_sdk_impl"](self.context)
+        self.rule(self.context)
 
     def test_newer_development_sdk_uses_pinned_headers_and_installed_runtime(self):
         self.select()
@@ -207,7 +224,7 @@ class SdkSelectionTest(unittest.TestCase):
     def test_explicit_sdk_rejects_different_parser_release(self):
         headers(self.system, (10, 16, 1, 11))
         library(self.libs, "nvonnxparser", "10.15.1")
-        self.context.os.environ["HSTREAM_PLAYER_TENSORRT_SDK_ROOT"] = str(self.system)
+        self.context.os.environ[self.override_name] = str(self.system)
         with self.assertRaisesRegex(RuntimeError, "parser release .* disagrees"):
             self.select()
         self.assertEqual(self.context.downloads, [])
@@ -218,14 +235,14 @@ class SdkSelectionTest(unittest.TestCase):
         self.assertEqual(len(self.context.downloads), 2)
 
     def test_explicit_override_never_silently_falls_back(self):
-        self.context.os.environ["HSTREAM_PLAYER_TENSORRT_SDK_ROOT"] = str(self.system)
+        self.context.os.environ[self.override_name] = str(self.system)
         with self.assertRaisesRegex(RuntimeError, "explicit overrides never fall back"):
             self.select()
         self.assertEqual(self.context.downloads, [])
 
     def test_explicit_build_mismatch_is_rejected(self):
         headers(self.system, (10, 16, 1, 99))
-        self.context.os.environ["HSTREAM_PLAYER_TENSORRT_SDK_ROOT"] = str(self.system)
+        self.context.os.environ[self.override_name] = str(self.system)
         with self.assertRaisesRegex(RuntimeError, "disagree with runtime"):
             self.select()
         self.assertEqual(self.context.downloads, [])
@@ -259,6 +276,25 @@ class SdkSelectionTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "DEEPSTREAM_ROOT does not exist"):
             self.select()
         self.assertEqual(self.context.downloads, [])
+
+    def test_coherent_explicit_sdk_needs_no_download(self):
+        headers(self.system, (10, 16, 1, 11))
+        self.context.os.environ[self.override_name] = str(self.system)
+        self.select()
+        self.assertEqual(self.context.downloads, [])
+        self.assertEqual((self.root / "repository/include").resolve(),
+                         self.system / "include/x86_64-linux-gnu")
+
+    def test_other_builder_override_does_not_change_selection(self):
+        self.context.os.environ[self.other_override_name] = str(self.root / "missing")
+        self.select()
+        self.assertEqual(len(self.context.downloads), 2)
+
+
+class DetectorSdkSelectionTest(SdkSelectionTest):
+    rule = staticmethod(DETECTOR["_tensorrt_sdk_impl"])
+    override_name = "HSTREAM_TENSORRT_SDK_ROOT"
+    other_override_name = "HSTREAM_PLAYER_TENSORRT_SDK_ROOT"
 
 
 if __name__ == "__main__":

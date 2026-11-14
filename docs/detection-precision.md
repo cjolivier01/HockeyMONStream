@@ -79,15 +79,29 @@ output for the current `NvDsInferParseYolo` parser.
 `src/apps/int8-calib-builder` builds against one coherent SDK selected by
 `HSTREAM_TENSORRT_SDK_ROOT` (an SDK directory containing `include/` and `lib/` or
 `lib64/`; a distribution `/usr` layout is also supported). The default is `/usr`,
-or the Jetson sysroot for `--config=jetson`. The builder rejects headers and
-loaded libraries with different major/minor versions. If the selected SDK is not
-on the system loader path, include its library directory in `LD_LIBRARY_PATH`
+or the Jetson sysroot for `--config=jetson`. Both detector and player builders use
+`bazel/tensorrt_sdk_common.bzl` to select headers matching DeepStream's TensorRT
+runtime and parser. Native builds check the full runtime version, including the
+build number; cross-builds check the library release without executing target code.
+If the selected SDK is not on the system loader path, include its library directory in `LD_LIBRARY_PATH`
 when invoking the builder; the SDK selection alone configures build dependencies.
+
+With native Linux x86_64 TensorRT 10.16.1 build 11, missing or incompatible system
+headers trigger the same SHA256-pinned NVIDIA header download as the player
+builder. `make perf` needs no SDK override on this installation, even with
+TensorRT 11 system headers. Only headers are extracted into Bazel's external
+repository; runtime libraries and system packages remain untouched. The first
+fetch requires network access and `dpkg-deb`. Other runtime releases and Jetson
+sysroots require matching installed headers. An explicit
+`HSTREAM_TENSORRT_SDK_ROOT` never falls back to downloaded headers.
+
+The YOLO custom inference plugin and its lifetime regression also use this SDK,
+so they compile and link against the same TensorRT runtime as DeepStream.
 
 Use the SDK corresponding to **DeepStream's loaded inference runtime**. A newer
 system TensorRT installation or Python package is not necessarily compatible.
 For example, this development host's DeepStream 9.1 links TensorRT 10.16.1 even
-though the default development files are TensorRT 11.3. Check with:
+though the default development files are TensorRT 11. Check with:
 
 ```sh
 readelf -d /opt/nvidia/deepstream/deepstream/lib/libnvds_infer.so | rg nvinfer

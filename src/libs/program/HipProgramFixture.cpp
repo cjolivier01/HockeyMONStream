@@ -117,7 +117,8 @@ int main(int argc, char** argv) {
           throw std::runtime_error("Unknown configured fixture argument: " + argument);
       }
       const auto launch = Take(hm::program::LoadProgramLaunchConfig(argv[2], argv[3], options));
-      const auto detector = Take(hm::program::PrepareProgramDetector(launch.inference_file, launch.inference, {}));
+      const auto detector =
+          Take(hm::program::PrepareProgramDetector(launch.inference_file, launch.inference, {}, launch.tiling));
       game = launch.game.string();
       camera = launch.camera;
       baseline.values = launch.configuration.values;
@@ -154,7 +155,8 @@ int main(int argc, char** argv) {
           detector.symmetric_padding,
           detector.fp16 ? hm::gpu::MigraphxSession::Precision::kFloat16 : hm::gpu::MigraphxSession::Precision::kFloat32,
           settings.maximum_inference_io_bytes,
-          settings.model_cache};
+          settings.model_cache,
+          launch.tiling};
       const auto& selected_blend = launch.blend;
       switch (Take(hm::stitching::ParseBlendMode(selected_blend.mode))) {
         case hm::stitching::BlendMode::kLaplacian:

@@ -1,9 +1,12 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+
+#include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/GpuMemoryProfile.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/common/ProcessDiagnostics.h"
+#include "hstream/src/libs/common/RuntimeControlConfig.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/program/RotationControls.h"
 #include "hstream/src/libs/program/ToneControls.h"
@@ -16,6 +19,7 @@
 #include "src/apps/hstream-ui/AnsiLogFormat.h"
 #include "src/apps/hstream-ui/ArchiveCatalog.h"
 #include "src/apps/hstream-ui/BackendPreview.h"
+#include "src/apps/hstream-ui/CameraChapterWarning.h"
 #include "src/apps/hstream-ui/CameraControlSpecs.h"
 #include "src/apps/hstream-ui/SupervisedProcess.h"
 #ifndef HSTREAM_USE_HIP
@@ -77,6 +81,7 @@
 #include <QtGui/QPaintEngine>
 #include <QtGui/QPalette>
 #include <QtGui/QResizeEvent>
+#include <QtGui/QShortcut>
 #include <QtGui/QStandardItemModel>
 #include <QtGui/QTextDocument>
 #include <QtGui/QWheelEvent>
@@ -268,7 +273,6 @@ double nonnegative_percentage(const YAML::Node& node) {
 
 constexpr int kFixedEdgeRotationMaximumX10 = 900;
 constexpr int kDefaultStitchCalibrationFrameCount = 4;
-constexpr int kMinimumReasonableStitchMaxOutputWidth = 4096;
 constexpr char kZeroStitchFrameTime[] = "00:00:00";
 constexpr char kStitchFrameTimeFormat[] = "HH:mm:ss";
 constexpr char kStitchFrameTimeFractionalFormat[] = "HH:mm:ss.zzz";
@@ -281,75 +285,7 @@ constexpr char kStitchedPreviewPipelineOptions[] =
 constexpr char kExternalStitchedPreviewRenderScale[] = "0.3012048193";
 
 bool is_cuda_out_of_memory_diagnostic(const QString& diagnostic) {
-  static const QRegularExpression cuda_status_2(R"(cuda failure:\s*status=2(?:[^0-9]|$))");
-  const QString normalized = diagnostic.toLower();
-  return cuda_status_2.match(normalized).hasMatch() || normalized.contains("cudaerrormemoryallocation") ||
-      normalized.contains("cuda_error_out_of_memory") ||
-      (normalized.startsWith("cuda error at ") && normalized.contains(": out of memory"));
-}
-
-// The source-bin no-progress watchdog reports through GST_ELEMENT_ERROR, which
-// carries no absl status prefix, so calibration_status_detail() cannot see it
-// and the line would be discarded as uninteresting. It is the most specific
-// cause there is when it fires, so match it by its own wording.
-bool is_stall_watchdog_diagnostic(const QString& diagnostic) {
-  return diagnostic.contains("no-progress watchdog expired", Qt::CaseInsensitive);
-}
-
-QString calibration_status_detail(const QString& message) {
-  static const QRegularExpression status(
-      R"(\b(?:CANCELLED|UNKNOWN|INVALID_ARGUMENT|DEADLINE_EXCEEDED|NOT_FOUND|ALREADY_EXISTS|PERMISSION_DENIED|)"
-      R"(RESOURCE_EXHAUSTED|FAILED_PRECONDITION|ABORTED|OUT_OF_RANGE|UNIMPLEMENTED|INTERNAL|UNAVAILABLE|DATA_LOSS|UNAUTHENTICATED):\s*)");
-  // Candidate-exhaustion summaries can wrap another status. The innermost
-  // status tells us whether the final message already supplies a concrete cause.
-  auto matches = status.globalMatch(message);
-  qsizetype detail_begin = -1;
-  while (matches.hasNext())
-    detail_begin = matches.next().capturedEnd();
-  return detail_begin < 0 ? QString() : message.mid(detail_begin).trimmed();
-}
-
-bool is_specific_calibration_status_detail(const QString& detail) {
-  const QString normalized = detail.toLower();
-  return !normalized.isEmpty() && normalized != "app run failed" &&
-      normalized != "pipeline failed during stitching calibration" &&
-      !normalized.startsWith("no stitching calibration frame pair");
-}
-
-QString stitching_oom_width_guidance(int current_max_output_width) {
-  if (current_max_output_width <= 0) {
-    return QString(
-               "Max stitched width was Auto, so HStream does not have a numeric stitched-width limit to halve. "
-               "Set Max stitched width to %1 pixels and press Play to retry; %1 is the lowest reasonable value.")
-        .arg(kMinimumReasonableStitchMaxOutputWidth);
-  }
-  if (current_max_output_width <= kMinimumReasonableStitchMaxOutputWidth) {
-    const QString position =
-        current_max_output_width == kMinimumReasonableStitchMaxOutputWidth ? "already at" : "already below";
-    return QString(
-               "This run used Max stitched width %1 pixels, which is %2 the %3-pixel lowest reasonable value; do "
-               "not reduce it further.")
-        .arg(current_max_output_width)
-        .arg(position)
-        .arg(kMinimumReasonableStitchMaxOutputWidth);
-  }
-
-  const int half_width = current_max_output_width / 2;
-  const int suggested_width = std::max(kMinimumReasonableStitchMaxOutputWidth, half_width);
-  const QString suggestion = suggested_width == half_width
-      ? QString("%1 pixels (half%2)")
-            .arg(suggested_width)
-            .arg(current_max_output_width % 2 == 0 ? "" : ", rounded down")
-      : QString("%1 pixels (the lowest reasonable value)").arg(suggested_width);
-  const QString retry_guidance = suggested_width == kMinimumReasonableStitchMaxOutputWidth
-      ? QString("%1 is the lowest reasonable value; do not reduce it further.")
-            .arg(kMinimumReasonableStitchMaxOutputWidth)
-      : QString("If another stitching OOM occurs, halve it again, stopping at %1 pixels.")
-            .arg(kMinimumReasonableStitchMaxOutputWidth);
-  return QString("This run used Max stitched width %1 pixels. Set it below %1 and press Play to retry; try %2. %3")
-      .arg(current_max_output_width)
-      .arg(suggestion)
-      .arg(retry_guidance);
+  return hm::stitching::failure::IsCudaOutOfMemory(diagnostic.toStdString());
 }
 
 template <typename Receiver, typename Slot>
@@ -919,9 +855,18 @@ class LetterboxRenderHost : public QWidget {
     }
     const int x = (available.width() - width) / 2;
     const int y = (available.height() - height) / 2;
+    const QRect surface_geometry(x, y, width, height);
+    const QRect target_geometry(0, 0, width, height);
+    constexpr int kButtonMargin = 6;
+    const QPoint button_position(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    const bool geometry_changed = render_surface_->geometry() != surface_geometry ||
+        render_target_->geometry() != target_geometry || focus_button_->pos() != button_position;
     const bool xcb = QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
-    const bool remap_target = xcb && !render_target_->isHidden();
-    const bool remap_focus_button = xcb && !focus_button_->isHidden();
+    // Status polls can repeat the same source dimensions. Remapping an
+    // unchanged target would clear the renderer's pixels, including its paused
+    // frame. Keep hidden QWindow geometry synchronized without unmapping it.
+    const bool remap_target = geometry_changed && xcb && !render_target_->isHidden();
+    const bool remap_focus_button = geometry_changed && xcb && !focus_button_->isHidden();
     const QRect old_focus_button_geometry = focus_button_->geometry();
     // Moving mapped native X11 children can leave their previous pixels in
     // Qt's backing store. Unmap the overlay hierarchy while geometry changes
@@ -930,10 +875,9 @@ class LetterboxRenderHost : public QWidget {
       focus_button_->hide();
     if (remap_target)
       render_target_->hide();
-    set_native_child_geometry(render_surface_, QRect(x, y, width, height));
-    set_native_child_geometry(render_target_, QRect(0, 0, width, height));
-    constexpr int kButtonMargin = 6;
-    focus_button_->move(width - focus_button_->width() - kButtonMargin, kButtonMargin);
+    set_native_child_geometry(render_surface_, surface_geometry);
+    set_native_child_geometry(render_target_, target_geometry);
+    focus_button_->move(button_position);
     if (remap_target) {
       render_target_->show();
       render_target_->raise();
@@ -1042,8 +986,9 @@ LogSeverity classify_log_message(const QString& message, bool stderr_output) {
     return LogSeverity::kWarning;
   if (success_pattern.match(message).hasMatch())
     return LogSeverity::kSuccess;
-  // Uncategorised runner stderr is still worth separating from the UI's own
-  // narration without shouting about it.
+  // Explicitly identified stderr can use the quieter detail style. The main
+  // pipeline merges its descriptors for ordered diagnostics, so its unmarked
+  // lines have no recoverable stream origin and retain the ordinary style.
   return stderr_output ? LogSeverity::kDetail : LogSeverity::kInfo;
 }
 
@@ -1057,11 +1002,7 @@ bool is_auto_chapter_file(const QString& file_name) {
   static const QRegularExpression insta360("^VID_[0-9]{8}_[0-9]{6}_[0-9]{3}\\.(MP4|mp4)$");
   static const QRegularExpression left_right("(left|right)(-[0-9])?\\.mp4$");
   return gopro.match(file_name).hasMatch() || insta360.match(file_name).hasMatch() ||
-      left_right.match(file_name).hasMatch();
-}
-
-bool is_root_auto_file(const QString& file_name) {
-  return is_auto_chapter_file(file_name);
+      left_right.match(file_name).hasMatch() || hm::stitching::IsStandaloneCameraFile(file_name.toStdString());
 }
 
 QString auto_file_family(const QString& file_name) {
@@ -1080,7 +1021,17 @@ QString auto_file_family(const QString& file_name) {
   if (lr_match.hasMatch()) {
     return "lr-" + lr_match.captured(1).toLower();
   }
+  if (hm::stitching::IsStandaloneCameraFile(file_name.toStdString())) {
+    return "file-" + file_name;
+  }
   return {};
+}
+
+bool is_root_auto_file(const QString& file_name) {
+  const QString family = auto_file_family(file_name);
+  // Arbitrary root videos may be published outputs; only imported camN inputs
+  // participate in standalone discovery.
+  return !family.isEmpty() && !family.startsWith("file-");
 }
 
 std::optional<QString> explicit_chapter_key(const QString& path) {
@@ -1110,6 +1061,31 @@ std::optional<QString> explicit_chapter_key(const QString& path) {
     return QString("lr:%1:%2").arg(QString::number(part.size()).rightJustified(10, '0'), part);
   }
   return std::nullopt;
+}
+
+bool normalized_explicit_playlist(const YAML::Node& explicit_videos, YAML::Node& playlist) {
+  std::map<QString, QString> by_chapter;
+  std::set<QString> schemes;
+  std::set<QString> unique_paths;
+  for (const auto& item : explicit_videos) {
+    const QString path = QString::fromStdString(item.as<std::string>());
+    if (!unique_paths.insert(path).second)
+      return false;
+    const auto chapter = explicit_chapter_key(path);
+    if (chapter && !by_chapter.emplace(*chapter, path).second)
+      return false;
+    if (chapter)
+      schemes.insert(chapter->section(':', 0, 0));
+  }
+  playlist = YAML::Node(YAML::NodeType::Sequence);
+  if (by_chapter.size() == explicit_videos.size() && schemes.size() == 1) {
+    for (const auto& [_, path] : by_chapter)
+      playlist.push_back(path.toStdString());
+  } else {
+    for (const auto& item : explicit_videos)
+      playlist.push_back(item.as<std::string>());
+  }
+  return playlist.size() > 0;
 }
 
 QString canonical_dir_path(const QString& path) {
@@ -4093,7 +4069,9 @@ YAML::Node map_value(YAML::Node parent, const char* key) {
   return YAML::Node();
 }
 
-YAML::Node merge_yaml_maps(const YAML::Node& base, const YAML::Node& overlay) {
+YAML::Node merge_yaml_maps(const YAML::Node& input_base, const YAML::Node& input_overlay) {
+  const auto base = hm::config::NormalizeRuntimeControlLayer(input_base);
+  const auto overlay = hm::config::NormalizeRuntimeControlLayer(input_overlay);
   if (!overlay.IsMap())
     return YAML::Clone(overlay);
   YAML::Node result = base.IsMap() ? YAML::Clone(base) : YAML::Node(YAML::NodeType::Map);
@@ -4710,11 +4688,13 @@ hm::ui_internal::StitchingIterationSettings read_stitching_iteration_settings(
     settings.show_crop_dialog = node.as<bool>();
   if (lookup_yaml_path(config, "hstream_ui.show_leveling_dialog", &node))
     settings.show_leveling_dialog = node.as<bool>();
-  if (lookup_yaml_path(config, "hstream_ui.playback_start_time", &node)) {
-    const auto parsed = parse_stitch_frame_time(QString::fromStdString(node.as<std::string>()));
-    if (!parsed.has_value())
-      throw std::invalid_argument("hstream_ui.playback_start_time must be HH:MM:SS or HH:MM:SS.mmm");
-    settings.playback_start_time = format_stitch_frame_time(*parsed);
+  const auto canonical = hm::config::NormalizeRuntimeControlLayer(config);
+  if (lookup_yaml_path(canonical, "playback.start_seconds", &node)) {
+    const double seconds = node.as<double>();
+    if (!std::isfinite(seconds) || seconds < 0 || seconds >= 86400)
+      throw std::invalid_argument("playback.start_seconds must be within one day");
+    settings.playback_start_time =
+        format_stitch_frame_time(QTime::fromMSecsSinceStartOfDay(std::llround(seconds * 1000)));
   }
   return settings;
 }
@@ -4730,7 +4710,8 @@ void write_stitching_iteration_settings(
   config["stitching"]["sync_method"] = settings.sync_method.toStdString();
   config["hstream_ui"]["show_crop_dialog"] = settings.show_crop_dialog;
   config["hstream_ui"]["show_leveling_dialog"] = settings.show_leveling_dialog;
-  config["hstream_ui"]["playback_start_time"] = settings.playback_start_time.toStdString();
+  config["playback"]["start_seconds"] =
+      parse_stitch_frame_time(settings.playback_start_time)->msecsSinceStartOfDay() / 1000.0;
 }
 
 QString resolve_config_path(const QString& path, const QString& base_dir) {
@@ -5003,11 +4984,17 @@ HStreamWindow::HStreamWindow(QWidget* parent, const hm::ui::BackendOptions& back
   development_pipeline_runner_ = hm::ui_internal::matching_development_pipeline_runner(application_path);
   development_bazel_bin_ = hm::ui_internal::matching_development_bazel_bin(application_path);
   setWindowIcon(hm::ui_internal::application_icon());
+  // Preview windows can hold activation while the pointer is over the transport.
+  // Disabled seek controls must still explain why seeking is unavailable.
+  setAttribute(Qt::WA_AlwaysShowToolTips);
   capture_complete_log_ = qEnvironmentVariableIsSet("HSTREAM_UI_E2E_GAME_ID");
   install_value_control_wheel_guard();
   qApp->installEventFilter(this);
   pipeline_process_ = new QProcess(this);
-  pipeline_process_->setProcessChannelMode(QProcess::SeparateChannels);
+  // Context records and failures can use different descriptors. Merge in the
+  // child before Qt buffers either pipe so delayed reads preserve their scope
+  // order, including CPU-fallback markers and internal configuration passes.
+  pipeline_process_->setProcessChannelMode(QProcess::MergedChannels);
   connect(pipeline_process_, &QProcess::started, this, [this]() { handlePipelineStarted(); });
   connect(
       pipeline_process_,
@@ -5126,7 +5113,7 @@ void HStreamWindow::loadBaselineDefaults() {
   baseline_config_ = merge_yaml_maps(loaded->values, user_overlay);
   hm::stitching::PreserveLegacyInputLensSelection(baseline_config_, user_overlay);
   baseline_layer_ = YAML::Clone(loaded->values);
-  user_layer_ = YAML::Clone(user_overlay);
+  user_layer_ = hm::config::NormalizeRuntimeControlLayer(user_overlay);
   baseline_config_root_ = QString::fromStdString(loaded->root.string());
 
   auto require = [this](const QString& path) {
@@ -5178,7 +5165,7 @@ void HStreamWindow::loadBaselineDefaults() {
   };
   auto checked = [this](const QString& id, int value, int, int) { camera_defaults_[id] = value; };
 
-  require("hstream_ui.playback_start_time");
+  require("playback.start_seconds");
   require("stitching.sync_method");
   hm::ui_internal::StitchingIterationSettings iteration_defaults;
   iteration_defaults.show_crop_dialog = boolean("hstream_ui.show_crop_dialog");
@@ -5186,8 +5173,8 @@ void HStreamWindow::loadBaselineDefaults() {
   default_show_scoreboard_dialog_ = boolean("hstream_ui.show_scoreboard_dialog");
   static_cast<void>(hm::ui::ReadInt8PreparationDefaults(baseline_config_));
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_, iteration_defaults);
-  default_drivegpt_database_enabled_ = boolean("hstream_ui.drivegpt_database.enabled");
-  default_playback_realtime_ = boolean("hstream_ui.playback_realtime");
+  default_drivegpt_database_enabled_ = boolean("telemetry.enabled");
+  default_playback_realtime_ = boolean("playback.realtime");
   const auto control_points_default = hm::stitching::read_control_point_limit(baseline_config_);
   if (!control_points_default.ok())
     throw std::runtime_error(control_points_default.status().ToString());
@@ -5397,9 +5384,8 @@ void HStreamWindow::loadBaselineDefaults() {
         std::string("Invalid rink.camera.fixed_edge_rotation_angle in bundled baseline: ") + error.what());
   }
 
-  // These selectors describe where a UI edit is applied, rather than a
-  // HockeyMOM config value. A zero speed/acceleration means no UI override, so
-  // the effective values continue to come from the baseline-backed pipeline.
+  // Target selectors and absolute motion limits share the runtime configuration.
+  // Zero inherits each box's configured translation limit.
   for (const char* id :
        {"Apply_To_Fast_Box",
         "Apply_To_Follower_Box",
@@ -5407,9 +5393,9 @@ void HStreamWindow::loadBaselineDefaults() {
         "Max_Speed_Y_x10",
         "Max_Accel_X_x10",
         "Max_Accel_Y_x10"})
-    camera_defaults_[id] = integer(QString("hstream_ui.camera_controls.%1").arg(id));
+    camera_defaults_[id] = hm::config::RuntimeControlPresentationValue(baseline_config_, id);
   for (const auto& spec : hm::program::kToneControls) {
-    const int value = integer(QString("hstream_ui.camera_controls.%1").arg(spec.id));
+    const int value = std::lround(hm::config::RuntimeControlPresentationValue(baseline_config_, spec.id));
     if (value < spec.minimum || value > spec.maximum)
       throw std::runtime_error(std::string("Invalid baseline tone value: ") + spec.id);
     camera_defaults_[spec.id] = value;
@@ -5445,6 +5431,7 @@ void HStreamWindow::loadBaselineDefaults() {
 }
 
 HStreamWindow::~HStreamWindow() {
+  stopSourceCamera();
   // The durable record remains authoritative if closing cannot prove shutdown.
   struct ForgetAdmission {
     HStreamWindow* window;
@@ -5499,6 +5486,10 @@ HStreamWindow::~HStreamWindow() {
 }
 
 bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (source_camera_player_ && source_camera_index_ >= 0 &&
+      watched == camera_preview_render_targets_[source_camera_index_] &&
+      (event->type() == QEvent::Show || event->type() == QEvent::Resize))
+    source_camera_redraw_pending_ = true;
   if (route_value_control_wheel(this, watched, event))
     return true;
   if (watched == setup_preview_splitter_ && event && event->type() == QEvent::Resize && !setup_split_seeded_ &&
@@ -5535,6 +5526,7 @@ bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
 }
 
 void HStreamWindow::closeEvent(QCloseEvent* event) {
+  stopSourceCamera();
   if (!event) {
     return;
   }
@@ -6361,6 +6353,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     playback_start_time_edit_->setDisplayFormat(
         value.msec() == 0 && !playback_start_time_edit_->hasFocus() ? kStitchFrameTimeFormat
                                                                     : kStitchFrameTimeFractionalFormat);
+    updateInheritedStitchFrameTime();
     updatePresetDirtyState();
   });
   setStitchingIterationSettings(default_iteration_settings_);
@@ -6370,8 +6363,15 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stitch_frame_time_edit_->setMinimumWidth(110);
   stitch_frame_time_edit_->setToolTip(
       "First calibration frame: HH:MM:SS[.mmm], or a negative time relative to the synchronized recording end. "
-      "Additional samples wrap to the beginning. Playback resumes at Playback start after calibration.");
-  connect(stitch_frame_time_edit_, &QLineEdit::textChanged, this, [this] { updatePresetDirtyState(); });
+      "Zero uses Playback start. Additional samples wrap to Playback start. "
+      "Playback resumes there after calibration.");
+  connect(stitch_frame_time_edit_, &QLineEdit::textChanged, this, [this] {
+    stitch_frame_time_inherits_playback_ = parse_calibration_reference(stitch_frame_time_edit_->text().trimmed()) ==
+        QString::fromLatin1(kZeroStitchFrameTime);
+    updatePresetDirtyState();
+  });
+  connect(stitch_frame_time_edit_, &QLineEdit::editingFinished, this, &HStreamWindow::updateInheritedStitchFrameTime);
+  setStitchFrameTime(default_stitch_frame_time_);
   updateStitchFrameTimeAvailability();
 
   render_video_toggle_ = new QCheckBox("Render video");
@@ -6490,6 +6490,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
     std::map<QString, double> current_controls;
     for (const auto& [id, value] : camera_defaults_)
       current_controls[id] = cameraControlValue(id);
+    stopSourceCamera();
     auto* dialog = new CameraExperimentDialog(
         gameDirectoryText(), this, current_controls, playback_start_time_edit_->time().msecsSinceStartOfDay());
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -6585,7 +6586,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
           "Initialized _hockeymon/config.yaml from the displayed settings for Stitching Experiments. "
           "Save Preset stores later changes for this recording.");
     }
-    auto selection_applied = std::make_shared<bool>(false);
+    stopSourceCamera();
     auto* dialog = new StitchingExperimentDialog(
         game_directory,
         runner,
@@ -6596,16 +6597,11 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         stitchingCalibrationFrameCount(),
         stitchFrameTime(),
         this,
-        [this, selection_applied]() {
-          *selection_applied = true;
+        [this]() {
           loadSavedControlConfig();
           appendLog("selected stitching experiment published; main Program will reuse its maps and seam");
         },
         format_stitch_frame_time(playback_start_time_edit_->time()));
-    connect(dialog, &QDialog::finished, this, [this, game_directory, selection_applied](int) {
-      if (*selection_applied)
-        openPromotedStitchingLeveling(game_directory);
-    });
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
     dialog->show();
@@ -6645,6 +6641,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
           this, "Highlights", "No published archive was found for " + game_id + ". Run and publish one first.");
       return;
     }
+    stopSourceCamera();
     auto* dialog = new hm::ui::HighlightsDialog(
         game_id,
         game_dir,
@@ -6897,6 +6894,180 @@ void HStreamWindow::updateWindowTitle() {
   setWindowTitle(game_id.isEmpty() ? title : title + " — " + game_id);
 }
 
+QStringList HStreamWindow::sourceCameraFiles(int camera) const {
+  if (camera < 0 || camera >= static_cast<int>(camera_optics_sources_.size()))
+    return {};
+  const std::filesystem::path game = gameDirectoryText().toStdString();
+  const auto source = (game / camera_optics_sources_[camera]).lexically_normal();
+  const auto matches = [&](const QStringList& files) {
+    return !files.isEmpty() && std::filesystem::path(files.front().toStdString()).lexically_normal() == source;
+  };
+  const auto saved = load_desktop_game_config(game / "_hockeymon/config.yaml");
+  if (!saved.ok())
+    return {};
+  if (saved->has_value()) {
+    const YAML::Node config = **saved;
+    for (const auto& section : {config["hstream_ui"], config["game"]}) {
+      const auto roles = section && section.IsMap()
+          ? (section["video_roles"] ? section["video_roles"] : section["videos"]) : YAML::Node();
+      if (!roles || !roles.IsMap())
+        continue;
+      for (const auto& entry : roles) {
+        if (!entry.second.IsSequence())
+          continue;
+        QStringList files;
+        for (const auto& file : entry.second)
+          if (file.IsScalar())
+            files.push_back(QString::fromStdString((game / file.as<std::string>()).lexically_normal().string()));
+        if (matches(files)) {
+          // The optics identity follows the original selected first file;
+          // playback follows Program's normalized chapter sequence.
+          YAML::Node playlist;
+          if (!normalized_explicit_playlist(entry.second, playlist))
+            return {};
+          files.clear();
+          for (const auto& file : playlist)
+            files.push_back(QString::fromStdString((game / file.as<std::string>()).lexically_normal().string()));
+          return files;
+        }
+      }
+    }
+  }
+  const auto discovered = hm::stitching::get_available_videos(game.string());
+  if (discovered.ok())
+    for (const auto& [key, chapters] : *discovered) {
+      QStringList files;
+      for (const auto& [number, file] : chapters)
+        files.push_back(QString::fromStdString((game / file).lexically_normal().string()));
+      if (matches(files))
+        return files;
+    }
+  return {};
+}
+
+void HStreamWindow::playSourceCamera(int camera, bool play, std::optional<qint64> seek) {
+  updateRunControls(); // Recheck durable ownership immediately before admission.
+  if (!source_camera_available_ || camera < 0 || camera >= static_cast<int>(camera_optics_sources_.size()) ||
+      preview_tabs_->currentIndex() != camera + 2)
+    return;
+  if (source_camera_index_ != camera) {
+    stopSourceCamera();
+    const auto files = sourceCameraFiles(camera);
+    if (files.isEmpty()) {
+      appendLog("Camera preview could not resolve the selected recording's chapters.");
+      return;
+    }
+    if (!beginGameOperation("pipeline"))
+      return;
+    source_camera_index_ = camera; // Retain admission until the graph is destroyed.
+    source_camera_player_ = std::make_unique<hm::ui::SourceCameraPlayer>();
+    auto* surface = camera_preview_surfaces_[camera];
+    auto* target = static_cast<hm::ui::NativePreviewSurface*>(camera_preview_render_targets_[camera]);
+    target->setImageMode(false);
+    surface->show();
+    target->show();
+    camera_preview_notices_[camera]->hide();
+    QString error;
+    if (!source_camera_player_->Open(files, target->winId(), pipeline_stop_timeout_ms_, &error)) {
+      appendLog("Camera preview: " + error);
+      stopSourceCamera();
+      return;
+    }
+    source_camera_player_->Seek(seek.value_or(source_camera_positions_[camera]));
+  } else if (seek) {
+    source_camera_player_->Seek(*seek);
+  }
+  if (play)
+    source_camera_player_->Play();
+  else
+    source_camera_player_->Pause();
+  pollSourceCamera();
+}
+
+void HStreamWindow::stopSourceCamera() {
+  if (!source_camera_player_)
+    return;
+  const int camera = source_camera_index_;
+  source_camera_positions_[camera] = source_camera_player_->GetStatus().position_ms;
+  source_camera_player_->Close();
+  source_camera_player_.reset();
+  source_camera_index_ = -1;
+  source_camera_redraw_pending_ = false;
+  setPreviewFocusAvailable(QString("source%1").arg(camera), false);
+  if (preview_focus_mode_)
+    setPreviewFocusMode(false, camera + 2);
+  camera_preview_render_targets_[camera]->setProperty("sourceCameraPresentedPts", qint64{-1});
+  camera_preview_render_targets_[camera]->hide();
+  camera_preview_surfaces_[camera]->hide();
+  releaseGameOperationIfStopped();
+  updateSourceCameraControls(source_camera_available_);
+}
+
+void HStreamWindow::pollSourceCamera() {
+  if (!source_camera_player_)
+    return;
+  const auto status = source_camera_player_->Poll();
+  const int camera = source_camera_index_;
+  source_camera_positions_[camera] = status.position_ms;
+  source_camera_durations_[camera] = status.duration_ms;
+  if (!status.error.isEmpty()) {
+    appendLog("Camera preview: " + status.error);
+    stopSourceCamera();
+    return;
+  }
+  if (status.width > 0 && status.height > 0) {
+    auto* host = static_cast<LetterboxRenderHost*>(preview_hosts_[camera + 2]);
+    host->setVideoSize(status.width, status.height);
+  }
+  camera_preview_render_targets_[camera]->setProperty("sourceCameraPresentedPts", status.presented_ns);
+  setPreviewFocusAvailable(QString("source%1").arg(camera), status.ready && status.presented_ns >= 0);
+  source_camera_play_[camera]->setText(status.playing ? "Pause camera" : "Play camera");
+  source_camera_play_[camera]->setIcon(action_icon(status.playing ? ActionIcon::Pause : ActionIcon::Play));
+  auto* slider = source_camera_seek_[camera];
+  if (!slider->isSliderDown()) {
+    const QSignalBlocker blocker(slider);
+    slider->setRange(0, static_cast<int>(std::min<qint64>(status.duration_ms - 1, std::numeric_limits<int>::max())));
+    slider->setValue(static_cast<int>(status.position_ms));
+  }
+  const auto clock = [](qint64 ms) {
+    const auto seconds = std::max<qint64>(0, ms / 1000);
+    return QString("%1:%2:%3").arg(seconds / 3600, 2, 10, QChar('0'))
+        .arg(seconds / 60 % 60, 2, 10, QChar('0')).arg(seconds % 60, 2, 10, QChar('0'));
+  };
+  source_camera_time_[camera]->setText(clock(status.position_ms) + " / " + clock(status.duration_ms));
+  source_camera_seek_[camera]->setEnabled(source_camera_available_ && status.ready);
+  source_camera_stop_[camera]->setEnabled(true);
+  if (source_camera_redraw_pending_ && status.ready && camera_preview_render_targets_[camera]->isVisible()) {
+    if (status.playing || source_camera_player_->Redraw())
+      source_camera_redraw_pending_ = false;
+  }
+}
+
+void HStreamWindow::updateSourceCameraControls(bool available) {
+  source_camera_available_ = available && QGuiApplication::platformName().compare("xcb", Qt::CaseInsensitive) == 0;
+  if (!source_camera_available_)
+    stopSourceCamera();
+  for (size_t camera = 0; camera < source_camera_play_.size(); ++camera) {
+    const bool enabled = source_camera_available_ && camera < camera_optics_sources_.size();
+    const bool active = static_cast<int>(camera) == source_camera_index_;
+    source_camera_play_[camera]->setEnabled(enabled);
+    source_camera_play_[camera]->setToolTip(enabled ? "Play this camera's original recording. Leaving this tab pauses it."
+                                                  : "Camera playback is available while other playback and workflows are stopped.");
+    source_camera_stop_[camera]->setEnabled(active);
+    source_camera_seek_[camera]->setEnabled(enabled && source_camera_durations_[camera] > 0);
+    if (!active) {
+      const QSignalBlocker blocker(source_camera_seek_[camera]);
+      source_camera_seek_[camera]->setRange(0, static_cast<int>(std::min<qint64>(
+          std::max<qint64>(0, source_camera_durations_[camera] - 1), std::numeric_limits<int>::max())));
+      source_camera_seek_[camera]->setValue(static_cast<int>(source_camera_positions_[camera]));
+      if (!source_camera_durations_[camera])
+        source_camera_time_[camera]->setText("00:00:00 / 00:00:00");
+      source_camera_play_[camera]->setText("Play camera");
+      source_camera_play_[camera]->setIcon(action_icon(ActionIcon::Play));
+    }
+  }
+}
+
 void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_tabs_ = new QTabWidget();
   preview_tabs_->setObjectName("previewTabs");
@@ -7003,6 +7174,22 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   program_footer->addWidget(scoreboard_select_button_);
   program_footer->addWidget(new QLabel("Position:"));
   program_footer->addWidget(scoreboard_position_combo_);
+  scoreboard_scale_spin_ = new QDoubleSpinBox();
+  scoreboard_scale_spin_->setObjectName("scoreboardScaleSpin");
+  scoreboard_scale_spin_->setRange(0.1, 4.0);
+  scoreboard_scale_spin_->setDecimals(2);
+  scoreboard_scale_spin_->setSingleStep(0.01);
+  scoreboard_scale_spin_->setSuffix("×");
+  scoreboard_scale_spin_->setToolTip(
+      "Scoreboard size on the next playback, including recordings and streams. "
+      "1× keeps the original size; 0.5× halves it; 2× doubles it. Save Preset to keep this scale.");
+  auto* scale_label = new QLabel("Scale (next play):");
+  scale_label->setBuddy(scoreboard_scale_spin_);
+  program_footer->addWidget(scale_label);
+  program_footer->addWidget(scoreboard_scale_spin_);
+  connect(
+      scoreboard_scale_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+      [this] { updatePresetDirtyState(); });
   scoreboard_controls_status_ = new QLabel();
   scoreboard_controls_status_->setObjectName("scoreboardControlsStatus");
   scoreboard_controls_status_->setWordWrap(true);
@@ -7090,6 +7277,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     auto* camera_layout = new QVBoxLayout(camera);
     auto* camera_splitter = new QSplitter(Qt::Horizontal, camera);
     auto* camera_preview = new QWidget(camera_splitter);
+    camera_preview->setFocusPolicy(Qt::StrongFocus);
     auto* camera_preview_layout = new QVBoxLayout(camera_preview);
     auto* camera_host = new LetterboxRenderHost(16.0 / 9.0);
     camera_host->setObjectName(QString("camera%1LetterboxHost").arg(camera_index + 1));
@@ -7100,6 +7288,8 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
     QWidget* camera_render_target = camera_host->renderTarget();
     camera_render_target->setObjectName(QString("camera%1PreviewRenderTarget").arg(camera_index + 1));
     camera_preview_render_targets_.push_back(camera_render_target);
+    camera_render_target->installEventFilter(this);
+    camera_render_target->setFocusPolicy(Qt::StrongFocus);
 
     auto* camera_notice = new QLabel("Camera preview requires embedded X11 rendering", camera_host);
     camera_notice->setObjectName(QString("camera%1ExternalRenderNotice").arg(camera_index + 1));
@@ -7117,6 +7307,58 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
         QString("Camera %1 decoded source preview — downstream controls do not alter this tab").arg(camera_index + 1));
     camera_status->setObjectName(QString("camera%1PreviewStatusLabel").arg(camera_index + 1));
     camera_preview_layout->addWidget(camera_status);
+    auto* transport = new QHBoxLayout();
+    auto* play = new QPushButton(action_icon(ActionIcon::Play), "Play camera");
+    play->setObjectName(QString("camera%1PlayButton").arg(camera_index + 1));
+    auto* stop = new QPushButton(action_icon(ActionIcon::Stop), "Stop");
+    stop->setObjectName(QString("camera%1StopButton").arg(camera_index + 1));
+    auto* seek = new PlaybackSeekSlider(Qt::Horizontal);
+    seek->setObjectName(QString("camera%1SeekSlider").arg(camera_index + 1));
+    seek->setAccessibleName("Camera recording position");
+    seek->setToolTip(
+        "Seek within this camera's original recording; Left/Right moves 10 seconds. Independent of Playback start and Input trim.");
+    seek->setSingleStep(10000);
+    seek->setPageStep(10000);
+    auto* time = new QLabel("00:00 / 00:00");
+    time->setObjectName(QString("camera%1PlaybackTime").arg(camera_index + 1));
+    source_camera_play_.push_back(play);
+    source_camera_stop_.push_back(stop);
+    source_camera_seek_.push_back(seek);
+    source_camera_time_.push_back(time);
+    transport->addWidget(play);
+    transport->addWidget(stop);
+    transport->addWidget(seek, 1);
+    transport->addWidget(time);
+    camera_preview_layout->addLayout(transport);
+    connect(play, &QPushButton::clicked, this, [this, camera_index] {
+      if (source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing)
+        source_camera_player_->Pause();
+      else
+        playSourceCamera(camera_index, true);
+      pollSourceCamera();
+    });
+    connect(stop, &QPushButton::clicked, this, [this] { stopSourceCamera(); });
+    const auto seek_camera = [this, camera_index](int value) {
+      const bool playing = source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing;
+      playSourceCamera(camera_index, playing, value);
+    };
+    seek->setReleaseHandler([seek_camera](std::optional<int> value) { if (value) seek_camera(*value); });
+    connect(seek, &QSlider::valueChanged, this, [seek, seek_camera](int value) {
+      if (!seek->isSliderDown()) seek_camera(value);
+    });
+    for (const auto key : {Qt::Key_Left, Qt::Key_Right}) {
+      auto* shortcut = new QShortcut(QKeySequence(key), camera_preview);
+      shortcut->setContext(Qt::WidgetWithChildrenShortcut);
+      connect(shortcut, &QShortcut::activated, this, [this, camera_index, key] {
+        const bool active = source_camera_index_ == camera_index && source_camera_player_;
+        const auto status = active ? source_camera_player_->GetStatus() : hm::ui::SourceCameraPlayer::Status{};
+        const qint64 position = active ? status.position_ms : source_camera_positions_[camera_index];
+        playSourceCamera(
+            camera_index,
+            active && status.playing,
+            std::max<qint64>(0, position + (key == Qt::Key_Left ? -10000 : 10000)));
+      });
+    }
     auto* controls = new QTabWidget(camera_splitter);
     controls->setObjectName(QString("camera%1ControlTabs").arg(camera_index + 1));
     auto* source_start = new CameraSourceStartWidget(controls);
@@ -7161,7 +7403,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   preview_tabs_->setTabToolTip(
       pipeline_inspector_tab_index_,
       "Inspect the structured live GStreamer graph, select elements, and edit explicitly live-mutable properties.");
+  auto* camera_poll = new QTimer(this);
+  camera_poll->setInterval(runtime_control_debounce_ms_);
+  connect(camera_poll, &QTimer::timeout, this, [this] { pollSourceCamera(); });
+  camera_poll->start();
   connect(preview_tabs_, &QTabWidget::currentChanged, this, [this](int tab_index) {
+    if (source_camera_player_ && tab_index != source_camera_index_ + 2) {
+      source_camera_player_->Pause();
+      pollSourceCamera();
+    }
     if (preview_focus_mode_) {
       if (!canFocusPreview(tab_index)) {
         setPreviewFocusMode(false, tab_index);
@@ -7642,6 +7892,14 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     for (const QString mode : {"fp32", "fp16", "bf16", "int8"})
       detector_precision_combo_->addItem(mode.toUpper(), mode);
     detection_layout->addWidget(detector_precision_combo_);
+    tiled_detection_check_ = new QCheckBox("Two-tile detection (next run)");
+    tiled_detection_check_->setObjectName("tiledDetectionCheck");
+    tiled_detection_check_->setEnabled(!backend_.isHockeyMon());
+    tiled_detection_check_->setToolTip(
+        "Processes two overlapping crops in one batch. Can improve small detections in wide panoramas; "
+        "adds GPU work. Available with the native HStream backend.");
+    detection_layout->addWidget(tiled_detection_check_);
+    connect(tiled_detection_check_, &QCheckBox::toggled, this, [this] { updatePresetDirtyState(); });
     detector_precision_status_ = new QLabel();
     detector_precision_status_->setObjectName("detectorPrecisionStatus");
     detector_precision_status_->setWordWrap(true);
@@ -8622,7 +8880,26 @@ bool HStreamWindow::runAutooptimizer() const {
   return run_autooptimizer_check_ ? run_autooptimizer_check_->isChecked() : default_run_autooptimizer_;
 }
 
+void HStreamWindow::setStitchFrameTime(const QString& value) {
+  const QSignalBlocker blocker(stitch_frame_time_edit_);
+  stitch_frame_time_inherits_playback_ =
+      parse_calibration_reference(value) == QString::fromLatin1(kZeroStitchFrameTime);
+  stitch_frame_time_edit_->setText(value);
+  updateInheritedStitchFrameTime();
+}
+
+void HStreamWindow::updateInheritedStitchFrameTime() {
+  if (stitch_frame_time_edit_ && playback_start_time_edit_ && stitch_frame_time_inherits_playback_) {
+    const QSignalBlocker blocker(stitch_frame_time_edit_);
+    stitch_frame_time_edit_->setText(format_stitch_frame_time(playback_start_time_edit_->time()));
+  }
+}
+
 QString HStreamWindow::stitchFrameTime() const {
+  // Keep zero as the persisted inheritance marker, while displaying its current
+  // effective value. Explicit positive and negative references stay independent.
+  if (stitch_frame_time_inherits_playback_)
+    return QString::fromLatin1(kZeroStitchFrameTime);
   const auto text = stitch_frame_time_edit_ ? stitch_frame_time_edit_->text().trimmed() : default_stitch_frame_time_;
   return parse_calibration_reference(text).value_or(text);
 }
@@ -8758,6 +9035,7 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
   camera_source_starts_ = result.camera.input_start_times;
   if (input_camera_defaults_group_)
     input_camera_defaults_group_->setVisible(editing_defaults_);
+  const auto previous_sources = camera_optics_sources_;
   camera_optics_sources_.clear();
   if (!editing_defaults_ && !result.panorama)
     for (const auto& [source, values] : result.camera.input_cameras)
@@ -8774,6 +9052,11 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
         };
         return rank(left) < rank(right);
       });
+  if (previous_sources != camera_optics_sources_) {
+    stopSourceCamera();
+    source_camera_positions_ = {};
+    source_camera_durations_ = {};
+  }
   if (!preview_tabs_)
     return;
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
@@ -9234,20 +9517,8 @@ bool HStreamWindow::rinkLevelingInputsUnchanged() const {
       saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount();
 }
 
-void HStreamWindow::openPromotedStitchingLeveling(const QString& game_directory) {
-  // Promotion first closes its modal dialog and drains its workers. Start this
-  // optional editor on the next event-loop turn, after that close has completed.
-  QTimer::singleShot(0, this, [this, game_directory]() {
-    if (!same_file_path(gameDirectoryText(), game_directory) || mappingBackend() != "nona" ||
-        !stitchingIterationSettings().show_leveling_dialog ||
-        (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
-        QApplication::activeModalWidget())
-      return;
-    selectRinkLeveling();
-  });
-}
-
 void HStreamWindow::selectRinkLeveling() {
+  stopSourceCamera();
   if (!ensureSavedControlConfigLoaded())
     return;
   if (!rink_leveling_button_ || !rink_leveling_button_->isEnabled() || !game_id_edit_)
@@ -9275,6 +9546,7 @@ void HStreamWindow::selectRinkLeveling() {
 }
 
 void HStreamWindow::selectRinkMap() {
+  stopSourceCamera();
   if (!ensureSavedControlConfigLoaded() || !rink_map_button_ || !rink_map_button_->isEnabled() || !game_id_edit_)
     return;
   const auto saved_parameters = saved_projection_parameters_.find(stitchProjection());
@@ -9327,6 +9599,7 @@ void HStreamWindow::selectRinkMap() {
 }
 
 void HStreamWindow::selectProjectionCrop() {
+  stopSourceCamera();
   if (!ensureSavedControlConfigLoaded())
     return;
   if (!projection_crop_button_ || !projection_crop_button_->isEnabled() || !game_id_edit_)
@@ -9401,6 +9674,9 @@ bool HStreamWindow::ensureProjectionCropReviewed(bool* cancelled) {
       return true;
     try {
       const auto config = YAML::LoadFile(QDir(directory).filePath("_hockeymon/config.yaml").toStdString());
+      YAML::Node review;
+      if (lookup_yaml_path(config, "hstream_ui.stitching_calibration.review_pending", &review) && review.as<bool>())
+        return true; // Play reviews the promoted alignment through the owned setup flow.
       if (hm::stitching::HasStitchingReframeIntent(config))
         return true; // The requested view was already accepted; startup validates its source.
       YAML::Node status;
@@ -10022,6 +10298,15 @@ bool HStreamWindow::resolveInitialProgramSources() {
       }
     }
     initial_program_requires_stitching_ = sources.contains("left");
+    if (*initial_program_requires_stitching_) {
+      std::map<std::string, std::vector<std::string>> chapters;
+      for (const auto& role : roles)
+        for (const auto& path : sources.value(role).toArray())
+          chapters[role.toStdString()].push_back(path.toString().toStdString());
+      const auto checked = hm::stitching::ValidateCameraChapters(chapters);
+      if (!checked.ok() && !ConfirmCameraChapterWarning(this, QString::fromStdString(std::string(checked.message()))))
+        return false;
+    }
     return true;
   } catch (const std::exception& error) {
     const QString detail = QString::fromUtf8(error.what());
@@ -10045,6 +10330,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   }
   *calibration_required = false;
   active_stitching_reframe_ = false;
+  active_stitching_review_ = false;
   if (hockeyMonProgram() && !backend_.initial_launch.isEmpty()) {
     if (!initial_program_requires_stitching_.has_value()) {
       appendLog("Initial HockeyMON source ownership must be resolved before stitching admission");
@@ -10372,6 +10658,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       }
       calibration_plan = *plan;
       active_stitching_reframe_ = plan->alignment_reused;
+      active_stitching_review_ = plan->review_required;
       replay_selected_frames = plan->retain_selected_frames;
       clean_all = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kAll;
       clean_from_control_points = plan->cleanup == hm::stitching::StitchingCalibrationCleanup::kControlPoints;
@@ -10843,287 +11130,55 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
 }
 
 void HStreamWindow::recordStitchingCalibrationDiagnostic(const QString& line) {
-  const QString diagnostic = line.trimmed();
-  if (diagnostic.isEmpty())
-    return;
-  if (diagnostic.startsWith("HSTREAM_ONNX_FALLBACK provider=cpu reason=cuda-out-of-memory ")) {
-    // A recovered inference OOM must not override a later CPU/model/geometry
-    // error in the failure dialog. The complete runtime log retains the event.
-    calibration_cuda_out_of_memory_ = false;
-    calibration_hmstitcher_input_pool_failure_ = false;
-    calibration_stitch_blender_oom_ = false;
-    calibration_diagnostic_lines_.clear();
-    return;
-  }
-  const QString normalized = diagnostic.toLower();
-  const bool cuda_out_of_memory = is_cuda_out_of_memory_diagnostic(diagnostic);
-  const bool gpu_buffer_allocation_failure = normalized.contains("gst_nvds_buffer_pool_alloc_buffer") ||
-      normalized.contains("failed to activate bufferpool") || normalized.contains("error(-1) in buffer allocation");
-  const bool hmstitcher_input_pool_failure =
-      normalized.contains("hmstitcher_conv0") && normalized.contains("failed to activate bufferpool");
-  const bool stall_watchdog = is_stall_watchdog_diagnostic(diagnostic);
-  calibration_cuda_out_of_memory_ = calibration_cuda_out_of_memory_ || cuda_out_of_memory;
-  calibration_hmstitcher_input_pool_failure_ =
-      calibration_hmstitcher_input_pool_failure_ || hmstitcher_input_pool_failure;
-  calibration_stitch_blender_oom_ =
-      calibration_stitch_blender_oom_ || (cuda_out_of_memory && normalized.contains("cudablend"));
-  // Keep the first expiry: the budget runs out once, then teardown can emit
-  // further stall errors from the other barrier waiters as the pipeline unwinds.
-  if (stall_watchdog && calibration_stall_watchdog_message_.isEmpty())
-    calibration_stall_watchdog_message_ = diagnostic;
-  const bool rejected_hypothesis = diagnostic.startsWith("Rejected calibrated MAGSAC hypothesis");
-  const bool rejected_candidate = diagnostic.startsWith("Skipping pooled stitching calibration") ||
-      diagnostic.startsWith("Skipping stitching calibration frame pair");
-  const bool useful = cuda_out_of_memory || gpu_buffer_allocation_failure || rejected_hypothesis ||
-      rejected_candidate || stall_watchdog || diagnostic.startsWith("Trying ") ||
-      diagnostic.startsWith("OpenCV mapping backend ") || !calibration_status_detail(diagnostic).isEmpty() ||
-      diagnostic.contains("HSTREAM_CALIBRATION") || diagnostic.contains("enblend", Qt::CaseInsensitive) ||
-      diagnostic.contains("autooptimiser", Qt::CaseInsensitive);
-  if (!useful)
-    return;
-  if (rejected_hypothesis)
-    ++calibration_rejected_hypotheses_;
-  if (rejected_candidate)
-    ++calibration_rejected_candidates_;
-  if (calibration_diagnostic_lines_.isEmpty() || calibration_diagnostic_lines_.back() != diagnostic)
-    calibration_diagnostic_lines_.append(diagnostic);
-  constexpr int kMaximumCalibrationDiagnostics = 24;
-  while (calibration_diagnostic_lines_.size() > kMaximumCalibrationDiagnostics)
-    calibration_diagnostic_lines_.removeFirst();
-
-  if (calibration_dialog_failed_ && calibration_detail_ && !calibration_failure_message_.isEmpty()) {
+  const auto& evidence = calibration_failure_session_.evidence();
+  const unsigned hypotheses = evidence.rejected_hypotheses();
+  const unsigned candidates = evidence.rejected_candidates();
+  // Protocol rejection disables frozen-context advice but does not mutate the
+  // processing outcome. The complete runtime log remains available.
+  (void)calibration_failure_session_.Record(line.toStdString());
+  if (calibration_dialog_failed_ && calibration_detail_ && !calibration_failure_message_.isEmpty())
     calibration_detail_->setText(stitchingCalibrationFailureAnalysis(calibration_failure_message_));
-  }
-
-  if ((rejected_hypothesis || rejected_candidate) && calibration_detail_ && calibration_pending_ &&
-      !calibration_dialog_failed_ && !pipeline_stop_requested_ && !calibration_waiting_for_playback_restart_) {
+  if ((hypotheses != evidence.rejected_hypotheses() || candidates != evidence.rejected_candidates()) &&
+      calibration_detail_ && calibration_pending_ && !calibration_dialog_failed_ && !pipeline_stop_requested_ &&
+      !calibration_waiting_for_playback_restart_) {
     calibration_detail_->setText(
         QString(
             "An alignment candidate was rejected safely. Trying another geometry hypothesis or sampled frame "
             "(%1 hypothesis rejection%2, %3 frame-set rejection%4 so far). This fallback search is bounded.")
-            .arg(calibration_rejected_hypotheses_)
-            .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
-            .arg(calibration_rejected_candidates_)
-            .arg(calibration_rejected_candidates_ == 1 ? "" : "s"));
+            .arg(evidence.rejected_hypotheses())
+            .arg(evidence.rejected_hypotheses() == 1 ? "" : "s")
+            .arg(evidence.rejected_candidates())
+            .arg(evidence.rejected_candidates() == 1 ? "" : "s"));
   }
 }
 
 QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& message) const {
-  QString root_cause = message.trimmed();
-  const QString normalized_message = root_cause.toLower();
-  const bool cuda_out_of_memory = calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(root_cause);
-  const bool hmstitcher_input_pool_failure = calibration_hmstitcher_input_pool_failure_ ||
-      (normalized_message.contains("hmstitcher_conv0") && normalized_message.contains("failed to activate bufferpool"));
-  const bool stitch_blender_oom = calibration_stitch_blender_oom_ ||
-      (is_cuda_out_of_memory_diagnostic(root_cause) && normalized_message.contains("cudablend"));
-  const bool stall_watchdog =
-      !calibration_stall_watchdog_message_.isEmpty() || is_stall_watchdog_diagnostic(root_cause);
-  if (cuda_out_of_memory) {
-    root_cause = stitch_blender_oom ? "CUDA out of memory while allocating the live stitching blender's GPU buffers."
-        : hmstitcher_input_pool_failure
-        ? "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while activating hmstitcher's pre-stitch "
-          "input-conversion buffer pool."
-        : "CUDA out of memory (cudaErrorMemoryAllocation, status 2) while allocating a calibration GPU buffer.";
-  } else if (stall_watchdog && !calibration_stall_watchdog_message_.isEmpty()) {
-    // The terminal status is the generic "Pipeline failed during stitching
-    // calibration"; the watchdog line is the one that says what actually ended
-    // the run, so promote it over the fallback search below.
-    root_cause = calibration_stall_watchdog_message_;
-  } else if (!is_specific_calibration_status_detail(calibration_status_detail(root_cause))) {
-    QString fallback;
-    for (auto diagnostic = calibration_diagnostic_lines_.crbegin(); diagnostic != calibration_diagnostic_lines_.crend();
-         ++diagnostic) {
-      if (diagnostic->startsWith("HSTREAM_CALIBRATION"))
-        continue;
-      const QString detail = calibration_status_detail(*diagnostic);
-      if (detail.isEmpty())
-        continue;
-      if (fallback.isEmpty())
-        fallback = *diagnostic;
-      // Generic runner/teardown summaries must not hide a more useful error.
-      if (is_specific_calibration_status_detail(detail)) {
-        fallback = *diagnostic;
-        break;
-      }
-    }
-    if (!fallback.isEmpty())
-      root_cause = fallback;
-  }
-  if (root_cause.isEmpty())
-    root_cause = "The calibration process ended without reporting a specific cause.";
-
-  const QString evidence = root_cause.toLower();
-  const int active_control_points =
+  // Older/unscoped desktop launchers retain their existing frozen UI context.
+  // An admitted native context is authoritative and never inherits UI drafts.
+  hm::stitching::failure::Context fallback;
+  fallback.matcher = active_control_point_matcher_.toStdString();
+  fallback.mapping_backend = active_mapping_backend_.toStdString();
+  fallback.projection = active_projection_.toStdString();
+  fallback.frame_count = active_calibration_frame_count_;
+  fallback.control_point_limit =
       active_calibration_control_points_ > 0 ? active_calibration_control_points_ : stitchingCalibrationControlPoints();
-  const bool reduced_control_point_limit =
-      active_control_points > 0 && active_control_points < default_stitch_control_points_;
-  const bool nondefault_camera_profile = active_camera_selection_ != default_camera_selection_;
-  const bool generic_geometry_failure = evidence.contains("no stitching calibration frame pair") ||
-      evidence.contains("usable solution") || evidence.contains("usable hugin solution") ||
-      evidence.contains("usable opencv solution");
-  const bool invalid_hugin_executable_override = evidence.contains("hm_pto_gen is not executable") ||
-      evidence.contains("hm_autooptimiser is not executable") ||
-      evidence.contains("hm_pano_modify is not executable") || evidence.contains("hm_nona is not executable") ||
-      evidence.contains("hm_enblend is not executable");
-  const bool missing_hugin_executable =
-      evidence.contains("required hugin executable not found") || invalid_hugin_executable_override;
-  QString explanation;
-  QString action;
-  if (stitch_blender_oom) {
-    explanation =
-        "The GPU ran out of VRAM during live video blending after the stitch maps were loaded. CPU fallback covers "
-        "control-point and ice-detection models; live video blending still requires GPU memory.";
-    action = QString("Close other GPU-intensive applications. %1")
-                 .arg(stitching_oom_width_guidance(active_stitch_max_output_width_));
-  } else if (cuda_out_of_memory) {
-    explanation = hmstitcher_input_pool_failure
-        ? "The GPU ran out of VRAM while preparing the native-resolution camera frames for stitching. This happened "
-          "before frame matching, NONA, or optional rink leveling began."
-        : "The GPU ran out of VRAM while calibration was allocating a required GPU buffer.";
-    const QString width_guidance = stitching_oom_width_guidance(active_stitch_max_output_width_);
-    action = hmstitcher_input_pool_failure
-        ? QString(
-              "Close other GPU-intensive applications and press Play to retry. If VRAM is still insufficient, set "
-              "10-bit / FP16 mode to Force off or use lower-resolution source video. %1 This setting reduces later "
-              "stitched-canvas memory; it does not reduce the pre-stitch native-resolution allocation that failed "
-              "here.")
-              .arg(width_guidance)
-        : QString(
-              "Close other GPU-intensive applications and press Play to retry. %1 If the failure occurred before "
-              "canvas generation, also set 10-bit / FP16 mode to Force off or use lower-resolution source video.")
-              .arg(width_guidance);
-  } else if (stall_watchdog) {
-    explanation =
-        "A timeout ended this run because neither camera stream made progress within the watchdog budget. "
-        "Calibration work and operator review suspend this watchdog. This message alone cannot identify "
-        "which part of the pipeline stopped advancing.";
-    action =
-        "Press Play to retry. If it keeps happening at the same point, start HStream with "
-        "HM_URI_PLAYLIST_BARRIER_STALL_SECONDS set to a larger number of seconds, or to 0 to disable the watchdog, "
-        "and report the run: a stall during calibration is a bug in the watchdog's suspension, not a setting you "
-        "should have to change.";
-  } else if (missing_hugin_executable) {
-    explanation = "Calibration found control points, but the Hugin/NONA command-line toolchain is incomplete.";
-    action =
-        "Install the Hugin command-line tools or set HM_PTO_GEN, HM_AUTOOPTIMISER, HM_PANO_MODIFY, HM_NONA, and "
-        "HM_ENBLEND to valid executables, then press Play to retry.";
-  } else if (
-      evidence.contains("enblend") || evidence.contains("seam_file") || evidence.contains("seam file") ||
-      evidence.contains("artifact publication") || evidence.contains("publish stitch artifact")) {
-    explanation = "Alignment completed, but the seam/panorama generation or artifact publication step failed.";
-    action = "Check the reported diagnostic, available disk space, and write access to the game directory.";
-  } else if (evidence.contains("autooptimiser")) {
-    explanation = "Hugin's panorama optimizer rejected the selected control-point geometry.";
-    action =
-        "Try a frame with clearer overlap or use AKAZE + MAGSAC++ + Rectilinear, which does not depend on Hugin "
-        "autooptimization.";
-  } else if (
-      evidence.contains("unsafe") || evidence.contains("pole") || evidence.contains("canvas extent") ||
-      evidence.contains("canvas dimension") || evidence.contains("output surface is smaller")) {
-    explanation =
-        "The fitted transform projected the cameras to an unsafe or implausibly large canvas. HStream rejected it "
-        "instead of allocating that canvas.";
-    action =
-        "Choose a frame with more unique overlap detail or increase Frames. Also verify the Mission lens profile; "
-        "Max stitched width can limit memory, but it cannot repair an incorrect transform.";
-  } else if (
-      evidence.contains("left_calibration.json") || evidence.contains("lens profile") || evidence.contains("kb4") ||
-      evidence.contains("calibrated akaze")) {
-    explanation = "The calibrated AKAZE path could not load or consistently apply both camera lens profiles.";
-    action =
-        "Verify left_calibration.json is a regular, readable Mission KB4 profile for these recordings and that "
-        "AKAZE is paired with MAGSAC++ and Rectilinear.";
-  } else if (
-      evidence.contains("resource_exhausted") || evidence.contains("allocate") || evidence.contains("out of memory") ||
-      (evidence.contains("cuda") && evidence.contains("memory"))) {
-    explanation = "Calibration exhausted CPU/GPU memory while building the mapping canvas.";
-    action = "Set a lower Max stitched width, close other GPU workloads, and press Play to retry.";
-  } else if (generic_geometry_failure && (reduced_control_point_limit || nondefault_camera_profile)) {
-    QStringList settings;
-    if (reduced_control_point_limit) {
-      settings << QString("CP limit is %1; the default calibration limit is %2")
-                      .arg(active_control_points)
-                      .arg(default_stitch_control_points_);
-    }
-    if (nondefault_camera_profile) {
-      settings << QString("lens profile is %1 (HFOV %2, VFOV %3); default is %4 (HFOV %5, VFOV %6)")
-                      .arg(QString::fromStdString(active_camera_selection_.configuration))
-                      .arg(active_camera_selection_.horizontal_fov, 0, 'g', 6)
-                      .arg(active_camera_selection_.vertical_fov, 0, 'g', 6)
-                      .arg(QString::fromStdString(default_camera_selection_.configuration))
-                      .arg(default_camera_selection_.horizontal_fov, 0, 'g', 6)
-                      .arg(default_camera_selection_.vertical_fov, 0, 'g', 6);
-    }
-    explanation =
-        "Calibration could not produce a safe geometry with the selected calibration settings. This does not by itself "
-        "prove that the camera views lack overlap.";
-    action = QString(
-                 "Restore the known-good stitching settings and retry: %1. If it still fails, choose a frame with more "
-                 "unique overlap detail or increase Frames.")
-                 .arg(settings.join("; "));
-  } else if (
-      evidence.contains("insufficient consensus") || evidence.contains("usable match") ||
-      evidence.contains("control point") || evidence.contains("control-point") ||
-      evidence.contains("no stitching calibration frame pair")) {
-    explanation =
-        "The cameras did not produce enough geometrically consistent overlap. Repeated rink markings can create "
-        "many descriptor matches while still leaving too few matches for one safe transform.";
-    action =
-        "Choose a stitch frame with players, boards, or other unique detail in the overlap; increase Frames; verify "
-        "the Left/Right assignments and lens profile; then press Play to retry.";
-  } else {
-    explanation = "The active calibration stage returned a terminal error.";
-    action =
-        "Review the diagnostic lines below, correct the reported input/configuration problem, and press Play to retry.";
-  }
-
-  QString stage = active_calibration_stage_.isEmpty() ? QString("calibration") : active_calibration_stage_;
-  const auto stage_label = calibration_stage_labels_.find(stage);
-  if (stage_label != calibration_stage_labels_.end() && stage_label->second)
-    stage = stage_label->second->text();
-  if (stitch_blender_oom)
-    stage = "Live stitching blend";
-  auto selected_label = [](QComboBox* combo, const QString& value) {
-    if (!combo)
-      return value;
-    const int index = combo->findData(value);
-    return index >= 0 ? combo->itemText(index) : value;
-  };
-  const QString matcher = selected_label(control_point_matcher_combo_, active_control_point_matcher_);
-  const QString backend = selected_label(mapping_backend_combo_, active_mapping_backend_);
-  const QString projection = selected_label(projection_combo_, active_projection_);
-
-  QString result = QString(
-                       "Failed stage: %1\nConfiguration: %2 · %3 · %4 · %5 sampled frame%6\n\n"
-                       "Why it failed\n%7\n\nReported cause\n%8\n\nWhat to try\n%9")
-                       .arg(stage)
-                       .arg(matcher.isEmpty() ? "unknown matcher" : matcher)
-                       .arg(backend.isEmpty() ? "unknown mapping backend" : backend)
-                       .arg(projection.isEmpty() ? "unknown projection" : projection)
-                       .arg(active_calibration_frame_count_)
-                       .arg(active_calibration_frame_count_ == 1 ? "" : "s")
-                       .arg(explanation, root_cause, action);
-  if (calibration_rejected_hypotheses_ > 0 || calibration_rejected_candidates_ > 0) {
-    result += QString(
-                  "\n\nBounded fallback search\nHStream rejected %1 projective hypothesis%2 and %3 frame-set "
-                  "candidate%4 before stopping. These rejections are expected safety fallbacks, not automatic "
-                  "restarts; pressing Play is required for a new calibration run.")
-                  .arg(calibration_rejected_hypotheses_)
-                  .arg(calibration_rejected_hypotheses_ == 1 ? "" : "s")
-                  .arg(calibration_rejected_candidates_)
-                  .arg(calibration_rejected_candidates_ == 1 ? "" : "s");
-  }
-  QStringList recent;
-  for (auto diagnostic = calibration_diagnostic_lines_.crbegin();
-       diagnostic != calibration_diagnostic_lines_.crend() && recent.size() < 6;
-       ++diagnostic) {
-    if (!diagnostic->startsWith("HSTREAM_CALIBRATION"))
-      recent.prepend(*diagnostic);
-  }
-  if (!recent.isEmpty())
-    result += "\n\nRecent diagnostics\n• " + recent.join("\n• ");
-  result += "\n\nThe runtime log contains the complete output.";
-  return result;
+  fallback.default_control_point_limit = default_stitch_control_points_;
+  fallback.max_output_width = active_stitch_max_output_width_;
+  fallback.camera = {
+      active_camera_selection_.configuration,
+      active_camera_selection_.horizontal_fov,
+      active_camera_selection_.vertical_fov};
+  fallback.default_camera = {
+      default_camera_selection_.configuration,
+      default_camera_selection_.horizontal_fov,
+      default_camera_selection_.vertical_fov};
+  fallback.camera_differs_from_defaults = active_camera_selection_ != default_camera_selection_;
+  fallback.calibration_required = calibration_pending_;
+  const bool unscoped =
+      calibration_failure_session_.invocation().empty() && calibration_failure_session_.error().empty();
+  const auto diagnosis = calibration_failure_session_.Analyze(
+      message.toStdString(), unscoped ? &fallback : nullptr, unscoped ? active_calibration_stage_.toStdString() : "");
+  return QString::fromStdString(diagnosis.rendered_text);
 }
 
 void HStreamWindow::completeStitchingCalibration() {
@@ -11150,6 +11205,14 @@ void HStreamWindow::completeStitchingCalibration() {
     failStitchingCalibration(
         "Stitching inputs changed while calibration was running. Stop and press Play to rebuild the newer dependency.");
     return;
+  }
+  if (active_stitching_review_) {
+    loaded_projection_framing_ = active_projection_framing_;
+    saved_projection_framing_ = active_projection_framing_;
+    projection_auto_crop_check_->setChecked(active_projection_framing_.auto_crop);
+    updateRinkLevelingControls();
+    updatePresetDirtyState();
+    active_stitching_review_ = false;
   }
   calibration_waiting_for_playback_restart_ = false;
   calibration_playback_restart_observed_ = false;
@@ -11339,6 +11402,11 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
   }
   const auto iteration = standalone ? stitchingIterationSettings() : active_iteration_settings_;
   args << QString("--start-time=%1").arg(iteration.playback_start_time);
+  args << QString("--options=playback.realtime=%1")
+              .arg(
+                  !standalone && render_video && realtime_playback_toggle_ && realtime_playback_toggle_->isChecked()
+                      ? "true"
+                      : "false");
   args << QString("--options=stitching.sync_method=%1").arg(iteration.sync_method);
   const QString frame_time = standalone ? stitchFrameTime() : active_stitch_frame_time_;
   if (!frame_time.isEmpty() && frame_time != default_stitch_frame_time_) {
@@ -11397,11 +11465,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
              : QString());
   if (!gpu_memory_profile.isEmpty())
     args << QString("--options=runtime.gpu_memory_profile=%1").arg(gpu_memory_profile);
-  args << QString("--options=hstream_ui.camera_controls.Bring_Up_Shadows=%1")
-              .arg(cameraControlValue("Bring_Up_Shadows"));
-  args << QString("--options=hstream_ui.camera_controls.Lift_Shadow_Black_Point=%1")
-              .arg(cameraControlValue("Lift_Shadow_Black_Point"));
-  args << QString("--options=hstream_ui.camera_controls.Exposure_x100=%1").arg(cameraControlValue("Exposure_x100"));
+  args << QString("--options=video_out.tone.shadow_lift_percent=%1").arg(cameraControlValue("Bring_Up_Shadows"));
+  args << QString("--options=video_out.tone.lift_shadow_black_point=%1")
+              .arg(cameraControlValue("Lift_Shadow_Black_Point") != 0 ? "true" : "false");
+  args << QString("--options=video_out.tone.exposure=%1").arg(cameraControlValue("Exposure_x100") / 100.0);
   if (!calibration_only) {
     if (rink_framing_controls_)
       args
@@ -11420,6 +11487,9 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
       args << QString("--options=pipeline.primary-gie.config-file=%1").arg(detectorConfigName());
       args << QString("--options=pipeline.primary-gie.model-engine-file=%1").arg(detectorEnginePath());
     }
+    if (!backend_.isHockeyMon() && tiled_detection_check_)
+      args << QString("--options=pipeline.primary-gie.tiled-inference.enable=%1")
+                  .arg(tiled_detection_check_->isChecked() ? 1 : 0);
     args << QString("--options=rink.tracking.cam_ignore_referees=%1")
                 .arg(cameraControlValue("Ignore_Referees") != 0 ? "true" : "false");
     args << QString("--options=rink.tracking.cam_ignore_goalies=%1")
@@ -11452,6 +11522,8 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
     // must use its current capture selection, including explicit opt-out.
     args << QString("--options=hstream_ui.job.capture_telemetry=%1").arg(capture_telemetry ? "true" : "false");
   }
+  if (!isCalibrationRun() && scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_)
+    args << QString("--options=rink.scoreboard.scoreboard_scale=%1").arg(scoreboard_scale_spin_->value(), 0, 'g', 17);
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
 }
@@ -11493,6 +11565,7 @@ bool HStreamWindow::detectorSelectionChanged() const {
 }
 
 void HStreamWindow::prepareRecordedInt8() {
+  stopSourceCamera();
   if ((pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
       findChild<QDialog*>("stitchingExperimentDialog")) {
     appendLog("Stop playback and close experiments before preparing INT8.");
@@ -11651,6 +11724,14 @@ void HStreamWindow::loadBlendMode(const YAML::Node& config) {
 void HStreamWindow::loadDetectorPrecision(const YAML::Node& config) {
   if (!detector_precision_combo_)
     return;
+  if (tiled_detection_check_) {
+    const auto resolved = merge_yaml_maps(baseline_config_, config);
+    const int enabled = resolved["pipeline"]["primary-gie"]["tiled-inference"]["enable"].as<int>();
+    if (enabled != 0 && enabled != 1)
+      throw std::runtime_error("tiled-inference.enable must be 0 or 1");
+    const QSignalBlocker blocker(tiled_detection_check_);
+    tiled_detection_check_->setChecked(!backend_.isHockeyMon() && enabled == 1);
+  }
   const auto selected = hm::ui::ReadDetectorSelection(
       merge_yaml_maps(baseline_config_, config),
       detectorModels(),
@@ -11727,6 +11808,7 @@ void HStreamWindow::setHighBitDepthMode(const QString& mode) {
 }
 
 bool HStreamWindow::beginGameOperation(const std::string& kind) {
+  stopSourceCamera();
   const std::filesystem::path game =
       std::filesystem::canonical(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
   auto lock = hm::game_operation::Lock::Acquire(game, false);
@@ -11758,7 +11840,7 @@ bool HStreamWindow::beginGameOperation(const std::string& kind) {
 }
 
 void HStreamWindow::releaseGameOperationIfStopped() {
-  if (operation_token_.empty() || operation_starting_ ||
+  if (operation_token_.empty() || operation_starting_ || source_camera_index_ >= 0 ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
       live_rotation_authorization_pending_)
     return;
@@ -11783,6 +11865,7 @@ void HStreamWindow::releaseGameOperationIfStopped() {
 }
 
 void HStreamWindow::startPipeline() {
+  stopSourceCamera();
   if (deferred_play_requested_ || deferred_restart_requested_)
     return;
   const auto show_startup_error = [this](const QString& detail) {
@@ -11898,6 +11981,9 @@ void HStreamWindow::startPipeline() {
       return;
     }
   }
+  if (!initial_single_source && (!hockeyMonProgram() || backend_.initial_launch.isEmpty()) &&
+      !ConfirmCameraChapterWarning(this, CameraChapterWarning(gameDirectoryText().toStdString())))
+    return;
   pipeline_state_->setText("STARTING");
   if (rink_framing_controls_)
     rink_framing_controls_->setCheckingSuspended(true);
@@ -11985,13 +12071,9 @@ void HStreamWindow::startPipeline() {
   active_calibration_start_stage_.clear();
   active_calibration_invalidation_id_.clear();
   calibration_failure_message_.clear();
-  calibration_diagnostic_lines_.clear();
-  calibration_cuda_out_of_memory_ = false;
-  calibration_hmstitcher_input_pool_failure_ = false;
-  calibration_stitch_blender_oom_ = false;
-  calibration_stall_watchdog_message_.clear();
-  calibration_rejected_hypotheses_ = 0;
-  calibration_rejected_candidates_ = 0;
+  calibration_failure_binding_ =
+      (QUuid::createUuid().toString(QUuid::Id128) + QUuid::createUuid().toString(QUuid::Id128)).toStdString();
+  calibration_failure_session_ = hm::stitching::failure::Session(calibration_failure_binding_);
   active_force_reconfigure_ = active_run_is_calibration_ && calibration_restart_requested_;
   calibration_restart_requested_ = false;
   scoreboard_selector_url_.clear();
@@ -12017,6 +12099,7 @@ void HStreamWindow::startPipeline() {
   }
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   applyScoreboardPromptEnvironment(env);
+  env.remove(hm::stitching::failure::kBindingEnvironment);
   const QString working_dir = pipelineWorkingDirectory();
   env.insert("HM_GAME_DIR", QDir(gameRoot()).absolutePath());
   if (!baseline_config_root_.isEmpty())
@@ -12330,7 +12413,8 @@ void HStreamWindow::startPipeline() {
   env.remove("HSTREAM_PROJECTION_CROP_FLOW");
   // Program can discover missing maps after launch. The backend only asks
   // during actual calibration; unchanged playback never emits a crop request.
-  if (!active_stitching_reframe_ && active_mapping_backend_ == "nona" && active_iteration_settings_.show_crop_dialog)
+  if ((!active_stitching_reframe_ || active_stitching_review_) && active_mapping_backend_ == "nona" &&
+      active_iteration_settings_.show_crop_dialog)
     env.insert("HSTREAM_PROJECTION_CROP_FLOW", "1");
   if (calibration_pending_) {
     const int control_points = active_calibration_control_points_;
@@ -12340,7 +12424,7 @@ void HStreamWindow::startPipeline() {
     env.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(frame_count));
     env.insert("HSTREAM_CALIBRATION_PENDING", "1");
     env.insert("HSTREAM_CALIBRATION_START_STAGE", active_calibration_start_stage_);
-    if (!active_stitching_reframe_ && active_mapping_backend_ == "nona" &&
+    if ((!active_stitching_reframe_ || active_stitching_review_) && active_mapping_backend_ == "nona" &&
         active_iteration_settings_.show_leveling_dialog)
       env.insert("HSTREAM_RINK_LEVELING_FLOW", "1");
     if (active_run_is_calibration_) {
@@ -12415,6 +12499,7 @@ void HStreamWindow::startPipeline() {
   }
   env.insert("HSTREAM_GAME_OPERATION_GAME", QString::fromStdString(operation_game_.string()));
   env.insert("HSTREAM_GAME_OPERATION_TOKEN", QString::fromStdString(operation_token_));
+  env.insert(hm::stitching::failure::kBindingEnvironment, QString::fromStdString(calibration_failure_binding_));
   pipeline_process_->setProcessEnvironment(env);
   pipeline_process_->setWorkingDirectory(working_dir);
   const bool test_without_setsid =
@@ -12534,27 +12619,7 @@ void HStreamWindow::pauseOrResumePipeline() {
     stopPipeline();
     return;
   }
-  pipeline_paused_ = !pipeline_paused_;
-  pipeline_state_->setText(pipeline_paused_ ? "PAUSED" : "PLAYING");
-  if (!pipeline_paused_) {
-    playback_eta_ = "Warming up";
-    playback_speed_ = "Warming up";
-    if (deferred_playback_seek_ns_.has_value()) {
-      const qint64 target_ns = *deferred_playback_seek_ns_;
-      deferred_playback_seek_ns_.reset();
-      playback_warming_after_resume_ = true;
-      resume_progress_reset_waiting_for_seek_ = true;
-      sendPlaybackSeek(target_ns);
-      if (pending_playback_seek_generation_ == 0) {
-        resume_progress_reset_waiting_for_seek_ = false;
-        beginPlaybackProgressReset();
-      }
-    } else {
-      beginPlaybackProgressReset();
-    }
-  }
-  preview_status_->setText(pipeline_paused_ ? "Pipeline paused" : "Pipeline resumed");
-  appendLog(pipeline_paused_ ? "pipeline paused" : "pipeline resumed");
+  preview_status_->setText("Resuming pipeline…");
   updateRunControls();
 #else
   appendLog("pause/resume is not supported on this platform yet");
@@ -12807,6 +12872,16 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
     pipeline_inspector_->setPipelineRunning(false);
   const bool stopped_by_user = pipeline_stop_requested_;
   const bool calibration_ended_incomplete = calibration_pending_ && !stopped_by_user;
+  const auto terminal_diagnosis = calibration_failure_session_.Analyze(calibration_failure_message_.toStdString());
+  const bool native_verdict_available =
+      calibration_failure_session_.has_context() && calibration_failure_session_.error().empty();
+  const bool calibration_failure_applicable = !native_verdict_available ||
+      terminal_diagnosis.applicability == "calibration" || terminal_diagnosis.applicability == "playback-restart";
+  // Waiting for restart remains a completion/publication fence. It does not
+  // establish a calibration failure when the shared native verdict excludes
+  // one. Preserve an already-reported local save/ownership failure separately.
+  const bool calibration_failure_needed =
+      calibration_ended_incomplete && (calibration_dialog_failed_ || calibration_failure_applicable);
   const bool completed_successfully =
       exit_status == QProcess::NormalExit && exit_code == 0 && !stopped_by_user && !calibration_ended_incomplete;
   bool archive_completed = completed_successfully;
@@ -12901,14 +12976,16 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   }
   pipeline_stop_requested_ = false;
   pipeline_publish_partial_ = false;
-  if (calibration_pending_ && !stopped_by_user) {
+  if (calibration_failure_needed) {
     appendLog("one-pass stitching calibration ended before completion; calibration remains pending");
     if (!calibration_dialog_failed_) {
       failStitchingCalibration(QString("The calibration process ended before it finished (exit %1, %2).")
                                    .arg(exit_code)
                                    .arg(exit_status == QProcess::NormalExit ? "normal exit" : "crashed"));
     }
-  } else if (calibration_pending_ && stopped_by_user) {
+  } else if (calibration_pending_) {
+    if (!stopped_by_user)
+      appendLog("native calibration outcome does not establish a failure; saved calibration state retained");
     closeStitchingCalibrationDialog();
   }
   rollbackActiveLiveRotationAuthorization("pipeline finished");
@@ -12943,20 +13020,26 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
   active_stitching_reframe_ = false;
+  if (active_stitching_review_)
+    loadSavedControlConfig();
+  active_stitching_review_ = false;
   pipeline_state_->setText("STOPPED");
   if (completed_successfully) {
     setPlaybackProgressState(PlaybackProgressState::kCompleted);
   } else if (stopped_by_user) {
     setPlaybackProgressState(PlaybackProgressState::kStopped);
   } else {
-    const bool calibration_cuda_oom = calibration_ended_incomplete &&
-        (calibration_cuda_out_of_memory_ || is_cuda_out_of_memory_diagnostic(calibration_failure_message_));
+    const bool calibration_cuda_oom = calibration_failure_needed &&
+        (calibration_failure_session_.evidence().CudaOutOfMemory() ||
+         is_cuda_out_of_memory_diagnostic(calibration_failure_message_));
     const QString terminal_detail = calibration_cuda_oom
-        ? (calibration_stitch_blender_oom_ ? QString("GPU out of memory in the live stitching blender")
-               : calibration_hmstitcher_input_pool_failure_
+        ? (calibration_failure_session_.evidence().BlenderOutOfMemory()
+               ? QString("GPU out of memory in the live stitching blender")
+               : calibration_failure_session_.evidence().InputPoolFailure()
                ? QString("GPU out of memory in the pre-stitch input-conversion buffer pool")
                : QString("GPU out of memory during stitching calibration"))
-        : !calibration_stall_watchdog_message_.isEmpty() ? QString("Timed out: the camera no-progress watchdog expired")
+        : !calibration_failure_session_.evidence().Watchdog().empty()
+        ? QString("Timed out: the camera no-progress watchdog expired")
         : !backend_publication_error_.isEmpty()
         ? backend_publication_error_
         : QString("Pipeline exited with code %1 (%2)")
@@ -13252,6 +13335,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   active_calibration_invalidation_id_.clear();
   active_force_reconfigure_ = false;
   active_stitching_reframe_ = false;
+  active_stitching_review_ = false;
   pipeline_state_->setText("STOPPED");
   setPlaybackProgressState(PlaybackProgressState::kError, error_message);
   preview_status_->setText("Pipeline failed to start");
@@ -13301,17 +13385,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
     if (message >= 0)
       rink_framing_controls_->showRunStatus(trimmed.mid(message + 8));
   }
-  const bool calibration_preamble = trimmed.startsWith("Rejected calibrated MAGSAC hypothesis") ||
-      trimmed.startsWith("Skipping pooled stitching calibration") ||
-      trimmed.startsWith("Skipping stitching calibration frame pair") ||
-      trimmed.startsWith("Trying pooled stitching calibration") ||
-      trimmed.startsWith("Trying stitching calibration frame pair");
-  // The stall watchdog is recorded whether or not a calibration is pending: it
-  // can also end an ordinary playback run, and the timeout is the only useful
-  // thing to say about that exit code either way.
-  if (calibration_pending_ || trimmed.startsWith("HSTREAM_CALIBRATION") || calibration_preamble ||
-      is_stall_watchdog_diagnostic(trimmed))
-    recordStitchingCalibrationDiagnostic(trimmed);
+  recordStitchingCalibrationDiagnostic(trimmed);
   if (handleProcessPauseOutput(trimmed) || handleStartupProgressOutput(trimmed) || handleHighBitDepthOutput(trimmed) ||
       handlePlaybackProgressOutput(trimmed) || handlePlaybackSeekOutput(trimmed) || handleGpuPreviewStatus(trimmed) ||
       handlePreviewOverlayDiagnostic(trimmed) || handlePreviewOverlayResponse(trimmed) ||
@@ -13321,7 +13395,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
   }
   handleTelemetryOutputStatus(trimmed);
   handleArchiveOutputStatus(trimmed);
-  appendLog(trimmed, stderr_output);
+  appendLog(trimmed, stderr_output, "runner-output");
   if (!handleScoreboardControlOutput(trimmed))
     handleRuntimeControlResponse(trimmed);
   handleScoreboardSelectorOutput(trimmed);
@@ -13338,9 +13412,9 @@ void HStreamWindow::flushPipelineOutputFragments() {
     buffer->clear();
     handlePipelineOutputLine(fragment, stderr_output);
   };
-  // Failure details are conventionally written to stderr while the structured
-  // terminal calibration event is written to stdout. Process stderr first so
-  // the first rendered failure analysis already contains the detailed cause.
+  // The main pipeline's merged stream has one trailing fragment in the stdout
+  // buffer. Keep the separate-buffer path for independently supplied channels;
+  // it cannot establish cross-descriptor order or original merged provenance.
   flush(&pipeline_stderr_buffer_, true);
   flush(&pipeline_stdout_buffer_, false);
 }
@@ -13441,6 +13515,31 @@ bool HStreamWindow::handleProcessPauseOutput(const QString& line) {
   if (generation != 0 && match.captured(1) == "resumed") {
     if (generation == pending_process_resume_generation_) {
       pending_process_resume_generation_ = 0;
+      if (pipeline_stop_requested_ || !pipeline_process_ || pipeline_process_->state() != QProcess::Running)
+        return true;
+      // Cancelling an unacknowledged Pause also receives a Resume ACK. Only
+      // a confirmed pause owns the deferred seek and progress reset below.
+      if (pipeline_paused_) {
+        pipeline_paused_ = false;
+        pipeline_state_->setText("PLAYING");
+        playback_eta_ = "Warming up";
+        playback_speed_ = "Warming up";
+        if (deferred_playback_seek_ns_.has_value()) {
+          const qint64 target_ns = *deferred_playback_seek_ns_;
+          deferred_playback_seek_ns_.reset();
+          playback_warming_after_resume_ = true;
+          resume_progress_reset_waiting_for_seek_ = true;
+          sendPlaybackSeek(target_ns);
+          if (pending_playback_seek_generation_ == 0) {
+            resume_progress_reset_waiting_for_seek_ = false;
+            beginPlaybackProgressReset();
+          }
+        } else {
+          beginPlaybackProgressReset();
+        }
+        preview_status_->setText("Pipeline resumed");
+        appendLog("pipeline resumed");
+      }
       updateRunControls();
       flushDeferredPreviewCommands();
       flushScheduledRuntimeControls();
@@ -13825,6 +13924,10 @@ void HStreamWindow::updatePlaybackSeekControls() {
     reason = "Waiting for the current seek to finish.";
   } else if (playback_seek_recovery_generation_ != 0) {
     reason = "The seek timed out; waiting for the backend reconstruction worker to return safely.";
+  } else if (pending_process_pause_generation_ != 0) {
+    reason = "Waiting for playback to pause before enabling seek.";
+  } else if (pending_process_resume_generation_ != 0) {
+    reason = "Waiting for playback to resume before enabling seek.";
   } else if (pipeline_paused_ && deferred_playback_seek_ns_.has_value()) {
     reason =
         "This position is queued and will be applied when playback resumes; choose another position to replace it.";
@@ -17037,6 +17140,22 @@ void HStreamWindow::loadScoreboardControls(const YAML::Node& config) {
   const QSignalBlocker blocker(scoreboard_position_combo_);
   set_combo_to_data(scoreboard_position_combo_, position);
   saved_scoreboard_position_ = position;
+  const double baseline_scale = baseline_layer_["rink"]["scoreboard"]["scoreboard_scale"].as<double>();
+  double scale = baseline_scale;
+  for (const auto& layer : {baseline_layer_, user_layer_, config}) {
+    for (const char* path : hm::scoreboard::kScalePaths) {
+      YAML::Node value;
+      if (lookup_yaml_path(layer, path, &value))
+        scale = value.IsNull() ? baseline_scale : value.as<double>();
+    }
+  }
+  if (!std::isfinite(scale) || scale <= 0)
+    throw std::invalid_argument("Scoreboard scale must be finite and positive");
+  const QSignalBlocker scale_blocker(scoreboard_scale_spin_);
+  // Preserve existing configuration values outside the usual editing range.
+  scoreboard_scale_spin_->setRange(std::min(0.1, scale), std::max(4.0, scale));
+  scoreboard_scale_spin_->setValue(scale);
+  saved_scoreboard_scale_ = scoreboard_scale_spin_->value();
   scoreboard_controls_status_->clear();
   updateScoreboardControls();
 }
@@ -17053,6 +17172,7 @@ void HStreamWindow::updateScoreboardControls() {
     }
   }
   const bool selecting = scoreboard_reselect_waiting_ || scoreboard_selection_dialog_;
+  scoreboard_scale_spin_->setEnabled(!running && !isArchiveFinalizing() && !selecting && !calibration_pending_);
   const bool available = !isArchiveFinalizing() && !isCalibrationRun() && !calibration_pending_ &&
       pending_scoreboard_property_.isEmpty() && pending_playback_seek_generation_ == 0 &&
       playback_seek_recovery_generation_ == 0 && pending_process_pause_generation_ == 0 &&
@@ -17348,9 +17468,11 @@ void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
     }
     active_projection_framing_.rotation_degrees = {yaw, pitch, roll};
     active_projection_framing_.rotation_inherited = false;
-    loaded_projection_framing_.rotation_degrees = active_projection_framing_.rotation_degrees;
-    loaded_projection_framing_.rotation_inherited = false;
-    saved_projection_framing_ = active_projection_framing_;
+    if (!active_stitching_review_) {
+      loaded_projection_framing_.rotation_degrees = active_projection_framing_.rotation_degrees;
+      loaded_projection_framing_.rotation_inherited = false;
+      saved_projection_framing_ = active_projection_framing_;
+    }
     pending_leveling_revision_.clear();
     updateRinkLevelingControls();
     updatePresetDirtyState();
@@ -17494,9 +17616,11 @@ void HStreamWindow::handleProjectionCropOutput(const QString& line) {
         (framing.auto_crop && framing.crop != hm::stitching::StitchProjectionFraming{}.crop))
       return;
     active_projection_framing_ = framing;
-    loaded_projection_framing_ = framing;
-    saved_projection_framing_ = framing;
-    projection_auto_crop_check_->setChecked(framing.auto_crop);
+    if (!active_stitching_review_) {
+      loaded_projection_framing_ = framing;
+      saved_projection_framing_ = framing;
+      projection_auto_crop_check_->setChecked(framing.auto_crop);
+    }
     crop_selection_revision_.clear();
     pending_crop_geometry_.clear();
     updatePresetDirtyState();
@@ -18724,6 +18848,9 @@ void HStreamWindow::setAllPreviewFocusAvailable(bool available) {
 }
 
 bool HStreamWindow::canFocusPreview(int tab_index) const {
+  if (source_camera_player_ && source_camera_index_ + 2 == tab_index)
+    return source_camera_player_->GetStatus().presented_ns >= 0;
+
   if (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning || !pipeline_render_embedded_ ||
       (render_video_toggle_ && !render_video_toggle_->isChecked()) || tab_index < 0 ||
       tab_index >= static_cast<int>(preview_hosts_.size())) {
@@ -18926,8 +19053,14 @@ void HStreamWindow::updateRunControls() {
     ++scheduled_player_drawing_generation_;
   }
   const bool waiting_for_start = deferred_play_requested_ || deferred_restart_requested_;
-  const bool finalizing =
-      isArchiveFinalizing() || waiting_for_start || external_operation || (!operation_token_.empty() && !running);
+  const bool local_finalizing = isArchiveFinalizing() || waiting_for_start || pipeline_completion_proof_pending_ ||
+      archive_completion_proof_pending_ || (!operation_token_.empty() && !running && source_camera_index_ < 0);
+  const bool finalizing = local_finalizing || external_operation;
+  const bool camera_dialog = findChild<QDialog*>("cameraExperimentDialog") ||
+      findChild<QDialog*>("stitchingExperimentDialog") || findChild<QDialog*>("highlightsDialog") ||
+      findChild<QDialog*>("int8PreparationDialog");
+  updateSourceCameraControls(!running && !finalizing && !camera_dialog && !editing_defaults_ &&
+      !rink_map_editor_active_ && !live_rotation_authorization_pending_);
   const bool archive_recovery_was_cleared =
       !archive_finalize_blocked_source_path_.isEmpty() && !QFileInfo::exists(archive_finalize_blocked_source_path_);
   if (archive_recovery_was_cleared) {
@@ -18963,6 +19096,8 @@ void HStreamWindow::updateRunControls() {
     save_preset_button_->setEnabled(false);
   if (auto* prepare = findChild<QPushButton*>("prepareRecordedInt8Button"))
     prepare->setEnabled(!external_operation && !running && !finalizing);
+  if (tiled_detection_check_)
+    tiled_detection_check_->setEnabled(!backend_.isHockeyMon() && !external_operation && !running && !finalizing);
   if (start_button_) {
     start_button_->setEnabled(
         !editing_defaults_ && !running && !finalizing && !archive_recovery_blocked &&
@@ -19072,7 +19207,12 @@ void HStreamWindow::updateRunControls() {
     drivegpt_csv_toggle_->setEnabled(!running && !finalizing);
   }
   if (game_controls_) {
-    game_controls_->setEnabled(!running && !finalizing);
+    // A foreign recording owner fences edits, not navigation away from that
+    // recording. Only this window's own work must keep its game binding.
+    game_controls_->setEnabled(!running && !local_finalizing);
+    game_id_edit_->setEnabled(!running && !finalizing);
+    if (auto* create = game_controls_->findChild<QPushButton*>("createGameButton"))
+      create->setEnabled(!running && !finalizing);
   }
   if (video_controls_) {
     video_controls_->setEnabled(!editing_defaults_ && !running && !finalizing);
@@ -19758,6 +19898,9 @@ void HStreamWindow::resetCameraControls() {
     set_combo_to_data(detector_model_combo_, detectorModels().front().id);
   if (!pipeline_running && detector_precision_combo_)
     set_combo_to_data(detector_precision_combo_, "fp32");
+  if (!pipeline_running && tiled_detection_check_)
+    tiled_detection_check_->setChecked(
+        !backend_.isHockeyMon() && baseline_config_["pipeline"]["primary-gie"]["tiled-inference"]["enable"].as<int>() == 1);
   if (!pipeline_running && player_analytics_controls_)
     player_analytics_controls_->resetToDefaults();
   if (!pipeline_running && rink_framing_controls_)
@@ -19767,7 +19910,7 @@ void HStreamWindow::resetCameraControls() {
   if (!pipeline_running && stitch_frame_time_edit_) {
     const auto parsed = parse_calibration_reference(default_stitch_frame_time_);
     if (parsed.has_value())
-      stitch_frame_time_edit_->setText(*parsed);
+      setStitchFrameTime(*parsed);
   }
   if (!pipeline_running && control_point_matcher_combo_) {
     set_combo_to_data(control_point_matcher_combo_, default_control_point_matcher_);
@@ -19893,14 +20036,14 @@ void HStreamWindow::cleanStitchingCalibration() {
   // when it starts the next calibration.
   const int selected_control_points = stitchingCalibrationControlPoints();
   const int selected_frame_count = stitchingCalibrationFrameCount();
-  const QString selected_reference_time = stitch_frame_time_edit_->text();
+  const QString selected_reference_time = stitchFrameTime();
   const auto selected_iteration_settings = stitchingIterationSettings();
   auto reload_controls =
       [this, selected_control_points, selected_frame_count, selected_reference_time, selected_iteration_settings]() {
         loadSavedControlConfig();
         control_points_spin_->setValue(selected_control_points);
         calibration_frame_count_spin_->setValue(selected_frame_count);
-        stitch_frame_time_edit_->setText(selected_reference_time);
+        setStitchFrameTime(selected_reference_time);
         setStitchingIterationSettings(selected_iteration_settings);
         updatePresetDirtyState();
       };
@@ -19974,6 +20117,7 @@ void HStreamWindow::setStitchingIterationSettings(const hm::ui_internal::Stitchi
     playback_start_time_edit_->setDisplayFormat(
         time.msec() == 0 ? kStitchFrameTimeFormat : kStitchFrameTimeFractionalFormat);
   }
+  updateInheritedStitchFrameTime();
 }
 
 void HStreamWindow::updateStitchFrameTimeAvailability() {
@@ -20003,6 +20147,7 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
 
 void HStreamWindow::captureSavedControlState() {
   saved_output_rink_map_ = outputRinkMapState();
+  saved_scoreboard_scale_ = scoreboard_scale_spin_->value();
   storeProjectionParameterControls();
   saved_camera_controls_.clear();
   for (const auto& [id, default_value] : camera_defaults_) {
@@ -20011,6 +20156,7 @@ void HStreamWindow::captureSavedControlState() {
   }
   saved_high_bit_depth_mode_ = highBitDepthMode();
   saved_detector_precision_ = detectorPrecision();
+  saved_tiled_detection_ = tiled_detection_check_ && tiled_detection_check_->isChecked();
   saved_detector_model_ = detectorModel();
   saved_prepared_int8_engine_ = prepared_int8_engine_;
   saved_prepared_int8_manifest_ = prepared_int8_manifest_;
@@ -20069,8 +20215,10 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = defaults_reset_pending_ || defaults_save_retry_ || retry_required ||
+  bool dirty = (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) ||
+      defaults_reset_pending_ || defaults_save_retry_ || retry_required ||
       saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
+      (tiled_detection_check_ && tiled_detection_check_->isChecked() != saved_tiled_detection_) ||
       (player_analytics_controls_ && player_analytics_controls_->isDirty()) ||
       (rink_framing_controls_ && rink_framing_controls_->isDirty()) ||
       (rink_mask_time_mode_ && saved_rink_mask_time_mode_ != rink_mask_time_mode_->currentData().toString()) ||
@@ -20396,7 +20544,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   }
   if (stitch_frame_time_edit_) {
     const bool blocked = stitch_frame_time_edit_->blockSignals(true);
-    stitch_frame_time_edit_->setText(default_stitch_frame_time_);
+    setStitchFrameTime(default_stitch_frame_time_);
     stitch_frame_time_edit_->blockSignals(blocked);
   }
   for (const auto& [id, value] : camera_defaults_) {
@@ -20478,6 +20626,9 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     hm::stitching::restore_generated_rink_mask_frame_time(config);
     std::map<QString, double> staged_controls;
     const QString staged_resolution = controlPointResolutionFromGameConfig(config);
+    const auto effective_preferences = merge_yaml_maps(baseline_config_, config);
+    const bool staged_realtime = hm::get_node(effective_preferences, "playback.realtime")->as<bool>();
+    const bool staged_telemetry = hm::get_node(effective_preferences, "telemetry.enabled")->as<bool>();
     const auto staged_filtering = controlPointFilteringFromGameConfig(config);
     QString staged_high_bit_depth_mode = highBitDepthMode();
     bool native_high_bit_depth_mode_present = false;
@@ -20883,6 +21034,13 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
               QStringLiteral("pipeline.hmstitcher.properties"), QStringLiteral("pipeline.hmplaycropper.properties")};
     const auto tone_value = [&](const QString& property) -> std::optional<std::pair<QString, YAML::Node>> {
       for (const YAML::Node& layer : {config, user_layer_}) {
+        const auto canonical = hm::config::NormalizeRuntimeControlLayer(layer);
+        const std::string key = std::string("video_out.tone.") +
+            (property == "shadow-lift"                   ? "shadow_lift_percent"
+                 : property == "shadow-lift-black-point" ? "lift_shadow_black_point"
+                                                         : "exposure");
+        if (const auto value = hm::get_node(canonical, key))
+          return std::make_pair(QString::fromStdString(key), *value);
         for (const QString& owner : tone_property_owners) {
           const QString path = owner + "." + property;
           YAML::Node value;
@@ -20906,7 +21064,25 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       }
       stage_control("Exposure_x100", setting_x100);
     }
-    YAML::Node controls = config["hstream_ui"]["camera_controls"];
+    const auto canonical_controls = hm::config::NormalizeRuntimeControlLayer(config);
+    for (const auto& key : hm::config::kRuntimeControlKeys) {
+      if (hm::get_node(canonical_controls, key.path)) {
+        const double value = hm::config::RuntimeControlPresentationValue(canonical_controls, key.id);
+        const QString id = QString::fromLatin1(key.id);
+        int maximum = key.boolean ? 1 : 100;
+        if (id.startsWith("Max_Speed_"))
+          maximum = 2000;
+        if (id.startsWith("Max_Accel_"))
+          maximum = 1000;
+        if (id == "Exposure_x100")
+          maximum = 130;
+        const int rounded = rounded_control(QString::fromLatin1(key.path), value);
+        if (value < 0 || value > maximum || std::abs(value - rounded) > 1e-6)
+          throw std::invalid_argument(std::string("Invalid saved camera control ") + key.path);
+        stage_control(id, rounded);
+      }
+    }
+    YAML::Node controls = hm::get_node(canonical_controls, "hstream_ui.camera_controls").value_or(YAML::Node());
     int loaded = 0;
     if (controls && controls.IsMap()) {
       for (const auto& entry : controls) {
@@ -20941,6 +21117,14 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
       }
     }
     setStitchingIterationSettings(staged_iteration_settings);
+    if (realtime_playback_toggle_) {
+      const QSignalBlocker blocker(realtime_playback_toggle_);
+      realtime_playback_toggle_->setChecked(staged_realtime);
+    }
+    if (drivegpt_csv_toggle_) {
+      const QSignalBlocker blocker(drivegpt_csv_toggle_);
+      drivegpt_csv_toggle_->setChecked(staged_telemetry);
+    }
     show_scoreboard_dialog_ = staged_show_scoreboard_dialog;
     if (staged_controls["Link_Fixed_Edge_Rotation_Left_Right"] != 0) {
       staged_controls["Right_Fixed_Edge_Rotation_Angle_x10"] = staged_controls["Left_Fixed_Edge_Rotation_Angle_x10"];
@@ -20957,7 +21141,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     }
     if (stitch_frame_time_edit_) {
       const bool blocked = stitch_frame_time_edit_->blockSignals(true);
-      stitch_frame_time_edit_->setText(staged_stitch_frame_time);
+      setStitchFrameTime(staged_stitch_frame_time);
       stitch_frame_time_edit_->blockSignals(blocked);
     }
     if (control_point_matcher_combo_) {
@@ -21177,7 +21361,17 @@ bool HStreamWindow::applySavedControlConfig(
     if (before.size() != 3 || before[2] != after[2])
       config["output"]["rink-map"]["position"] = after[2].toStdString();
   }
+  if (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) {
+    config["rink"]["scoreboard"]["scoreboard_scale"] = scoreboard_scale_spin_->value();
+    for (const char* key : {"scoreboard-scale", "scoreboard_scale"}) {
+      remove_yaml_path(config, {"pipeline", "hmplaycropper", key});
+      for (const char* bag : {"properties", "private-properties"})
+        remove_yaml_path(config, {"pipeline", "hmplaycropper", bag, key});
+    }
+  }
   const auto previous_mask_time = hm::stitching::read_rink_mask_frame_time(merge_yaml_maps(baseline_config_, config));
+  if (!backend_.isHockeyMon() && tiled_detection_check_ && tiled_detection_check_->isChecked() != saved_tiled_detection_)
+    config["pipeline"]["primary-gie"]["tiled-inference"]["enable"] = tiled_detection_check_->isChecked() ? 1 : 0;
   if (backend_.isHockeyMon() && !detectorPrecision().isEmpty() && detectorSelectionChanged()) {
     YAML::Node detector = config["hstream_ui"]["hockeymon"]["detector"];
     detector["model"] = detectorModel().toStdString();
@@ -21383,6 +21577,8 @@ bool HStreamWindow::applySavedControlConfig(
     }
   };
 
+  for (const auto& key : hm::config::kRuntimeControlKeys)
+    remove_yaml_path(config, QString::fromLatin1(key.path));
   YAML::Node controls(YAML::NodeType::Map);
   int changed = 0;
   for (const auto& [id, default_value] : camera_defaults_) {
@@ -21616,8 +21812,6 @@ bool HStreamWindow::applySavedControlConfig(
   }
   const QString high_bit_depth_mode = highBitDepthMode();
   const bool use_high_bit_grading = high_bit_depth_mode == "1";
-  const char* tone_element = use_high_bit_grading ? "hmstitcher" : "hmplaycropper";
-  const QString tone_path_prefix = QString("pipeline.%1.properties").arg(tone_element);
   if (high_bit_depth_mode != "auto") {
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = use_high_bit_grading;
     mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
@@ -21628,19 +21822,7 @@ bool HStreamWindow::applySavedControlConfig(
     config["pipeline"]["hmstitcher"]["properties"]["high-bit-depth"] = "auto";
     mark_runtime_key("pipeline.hmstitcher.properties.high-bit-depth");
   }
-  if (has_control(controls, "Bring_Up_Shadows")) {
-    config["pipeline"][tone_element]["properties"]["shadow-lift"] = slider_value("Bring_Up_Shadows");
-    mark_runtime_key(tone_path_prefix + ".shadow-lift");
-  }
-  if (has_control(controls, "Lift_Shadow_Black_Point")) {
-    config["pipeline"][tone_element]["properties"]["shadow-lift-black-point"] =
-        slider_value("Lift_Shadow_Black_Point") != 0;
-    mark_runtime_key(tone_path_prefix + ".shadow-lift-black-point");
-  }
-  if (has_control(controls, "Exposure_x100")) {
-    config["pipeline"][tone_element]["properties"]["exposure"] = slider_value("Exposure_x100") / 100.0;
-    mark_runtime_key(tone_path_prefix + ".exposure");
-  }
+
   const bool fixed_edge_rotation_changed = has_control(controls, "Link_Fixed_Edge_Rotation_Left_Right") ||
       has_control(controls, "Left_Fixed_Edge_Rotation_Angle_x10") ||
       has_control(controls, "Right_Fixed_Edge_Rotation_Angle_x10");
@@ -21755,9 +21937,7 @@ bool HStreamWindow::applySavedControlConfig(
       has_control(controls, "Stop_Cancel_Hysteresis_Frames") || has_control(controls, "Stop_Delay_Cooldown_Frames") ||
       has_control(controls, "Time_To_Dest_Speed_Limit_Frames") ||
       has_control(controls, "Overshoot_Stop_Delay_Frames") || has_control(controls, "Post_Nonstop_Stop_Delay_Frames") ||
-      has_control(controls, "Overshoot_Speed_Ratio_x100") || has_control(controls, "Max_Speed_X_x10") ||
-      has_control(controls, "Max_Speed_Y_x10") || has_control(controls, "Max_Accel_X_x10") ||
-      has_control(controls, "Max_Accel_Y_x10");
+      has_control(controls, "Overshoot_Speed_Ratio_x100");
   const QStringList tracker_control_ids = {
       "Ignore_Largest_Count",
       "Ignore_Referees",
@@ -21873,18 +22053,6 @@ bool HStreamWindow::applySavedControlConfig(
           if (has_control(controls, "Post_Nonstop_Stop_Delay_Frames")) {
             live_boxes[index]["post-nonstop-stop-delay-count"] = slider_value("Post_Nonstop_Stop_Delay_Frames");
           }
-          if (has_control(controls, "Max_Speed_X_x10")) {
-            live_boxes[index]["max-speed-x"] = static_cast<double>(slider_value("Max_Speed_X_x10")) / 10.0;
-          }
-          if (has_control(controls, "Max_Speed_Y_x10")) {
-            live_boxes[index]["max-speed-y"] = static_cast<double>(slider_value("Max_Speed_Y_x10")) / 10.0;
-          }
-          if (has_control(controls, "Max_Accel_X_x10")) {
-            live_boxes[index]["max-accel-x"] = static_cast<double>(slider_value("Max_Accel_X_x10")) / 10.0;
-          }
-          if (has_control(controls, "Max_Accel_Y_x10")) {
-            live_boxes[index]["max-accel-y"] = static_cast<double>(slider_value("Max_Accel_Y_x10")) / 10.0;
-          }
         };
         if (slider_value("Apply_To_Fast_Box") != 0) {
           apply_live_box(live_box_roles->fast_index);
@@ -21922,15 +22090,6 @@ bool HStreamWindow::applySavedControlConfig(
         return false;
       }
     }
-  }
-  if (has_control(controls, "Apply_To_Fast_Box")) {
-    config["hstream_ui"]["camera_control_targets"]["apply_to_fast_box"] = slider_value("Apply_To_Fast_Box") != 0;
-    mark_runtime_key("hstream_ui.camera_control_targets.apply_to_fast_box");
-  }
-  if (has_control(controls, "Apply_To_Follower_Box")) {
-    config["hstream_ui"]["camera_control_targets"]["apply_to_follower_box"] =
-        slider_value("Apply_To_Follower_Box") != 0;
-    mark_runtime_key("hstream_ui.camera_control_targets.apply_to_follower_box");
   }
   if (!unavailable_playtracker_config_error_.isEmpty()) {
     // Native defaults are unknown, so retain untouched tracker overrides
@@ -22003,6 +22162,7 @@ bool HStreamWindow::applySavedControlConfig(
     config["stitching"]["calibration_frame_count"] = selected_frame_count;
   }
   appendLog(QString("preset captured %1 non-default camera controls").arg(changed));
+  config = hm::config::NormalizeRuntimeControlLayer(config);
   return true;
 }
 
@@ -22025,6 +22185,7 @@ void HStreamWindow::rememberGameSelection() {
 }
 
 void HStreamWindow::browseGameRoot() {
+  stopSourceCamera();
   if (!game_controls_->isEnabled())
     return;
   const QString directory = QFileDialog::getExistingDirectory(this, "Choose Game Root", gameRoot());
@@ -22120,6 +22281,9 @@ void HStreamWindow::refreshGames() {
 }
 
 void HStreamWindow::selectGame(const QString& game_id) {
+  stopSourceCamera();
+  source_camera_positions_ = {};
+  source_camera_durations_ = {};
   if (!game_id_edit_) {
     return;
   }
@@ -22197,6 +22361,7 @@ void HStreamWindow::addVideoPath() {
 }
 
 bool HStreamWindow::addVideoFile(const QString& path) {
+  stopSourceCamera();
   const QString role = selectedVideoRole();
   if (!ensureGameDirectory()) {
     return false;
@@ -22284,6 +22449,7 @@ void HStreamWindow::browseVideoPath() {
 }
 
 void HStreamWindow::removeSelectedVideoSet() {
+  stopSourceCamera();
   if (!video_set_list_) {
     return;
   }
@@ -23027,39 +23193,10 @@ bool HStreamWindow::syncRuntimeExplicitVideoConfig(YAML::Node& config) {
   const bool has_left = explicit_left && explicit_left.IsSequence() && explicit_left.size() > 0;
   const bool has_right = explicit_right && explicit_right.IsSequence() && explicit_right.size() > 0;
   if (has_left && has_right) {
-    auto normalized_playlist = [](const YAML::Node& explicit_videos, YAML::Node& playlist) {
-      std::map<QString, QString> by_chapter;
-      std::set<QString> schemes;
-      std::set<QString> unique_paths;
-      for (const auto& item : explicit_videos) {
-        const QString path = QString::fromStdString(item.as<std::string>());
-        if (!unique_paths.insert(path).second) {
-          return false;
-        }
-        const std::optional<QString> chapter = explicit_chapter_key(path);
-        if (chapter && !by_chapter.emplace(*chapter, path).second) {
-          return false;
-        }
-        if (chapter) {
-          schemes.insert(chapter->section(':', 0, 0));
-        }
-      }
-      playlist = YAML::Node(YAML::NodeType::Sequence);
-      if (by_chapter.size() == explicit_videos.size() && schemes.size() == 1) {
-        for (const auto& [_, path] : by_chapter) {
-          playlist.push_back(path.toStdString());
-        }
-      } else {
-        for (const auto& item : explicit_videos) {
-          playlist.push_back(item.as<std::string>());
-        }
-      }
-      return playlist.size() > 0;
-    };
-
     YAML::Node left_list;
     YAML::Node right_list;
-    if (normalized_playlist(explicit_left, left_list) && normalized_playlist(explicit_right, right_list)) {
+    if (normalized_explicit_playlist(explicit_left, left_list) &&
+        normalized_explicit_playlist(explicit_right, right_list)) {
       // Each camera's chapter labels describe only that camera's physical file boundaries. Preserve and sort the two
       // playlists independently; requiring equal labels or counts drops valid footage when cameras roll files apart.
       config["game"]["videos"]["left"] = left_list;
@@ -23425,11 +23562,14 @@ void HStreamWindow::addRtspOutput() {
   appendLog(QString("rtsp server mount /dynamic%1 enabled for the next pipeline start").arg(dynamic_rtsp_count_));
 }
 
-void HStreamWindow::appendLog(const QString& message, bool stderr_output) {
+void HStreamWindow::appendLog(const QString& message, bool stderr_output, const char* diagnostic_source) {
   const QString entry_timestamp = timestamp();
   const QByteArray plain_entry = QString("%1 %2\n").arg(entry_timestamp, message).toUtf8();
   hm::diagnostics::Log(
-      stderr_output ? "runner-stderr" : "ui-log", {plain_entry.constData(), static_cast<size_t>(plain_entry.size())});
+      diagnostic_source   ? diagnostic_source
+          : stderr_output ? "runner-stderr"
+                          : "ui-log",
+      {plain_entry.constData(), static_cast<size_t>(plain_entry.size())});
   FILE* console = stderr_output ? stderr : stdout;
   if (console) {
     (void)std::fwrite(plain_entry.constData(), 1, static_cast<size_t>(plain_entry.size()), console);

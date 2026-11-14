@@ -102,8 +102,6 @@ def parser():
             command.add_argument("--output", required=True, type=Path)
         if name == "serve":
             command.add_argument("--once", action="store_true")
-    supervise = commands.add_parser("_supervise", help=argparse.SUPPRESS)
-    supervise.add_argument("--root", required=True, type=Path)
     return root
 
 
@@ -111,10 +109,6 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser().parse_args(argv)
     try:
-        if args.command == "_supervise":
-            from .supervisor import execute
-
-            return execute(args.root)
         dispatch(args.registry, argv)
         if args.command == "serve":
             serve(args.registry, args.once)

@@ -59,6 +59,9 @@ class WebPreviewTarget {
   void RemoveRoute(GstPad* route);
   bool Select(GstPad* route, std::uint64_t operation);
   bool Active(GstPad* route, std::uint64_t operation) const;
+  // Reset presentation clock bounds only with all routes closed and the
+  // encoder/payloader stopped at READY, after retiring signaling.
+  bool ResetMediaEpoch();
   bool SetFrameAdmission(FrameAdmission admission);
   bool SetPresentationMapper(PresentationMapper mapper, std::function<void()> wake);
   bool CancelRoutePresentation(GstPad* route, std::uint64_t operation);

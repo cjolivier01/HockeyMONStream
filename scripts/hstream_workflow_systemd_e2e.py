@@ -26,7 +26,7 @@ from install_workflow_services import render_unit
     "explicit systemd qualification required",
 )
 class SystemdLifecycleTest(unittest.TestCase):
-    def test_restart_stop_and_main_crash_preserve_attempt_supervisor(self):
+    def test_restart_stop_and_main_crash_preserve_native_worker(self):
         fixture = fixtures.ControllerTest()
         fixture.setUp()
         unit = "hstream-workflow-test-" + uuid4().hex
@@ -83,12 +83,33 @@ class SystemdLifecycleTest(unittest.TestCase):
                 fixture.plan["workflow_id"]
             )
 
-            def supervisor_record():
-                records = list(directory.glob("attempts/*/supervisor.json"))
-                return read_json(records[0]) if records else None
+            def worker_record():
+                records = list(directory.glob("attempts/*/worker/state.json"))
+                if not records:
+                    return None
+                try:
+                    state = read_json(records[0])
+                except WorkflowError as exc:
+                    if any(
+                        message in str(exc.__cause__ or exc)
+                        for message in (
+                            "replaced while reading",
+                            "changed while reading",
+                        )
+                    ):
+                        return None  # A worker heartbeat atomically replaced this snapshot.
+                    raise
+                if not state.get("tasks"):
+                    return None
+                identity = state["identity"]
+                return {
+                    **identity,
+                    "boot_id": identity["boot"],
+                    "start_time": identity["start"],
+                }
 
-            supervisor = wait_for(supervisor_record)
-            cgroup = Path(f"/proc/{supervisor['pid']}/cgroup").read_text()
+            worker = wait_for(worker_record)
+            cgroup = Path(f"/proc/{worker['pid']}/cgroup").read_text()
             self.assertIn(unit, cgroup)
             for action in ("restart", "stop-start", "crash"):
                 previous = command(
@@ -98,7 +119,7 @@ class SystemdLifecycleTest(unittest.TestCase):
                     command("systemctl", "restart", unit)
                 elif action == "stop-start":
                     command("systemctl", "stop", unit)
-                    self.assertTrue(same_process(supervisor))
+                    self.assertTrue(same_process(worker))
                     command("systemctl", "start", unit)
                 else:
                     command(
@@ -109,14 +130,14 @@ class SystemdLifecycleTest(unittest.TestCase):
                         unit,
                     )
                 wait_for(
-                    lambda: command(
+                    lambda previous=previous: command(
                         "systemctl", "show", unit, "--property=MainPID", "--value"
                     )
                     not in {"0", previous}
                 )
-                self.assertTrue(same_process(supervisor), action)
+                self.assertTrue(same_process(worker), action)
                 self.assertEqual(
-                    Path(f"/proc/{supervisor['pid']}/cgroup").read_text(), cgroup
+                    Path(f"/proc/{worker['pid']}/cgroup").read_text(), cgroup
                 )
 
             def completed():
@@ -125,7 +146,13 @@ class SystemdLifecycleTest(unittest.TestCase):
                 except WorkflowError as exc:
                     # The strict reader can observe atomic state replacement by
                     # the live dispatcher. Retry that read as the monitor does.
-                    if "replaced while reading" in str(exc.__cause__):
+                    if any(
+                        message in str(exc.__cause__ or exc)
+                        for message in (
+                            "replaced while reading",
+                            "changed while reading",
+                        )
+                    ):
                         return None
                     raise
                 return (

@@ -62,11 +62,14 @@ enabling that deployment. A mount translating inode identities is unsupported
 until it has an independent CPU read verifier; equal paths alone are insufficient.
 
 Every Slurm target must provide the pinned native task executable, configuration,
-models and a qualified native runtime. In a profile, `runtime.python` names the
-compute host's Python executable; never reuse the dispatcher's x86 interpreter
-path for a different architecture. Pin the resolved interpreter binary and native
-files in `runtime.files`. Install the same workflow supervisor code and
-`scripts/hstream-workflow` launcher at the shared/identical compute path. Profile
+models and a qualified native runtime. Each execution profile names the pinned
+C++ worker as `runtime.worker` and includes its hash in `runtime.files`. Qualify
+`native-batch-v1` support before admitting standalone work. Interpreter-only
+`runtime.python` profiles no longer admit Slurm work; replace them and requalify
+every target. Compute profiles do not need the Python controller or launcher.
+Keep those pins in the local admission profile, which identifies the controller
+installation used by Qt and exported workflows. Native task dependencies (including
+Python used by a native preparation tool) remain part of their own runtime. Profile
 readiness must enumerate every allowed target, including backend and architecture.
 Current automatic calibration/player scanning requires the qualified NVIDIA
 runtime; an AMD allocation does not imply support for those existing CLI gaps.
@@ -377,3 +380,11 @@ with the actual Dagster run ID; Qt and the browser consume those records.
 `HSTREAM_DAGSTER_URL` can override the web-visible origin when a browser deployment
 requires a different route. None of these service addresses are per-job processing
 controls. Changing the operator configuration does not require recompiling the UI.
+
+The native package also installs [hstream-runtime-worker](runtime-worker.md) for
+service-side controllers. HockeyMONWeb uses that C++ worker on compute and keeps
+its Python coordinator on the service host. No web application install belongs
+on a GPU node. Standalone workflows use the same worker in batch mode. Upgrade
+with jobs idle, replace legacy interpreter profiles, and requalify native hashes.
+Existing completed receipts remain readable; do not remove old installations
+until all old jobs and their descendants have retired.

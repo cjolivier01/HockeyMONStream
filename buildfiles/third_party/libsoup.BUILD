@@ -17,6 +17,8 @@ cc_library(
     # and libnvbufsurftransform.so in /usr win over the installed SDK.
     linkopts = [
         "-l:" + SOUP_SONAME,
+        # libsoup 3's TLS setup uses GIO certificate objects directly.
+        "-lgio-2.0",
     ],
     visibility = ["//visibility:public"],
     deps = [

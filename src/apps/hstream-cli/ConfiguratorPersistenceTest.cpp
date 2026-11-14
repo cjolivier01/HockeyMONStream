@@ -23,8 +23,10 @@
 
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
+#include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
@@ -1711,6 +1713,38 @@ int main() {
           mapped_canonical["sink0"]["output-file"].as<std::string>() == "/tmp/canonical.mkv" &&
           mapped_canonical["sink0"]["width"].as<int>() == 1280 && mapped_canonical["sink0"]["height"].as<int>() == 720,
       "Explicit canonical game values must replace lower-ranked structural native values for every supported mapping");
+
+  for (const char* alias : hm::scoreboard::kScalePaths) {
+    const fs::path scale_game_dir = games / "mapping-scoreboard-scale";
+    fs::create_directories(scale_game_dir / "_hockeymon");
+    auto scale_game = YAML::Load("rink: {scoreboard: {scoreboard_scale: 1.2}}");
+    hm::set_node_value(scale_game, alias, "1.7");
+    std::ofstream(scale_game_dir / "_hockeymon/config.yaml") << YAML::Dump(scale_game) << '\n';
+    for (const std::string draft : {"", "0.75", "reset"}) {
+      hm::Configurator scale_config(
+          "mapping-scoreboard-scale", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
+      bool loaded =
+          scale_config.configure().ok() && scale_config.underlay_config("pipeline", structural_custom_path.string());
+      if (draft == "reset") {
+        const auto overlay = root / "scoreboard-scale-reset.yaml";
+        std::ofstream(overlay) << "rink: {scoreboard: {scoreboard_scale: null}}\n";
+        loaded &= scale_config.apply_settings_overlay(overlay).ok();
+      } else if (!draft.empty()) {
+        loaded &= scale_config.apply_config_item("rink.scoreboard.scoreboard_scale", draft).ok();
+      }
+      const auto status =
+          loaded ? scale_config.apply_supported_baseline_mappings() : absl::InternalError("Scale fixture did not load");
+      const auto cropper = scale_config.config()["pipeline"]["hmplaycropper"];
+      const double expected = draft == "reset" ? 1.0 : draft.empty() ? 1.7 : 0.75;
+      ok &= expect(
+          status.ok() && cropper["scoreboard-scale"].as<double>() == expected,
+          "Scale aliases, draft overrides and null resets must resolve before native materialization");
+      for (const char* path : hm::scoreboard::kScalePaths) {
+        if (std::string(path).find("pipeline.") == 0 && std::string(path) != "pipeline.hmplaycropper.scoreboard-scale")
+          ok &= expect(!hm::get_node(scale_config.config(), path), "Native scale retained a competing alias");
+      }
+    }
+  }
 
   const fs::path stale_runtime_polygon_dir = games / "mapping-stale-runtime-polygon";
   fs::create_directories(stale_runtime_polygon_dir);

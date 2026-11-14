@@ -1,0 +1,142 @@
+#include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/ValueControlWheel.h"
+
+#include <QtCore/QDir>
+#include <QtCore/QFile>
+#include <QtCore/QTemporaryDir>
+#include <QtGui/QWheelEvent>
+#include <QtWidgets/QApplication>
+
+#include <iostream>
+#include <stdexcept>
+
+struct HStreamWindowTestAccess {
+  static bool save(HStreamWindow& window) {
+    return window.savePreset();
+  }
+  static QStringList args(const HStreamWindow& window) {
+    return window.pipelineArguments(true);
+  }
+  static void reload(HStreamWindow& window) {
+    window.loadSavedControlConfig();
+  }
+  static void defaults(HStreamWindow& window) {
+    window.selectDefaults();
+  }
+  static void reset(HStreamWindow& window) {
+    window.resetDefaultsToBaseline();
+  }
+  static bool scaleDisabledDuringPlayback(HStreamWindow& window) {
+    QProcess process;
+    process.start("/bin/sleep", {"30"});
+    if (!process.waitForStarted(5000))
+      return false;
+    auto* original = window.pipeline_process_;
+    window.pipeline_process_ = &process;
+    window.updateScoreboardControls();
+    const bool disabled = !window.scoreboard_scale_spin_->isEnabled();
+    process.kill();
+    const bool stopped = process.waitForFinished(5000);
+    window.pipeline_process_ = original;
+    window.updateScoreboardControls();
+    return disabled && stopped && window.scoreboard_scale_spin_->isEnabled();
+  }
+};
+namespace {
+void Check(bool value, const char* message) {
+  if (!value)
+    throw std::runtime_error(message);
+}
+void Write(const QString& path, const QByteArray& text) {
+  QFile file(path);
+  Check(file.open(QIODevice::WriteOnly) && file.write(text) == text.size(), "Cannot write test configuration");
+}
+template <class T>
+T* Find(HStreamWindow& window, const char* name) {
+  auto* result = window.findChild<T*>(name);
+  Check(result != nullptr, name);
+  return result;
+}
+} // namespace
+int main(int argc, char** argv) {
+  try {
+    QTemporaryDir root;
+    Check(root.isValid(), "Cannot create test directory");
+    qputenv("HOME", root.path().toUtf8());
+    qputenv("XDG_CONFIG_HOME", root.filePath("config").toUtf8());
+    qputenv("HM_GAME_DIR", root.filePath("games").toUtf8());
+    QDir().mkpath(root.filePath("games/one/_hockeymon"));
+    QDir().mkpath(root.filePath("games/two/_hockeymon"));
+    const auto config_path = root.filePath("games/one/_hockeymon/config.yaml");
+    Write(
+        config_path,
+        "rink: {scoreboard: {scoreboard_scale: 1.2}}\npipeline: {hmplaycropper: {private-properties: {scoreboard-scale: 1.7}}}\n");
+    QApplication app(argc, argv);
+    install_value_control_wheel_guard();
+    HStreamWindow window;
+    auto* game = Find<QComboBox>(window, "gameSelector");
+    auto* scale = Find<QDoubleSpinBox>(window, "scoreboardScaleSpin");
+    auto* save = Find<QPushButton>(window, "savePresetButton");
+    game->setCurrentIndex(game->findText("two"));
+    Check(scale->value() == 1, "Fresh game must read baseline scale 1");
+    game->setCurrentIndex(game->findText("one"));
+    Check(scale->value() == 1.7, "Native scale alias must win within the game layer");
+    Check(HStreamWindowTestAccess::scaleDisabledDuringPlayback(window), "Scale must be disabled during playback");
+    scale->setValue(.75);
+    QWheelEvent wheel(
+        QPointF(1, 1), QPointF(1, 1), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(scale, &wheel);
+    Check(scale->value() == .75, "Wheel changed scoreboard scale");
+    Check(save->isEnabled(), "Scale edit did not mark preset dirty");
+    Check(
+        HStreamWindowTestAccess::args(window).contains("--options=rink.scoreboard.scoreboard_scale=0.75"),
+        "Draft scale did not reach the next playback");
+    Check(HStreamWindowTestAccess::save(window), "Could not save scale");
+    const auto saved = YAML::LoadFile(config_path.toStdString());
+    Check(saved["rink"]["scoreboard"]["scoreboard_scale"].as<double>() == .75, "Scale did not persist");
+    Check(
+        !saved["pipeline"]["hmplaycropper"]["private-properties"]["scoreboard-scale"].IsDefined(),
+        "Saved scale kept a conflicting alias");
+    HStreamWindowTestAccess::reload(window);
+    Check(scale->value() == .75, "Saved scale did not reload");
+    auto with_polygon = YAML::Clone(saved);
+    const auto polygon = YAML::Load("[[10,10],[30,10],[30,20],[10,20]]");
+    with_polygon["rink"]["scoreboard"]["perspective_polygon"] = polygon;
+    with_polygon["rink"]["stitched_output_generation"] = "unchanged-scoreboard-canvas";
+    Write(config_path, QByteArray::fromStdString(YAML::Dump(with_polygon)));
+    HStreamWindowTestAccess::reload(window);
+    scale->setValue(2);
+    Check(HStreamWindowTestAccess::save(window), "Could not save scale with existing corners");
+    const auto retained = YAML::LoadFile(config_path.toStdString());
+    Check(
+        YAML::Dump(retained["rink"]["scoreboard"]["perspective_polygon"]) == YAML::Dump(polygon) &&
+            retained["rink"]["stitched_output_generation"].as<std::string>() == "unchanged-scoreboard-canvas",
+        "Scale changed selected source corners or their generation");
+    game->setCurrentIndex(game->findText("two"));
+    Check(scale->value() == 1, "Game scale leaked into another game");
+    HStreamWindowTestAccess::defaults(window);
+    scale->setValue(2);
+    Check(HStreamWindowTestAccess::save(window), "Could not save default scale");
+    Check(
+        YAML::LoadFile(
+            root.filePath(".config/hstream-ui/defaults.yaml").toStdString())["rink"]["scoreboard"]["scoreboard_scale"]
+                .as<double>() == 2,
+        "Default scale did not persist");
+    HStreamWindowTestAccess::reset(window);
+    Check(scale->value() == 1 && HStreamWindowTestAccess::save(window), "Reset did not restore baseline scale");
+    const auto reset = YAML::LoadFile(root.filePath(".config/hstream-ui/defaults.yaml").toStdString());
+    Check(reset.IsMap() && reset.size() == 0, "Reset left a scale override");
+    const auto artifacts = qEnvironmentVariable("HSTREAM_SCOREBOARD_ARTIFACTS");
+    if (!artifacts.isEmpty()) {
+      window.resize(1600, 1000);
+      window.show();
+      QApplication::processEvents();
+      QDir().mkpath(artifacts);
+      Check(window.grab().save(artifacts + "/qt-after.png"), "Cannot capture scoreboard controls");
+    }
+    return 0;
+  } catch (const std::exception& error) {
+    std::cerr << error.what() << '\n';
+    return 1;
+  }
+}
