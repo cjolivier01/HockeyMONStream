@@ -11889,11 +11889,15 @@ void HStreamWindow::requestPlay() {
   if (!owner.ok() || owner->has_value() || running || pipeline_completion_proof_pending_ ||
       archive_completion_proof_pending_) {
     const bool ours = !operation_token_.empty();
-    GameOwnershipDialog dialog(game, this,
+    GameOwnershipDialog dialog(
+        game,
+        this,
         ours && running ? std::function<void()>([this, token = operation_token_] {
           if (operation_token_ == token)
             confirmStopPipeline();
-        }) : std::function<void()>(), !ours);
+        })
+                        : std::function<void()>(),
+        !ours);
     if (dialog.exec() == QDialog::Accepted)
       appendLog("Ownership released; old records and outputs retained. Click Play to start a new run.");
     updateRunControls();
