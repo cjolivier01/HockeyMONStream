@@ -92,7 +92,6 @@ namespace {
 
 namespace fs = std::filesystem;
 
-constexpr size_t kDefaultJetsonMaxLiveStitchCanvasDimension = 8192;
 constexpr size_t kHardMaximumArtifactDimension = 65536;
 constexpr uint64_t kHardMaximumArtifactPixels = 256ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
@@ -310,8 +309,8 @@ std::optional<size_t> live_canvas_limit_impl() {
     return std::nullopt;
   if (auto configured = positive_environment_size("HM_MAX_LIVE_STITCH_EGL_DIMENSION"))
     return configured;
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-  return kDefaultJetsonMaxLiveStitchCanvasDimension;
+#if defined(HSTREAM_ENABLE_JETSON_CANVAS_LIMIT) && defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+  return 8192;
 #else
   return std::nullopt;
 #endif

@@ -1844,13 +1844,25 @@ bool expect_changed_applied_live_limit_requires_regeneration(const fs::path& tmp
   return true;
 }
 
-bool expect_malformed_live_limit_is_ignored() {
+bool expect_live_canvas_limit_policy() {
+  unsetenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
+  unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
+  const auto default_limit = hm::stitching::live_stitch_max_canvas_dimension();
+#if defined(HSTREAM_ENABLE_JETSON_CANVAS_LIMIT) && defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+  const bool default_ok = default_limit == 8192;
+#else
+  const bool default_ok = !default_limit.has_value();
+#endif
+  setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "4096", /*overwrite=*/1);
+  const auto explicit_limit = hm::stitching::live_stitch_max_canvas_dimension();
+  setenv("HM_ALLOW_OVERSIZED_LIVE_STITCH", "1", /*overwrite=*/1);
+  const auto bypassed_limit = hm::stitching::live_stitch_max_canvas_dimension();
   unsetenv("HM_ALLOW_OVERSIZED_LIVE_STITCH");
   setenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "4096junk", /*overwrite=*/1);
-  const auto effective_limit = hm::stitching::live_stitch_max_canvas_dimension();
+  const auto malformed_limit = hm::stitching::live_stitch_max_canvas_dimension();
   unsetenv("HM_MAX_LIVE_STITCH_EGL_DIMENSION");
-  if (effective_limit.has_value() && *effective_limit == 4096) {
-    std::cerr << "a malformed live canvas limit must not be parsed as a valid numeric prefix" << std::endl;
+  if (!default_ok || explicit_limit != 4096 || bypassed_limit.has_value() || malformed_limit != default_limit) {
+    std::cerr << "live canvas limits must honor the build opt-in and explicit environment precedence" << std::endl;
     return false;
   }
   return true;
@@ -2988,7 +3000,7 @@ int main() {
     finish(tmpdir, 30);
   }
 
-  if (!expect_malformed_live_limit_is_ignored()) {
+  if (!expect_live_canvas_limit_policy()) {
     finish(tmpdir, 34);
   }
 

@@ -312,6 +312,8 @@ sh_test(
 
 cc_library(
   name = "canvas_constraint_check",
+  # Opt in to the legacy 8192-pixel Jetson cap; disabled by default.
+  # defines = ["HSTREAM_ENABLE_JETSON_CANVAS_LIMIT"],
   srcs = ["CanvasConstraintCheck.cpp"],
   hdrs = ["CanvasConstraintCheck.h", "MappingCanvasPlacement.h"],
   include_prefix = INCLUDE_PREFIX,
