@@ -91,7 +91,17 @@ if [[ -d "${CUDA_ROOT}/targets/sbsa-linux" ]]; then
   if [[ ! -e "${CUDA_ROOT}/lib64" && -d "${CUDA_ROOT}/targets/sbsa-linux/lib" ]]; then
     sudo ln -s "targets/sbsa-linux/lib" "${CUDA_ROOT}/lib64"
   fi
-  sudo ln -sfn "${HOST_CUDA_ROOT}/bin" "${CUDA_ROOT}/bin"
+  # nvcc resolves its SDK through bin/..; a directory symlink would escape
+  # into the host toolkit. Keep bin real and link its individual host tools.
+  if [[ -L "${CUDA_ROOT}/bin" ]]; then
+    sudo rm -- "${CUDA_ROOT}/bin"
+  fi
+  sudo mkdir -p "${CUDA_ROOT}/bin"
+  for host_tool in "${HOST_CUDA_ROOT}/bin/"*; do
+    sudo ln -sfn "${host_tool}" "${CUDA_ROOT}/bin/$(basename "${host_tool}")"
+  done
+  # x86 nvcc still selects this name for an aarch64 cross compiler.
+  sudo ln -sfn sbsa-linux "${CUDA_ROOT}/targets/aarch64-linux"
   sudo ln -sfn "${HOST_CUDA_ROOT}/nvvm" "${CUDA_ROOT}/nvvm"
   sudo ln -sfn "${HOST_CUDA_ROOT}/targets/x86_64-linux" "${CUDA_ROOT}/targets/x86_64-linux"
 fi
