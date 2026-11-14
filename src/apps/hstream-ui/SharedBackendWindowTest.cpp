@@ -5,6 +5,7 @@
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
+#include <QtTest/qtest_widgets.h>
 #include <QtCore/QDir>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QFile>
@@ -13,8 +14,8 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QTemporaryDir>
+#include <QtCore/QTimer>
 #include <QtTest/QTest>
-#include <QtTest/qtest_widgets.h>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QDialog>
 
@@ -82,9 +83,18 @@ struct HStreamWindowTestAccess {
           fresh.updateRunControls();
         }
         require(
-            !fresh.start_button_->isEnabled() && !fresh.save_preset_button_->isEnabled() &&
+            fresh.start_button_->isEnabled() && !fresh.save_preset_button_->isEnabled() &&
                 !fresh.clean_stitching_button_->isEnabled() && fresh.stitching_experiments_button_->isEnabled(),
             "Fresh main window fences mutations while retaining the workflow launcher");
+        bool ownership_dialog_opened = false;
+        QTimer::singleShot(0, [&] {
+          auto* dialog = fresh.findChild<QDialog*>("gameOwnershipDialog");
+          ownership_dialog_opened = dialog && dialog->isVisible();
+          if (dialog)
+            dialog->reject();
+        });
+        fresh.start_button_->click();
+        require(ownership_dialog_opened, "Busy Play opens ownership details without launching processing");
         fresh.stitching_experiments_button_->click();
         auto* monitor = fresh.findChild<QDialog*>("stitchingExperimentDialog");
         require(monitor && monitor->isVisible(), "Fresh main window opens the unbound workflow monitor");
@@ -138,7 +148,7 @@ struct HStreamWindowTestAccess {
             fresh.game_selector_->isEnabled() && root->isEnabled() && refresh->isEnabled(),
             "Remote ownership must permit game selection and root navigation");
         require(
-            !create->isEnabled() && !fresh.game_id_edit_->isEnabled() && !fresh.start_button_->isEnabled() &&
+            !create->isEnabled() && !fresh.game_id_edit_->isEnabled() && fresh.start_button_->isEnabled() &&
                 !fresh.save_preset_button_->isEnabled() && !fresh.video_controls_->isEnabled() &&
                 !fresh.clean_stitching_button_->isEnabled(),
             "Navigation must not enable mutations of the remotely owned game");
@@ -149,7 +159,7 @@ struct HStreamWindowTestAccess {
             "A deliberate selector key must leave the busy game and allow the free game");
         fresh.game_selector_->setCurrentIndex(fresh.game_selector_->findText("game"));
         fresh.updateRunControls();
-        require(!fresh.start_button_->isEnabled(), "Returning to an owned game must restore its fence");
+        require(fresh.start_button_->isEnabled(), "Returning to an owned game must restore its fence");
         const auto current = hm::game_operation::Inspect(game);
         require(
             current.ok() && current->has_value() && (**current).token == owner.token &&
@@ -201,12 +211,17 @@ struct HStreamWindowTestAccess {
     }
     window.updateRunControls();
     require(
-        !window.start_button_->isEnabled() && !window.save_preset_button_->isEnabled() &&
+        window.start_button_->isEnabled() && !window.save_preset_button_->isEnabled() &&
             !window.clean_stitching_button_->isEnabled() && window.stitching_experiments_button_->isEnabled() &&
             window.pipeline_state_->text().contains("remote-test"),
         "Remote ownership fences desktop mutations while experiment monitoring remains available");
+    QTimer::singleShot(0, [&] {
+      auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
+      require(dialog, "Busy Play opens ownership details");
+      dialog->reject();
+    });
     window.start_button_->click();
-    require(window.pipeline_process_->state() == QProcess::NotRunning, "Disabled Play cannot bypass remote admission");
+    require(window.pipeline_process_->state() == QProcess::NotRunning, "Busy Play cannot bypass remote admission");
     {
       auto lock = hm::game_operation::Lock::Acquire(game);
       require(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "Release remote test owner");

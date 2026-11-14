@@ -1386,6 +1386,8 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "src/apps/hstream-ui/PlayerAnalyticsControls.cpp",
                 "src/apps/hstream-ui/RinkFramingControls.cpp",
                 "src/apps/hstream-ui/PipelineInspectorWidget.cpp",
+                "src/apps/hstream-ui/GameOwnershipDialog.cpp",
+                "src/apps/hstream-ui/GameOwnershipDialog.h",
                 "src/apps/hstream-ui/HighlightsDialog.cpp",
                 "src/apps/hstream-ui/HighlightItemEditor.cpp",
                 "src/apps/hstream-ui/StitchingExperimentDialog.cpp",

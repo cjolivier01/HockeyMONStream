@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/PinnedFile.h"
 #include "hstream/src/libs/recording/Database.h"
@@ -44,6 +45,17 @@ struct Fd {
 };
 [[noreturn]] void fail(const std::string& message) {
   throw std::runtime_error(message);
+}
+std::unique_ptr<game_operation::Lock> completion(const fs::path& game, const std::string& producer = {}) {
+  auto lock = game_operation::Completion(game);
+  if (!lock.ok())
+    fail(lock.status().ToString());
+  if (!producer.empty()) {
+    const auto allowed = (*lock)->Authorize(producer);
+    if (!allowed.ok())
+      fail(allowed.ToString());
+  }
+  return std::move(*lock);
 }
 void check(bool success, const std::string& message) {
   if (!success)
@@ -629,6 +641,10 @@ void CompletePipeline(bool success, int64_t start_time_ms) {
   auto run = load(manifest);
   if (run["state"].as<std::string>() != "running")
     fail("Invalid pipeline completion state");
+  // Hold authority until the encoded/failed state is durable.
+  auto authority = game_operation::Completion(run["game_dir"].as<std::string>());
+  if (!authority.ok())
+    success = false;
   if (success) {
     bool video = false, telemetry = false;
     for (auto output : run["outputs"]) {
@@ -647,6 +663,7 @@ void CompletePipeline(bool success, int64_t start_time_ms) {
     if ((telemetry_only ? (!telemetry || video) : !video) || (run["telemetry_required"].as<bool>(false) && !telemetry))
       fail("Pipeline did not produce all required outputs");
   }
+  run["game_operation_token"] = game_operation::Authorization(run["game_dir"].as<std::string>());
   run["start_time_ms"] = start_time_ms;
   run["state"] = success ? "encoded" : "failed";
   save_run(run);
@@ -710,6 +727,7 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
   const fs::path game = run["game_dir"].as<std::string>();
   const auto receipt = ReceiptPath(game, run["id"].as<std::string>());
   GameLock game_lock(game);
+  auto authority = completion(game);
   if (entry_exists(receipt)) {
     const auto saved = load(receipt);
     verify_binding(saved, run);
@@ -730,6 +748,12 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
     check(work_lock.value >= 0 && ::flock(work_lock.value, LOCK_EX | LOCK_NB) == 0, "Run is still active");
   if (initial_state == "admitted")
     run = load_admitted_run(run);
+  const auto producer = run["game_operation_token"].as<std::string>("");
+  if (!producer.empty()) {
+    const auto allowed = authority->Authorize(producer);
+    if (!allowed.ok())
+      fail(allowed.ToString());
+  }
   std::vector<std::unique_ptr<Fd>> owner_locks;
   for (auto output : run["outputs"]) {
     if (!output["owner_lock_identity"])
@@ -913,6 +937,9 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
         const fs::path source = artifact["source"].as<std::string>();
         if (!matches(source, artifact["source_identity"], true))
           fail("Working output was replaced: " + source.string());
+        // Long remux/copy work does not block recovery. Recheck under the
+        // admission lock before publishing or deleting any retained work.
+        authority.reset();
         message(progress, "Preparing " + destination.filename().string());
         if (kind == "telemetry") {
           Fd database_file(::open(prepared.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, 0600));
@@ -941,6 +968,8 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
             fail("Working video changed during remux");
         }
       }
+      if (!authority)
+        authority = completion(game, producer);
       Fd fd(::open(prepared.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
       check(fd.value >= 0 && ::fsync(fd.value) == 0, "Cannot synchronize prepared output");
       if (info(prepared).st_size <= 0)

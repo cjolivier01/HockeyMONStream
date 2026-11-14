@@ -24,6 +24,8 @@ struct Owner {
   int64_t process_id{0};
   uint64_t revision{0};
   bool cancel_requested{false};
+  int64_t started_unix_ms{0};
+  uint64_t process_start_ticks{0};
 };
 
 // Acquire before reading/writing mutable game state. Keep this lock until that
@@ -37,12 +39,16 @@ class Lock final {
   static absl::StatusOr<std::unique_ptr<Lock>> Acquire(const std::filesystem::path& game, bool wait = true);
   absl::StatusOr<std::optional<Owner>> Read() const;
   absl::Status Authorize(const std::string& token) const;
+  absl::StatusOr<bool> Revoked(const std::string& token) const;
   absl::Status Claim(Owner& owner);
   absl::Status Handoff(Owner& successor, const std::string& expected_token, uint64_t expected_revision);
   absl::Status RequestCancel(const std::string& token, uint64_t expected_revision);
   // The caller is the owning supervisor and must already have exact shutdown
   // and cleanup proof. A false proof and stale token/revision always fail.
   absl::Status Release(const std::string& token, uint64_t expected_revision, bool stopped_and_clean);
+  // Explicit operator abandonment is distinct from verified shutdown. Preserve
+  // an audit/tombstone before releasing; never delete outputs or claim success.
+  absl::Status Recover(const std::string& token, uint64_t expected_revision, bool force, const std::string& reason);
 
  private:
   Lock(int directory, int descriptor) : directory_(directory), descriptor_(descriptor) {}
@@ -52,7 +58,22 @@ class Lock final {
 };
 
 absl::StatusOr<std::optional<Owner>> Inspect(const std::filesystem::path& game);
+struct RecoveryInfo {
+  std::optional<Owner> owner;
+  int64_t updated_unix_ms{0};
+  bool local_host{false};
+  bool verified_reboot{false};
+  bool process_matches{false};
+  std::string process_state;
+  std::string executable;
+  std::string explanation;
+};
+// Read-only observations. A missing PID or an old timestamp is never proof.
+absl::StatusOr<RecoveryInfo> InspectRecovery(const std::filesystem::path& game);
 absl::StatusOr<std::unique_ptr<Lock>> Mutation(const std::filesystem::path& game, bool wait = true);
+// Hold through publication and destructive completion cleanup. Cancellation
+// permits ordinary cleanup mutations, but must never authorize successful output.
+absl::StatusOr<std::unique_ptr<Lock>> Completion(const std::filesystem::path& game, bool wait = true);
 absl::StatusOr<std::string> NewToken();
 Owner LocalOwner(const std::string& kind, const std::string& id, const std::string& token);
 
@@ -61,6 +82,10 @@ Owner LocalOwner(const std::string& kind, const std::string& id, const std::stri
 void RegisterAuthorization(const std::filesystem::path& game, const std::string& token);
 void ForgetAuthorization(const std::filesystem::path& game, const std::string& token);
 std::string Authorization(const std::filesystem::path& game);
+// Poll from existing control timers, never for each video frame. Unavailable
+// observations do not imply cancellation. Revoked/replaced owners do.
+bool CancellationRequested();
+bool CancellationRequested(const std::filesystem::path& game, const std::string& token);
 
 // Dedicated CLI processes call this before launching any child. At retirement,
 // the caller must have stopped its own launchers and child-status consumers.

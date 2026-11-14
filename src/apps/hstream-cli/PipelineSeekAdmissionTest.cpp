@@ -1,3 +1,5 @@
+#include <unistd.h>
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/Status.h"
 #include "src/apps/hstream-cli/PipelineApp.h"
 
@@ -42,7 +44,44 @@ struct PipelineSeekAdmissionTestAccess {
     return application.runtime_seek_is_local_render_only();
   }
 
+  void CheckOwnershipCancellation() {
+    namespace op = hm::game_operation;
+    const auto game = std::filesystem::temp_directory_path() / ("pipeline-owner-" + std::to_string(getpid()));
+    std::filesystem::create_directories(game);
+    auto owner = op::LocalOwner("pipeline", "cancel-test", "cancel-test-token");
+    {
+      auto lock = op::Lock::Acquire(game);
+      Check(lock.ok() && (*lock)->Claim(owner).ok(), "Claim cancellation fixture");
+      Check((*lock)->RequestCancel(owner.token, owner.revision).ok(), "Request durable cancellation");
+    }
+    op::RegisterAuthorization(game, owner.token);
+    PipelineApplication cancelled;
+    Check(!cancelled.check_for_interrupt(), "Durable cancellation stops the control timer");
+    Check(!cancelled.cintr_ && cancelled.was_interrupted(), "Consumed interrupt retains failed-completion evidence");
+    {
+      auto lock = op::Lock::Acquire(game);
+      const auto current = (*lock)->Read();
+      Check((*lock)->Recover(owner.token, (**current).revision, true, "startup test").ok(), "Revoke fixture");
+    }
+    op::ForgetAuthorization(game, owner.token);
+    setenv("HM_GAME_DIR", game.parent_path().c_str(), 1);
+    setenv("HSTREAM_GAME_OPERATION_GAME", game.c_str(), 1);
+    setenv("HSTREAM_GAME_OPERATION_TOKEN", owner.token.c_str(), 1);
+    PipelineApplication delayed;
+    auto id = game.filename().string();
+    gchar* name = id.data();
+    delayed.game_id_ = &name;
+    CleanupStack cleanup;
+    Check(!delayed.initializeInstances(cleanup).ok(), "Revoked inherited startup cannot claim a fresh token");
+    delayed.game_id_ = nullptr;
+    unsetenv("HSTREAM_GAME_OPERATION_GAME");
+    unsetenv("HSTREAM_GAME_OPERATION_TOKEN");
+    unsetenv("HM_GAME_DIR");
+    std::filesystem::remove_all(game);
+  }
+
   void Run() {
+    CheckOwnershipCancellation();
     Check(Admitted(), "Completed Calibration browser playback cannot seek");
     output.clear();
     application.publish_web_preview_capability();

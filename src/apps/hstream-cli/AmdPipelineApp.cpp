@@ -139,7 +139,7 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
           args.application.empty() ? root / "ds_hockey_app_config.yaml" : std::filesystem::path(args.application),
           args.options));
   {
-    auto admission = Take(hm::game_operation::Lock::Acquire(launch.game));
+    auto admission = Take(hm::game_operation::Mutation(launch.game));
     const auto current = Take(admission->Read());
     if (current) {
       Status(admission->Authorize(hm::game_operation::Authorization(launch.game)));
@@ -596,7 +596,16 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
     g_print("HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=1\n", args.preview_active.c_str());
     Status(select_preview(args.preview_active, 1));
   }
+  auto next_owner_check = std::chrono::steady_clock::time_point{};
+  const auto owner_poll = std::chrono::milliseconds(
+      launch.configuration.values["workflow"]["poll_interval_ms"].as<int64_t>());
   const auto service_control = [&] {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_owner_check) {
+      next_owner_check = now + owner_poll;
+      if (hm::game_operation::CancellationRequested())
+        Stop(SIGTERM);
+    }
     const auto status = control->Service();
     if (!(absl::IsCancelled(status) && DrainRequested()))
       Status(status);
@@ -692,10 +701,15 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   publish_preview_ready();
   if (AbortRequested())
     throw Failure(absl::CancelledError("Program cancelled before publication"));
-  for (const auto& [name, file] : files) {
-    Status(file->Commit(AbortRequested, managed_work.empty() ? launch.game : std::filesystem::path{}));
-    const auto& archive = archives.at(name);
-    hm::publication::RegisterOutput(archive.path, archive.kind, true, file->fd());
+  {
+    // The final timer poll can precede a durable Stop or force release. Fence
+    // standalone output links too, before the managed completion check below.
+    auto authority = Take(hm::game_operation::Completion(launch.game));
+    for (const auto& [name, file] : files) {
+      Status(file->Commit(AbortRequested, managed_work.empty() ? launch.game : std::filesystem::path{}));
+      const auto& archive = archives.at(name);
+      hm::publication::RegisterOutput(archive.path, archive.kind, true, file->fd());
+    }
   }
   Require(!AbortRequested(), "Program cancelled before managed completion");
   hm::publication::CompletePipeline(true, start / GST_MSECOND);

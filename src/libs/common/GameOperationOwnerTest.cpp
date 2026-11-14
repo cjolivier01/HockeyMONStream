@@ -125,6 +125,120 @@ int main() {
       require(!take(op::Inspect(game)), "local release must clear the durable owner after child proof");
     }
     const fs::path game = root / "remote";
+    {
+      const auto recover_game = root / "recover";
+      fs::create_directory(recover_game);
+      auto owner = op::LocalOwner("pipeline", "recover-me", take(op::NewToken()));
+      {
+        auto lock = take(op::Lock::Acquire(recover_game));
+        check(lock->Claim(owner));
+      }
+      const auto info = take(op::InspectRecovery(recover_game));
+      require(
+          info.process_matches && info.local_host && info.owner->started_unix_ms > 0,
+          "new claims must retain verifiable process identity and start time");
+      auto lock = take(op::Lock::Acquire(recover_game));
+      require(
+          !lock->Recover(owner.token, owner.revision, false, "no progress").ok(),
+          "no progress is never verified retirement");
+      check(lock->RequestCancel(owner.token, owner.revision));
+      require(
+          !lock->Recover(owner.token, owner.revision, true, "stale confirmation").ok(),
+          "confirmation must not cross an owner revision");
+      owner = *take(lock->Read());
+      lock.reset();
+      op::RegisterAuthorization(recover_game, owner.token);
+      require(op::CancellationRequested(), "a remote stop intent must reach the owning timer");
+      require(!op::Completion(recover_game).ok(), "cancelled owner cannot commit outputs");
+      require(op::Mutation(recover_game).ok(), "cancelled owner can still perform supervised cleanup");
+      const auto state = hm::game_storage::StateDirectory(recover_game);
+      std::ofstream(state / "unfinished.mkv") << "retained-output";
+      std::ofstream(state / "config.yaml") << "retained-config";
+      lock = take(op::Lock::Acquire(recover_game));
+      check(lock->Recover(owner.token, owner.revision, true, "operator abandons legacy run"));
+      require(!take(lock->Read()), "explicit force release must remove the active claim");
+      require(
+          fs::exists(state / ("game-operation-revoked-" + owner.token + ".yaml")),
+          "force release must durably preserve a revocation and audit");
+      require(
+          fs::file_size(state / "unfinished.mkv") == 15 && fs::file_size(state / "config.yaml") == 15,
+          "recovery must preserve unfinished outputs and configuration");
+      require(!lock->Authorize(owner.token).ok(), "abandoned tokens must remain revoked with no successor");
+      require(!lock->Claim(owner).ok(), "an abandoned controller cannot reacquire with the same token");
+      lock.reset();
+      op::ForgetAuthorization(recover_game, owner.token);
+      ::setenv("HSTREAM_GAME_OPERATION_GAME", recover_game.c_str(), 1);
+      ::setenv("HSTREAM_GAME_OPERATION_TOKEN", owner.token.c_str(), 1);
+      require(!op::Mutation(recover_game).ok(), "delayed child cannot reacquire after inherited token revocation");
+      ::unsetenv("HSTREAM_GAME_OPERATION_GAME");
+      ::unsetenv("HSTREAM_GAME_OPERATION_TOKEN");
+      op::RegisterAuthorization(recover_game, owner.token);
+      require(!op::Completion(recover_game).ok(), "revoked finalizer cannot commit without a successor");
+      require(
+          !op::PrepareSupervisedCommand(recover_game, owner.token, 1000, 10, {"/bin/true"}).ok(),
+          "revoked owner cannot issue a later helper permit");
+      lock = take(op::Lock::Acquire(recover_game));
+      auto next = op::LocalOwner("pipeline", "next", take(op::NewToken()));
+      check(lock->Claim(next));
+      require(
+          !lock->Recover(owner.token, owner.revision, true, "old dialog").ok(),
+          "an old dialog cannot release the next run");
+      lock.reset();
+      check(op::ReleaseLocal(recover_game, owner.token, true));
+      require(
+          take(op::Inspect(recover_game))->token == next.token,
+          "retiring a revoked local scope must preserve successor ownership");
+      lock = take(op::Lock::Acquire(recover_game));
+      check(lock->Release(next.token, next.revision, true));
+      auto rebooted = op::LocalOwner("pipeline", "previous-boot", take(op::NewToken()));
+      rebooted.boot_id = "previous-boot";
+      check(lock->Claim(rebooted));
+      check(lock->Recover(rebooted.token, rebooted.revision, false, "local reboot verified"));
+      auto workflow = op::LocalOwner("workflow", "remote-tasks", take(op::NewToken()));
+      workflow.boot_id = "previous-boot";
+      check(lock->Claim(workflow));
+      require(
+          !lock->Recover(workflow.token, workflow.revision, false, "local reboot").ok(),
+          "controller reboot does not prove its remote tasks stopped");
+      check(lock->Release(workflow.token, workflow.revision, true));
+      auto blocked = op::LocalOwner("pipeline", "bad-audit", take(op::NewToken()));
+      check(lock->Claim(blocked));
+      fs::create_symlink(state / "config.yaml", state / ("game-operation-revoked-" + blocked.token + ".yaml"));
+      require(
+          !lock->Recover(blocked.token, blocked.revision, true, "bad audit").ok() && take(lock->Read()).has_value(),
+          "audit publication failure must preserve ownership and reject symlinks");
+    }
+    {
+      const auto legacy = root / "legacy";
+      fs::create_directory(legacy);
+      auto lock = take(op::Lock::Acquire(legacy));
+      const auto state = hm::game_storage::StateDirectory(legacy);
+      const std::string contents =
+          "schema: 1\ngame_admission: exclusive\nkind: pipeline\nid: old\n"
+          "token: old-token\nhost: remote-host\nboot_id: old-boot\nworkflow_directory: ''\n"
+          "process_id: 9999999\nrevision: 1\ncancel_requested: false\n";
+      std::ofstream(state / "game-operation.yaml") << contents;
+      auto old = *take(lock->Read());
+      require(old.started_unix_ms == 0 && old.process_start_ticks == 0, "legacy unknown identity stays unknown");
+      lock.reset();
+      const auto info = take(op::InspectRecovery(legacy));
+      require(!info.verified_reboot && !info.process_matches, "remote missing PID cannot verify shutdown");
+      lock = take(op::Lock::Acquire(legacy));
+      check(lock->Recover(old.token, old.revision, true, "legacy recovery"));
+      // Simulate interruption after the audit was committed but before unlink.
+      std::ofstream(state / "game-operation.yaml") << contents;
+      lock.reset();
+      op::RegisterAuthorization(legacy, old.token);
+      require(op::CancellationRequested(), "committed revocation cancels even before owner unlink");
+      op::ForgetAuthorization(legacy, old.token);
+      lock = take(op::Lock::Acquire(legacy));
+      check(lock->Recover(old.token, old.revision, true, "retry interrupted recovery"));
+      auto reused = op::LocalOwner("pipeline", "reused-pid", take(op::NewToken()));
+      ++reused.process_start_ticks;
+      check(lock->Claim(reused));
+      lock.reset();
+      require(!take(op::InspectRecovery(legacy)).process_matches, "PID reuse cannot identify the owner");
+    }
     fs::create_directory(game);
     auto owner = op::LocalOwner("workflow", "remote-workflow", take(op::NewToken()));
     owner.host = "another-host";

@@ -325,9 +325,20 @@ while True:
       if (!window.beginGameOperation("pipeline"))
         return false;
       window.startArchiveFinalization(source, game, false, output == "archive-stitched", output);
-      if (!hm::ui::HasSupervisedProcess(*window.archive_finalize_process_) ||
-          !QTest::qWaitFor(
-              [&] { return window.outputStateText(output) == "SAVED" && window.operation_token_.empty(); }, 10000)) {
+      // Simulate another window inspecting ownership just as the helper exits.
+      // The finalizer must serialize with that reader, not abandon the queue.
+      auto observation = hm::game_operation::Lock::Acquire(directory.toStdString());
+      if (!observation.ok())
+        return false;
+      std::thread observer([lock = std::move(*observation)]() mutable {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        lock.reset();
+      });
+      const bool saved = hm::ui::HasSupervisedProcess(*window.archive_finalize_process_) &&
+          QTest::qWaitFor([&] { return window.outputStateText(output) == "SAVED" && window.operation_token_.empty(); },
+                          10000);
+      observer.join();
+      if (!saved) {
         std::cerr << "Guarded finalizer failed for " << output.toStdString() << '\n' << window.logText().toStdString();
         return false;
       }
@@ -453,8 +464,16 @@ while True:
       return false;
     ::kill(-worker_pid, SIGKILL);
     const auto owner = hm::game_operation::Inspect(directory.toStdString());
+    bool inspected = false;
+    QTimer::singleShot(0, [&] {
+      auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
+      inspected = dialog && dialog->isVisible();
+      if (dialog)
+        dialog->reject();
+    });
+    window.start_button_->click();
     return owner.ok() && owner->has_value() && (**owner).token == token && !window.save_preset_button_->isEnabled() &&
-        !window.start_button_->isEnabled() && window.pipeline_state_->text().startsWith("RECOVERY REQUIRED:");
+        window.start_button_->isEnabled() && inspected && window.pipeline_state_->text().startsWith("RECOVERY REQUIRED:");
   }
 
   static bool pausedGuardDestructionChecks() {

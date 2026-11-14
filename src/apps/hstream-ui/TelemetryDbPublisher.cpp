@@ -10,6 +10,7 @@
 #include <QtCore/QTemporaryFile>
 #include <cerrno>
 #include <stdexcept>
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
@@ -83,6 +84,7 @@ TelemetryCsvPublicationResult publish_telemetry_database(
     hm::recording::TelemetryDatabaseStem(game_id);
     if (suffix && !telemetry_csv_destination_paths_available(publication_directory, *suffix))
       throw std::runtime_error("Telemetry generation already exists or cannot be checked");
+    std::unique_ptr<hm::game_operation::Lock> authority;
     QString destination;
     {
       QTemporaryFile stage(QDir(publication_directory).filePath("_hockeymon/.hstream-database-XXXXXX"));
@@ -98,6 +100,12 @@ TelemetryCsvPublicationResult publish_telemetry_database(
       close(file);
       if (synced)
         throw std::runtime_error("Cannot synchronize database copy");
+      auto allowed = hm::game_operation::Completion(publication_directory.toStdString());
+      if (!allowed.ok()) {
+        stage.setAutoRemove(false);
+        throw std::runtime_error(allowed.status().ToString());
+      }
+      authority = std::move(*allowed);
       const int dir =
           open(QFile::encodeName(publication_directory).constData(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
       if (dir < 0)
