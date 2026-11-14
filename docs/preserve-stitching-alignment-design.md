@@ -58,6 +58,25 @@ The intent includes stable hashes for the representative camera PNGs because the
 fingerprint does not include those files. With player inputs, validate the representative index and image hashes
 against the retained bundle. Reframing reads the published stills/PTO; original recordings need not be decoded.
 
+The desired view stores projection, projection parameters, framing and the user-selected
+`max_output_width`. The execution host's canvas limit is separate: validation resolves
+`live_stitch_max_canvas_dimension()` and passes it to the existing Hugin reframe constraints.
+New requests omit `desired_view.max_output_dimension`; version-1 requests that contain it
+remain readable, but that field is excluded from framing comparisons. Published source
+limits remain in provenance. Moving a request between hosts does not change its owner,
+framing or source identity, and retries still validate all selected inputs and artifacts.
+Runtime canvas compatibility and regeneration checks remain in force; accepting a pending
+request on another host does not authorize loading an oversized canvas.
+
+The automatic 8192-pixel Jetson cap is disabled by default. To restore it, uncomment
+`HSTREAM_ENABLE_JETSON_CANVAS_LIMIT` in the `canvas_constraint_check` Bazel target.
+The define only affects Jetson builds, not x86 or ARM64/SBSA. Explicit
+`HM_MAX_LIVE_STITCH_EGL_DIMENSION` overrides still apply; `HM_ALLOW_OVERSIZED_LIVE_STITCH=1`
+still bypasses this runtime cap. Artifact validation bounds remain unchanged.
+On AGX Orin with Jetson Linux 39.2.1, CUDA 13.2 and DeepStream 9.1, headless RGBA8
+EGL/CUDA mapping and GPU read/write checks passed at 16384x4096, and CUDA/VIC resizing
+passed with 16384-pixel-wide input. This does not qualify every format or display path.
+
 ## Native operation
 
 Add `HuginProject::Reframe` within the existing owned staging/publication path. Stage the exact representative

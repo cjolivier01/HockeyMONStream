@@ -673,16 +673,40 @@ bool test_environment_canvas_limit(const fs::path& root) {
   pending(desired, "new-runtime-limit");
   const auto validated = ValidateStitchingReframeIntentLocked(root, desired);
   ok &= expect(
-      validated.ok() && validated->desired_max_output_dimension == 48 &&
+      validated.ok() && validated->runtime_max_canvas_dimension == 48 &&
           validated->source_provenance.max_canvas_dimension == 0 && validated->source_generation == source_generation,
-      "environment reframe freezes published cap and source identity while requesting new cap");
+      "environment reframe retains published provenance and resolves the execution cap");
   ok &= expect(
       value(stitch_artifact_generation_id_locked(root)) == source_generation,
       "capturing an environment-only view change retains original artifact generation");
-  ScopedEnvironment newer_limit("HM_MAX_LIVE_STITCH_EGL_DIMENSION", "32");
-  ok &= expect(
-      !ValidateStitchingReframeIntentLocked(root, desired).ok(),
-      "a later runtime canvas limit cannot silently replace the saved request");
+  auto record = desired["hstream_ui"]["stitching_calibration"]["reframe"];
+  ok &= expect(!record["desired_view"]["max_output_dimension"], "new saved framing excludes the host limit");
+  // Exercise both new requests and persisted version-1 requests from another host.
+  for (const bool legacy : {false, true}) {
+    if (legacy)
+      record["desired_view"]["max_output_dimension"] = 48;
+    const std::string saved_request = YAML::Dump(record);
+    for (const char* limit : {"32", "96", "0"}) {
+      ScopedEnvironment execution_limit("HM_MAX_LIVE_STITCH_EGL_DIMENSION", limit);
+      ScopedEnvironment oversized("HM_ALLOW_OVERSIZED_LIVE_STITCH", std::string(limit) == "0" ? "1" : "0");
+      const auto moved = ValidateStitchingReframeIntentLocked(root, desired);
+      ok &= expect(
+          moved.ok() && moved->runtime_max_canvas_dimension == std::stoul(limit) &&
+              moved->source_generation == source_generation && moved->source_provenance.max_canvas_dimension == 0,
+          "stricter, looser and unlimited hosts resolve their own cap without replacing the alignment");
+      ok &= expect(YAML::Dump(record) == saved_request, "host validation leaves the saved request unchanged");
+      auto changed_width = YAML::Clone(desired);
+      changed_width["stitching"]["max_output_width"] = 24;
+      ok &= expect(
+          !ValidateStitchingReframeIntentLocked(root, changed_width).ok(),
+          "host changes do not permit edits to the requested output width");
+      auto changed_framing = YAML::Clone(desired);
+      changed_framing["stitching"]["projection_framing"]["rotation_degrees"] = std::vector<double>{0, 1, 0};
+      ok &= expect(
+          !ValidateStitchingReframeIntentLocked(root, changed_framing).ok(),
+          "host changes do not permit edits to saved framing");
+    }
+  }
   return ok;
 }
 

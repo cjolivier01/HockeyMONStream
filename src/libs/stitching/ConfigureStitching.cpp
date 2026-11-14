@@ -5672,8 +5672,8 @@ absl::Status reframe_stitching(
   options.projection_framing = intent.desired_choices.projection_framing;
   if (intent.desired_max_output_width)
     options.max_output_width = intent.desired_max_output_width;
-  if (intent.desired_max_output_dimension)
-    options.max_canvas_dimension = intent.desired_max_output_dimension;
+  if (intent.runtime_max_canvas_dimension)
+    options.max_canvas_dimension = intent.runtime_max_canvas_dimension;
   options.progress = report_calibration_progress;
   options.is_cancelled = is_cancelled;
   // Review choices stay private until the reframe transaction commits. The

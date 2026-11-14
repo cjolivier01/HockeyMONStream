@@ -56,8 +56,9 @@ int fresh_stitch_fstat(int descriptor, struct stat* metadata);
 int fresh_stitch_stat(const char* path, struct stat* metadata);
 int fresh_stitch_lstat(const char* path, struct stat* metadata);
 
-// Returns the effective platform/runtime canvas limit. Malformed environment
-// overrides are ignored consistently by generation and validation paths.
+// Returns the effective runtime canvas limit. The legacy Jetson default is
+// opt-in via HSTREAM_ENABLE_JETSON_CANVAS_LIMIT. Malformed environment overrides
+// are ignored consistently by generation and validation paths.
 std::optional<size_t> live_stitch_max_canvas_dimension();
 
 // Shared by the lightweight checker and Hugin publication so crash recovery
