@@ -1251,9 +1251,9 @@ dependency_elfs=("${package_elfs[@]}")
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   # Desktop DeepStream's package metadata does not expose every dependency of
   # its dlopen'd tracker implementation (notably MQTT), so include that ELF in
-  # dependency discovery. JetPack's deepstream-9.1 package already declares
-  # the tracker/VPI runtime graph; asking dpkg-shlibdeps to analyze NVIDIA's
-  # private tracker ELF there fails because libnvvpi3 ships no shlibs metadata.
+  # dependency discovery. Jetson's DeepStream package declares the VPI
+  # runtime; NVIDIA's private tracker ELF cannot be analyzed here because
+  # libnvvpi4 ships no shlibs metadata.
   dependency_elfs+=("${DEEPSTREAM_TRACKER_RUNTIME}")
   shlibdeps_elf_args+=("-e${DEEPSTREAM_TRACKER_RUNTIME}")
 fi

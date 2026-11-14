@@ -144,6 +144,8 @@ cd "${source_dir}"
 # which Jammy arm64 does not provide as a package.
 build_packages=(
   cuda-toolkit-13-2
+  libcudnn9-cuda-13
+  libmosquitto1
   libopencv-dev
   python3
   python3-yaml
