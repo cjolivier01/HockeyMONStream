@@ -1,5 +1,11 @@
 # Generic runtime worker
 
+Direct task stdout/stderr use synchronous data writes. Live protocol readers on
+another NFS client must receive each readiness or acknowledgment record while
+the producer is still running; a visible size with buffered, zero-filled data
+would otherwise make their incremental readers skip those records permanently.
+This applies to direct task logs, not the standalone batch rotation pipe.
+
 `hstream-runtime-worker` is a C++17 execution owner for private shared-storage
 jobs. Build it with `make hstream-runtime-worker`; the desktop and Jetson Debian
 packages install it under `/opt/hstream/bin` and expose a `/usr/bin` symlink.

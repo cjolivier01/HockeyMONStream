@@ -288,6 +288,28 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual((self.workspace / (main + ".log")).read_text(), "seek 42\n")
         self.finish()
 
+    def test_live_protocol_output_is_synchronous_before_task_exit(self):
+        self.start()
+        task = self.launch("""import fcntl, os, sys
+for descriptor in (1, 2):
+    assert fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_DSYNC
+os.write(1, b'ready\\n')
+os.write(2, b'diagnostic\\n')
+sys.stdin.readline()
+os.write(1, b'ack\\n')
+""")
+        log = self.workspace / (task + ".log")
+        self.until(lambda: log.exists() and log.read_bytes() == b"ready\ndiagnostic\n")
+        self.assertIsNone(self.call("poll", task=task)["result"]["returncode"])
+        self.assertTrue(
+            self.call("stdin", task=task, data=base64.b64encode(b"stop\n").decode())[
+                "ok"
+            ]
+        )
+        self.assertEqual(self.completed(task)["returncode"], 0)
+        self.assertEqual(log.read_bytes(), b"ready\ndiagnostic\nack\n")
+        self.finish()
+
     def test_detached_resistant_descendant_is_reaped(self):
         self.start()
         task = self.launch("""import os, signal, time
