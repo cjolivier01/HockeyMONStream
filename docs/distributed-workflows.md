@@ -241,12 +241,11 @@ enable it; first qualify a compatible runtime with actual stitching stages.
 `runtime` identifies `backend` (`nvidia`, `amd`, or metadata-only `cpu`),
 `architecture` (`x86_64` or `aarch64`), `storage_namespace`, and an absolute-path
 `files` map of SHA256 digests. Pin the task executable, exporter, CLI, baseline,
-application configuration, models and supervisor deployment used by that profile.
+application configuration, models and `runtime.worker`, the C++ batch worker.
 Native GPU tasks additionally use `exporter`, `cli`, `config`, and `root` runtime
-paths. Slurm also needs a pinned absolute `python` interpreter available on every
-qualified target. Install the controller package at the same path on compute
-nodes or use a shared installation. The supervisor itself has no Dagster or web
-database dependency.
+paths. The controller package and launcher stay on the controller host and are
+pinned in its local admission profile. Compute profiles need neither those files
+nor a Python executor. Qualify `native-batch-v1` before enabling the new profiles.
 
 For each Slurm node, `qualified_nodes[node].runtime_identity` must equal the exact
 runtime object and `qualified_nodes[node].capabilities` must include the profile's
@@ -385,17 +384,14 @@ can select one stage. `state.json` remains authoritative if a crash interrupts
 a diagnostic append. Metadata and artifact verification also
 have protocol bounds. Local supervisors require the kernel to report that no
 children remain after reaping; an empty process-directory scan is not shutdown
-proof because a child can fork during the scan. Python supervisors signal pinned
-process descriptors and check kernel pidfd support before launching work. Python
-builds without pidfd wrappers use the same libc interfaces; there is no numeric
-PID signaling fallback. Standalone workflow retirement passes absolute TERM and
-KILL deadlines through process enumeration, ancestry expansion, descriptor
-signaling and reaping, including interrupted kernel waits. Observation errors
-cannot override a subsequent kernel `ECHILD` result. A zero helper budget makes
-one nonretrying proof check and sends no signals; deployed workflow profiles
-require a positive shutdown budget. These deadlines bound repeated operations,
-not an individual blocked filesystem or kernel call. The supervisor's captured
-exit code and cancellation/timeout fallback remain authoritative.
+proof because a child can fork during the scan. Both standalone and web tasks
+use `hstream-runtime-worker` and `common/ProcessGuard`: pidfd signaling, bounded
+TERM/KILL phases, captured root exit status and kernel `ECHILD` proof. Python
+controllers retain reservations when retirement cannot be proved. Batch execution
+and bound cancellation watches continue while a standalone controller restarts.
+The worker captures the bounded log tail and verifies result hashes after retirement;
+the controller then removes private runtime scratch and adopts verified receipts.
+
 Native ownership checks keep
 the CLI inside its own subreaper scope. Qt commands use the installed
 `hstream-process-guard` and exact token-bound completion receipts, so unrelated Qt
@@ -416,8 +412,10 @@ covers observer-only restart, retained historical runs, and installer rollback.
 
 - `scripts/hstream_workflow/schema.py` and `graph.py`: pure plan/state contract,
   byte-synchronized into the web coordinator.
-- `controller.py`, `state.py`, `local.py`, `slurm.py`, `supervisor.py`: standalone
-  admission, shared reservations, execution, reconciliation and containment.
+- `controller.py`, `state.py`, `local.py`, `slurm.py`, `executor.py`: standalone
+  admission, shared reservations, native-worker submission and reconciliation.
+- `runtime_worker/Worker.cpp` and `common/ProcessGuard`: shared C++ execution,
+  bounded log capture and descendant retirement for standalone and web jobs.
 - `GameOperationOwner.*`: reciprocal durable recording ownership.
 - `ExperimentTaskMain.cpp` and `ExperimentTaskRuntime.*`: typed native preparation,
   scan, materialization and solve; exact catalog adoption.

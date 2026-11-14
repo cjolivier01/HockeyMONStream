@@ -87,6 +87,140 @@ class WorkerTest(unittest.TestCase):
         if not (self.root / "state.json").exists():
             self.fail(self.process.communicate()[1].decode())
 
+    def batch(self, script, timeout=5000):
+        task = uuid.uuid4().hex
+        self.request["limits"]["max_tasks"] = 1
+        self.request["batch"] = {
+            "spec": {
+                "id": task,
+                "argv": [self.python, "-c", script],
+                "cwd": str(self.workspace),
+                "stdout": str(self.workspace / "task.log"),
+                "stderr": str(self.workspace / "task.log"),
+                "environment": {},
+                "rotate_log": True,
+                "timeout_ms": timeout,
+            },
+            "artifacts": [],
+        }
+        return task
+
+    def batch_result(self):
+        self.process.communicate(timeout=10)
+        result = json.loads((self.root / "result.json").read_text())
+        self.assertTrue(result["stopped"])
+        self.assertEqual(
+            result["request_sha256"],
+            hashlib.sha256((self.root / "request.json").read_bytes()).hexdigest(),
+        )
+        return result
+
+    def test_batch_finishes_without_controller_and_hashes_after_retirement(self):
+        task = self.batch(
+            "from pathlib import Path; Path('output').write_text('native evidence'); print('done')"
+        )
+        self.request["batch"]["artifacts"] = [
+            {"path": str(self.workspace / "output"), "maximum": 100}
+        ]
+        self.start()
+        result = self.batch_result()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["tasks"][task]["returncode"], 0)
+        self.assertEqual(
+            result["artifacts"][str(self.workspace / "output")]["sha256"],
+            hashlib.sha256(b"native evidence").hexdigest(),
+        )
+        self.assertEqual((self.workspace / "task.log").read_text(), "done\n")
+
+    def test_batch_rotates_noisy_output_and_preserves_final_diagnostic(self):
+        self.request["limits"].update(max_log_bytes=4096, poll_ms=1000, retire_ms=1000)
+        self.batch("import sys; sys.stdout.write('x'*10000000+'final diagnostic\\n')")
+        self.start()
+        result = self.batch_result()
+        self.assertTrue(result["ok"], result)
+        logs = list(self.workspace.glob("task.log*"))
+        self.assertEqual(len(logs), 2)
+        self.assertLessEqual(sum(p.stat().st_size for p in logs), 8192)
+        self.assertTrue(
+            (self.workspace / "task.log").read_bytes().endswith(b"final diagnostic\n")
+        )
+
+    def test_batch_cancel_is_bound_to_current_epoch_and_retires_detached_child(self):
+        task = self.batch(
+            "import subprocess,sys,time; from pathlib import Path; p=subprocess.Popen([sys.executable,'-c','import os,time; os.setsid(); time.sleep(60)']); Path('child').write_text(str(p.pid)); time.sleep(60)"
+        )
+        cancel = self.workspace / "intent.json"
+        self.write(cancel, {"id": "owner", "epoch": 1})
+        self.request["cancel_files"] = [
+            {"path": str(cancel), "match": {"id": "owner", "epoch": 2}}
+        ]
+        self.start()
+        self.until((self.workspace / "child").exists)
+        child = int((self.workspace / "child").read_text())
+        self.assertIsNone(self.process.poll())
+        self.write(cancel, {"id": "owner", "epoch": 2})
+        result = self.batch_result()
+        self.assertTrue(result["cancelled"])
+        self.assertTrue(result["tasks"][task]["stopped"])
+        self.assertFalse(Path(f"/proc/{child}").exists())
+
+    def test_batch_artifact_failure_discards_partial_receipts(self):
+        self.batch("from pathlib import Path; Path('output').write_text('complete')")
+        self.request["batch"]["artifacts"] = [
+            {"path": str(self.workspace / "output"), "maximum": 100},
+            {"path": str(self.workspace / "missing"), "maximum": 100},
+        ]
+        self.start()
+        result = self.batch_result()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["artifacts"], {})
+
+    def test_batch_cancel_before_launch_has_exact_empty_retirement(self):
+        self.batch("raise AssertionError('must not launch')")
+        cancel = self.workspace / "intent.json"
+        self.write(cancel, {"token": "current"})
+        self.request["cancel_files"] = [
+            {"path": str(cancel), "match": {"token": "current"}}
+        ]
+        self.start()
+        result = self.batch_result()
+        self.assertTrue(result["cancelled"])
+        self.assertEqual(result["tasks"], {})
+
+    def test_batch_deadline_does_not_publish_success_artifacts(self):
+        task = self.batch(
+            "import time; from pathlib import Path; Path('output').write_text('partial'); time.sleep(60)",
+            timeout=100,
+        )
+        self.request["batch"]["artifacts"] = [
+            {"path": str(self.workspace / "output"), "maximum": 100}
+        ]
+        self.start()
+        result = self.batch_result()
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["tasks"][task]["timed_out"])
+        self.assertEqual(result["artifacts"], {})
+
+    def test_batch_unsets_inherited_environment_and_keeps_managed_snapshot(self):
+        self.batch(
+            "import os; assert 'HSTREAM_ARCHIVE_RUN_ID' not in os.environ; assert os.environ['HSTREAM_USER_CONFIG_SNAPSHOT']=='frozen'"
+        )
+        self.request["batch"]["spec"].update(
+            unset_environment=[
+                "HSTREAM_ARCHIVE_RUN_ID",
+                "HSTREAM_USER_CONFIG_SNAPSHOT",
+            ],
+            environment={"HSTREAM_USER_CONFIG_SNAPSHOT": "frozen"},
+        )
+        self.start(
+            environment={
+                **os.environ,
+                "HSTREAM_ARCHIVE_RUN_ID": "old",
+                "HSTREAM_USER_CONFIG_SNAPSHOT": "old",
+            }
+        )
+        self.assertTrue(self.batch_result()["ok"])
+
     def call(self, operation, **payload):
         self.sequence += 1
         name = f"{self.sequence:020d}.json"

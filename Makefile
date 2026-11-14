@@ -141,7 +141,7 @@ hstream-experiment-task:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-ui:hstream-experiment-task
 
 hstream-workflow: hstream-experiment-task
-	$(BAZEL) test --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //scripts:workflow_graph_test //scripts:workflow_controller_test //scripts:workflow_slurm_test //scripts:workflow_files_test //scripts:workflow_processes_test //scripts:workflow_local_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //scripts:workflow_graph_test //scripts:workflow_controller_test //scripts:workflow_slurm_test //scripts:workflow_files_test //src/libs/runtime_worker:runtime_worker_test //src/libs/common:process_guard_deadline_test //scripts:workflow_local_test
 
 hstream-web-job:
 	$(BAZEL) build --config=$(BUILD_CONFIG) $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //src/apps/hstream-ui:hstream-web-job

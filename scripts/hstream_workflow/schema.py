@@ -321,18 +321,13 @@ def validate_profile(profile):
         "Unsupported runtime backend",
     )
     if profile["executor"] == "slurm":
-        executors = [runtime[key] for key in ("worker", "python") if key in runtime]
+        worker = runtime.get("worker")
         require(
-            executors,
-            "Slurm profiles need a pinned runtime worker or native workflow interpreter",
+            isinstance(worker, str)
+            and Path(worker).is_absolute()
+            and worker in runtime["files"],
+            "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles",
         )
-        for executable in executors:
-            require(
-                isinstance(executable, str)
-                and Path(executable).is_absolute()
-                and executable in runtime["files"],
-                "Slurm runtime executables must be pinned",
-            )
     qualified = profile["qualified_nodes"]
     require(isinstance(qualified, dict), "Expected qualified target evidence")
     if profile["executor"] == "slurm":

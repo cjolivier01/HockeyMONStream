@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -12,8 +13,10 @@ namespace hm::process_guard {
 // Dedicated process only. Reaping consumes all of this process's child statuses.
 absl::Status Enable();
 bool Enabled();
-absl::StatusOr<bool> Reap();
-absl::Status Signal(int number);
+// An expired deadline permits one nonretrying proof read, never another signal.
+using Deadline = std::chrono::steady_clock::time_point;
+absl::StatusOr<bool> Reap(Deadline deadline = Deadline::max());
+absl::Status Signal(int number, Deadline deadline = Deadline::max());
 absl::Status Retire(int64_t grace_ms, int64_t poll_ms);
 
 std::string ReceiptHeader(const std::string& token, const std::string& nonce);
