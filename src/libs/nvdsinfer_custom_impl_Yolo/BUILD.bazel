@@ -24,9 +24,6 @@ cc_binary(
         "-Wl,-z,nodelete",
         "-Wno-error=deprecated-declarations",
         "-Wl,--start-group",
-        "-lnvinfer_plugin",
-        "-lnvinfer",
-        "-lnvonnxparser",
         "-L/usr/local/cuda/lib64",
         "-lcudart",
         "-lcublas",
@@ -36,7 +33,7 @@ cc_binary(
     deps=[
         ":nvdsinfer_custom_impl_Yolo_cuda_lib",
         "@deepstream//:deepstream_includes",
-        "@deepstream//:nvdsinfer",
+        "@detector_tensorrt//:sdk",
         # "@NvDsBaseExt",
         # "@NvDsInterfaceExt",
         # "@StandardExtension",
@@ -54,8 +51,8 @@ cc_test(
     srcs = ["PluginLifetimeTest.cpp"],
     args = ["$(location :nvdsinfer_custom_impl_Yolo)"],
     data = [":nvdsinfer_custom_impl_Yolo"],
-    deps = ["@deepstream//:deepstream_includes", "@local_cuda//:cuda"],
-    linkopts = ["-lnvinfer", "-ldl"],
+    deps = ["@detector_tensorrt//:sdk", "@local_cuda//:cuda"],
+    linkopts = ["-ldl"],
 )
 
 cuda_library(
@@ -84,5 +81,6 @@ cc_library(
         "*.h",
         "layers/*.h",
     ]),
+    deps = ["@detector_tensorrt//:sdk"],
     visibility = ["//visibility:public"],
 )
