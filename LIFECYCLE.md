@@ -14,7 +14,7 @@ encoding alone is not successful publication.
 | Remux MP4 with faststart, publish telemetry and archive sidecars, resume interrupted publication, clean owned scratch | `src/libs/publication` |
 | Supervise a headless CLI process and report final job status | `hstream-finalize` |
 | Display publication progress and results after a desktop run | `hstream-ui` |
-| Freeze job arguments and a unique run ID into an executable script | `hstream-job` |
+| Save job arguments and portable game discovery in an executable script | `hstream-job` |
 
 ## Working storage
 
@@ -60,9 +60,14 @@ hstream-job --game-dir /path/to/games/game-42
 ```
 
 The generated script resolves `hstream-finalize` and `hstream-cli` from `PATH`
-on the execution host. It saves the run ID, game directory and CLI arguments,
-but no exporter binary, build, config or working-directory paths. The selected
-CLI discovers its own configs and runtime libraries. After admitting a new
+on the execution host. Ordinary exports save CLI arguments and the game's path
+relative to the script, without a run ID or export-host output root. Move the
+script with the game, or set `HM_GAME_DIR` to the execution host's games root
+when copying only the script. For Slurm, submit from the script's directory
+(Slurm supplies `SLURM_SUBMIT_DIR`), or set `HM_GAME_DIR` explicitly. The selected
+CLI discovers its own configs and runtime libraries. The finalizer's `--new-run`
+creates a fresh identity on every invocation, including after failed runs or
+deleted scratch. It creates its working directories as needed. After admitting a new
 encoding run, the supervisor assigns its private `runtime/` directory before
 starting the CLI. Busy and completed retries create no runtime staging.
 The installed launcher passes managed-job arguments through unchanged and uses
@@ -77,8 +82,11 @@ script's own working directory, and sources, audio options and a sink for a
 session that selected none.
 Explicit `--runner`, `--finalizer`, `--config` and `--working-directory`
 overrides remain available for custom runtimes; their values must work on the
-execution host. `HM_CONFIG_ROOT` is read there rather than captured at export.
-Older scripts containing Bazel paths must be exported again after deployment;
+execution host. `HM_CONFIG_ROOT` and `HM_OUTPUT_WORK_DIR` are read there rather
+than captured at export. Derived desktop telemetry directory/game arguments are
+omitted; the admitted native run supplies them. Saved explicit configuration
+overrides still apply. Portable scripts require a finalizer supporting `--new-run`.
+Older scripts containing fixed run IDs or paths must be exported again after deployment;
 installing a package does not rewrite saved scripts or Slurm's submitted copies.
 The finalizer supervises `hstream-cli --encode-job`, forwards cancellation, and
 requires both a successful exit and the CLI's completed manifest before
@@ -101,11 +109,16 @@ the configured output root changes; missing or replaced working data is an error
 The same file becomes the publication receipt, so no extra permanent file is
 needed.
 
-Repeating the same exported script resumes publication/cleanup for the same run.
-A completely successful run is verified and is not encoded or published again.
-Export another script to request a new run and output generation. Failed or
-interrupted encoding retains its files and log; it is not silently treated as
-complete or overwritten by a retry.
+Repeating an ordinary exported script starts another encoding run and output
+generation. It neither adopts nor removes a previous run's files. Failed or
+interrupted encoding retains its files and log.
+
+Explicit `hstream-job --run-id ID` exports and managed interactive publication
+scripts retain the supervisor's fixed game paths and run identity. Repeating
+those scripts resumes publication/cleanup for that exact run; a completed run is
+verified without encoding again. Missing or replaced admitted working data
+remains an error for explicit recovery. A fresh invocation never weakens those
+receipt checks or treats incomplete encoding as complete.
 
 Publication can also be resumed directly:
 

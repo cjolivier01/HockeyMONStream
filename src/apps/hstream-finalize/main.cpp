@@ -5,23 +5,25 @@
 
 #include "hstream/src/libs/common/OutputRootConfig.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/recording/Database.h"
 
 int main(int argc, char** argv) {
   try {
     namespace fs = std::filesystem;
     fs::path manifest, game, root;
     std::string id;
-    bool telemetry_only = false;
+    bool telemetry_only = false, new_run = false;
     std::vector<std::string> command;
     std::vector<std::string> option_groups;
     for (int i = 1; i < argc; ++i) {
       const std::string argument = argv[i];
       if (argument == "--help") {
         std::cout << "Usage: hstream-finalize --manifest RUN_OR_RECEIPT.yaml\n"
-                     "   or: hstream-finalize --game-dir DIR --run-id ID [--work-root DIR]\n"
+                     "   or: hstream-finalize --game-dir DIR (--new-run | --run-id ID) [--work-root DIR]\n"
                      "        [--options KEY=VALUE,...] [--telemetry-only] -- RUNNER ARGS...\n"
                      "Telemetry-only runs require a completed recording and forbid video archives.\n"
                      "Options mirror the runner's configuration overrides for working-root resolution only.\n"
+                     "--new-run creates a fresh identity and working directory on each invocation.\n"
                      "Publishes completed outputs and removes owned scratch files. Repeating a run ID resumes\n"
                      "publication/cleanup without encoding again. Failed encoding retains its working data.\n";
         return 0;
@@ -33,6 +35,10 @@ int main(int argc, char** argv) {
       }
       if (argument == "--telemetry-only") {
         telemetry_only = true;
+        continue;
+      }
+      if (argument == "--new-run") {
+        new_run = true;
         continue;
       }
       if (++i == argc)
@@ -52,13 +58,17 @@ int main(int argc, char** argv) {
     }
     const auto progress = [](const std::string& message) { std::cout << message << std::endl; };
     if (!manifest.empty()) {
-      if (!command.empty() || !game.empty() || !id.empty() || telemetry_only)
+      if (!command.empty() || !game.empty() || !id.empty() || telemetry_only || new_run)
         throw std::runtime_error("Choose manifest or run mode");
       hm::publication::Finalize(manifest, progress);
       return 0;
     }
+    if (new_run && !id.empty())
+      throw std::runtime_error("Choose --new-run or --run-id, not both");
+    if (new_run)
+      id = hm::recording::NewGuid();
     if (game.empty() || id.empty() || command.empty())
-      throw std::runtime_error("Game, run ID and runner are required");
+      throw std::runtime_error("Game, --new-run or --run-id, and runner are required");
     // An admitted run keeps its original workspace even if live configuration
     // has changed or can no longer be parsed. RunJob validates the saved binding.
     if (root.empty() && !fs::exists(hm::publication::ReceiptPath(fs::canonical(game), id))) {

@@ -148,6 +148,228 @@ class JobScriptTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertFalse((self.root / "INJECTED").exists())
 
+    def test_repeated_script_starts_fresh_after_missing_or_replaced_work(self):
+        self.assertEqual(self.generate().returncode, 0)
+        script = self.game / "hstream-job.sh"
+        original_script = script.read_bytes()
+        identities = set()
+        for attempt in range(3):
+            run = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+            self.assertEqual(run.returncode, 7, run.stderr)
+            actual = json.loads(self.output.read_text())
+            identity = actual["env"]["HSTREAM_ARCHIVE_RUN_ID"]
+            self.assertNotIn(identity, identities)
+            identities.add(identity)
+            work = Path(actual["env"]["HSTREAM_JOB_MANIFEST"]).parent
+            self.assertTrue(work.is_dir())
+            receipt = self.game / "_hockeymon" / f"hstream-job-{identity}.yaml"
+            saved_receipt = receipt.read_bytes()
+            if attempt == 0:
+                shutil.rmtree(work)
+            elif attempt == 1:
+                work.rename(work.with_name(work.name + "-retained"))
+                work.mkdir()
+                (work / "unrelated").write_text("must survive")
+            self.assertEqual(receipt.read_bytes(), saved_receipt)
+        self.assertEqual(script.read_bytes(), original_script)
+        self.assertEqual(len(list((self.game / "_hockeymon").glob("hstream-job-*.yaml"))), 3)
+        self.assertTrue(list(Path(self.env["HM_OUTPUT_WORK_DIR"]).glob("*/runs/*/unrelated")))
+
+    def test_portable_script_moves_with_game_and_uses_execution_paths(self):
+        saved = json.loads((self.game / "_hockeymon/config.yaml").read_text())
+        saved["hstream_ui"]["job"]["arguments"] += [
+            "--options=pipeline.ds-playtracker.private-properties.telemetry-db-dir=" + str(self.root / "old-work"),
+            "-p", "keep=1,pipeline.ds-playtracker.private-properties.telemetry-game-id=old-game,keep2=2",
+            "-ppipeline.ds-playtracker.private-properties.telemetry-db-dir=/old-root",
+        ]
+        (self.game / "_hockeymon/config.yaml").write_text(json.dumps(saved))
+        result = subprocess.run([TOOL, "--game-dir", str(self.game)], env=self.env,
+                                text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        script = self.game / "hstream-job.sh"
+        self.assertNotIn(str(self.root), script.read_text())
+        self.assertNotIn("old-root", script.read_text())
+        self.assertNotIn("telemetry-db-dir", script.read_text())
+        self.assertNotIn("telemetry-game-id", script.read_text())
+        self.assertNotIn("--run-id", script.read_text())
+        moved = self.root / "relocated 'game' $(touch INJECTED)"
+        self.game.rename(moved)
+        shutil.copy2(self.runner, self.runtime_bin / "hstream-cli")
+        runtime_work = self.root / "execution-work"
+        environment = dict(self.env, HM_OUTPUT_WORK_DIR=str(runtime_work))
+        run = subprocess.run([str(moved / script.name)], env=environment, cwd="/",
+                             text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"][:2], ["-g", moved.name])
+        self.assertEqual(actual["env"]["HM_GAME_DIR"], str(moved.parent))
+        self.assertEqual(Path(actual["env"]["HSTREAM_JOB_MANIFEST"]).parents[3], runtime_work)
+        self.assertIn("keep=1,keep2=2", actual["argv"])
+        self.assertFalse(Path(self.env["HM_OUTPUT_WORK_DIR"]).exists())
+        self.assertFalse((self.root / "INJECTED").exists())
+
+    def test_completed_portable_script_encodes_another_generation(self):
+        game = self.game.with_name("game")
+        self.game.rename(game)
+        self.game = game
+        self.command[self.command.index("--game-dir") + 1] = str(game)
+        fixture = self.root / "fixture.mkv"
+        subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=64x64:rate=5",
+            "-t", "0.4", "-c:v", "libx264", "-y", str(fixture),
+        ], check=True)
+        self.runner.write_text(
+            "#!/usr/bin/env python3\nimport subprocess\n"
+            + "subprocess.run(" + repr([str(PUBLICATION), "--produce", str(fixture)]) + ",check=True)\n"
+        )
+        self.assertEqual(self.generate().returncode, 0)
+        script = self.game / "hstream-job.sh"
+        for generation in (1, 2):
+            run = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertEqual(len(list(self.game.glob("*.mp4"))), 3 * generation)
+            self.assertEqual(len(list(self.game.glob("*.db"))), generation)
+            receipts = list((self.game / "_hockeymon").glob("hstream-job-*.yaml"))
+            self.assertEqual(len(receipts), generation)
+            self.assertTrue(all("state: complete" in receipt.read_text() for receipt in receipts))
+            self.assertFalse(list(Path(self.env["HM_OUTPUT_WORK_DIR"]).glob("*/runs/*")))
+
+    def test_custom_script_location_remains_relative_after_tree_move(self):
+        scripts = self.root / "exports"
+        scripts.mkdir()
+        script = scripts / "custom.sh"
+        self.assertEqual(self.generate("--output", str(script)).returncode, 0)
+        # Relocate the sibling game/scripts layout, while the explicit runtime
+        # overrides and original cwd stay available elsewhere.
+        moved = self.root / "relocated"
+        moved.mkdir()
+        shutil.move(str(scripts), moved)
+        shutil.move(str(self.game.parent), moved)
+        run = subprocess.run([str(moved / "exports/custom.sh")], env=self.env, cwd="/",
+                             text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["env"]["HM_GAME_DIR"], str(moved / "games"))
+
+    def test_script_only_copy_and_slurm_spool_use_execution_game_root(self):
+        self.assertEqual(self.generate().returncode, 0)
+        script = self.game / "hstream-job.sh"
+        for spool_name in ("job1234", "job01234", "job01234.00001"):
+            spool = self.root / spool_name
+            spool.mkdir()
+            copy = spool / "slurm_script"
+            shutil.copy2(script, copy)
+            for override in (False, True):
+                with self.subTest(spool=spool_name, explicit_root=override):
+                    environment = dict(self.env, SLURM_JOB_ID="1234", SLURM_SUBMIT_DIR=str(self.game))
+                    if override:
+                        environment.update(HM_GAME_DIR=str(self.game.parent), SLURM_SUBMIT_DIR=str(spool))
+                    run = subprocess.run([str(copy)], env=environment, cwd="/", text=True, capture_output=True)
+                    self.assertEqual(run.returncode, 7, run.stderr)
+                    actual = json.loads(self.output.read_text())
+                    self.assertEqual(actual["env"]["HM_GAME_DIR"], str(self.game.parent))
+
+    def test_direct_execution_inside_slurm_keeps_script_location(self):
+        self.assertEqual(self.generate().returncode, 0)
+        environment = dict(self.env, SLURM_JOB_ID="1234", SLURM_SUBMIT_DIR=str(self.root))
+        run = subprocess.run([str(self.game / "hstream-job.sh")], env=environment,
+                             cwd="/", text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"][:2], ["-g", self.game.name])
+        self.assertEqual(actual["env"]["HM_GAME_DIR"], str(self.game.parent))
+        self.assertFalse((self.root / "_hockeymon").exists())
+
+    def test_external_script_preserves_game_alias_after_target_move(self):
+        alias = self.root / "linked-game"
+        alias.symlink_to(self.game, target_is_directory=True)
+        script = self.root / "external.sh"
+        result = self.generate("--game-dir", str(alias), "--output", str(script))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        moved = self.root / "moved-game"
+        self.game.rename(moved)
+        alias.unlink()
+        alias.symlink_to(moved, target_is_directory=True)
+        run = subprocess.run([str(script)], env=self.env, cwd="/", text=True, capture_output=True)
+        self.assertEqual(run.returncode, 7, run.stderr)
+        actual = json.loads(self.output.read_text())
+        self.assertEqual(actual["argv"][:2], ["-g", alias.name])
+        self.assertEqual(actual["env"]["HM_GAME_DIR"], str(alias.parent))
+
+    def test_external_script_directory_alias_cannot_redirect_game(self):
+        scripts = self.root / "exports"
+        scripts.mkdir()
+        layout = self.root / "layout/nested"
+        layout.mkdir(parents=True)
+        alias = layout / "export-alias"
+        alias.symlink_to(scripts, target_is_directory=True)
+        decoy = layout / "games" / self.game.name
+        decoy.mkdir(parents=True)
+        result = self.generate("--output", str(alias / "job.sh"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for directory in (alias, scripts):
+            with self.subTest(directory=directory):
+                run = subprocess.run([str(directory / "job.sh")], env=self.env, cwd="/",
+                                     text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                self.assertEqual(actual["env"]["HM_GAME_DIR"], str(self.game.parent))
+                self.assertFalse((decoy / "_hockeymon").exists())
+
+    def test_trailing_newlines_in_paths_never_select_a_sibling_game(self):
+        game = self.game.with_name("game\n")
+        self.game.rename(game)
+        decoy = game.with_name("game")
+        decoy.mkdir()
+        scripts = self.root / "exports\n"
+        scripts.mkdir()
+        for output in (game / "job.sh", scripts / "external.sh"):
+            with self.subTest(output=output):
+                result = self.generate("--game-dir", str(game), "--output", str(output))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                run = subprocess.run([str(output)], env=self.env, cwd="/", text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                actual = json.loads(self.output.read_text())
+                self.assertEqual(actual["argv"][:2], ["-g", game.name])
+                self.assertEqual(actual["env"]["HM_GAME_DIR"], str(game.parent))
+                self.assertFalse((decoy / "_hockeymon").exists())
+
+    def test_symlink_parent_traversal_cannot_select_a_sibling_game(self):
+        actual = self.root / "actual"
+        (actual / "child").mkdir(parents=True)
+        game = actual / self.game.name
+        self.game.rename(game)
+        layout = self.root / "layout"
+        layout.mkdir()
+        alias = layout / "alias"
+        alias.symlink_to(actual / "child", target_is_directory=True)
+        decoy = layout / game.name
+        decoy.mkdir()
+        script = alias / ".." / game.name / "job.sh"
+        exported = self.generate("--game-dir", str(game), "--output", str(script))
+        self.assertEqual(exported.returncode, 0, exported.stderr)
+        for override in (False, True):
+            with self.subTest(environment_root=override):
+                environment = dict(self.env)
+                if override:
+                    environment["HM_GAME_DIR"] = str(alias / "..")
+                run = subprocess.run([str(script)], env=environment, cwd="/", text=True, capture_output=True)
+                self.assertEqual(run.returncode, 7, run.stderr)
+                observed = json.loads(self.output.read_text())
+                self.assertEqual(observed["env"]["HM_GAME_DIR"], str(actual))
+                self.assertEqual(observed["argv"][:2], ["-g", game.name])
+                self.assertFalse((decoy / "_hockeymon").exists())
+
+    def test_finalizer_rejects_conflicting_fresh_and_resume_modes(self):
+        finalizer = self.runtime_bin / "hstream-finalize"
+        for options in (["--new-run", "--run-id", "explicit-run-id"],
+                        ["--new-run", "--manifest", str(self.root / "receipt.yaml")]):
+            run = subprocess.run([str(finalizer), "--game-dir", str(self.game), *options,
+                                  "--", str(self.runner)], env=self.env, text=True, capture_output=True)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn("Choose", run.stderr)
+            self.assertFalse(self.output.exists())
+
     def test_direct_execution_preserves_arguments_and_exit_code(self):
         result = self.generate(
             "--sbatch", "--partition=gpu", "--sbatch", "--time=02:00:00"
@@ -527,7 +749,7 @@ class JobScriptTest(unittest.TestCase):
         config = json.loads((self.game / "_hockeymon/config.yaml").read_text())
         config["paths"] = {"output-root": str(original)}
         (self.game / "_hockeymon/config.yaml").write_text(json.dumps(config))
-        generated = self.generate()
+        generated = self.generate("--run-id", "explicit-failed-retry")
         self.assertEqual(generated.returncode, 0, generated.stderr)
         script = self.game / "hstream-job.sh"
         run = subprocess.run([str(script)], env=self.env, text=True, capture_output=True)
@@ -627,7 +849,7 @@ class JobScriptTest(unittest.TestCase):
                 self.assertNotIn(str(layout), script_text)
                 self.assertNotIn("HM_CONFIG_ROOT", script_text)
                 self.assertNotIn("bazel", script_text.lower())
-                self.assertNotIn("cd --", script_text)
+                self.assertNotIn(str(self.game.parent), script_text)
                 self.assertIn("exec 'hstream-finalize'", script_text)
                 self.assertIn(" -- 'hstream-cli'", script_text)
                 shutil.rmtree(layout)
@@ -760,10 +982,11 @@ class JobScriptTest(unittest.TestCase):
     def test_rejected_concurrent_launch_creates_no_runtime_scratch(self):
         self.runner.write_text(
             "#!/usr/bin/env python3\nimport json, os, time\n"
-            "with open(os.environ['JOB_TEST_OUTPUT'], 'w') as f: json.dump(dict(os.environ), f)\n"
+            "with open(os.environ['JOB_TEST_OUTPUT']+'.tmp', 'w') as f: json.dump(dict(os.environ), f)\n"
+            "os.replace(os.environ['JOB_TEST_OUTPUT']+'.tmp', os.environ['JOB_TEST_OUTPUT'])\n"
             "time.sleep(60)\n"
         )
-        self.assertEqual(self.generate().returncode, 0)
+        self.assertEqual(self.generate("--run-id", "explicit-concurrent-run").returncode, 0)
         script = self.game / "hstream-job.sh"
         process = subprocess.Popen([str(script)], env=self.env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
