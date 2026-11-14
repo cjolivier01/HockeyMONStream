@@ -1077,7 +1077,7 @@ finally:
             self.assertTrue(result["stopped"])
         self.assertEqual(self.wait()["state"], "cancelled")
 
-    def test_successful_slurm_job_waits_for_delayed_nfs_receipt(self):
+    def slurm_attempt(self):
         self.plan["stages"] = [self.stage("a")]
         profile = copy.deepcopy(self.profile)
         profile["executor"] = "slurm"
@@ -1108,6 +1108,62 @@ finally:
             self.controller.tick(self.plan["workflow_id"])
         root = next((directory / "attempts").iterdir())
         request = read_json(root / "request.json")
+        return profile, root, request
+
+    def test_failed_slurm_can_clean_up_bound_unproved_native_retirement(self):
+        _profile, root, _request = self.slurm_attempt()
+        admitted = read_json(root / "worker/request.json")
+        result = {
+            "schema": admitted["schema"],
+            "id": admitted["id"],
+            "token": admitted["token"],
+            "request_sha256": read_json(root / "submission.json")[
+                "worker_request_sha256"
+            ],
+            "stopped": False,
+            "error": "Native retirement evidence was lost",
+        }
+        observation = {
+            "scheduler_id": "42",
+            "cluster": "fixture",
+            "state": "FAILED",
+            "exit_code": "1:0",
+            "terminal": True,
+        }
+        with patch(
+            "hstream_workflow.controller.slurm.lookup", return_value=observation
+        ):
+            write_json(root / "worker/result.json", {**result, "token": "foreign"})
+            self.assertEqual(
+                self.controller.tick(self.plan["workflow_id"])["state"], "recovery"
+            )
+            self.assertTrue((root / "runtime").exists())
+            self.assertEqual(len(self.controller.registry.read()["reservations"]), 1)
+            write_json(root / "worker/result.json", result)
+            state = self.controller.tick(self.plan["workflow_id"])
+            self.assertEqual(state["state"], "failed")
+            self.assertTrue(state["owner_released"])
+            self.assertEqual(self.controller.registry.read()["reservations"], {})
+            self.assertFalse((root / "runtime").exists())
+            self.assertFalse((root / "completion.json").exists())
+
+    def test_unproved_local_retirement_retains_ownership_and_scratch(self):
+        _directory, root = self.completed_attempt_before_adoption()
+        (root / "completion.json").unlink()
+        (root / "runtime").mkdir()
+        result = read_json(root / "worker/result.json")
+        write_json(root / "worker/result.json", {**result, "stopped": False})
+        self.assertEqual(
+            self.controller.tick(self.plan["workflow_id"])["state"], "recovery"
+        )
+        self.assertTrue((root / "runtime").exists())
+        self.assertEqual(len(self.controller.registry.read()["reservations"]), 1)
+        self.assertFalse((root / "completion.json").exists())
+        write_json(root / "worker/result.json", result)
+        self.assertEqual(self.wait()["state"], "succeeded")
+
+    def test_successful_slurm_job_waits_for_delayed_nfs_receipt(self):
+        profile, root, request = self.slurm_attempt()
         subprocess.run(
             [*profile["task_command"], "--request", str(root / "request.json")],
             check=True,

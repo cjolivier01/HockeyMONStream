@@ -158,8 +158,14 @@ def completion(root):
         "Native worker completion binding changed",
     )
     require(
-        result.get("stopped") is True, "Native worker descendant retirement is unproved"
+        type(result.get("stopped")) is bool, "Invalid native worker retirement result"
     )
+    if not result["stopped"]:
+        # This never authorizes local cleanup or artifact adoption. The controller
+        # may still prove a failed Slurm allocation retired through its exact
+        # scheduler identity and qualified cgroup containment.
+        return {"stopped": False, "cleanup_complete": False}
+
     task_id = intent["attempt_id"].replace("-", "")
     tasks = result.get("tasks", {})
     require(set(tasks) <= {task_id}, "Native worker completed unexpected tasks")

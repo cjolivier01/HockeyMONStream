@@ -429,7 +429,7 @@ class Worker {
           }
           accounting = Clock::now() + std::chrono::seconds(1);
         }
-        ::poll(nullptr, 0, static_cast<int>(poll_ms_));
+        Wait();
       }
       stopped = Retire();
       Require(stopped, "Runtime descendant retirement is unproved");
@@ -612,6 +612,15 @@ class Worker {
     Require(found != tasks_.end(), "Unknown runtime task");
     return found->second;
   }
+  void Wait() {
+    std::vector<pollfd> output;
+    for (const auto& entry : tasks_)
+      if (entry.second.capture.value >= 0)
+        output.push_back({entry.second.capture.value, POLLIN, 0});
+    // Mailbox polling bounds idle latency. Native output wakes the owner
+    // immediately so logging cannot throttle processing at that interval.
+    ::poll(output.data(), output.size(), static_cast<int>(poll_ms_));
+  }
   void DrainLog(Task& task) {
     if (task.capture.value < 0)
       return;
@@ -713,7 +722,7 @@ class Worker {
         if (*proof)
           return true;
       }
-      ::poll(nullptr, 0, static_cast<int>(poll_ms_));
+      Wait();
     }
     // Even a damaged per-task receipt cannot skip outer containment. This path
     // never authorizes artifact adoption: the session records a cleanup error.
@@ -1027,7 +1036,7 @@ class Worker {
       const auto deadline = Clock::now() + std::chrono::milliseconds(2 * grace_ms_ + 2 * poll_ms_);
       while (!task.code && Clock::now() < deadline) {
         Poll();
-        ::poll(nullptr, 0, static_cast<int>(poll_ms_));
+        Wait();
       }
       Require(task.stopped, "Native task descendant retirement is unproved");
       return TaskState(task);

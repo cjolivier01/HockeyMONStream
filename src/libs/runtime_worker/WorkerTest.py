@@ -133,8 +133,8 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual((self.workspace / "task.log").read_text(), "done\n")
 
     def test_batch_rotates_noisy_output_and_preserves_final_diagnostic(self):
-        self.request["limits"]["max_log_bytes"] = 4096
-        self.batch("import sys; sys.stdout.write('x'*1000000+'final diagnostic\\n')")
+        self.request["limits"].update(max_log_bytes=4096, poll_ms=1000, retire_ms=1000)
+        self.batch("import sys; sys.stdout.write('x'*10000000+'final diagnostic\\n')")
         self.start()
         result = self.batch_result()
         self.assertTrue(result["ok"], result)
