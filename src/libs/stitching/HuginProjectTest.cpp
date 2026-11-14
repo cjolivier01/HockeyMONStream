@@ -209,13 +209,23 @@ bool test_publication_file_pins(const std::filesystem::path& root, const std::fi
   namespace fs = std::filesystem;
   using namespace hm::stitching;
   bool ok = true;
-  for (const std::string scenario : {"rename", "symlink", "replacement", "write"}) {
+  for (const std::string scenario : {"rename", "buffered", "symlink", "replacement", "write"}) {
     const fs::path game = root / ("publication-pin-" + scenario);
     const fs::path staging = saved_state(game) / "staging";
     fs::create_directory(staging);
     for (const std::string& name : stitch_artifact_names()) {
       if (name != kStitchGenerationArtifact && fs::exists(saved_state(source) / name))
         fs::copy_file(saved_state(source) / name, staging / name);
+    }
+    if (scenario == "buffered") {
+      // Valid TIFF readers ignore trailing padding. Leave a sizeable payload
+      // dirty, as map producers do, so this also exercises NFS writeback when
+      // the test's temporary directory is on the shared deployment mount.
+      std::ofstream output(staging / "mapping_0000.tif", std::ios::binary | std::ios::app);
+      const std::string padding(1024 * 1024, 'x');
+      for (int index = 0; index < 32; ++index)
+        output.write(padding.data(), padding.size());
+      ok &= expect(output.good(), "buffered publication fixture must write its map payload");
     }
     auto prepared = prepare_stitch_generation_publication(staging, game);
     ok &= expect(prepared.ok(), "publication pin fixture must prepare a complete generation");
@@ -238,11 +248,14 @@ bool test_publication_file_pins(const std::filesystem::path& root, const std::fi
     } else if (scenario == "write") {
       std::ofstream(published, std::ios::app) << "changed";
     }
+    if (scenario == "buffered")
+      ok &= expect(fsync_stitch_path(published).ok(), "publication writeback must complete");
     const auto recorded = record_published_stitch_generation_artifact(*prepared, game, name);
+    const bool unchanged = scenario == "rename" || scenario == "buffered";
     ok &= expect(
-        scenario == "rename" ? recorded.ok() : absl::IsAborted(recorded),
+        unchanged ? recorded.ok() : absl::IsAborted(recorded),
         "publication must accept its renamed inode and reject symlinks, same-byte replacements, and changed payloads");
-    if ((scenario == "rename") != recorded.ok())
+    if (unchanged != recorded.ok())
       std::cerr << "Publication pin scenario " << scenario << ": " << recorded << '\n';
     prepared->Reset();
     fs::remove_all(game);

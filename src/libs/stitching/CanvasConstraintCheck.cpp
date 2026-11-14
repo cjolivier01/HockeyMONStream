@@ -1308,6 +1308,13 @@ absl::StatusOr<StitchArtifactFingerprint> stitch_artifact_fingerprint_impl(
     struct stat before{};
     if (::fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size <= 0)
       return absl::FailedPreconditionError("Invalid Hugin artifact while fingerprinting: " + path.string());
+    if (retain_descriptors) {
+      // Generated maps can still have pending NFS writes after their producer
+      // closes them. Commit those writes before capturing the publication pin;
+      // otherwise later writeback changes mtime during hashing or rename.
+      if (::fsync(descriptor) != 0 || ::fstat(descriptor, &before) != 0)
+        return absl::InternalError("Unable to settle Hugin artifact before fingerprinting: " + path.string());
+    }
     uint64_t maximum_bytes = maximum_stitch_artifact_bytes(name);
     if (maximum_bytes == 0) {
       return absl::FailedPreconditionError("Invalid Hugin artifact type while fingerprinting: " + path.string());
@@ -1717,12 +1724,12 @@ absl::StatusOr<PreparedStitchGenerationPublication> prepare_stitch_generation_pu
   auto logical_id = random_stitch_logical_generation_id();
   if (!logical_id.ok())
     return logical_id.status();
-  auto bindings = stitch_artifact_stat_id(staging, StitchStatIdentityFormat::kBinding);
-  if (!bindings.ok())
-    return bindings.status();
   auto fingerprint = stitch_artifact_fingerprint_impl(staging, /*retain_descriptors=*/true);
   if (!fingerprint.ok())
     return fingerprint.status();
+  auto bindings = stitch_artifact_stat_id(staging, StitchStatIdentityFormat::kBinding);
+  if (!bindings.ok())
+    return bindings.status();
   auto status = write_stitch_transaction_file(
       staging / kStitchGenerationArtifact,
       serialize_stitch_generation_identity(*logical_id, *bindings, fingerprint->value));
