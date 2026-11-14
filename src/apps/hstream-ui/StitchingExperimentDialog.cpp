@@ -1546,7 +1546,7 @@ struct StitchingExperimentDialog::Impl {
         if (record.workspace.game_directory.lexically_relative(store->directory).generic_string() == owner_key)
           candidate.selection_owner_sequence = candidate.sequence;
         if (workflow && owned->isEmpty() && (workflow->workflowId().isEmpty() || record.workflow_active))
-          workflow->attach(QString::fromStdString(record.workflow_id));
+          workflow->attach(QString::fromStdString(record.workflow_id), record.workflow_active);
         append_candidate(std::move(candidate));
         continue;
       }

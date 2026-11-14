@@ -657,6 +657,7 @@ struct StitchingWorkflow::Impl {
   QJsonObject profiles, snapshot;
   QString workflow, selected_candidate, transient_notice;
   bool command_pending{false}, status_pending{false}, profiles_ready{false}, editing{true}, queued{false};
+  bool attachment_active{true};
   bool restore_controls{false};
   int timeout_ms{0};
   uint64_t request_generation{0};
@@ -1372,6 +1373,8 @@ void StitchingWorkflow::restoreMonitor() {
     impl_->monitor_dialog->close();
 }
 bool StitchingWorkflow::active() const {
+  if (impl_->snapshot.isEmpty() && impl_->retry_epoch < 0)
+    return !impl_->workflow.isEmpty() && impl_->attachment_active;
   return !impl_->workflow.isEmpty() &&
       (impl_->retry_epoch >= 0 || !terminal(impl_->snapshot.value("state").toString()) ||
        !impl_->snapshot.value("owner_released").toBool());
@@ -1418,10 +1421,11 @@ void StitchingWorkflow::cancel(std::function<void(bool)> completed) {
           s.owner->changed();
       });
 }
-void StitchingWorkflow::attach(const QString& id) {
+void StitchingWorkflow::attach(const QString& id, bool active) {
   ++impl_->request_generation;
   impl_->transient_notice.clear();
   impl_->workflow = id;
+  impl_->attachment_active = active;
   impl_->snapshot = {};
   impl_->restore_controls = true;
   impl_->showMonitor(true);
