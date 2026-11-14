@@ -1,3 +1,19 @@
+cc_library(
+    name = "bf16_engine",
+    srcs = ["Bf16Engine.cpp"],
+    hdrs = ["Bf16Engine.h", "EnginePrecision.h"],
+    copts = ["-std=c++17", "-Wno-error=deprecated-declarations"],
+    linkopts = ["-ldl"],
+    deps = [
+        "@player_tensorrt//:sdk",
+        "@local_cuda//:cuda",
+        "//toolchains/jetson:cuda_runtime",
+        "@yaml-cpp",
+        "@com_google_absl//absl/status",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "int8-calib-builder",
     srcs = ["int8_calib_builder.cpp", "EnginePrecision.h"],

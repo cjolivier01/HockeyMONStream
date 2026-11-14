@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -236,7 +237,7 @@ absl::StatusOr<fs::path> cache_root() {
   return private_root / "tensorrt";
 }
 
-absl::Status ensure_private_directory(const fs::path& directory) {
+absl::Status ensure_owned_directory(const fs::path& directory, bool private_cache = true) {
   std::error_code error;
   fs::create_directories(directory, error);
   if (error)
@@ -252,7 +253,7 @@ absl::Status ensure_private_directory(const fs::path& directory) {
     return absl::PermissionDeniedError(
         "TensorRT cache directory is not owned by the current user: " + directory.string());
   }
-  if (::fchmod(descriptor, 0700) != 0) {
+  if (private_cache && ::fchmod(descriptor, 0700) != 0) {
     const std::string message = std::strerror(errno);
     ::close(descriptor);
     return absl::InternalError("Unable to protect TensorRT cache directory: " + message);
@@ -438,6 +439,22 @@ unsigned inference_gpu(const YAML::Node& properties, const YAML::Node& section, 
   return scalar_unsigned(section, {}, "gpu-id", gpu);
 }
 
+unsigned inference_batch(
+    const YAML::Node& properties,
+    const YAML::Node& section,
+    const YAML::Node& pipeline,
+    bool secondary,
+    unsigned fallback) {
+  const YAML::Node application = pipeline["application"];
+  unsigned batch_size = scalar_unsigned(section, properties, "batch-size", fallback);
+  if (scalar_bool(application, "use-nvmultiurisrcbin", false) && section["batch-size"] &&
+      section["batch-size"].IsScalar()) {
+    const char* batch_key = secondary ? "sgie-batch-size" : "max-batch-size";
+    batch_size = scalar_unsigned(application, {}, batch_key, batch_size);
+  }
+  return batch_size;
+}
+
 fs::path derived_engine_path(
     const fs::path& cached_onnx,
     const YAML::Node& properties,
@@ -446,12 +463,7 @@ fs::path derived_engine_path(
     bool secondary,
     const std::string& mode_override = {}) {
   const YAML::Node application = pipeline["application"];
-  unsigned batch_size = scalar_unsigned(section, properties, "batch-size", 1);
-  if (scalar_bool(application, "use-nvmultiurisrcbin", false) && section["batch-size"] &&
-      section["batch-size"].IsScalar()) {
-    const char* batch_key = secondary ? "sgie-batch-size" : "max-batch-size";
-    batch_size = scalar_unsigned(application, {}, batch_key, batch_size);
-  }
+  const unsigned batch_size = inference_batch(properties, section, pipeline, secondary, 1);
   unsigned gpu_id = scalar_unsigned({}, properties, "gpu-id", 0);
   gpu_id = scalar_unsigned(application, {}, "global-gpu-id", gpu_id);
   gpu_id = scalar_unsigned(section, {}, "gpu-id", gpu_id);
@@ -464,7 +476,9 @@ fs::path derived_engine_path(
       ".engine");
 }
 
-absl::Status acquire_engine_lock(const fs::path& path) {
+absl::Status acquire_engine_lock(const fs::path& path, const std::function<bool()>& cancelled = {}) {
+  if (cancelled && cancelled())
+    return absl::CancelledError("TensorRT engine preparation cancelled");
   for (const auto& lock : held_engine_locks())
     if (lock.path == path)
       return absl::OkStatus();
@@ -476,12 +490,22 @@ absl::Status acquire_engine_lock(const fs::path& path) {
     ::close(descriptor);
     return absl::PermissionDeniedError("TensorRT engine lock is not a user-owned regular file: " + path.string());
   }
-  while (::flock(descriptor, LOCK_EX) != 0) {
-    if (errno == EINTR)
+  while (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
+    if (cancelled && cancelled()) {
+      ::close(descriptor);
+      return absl::CancelledError("TensorRT engine preparation cancelled while waiting for its cache lock");
+    }
+    if (errno == EINTR || errno == EWOULDBLOCK) {
+      ::poll(nullptr, 0, 50);
       continue;
+    }
     const std::string message = std::strerror(errno);
     ::close(descriptor);
     return absl::InternalError("Unable to lock TensorRT engine cache: " + message);
+  }
+  if (cancelled && cancelled()) {
+    ::close(descriptor);
+    return absl::CancelledError("TensorRT engine preparation cancelled");
   }
   held_engine_locks().push_back({path, descriptor});
   return absl::OkStatus();
@@ -503,11 +527,11 @@ absl::Status publish_yaml(const fs::path& target, const YAML::Node& config) {
   std::ostringstream serialized;
   serialized << config << '\n';
   const std::string contents = serialized.str();
-  const fs::path temporary =
-      target.parent_path() / ("." + target.filename().string() + "." + std::to_string(::getpid()) + ".tmp");
-  const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  std::string temporary_pattern = (target.parent_path() / ("." + target.filename().string() + ".XXXXXX")).string();
+  const int fd = ::mkostemp(temporary_pattern.data(), O_CLOEXEC);
   if (fd < 0)
     return absl::InternalError("Unable to create TensorRT runtime config: " + std::string(std::strerror(errno)));
+  const fs::path temporary = temporary_pattern;
   size_t offset = 0;
   while (offset < contents.size()) {
     const ssize_t written = ::write(fd, contents.data() + offset, contents.size() - offset);
@@ -555,11 +579,11 @@ absl::Status publish_relocated_runtime_config(
   auto root = cache_root();
   if (!root.ok())
     return root.status();
-  auto root_status = ensure_private_directory(*root);
+  auto root_status = ensure_owned_directory(*root);
   if (!root_status.ok())
     return root_status;
   const fs::path runtime_configs = *root / "runtime-configs";
-  auto directory_status = ensure_private_directory(runtime_configs);
+  auto directory_status = ensure_owned_directory(runtime_configs);
   if (!directory_status.ok())
     return directory_status;
   std::ostringstream identity;
@@ -575,12 +599,159 @@ absl::Status publish_relocated_runtime_config(
   return absl::OkStatus();
 }
 
+absl::StatusOr<YAML::Node> bf16_source_identity(
+    const fs::path& onnx,
+    const std::string& declared_sha256,
+    const YAML::Node& previous) {
+  std::error_code error;
+  const auto canonical = fs::weakly_canonical(onnx.parent_path(), error) / onnx.filename();
+  if (error)
+    return absl::FailedPreconditionError("Cannot resolve BF16 source identity: " + error.message());
+  YAML::Node identity;
+  identity["path"] = canonical.string();
+  identity["declared-sha256"] = declared_sha256;
+  if (!fs::exists(canonical, error) && !error) {
+    // Offline reuse still binds the selected source path and declared digest.
+    if (previous && previous.IsMap() && previous["path"].IsScalar() && previous["declared-sha256"].IsScalar() &&
+        previous["sha256"].IsScalar() && previous["path"].as<std::string>() == canonical.string() &&
+        previous["declared-sha256"].as<std::string>() == declared_sha256)
+      return YAML::Clone(previous);
+    return absl::NotFoundError("Selected BF16 source has no cached identity");
+  }
+  auto hash = hm::assets::AssetManager::Sha256(canonical);
+  if (!hash.ok())
+    return hash.status();
+  identity["sha256"] = *hash;
+  auto external = OnnxExternalDataFiles(canonical);
+  if (!external.ok())
+    return external.status();
+  for (const auto& relative : *external) {
+    auto tensor_hash = hm::assets::AssetManager::Sha256(canonical.parent_path() / relative);
+    if (!tensor_hash.ok())
+      return tensor_hash.status();
+    identity["external"][relative.string()] = *tensor_hash;
+  }
+  return identity;
+}
+
+absl::Status prepare_bf16_engine(
+    fs::path& engine,
+    const YAML::Node& inference,
+    const fs::path& inference_path,
+    const YAML::Node& section,
+    const YAML::Node& pipeline,
+    bool secondary,
+    const TensorRtModelCacheOptions& options) {
+  if (options.cancelled && options.cancelled())
+    return absl::CancelledError("BF16 engine preparation cancelled");
+  auto root = cache_root();
+  if (!root.ok())
+    return root.status();
+  auto status = ensure_owned_directory(*root);
+  if (!status.ok())
+    return status;
+  // Private web homes resolve to the same model directory. All GIE builds use
+  // one cache lock so opposite primary/secondary ordering cannot deadlock.
+  std::error_code error;
+  engine = fs::weakly_canonical(engine.parent_path(), error) / engine.filename();
+  if (error)
+    return absl::FailedPreconditionError("Cannot resolve BF16 engine cache: " + error.message());
+  status = acquire_engine_lock(*root / "engine-build.lock", options.cancelled);
+  if (!status.ok())
+    return status;
+  const auto properties = inference["property"];
+  hm::inference::Bf16EngineOptions build_options{
+      inference_gpu(properties, section, pipeline),
+      inference_batch(properties, section, pipeline, secondary, 0),
+      std::nullopt,
+      options.cancelled,
+      options.progress};
+  if (!build_options.batch)
+    return absl::InvalidArgumentError("BF16 preparation requires a positive configured batch-size");
+  if (properties["workspace-size"])
+    build_options.workspace_mib = properties["workspace-size"].as<unsigned>();
+  status = options.validate_bf16(engine, build_options);
+  if (absl::IsCancelled(status))
+    return status;
+  const fs::path provenance = engine.string() + ".source.yaml";
+  const bool tracked = fs::exists(fs::symlink_status(provenance, error));
+  // Externally prepared engines retain the existing engine-only/offline path.
+  // Engines built here always have a source record, including interrupted builds.
+  if (status.ok() && !tracked)
+    return status;
+  YAML::Node previous;
+  if (tracked && fs::is_regular_file(fs::symlink_status(provenance, error))) {
+    try {
+      previous = YAML::LoadFile(provenance.string());
+    } catch (const YAML::Exception&) {
+      // A damaged record requires preparation, never adoption of an unknown source.
+    }
+  }
+  if (!properties["onnx-file"] || !properties["onnx-file"].IsScalar())
+    return absl::FailedPreconditionError("Cannot rebuild selected BF16 engine without its source ONNX: " + engine.string());
+  auto onnx = resolve_path(properties["onnx-file"].as<std::string>(), inference_path.parent_path());
+  auto assets = hm::assets::AssetManager::DeclaredAssets(inference, fs::absolute(inference_path));
+  if (!assets.ok())
+    return assets.status();
+  const hm::assets::AssetSpec* selected_asset = nullptr;
+  for (const auto& asset : *assets) {
+    if (asset.target.lexically_normal() == onnx.lexically_normal())
+      selected_asset = &asset;
+  }
+  const std::string declared_sha256 = selected_asset ? selected_asset->sha256 : "";
+  const YAML::Node previous_source = previous && previous.IsMap() ? previous["source"] : YAML::Node();
+  auto identity = bf16_source_identity(onnx, declared_sha256, previous_source);
+  if (status.ok() && identity.ok() && previous && previous.IsMap() && previous["engine-sha256"].IsScalar() &&
+      YAML::Dump(*identity) == YAML::Dump(previous_source)) {
+    auto engine_hash = hm::assets::AssetManager::Sha256(engine);
+    if (engine_hash.ok() && *engine_hash == previous["engine-sha256"].as<std::string>())
+      return status;
+  }
+  const std::string message = "Preparing selected BF16 detector engine: " + engine.string() +
+      (status.ok() ? " (selected source or cached identity changed)" : " (" + std::string(status.message()) + ")");
+  if (options.progress)
+    options.progress(message);
+  else
+    std::cout << message << '\n';
+  if (selected_asset) {
+    auto verified = hm::assets::AssetManager::EnsureCacheAsset(*selected_asset, {}, options.cancelled);
+    if (!verified.ok())
+      return verified.status();
+    onnx = verified->target;
+  }
+  identity = bf16_source_identity(onnx, declared_sha256, {});
+  if (!identity.ok())
+    return identity.status();
+  // A configured engine may live in a shared models/project directory. Keep
+  // its permissions while retaining the ownership and no-follow checks.
+  status = ensure_owned_directory(engine.parent_path(), false);
+  if (!status.ok())
+    return status;
+  YAML::Node record;
+  record["source"] = *identity;
+  record["engine-sha256"] = "pending";
+  // Persist intent first: a crash after engine publication cannot make a newly
+  // built engine look like an untracked, externally prepared engine.
+  status = publish_yaml(provenance, record);
+  if (!status.ok())
+    return status;
+  status = options.build_bf16(onnx, engine, build_options);
+  if (!status.ok())
+    return status;
+  auto engine_hash = hm::assets::AssetManager::Sha256(engine);
+  if (!engine_hash.ok())
+    return engine_hash.status();
+  record["engine-sha256"] = *engine_hash;
+  return publish_yaml(provenance, record);
+}
+
 absl::Status prepare_inference_config(
     YAML::Node section,
     const YAML::Node& pipeline,
     const std::string& section_name,
     const fs::path& config_directory,
-    const GpuNameProvider& gpu_name) {
+    const GpuNameProvider& gpu_name,
+    const TensorRtModelCacheOptions& options) {
   if (!enabled(section) || !section["config-file"] || !section["config-file"].IsScalar())
     return absl::OkStatus();
   const fs::path inference_path = resolve_path(section["config-file"].as<std::string>(), config_directory);
@@ -639,13 +810,19 @@ absl::Status prepare_inference_config(
   if (properties && properties.IsMap() && properties["model-engine-file"] &&
       properties["model-engine-file"].IsScalar()) {
     const bool overridden = section["model-engine-file"] && section["model-engine-file"].IsScalar();
-    const fs::path engine = overridden
+    fs::path engine = overridden
         ? resolve_path(section["model-engine-file"].as<std::string>(), config_directory)
         : resolve_path(properties["model-engine-file"].as<std::string>(), inference_path.parent_path());
     const bool legacy_bf16 = lowercase(engine.filename().string()).find("_bf16.engine") != std::string::npos;
     if (required_precision || legacy_bf16) {
       const std::string precision = required_precision ? required_precision.as<std::string>() : "bf16";
       std::error_code error;
+      if (required_precision && precision == "bf16") {
+        auto status = prepare_bf16_engine(
+            engine, inference, inference_path, section, pipeline, section_name.rfind("secondary-gie", 0) == 0, options);
+        if (!status.ok())
+          return status;
+      }
       if (!fs::is_regular_file(engine, error) || error || fs::file_size(engine, error) == 0 || error) {
         return absl::NotFoundError(
             "Prepared " + precision + " detector engine is missing or empty: " + engine.string() +
@@ -760,7 +937,7 @@ absl::Status prepare_inference_config(
   auto root = cache_root();
   if (!root.ok())
     return root.status();
-  auto root_status = ensure_private_directory(*root);
+  auto root_status = ensure_owned_directory(*root);
   if (!root_status.ok())
     return root_status;
   auto device_name = gpu_name(inference_gpu(properties, section, pipeline));
@@ -768,7 +945,7 @@ absl::Status prepare_inference_config(
     return device_name.status();
   const fs::path model_directory =
       *root / (model_hash->substr(0, 16) + "-" + build_digest->substr(0, 16) + "-" + *device_name);
-  auto directory_status = ensure_private_directory(model_directory);
+  auto directory_status = ensure_owned_directory(model_directory);
   if (!directory_status.ok())
     return directory_status;
 
@@ -784,7 +961,7 @@ absl::Status prepare_inference_config(
   properties["onnx-file"] = cached_onnx.string();
   const bool secondary = section_name.rfind("secondary-gie", 0) == 0;
   fs::path cached_engine = derived_engine_path(cached_onnx, properties, section, pipeline, secondary);
-  auto lock_status = acquire_engine_lock(*root / "engine-build.lock");
+  auto lock_status = acquire_engine_lock(*root / "engine-build.lock", options.cancelled);
   if (!lock_status.ok())
     return lock_status;
   if (scalar_unsigned({}, properties, "network-mode", 0) == 3) {
@@ -829,7 +1006,7 @@ absl::Status prepare_inference_config(
       return absl::InvalidArgumentError(
           "ONNX external tensor location conflicts with cache output: " + target.string());
     }
-    auto status = ensure_private_directory(target.parent_path());
+    auto status = ensure_owned_directory(target.parent_path());
     if (!status.ok()) {
       release_engine_locks();
       return status;
@@ -860,7 +1037,8 @@ absl::Status prepare_inference_config(
 absl::Status PrepareTensorRtModelCache(
     YAML::Node pipeline,
     const fs::path& config_directory,
-    const GpuNameProvider& gpu_name) {
+    const GpuNameProvider& gpu_name,
+    const TensorRtModelCacheOptions& options) {
   if (!pipeline || !pipeline.IsMap())
     return absl::OkStatus();
   for (auto entry : pipeline) {
@@ -869,9 +1047,11 @@ absl::Status PrepareTensorRtModelCache(
     const std::string name = entry.first.as<std::string>();
     if (name.rfind("primary-gie", 0) != 0 && name.rfind("secondary-gie", 0) != 0)
       continue;
-    auto status = prepare_inference_config(entry.second, pipeline, name, config_directory, gpu_name);
-    if (!status.ok())
+    auto status = prepare_inference_config(entry.second, pipeline, name, config_directory, gpu_name, options);
+    if (!status.ok()) {
+      release_engine_locks();
       return status;
+    }
   }
   return absl::OkStatus();
 }
