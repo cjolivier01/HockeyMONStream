@@ -307,8 +307,10 @@ QJsonObject admission_command(const std::string& action, const QJsonObject& requ
     auto owner = new_owner(request, game);
     const auto current = take(lock->Read());
     if (current && current->kind == owner.kind && current->id == owner.id && current->token == owner.token &&
-        current->workflow_directory == owner.workflow_directory)
+        current->workflow_directory == owner.workflow_directory) {
+      check(lock->Authorize(owner.token));
       return {{"owner", owner_json(current)}};
+    }
     check(lock->Claim(owner));
   } else if (action == "handoff") {
     auto successor = new_owner(request.value("successor").toObject(), game);

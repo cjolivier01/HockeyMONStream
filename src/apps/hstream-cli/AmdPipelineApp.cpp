@@ -596,7 +596,16 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
     g_print("HSTREAM_PREVIEW_RUNTIME status=ready channel=%s generation=1\n", args.preview_active.c_str());
     Status(select_preview(args.preview_active, 1));
   }
+  auto next_owner_check = std::chrono::steady_clock::time_point{};
+  const auto owner_poll = std::chrono::milliseconds(
+      launch.configuration.values["workflow"]["poll_interval_ms"].as<int64_t>());
   const auto service_control = [&] {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= next_owner_check) {
+      next_owner_check = now + owner_poll;
+      if (hm::game_operation::CancellationRequested())
+        Stop(SIGINT);
+    }
     const auto status = control->Service();
     if (!(absl::IsCancelled(status) && DrainRequested()))
       Status(status);

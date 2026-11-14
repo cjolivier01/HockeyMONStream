@@ -50,6 +50,8 @@ filegroup(
         "CalibrationFrameView.h",
         "HStreamWindow.cpp",
         "HStreamWindow.h",
+        "GameOwnershipDialog.cpp",
+        "GameOwnershipDialog.h",
         "SourceCameraPlayer.cpp",
         "SourceCameraPlayer.h",
         "SourceCameraTrack.cpp",
@@ -994,6 +996,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = [
+        ":game_ownership_dialog",
         "//src/libs/common:config_path",
         "//src/libs/common:runtime_control_config",
         "//src/libs/stitching:calibration_failure_protocol",
@@ -1890,4 +1893,22 @@ cc_test(
         "//src/libs/common:game_operation_owner",
         "@qt//:qt_core",
     ],
+)
+
+cc_library(
+    name = "game_ownership_dialog",
+    srcs = ["GameOwnershipDialog.cpp"],
+    hdrs = ["GameOwnershipDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", "//src/libs/common:game_operation_owner", "@qt//:qt_widgets"],
+)
+
+cc_test(
+    name = "game_ownership_dialog_test",
+    srcs = ["GameOwnershipDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":game_ownership_dialog", "//src/libs/common:game_operation_owner", "@qt//:qt_widgets"],
 )

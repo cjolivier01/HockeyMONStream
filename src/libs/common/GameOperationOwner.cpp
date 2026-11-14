@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -68,12 +69,100 @@ bool identity(const std::string& value, size_t maximum = 160) {
       std::string::npos;
 }
 
+int64_t now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+uint64_t process_start(int64_t pid, std::string* state = nullptr) {
+  if (pid <= 0)
+    return 0;
+  std::ifstream input("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  if (!std::getline(input, line) || line.size() > 4096)
+    return 0;
+  const auto end = line.rfind(')');
+  if (end == std::string::npos)
+    return 0;
+  std::istringstream fields(line.substr(end + 1));
+  std::string field;
+  for (int number = 3; number <= 21; ++number) {
+    if (!(fields >> field))
+      return 0;
+    if (number == 3 && state)
+      *state = field;
+  }
+  uint64_t ticks = 0;
+  return fields >> ticks ? ticks : 0;
+}
+
+std::string revoked_name(const std::string& token) {
+  return "game-operation-revoked-" + token + ".yaml";
+}
+
+absl::StatusOr<bool> revoked(int directory, const std::string& token) {
+  if (!identity(token))
+    return absl::InvalidArgumentError("Invalid game operation token");
+  struct stat st{};
+  if (::fstatat(directory, revoked_name(token).c_str(), &st, AT_SYMLINK_NOFOLLOW) == 0)
+    return true;
+  if (errno == ENOENT)
+    return false;
+  return io("Cannot inspect ownership recovery record");
+}
+
+absl::Status not_revoked(int directory, const std::string& token) {
+  if (token.empty())
+    return absl::OkStatus();
+  const auto result = revoked(directory, token);
+  if (!result.ok())
+    return result.status();
+  return *result
+      ? absl::FailedPreconditionError("Game operation ownership was released by recovery; old authorization is revoked")
+      : absl::OkStatus();
+}
+
+RecoveryInfo recovery_info(const Owner& owner) {
+  RecoveryInfo result;
+  result.owner = owner;
+  const auto local = LocalOwner("mutation", "inspect", "inspect");
+  result.local_host = !local.host.empty() && local.host == owner.host;
+  result.verified_reboot = result.local_host && !local.boot_id.empty() && local.boot_id != owner.boot_id &&
+      owner.kind != "workflow" && owner.workflow_directory.empty();
+  if (!result.local_host) {
+    result.explanation =
+        "Remote host has not been inspected. An unreachable host or missing progress does not prove shutdown.";
+  } else if (result.verified_reboot) {
+    result.explanation =
+        "This host has rebooted since this local operation. Its old processes cannot still be running.";
+  } else if (owner.kind == "workflow") {
+    result.explanation = "The workflow may own remote tasks. Use its workflow monitor to cancel and verify cleanup.";
+  } else {
+    const auto start = process_start(owner.process_id, &result.process_state);
+    result.process_matches =
+        start && owner.process_start_ticks && start == owner.process_start_ticks && local.boot_id == owner.boot_id;
+    if (result.process_matches) {
+      std::error_code error;
+      result.executable =
+          std::filesystem::read_symlink("/proc/" + std::to_string(owner.process_id) + "/exe", error).string();
+      result.explanation =
+          "The recorded process still exists. Process state is not a measurement of processing progress.";
+    } else if (start && !owner.process_start_ticks) {
+      result.explanation = "This PID exists, but the legacy record cannot distinguish its owner from a reused PID.";
+    } else {
+      result.explanation =
+          "The original process could not be verified. Its absence alone does not prove descendant cleanup.";
+    }
+  }
+  return result;
+}
+
 absl::Status validate(const Owner& owner) {
   if ((owner.kind != "workflow" && owner.kind != "pipeline" && owner.kind != "int8" && owner.kind != "mutation" &&
        owner.kind != "experiment") ||
       !identity(owner.id) || !identity(owner.token) || !identity(owner.host, 255) || !identity(owner.boot_id) ||
-      owner.process_id < 0 || owner.revision == 0 || owner.workflow_directory.size() > 4096 ||
-      owner.workflow_directory.find('\0') != std::string::npos ||
+      owner.process_id < 0 || owner.revision == 0 || owner.started_unix_ms < 0 ||
+      owner.workflow_directory.size() > 4096 || owner.workflow_directory.find('\0') != std::string::npos ||
       (!owner.workflow_directory.empty() && !std::filesystem::path(owner.workflow_directory).is_absolute()))
     return absl::InvalidArgumentError("Invalid game operation owner");
   return absl::OkStatus();
@@ -150,7 +239,8 @@ absl::StatusOr<std::optional<Owner>> Lock::Read() const {
     return absl::AbortedError("Game operation owner changed while reading");
   try {
     const auto node = YAML::Load(contents);
-    if (!node.IsMap() || node.size() != 11 || node["schema"].as<int>() != 1)
+    const int schema = node["schema"].as<int>();
+    if (!node.IsMap() || !((schema == 1 && node.size() == 11) || (schema == 2 && node.size() == 13)))
       return absl::FailedPreconditionError("Unsupported game operation owner; recovery is required");
     Owner result{
         node["kind"].as<std::string>(),
@@ -162,6 +252,10 @@ absl::StatusOr<std::optional<Owner>> Lock::Read() const {
         node["process_id"].as<int64_t>(),
         node["revision"].as<uint64_t>(),
         node["cancel_requested"].as<bool>()};
+    if (schema == 2) {
+      result.started_unix_ms = node["started_unix_ms"].as<int64_t>();
+      result.process_start_ticks = node["process_start_ticks"].as<uint64_t>();
+    }
     if (node["game_admission"].as<std::string>() != "exclusive")
       return absl::FailedPreconditionError("Invalid game admission mode");
     const auto valid = validate(result);
@@ -179,7 +273,7 @@ absl::Status Lock::Write(const Owner& owner) const {
   if (!valid.ok())
     return valid;
   YAML::Node node;
-  node["schema"] = 1;
+  node["schema"] = 2;
   node["game_admission"] = "exclusive";
   node["kind"] = owner.kind;
   node["id"] = owner.id;
@@ -190,6 +284,8 @@ absl::Status Lock::Write(const Owner& owner) const {
   node["process_id"] = owner.process_id;
   node["revision"] = owner.revision;
   node["cancel_requested"] = owner.cancel_requested;
+  node["started_unix_ms"] = owner.started_unix_ms;
+  node["process_start_ticks"] = owner.process_start_ticks;
   const std::string contents = YAML::Dump(node) + '\n';
   auto nonce = NewToken();
   if (!nonce.ok())
@@ -220,7 +316,14 @@ absl::Status Lock::Write(const Owner& owner) const {
   return absl::OkStatus();
 }
 
+absl::StatusOr<bool> Lock::Revoked(const std::string& token) const {
+  return revoked(directory_, token);
+}
+
 absl::Status Lock::Authorize(const std::string& token) const {
+  const auto allowed = not_revoked(directory_, token);
+  if (!allowed.ok())
+    return allowed;
   auto owner = Read();
   if (!owner.ok())
     return owner.status();
@@ -232,6 +335,9 @@ absl::Status Lock::Authorize(const std::string& token) const {
 }
 
 absl::Status Lock::Claim(Owner& owner) {
+  const auto allowed = not_revoked(directory_, owner.token);
+  if (!allowed.ok())
+    return allowed;
   auto current = Read();
   if (!current.ok())
     return current.status();
@@ -242,6 +348,12 @@ absl::Status Lock::Claim(Owner& owner) {
 }
 
 absl::Status Lock::Handoff(Owner& successor, const std::string& token, uint64_t revision) {
+  const auto previous_allowed = not_revoked(directory_, token);
+  if (!previous_allowed.ok())
+    return previous_allowed;
+  const auto allowed = not_revoked(directory_, successor.token);
+  if (!allowed.ok())
+    return allowed;
   auto current = Read();
   if (!current.ok())
     return current.status();
@@ -256,6 +368,9 @@ absl::Status Lock::Handoff(Owner& successor, const std::string& token, uint64_t 
 }
 
 absl::Status Lock::RequestCancel(const std::string& token, uint64_t revision) {
+  const auto allowed = not_revoked(directory_, token);
+  if (!allowed.ok())
+    return allowed;
   auto current = Read();
   if (!current.ok())
     return current.status();
@@ -288,6 +403,119 @@ absl::StatusOr<std::optional<Owner>> Inspect(const std::filesystem::path& game) 
     return std::optional<Owner>{};
   auto lock = Lock::Acquire(game, false);
   return lock.ok() ? (*lock)->Read() : absl::StatusOr<std::optional<Owner>>(lock.status());
+}
+
+absl::StatusOr<RecoveryInfo> InspectRecovery(const std::filesystem::path& game) {
+  auto lock = Lock::Acquire(game, false);
+  if (!lock.ok())
+    return lock.status();
+  auto owner = (*lock)->Read();
+  if (!owner.ok())
+    return owner.status();
+  if (!*owner)
+    return RecoveryInfo{};
+  auto result = recovery_info(**owner);
+  struct stat st{};
+  if (::lstat((game_storage::StateDirectory(game) / kOwner).c_str(), &st) != 0)
+    return io("Cannot inspect ownership timestamp");
+  result.updated_unix_ms = int64_t(st.st_mtim.tv_sec) * 1000 + st.st_mtim.tv_nsec / 1000000;
+  return result;
+}
+
+absl::Status Lock::Recover(const std::string& token, uint64_t revision, bool force, const std::string& reason) {
+  if (reason.empty() || reason.size() > 1024 || reason.find('\0') != std::string::npos)
+    return absl::InvalidArgumentError("Ownership recovery requires a bounded reason");
+  const auto current = Read();
+  if (!current.ok())
+    return current.status();
+  if (!*current || (**current).token != token || (**current).revision != revision)
+    return absl::AbortedError("Game ownership changed; inspect the current owner before releasing it");
+  if (!force && !recovery_info(**current).verified_reboot)
+    return absl::FailedPreconditionError(
+        "Shutdown is not verified. Only an explicit force release can abandon this owner");
+  YAML::Node record;
+  record["schema"] = 1;
+  record["disposition"] = force ? "force-released" : "host-rebooted";
+  record["reason"] = reason;
+  record["released_unix_ms"] = now_ms();
+  const auto actor = LocalOwner("mutation", "recovery", "recovery");
+  record["actor_host"] = actor.host;
+  record["actor_pid"] = actor.process_id;
+  const auto& owner = **current;
+  for (const auto& item : std::vector<std::pair<std::string, std::string>>{
+           {"kind", owner.kind},
+           {"id", owner.id},
+           {"token", owner.token},
+           {"host", owner.host},
+           {"boot_id", owner.boot_id},
+           {"workflow_directory", owner.workflow_directory}})
+    record["owner"][item.first] = item.second;
+  record["owner"]["process_id"] = owner.process_id;
+  record["owner"]["revision"] = owner.revision;
+  record["owner"]["cancel_requested"] = owner.cancel_requested;
+  record["owner"]["started_unix_ms"] = owner.started_unix_ms;
+  record["owner"]["process_start_ticks"] = owner.process_start_ticks;
+  record["owner"]["schema"] = 2;
+  record["owner"]["game_admission"] = "exclusive";
+  const auto name = revoked_name(token);
+  auto nonce = NewToken();
+  if (!nonce.ok())
+    return nonce.status();
+  const auto pending = ".ownership-recovery-" + *nonce;
+  const int file = ::openat(directory_, pending.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (file < 0)
+    return io("Cannot create ownership recovery record");
+  struct Cleanup {
+    int directory, file;
+    std::string name;
+    ~Cleanup() {
+      ::close(file);
+      ::unlinkat(directory, name.c_str(), 0);
+    }
+  } cleanup{directory_, file, pending};
+  const auto contents = YAML::Dump(record) + '\n';
+  size_t offset = 0;
+  while (offset < contents.size()) {
+    const auto count = ::write(file, contents.data() + offset, contents.size() - offset);
+    if (count < 0 && errno == EINTR)
+      continue;
+    if (count <= 0)
+      return io("Cannot write ownership recovery record");
+    offset += count;
+  }
+  if (::fsync(file) != 0)
+    return io("Cannot sync ownership recovery record");
+  // Exclusive publication preserves the first audit even on a retry after a
+  // crash. A preexisting tombstone must not be overwritten or followed.
+  if (::linkat(directory_, pending.c_str(), directory_, name.c_str(), 0) != 0) {
+    if (errno != EEXIST)
+      return io("Cannot publish ownership recovery record");
+    const int previous = ::openat(directory_, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (previous < 0)
+      return io("Cannot inspect interrupted ownership recovery");
+    struct stat st{};
+    std::string bytes(kMaximumOwnerBytes, '\0');
+    const bool regular = ::fstat(previous, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 &&
+        st.st_size <= static_cast<off_t>(bytes.size());
+    const auto count = regular ? ::pread(previous, bytes.data(), st.st_size, 0) : -1;
+    ::close(previous);
+    if (!regular || count != st.st_size)
+      return absl::FailedPreconditionError("Invalid ownership recovery record; ownership retained");
+    try {
+      const auto saved = YAML::Load(bytes.substr(0, count));
+      if (saved["schema"].as<int>() != 1 || saved["owner"]["token"].as<std::string>() != token ||
+          saved["owner"]["revision"].as<uint64_t>() != revision ||
+          YAML::Dump(saved["owner"]) != YAML::Dump(record["owner"]) ||
+          (saved["disposition"].as<std::string>() != "force-released" &&
+           saved["disposition"].as<std::string>() != "host-rebooted"))
+        return absl::FailedPreconditionError("Ownership recovery record belongs to another release");
+    } catch (const YAML::Exception&) {
+      return absl::FailedPreconditionError("Unreadable ownership recovery record; ownership retained");
+    }
+  }
+  if (::fsync(directory_) != 0)
+    return io("Cannot persist ownership revocation");
+  return Release(token, revision, true);
 }
 
 absl::StatusOr<std::unique_ptr<Lock>> Mutation(const std::filesystem::path& game, bool wait) {
@@ -331,6 +559,8 @@ Owner LocalOwner(const std::string& kind, const std::string& id, const std::stri
   std::ifstream boot("/proc/sys/kernel/random/boot_id");
   std::getline(boot, result.boot_id);
   result.process_id = ::getpid();
+  result.started_unix_ms = now_ms();
+  result.process_start_ticks = process_start(result.process_id);
   return result;
 }
 
@@ -347,6 +577,33 @@ void ForgetAuthorization(const std::filesystem::path& game, const std::string& t
   if (found != authorizations.end() && found->second == token)
     authorizations.erase(found);
   local_admissions.erase(token);
+}
+
+bool CancellationRequested(const std::filesystem::path& game, const std::string& token) {
+  const auto lock = Lock::Acquire(game, false);
+  if (!lock.ok())
+    return false;
+  const auto abandoned = (*lock)->Revoked(token);
+  if (abandoned.ok() && *abandoned)
+    return true;
+  const auto owner = (*lock)->Read();
+  return owner.ok() && (!*owner || (**owner).token != token || (**owner).cancel_requested);
+}
+
+bool CancellationRequested() {
+  std::map<std::string, std::string> bindings;
+  {
+    std::lock_guard<std::mutex> lock(authorizations_mutex);
+    bindings = authorizations;
+  }
+  const char* game = std::getenv("HSTREAM_GAME_OPERATION_GAME");
+  const char* token = std::getenv("HSTREAM_GAME_OPERATION_TOKEN");
+  if (game && *game && token && *token)
+    bindings.emplace(game, token);
+  for (const auto& [path, expected] : bindings)
+    if (CancellationRequested(path, expected))
+      return true;
+  return false;
 }
 
 std::string Authorization(const std::filesystem::path& game) {
@@ -658,9 +915,15 @@ absl::Status ReleaseLocal(const std::filesystem::path& game, const std::string& 
   auto owner = (*lock)->Read();
   if (!owner.ok())
     return owner.status();
-  if (!*owner || (**owner).token != token)
+  const auto abandoned = (*lock)->Revoked(token);
+  if (!abandoned.ok())
+    return abandoned.status();
+  if ((!*owner || (**owner).token != token) && !*abandoned)
     return absl::AbortedError("Local game owner changed");
-  auto result = (*lock)->Release(token, (**owner).revision, true);
+  // Explicit recovery may have admitted a successor. Retire only our proven
+  // local scope; never remove that successor's claim.
+  auto result =
+      *owner && (**owner).token == token ? (*lock)->Release(token, (**owner).revision, true) : absl::OkStatus();
   if (result.ok()) {
     {
       std::lock_guard<std::mutex> guard(authorizations_mutex);

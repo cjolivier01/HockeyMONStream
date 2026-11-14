@@ -38,6 +38,7 @@
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/GameOwnershipDialog.h"
 #include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
@@ -6447,7 +6448,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   stop_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaStop), "Stop");
   stop_button_->setObjectName("stopPipelineButton");
 
-  connect(start_button_, &QPushButton::clicked, this, [this]() { startPipeline(); });
+  connect(start_button_, &QPushButton::clicked, this, [this]() { requestPlay(); });
   connect(pause_button_, &QPushButton::clicked, this, [this]() { pauseOrResumePipeline(); });
   connect(stop_button_, &QPushButton::clicked, this, [this]() { confirmStopPipeline(); });
   connect(restart, &QPushButton::clicked, this, [this]() { restartStage(); });
@@ -7563,7 +7564,7 @@ void HStreamWindow::configureControlHelp() {
       "suffix when no video is saved. Video pixels stay on the GPU. Capture disables seeking for this run.");
   help(
       "startPipelineButton",
-      "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run.");
+      "Validate the selected game and start the chosen run mode. Output routes are captured when Play is pressed; route changes during playback apply to the next run. If the game is busy, Play shows its owner and recovery options.");
   help(
       "pausePipelineButton",
       "Pause or resume the running pipeline without discarding its current processing position.");
@@ -11816,6 +11817,15 @@ bool HStreamWindow::beginGameOperation(const std::string& kind) {
     appendLog(QString::fromStdString(lock.status().ToString()));
     return false;
   }
+  const auto existing = (*lock)->Read();
+  if (existing.ok() && *existing) {
+    // Only a verified local reboot qualifies here. Missing PIDs, quiet logs
+    // and remote-host observations never implicitly authorize abandonment.
+    const auto recovered = (*lock)->Recover(
+        (**existing).token, (**existing).revision, false, "Verified local host reboot before Play");
+    if (recovered.ok())
+      appendLog("Recovered ownership from the previous local boot; retained the old record and outputs.");
+  }
   auto token = hm::game_operation::NewToken();
   if (!token.ok()) {
     appendLog(QString::fromStdString(token.status().ToString()));
@@ -11862,6 +11872,34 @@ void HStreamWindow::releaseGameOperationIfStopped() {
     operation_token_.clear();
     operation_retirement_started_ms_ = 0;
   }
+}
+
+void HStreamWindow::requestPlay() {
+  if (editing_defaults_ || !game_id_edit_)
+    return;
+  const auto game = gameDirectory(game_id_edit_->text().trimmed()).toStdString();
+  const auto owner = hm::game_operation::Inspect(game);
+  const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
+  if (!running && source_camera_player_ && owner.ok() && *owner && (**owner).token == operation_token_) {
+    // Main Play has always retired this window's idle camera decoder before
+    // starting processing. It is not a competing run requiring recovery.
+    startPipeline();
+    return;
+  }
+  if (!owner.ok() || owner->has_value() || running || pipeline_completion_proof_pending_ ||
+      archive_completion_proof_pending_) {
+    const bool ours = !operation_token_.empty();
+    GameOwnershipDialog dialog(game, this,
+        ours && running ? std::function<void()>([this, token = operation_token_] {
+          if (operation_token_ == token)
+            confirmStopPipeline();
+        }) : std::function<void()>(), !ours);
+    if (dialog.exec() == QDialog::Accepted)
+      appendLog("Ownership released; old records and outputs retained. Click Play to start a new run.");
+    updateRunControls();
+    return;
+  }
+  startPipeline();
 }
 
 void HStreamWindow::startPipeline() {
@@ -19008,6 +19046,16 @@ void HStreamWindow::updateStitchingStillPreview() {
 }
 
 void HStreamWindow::updateRunControls() {
+  if (!operation_token_.empty() && observed_cancel_token_ != operation_token_ &&
+      (source_camera_player_ || (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning)) &&
+      hm::game_operation::CancellationRequested(operation_game_, operation_token_)) {
+    observed_cancel_token_ = operation_token_;
+    appendLog("Ownership stop/revocation requested; stopping the supervised operation.");
+    if (source_camera_player_)
+      stopSourceCamera();
+    else
+      stopPipeline();
+  }
   releaseGameOperationIfStopped();
   bool external_operation = false;
   if (!editing_defaults_ && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
@@ -19100,7 +19148,7 @@ void HStreamWindow::updateRunControls() {
     tiled_detection_check_->setEnabled(!backend_.isHockeyMon() && !external_operation && !running && !finalizing);
   if (start_button_) {
     start_button_->setEnabled(
-        !editing_defaults_ && !running && !finalizing && !archive_recovery_blocked &&
+        !editing_defaults_ && !waiting_for_start && !isArchiveFinalizing() && !archive_recovery_blocked &&
         !live_rotation_authorization_pending_ && !findChild<QDialog*>("highlightsDialog"));
   }
   if (pause_button_) {

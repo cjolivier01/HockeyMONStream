@@ -5020,6 +5020,8 @@ gboolean PipelineApplication::check_for_interrupt_static(gpointer data) {
 gboolean PipelineApplication::check_for_interrupt() {
   if (quit_)
     return FALSE;
+  if (hm::game_operation::CancellationRequested())
+    cintr_ = TRUE;
   if (cintr_) {
     cintr_ = FALSE;
     if (runtime_seek_recreation_active_.load(std::memory_order_acquire)) {

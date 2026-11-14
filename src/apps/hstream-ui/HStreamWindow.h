@@ -817,6 +817,8 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> focus_hidden_widgets_;
   QVBoxLayout* output_list_{nullptr};
   bool beginGameOperation(const std::string& kind);
+  void requestPlay();
+  std::string observed_cancel_token_;
   void releaseGameOperationIfStopped();
   std::filesystem::path operation_game_;
   std::string operation_token_;
