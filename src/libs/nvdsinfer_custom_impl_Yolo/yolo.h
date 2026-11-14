@@ -26,7 +26,7 @@
 #ifndef _YOLO_H_
 #define _YOLO_H_
 
-#include "NvInferPlugin.h"
+#include "NvInfer.h"
 #include "nvdsinfer_custom_impl.h"
 
 #include "layers/batchnorm_layer.h"
