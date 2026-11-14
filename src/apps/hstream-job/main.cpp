@@ -137,6 +137,51 @@ std::string environment(const char* key) {
   return value ? value : "";
 }
 
+// Desktop recipes include these derived telemetry locations. Managed encoding
+// assigns both from the admitted run, so exporting them would only retain paths
+// and game names from the machine that saved the recipe.
+std::vector<std::string> portable_arguments(const std::vector<std::string>& arguments) {
+  std::vector<std::string> result;
+  for (size_t i = 0; i < arguments.size(); ++i) {
+    const auto& argument = arguments[i];
+    std::string prefix, group;
+    bool separate = false;
+    if (argument == "--options" || argument == "-p") {
+      if (++i == arguments.size())
+        throw std::runtime_error("saved --options is missing its value");
+      prefix = argument;
+      group = arguments[i];
+      separate = true;
+    } else if (argument.rfind("--options=", 0) == 0) {
+      prefix = "--options=";
+      group = argument.substr(prefix.size());
+    } else if (argument.rfind("-p", 0) == 0 && argument.size() > 2) {
+      prefix = "-p";
+      group = argument.substr(prefix.size());
+    } else {
+      result.push_back(argument);
+      continue;
+    }
+    std::istringstream stream(group);
+    std::string option, retained;
+    while (std::getline(stream, option, ',')) {
+      const auto key = option.substr(0, option.find('='));
+      if (key == "pipeline.ds-playtracker.private-properties.telemetry-db-dir" ||
+          key == "pipeline.ds-playtracker.private-properties.telemetry-game-id")
+        continue;
+      if (!retained.empty())
+        retained += ',';
+      retained += option;
+    }
+    if (!retained.empty()) {
+      result.push_back(prefix + (separate ? "" : retained));
+      if (separate)
+        result.push_back(retained);
+    }
+  }
+  return result;
+}
+
 void write_script(const fs::path& output, const std::string& contents, bool overwrite) {
   if (!overwrite && fs::exists(output))
     throw std::runtime_error("output already exists; use --force to replace it: " + output.string());
@@ -183,11 +228,13 @@ int main(int argc, char** argv) {
         std::cout << "Usage: hstream-job --game-dir DIR [--output FILE] [--force] [--interactive]\n"
                      "  [--sbatch '--partition=gpu'] [--sbatch '--time=02:00:00']\n"
                      "  [--runner COMMAND] [--finalizer COMMAND] [--config FILE] [--working-directory DIR]\n"
-                     "  [--run-id ID] (managed publication only; otherwise generates a fresh identity)\n"
+                     "  [--run-id ID] (explicit resume identity; ordinary scripts start a new run each time)\n"
                      "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE]\n"
                      "Save an executable job (default: DIR/hstream-job.sh). Never launches the job.\n"
                      "Commands default to hstream-cli and hstream-finalize on the execution host PATH.\n"
-                     "Config and runtime discovery belong to that host; no build paths are saved.\n"
+                     "Ordinary scripts locate the game relative to the script, or under execution-time HM_GAME_DIR.\n"
+                     "For sbatch, submit from the script directory or set HM_GAME_DIR to the games root.\n"
+                     "Config, output-root and runtime discovery belong to that host; no build paths are saved.\n"
                      "SBATCH defaults: one node, one task, one GPU. Additional directives override defaults.\n"
                      "Reads config.yaml and hstream_ui.job.arguments saved by the UI. Without a saved\n"
                      "job or selected file encoder, defaults to the 4K Program MP4. Rendering is disabled.\n"
@@ -264,6 +311,7 @@ int main(int argc, char** argv) {
         throw std::runtime_error("--run-id requires managed publication");
       hm::publication::ValidateRunId(*requested_run_id);
     }
+    const bool portable = !interactive && !requested_run_id;
     // Preserve a symlinked game's logical name, which is also its CLI game ID.
     game = fs::absolute(game).lexically_normal();
     if (game.filename().empty())
@@ -316,6 +364,8 @@ int main(int argc, char** argv) {
       }
     } else {
       job_args = encode_job_arguments(saved_args, requested_sinks);
+      if (portable)
+        job_args = portable_arguments(job_args);
     }
     bool telemetry_only = false;
     if (interactive_publication) {
@@ -348,9 +398,34 @@ int main(int argc, char** argv) {
     script += "# Game files and assets must be accessible there.\n";
     script += interactive && !interactive_publication
         ? "# Interactive session; the outer supervisor owns cleanup and cancellation.\n"
-        : "# Publishes completed archives and telemetry, then cleans this run.\n"
-          "# Repeating this script resumes the same run; export again for a new generation.\n";
+        : "# Publishes completed archives and telemetry, then cleans this run.\n";
+    if (portable)
+      script +=
+          "# Each invocation starts a new run; no previous working directory is needed.\n"
+          "# For sbatch, submit from the script directory or set HM_GAME_DIR to the games root.\n";
+    else if (!interactive || interactive_publication)
+      script += "# Repeating this script resumes the same explicitly managed run.\n";
     script += "set -euo pipefail\numask 077\n";
+    if (portable) {
+      // Slurm executes a spool copy; its submission directory replaces the
+      // script directory. Explicit runtime HM_GAME_DIR works in either case.
+      const auto relative_game = fs::relative(game, output.parent_path());
+      script += "game_id=" + quote(game.filename().string()) + "\n";
+      script += R"JOB(if [ -n "${HM_GAME_DIR:-}" ]; then
+  game_dir="${HM_GAME_DIR}/${game_id}"
+else
+  script_dir="$(dirname -- "${BASH_SOURCE[0]}")"
+  if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+    script_dir="${SLURM_SUBMIT_DIR}"
+  fi
+)JOB";
+      script += "  game_dir=\"${script_dir}/\"" + quote(relative_game.string()) + "\nfi\n";
+      script += R"JOB(game_dir="$(CDPATH= cd -- "${game_dir}" && pwd -L)"
+game_id="${game_dir##*/}"
+game_root="${game_dir%/*}"
+export HM_GAME_DIR="${game_root:-/}"
+)JOB";
+    }
     if (!working.empty())
       script += "cd -- " + quote(working.string()) + "\n";
     script += "unset HSTREAM_UI_PARENT_PID\n";
@@ -365,10 +440,11 @@ int main(int argc, char** argv) {
     // Every exported mode owns its runtime and must leave user preferences
     // unchanged, including unattended encoding through the finalizer.
     script += "export HSTREAM_JOB_MANAGED_RUNTIME=1\n";
-    script += "export HM_GAME_DIR=" + quote(game.parent_path().string()) + "\n";
+    if (!portable)
+      script += "export HM_GAME_DIR=" + quote(game.parent_path().string()) + "\n";
     for (const char* key : {"HM_OUTPUT_WORK_DIR", "HM_RENDER_SINK", "USE_NEW_NVSTREAMMUX"}) {
       const std::string value = environment(key);
-      if (!value.empty())
+      if (!portable && !value.empty())
         script += "export " + std::string(key) + "=" + quote(value) + "\n";
     }
     if (interactive && !interactive_publication) {
@@ -400,12 +476,14 @@ export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
       std::cout << output.string() << "\n";
       return 0;
     }
-    script += "printf '%s\n' " +
-        quote("hstream-job: Publishing completed outputs to " + game.string() +
-              "; temporary files are removed only after all outputs are safely saved.") +
-        "\n";
-    script += "exec " + quote(finalizer) + " --game-dir " + quote(game.string()) + " --run-id " +
-        quote(requested_run_id ? *requested_run_id : hm::recording::NewGuid());
+    script +=
+        "printf 'hstream-job: Publishing completed outputs to %s; temporary files are removed only after all "
+        "outputs are safely saved.\\n' " +
+        (portable ? std::string("\"${game_dir}\"") : quote(game.string())) + "\n";
+    script += "exec " + quote(finalizer) + " --game-dir " +
+        (portable ? std::string("\"${game_dir}\" --new-run")
+                  : quote(game.string()) + " --run-id " +
+                 quote(requested_run_id ? *requested_run_id : hm::recording::NewGuid()));
     if (telemetry_only)
       script += " --telemetry-only";
     // The supervisor resolves the same live config layers before it can admit
@@ -423,8 +501,8 @@ export HSTREAM_RUNTIME_CACHE_DIR="${runtime_cache}"
       }
     }
     script += " -- " + quote(runner);
-    for (const auto& arg : args)
-      script += " \\\n  " + quote(arg);
+    for (size_t i = 0; i < args.size(); ++i)
+      script += " \\\n  " + (portable && i == 1 ? std::string("\"${game_id}\"") : quote(args[i]));
     if (interactive_publication)
       script += " \"$@\"";
     script += "\n";

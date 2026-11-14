@@ -288,11 +288,12 @@ requires its completed run manifest, publishes faststart MP4s and telemetry in t
 directory, and removes owned working files only after all required outputs are saved.
 Both commands come from the execution host's `PATH`, including for scripts exported
 from a development UI. The UI does not export its local CLI, config, working directory
-or baseline override. The selected CLI finds its own bundled config and runtime;
-the script retains game settings and the selected working output location.
-Each export has a fixed run ID: repeating its script resumes finalization/cleanup without
-encoding again; export a new script for another run. Custom working output paths remain
-supported. Stitched jobs retain their independent output path and bitrate. Direct
+or baseline override. Ordinary scripts locate the game relative to the script (or
+execution-time `HM_GAME_DIR`) and resolve working storage on the execution host.
+Each invocation requests `--new-run`, including after earlier scratch was deleted.
+Explicit `--run-id` exports and managed interactive publication retain fixed identities
+and resume finalization/cleanup without encoding again. Custom working output paths
+remain supported. Stitched jobs retain their independent output path and bitrate. Direct
 `hstream-cli --encode-job` without the managed wrapper still writes MP4 in working storage
 without publication or faststart. See [the lifecycle](../LIFECYCLE.md) for staging, receipts,
 failure recovery and cleanup.
