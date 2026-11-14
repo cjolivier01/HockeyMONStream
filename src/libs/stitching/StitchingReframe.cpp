@@ -162,6 +162,9 @@ std::string solver_text(const YAML::Node& solver) {
 
 std::string view_text(const YAML::Node& view) {
   auto normalized = canonical(view);
+  // Version-1 requests may contain the saving host's limit. It is not a
+  // framing choice; execution resolves its own limit before materialization.
+  normalized.remove("max_output_dimension");
   normalize_numbers(node_at(normalized, {"projection_parameters"}));
   for (const char* key : {"horizontal_fov", "crop", "rotation_degrees"})
     normalize_numbers(node_at(normalized, {"projection_framing", key}));
@@ -284,7 +287,7 @@ struct Snapshot {
   YAML::Node solver;
   YAML::Node view;
   size_t max_output_width{0};
-  size_t max_output_dimension{0};
+  size_t runtime_max_canvas_dimension{0};
 };
 
 absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_completed_inputs = true) {
@@ -370,9 +373,8 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   HM_ASSIGN_OR_RETURN(result.max_output_width, nonnegative_size(stitching["max_output_width"], "max_output_width"));
   // The native Hugin worker derives this limit from platform/environment,
   // rather than the historical canonical max_output_dimension setting.
-  result.max_output_dimension = live_stitch_max_canvas_dimension().value_or(0);
+  result.runtime_max_canvas_dimension = live_stitch_max_canvas_dimension().value_or(0);
   view["max_output_width"] = result.max_output_width;
-  view["max_output_dimension"] = result.max_output_dimension;
   return result;
 }
 
@@ -607,7 +609,6 @@ absl::StatusOr<StitchingReframeIntent> validate_intent(const fs::path& directory
   }
   original["stitching"]["projection_framing"] = source_view["projection_framing"];
   original["stitching"]["max_output_width"] = source_view["max_output_width"];
-  original["stitching"]["max_output_dimension"] = source_view["max_output_dimension"];
   original["hstream_ui"]["stitching_calibration"]["status"] = "complete";
   original["hstream_ui"]["stitching_calibration"]["invalidation_id"] = record["source_owner"];
   original["hstream_ui"]["stitching_calibration"]["backend_generation"] = record["source_backend_generation"];
@@ -640,7 +641,7 @@ absl::StatusOr<StitchingReframeIntent> validate_intent(const fs::path& directory
       validate_selected_inputs(directory, effective, result.source_provenance, result.source_image_sha256));
   result.desired_choices = current.choices;
   result.desired_max_output_width = current.max_output_width;
-  result.desired_max_output_dimension = current.max_output_dimension;
+  result.runtime_max_canvas_dimension = current.runtime_max_canvas_dimension;
   return result;
 }
 
@@ -733,7 +734,7 @@ static absl::StatusOr<bool> prepare_reframe_intent_locked(
       // Unchanged legacy playback does not acquire a new alignment request.
       // An explicit geometry edit still requires complete provenance below.
       if (!published->has_value() ||
-          ((**published).max_canvas_dimension == requested.max_output_dimension &&
+          ((**published).max_canvas_dimension == requested.runtime_max_canvas_dimension &&
            (**published).max_output_width == requested.max_output_width))
         return false;
     }

@@ -17,7 +17,8 @@ struct StitchingReframeIntent {
   HuginProject::CanvasProvenance source_provenance;
   StitchingBackendChoices desired_choices;
   size_t desired_max_output_width{0};
-  size_t desired_max_output_dimension{0};
+  // Resolved on the execution host during validation, never frozen in desired_view.
+  size_t runtime_max_canvas_dimension{0};
 };
 
 // Presence includes malformed non-null records, which must fail validation
@@ -59,8 +60,9 @@ absl::StatusOr<bool> PrepareResolvedStitchingReframeIntentLocked(
     bool review_unchanged_view = false);
 
 // Revalidate source artifacts/stills, retained selected inputs, current owner,
-// and the complete solve/view snapshots. Does not decode original recordings
-// or acquire another lock. Failure never authorizes an ordinary full solve.
+// and the solve/framing snapshots. Host limits are resolved at validation time.
+// Does not decode original recordings or acquire another lock. Failure never
+// authorizes an ordinary full solve.
 absl::StatusOr<StitchingReframeIntent> ValidateStitchingReframeIntentLocked(
     const std::filesystem::path& game_directory,
     const YAML::Node& effective_config);
