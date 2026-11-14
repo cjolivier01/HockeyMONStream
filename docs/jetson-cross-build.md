@@ -46,3 +46,7 @@ The Jetson baseline is Ubuntu 24.04 / Jetson Linux 39, DeepStream 9.1 and CUDA
 13.2. After reflashing or upgrading the device, install its development packages
 (including CUDA Toolkit and OpenCV), then resync the sysroot before cross-building.
 The old Ubuntu 22.04 / DeepStream 7.1 sysroot is incompatible with this baseline.
+
+Jetson packages now depend on Ubuntu’s arm64 `hugin-tools`, `enblend` and
+`gstreamer1.0-libav` packages, as desktop packages do. The Ubuntu 22.04 workaround
+that bundled source-built Hugin/VIGRA is no longer used.

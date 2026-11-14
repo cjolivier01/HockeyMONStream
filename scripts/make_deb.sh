@@ -150,7 +150,6 @@ HSTREAM_PLAYER_MODEL_BUILDER="${TOPDIR}/bazel-bin/src/apps/player-model-builder/
 HSTREAM_UI="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-ui"
 HSTREAM_WEB_JOB="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-web-job"
 HSTREAM_EXPERIMENT_TASK="${TOPDIR}/bazel-bin/src/apps/hstream-ui/hstream-experiment-task"
-HSTREAM_HUGIN_TOOLS_DIR="${HSTREAM_HUGIN_TOOLS_DIR:-}"
 HSTREAM_GST_PLUGINS=(
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-dsxvideoconvert/libgstdsxvideoconvert.so"
   "${TOPDIR}/bazel-bin/src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"
@@ -213,21 +212,6 @@ fi
 if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_EXPERIMENT_TASK}" ]]; then
   echo "ERROR: ${HSTREAM_EXPERIMENT_TASK} not found. Build hstream-experiment-task for the target platform first." >&2
   exit 1
-fi
-if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
-  for required_hugin_file in \
-    bin/autooptimiser \
-    bin/pano_modify \
-    bin/nona \
-    lib/libhuginbase.so.0.0 \
-    lib/libvigraimpex.so.11.1.11.1 \
-    licenses/hugin/COPYING.txt \
-    licenses/vigra/LICENSE.txt; do
-    if [[ -z "${HSTREAM_HUGIN_TOOLS_DIR}" || ! -f "${HSTREAM_HUGIN_TOOLS_DIR}/${required_hugin_file}" ]]; then
-      echo "ERROR: pinned Jetson Hugin artifact is missing: ${required_hugin_file}" >&2
-      exit 1
-    fi
-  done
 fi
 for plugin in "${HSTREAM_GST_PLUGINS[@]}"; do
   if [[ ! -f "${plugin}" ]]; then
@@ -293,10 +277,8 @@ mkdir -p \
   "${STAGING}${INSTALL_PREFIX}/bin" \
   "${STAGING}${INSTALL_PREFIX}/lib/gst-plugins" \
   "${STAGING}${INSTALL_PREFIX}/configs" \
-  "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/native-calibration-models" \
   "${STAGING}${INSTALL_PREFIX}/share/licenses/onnxruntime" \
-  "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra" \
   "${STAGING}${INSTALL_PREFIX}/scripts" \
   "${STAGING}/usr/share/applications" \
   "${STAGING}/usr/share/doc/${PKG_NAME}" \
@@ -452,31 +434,6 @@ fi
 mkdir -p "${STAGING}${INSTALL_PREFIX}/share/exiftool"
 cp -L "${exiftool_runtime}/exiftool" "${exiftool_runtime}/LICENSE" "${STAGING}${INSTALL_PREFIX}/share/exiftool/"
 cp -RL "${exiftool_runtime}/lib" "${STAGING}${INSTALL_PREFIX}/share/exiftool/"
-
-# Ubuntu 22.04 arm64 publishes no hugin-tools package. Jetson releases include
-# pinned source-built copies of the required commands and their private
-# Hugin/VIGRA libraries, with upstream licenses, so clean-state calibration is
-# available without an unsatisfiable package dependency.
-if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
-  for hugin_tool in autooptimiser pano_modify nona; do
-    hugin_source="${HSTREAM_HUGIN_TOOLS_DIR}/bin/${hugin_tool}"
-    hugin_destination="${STAGING}${INSTALL_PREFIX}/bin/${hugin_tool}"
-    validate_elf_arch "${hugin_source}"
-    install -m 0755 "${hugin_source}" "${hugin_destination}"
-    patchelf_rpath "${hugin_destination}"
-    package_elfs+=("${hugin_destination}")
-  done
-  install_lib "${HSTREAM_HUGIN_TOOLS_DIR}/lib/libhuginbase.so.0.0" "${STAGING}${INSTALL_PREFIX}/lib"
-  install_lib "${HSTREAM_HUGIN_TOOLS_DIR}/lib/libvigraimpex.so.11.1.11.1" "${STAGING}${INSTALL_PREFIX}/lib"
-  install -m 0644 "${HSTREAM_HUGIN_TOOLS_DIR}/licenses/hugin/COPYING.txt" \
-    "${STAGING}${INSTALL_PREFIX}/share/licenses/hugin/COPYING.txt"
-  install -m 0644 "${HSTREAM_HUGIN_TOOLS_DIR}/licenses/vigra/LICENSE.txt" \
-    "${STAGING}${INSTALL_PREFIX}/share/licenses/vigra/LICENSE.txt"
-  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/autooptimiser" \
-    --help >/dev/null
-  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/pano_modify" --help >/dev/null
-  LD_LIBRARY_PATH="${STAGING}${INSTALL_PREFIX}/lib" "${STAGING}${INSTALL_PREFIX}/bin/nona" --help >/dev/null
-fi
 
 # ---------- bundled private shared libs ----------
 echo "[make_deb] Collecting bundled shared libs..."
@@ -1464,18 +1421,18 @@ if grep -Eiq '(^|[[:space:]])(libnccl[^,[:space:]]*|python[^,[:space:]]*|onnxrun
 fi
 rm -rf "${SHLIBDEPS_WORK_DIR}"
 
+# Ubuntu 24.04 provides these tools on both amd64 and arm64.
+RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend,\n gstreamer1.0-libav'
 INSTALLED_SIZE=$(du -sk "${STAGING}" | awk '{print $1}')
 if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
   PACKAGE_DESCRIPTION="HStream video pipeline application and UI"
   PACKAGE_CONTENTS="Installs the HStream CLI/UI binaries"
   UI_LAUNCH_HELP="Launch the UI with: ${INSTALL_PREFIX}/hstream-ui.sh
  or via the hstream-ui wrapper in /usr/bin/hstream-ui."
-  RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend,\n gstreamer1.0-libav'
 else
   PACKAGE_DESCRIPTION="HStream video pipeline application for Jetson"
-  PACKAGE_CONTENTS="Installs the HStream CLI and pinned native Hugin calibration tools"
+  PACKAGE_CONTENTS="Installs the HStream CLI binaries"
   UI_LAUNCH_HELP="The Qt desktop UI is not part of the Jetson package."
-  RUNTIME_TOOL_DEPENDS=""
 fi
 cat > "${STAGING}/DEBIAN/control" <<CONTROL
 Package: ${PKG_NAME}

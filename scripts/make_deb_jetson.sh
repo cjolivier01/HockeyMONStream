@@ -140,8 +140,7 @@ mkdir -p "${persistent_cache_root}/repository" "${sandbox_base}"
 git config --global url.https://github.com/.insteadOf ssh://git@github.com/
 cd "${source_dir}"
 
-# Generate the web catalog at build time and compile the pinned Hugin tools
-# which Jammy arm64 does not provide as a package.
+# Install the native SDK and the distribution calibration tools.
 build_packages=(
   cuda-toolkit-13-2
   libcudnn9-cuda-13
@@ -163,7 +162,9 @@ build_packages=(
   libpano13-dev
   libpng-dev
   libtiff-dev
-  libwxgtk3.2-dev
+  hugin-tools
+  enblend
+  gstreamer1.0-libav
   ninja-build
   zlib1g-dev
 )
@@ -180,9 +181,6 @@ fi
 if [[ ! -e /opt/jetson-sysroot ]]; then
   sudo -n ln -s / /opt/jetson-sysroot
 fi
-scripts/build_hugin_tools_jetson.sh \
-  --cache-dir="${persistent_cache_root}/hugin-tools" \
-  --output-dir="${remote_root}/hugin-tools"
 
 # External repositories that use build_file labels contain symlinks back into
 # the immutable source snapshot. The snapshot is intentionally deleted after
@@ -287,7 +285,6 @@ HSTREAM_IMMUTABLE_SOURCE=1 \
 HSTREAM_TARGET_UBUNTU=24.04 \
 HSTREAM_TARGET_PLATFORM=jetson \
 HSTREAM_BAZEL_OUTPUT_BASE="${output_base}" \
-HSTREAM_HUGIN_TOOLS_DIR="${remote_root}/hugin-tools" \
 HSTREAM_CONTAINER_PACKAGE_STAGING=1 \
 scripts/make_deb.sh --version "${package_version}" --output-dir "${remote_root}/output"
 
