@@ -15,3 +15,8 @@
 
 ## Misc
 
+- Deferred: add an optional arbitrary output label after the game ID in output
+  filenames, similar to HockeyMON's `--label` / `--output-label` support (for
+  example, `<game-id>-<label>-program_8k_output-with-audio-1.mp4`). Revisit how to
+  expose it without cluttering the already busy UI; no implementation for now.
+
