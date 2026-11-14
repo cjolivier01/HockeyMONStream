@@ -328,12 +328,34 @@ class Worker {
     bool stopped = false;
     try {
       State("starting", false, "");
-      for (const auto& path : runtime_.Keys()) {
+      const auto qualified = runtime_;
+      runtime_ = Json();
+      for (const auto& path : qualified.Keys()) {
         Require(fs::path(path).is_absolute(), "Runtime files require absolute paths");
+        const auto resolved = fs::canonical(path).string();
+        const auto digest = qualified.Text(path.c_str());
+        if (runtime_.Has(resolved.c_str()))
+          Require(
+              runtime_.Text(resolved.c_str()) == digest, "Qualified runtime aliases have conflicting pins: " + path);
         Require(
-            File(path, 8LL * 1024 * 1024 * 1024, [&] { CheckDeadline(); }).Text("sha256") ==
-                runtime_.Text(path.c_str()),
+            File(resolved, 8LL * 1024 * 1024 * 1024, [&] { CheckDeadline(); }).Text("sha256") == digest,
             "Pinned runtime file changed: " + path);
+        runtime_.Set(resolved.c_str(), digest);
+        tools_.Set(path.c_str(), resolved);
+      }
+      if (request_.Has("resolve_files")) {
+        const auto paths = request_.Get("resolve_files").Items();
+        Require(paths.size() <= 4096, "Too many compute runtime paths");
+        for (const auto& path : paths) {
+          const auto name = path.Text();
+          Require(fs::path(name).is_absolute(), "Compute runtime paths must be absolute");
+          const auto resolved = fs::canonical(name).string();
+          const auto digest = File(resolved, 8LL * 1024 * 1024 * 1024, [&] { CheckDeadline(); }).Text("sha256");
+          if (runtime_.Has(resolved.c_str()))
+            Require(runtime_.Text(resolved.c_str()) == digest, "Qualified compute runtime changed: " + name);
+          runtime_.Set(resolved.c_str(), digest);
+          tools_.Set(name.c_str(), resolved);
+        }
       }
       if (request_.Has("tools")) {
         const auto tools = request_.Get("tools").Items();
@@ -524,6 +546,7 @@ class Worker {
       tasks.Set(entry.first.c_str(), TaskState(entry.second));
     value.Set("tasks", tasks);
     value.Set("tools", tools_);
+    value.Set("files", runtime_);
     if (port_)
       value.Set("port", static_cast<int64_t>(port_));
     Atomic(root_ / "state.json", value);
@@ -859,7 +882,8 @@ class Worker {
     if (operation == "launch")
       return Launch(command);
     if (operation == "inspect" || operation == "read") {
-      const auto name = command.Text("path");
+      const auto requested = command.Text("path");
+      const auto name = tools_.Has(requested.c_str()) ? tools_.Text(requested.c_str()) : requested;
       const auto path =
           runtime_.Has(name.c_str()) || std::find(read_files_.begin(), read_files_.end(), name) != read_files_.end()
           ? fs::path(name)
@@ -973,6 +997,7 @@ Json Capabilities() {
     operations.Append(Json::String(operation));
   result.Set("operations", operations);
   result.Set("retirement", "pidfd-echild-v1");
+  result.Set("runtime_identity", "compute-files-v1");
   return result;
 }
 int Run(const fs::path& request) {

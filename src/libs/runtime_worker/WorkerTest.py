@@ -494,6 +494,58 @@ root.rmdir()
         self.assertIn("executable changed", response["error"])
         self.finish()
 
+    def test_compute_file_resolution_pins_exact_bytes_and_aliases(self):
+        alias = self.workspace / "python-alias"
+        alias.symlink_to(self.python)
+        self.request["files"] = {}
+        self.request["resolve_files"] = [str(alias)]
+        self.start()
+        self.until(
+            lambda: json.loads((self.root / "state.json").read_text())["status"]
+            == "ready"
+        )
+        state = json.loads((self.root / "state.json").read_text())
+        self.assertEqual(state["tools"][str(alias)], self.python)
+        self.assertEqual(
+            state["files"][self.python],
+            hashlib.sha256(Path(self.python).read_bytes()).hexdigest(),
+        )
+        self.python = str(alias)
+        task = self.launch("print('compute binary')")
+        self.assertEqual(self.completed(task)["returncode"], 0)
+        self.finish()
+
+    def test_compute_resolution_does_not_override_qualified_hashes(self):
+        self.request["files"][self.python] = "0" * 64
+        self.request["resolve_files"] = [self.python]
+        self.start()
+        self.assertEqual(self.process.wait(timeout=5), 1)
+        state = json.loads((self.root / "state.json").read_text())
+        self.assertIn("Pinned runtime file changed", state["error"])
+        self.assertTrue(state["stopped"])
+
+    def test_compute_resolution_rejects_relative_paths(self):
+        self.request["resolve_files"] = ["relative/python"]
+        self.start()
+        self.assertEqual(self.process.wait(timeout=5), 1)
+        state = json.loads((self.root / "state.json").read_text())
+        self.assertIn("must be absolute", state["error"])
+
+    def test_qualified_runtime_alias_resolves_on_compute(self):
+        alias = self.workspace / "qualified-python"
+        alias.symlink_to(self.python)
+        digest = self.request["files"].pop(self.python)
+        self.request["files"][str(alias)] = digest
+        self.python = str(alias)
+        self.start()
+        task = self.launch("print('qualified compute alias')")
+        self.assertEqual(self.completed(task)["returncode"], 0)
+        inspected = self.call(
+            "inspect", path=str(alias), maximum=1024**3, expected={"sha256": digest}
+        )
+        self.assertTrue(inspected["ok"], inspected)
+        self.finish()
+
 
 if __name__ == "__main__":
     unittest.main()
