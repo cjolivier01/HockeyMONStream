@@ -115,7 +115,7 @@ case "${TARGET_PLATFORM}:${PKG_ARCH}" in
     ;;
   jetson:arm64)
     DEB_MULTIARCH=aarch64-linux-gnu
-    CUDA_TARGET_TRIPLE=aarch64-linux
+    CUDA_TARGET_TRIPLE=sbsa-linux
     ;;
   *)
     echo "ERROR: unsupported HStream package platform/architecture: ${TARGET_PLATFORM}/${PKG_ARCH}" >&2
@@ -710,7 +710,7 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
-prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
+prepend_path LD_LIBRARY_PATH "/usr/local/cuda/lib64"
 
 # Managed jobs already select their sources, encoders and config overrides.
 # The native CLI discovers its bundled default config and runtime itself.
@@ -1087,7 +1087,7 @@ prepend_path LD_LIBRARY_PATH "/opt/nvidia/deepstream/deepstream/lib/gst-plugins"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/nvshmem/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/x86_64-linux-gnu/libcusparseLt/13"
 prepend_path LD_LIBRARY_PATH "/usr/lib/aarch64-linux-gnu/tegra"
-prepend_path LD_LIBRARY_PATH "/usr/local/cuda/targets/aarch64-linux/lib"
+prepend_path LD_LIBRARY_PATH "/usr/local/cuda/lib64"
 exec "${INSTALL_DIR}/bin/hstream-ui" "$@"
 UISH
   chmod 755 "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh"

@@ -65,9 +65,12 @@ copy_path "/usr/include"
 copy_path "/usr/lib"
 copy_path "/usr/local/include"
 copy_path "/usr/local/lib"
-if "${SSH_BASE[@]}" "${JETSON_HOST}" "[ -d /usr/local/cuda/targets/aarch64-linux ]"; then
-  copy_path "/usr/local/cuda/targets/aarch64-linux"
+# CUDA 13 uses the SBSA toolkit layout on Jetson too.
+if ! "${SSH_BASE[@]}" "${JETSON_HOST}" "[ -d /usr/local/cuda/targets/sbsa-linux ]"; then
+  echo "Jetson Linux 39 CUDA target SDK is missing: /usr/local/cuda/targets/sbsa-linux" >&2
+  exit 1
 fi
+copy_path "/usr/local/cuda/targets/sbsa-linux"
 copy_path "/usr/lib/aarch64-linux-gnu"
 copy_path "/lib/aarch64-linux-gnu"
 
@@ -77,16 +80,16 @@ if "${SSH_BASE[@]}" "${JETSON_HOST}" "[ -d /opt/nvidia ]"; then
 fi
 
 # Create a local hybrid CUDA toolkit view for rules_cuda:
-# - aarch64 target libs/headers from sysroot
+# - ARM64 target libs/headers from sysroot
 # - host x86_64 nvcc tooling from the matching local toolkit
 CUDA_ROOT="${SYSROOT}/usr/local/cuda"
-if [[ -d "${CUDA_ROOT}/targets/aarch64-linux" ]]; then
+if [[ -d "${CUDA_ROOT}/targets/sbsa-linux" ]]; then
   sudo mkdir -p "${CUDA_ROOT}/targets"
-  if [[ ! -e "${CUDA_ROOT}/include" && -d "${CUDA_ROOT}/targets/aarch64-linux/include" ]]; then
-    sudo ln -s "targets/aarch64-linux/include" "${CUDA_ROOT}/include"
+  if [[ ! -e "${CUDA_ROOT}/include" && -d "${CUDA_ROOT}/targets/sbsa-linux/include" ]]; then
+    sudo ln -s "targets/sbsa-linux/include" "${CUDA_ROOT}/include"
   fi
-  if [[ ! -e "${CUDA_ROOT}/lib64" && -d "${CUDA_ROOT}/targets/aarch64-linux/lib" ]]; then
-    sudo ln -s "targets/aarch64-linux/lib" "${CUDA_ROOT}/lib64"
+  if [[ ! -e "${CUDA_ROOT}/lib64" && -d "${CUDA_ROOT}/targets/sbsa-linux/lib" ]]; then
+    sudo ln -s "targets/sbsa-linux/lib" "${CUDA_ROOT}/lib64"
   fi
   sudo ln -sfn "${HOST_CUDA_ROOT}/bin" "${CUDA_ROOT}/bin"
   sudo ln -sfn "${HOST_CUDA_ROOT}/nvvm" "${CUDA_ROOT}/nvvm"
