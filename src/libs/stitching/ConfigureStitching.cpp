@@ -862,8 +862,7 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
     ::close(descriptor);
     return absl::InternalError("Unable to settle stitch snapshot artifact: " + path.string());
   }
-  if (!S_ISREG(metadata.st_mode) || metadata.st_size <= 0 ||
-      static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
+  if (!S_ISREG(metadata.st_mode) || metadata.st_size <= 0 || static_cast<uint64_t>(metadata.st_size) > maximum_bytes) {
     ::close(descriptor);
     return absl::FailedPreconditionError("Invalid or oversized settled stitch snapshot artifact: " + path.string());
   }
