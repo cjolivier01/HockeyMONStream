@@ -33,6 +33,15 @@ case "${TARGET_PLATFORM}" in
   *) echo "ERROR: HSTREAM_TARGET_PLATFORM must be desktop or jetson." >&2; exit 1 ;;
 esac
 DEEPSTREAM_DEPENDS="${DEEPSTREAM_PACKAGE} (>= ${DEEPSTREAM_MIN_VERSION}), ${DEEPSTREAM_PACKAGE} (<< ${DEEPSTREAM_MAX_VERSION})"
+JETSON_QT="${JETSON_QT:-0}"
+if [[ "${JETSON_QT}" != 0 && "${JETSON_QT}" != 1 ]]; then
+  echo "ERROR: JETSON_QT must be 0 or 1." >&2
+  exit 1
+fi
+PACKAGE_QT=0
+if [[ "${TARGET_PLATFORM}" == desktop || "${JETSON_QT}" == 1 ]]; then
+  PACKAGE_QT=1
+fi
 
 # ---------- arg parsing ----------
 PKG_VERSION=""
@@ -201,15 +210,15 @@ if [[ ! -f "${HSTREAM_PLAYER_MODEL_BUILDER}" ]]; then
   echo "ERROR: ${HSTREAM_PLAYER_MODEL_BUILDER} not found. Rebuild hstream-cli or pass --build." >&2
   exit 1
 fi
-if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_UI}" ]]; then
+if [[ "${PACKAGE_QT}" == 1 && ! -f "${HSTREAM_UI}" ]]; then
   echo "ERROR: ${HSTREAM_UI} not found. Run 'make hstream-ui' first, or pass --build." >&2
   exit 1
 fi
-if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_WEB_JOB}" ]]; then
+if [[ "${PACKAGE_QT}" == 1 && ! -f "${HSTREAM_WEB_JOB}" ]]; then
   echo "ERROR: ${HSTREAM_WEB_JOB} not found. Run 'make hstream-web-job' first." >&2
   exit 1
 fi
-if [[ "${TARGET_PLATFORM}" == "desktop" && ! -f "${HSTREAM_EXPERIMENT_TASK}" ]]; then
+if [[ "${PACKAGE_QT}" == 1 && ! -f "${HSTREAM_EXPERIMENT_TASK}" ]]; then
   echo "ERROR: ${HSTREAM_EXPERIMENT_TASK} not found. Build hstream-experiment-task for the target platform first." >&2
   exit 1
 fi
@@ -246,8 +255,10 @@ validate_elf_arch "${HSTREAM_CLI}"
 validate_elf_arch "${HSTREAM_CALIBRATION_EXPORT}"
 validate_elf_arch "${HSTREAM_ASSETS}"
 validate_elf_arch "${HSTREAM_PLAYER_MODEL_BUILDER}"
-if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+if [[ "${PACKAGE_QT}" == 1 ]]; then
   validate_elf_arch "${HSTREAM_UI}"
+  validate_elf_arch "${HSTREAM_WEB_JOB}"
+  validate_elf_arch "${HSTREAM_EXPERIMENT_TASK}"
 fi
 
 # ---------- ensure tools ----------
@@ -412,7 +423,7 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-assets")
 cp "${HSTREAM_PLAYER_MODEL_BUILDER}" "${STAGING}${INSTALL_PREFIX}/bin/player-model-builder"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/player-model-builder"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/player-model-builder")
-if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+if [[ "${PACKAGE_QT}" == 1 ]]; then
   cp "${HSTREAM_EXPERIMENT_TASK}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
   package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task")
@@ -441,8 +452,8 @@ declare -A seen_libs
 
 # Collect from the binaries and the exact HStream-owned plugin set.
 all_elfs=("${HSTREAM_CLI}" "${HSTREAM_CALIBRATION_EXPORT}" "${HSTREAM_ASSETS}" "${HSTREAM_PLAYER_MODEL_BUILDER}" "${HSTREAM_GST_PLUGINS[@]}")
-if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
-  all_elfs+=("${HSTREAM_UI}" "${HSTREAM_WEB_JOB}")
+if [[ "${PACKAGE_QT}" == 1 ]]; then
+  all_elfs+=("${HSTREAM_UI}" "${HSTREAM_WEB_JOB}" "${HSTREAM_EXPERIMENT_TASK}")
 fi
 
 for elf in "${all_elfs[@]}"; do
@@ -1056,7 +1067,7 @@ RUNSH
 chmod 755 "${STAGING}${INSTALL_PREFIX}/run.sh"
 
 # ---------- installed UI wrapper ----------
-if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+if [[ "${PACKAGE_QT}" == 1 ]]; then
   cat > "${STAGING}${INSTALL_PREFIX}/hstream-ui.sh" <<'UISH'
 #!/bin/bash
 set -euo pipefail
@@ -1113,7 +1124,7 @@ install -m 0644 "${TOPDIR}/scripts/hstream_workflow/"*.py "${STAGING}${INSTALL_P
 install -m 0755 "${TOPDIR}/scripts/hstream-workflow" "${STAGING}${INSTALL_PREFIX}/scripts/hstream-workflow"
 install -m 0755 "${TOPDIR}/scripts/install_workflow_services.py" "${STAGING}${INSTALL_PREFIX}/scripts/install_workflow_services.py"
 ln -s "${INSTALL_PREFIX}/scripts/hstream-workflow" "${STAGING}/usr/bin/hstream-workflow"
-if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+if [[ "${PACKAGE_QT}" == 1 ]]; then
   ln -s "${INSTALL_PREFIX}/bin/hstream-experiment-task" "${STAGING}/usr/bin/hstream-experiment-task"
 fi
 for int8_helper in prepare_recording_int8.py quantize_detector_onnx.py benchmark_model_precision.py; do
@@ -1137,7 +1148,7 @@ ln -s "${INSTALL_PREFIX}/run.sh" "${STAGING}/usr/bin/hstream"
 ln -s \
   "${INSTALL_PREFIX}/scripts/hstream_instat_generate_team_only_reports.py" \
   "${STAGING}/usr/bin/hstream-instat-generate-team-only-reports"
-if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+if [[ "${PACKAGE_QT}" == 1 ]]; then
   ln -s "${INSTALL_PREFIX}/hstream-ui.sh" "${STAGING}/usr/bin/hstream-ui"
   ln -s "${INSTALL_PREFIX}/bin/hstream-web-job" "${STAGING}/usr/bin/hstream-web-job"
   install -m 0644 \
@@ -1427,8 +1438,13 @@ rm -rf "${SHLIBDEPS_WORK_DIR}"
 
 # Ubuntu 24.04 provides these tools on both amd64 and arm64.
 RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend,\n gstreamer1.0-libav'
+if [[ "${PACKAGE_QT}" == 1 ]]; then
+  # Platform and image plugins (including WebP cards) are loaded dynamically,
+  # outside dpkg-shlibdeps' ELF graph.
+  RUNTIME_TOOL_DEPENDS+=$',\n qt6-qpa-plugins,\n qt6-image-formats-plugins'
+fi
 INSTALLED_SIZE=$(du -sk "${STAGING}" | awk '{print $1}')
-if [[ "${TARGET_PLATFORM}" == "desktop" ]]; then
+if [[ "${PACKAGE_QT}" == 1 ]]; then
   PACKAGE_DESCRIPTION="HStream video pipeline application and UI"
   PACKAGE_CONTENTS="Installs the HStream CLI/UI binaries"
   UI_LAUNCH_HELP="Launch the UI with: ${INSTALL_PREFIX}/hstream-ui.sh
@@ -1446,6 +1462,7 @@ X-HStream-Source-Commit: ${SOURCE_REVISION}
 X-HStream-Source-Epoch: ${SOURCE_EPOCH}
 X-HStream-Target-Ubuntu: ${TARGET_UBUNTU}
 X-HStream-Target-Platform: ${TARGET_PLATFORM}
+X-HStream-Qt: ${PACKAGE_QT}
 Maintainer: Christopher Olivier <cjolivier01@gmail.com>
 Installed-Size: ${INSTALLED_SIZE}
 Conflicts: hmstream
@@ -1549,6 +1566,8 @@ else
   echo "Run with:"
   echo "  /opt/hstream/run.sh [args...]"
   echo "  hstream-cli [args...]   (after install)"
-  echo "  hstream-ui              (after install)"
+  if [[ "${PACKAGE_QT}" == 1 ]]; then
+    echo "  hstream-ui              (after install)"
+  fi
   echo "  hstream [args...]        (compatibility wrapper after install)"
 fi

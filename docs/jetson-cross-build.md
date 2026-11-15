@@ -34,6 +34,59 @@ Notes:
 - If the sysroot path is empty or missing headers, `make jetson` will fail fast with a hint to re-run the sync script.
 - When running directly on a Jetson device, `make jetson` will auto-symlink `/opt/jetson-sysroot` to `/`, so you can build natively without pulling a sysroot.
 
+## Optional Qt applications (native and cross builds)
+
+`make jetson` and `--config=jetson` skip the Qt targets. To include `hstream-ui`
+and the Qt-based web/experiment helpers, install Qt 6 development packages on
+the Jetson:
+
+```bash
+sudo apt-get install qt6-base-dev qt6-qpa-plugins qt6-image-formats-plugins
+```
+
+For cross builds, rerun `scripts/sync_jetson_sysroot.sh` after installing the
+packages. Qt headers and libraries must come from the target sysroot; installing
+Qt on the x86_64 host alone is insufficient. `hstream-ui` does not run Qt code
+generators during its build, so it does not need a host `moc` matching the target
+Qt version.
+
+On either the Jetson or the cross-build host:
+
+```bash
+make jetson-qt  # includes Qt targets in the full Jetson build
+
+# Build just the desktop application (after preparing /opt/jetson-sysroot).
+bazelisk build --config=opt --config=jetson-qt //src/apps/hstream-ui:hstream-ui
+```
+
+`jetson-qt` includes the normal `jetson` configuration and sets
+`--define=jetson_qt=true`. The opt-in applies to all targets in
+`src/apps/hstream-ui`, including its tests and headless helpers. Native x86_64
+and ARM64/SBSA builds keep their existing Qt behavior. Cross-built binaries and
+tests must run on the Jetson, with the matching Qt runtime installed.
+The platform plugins provide desktop/offscreen rendering, and the image plugins
+provide formats such as WebP for highlight cards. Media tests also need an
+FFmpeg/ffprobe build with `lavfi` and `libx264`; a minimal NVIDIA build may omit
+these. A separate test installation can be selected through `PATH` without
+replacing the device's FFmpeg.
+
+To build or deploy a Jetson package with the Qt applications, use the separate
+packaging opt-in:
+
+```bash
+make deb-jetson JETSON_DEB_HOST=stubby JETSON_QT=1
+make deploy NODES=stubby JETSON_QT=1
+```
+
+These commands require a committed, clean local checkout and build its source
+snapshot on the Jetson.
+The package builder installs the Qt development packages when needed and
+includes `hstream-ui`, the web/experiment helpers, their runtime dependencies,
+and the desktop launcher. After deployment, run `hstream-ui` from the Jetson's
+desktop session. Omitting `JETSON_QT=1` keeps Jetson packages headless; installing
+Qt on the device alone does not opt in. The package records `X-HStream-Qt` as
+`0` or `1`, and deployment checks that it matches the requested option.
+
 ## Deployment
 
 `make perf deploy NODES=stubby` runs two independent targets: `perf` builds for

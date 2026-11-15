@@ -65,7 +65,7 @@ def check(binary, replay, root, *, selected_media, dense=False):
         panorama = root / "panorama.mp4"
         subprocess.run(
             [
-                "/usr/bin/ffmpeg",
+                "ffmpeg",
                 "-v",
                 "error",
                 "-f",

@@ -40,6 +40,7 @@
 - x86_64 build: `bazelisk build --config=opt --cpu=k8 //...`.
 - ARM64/SBSA build (native non-Jetson, e.g. GB300): `make arm64` or `bazelisk build --config=opt --config=arm64 //...`.
 - Jetson (aarch64) build: `bazelisk build --config=jetson //...`.
+- Optional Jetson Qt applications: `make jetson-qt` or `bazelisk build --config=jetson-qt //src/apps/hstream-ui:hstream-ui`, natively or cross-compiled. See `docs/jetson-cross-build.md` for Qt dependencies.
 - Before opening or updating PRs, validate changes on this machine with the x86_64 build and also validate ARM64/Jetson builds. A Jetson host is available at `stubby` for Jetson-specific build checks.
 - Canonical runs:
   - End-to-end wrapper (recommended): `./run.sh --game-id=<game_id> -t=5`
@@ -282,6 +283,8 @@ camera files / live sources -> decode and batch -> hmstitcher
 
 ### Dependency and distribution boundaries
 
+- `src/apps/hstream-ui/BUILD.bazel` keeps Qt targets optional on Jetson through `--config=jetson-qt`. Native and cross builds share the gate; cross builds use the sysroot's Qt headers/libraries. See `docs/jetson-cross-build.md`.
+- Jetson packaging and deployment opt in separately with `JETSON_QT=1`; `make_deb_jetson.sh` builds the Qt applications and `make_deb.sh` includes their launchers and runtime dependencies. `deploy.sh` checks the package's `X-HStream-Qt` field against the request.
 - `bazel/tensorrt_sdk_common.bzl` selects matching DeepStream TensorRT libraries and headers for both detector and player builders; the YOLO custom plugin shares the detector SDK. Its verified native x86_64 10.16.1 header fallback changes no system packages; explicit per-builder SDK overrides and Jetson sysroots never fall back. See `docs/detection-precision.md` and `docs/player-model-preparation.md`.
 - `scripts/side_by_side_video.py` is a standalone offline Python/FFmpeg comparison utility. It aligns relative playback times, fits two aspect-preserving panes within 7680×4320, and supports a shared start/duration. It does not enter the native playback or export pipeline; usage and timing limits are in the README.
 - `WORKSPACE.bazel` pins `@hm` (HockeyMON's native `hockeymon/csrc/play_tracker`), `@hm-cupano` (panorama/CUDA mapping and blending), and `@jetson-utils` (GPU/video utilities). Changes in sibling checkouts do not affect these pins unless an explicit repository override is used. Inspect both the local adapter and the pinned external implementation for changes crossing these boundaries.

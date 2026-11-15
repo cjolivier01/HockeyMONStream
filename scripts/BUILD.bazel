@@ -204,6 +204,8 @@ sh_test(
     data = [
         "deepstream_artifact.sh",
         "deploy.sh",
+        "make_deb.sh",
+        "make_deb_jetson.sh",
         # Read directly: the test pins install_deb.sh's codename table to
         # deploy.sh's.
         "install_deb.sh",
