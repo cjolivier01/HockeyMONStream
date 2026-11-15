@@ -214,6 +214,11 @@ directory (`~/.local/share`, or `XDG_DATA_HOME`) before showing its window, so
 the desktop taskbar can identify command-line launches. Existing custom or
 package-installed desktop entries take precedence.
 
+Builds require CUDA 12.8 or newer and include native CUDA code for RTX 3060 Ti,
+RTX 4090 and RTX 5090, plus PTX for driver compilation on other supported GPUs.
+Jetson builds use Orin PTX. See [CUDA targets and the JIT cache](docs/cuda-targets.md)
+for driver requirements, architecture overrides and cache behavior.
+
 ### Prepare a DeepStream Debian package
 
 To prepare DeepStream without building HStream or running Docker:

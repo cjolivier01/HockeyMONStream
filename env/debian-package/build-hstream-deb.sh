@@ -17,13 +17,13 @@ case "${TARGET_UBUNTU}" in
     BAZEL_DEB_CONFIG=deb_ubuntu24
     TARGET_CUDA_ROOT=/usr/local/cuda-13.2
     TARGET_CUDA_SONAME=13
-    TARGET_CUDA_ARCHES=(sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120)
+    TARGET_CUDA_ARCHES=(sm_86 sm_89 sm_120)
     ;;
   26.04)
     BAZEL_DEB_CONFIG=deb_ubuntu26
     TARGET_CUDA_ROOT=/usr/local/cuda-13.2
     TARGET_CUDA_SONAME=13
-    TARGET_CUDA_ARCHES=(sm_75 sm_80 sm_86 sm_89 sm_90 sm_100 sm_120)
+    TARGET_CUDA_ARCHES=(sm_86 sm_89 sm_120)
     ;;
   *) echo "ERROR: unsupported target Ubuntu release: ${TARGET_UBUNTU}" >&2; exit 1 ;;
 esac
@@ -86,10 +86,10 @@ if [[ -z "${CUDA_NEEDED}" ]] || grep -Ev "[.]so[.]${TARGET_CUDA_SONAME}$" <<< "$
   exit 1
 fi
 
-validate_native_cuda_code() {
+validate_cuda_code() {
   local label="$1"
   local elf="$2"
-  local cuda_cubins
+  local cuda_cubins cuda_ptx cuda_arch
   if ! cuda_cubins="$("${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-elf "${elf}")"; then
     echo "ERROR: Ubuntu ${TARGET_UBUNTU} could not inspect native CUDA code in ${label}: ${elf}" >&2
     exit 1
@@ -100,14 +100,20 @@ validate_native_cuda_code() {
       exit 1
     fi
   done
-  if "${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-ptx "${elf}" 2>&1 | grep -q '^PTX file'; then
-    echo "ERROR: Ubuntu ${TARGET_UBUNTU} ${label} unexpectedly contains PTX." >&2
+  if grep -Ev '[.]sm_(86|89|120)[.]cubin$' <<< "${cuda_cubins}" >/dev/null; then
+    echo "ERROR: Ubuntu ${TARGET_UBUNTU} ${label} contains unexpected native CUDA code." >&2
+    exit 1
+  fi
+  cuda_ptx="$("${TARGET_CUDA_ROOT}/bin/cuobjdump" --list-ptx "${elf}")"
+  if ! grep -q '[.]sm_75[.]ptx$' <<< "${cuda_ptx}" ||
+      grep -Ev '[.]sm_75[.]ptx$' <<< "${cuda_ptx}" >/dev/null; then
+    echo "ERROR: Ubuntu ${TARGET_UBUNTU} ${label} must contain only compute_75 PTX for JIT fallback." >&2
     exit 1
   fi
 }
 
-validate_native_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
-validate_native_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
+validate_cuda_code videoprep "${VIDEOPREP_PLUGIN}"
+validate_cuda_code hstream-cli "${BUILD_DIR}/bazel-bin/src/apps/hstream-cli/hstream-cli"
 # hstream-calibration-export exports saved calibration artifacts and has no
 # embedded device code; only require CUDA payloads in the GPU executables above.
 

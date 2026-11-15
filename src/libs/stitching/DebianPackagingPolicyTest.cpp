@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
           !contains(installer, "install -m 0644 \"${combined_keyring}\" /usr/share/keyrings/cuda-archive-keyring.gpg"),
       "Ubuntu 26 installer must own its key and interruption-safely replace duplicate compatibility sources");
   ok &= expect(
-          contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=sm_87") &&
+          contains(bazelrc, "build:deb_jetson --@rules_cuda//cuda:archs=compute_87") &&
           contains(jetson_builder, "--config=opt --config=deb_jetson") &&
           contains(jetson_builder, "output_base=\"${persistent_cache_root}/output\"") &&
           contains(jetson_builder, "stale_repository_names") &&
@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
           contains(jetson_builder, "--action_env=TMPDIR=/var/tmp") &&
           contains(jetson_builder, "--sandbox_tmpfs_path=/var/tmp") && contains(jetson_builder, "--list-elf") &&
           contains(jetson_builder, "--list-ptx") && contains(jetson_builder, "apt-get -s install"),
-      "Jetson release packages must contain verified native Orin code and pass an install simulation");
+      "Jetson release packages must contain verified Orin PTX and pass an install simulation");
   ok &= expect(
       contains(packager, "nvidia-l4t-cuda | libcuda.so.1") &&
           contains(packager, "libopencv (>= %s), libopencv (<< %s)") &&

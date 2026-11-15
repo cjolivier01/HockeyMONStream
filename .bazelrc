@@ -63,22 +63,23 @@ build:x86_64 --cpu=k8
 build:x86_64 --define=target_platform=x86_64
 build:x86_64 --action_env=target_platform="x86_64"
 
-# Opt-in host config for RTX 50xx / Blackwell systems. Do not include this in
-# default opt/debug configs; older CUDA toolchains cannot compile sm_120.
-build:blackwell --@rules_cuda//cuda:archs=sm_75;sm_120
+# Native RTX 3060 Ti, RTX 4090 and RTX 5090 code; other supported GPUs
+# JIT the embedded Turing PTX. Volta/V100 is excluded. Requires CUDA 12.8+
+# for sm_120; see docs/cuda-targets.md for driver and cache requirements.
+build --@rules_cuda//cuda:archs=sm_86;sm_89;sm_120;compute_75
 
-# Debian artifacts use explicit CUDA toolchains and native SASS targets. This
-# avoids relying on PTX JIT compatibility with whatever driver a target host
-# happens to have installed.
+# Backward-compatible host config: the ordinary build now includes Blackwell.
+build:blackwell --@rules_cuda//cuda:archs=sm_86;sm_89;sm_120;compute_75
+
+# Debian artifacts use the same native/JIT policy with a pinned toolkit.
 build:deb_ubuntu24 --repo_env=CUDA_PATH=/usr/local/cuda-13.2
-build:deb_ubuntu24 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_100;sm_120
+build:deb_ubuntu24 --@rules_cuda//cuda:archs=sm_86;sm_89;sm_120;compute_75
 build:deb_ubuntu26 --repo_env=CUDA_PATH=/usr/local/cuda-13.2
-build:deb_ubuntu26 --@rules_cuda//cuda:archs=sm_75;sm_80;sm_86;sm_89;sm_90;sm_100;sm_120
+build:deb_ubuntu26 --@rules_cuda//cuda:archs=sm_86;sm_89;sm_120;compute_75
 
-# Jetson Linux 39 release packages target Orin. Ship native sm_87 SASS instead of
-# relying on runtime PTX compilation on every installation.
+# Jetson packages JIT the same Orin PTX as Jetson source builds.
 build:deb_jetson --config=jetson
-build:deb_jetson --@rules_cuda//cuda:archs=sm_87
+build:deb_jetson --@rules_cuda//cuda:archs=compute_87
 
 build:arm64 --define=target_platform=arm64
 build:arm64 --action_env=target_platform="arm64"
@@ -90,6 +91,7 @@ build:aarch64 --config=arm64
 
 
 build:jetson --define=target_platform=jetson
+build:jetson --@rules_cuda//cuda:archs=compute_87
 build:jetson --action_env=target_platform="jetson"
 build:jetson --platforms=//platforms:jetson
 build:jetson --extra_toolchains=//toolchains/jetson:jetson_toolchain

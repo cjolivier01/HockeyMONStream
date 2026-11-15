@@ -180,7 +180,7 @@ qt_build_flags=()
 qt_targets=()
 if [[ "${jetson_qt}" == 1 ]]; then
   build_packages+=(qt6-base-dev qt6-qpa-plugins qt6-image-formats-plugins)
-  # deb_jetson already includes the Jetson config and pins native Orin SASS.
+  # deb_jetson already includes the Jetson config and pins Orin PTX.
   qt_build_flags+=(--define=jetson_qt=true)
   qt_targets+=(
     //src/apps/hstream-ui:hstream-ui
@@ -299,17 +299,17 @@ if [[ "${jetson_qt}" == 1 ]]; then
   )
 fi
 for cuda_elf in "${cuda_elfs[@]}"; do
-  cubins="$(${cuobjdump} --list-elf "${cuda_elf}" 2>/dev/null || true)"
-  [[ -n "${cubins}" ]] || continue
+  cubins="$(scripts/jetson_cuda_payload_listing.sh "${cuobjdump}" --list-elf "${cuda_elf}")"
+  ptx="$(scripts/jetson_cuda_payload_listing.sh "${cuobjdump}" --list-ptx "${cuda_elf}")"
+  [[ -n "${cubins}${ptx}" ]] || continue
   cuda_elf_count=$((cuda_elf_count + 1))
-  if ! grep -q '[.]sm_87[.]cubin$' <<< "${cubins}" || grep -Ev '[.]sm_87[.]cubin$' <<< "${cubins}" >/dev/null; then
-    echo "ERROR: Jetson release ELF lacks an sm_87-only native CUDA payload: ${cuda_elf}" >&2
+  if [[ -n "${cubins}" ]]; then
+    echo "ERROR: Jetson release ELF contains native CUDA code instead of JIT PTX: ${cuda_elf}" >&2
     printf '%s\n' "${cubins}" >&2
     exit 1
   fi
-  ptx="$(${cuobjdump} --list-ptx "${cuda_elf}" 2>/dev/null || true)"
-  if [[ -n "${ptx}" ]]; then
-    echo "ERROR: Jetson release ELF still contains a PTX fallback: ${cuda_elf}" >&2
+  if ! grep -q '[.]sm_87[.]ptx$' <<< "${ptx}" || grep -Ev '[.]sm_87[.]ptx$' <<< "${ptx}" >/dev/null; then
+    echo "ERROR: Jetson release ELF lacks a compute_87-only PTX payload: ${cuda_elf}" >&2
     printf '%s\n' "${ptx}" >&2
     exit 1
   fi
