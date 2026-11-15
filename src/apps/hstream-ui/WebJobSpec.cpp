@@ -12,6 +12,7 @@
 #include <cmath>
 #include <regex>
 #include <stdexcept>
+#include <vector>
 
 namespace hm::web {
 namespace fs = std::filesystem;
@@ -243,14 +244,16 @@ QJsonObject Artifact(const Request& request, const fs::path& path, const QString
   pinned = synchronized;
   if (!request.workflow.isEmpty()) {
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    char buffer[1024 * 1024];
+    // Keep this large buffer off the stack so validation exceptions unwind
+    // reliably with the native Jetson toolchain.
+    std::vector<char> buffer(1024 * 1024);
     off_t remaining = pinned.st_size;
     while (remaining > 0) {
-      const ssize_t count = ::read(fd, buffer, std::min<off_t>(remaining, sizeof(buffer)));
+      const ssize_t count = ::read(fd, buffer.data(), std::min<off_t>(remaining, buffer.size()));
       if (count < 0 && errno == EINTR)
         continue;
       require(count > 0, "Artifact changed while hashing");
-      hash.addData(buffer, count);
+      hash.addData(buffer.data(), count);
       remaining -= count;
     }
     struct stat after{}, named{};
