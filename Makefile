@@ -5,6 +5,8 @@ HOST_OS_VERSION := $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSI
 AMD_GSTREAMER_CACHE_ROOT ?= $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)
 AMD_GSTREAMER_RECIPE_REVISION ?= 1
 AMD_GSTREAMER_PREFIX ?= $(AMD_GSTREAMER_CACHE_ROOT)/hstream/gstva-$(HOST_OS_VERSION)-r$(AMD_GSTREAMER_RECIPE_REVISION)
+ROCM_PATH ?= $(shell if [ -x /opt/rocm/bin/hipcc ]; then printf '%s' /opt/rocm; else for rocm_root in /opt/rocm-*; do if [ -x "$$rocm_root/bin/hipcc" ]; then printf '%s' "$$rocm_root"; break; fi; done; fi)
+ROCM_REPO_ENV := $(if $(strip $(ROCM_PATH)),--repo_env=ROCM_PATH=$(ROCM_PATH),)
 
 # Forward `make -j N` to Bazel as --jobs=N. GNU make normalizes -jN/-j N/--jobs=N
 # into a single "-jN" word in MAKEFLAGS; a bare "-j" (unlimited) maps to Bazel's
@@ -51,10 +53,10 @@ all: print_targets
 .PHONY: amd-kernels test-amd-kernels test-amd-video test-amd-inference test-amd-tracking test-amd-driver-interop
 
 amd-kernels:
-	$(BAZEL) build --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) //src/libs/gpu:portable_gpu_tests //src/libs/player_analytics/runtime:semantic_gpu_test
+	$(BAZEL) build --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) //src/libs/gpu:portable_gpu_tests //src/libs/player_analytics/runtime:semantic_gpu_test
 
 test-amd-kernels:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
 
 .PHONY: private-amd-gstreamer
 
@@ -62,16 +64,16 @@ private-amd-gstreamer:
 	scripts/build_amd_gstreamer.sh --ensure "$(AMD_GSTREAMER_PREFIX)" "$(AMD_GSTREAMER_BUILD_JOBS)"
 
 test-amd-video: private-amd-gstreamer
-	"$(AMD_GSTREAMER_PREFIX)/run" $(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/gpu/vaapi:va_stereo_video_test //src/libs/media:stereo_frame_plan_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_sink_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
+	"$(AMD_GSTREAMER_PREFIX)/run" $(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/gpu/vaapi:va_stereo_video_test //src/libs/media:stereo_frame_plan_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_sink_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
 
 test-amd-inference:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
 
 test-amd-tracking:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --test_output=errors //src/libs/tracking:native_tracker_test //src/libs/tracking:program_tracking_test //src/libs/detection:rink_detection_mask_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --test_output=errors //src/libs/tracking:native_tracker_test //src/libs/tracking:program_tracking_test //src/libs/detection:rink_detection_mask_test
 
 test-amd-driver-interop:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
+	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(ROCM_REPO_ENV) $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
 
 .PHONY: all print_targets perf perf-rocm debug test clean distclean expunge x86_64 arm64 jetson jetson-qt gstdebug private-amd-gstreamer \
 	hstream-job hstream-process-guard hstream-runtime-worker hstream-finalize hstream-calibration-export hstream-model-prepare hstream-prepared-model-validate hstream-model-infer hstream-cli run-hstream-cli hstream-ui hstream-web-job hstream-experiment-task hstream-workflow run-hstream-ui \
@@ -83,7 +85,7 @@ perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 perf-rocm: private-amd-gstreamer
-	$(BAZEL) build --config=opt --config=rocm $(HOST_PLATFORM_FLAGS) $(BAZEL_JOBS_FLAG) //...
+	$(BAZEL) build --config=opt --config=rocm $(ROCM_REPO_ENV) $(HOST_PLATFORM_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 debug:
 	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
