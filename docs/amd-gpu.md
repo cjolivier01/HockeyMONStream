@@ -214,10 +214,13 @@ Repeated chapter changes exposed an upstream GStreamer 1.24.2 leak:
 closes its DMA-BUF handles. On this host that leaked 13 descriptors per restart,
 without HIP involvement. The private build below fixes the probe and failed
 exports, leaving the installed library, plugins and core unchanged. It builds
-private `libgstva-1.0` and the matching VA plugin against the installed 1.24.2
-development packages. The plugin also fixes the Main10 profile constant described below. The source
-archive is SHA-pinned; the runtime retains its source, patch, build recipe and
-license. The recipe deliberately rejects other SDK versions.
+private `libgstva-1.0` and the matching VA plugin against the installed
+development packages. Ubuntu 24.04 uses `gst-plugins-bad` 1.24.2 and needs both
+the descriptor and Main10 patches. Ubuntu 26.04 uses the 1.28.2 VA implementation
+with core 1.28.2: descriptor cleanup is upstream there, but Main10 still needs a
+version-specific patch. Source archives are SHA-pinned; the runtime retains its
+source, applied patches, build recipe and license. The recipe rejects unqualified
+version combinations.
 
 ```bash
 scripts/build_amd_gstreamer.sh /tmp/hstream-private-gstva 8
