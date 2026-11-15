@@ -462,6 +462,14 @@ int main(int argc, char** argv) {
       } else {
 #if NV_TENSORRT_MAJOR >= 9
         config->setFlag(nvinfer1::BuilderFlag::kBF16);
+        // Match automatic detector preparation: permitting BF16 alone can
+        // produce an entirely FP32 engine on Orin.
+        config->setFlag(nvinfer1::BuilderFlag::kOBEY_PRECISION_CONSTRAINTS);
+        for (int i = 0; i < network->getNbLayers(); ++i) {
+          auto* layer = network->getLayer(i);
+          if (layer->getType() == nvinfer1::LayerType::kCONVOLUTION)
+            layer->setPrecision(nvinfer1::DataType::kBF16);
+        }
 #else
         throw std::runtime_error("BF16 requires TensorRT 9 or newer");
 #endif

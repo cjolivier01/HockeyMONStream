@@ -99,7 +99,7 @@ struct LockedStitchingCanvasConstraintCheck {
 // Restores only paths cleared by the UI's automatic video selection. Other
 // keys may have been updated by another config owner in the meantime.
 void restore_auto_selection_paths(YAML::Node& current, const YAML::Node& previous);
-bool supports_x11_embedding(const QString& platform_name, bool tegra_runtime = false);
+bool supports_x11_embedding(const QString& platform_name);
 QString preview_channel_for_tab(int tab_index, int camera_count);
 // Selects the pipeline runner and source workspace that belong to a Bazel-built
 // UI executable without consulting the mutable bazel-bin workspace symlink.

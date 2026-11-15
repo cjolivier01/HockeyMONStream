@@ -467,6 +467,15 @@ cc_library(
     ],
 )
 
+cc_test(
+    name = "egl_surface_mapper_test",
+    srcs = ["SurfaceMapperTest.cpp"],
+    linkopts = ["-lcuda"],
+    tags = ["manual", "requires-gpu"],
+    target_compatible_with = ["@platforms//cpu:aarch64"],
+    deps = [":surface"],
+)
+
 cc_library(
     name = "managed_object",
     srcs = [],

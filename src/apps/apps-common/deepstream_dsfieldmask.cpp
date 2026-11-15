@@ -642,6 +642,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   gboolean ret = FALSE;
   gboolean high_bit_depth = FALSE;
   gboolean high_bit_depth_output = FALSE;
+  const char* pre_converter = nullptr;
   std::stringstream ppc;
   std::string private_config;
 
@@ -663,27 +664,13 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
     goto done;
   }
 
-  bin->pre_conv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "hmstitcher_conv0");
-  if (!bin->pre_conv) {
-    NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher_conv0'");
-    goto done;
-  }
-
   bin->cap_filter = gst_element_factory_make(NVDS_ELEM_CAPS_FILTER, "hmstitcher_caps");
   if (!bin->cap_filter) {
     NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher_caps'");
     goto done;
   }
 
-  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->pre_conv, bin->cap_filter, bin->elem_hmstitcher, NULL);
-
-  NVGSTDS_LINK_ELEMENT(bin->queue, bin->pre_conv);
-  NVGSTDS_LINK_ELEMENT(bin->pre_conv, bin->cap_filter);
-  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_hmstitcher);
-
-  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
-  // assert(false);
-  // assert(strlen(config->detection_mask_file) > 0);
+  gst_bin_add_many(GST_BIN(bin->bin), bin->queue, bin->cap_filter, bin->elem_hmstitcher, NULL);
 
   ppc << "left-frame-offset-ns=" << config->left_frame_offset_ns;
   ppc << ";right-frame-offset-ns=" << config->right_frame_offset_ns;
@@ -725,10 +712,6 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "plugin-type", "hmstitcher", NULL);
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "config-file", config->config_file, NULL);
-  g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
-  g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
-  if (config->pre_converter_output_buffers)
-    g_object_set(G_OBJECT(bin->pre_conv), "output-buffers", config->pre_converter_output_buffers, NULL);
 
   if (config->num_output_buffers) {
     g_object_set(G_OBJECT(bin->elem_hmstitcher), "num-output-buffers", config->num_output_buffers, NULL);
@@ -752,8 +735,36 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
     NVGSTDS_ERR_MSG_V("High-bit-depth stitching requires the replacement nvstreammux");
     goto done;
   }
+  // Jetson's NVIDIA converter omits RGB10A2 from its caps, even though the
+  // GPU transform API supports it. Use the native adapter for that conversion
+  // and CUDA-device storage: packed 10-bit EGL images cannot be mapped by CUDA.
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+  pre_converter = high_bit_depth ? hm::deepstream::kDsxVideoConvertElement : NVDS_ELEM_VIDEO_CONV;
+#else
+  pre_converter = NVDS_ELEM_VIDEO_CONV;
+#endif
+  bin->pre_conv = gst_element_factory_make(pre_converter, "hmstitcher_conv0");
+  if (!bin->pre_conv) {
+    NVGSTDS_ERR_MSG_V("Failed to create 'hmstitcher_conv0' using %s", pre_converter);
+    goto done;
+  }
+
+  gst_bin_add(GST_BIN(bin->bin), bin->pre_conv);
+
+  NVGSTDS_LINK_ELEMENT(bin->queue, bin->pre_conv);
+  NVGSTDS_LINK_ELEMENT(bin->pre_conv, bin->cap_filter);
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_hmstitcher);
+
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
+  g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
+  g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
+  if (config->pre_converter_output_buffers)
+    g_object_set(G_OBJECT(bin->pre_conv), "output-buffers", config->pre_converter_output_buffers, NULL);
   if (high_bit_depth) {
     g_object_set(G_OBJECT(bin->pre_conv), "compute-hw", 1, NULL);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+    g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, NULL);
+#endif
   }
   high_bit_depth_output = high_bit_depth && config->archive_stitched;
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "high-bit-depth-output", high_bit_depth_output, NULL);
@@ -833,7 +844,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
           1,
           NULL);
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-      g_object_set(G_OBJECT(bin->preview_converter), "copy-hw", 2, NULL);
+      g_object_set(G_OBJECT(bin->preview_converter), "compute-hw", 1, NULL);
 #endif
       GstCaps* preview_caps = gst_caps_new_simple(
           "video/x-raw",

@@ -12,6 +12,7 @@
 #include "src/apps/hstream-ui/CameraExperimentPreviewOutput.h"
 #include "src/apps/hstream-ui/SourceCameraTrack.h"
 #ifndef HSTREAM_USE_HIP
+#include <nvbufsurface.h>
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #endif
 
@@ -201,6 +202,11 @@ struct SourceCameraPlayer::Impl {
     g_object_set(file, "location", item.file.toLocal8Bit().constData(), nullptr);
     // Separate demux from video preroll so audio can receive its first packet.
     g_object_set(video_input, "max-size-buffers", 2U, "max-size-bytes", 0U, "max-size-time", guint64{0}, nullptr);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA) && !defined(HSTREAM_USE_HIP)
+    // Jetson defaults to VIC/surface-array output; the GL renderer consumes
+    // CUDA-device RGBA. Conversion and presentation both remain on the GPU.
+    g_object_set(convert, "compute-hw", 1, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, nullptr);
+#endif
     g_object_set(filter, "caps", caps, nullptr);
     gst_caps_unref(caps);
     g_object_set(sink, "sync", TRUE, "async", TRUE, "qos", TRUE, "enable-last-sample", TRUE, nullptr);
@@ -420,6 +426,21 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
       hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
 #endif
     s.status.presented_ns = -1;
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA) && !defined(HSTREAM_USE_HIP)
+    // Jetson's decoder can wait for its output task while propagating a
+    // flushing seek. Release the renderer's PAUSED preroll first, so that
+    // task can finish even before the demuxer flush reaches the video branch.
+    auto* render_pad = gst_element_get_static_pad(s.sink, "sink");
+    if (render_pad) {
+      gst_pad_send_event(render_pad, gst_event_new_flush_start());
+      gst_object_unref(render_pad);
+    }
+    if (gst_element_set_state(s.decoder, GST_STATE_READY) == GST_STATE_CHANGE_FAILURE ||
+        !gst_element_sync_state_with_parent(s.decoder)) {
+      s.fail("Could not restart the camera decoder before seeking.");
+      return s.status;
+    }
+#endif
     const auto seek = [&] {
       return gst_element_seek(
           s.graph,

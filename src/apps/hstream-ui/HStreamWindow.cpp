@@ -1291,22 +1291,6 @@ QString stage_bazel_gst_plugins(QProcessEnvironment& env, const QString& cache_r
   return {};
 }
 
-bool is_tegra_runtime() {
-#ifdef IS_TEGRA
-  return true;
-#elif defined(Q_OS_LINUX)
-  const QString architecture = QSysInfo::currentCpuArchitecture().toLower();
-  if (architecture != "arm64" && architecture != "aarch64")
-    return false;
-  if (QFileInfo::exists("/etc/nv_tegra_release"))
-    return true;
-  QFile compatible("/proc/device-tree/compatible");
-  return compatible.open(QIODevice::ReadOnly) && compatible.readAll().contains("nvidia,tegra");
-#else
-  return false;
-#endif
-}
-
 QString configure_pipeline_runtime_environment(
     QProcessEnvironment& env,
     const QString& working_dir,
@@ -1332,8 +1316,7 @@ QString configure_pipeline_runtime_environment(
   if (env.value("HM_RENDER_SINK").isEmpty()) {
     env.insert(
         "HM_RENDER_SINK",
-        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ? "ximagesink"
-                                                                                                     : "nv3dsink");
+        hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName()) ? "ximagesink" : "nv3dsink");
   }
 #endif
   QDir registry_dir(QDir(cache_root).filePath("gstreamer-1.0"));
@@ -4840,12 +4823,11 @@ void hm::ui_internal::restore_auto_selection_paths(YAML::Node& current, const YA
   restore_child(current["stitching"], map_value(previous, "stitching"), "frame_offsets");
 }
 
-bool hm::ui_internal::supports_x11_embedding(const QString& platform_name, bool tegra_runtime) {
-#if defined(__x86_64__)
-  return !tegra_runtime && platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
+bool hm::ui_internal::supports_x11_embedding(const QString& platform_name) {
+#if defined(__x86_64__) || defined(__aarch64__)
+  return platform_name.compare("xcb", Qt::CaseInsensitive) == 0;
 #else
   (void)platform_name;
-  (void)tegra_runtime;
   return false;
 #endif
 }
@@ -9361,8 +9343,8 @@ void HStreamWindow::updateRinkMapControls() {
   for (auto* combo : {rink_map_size_combo_, rink_map_position_combo_})
     combo->setEnabled(rink_map_preview_check_->isEnabled() && checked);
   QString message;
-#if !defined(__x86_64__)
-  message = "The rink mini-map requires the x86 desktop GPU preview.";
+#if !defined(__x86_64__) && !defined(__aarch64__)
+  message = "The rink mini-map requires the desktop GPU preview.";
 #else
   if (!checked)
     message = "Mini-map is off.";
@@ -11352,8 +11334,7 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
   const bool test_embedded_preview = !qgetenv("HSTREAM_UI_TEST_RUNNER").isEmpty() &&
       qEnvironmentVariableIsSet("HSTREAM_UI_TEST_FORCE_EMBEDDED_PREVIEW");
   const bool embed_render_window = !standalone &&
-      (hockeyMonProgram() ||
-       hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName(), is_tegra_runtime()) ||
+      (hockeyMonProgram() || hm::ui_internal::supports_x11_embedding(QGuiApplication::platformName()) ||
        test_embedded_preview);
   QStringList args;
   args << "-g" << game_id << "--enable-sources=URI-MULTIPLE";

@@ -2567,6 +2567,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
           G_OBJECT(converter),
           "gpu-id",
           gpu_id,
+          "compute-hw",
+          1,
           "nvbuf-memory-type",
           NVBUF_MEM_CUDA_DEVICE,
           "output-buffers",
@@ -2723,12 +2725,6 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       std::string error;
       auto attachment =
           hm::preview::RouteAttachment::Create(tap, {ingress, converter, caps, queue, drain, sink}, nullptr, &error);
-#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
-      // Preserve the calibration branch's CUDA copy engine when construction
-      // moves out of create_hmstitcher_bin; VIC cannot copy these device surfaces.
-      if (attachment && !tracked)
-        g_object_set(G_OBJECT(converter), "copy-hw", 2, nullptr);
-#endif
       if (!attachment ||
           !configure_path(
               queue,
@@ -4518,10 +4514,9 @@ void PipelineApplication::handle_intr(int signum) {
   if (progress_ui_) {
     progress_ui_->restoreTerminalForInterrupt();
   }
-  struct sigaction action;
-  memset(&action, 0, sizeof(action));
-  action.sa_handler = SIG_DFL;
-  sigaction(SIGINT, &action, nullptr);
+  // The process guard repeats cooperative cancellation until descendants
+  // retire. Keep handling SIGINT while GPU teardown drains; its deadline owns
+  // escalation rather than a repeated interrupt killing cleanup mid-flight.
   player_scan_interrupted_ = TRUE;
   cintr_ = TRUE;
 }

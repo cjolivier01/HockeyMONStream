@@ -28,7 +28,7 @@
 #if NVDS_VERSION_MAJOR >= 9
 #define DSX_NVMM_FORMATS                                               \
   "{ I420, NV12, P010_10LE, I420_12LE, BGRx, RGBA, GRAY8, GRAY16_LE, " \
-  "RGB, BGR, BGR10A2_LE, UYVP, UYVY, YUY2, YVYU, Y42B, BGRA64_LE }"
+  "RGB, BGR, BGR10A2_LE, RGB10A2_LE, UYVP, UYVY, YUY2, YVYU, Y42B, BGRA64_LE }"
 #define DSX_RAW_FORMATS                                               \
   "{ I420, NV12, P010_10LE, BGRx, RGBA, GRAY8, GRAY16_LE, RGB, BGR, " \
   "BGR10A2_LE, UYVP, UYVY, YUY2, YVYU, Y42B, BGRA64_LE }"

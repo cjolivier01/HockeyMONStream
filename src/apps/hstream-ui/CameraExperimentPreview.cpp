@@ -476,7 +476,7 @@ bool CameraExperimentPreview::Impl::build_graph(std::string* error) {
     g_signal_connect(s.decoder, "pad-added", G_CALLBACK(Impl::pad_added), &s);
     g_signal_connect(s.decoder, "autoplug-select", G_CALLBACK(Impl::autoplug_select), &s);
   }
-  g_object_set(s.converter, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, "output-buffers", 2, nullptr);
+  g_object_set(s.converter, "compute-hw", 1, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, "output-buffers", 2, nullptr);
   GstCaps* caps = rgba_caps();
   g_object_set(capsfilter, "caps", caps, nullptr);
   gst_caps_unref(caps);

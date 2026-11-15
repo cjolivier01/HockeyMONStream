@@ -68,7 +68,19 @@ The platform plugins provide desktop/offscreen rendering, and the image plugins
 provide formats such as WebP for highlight cards. Media tests also need an
 FFmpeg/ffprobe build with `lavfi` and `libx264`; a minimal NVIDIA build may omit
 these. A separate test installation can be selected through `PATH` without
-replacing the device's FFmpeg.
+replacing the device's FFmpeg. The source-camera fixture tests use
+`HSTREAM_TEST_FFMPEG=/absolute/path/to/ffmpeg` for this override.
+
+On an X11 desktop (`QT_QPA_PLATFORM=xcb`), Program, Stitched and camera previews
+render inside the Qt window on Orin. Preview conversion uses the GPU and
+CUDA-device RGBA buffers for CUDA/OpenGL presentation; it does not download
+video frames to the CPU. Run against the Jetson's local display rather than an
+SSH-forwarded X server. Other Qt platforms retain the separate-window path.
+
+High-bit stitching uses `dsxvideoconvert` for its RGB10A2 input conversion on
+Jetson. NVIDIA's converter omits that format from its Jetson caps, although the
+GPU transform supports it. Packed 10-bit inputs stay in CUDA-device storage
+because CUDA cannot map those packed EGL images on Orin.
 
 To build or deploy a Jetson package with the Qt applications, use the separate
 packaging opt-in:
@@ -103,3 +115,10 @@ The old Ubuntu 22.04 / DeepStream 7.1 sysroot is incompatible with this baseline
 Jetson packages now depend on Ubuntu’s arm64 `hugin-tools`, `enblend` and
 `gstreamer1.0-libav` packages, as desktop packages do. The Ubuntu 22.04 workaround
 that bundled source-built Hugin/VIGRA is no longer used.
+
+Jetson's paused camera decoder is flushed at the render pad and restarted
+before a seek. This releases hardware decoder preroll without CPU video copies;
+the existing HEVC recovery still repeats the exact requested seek. Shared paced
+playback preserves an empty video epoch when audio completes its preroll flush
+after the new video segment. Repeated cooperative Stop signals allow GPU cleanup
+to finish under the process guard's existing deadline.

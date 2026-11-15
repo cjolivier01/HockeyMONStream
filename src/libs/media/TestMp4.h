@@ -35,7 +35,8 @@ struct Directory {
 inline void Ffmpeg(std::vector<std::string> arguments) {
   // Only synthetic fixture preparation uses software encoding. Production
   // chapter discovery neither launches a process nor opens a video codec.
-  arguments.insert(arguments.begin(), {"/usr/bin/ffmpeg", "-nostdin", "-v", "error"});
+  const char* ffmpeg = std::getenv("HSTREAM_TEST_FFMPEG");
+  arguments.insert(arguments.begin(), {ffmpeg ? ffmpeg : "/usr/bin/ffmpeg", "-nostdin", "-v", "error"});
   std::string errors;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
   const int status = hm::run_command(

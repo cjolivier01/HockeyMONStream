@@ -232,6 +232,13 @@ Distilled and Hockey Roles use distinct source assets and caches. An unsaved
 model/precision choice applies to the next Play; the saved preset never overrides
 that explicit choice. The initial build can take several minutes.
 
+Both automatic and offline conversion require BF16 convolution tactics, while
+allowing other operations to retain higher precision and keeping parser I/O in
+FP32. Merely enabling BF16 can produce an entirely FP32 engine on Orin. Engine
+inspection still rejects a result without BF16 tensors. Hardware regression:
+set `HSTREAM_BF16_TEST_ONNX` to the selected FP32 ONNX and run
+`//src/apps/int8-calib-builder:bf16_engine_test` on its target GPU/runtime.
+
 For explicit offline preparation, the existing builder remains available:
 
 ```sh
