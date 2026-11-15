@@ -41,7 +41,7 @@ and the Qt-based web/experiment helpers, install Qt 6 development packages on
 the Jetson:
 
 ```bash
-sudo apt-get install qt6-base-dev
+sudo apt-get install qt6-base-dev qt6-qpa-plugins qt6-image-formats-plugins
 ```
 
 For cross builds, rerun `scripts/sync_jetson_sysroot.sh` after installing the
@@ -64,6 +64,11 @@ bazelisk build --config=opt --config=jetson-qt //src/apps/hstream-ui:hstream-ui
 `src/apps/hstream-ui`, including its tests and headless helpers. Native x86_64
 and ARM64/SBSA builds keep their existing Qt behavior. Cross-built binaries and
 tests must run on the Jetson, with the matching Qt runtime installed.
+The platform plugins provide desktop/offscreen rendering, and the image plugins
+provide formats such as WebP for highlight cards. Media tests also need an
+FFmpeg/ffprobe build with `lavfi` and `libx264`; a minimal NVIDIA build may omit
+these. A separate test installation can be selected through `PATH` without
+replacing the device's FFmpeg.
 
 To build or deploy a Jetson package with the Qt applications, use the separate
 packaging opt-in:

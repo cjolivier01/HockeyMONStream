@@ -179,7 +179,7 @@ build_packages=(
 qt_build_flags=()
 qt_targets=()
 if [[ "${jetson_qt}" == 1 ]]; then
-  build_packages+=(qt6-base-dev qt6-qpa-plugins)
+  build_packages+=(qt6-base-dev qt6-qpa-plugins qt6-image-formats-plugins)
   # deb_jetson already includes the Jetson config and pins native Orin SASS.
   qt_build_flags+=(--define=jetson_qt=true)
   qt_targets+=(

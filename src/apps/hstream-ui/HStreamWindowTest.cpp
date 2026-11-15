@@ -2947,6 +2947,9 @@ bool write_fake_runner(const QString& path) {
       "        print('HSTREAM_CALIBRATION stage=calibration status=complete message=Stitching calibration is "
       "complete', flush=True)\n");
   file.write("        print('hmstitcher: one-pass stitching configuration complete', flush=True)\n");
+  file.write("        restart_release = os.environ.get('HSTREAM_UI_TEST_PLAYBACK_RESTART_RELEASE_FILE')\n");
+  file.write("        while restart_release and not os.path.exists(restart_release):\n");
+  file.write("            time.sleep(0.01)\n");
   file.write("        time.sleep(float(os.environ.get('HSTREAM_UI_TEST_PLAYBACK_RESTART_DELAY_MS', '0')) / 1000.0)\n");
   file.write(
       "        print('HSTREAM_CALIBRATION stage=playback-restart status=complete message=Playback restarted', "
@@ -5645,8 +5648,15 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     return false;
 
   qputenv("HSTREAM_UI_TEST_CALIBRATION_RESULT", "success");
-  qputenv("HSTREAM_UI_TEST_PLAYBACK_RESTART_DELAY_MS", "750");
+  // Hold the runner until the pending state has actually been inspected. A
+  // fixed delay can expire while a slower Jetson is processing Qt events.
+  QTemporaryDir restart_gate;
+  if (!expect(restart_gate.isValid(), "Cannot create playback restart gate"))
+    return false;
+  QFile restart_release(restart_gate.filePath("release"));
+  qputenv("HSTREAM_UI_TEST_PLAYBACK_RESTART_RELEASE_FILE", restart_release.fileName().toUtf8());
   activate(start);
+  qunsetenv("HSTREAM_UI_TEST_PLAYBACK_RESTART_RELEASE_FILE");
   for (int i = 0; i < 400 && !headline->text().contains("Restarting playback"); ++i) {
     QApplication::processEvents();
     QTest::qWait(10);
@@ -5660,6 +5670,11 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
       expect(
           waiting_for_restart["hstream_ui"]["stitching_calibration"]["status"].as<std::string>() == "pending",
           "The UI must not declare calibration playback running before the restart-complete event");
+  if (!expect(restart_release.open(QIODevice::WriteOnly), "Cannot release playback restart gate")) {
+    activate(stop);
+    return false;
+  }
+  restart_release.close();
   for (int i = 0; i < 400 &&
        (dialog->isVisible() ||
         !window->logText().contains("one-pass stitching calibration complete; continuous stitched preview running"));
@@ -5703,7 +5718,6 @@ bool test_calibration_progress_dialog(HStreamWindow* window) {
     QTest::qWait(10);
   }
   qunsetenv("HSTREAM_UI_TEST_CALIBRATION_RESULT");
-  qunsetenv("HSTREAM_UI_TEST_PLAYBACK_RESTART_DELAY_MS");
   if (!success_ok || !duplicate_completion_ok || !set_test_calibration_status(window, "complete"))
     return false;
 

@@ -1439,8 +1439,9 @@ rm -rf "${SHLIBDEPS_WORK_DIR}"
 # Ubuntu 24.04 provides these tools on both amd64 and arm64.
 RUNTIME_TOOL_DEPENDS=$',\n hugin-tools,\n enblend,\n gstreamer1.0-libav'
 if [[ "${PACKAGE_QT}" == 1 ]]; then
-  # Platform plugins are loaded dynamically, outside dpkg-shlibdeps' ELF graph.
-  RUNTIME_TOOL_DEPENDS+=$',\n qt6-qpa-plugins'
+  # Platform and image plugins (including WebP cards) are loaded dynamically,
+  # outside dpkg-shlibdeps' ELF graph.
+  RUNTIME_TOOL_DEPENDS+=$',\n qt6-qpa-plugins,\n qt6-image-formats-plugins'
 fi
 INSTALLED_SIZE=$(du -sk "${STAGING}" | awk '{print $1}')
 if [[ "${PACKAGE_QT}" == 1 ]]; then

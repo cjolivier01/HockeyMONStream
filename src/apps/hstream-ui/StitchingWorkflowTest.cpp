@@ -2162,14 +2162,17 @@ void killedExperimentGuard(const QString& root) {
   write(game + "/left.mp4", "left");
   write(game + "/right.mp4", "right");
   const auto runner = root + "/lost-guard-runner";
-  write(runner, "#!/bin/sh\nexec sleep 30\n");
+  const auto worker_identity = root + "/lost-guard-worker.pid";
+  write(runner, "#!/bin/sh\nprintf '%s %s\\n' \"$$\" \"$PPID\" > \"$HSTREAM_TEST_WORKER_IDENTITY\"\nexec sleep 30\n");
   QFile::setPermissions(runner, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_TEST_WORKER_IDENTITY", worker_identity);
   StitchingExperimentDialog dialog(
       game,
       runner,
       root,
       game + "/_hockeymon/config.yaml",
-      QProcessEnvironment::systemEnvironment(),
+      environment,
       100,
       1,
       "00:00:00");
@@ -2193,14 +2196,19 @@ void killedExperimentGuard(const QString& root) {
       "Guard process ownership was not durably recorded");
   const auto owned = hm::game_operation::Inspect(game.toStdString());
   require(owned.ok() && owned->has_value(), "Lost-guard fixture has no game admission");
-  QFile children(QString("/proc/%1/task/%1/children").arg(process));
+  // Jetson kernels may omit /proc/<pid>/task/<pid>/children. The test-owned
+  // runner reports its identity directly, including its exact guard parent.
+  QFile identity(worker_identity);
   pid_t worker = 0;
   require(
       wait([&] {
-        if (!children.open(QIODevice::ReadOnly))
+        if (!identity.open(QIODevice::ReadOnly))
           return false;
-        worker = static_cast<pid_t>(children.readAll().trimmed().toLongLong());
-        children.close();
+        const auto fields = identity.readAll().trimmed().split(' ');
+        identity.close();
+        if (fields.size() != 2 || fields[1].toLongLong() != process)
+          return false;
+        worker = static_cast<pid_t>(fields[0].toLongLong());
         return worker > 0 && ::getpgid(worker) == worker;
       }),
       "Cannot identify exact test-owned worker group");
