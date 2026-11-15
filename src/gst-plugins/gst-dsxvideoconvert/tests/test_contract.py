@@ -137,7 +137,15 @@ def main() -> None:
         original = inspect("nvvideoconvert", registry)
         replacement = inspect("dsxvideoconvert", registry)
 
-    if pad_contract(original) != pad_contract(replacement):
+    replacement_pads = pad_contract(replacement)
+    if IS_JETSON and "RGB10A2_LE" not in pad_contract(original):
+        # The GPU adapter adds packed RGB10 NVMM for high-bit stitching.
+        # System-memory caps and all existing formats retain NVIDIA parity.
+        if "BGRA64_LE" in original:
+            if replacement_pads.count("(string)RGB10A2_LE") != 2:
+                raise AssertionError("expected RGB10A2 on both NVMM pads only")
+            replacement_pads = replacement_pads.replace("(string)RGB10A2_LE, ", "")
+    if pad_contract(original) != replacement_pads:
         raise AssertionError("sink/source pad caps differ from nvvideoconvert")
     original_properties = property_contract(original)
     replacement_properties = property_contract(replacement)

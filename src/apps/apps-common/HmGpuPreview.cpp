@@ -471,7 +471,7 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 
 } // namespace
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
 
 #include "hstream/src/apps/apps-common/PreviewOverlayGlPaths.h"
 #include "hstream/src/apps/apps-common/PreviewOverlayScene.h"
@@ -1968,18 +1968,18 @@ void gst_hm_gpu_preview_sink_init(GstHmGpuPreviewSink* self) {
 
 } // namespace
 
-#endif // defined(__x86_64__)
+#endif // defined(__x86_64__) || defined(__aarch64__)
 
 namespace hm::gpu_preview {
 
 void initialize_process() {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   initialize_xlib_once();
 #endif
 }
 
 bool renderer_available() {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   return true;
 #else
   return false;
@@ -1992,7 +1992,7 @@ bool register_elements() {
   if (g_once_init_enter(&registration_result)) {
     gboolean registered =
         gst_element_register(nullptr, "hmpreviewisolation", GST_RANK_NONE, gst_hm_preview_isolation_get_type());
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
     registered = registered &&
         gst_element_register(nullptr, "hmgpupreviewsink", GST_RANK_NONE, gst_hm_gpu_preview_sink_get_type());
 #endif
@@ -2027,7 +2027,7 @@ void set_isolation_failure_peer(GstElement* isolation, GstElement* ingress) {
 }
 
 void set_renderer_generation(GstElement* sink, std::uint64_t generation) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2055,7 +2055,7 @@ void set_source_geometry(GstElement* sink, unsigned width, unsigned height) {
 }
 
 bool quiesce(GstElement* sink, std::uint64_t generation) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return false;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2078,11 +2078,11 @@ bool quiesce(GstElement* sink, std::uint64_t generation) {
 
 // Bounded external diagnostics resolve this metadata-only getter from the linked
 // executable. Keep the x86 implementation even when playback has no direct caller.
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
 [[gnu::used, gnu::retain]]
 #endif
 bool presented_frame(GstElement* sink, std::uint64_t* generation, GstClockTime* pts) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !generation || !pts || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return false;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2133,7 +2133,7 @@ bool capture_presented_frame(
     std::optional<CapturedFrameIdentity>* identity) {
   if (identity)
     identity->reset();
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   try {
     if (!sink || !rgba || !width || !height || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type())) {
       set_capture_error(error, "GPU preview renderer is unavailable");
@@ -2293,7 +2293,7 @@ bool capture_presented_frame(
 }
 
 void set_render_exception_injection_for_test(GstElement* sink, RenderExceptionInjection injection) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2318,7 +2318,7 @@ void set_callback_exception_injection_for_test(
     isolation->state->callback_exception_point = static_cast<int>(point);
     return;
   }
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (G_TYPE_CHECK_INSTANCE_TYPE(element, gst_hm_gpu_preview_sink_get_type())) {
     auto* sink = reinterpret_cast<GstHmGpuPreviewSink*>(element);
     if (!sink->state)
@@ -2333,7 +2333,7 @@ void set_callback_exception_injection_for_test(
 }
 
 void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptionInjection injection) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2346,7 +2346,7 @@ void set_capture_exception_injection_for_test(GstElement* sink, CallbackExceptio
 }
 
 void configure_recorded_rink_mask(GstElement* sink, std::shared_ptr<const RinkMaskImage> mask) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2364,7 +2364,7 @@ void configure_recorded_rink_mask(GstElement* sink, std::shared_ptr<const RinkMa
 }
 
 bool redraw_last_sample(GstElement* sink) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return false;
   GstSample* sample = gst_base_sink_get_last_sample(GST_BASE_SINK(sink));
@@ -2384,7 +2384,7 @@ void configure_rink_mini_map(
     GstElement* sink,
     std::shared_ptr<const hm::stitching::PlaybackRinkMap> map,
     hm::draw_display::RinkMiniMapOptions options) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2401,7 +2401,7 @@ void configure_rink_mini_map(
 }
 
 void configure_player_analytics(GstElement* sink, unsigned layers, float joint_confidence) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2419,7 +2419,7 @@ void configure_player_analytics(GstElement* sink, unsigned layers, float joint_c
 }
 
 PreviewOverlayInspection inspect_preview_overlays_for_test(GstElement* sink, GstBuffer* buffer) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !buffer || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return {};
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2449,7 +2449,7 @@ bool renderer_rink_mask_loaded_for_test(
     const std::string& output_generation,
     unsigned width,
     unsigned height) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return false;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2469,7 +2469,7 @@ bool renderer_rink_mask_loaded_for_test(
 }
 
 bool renderer_rink_mask_cache_cleared_for_test(GstElement* sink) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return false;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);
@@ -2488,7 +2488,7 @@ bool renderer_rink_mask_cache_cleared_for_test(GstElement* sink) {
 }
 
 bool renderer_resources_released_for_test(GstElement* sink) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
   if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
     return false;
   auto* self = reinterpret_cast<GstHmGpuPreviewSink*>(sink);

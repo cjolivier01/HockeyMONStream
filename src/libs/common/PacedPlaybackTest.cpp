@@ -711,6 +711,62 @@ bool RunPacketBoundaries(
       maximum_sample_difference <= 1;
 }
 
+// Source reconstruction can deliver the new video segment before audio's
+// final flush. That flush must not erase the still-empty video epoch.
+bool RunAudioPrerollFlush() {
+  auto* pipeline = gst_pipeline_new("audio-preroll-flush");
+  auto* video = gst_element_factory_make("identity", "video");
+  auto* audio = gst_element_factory_make("identity", "audio");
+  auto* video_sink = gst_element_factory_make("fakesink", "video-sink");
+  auto* audio_sink = gst_element_factory_make("fakesink", "audio-sink");
+  gst_bin_add_many(GST_BIN(pipeline), video, audio, video_sink, audio_sink, nullptr);
+  g_object_set(video_sink, "sync", FALSE, "async", FALSE, nullptr);
+  g_object_set(audio_sink, "sync", FALSE, "async", FALSE, nullptr);
+  bool ok = gst_element_link(video, video_sink) && gst_element_link(audio, audio_sink);
+  auto* video_pad = gst_element_get_static_pad(video, "src");
+  auto* audio_pad = gst_element_get_static_pad(audio, "src");
+  auto owner =
+      hm::gst::PacedPlayback::Create(pipeline, video_pad, {16683, 4170, 0, 64, GST_SECOND, 1, 16384, 2, GST_SECOND});
+  ok = ok && owner && owner->AttachAudioTransport(audio_sink) &&
+      gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
+  GstSegment segment;
+  gst_segment_init(&segment, GST_FORMAT_TIME);
+  auto* caps = gst_caps_from_string("audio/x-raw,format=F32LE,layout=interleaved,rate=48000,channels=2");
+  ok = ok && gst_pad_push_event(video_pad, gst_event_new_stream_start("video")) &&
+      gst_pad_push_event(audio_pad, gst_event_new_stream_start("audio")) &&
+      gst_pad_push_event(audio_pad, gst_event_new_caps(caps)) &&
+      gst_pad_push_event(video_pad, gst_event_new_segment(&segment));
+  gst_caps_unref(caps);
+  for (int i = 0; ok && i < 2; ++i) {
+    ok = gst_pad_push_event(audio_pad, gst_event_new_flush_start()) &&
+        gst_pad_push_event(audio_pad, gst_event_new_flush_stop(FALSE)) &&
+        gst_pad_push_event(audio_pad, gst_event_new_segment(&segment));
+  }
+  auto* frame = gst_buffer_new_allocate(nullptr, 1, nullptr);
+  GST_BUFFER_PTS(frame) = 0;
+  GST_BUFFER_DURATION(frame) = 10 * GST_MSECOND;
+  ok = gst_pad_push(video_pad, frame) == GST_FLOW_OK && ok;
+  auto* pcm = gst_buffer_new_allocate(nullptr, 480 * 2 * sizeof(float), nullptr);
+  gst_buffer_memset(pcm, 0, 0, gst_buffer_get_size(pcm));
+  GST_BUFFER_PTS(pcm) = 0;
+  GST_BUFFER_DURATION(pcm) = 10 * GST_MSECOND;
+  ok = gst_pad_push(audio_pad, pcm) == GST_FLOW_OK && ok;
+  GstClockTime presentation = GST_CLOCK_TIME_NONE;
+  ok = owner->PresentationTime(segment, 0, &presentation) == GST_FLOW_OK && GST_CLOCK_TIME_IS_VALID(presentation) && ok;
+  auto* bus = gst_element_get_bus(pipeline);
+  auto* error = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR);
+  ok = !error && ok;
+  if (error)
+    gst_message_unref(error);
+  gst_object_unref(bus);
+  owner->Cancel();
+  gst_element_set_state(pipeline, GST_STATE_NULL);
+  gst_object_unref(video_pad);
+  gst_object_unref(audio_pad);
+  gst_object_unref(pipeline);
+  return ok || Failure(__LINE__);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -767,7 +823,7 @@ int main(int argc, char** argv) {
   const bool duplicate_rejected = !hm::gst::PacedPlayback::Create(
       pipeline, video_pad, {16683, 4170, 0, 64, 3 * GST_SECOND, 1, 16384, 2, 3 * GST_SECOND});
   gst_object_unref(video_pad);
-  bool ok = duplicate_rejected && linked && owner && owner->AttachVideoSink(output, 30) &&
+  bool ok = RunAudioPrerollFlush() && duplicate_rejected && linked && owner && owner->AttachVideoSink(output, 30) &&
       owner->AttachAudioSink(sink) && Run(pipeline, audio, video, sink, observations, 20, owner, true) &&
       Run(pipeline, audio, video, sink, observations, 12, owner) &&
       RunPacketBoundaries(pipeline, audio, video, sink, observations, owner) &&

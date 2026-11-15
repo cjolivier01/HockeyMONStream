@@ -737,11 +737,11 @@ for line in sys.stdin:
     window->updateRinkMapControls();
     auto* status = window->rink_map_preview_status_;
     const auto displays = [status](const char* message) {
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
       return status->text().contains(message);
 #else
       (void)message;
-      return status->text().contains("requires the x86 desktop GPU preview");
+      return status->text().contains("requires the desktop GPU preview");
 #endif
     };
     const auto idle_message = status->text();
@@ -6898,7 +6898,7 @@ bool test_pipeline_buttons(HStreamWindow* window) {
   if (!invalid_pair_rejected)
     return false;
   const bool architecture_supports_x11_embedding =
-#if defined(__x86_64__)
+#if defined(__x86_64__) || defined(__aarch64__)
       true;
 #else
       false;
@@ -6907,7 +6907,6 @@ bool test_pipeline_buttons(HStreamWindow* window) {
           hm::ui_internal::supports_x11_embedding("xcb") == architecture_supports_x11_embedding &&
               !hm::ui_internal::supports_x11_embedding("wayland") &&
               !hm::ui_internal::supports_x11_embedding("offscreen") &&
-              !hm::ui_internal::supports_x11_embedding("xcb", true) &&
               hm::ui_internal::preview_channel_for_tab(0, 3) == "program" &&
               hm::ui_internal::preview_channel_for_tab(1, 3) == "stitched" &&
               hm::ui_internal::preview_channel_for_tab(2, 3) == "source0" &&
@@ -20124,8 +20123,12 @@ bool run_preview_transitions_e2e(HStreamWindow* window, const QString& game_id) 
           break;
         }
       }
-      if (frame.passed && identity_matches && drawing_matches)
+      if (frame.passed && identity_matches && drawing_matches) {
+        if (qEnvironmentVariableIsSet("HSTREAM_UI_E2E_WINDOW_CAPTURES") &&
+            !window->screen()->grabWindow(window->winId()).save(QDir(artifact_dir).filePath(filename + ".window.png")))
+          return expect(false, "Composed preview window screenshot must be retained");
         return promote_diagnostic_capture_artifact(path, QDir(artifact_dir).filePath(filename));
+      }
       if (genuine_preview && capture_timer.elapsed() >= 10000)
         break;
       QTest::qWait(genuine_preview ? 500 : 250);

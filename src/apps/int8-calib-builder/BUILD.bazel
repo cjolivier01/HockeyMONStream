@@ -40,6 +40,14 @@ cc_binary(
 )
 
 cc_test(
+    name = "bf16_engine_test",
+    srcs = ["Bf16EngineTest.cpp"],
+    env_inherit = ["HSTREAM_BF16_TEST_ONNX"],
+    tags = ["manual", "requires-gpu"],
+    deps = [":bf16_engine"],
+)
+
+cc_test(
     name = "engine_precision_test",
     srcs = ["EnginePrecisionTest.cpp", "EnginePrecision.h"],
     deps = ["@yaml-cpp"],

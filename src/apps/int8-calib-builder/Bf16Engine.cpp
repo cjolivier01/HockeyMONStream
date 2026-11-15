@@ -207,6 +207,15 @@ absl::Status BuildBf16Engine(const fs::path& onnx, const fs::path& path, const B
     std::unique_ptr<nvinfer1::IBuilderConfig> config(builder->createBuilderConfig());
     require(bool(config), "Cannot create the BF16 builder configuration");
     config->setFlag(nvinfer1::BuilderFlag::kBF16);
+    // kBF16 only permits BF16 tactics: on Orin TensorRT can otherwise select
+    // FP32 for every layer. Require BF16 for detector convolutions while
+    // allowing other operations and parser I/O to keep their FP32 precision.
+    config->setFlag(nvinfer1::BuilderFlag::kOBEY_PRECISION_CONSTRAINTS);
+    for (int i = 0; i < network->getNbLayers(); ++i) {
+      auto* layer = network->getLayer(i);
+      if (layer->getType() == nvinfer1::LayerType::kCONVOLUTION)
+        layer->setPrecision(nvinfer1::DataType::kBF16);
+    }
     config->setProfilingVerbosity(nvinfer1::ProfilingVerbosity::kDETAILED);
     config->setProgressMonitor(&progress);
     if (options.workspace_mib)

@@ -128,6 +128,17 @@ EglSurfaceMapper::~EglSurfaceMapper() {
 // NvDestroyEGLImage(NULL, eglImage);
 
 cudaError_t EglSurfaceMapper::map() {
+  if (surface_->memType == NVBUF_MEM_CUDA_DEVICE || surface_->memType == NVBUF_MEM_CUDA_UNIFIED) {
+    // A GPU converter can produce directly addressable CUDA storage on Jetson.
+    // Only surface-array storage needs EGL registration; mapping a device
+    // allocation as an EGL image fails (notably for packed 10-bit inputs).
+    const auto& params = surface_->surfaceList[index_];
+    if (!params.dataPtr || params.layout != NVBUF_LAYOUT_PITCH)
+      return cudaErrorInvalidValue;
+    surface_list_ = std::make_unique<SurfaceList>(surface_->gpuId, 1);
+    surface_list_->add_surface(&params);
+    return cudaSuccess;
+  }
   assert(!surface_->surfaceList[index_].mappedAddr.eglImage);
   auto nv_error = NvBufSurfaceMapEglImage(surface_, index_);
   if (nv_error != 0) {

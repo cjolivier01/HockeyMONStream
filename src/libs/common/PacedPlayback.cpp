@@ -119,16 +119,17 @@ struct PacedPlayback::Impl {
     gst_object_unref(element);
     return true;
   }
-  void Cancel() {
+  void Cancel(bool audio_only = false) {
     std::lock_guard<std::mutex> lock(mutex);
     RestorePauseStartTimeLocked();
+    const bool retain_video_segment = audio_only && restart_pending && active;
     // Audio can flush again after the recorder's SEGMENT but before its first
     // video interval. Reserve one epoch for that whole preroll: retained
     // preview sinks may already have captured it on their SEGMENT.
     if (!restart_pending)
       ++epoch;
     restart_pending = true;
-    active = false;
+    active = retain_video_segment;
     cancelled = true;
     pause_pending = false;
     ended = false;
@@ -239,14 +240,24 @@ struct PacedPlayback::Impl {
   }
   GstFlowReturn Record(guint64 expected_epoch, GstClockTime start, GstClockTime duration) {
     if (!GST_CLOCK_TIME_IS_VALID(start) || !GST_CLOCK_TIME_IS_VALID(duration) || !duration ||
-        duration > guint64(INT64_MAX) || start > guint64(INT64_MAX) - duration)
+        duration > guint64(INT64_MAX) || start > guint64(INT64_MAX) - duration) {
+      GST_ERROR("Invalid video interval start=%" G_GUINT64_FORMAT " duration=%" G_GUINT64_FORMAT, start, duration);
       return GST_FLOW_ERROR;
+    }
     const auto now = RunningNow();
     std::lock_guard<std::mutex> lock(mutex);
     if (epoch != expected_epoch || cancelled)
       return GST_FLOW_FLUSHING;
-    if (!active || (!history.empty() && start <= history.back().start))
+    if (!active || (!history.empty() && start <= history.back().start)) {
+      GST_ERROR(
+          "Non-increasing video interval epoch=%" G_GUINT64_FORMAT " active=%d start=%" G_GUINT64_FORMAT
+          " previous=%" G_GUINT64_FORMAT,
+          epoch,
+          active,
+          start,
+          history.empty() ? GST_CLOCK_TIME_NONE : history.back().start);
       return GST_FLOW_ERROR;
+    }
     if (duration > maximum_interval) {
       maximum_interval = duration;
       if (audio_attached && !UpdateAudioQueueLocked())
@@ -513,7 +524,7 @@ GstPadProbeReturn AdmitAudio(GstPad* pad, GstPadProbeInfo* info, gpointer data) 
         break;
       }
       case GST_EVENT_FLUSH_START:
-        owner.Cancel();
+        owner.Cancel(true);
         break;
       case GST_EVENT_EOS:
         owner.AdmitAudio(admission.epoch, 0, true);

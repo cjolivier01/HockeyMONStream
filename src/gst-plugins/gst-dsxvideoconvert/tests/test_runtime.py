@@ -541,6 +541,32 @@ def test_hardware_controls(directory: Path) -> int:
     return count
 
 
+def test_rgb10_nvmm(directory: Path) -> int:
+    if not IS_JETSON or not oracle_supports("BGRA64_LE"):
+        return 0
+    outputs = []
+    # NVIDIA exposes only BGR10 on Jetson. Roundtrip both channel orders to
+    # RGBA and compare pixels, including conversion from decoder-style NVMM.
+    for converter, packed in ((ORIGINAL, "BGR10A2_LE"), (REPLACEMENT, "RGB10A2_LE")):
+        output = directory / f"packed10-{packed}.raw"
+        run_pipeline(
+            [
+                *raw_source("P010_10LE"),
+                *element(ORIGINAL, "compute-hw=1", "nvbuf-memory-type=4"),
+                *caps("video/x-raw(memory:NVMM),format=P010_10LE"),
+                *element(converter, *JETSON_GPU_PROPERTIES),
+                *caps(f"video/x-raw(memory:NVMM),format={packed}"),
+                *element(converter, *JETSON_GPU_PROPERTIES),
+                *caps("video/x-raw,format=RGBA"),
+            ],
+            output,
+        )
+        outputs.append(output.read_bytes())
+    if not any(outputs[0]) or outputs[0] != outputs[1]:
+        raise AssertionError("GPU RGB10 stitching input differs from NVIDIA BGR10 roundtrip")
+    return 1
+
+
 def main() -> None:
     if not Path(os.environ["NVVIDEO_PLUGIN_SO"]).is_file():
         raise SystemExit("installed nvvideoconvert is required for black-box parity")
@@ -551,6 +577,7 @@ def main() -> None:
         checks += test_transforms(directory)
         checks += test_nvmm(directory)
         checks += test_bgra64(directory)
+        checks += test_rgb10_nvmm(directory)
         checks += test_hardware_controls(directory)
     qualifier = (
         "Jetson black-box parity and hardware compatibility cases"

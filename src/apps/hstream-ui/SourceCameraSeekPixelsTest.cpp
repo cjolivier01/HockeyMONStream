@@ -31,13 +31,19 @@ hm::ui::SourceCameraPlayer::Status Wait(hm::ui::SourceCameraPlayer& player, Pred
 // Bounded test-only front-buffer readback, never part of camera playback.
 QImage Presented(hm::ui::NativePreviewSurface& surface) {
   auto* connection = qGuiApp->nativeInterface<QNativeInterface::QX11Application>()->connection();
+  const int width = std::lround(surface.width() * surface.devicePixelRatioF());
+  const int height = std::lround(surface.height() * surface.devicePixelRatioF());
   auto* reply = xcb_get_image_reply(
-      connection, xcb_get_image(connection, XCB_IMAGE_FORMAT_Z_PIXMAP, surface.winId(), 0, 0, 640, 360, ~0U), nullptr);
-  Check(reply && xcb_get_image_data_length(reply) == 640 * 360 * 4, "Cannot read the displayed camera frame");
-  QImage image(xcb_get_image_data(reply), 640, 360, QImage::Format_RGB32);
+      connection,
+      xcb_get_image(connection, XCB_IMAGE_FORMAT_Z_PIXMAP, surface.winId(), 0, 0, width, height, ~0U),
+      nullptr);
+  Check(reply && xcb_get_image_data_length(reply) == width * height * 4, "Cannot read the displayed camera frame");
+  QImage image(xcb_get_image_data(reply), width, height, QImage::Format_RGB32);
   image = image.copy();
   std::free(reply);
-  return image;
+  // X11 reads physical pixels, while the reference uses the logical widget
+  // size. Reading 640x360 directly only samples a corner on a scaled desktop.
+  return image.scaled(surface.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 }
 
 void Compare(const QImage& actual, const QImage& expected) {

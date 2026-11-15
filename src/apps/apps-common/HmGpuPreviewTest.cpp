@@ -963,7 +963,7 @@ bool run_rink_mask_reactivation_test(Window window) {
   GstElement* pipeline = gst_parse_launch(
       "videotestsrc is-live=true pattern=black ! "
       "video/x-raw,width=640,height=360,framerate=30/1 ! "
-      "nvvideoconvert gpu-id=0 nvbuf-memory-type=2 output-buffers=1 ! "
+      "nvvideoconvert gpu-id=0 compute-hw=1 nvbuf-memory-type=2 output-buffers=1 ! "
       "video/x-raw(memory:NVMM),format=RGBA,width=640,height=360 ! "
       "hmpreviewisolation name=gate ! "
       "hmgpupreviewsink name=preview gpu-id=0 channel=stitched sync=false async=false",
@@ -1085,7 +1085,7 @@ bool run_renderer_test(Display* display, Window window) {
       // video frame must remain opaque after the previous frame's overlays.
       "videotestsrc pattern=solid-color foreground-color=0x030000ff num-buffers=5 ! "
       "video/x-raw,format=RGBA,width=640,height=360,framerate=30/1 ! "
-      "nvvideoconvert gpu-id=0 nvbuf-memory-type=2 output-buffers=1 ! "
+      "nvvideoconvert gpu-id=0 compute-hw=1 nvbuf-memory-type=2 output-buffers=1 ! "
       "video/x-raw(memory:NVMM),format=RGBA,width=640,height=360 ! "
       // This source has no DeepStream frame metadata. The stitched preview
       // still needs negotiated geometry to place its mandatory watermark.
