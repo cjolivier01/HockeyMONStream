@@ -3,5 +3,6 @@ exports_files([
     "abseil_aarch64_signal_stack.patch",
     "rules_cuda_sm120.patch",
     "rules_cuda_quote_includes.patch",
+    "rules_cuda_nonrecursive_lib64.patch",
     "yaml_cpp_preserve_quoted_scalars.patch",
 ])

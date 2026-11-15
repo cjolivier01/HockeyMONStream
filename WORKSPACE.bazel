@@ -38,6 +38,7 @@ git_repository(
     patches = [
         "//third_party/patches:rules_cuda_sm120.patch",
         "//third_party/patches:rules_cuda_quote_includes.patch",
+        "//third_party/patches:rules_cuda_nonrecursive_lib64.patch",
     ],
     remote = "https://github.com/bazel-contrib/rules_cuda",
 )

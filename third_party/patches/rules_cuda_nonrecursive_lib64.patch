@@ -1,0 +1,13 @@
+diff --git a/cuda/runtime/BUILD.local_cuda b/cuda/runtime/BUILD.local_cuda
+--- a/cuda/runtime/BUILD.local_cuda
++++ b/cuda/runtime/BUILD.local_cuda
+@@ -17,7 +17,8 @@ filegroup(
+             "cuda/version.json",
+             "cuda/version.txt",
+             "cuda/bin/**",
+-            "cuda/lib64/**",
++            "cuda/lib64/*",
++            "cuda/lib64/stubs/*",
+             "cuda/nvvm/**",
+         ],
+         allow_empty = True,
