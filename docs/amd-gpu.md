@@ -157,7 +157,9 @@ jersey/action reductions. Its fixture arguments are described by
 `scripts/prepare_player_semantic_fixtures.py` and
 `src/libs/player_analytics/runtime/SemanticGpuTest.cpp`.
 
-The toolkit is discovered at `/opt/rocm`. Override it with
+Make ROCm targets discover `/opt/rocm`, falling back to an installed versioned
+`/opt/rocm-*` prefix. Override that selection with `ROCM_PATH=/path/to/rocm`.
+Direct Bazel commands discover the toolkit at `/opt/rocm`; override them with
 `--repo_env=ROCM_PATH=/path/to/rocm`. Architectures are discovered with
 `rocm_agent_enumerator`, filtered to concrete `gfx` targets, and recorded with
 the compiler version in the compilation tool input. For a build machine without
