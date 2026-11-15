@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -339,6 +340,11 @@ def symlink_plex_programs(
         published.add(source)
         if not publish:
             continue
+        # Media servers need to read the target, not just follow its link.
+        mode = stat.S_IMODE(source.stat().st_mode)
+        readable = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+        if mode & readable != readable:
+            source.chmod(mode | readable)
         # Publish first so a failed link creation leaves the old library intact.
         with tempfile.TemporaryDirectory(prefix=".plex-link-", dir=destination) as staging:
             temporary = Path(staging) / link.name
@@ -615,7 +621,7 @@ def main() -> None:
         action="store_true",
         help=("Link each immediate child game's newest Program MP4 into Plex as GAME-ID.mp4; "
               "prefer 4K within the newest generation and replace all links into that game. "
-              "Stitched exports and deeper directories are excluded."),
+              "Make linked files world-readable. Stitched exports and deeper directories are excluded."),
     )
     parser.add_argument(
         "--plex-dir",

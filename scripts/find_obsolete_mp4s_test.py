@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -72,6 +73,7 @@ class PlexLinksTest(unittest.TestCase):
 
     def test_relative_target_replaces_an_absolute_link(self):
         chosen = self.video('game/program_4k_output-1.mp4')
+        chosen.chmod(0o600)
         link = self.plex / 'game.mp4'
         link.symlink_to(chosen)
         symlink_plex_programs(self.root, self.plex)
@@ -79,6 +81,7 @@ class PlexLinksTest(unittest.TestCase):
         self.assertFalse(target.is_absolute())
         self.assertEqual(target.parts[-3:], ('Videos', 'game', 'program_4k_output-1.mp4'))
         self.assertEqual(link.resolve(), chosen.resolve())
+        self.assertEqual(stat.S_IMODE(chosen.stat().st_mode), 0o644)
 
     def test_remove_every_matching_link_including_dangling_and_relative(self):
         chosen = self.video('game/game-program-4k_output-with-audio-3.mp4')
@@ -220,6 +223,7 @@ class PlexLinksTest(unittest.TestCase):
     def test_a_dry_run_previews_the_published_sweep_without_publishing(self):
         self.video('game/stitched_output-9.mp4')
         chosen = self.video('game/program_4k_output-3.mp4')
+        chosen.chmod(0o600)
         self.video('game/program_4k_output-3.mp4.hstream-archive.json')
         # write_job_scripts only looks at directories holding a game config.
         self.video('game/_hockeymon/config.yaml')
@@ -231,6 +235,7 @@ class PlexLinksTest(unittest.TestCase):
         # without the sparing that publication performs.
         self.assertIn('would remove 0 files', dry.stderr)
         self.assertTrue(chosen.is_file())
+        self.assertEqual(stat.S_IMODE(chosen.stat().st_mode), 0o600)
 
     def test_a_game_plex_could_not_publish_cannot_be_swept(self):
         chosen = self.video('game/program_4k_output-3.mp4')
