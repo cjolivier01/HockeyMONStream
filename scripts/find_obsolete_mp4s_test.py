@@ -81,7 +81,7 @@ class PlexLinksTest(unittest.TestCase):
         self.assertFalse(target.is_absolute())
         self.assertEqual(target.parts[-3:], ('Videos', 'game', 'program_4k_output-1.mp4'))
         self.assertEqual(link.resolve(), chosen.resolve())
-        self.assertEqual(stat.S_IMODE(chosen.stat().st_mode), 0o604)
+        self.assertEqual(stat.S_IMODE(chosen.stat().st_mode), 0o644)
 
     def test_remove_every_matching_link_including_dangling_and_relative(self):
         chosen = self.video('game/game-program-4k_output-with-audio-3.mp4')

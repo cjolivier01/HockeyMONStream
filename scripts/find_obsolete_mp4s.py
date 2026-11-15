@@ -342,8 +342,9 @@ def symlink_plex_programs(
             continue
         # Media servers need to read the target, not just follow its link.
         mode = stat.S_IMODE(source.stat().st_mode)
-        if not mode & stat.S_IROTH:
-            source.chmod(mode | stat.S_IROTH)
+        readable = stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH
+        if mode & readable != readable:
+            source.chmod(mode | readable)
         # Publish first so a failed link creation leaves the old library intact.
         with tempfile.TemporaryDirectory(prefix=".plex-link-", dir=destination) as staging:
             temporary = Path(staging) / link.name
