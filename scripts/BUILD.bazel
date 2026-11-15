@@ -62,6 +62,14 @@ py_library(
     visibility = ["//visibility:public"],
 )
 
+sh_test(
+    name = "jetson_cuda_payload_listing_test",
+    size = "small",
+    srcs = ["jetson_cuda_payload_listing_test.sh"],
+    args = ["$(location jetson_cuda_payload_listing.sh)"],
+    data = ["jetson_cuda_payload_listing.sh"],
+)
+
 py_test(
     name = "workflow_graph_test",
     size = "small",

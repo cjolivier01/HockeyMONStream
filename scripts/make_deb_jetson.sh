@@ -299,8 +299,8 @@ if [[ "${jetson_qt}" == 1 ]]; then
   )
 fi
 for cuda_elf in "${cuda_elfs[@]}"; do
-  cubins="$("${cuobjdump}" --list-elf "${cuda_elf}")"
-  ptx="$("${cuobjdump}" --list-ptx "${cuda_elf}")"
+  cubins="$(scripts/jetson_cuda_payload_listing.sh "${cuobjdump}" --list-elf "${cuda_elf}")"
+  ptx="$(scripts/jetson_cuda_payload_listing.sh "${cuobjdump}" --list-ptx "${cuda_elf}")"
   [[ -n "${cubins}${ptx}" ]] || continue
   cuda_elf_count=$((cuda_elf_count + 1))
   if [[ -n "${cubins}" ]]; then
