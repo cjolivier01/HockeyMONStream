@@ -3,7 +3,8 @@ BAZEL ?= bazelisk
 BUILD_CONFIG ?= opt
 HOST_OS_VERSION := $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSION_ID")
 AMD_GSTREAMER_CACHE_ROOT ?= $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)
-AMD_GSTREAMER_PREFIX ?= $(AMD_GSTREAMER_CACHE_ROOT)/hstream/gstva-$(HOST_OS_VERSION)
+AMD_GSTREAMER_RECIPE_REVISION ?= 1
+AMD_GSTREAMER_PREFIX ?= $(AMD_GSTREAMER_CACHE_ROOT)/hstream/gstva-$(HOST_OS_VERSION)-r$(AMD_GSTREAMER_RECIPE_REVISION)
 
 # Forward `make -j N` to Bazel as --jobs=N. GNU make normalizes -jN/-j N/--jobs=N
 # into a single "-jN" word in MAKEFLAGS; a bare "-j" (unlimited) maps to Bazel's

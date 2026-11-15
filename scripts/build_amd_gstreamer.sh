@@ -46,12 +46,29 @@ case "$gst_version:$va_version" in
     exit 2
     ;;
 esac
-if ((ensure)) && [[ -x $prefix/run && -f $prefix/build-info.txt ]] &&
-    grep -Fxq "GStreamer VA source: gst-plugins-bad $source_version" "$prefix/build-info.txt" &&
-    grep -Fxq "GStreamer core: $gst_version" "$prefix/build-info.txt" &&
-    grep -Fxq "GStreamer VA: $va_version" "$prefix/build-info.txt"; then
-  printf 'Using existing private GStreamer VA runtime: %s\n' "$prefix"
-  exit 0
+if ((ensure)) && [[ -e $prefix ]]; then
+  cache_valid=0
+  if [[ -x $prefix/run && -f $prefix/build-info.txt && -f $prefix/plugins/libgstva.so ]] &&
+      compgen -G "$prefix/lib/libgstva-1.0.so*" >/dev/null &&
+      grep -Fxq "GStreamer VA source: gst-plugins-bad $source_version" "$prefix/build-info.txt" &&
+      grep -Fxq "GStreamer core: $gst_version" "$prefix/build-info.txt" &&
+      grep -Fxq "GStreamer VA: $va_version" "$prefix/build-info.txt"; then
+    cache_valid=1
+    for patch_file in "${patches[@]}"; do
+      read -r patch_hash _ < <(sha256sum "$repo/buildfiles/patches/$patch_file")
+      if ! grep -Fq "$patch_hash " "$prefix/build-info.txt"; then
+        cache_valid=0
+        break
+      fi
+    done
+  fi
+  if ((cache_valid)); then
+    printf 'Using existing private GStreamer VA runtime: %s\n' "$prefix"
+    exit 0
+  fi
+  echo "Existing private GStreamer VA runtime is incomplete or stale: $prefix" >&2
+  echo "Remove it or use a new AMD_GSTREAMER_PREFIX." >&2
+  exit 2
 fi
 mkdir -p -- "$(dirname -- "$prefix")"
 work=$(mktemp -d "$(dirname -- "$prefix")/.hstream-gstva-build-XXXXXX")
