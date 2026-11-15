@@ -283,6 +283,7 @@ camera files / live sources -> decode and batch -> hmstitcher
 
 ### Dependency and distribution boundaries
 
+- `.bazelrc` selects native RTX 3060 Ti/4090/5090 code plus Turing PTX for other supported GPUs in source and desktop package builds. Jetson source/package builds use Orin PTX. Package checks enforce these payloads; V100/Volta is excluded. See `docs/cuda-targets.md` for driver/JIT compatibility and cache behavior.
 - `src/apps/hstream-ui/BUILD.bazel` keeps Qt targets optional on Jetson through `--config=jetson-qt`. Native and cross builds share the gate; cross builds use the sysroot's Qt headers/libraries. See `docs/jetson-cross-build.md`.
 - Jetson packaging and deployment opt in separately with `JETSON_QT=1`; `make_deb_jetson.sh` builds the Qt applications and `make_deb.sh` includes their launchers and runtime dependencies. `deploy.sh` checks the package's `X-HStream-Qt` field against the request.
 - `bazel/tensorrt_sdk_common.bzl` selects matching DeepStream TensorRT libraries and headers for both detector and player builders; the YOLO custom plugin shares the detector SDK. Its verified native x86_64 10.16.1 header fallback changes no system packages; explicit per-builder SDK overrides and Jetson sysroots never fall back. See `docs/detection-precision.md` and `docs/player-model-preparation.md`.
