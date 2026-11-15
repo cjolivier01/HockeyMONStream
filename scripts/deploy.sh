@@ -10,6 +10,7 @@ DEPLOY_OUTPUT_DIR="${DEPLOY_OUTPUT_DIR:-${TOPDIR}/dist}"
 NODES_CSV="${NODES:-}"
 REQUESTED_PACKAGE_VERSION="${PACKAGE_VERSION:-}"
 REQUESTED_DEEPSTREAM_DEB="${DEEPSTREAM_DEB:-}"
+JETSON_QT="${JETSON_QT:-0}"
 OPERATION="deploy"
 
 declare -a NODES_LIST=()
@@ -54,6 +55,7 @@ Optional make variables:
   PACKAGE_VERSION=VERSION   Override the source-derived package version.
   DEEPSTREAM_DEB=FILE      Use this DeepStream 9.1 amd64 artifact for desktops.
   DEPLOY_OUTPUT_DIR=DIR    Override the package output root (default: dist).
+  JETSON_QT=1              Include Qt applications in Jetson packages (default: 0).
 
 When DEEPSTREAM_DEB is unset, deepstream-9.1_*_amd64.deb is looked up in
 ../DeepStream/artifacts, the output root, ~/Downloads and ~, and the highest
@@ -185,6 +187,10 @@ deployment_action() {
 }
 
 require_local_commands() {
+  if [[ "${JETSON_QT}" != 0 && "${JETSON_QT}" != 1 ]]; then
+    printf 'ERROR: JETSON_QT must be 0 or 1.\n' >&2
+    return 1
+  fi
   local command_name
   local -a required_commands=(git ssh sed)
   if [[ "${OPERATION}" == deploy ]]; then
@@ -349,6 +355,11 @@ verify_built_package() {
       "${actual_platform:-unknown}" "${actual_arch:-unknown}" >&2
     return 1
   fi
+  if [[ "${expected_platform}" == jetson &&
+        "$(dpkg-deb -f "${deb}" X-HStream-Qt 2>/dev/null)" != "${JETSON_QT}" ]]; then
+    printf 'ERROR: Jetson package does not match JETSON_QT=%s: %s\n' "${JETSON_QT}" "${deb}" >&2
+    return 1
+  fi
 }
 
 build_target() {
@@ -402,7 +413,7 @@ build_target() {
       build_host="${TARGET_BUILD_HOST[${target_key}]}"
       printf '\n[deploy] Building HStream %s for Jetson on %s...\n' \
         "${PACKAGE_VERSION_NORMALIZED}" "${build_host}"
-      if ! "${TOPDIR}/scripts/make_deb_jetson.sh" \
+      if ! JETSON_QT="${JETSON_QT}" "${TOPDIR}/scripts/make_deb_jetson.sh" \
         --host="${build_host}" \
         --output-dir="${output_dir}" \
         --version="${PACKAGE_VERSION_NORMALIZED}"; then

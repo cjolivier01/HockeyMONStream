@@ -31,6 +31,7 @@ TARGET_UBUNTU ?= $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSION
 DEB_OUTPUT_DIR ?= $(TOPDIR)/dist/ubuntu$(TARGET_UBUNTU)
 PACKAGE_VERSION ?=
 JETSON_DEB_HOST ?= stubby
+export JETSON_QT ?= 0
 JETSON_DEB_OUTPUT_DIR ?= $(TOPDIR)/dist/jetson
 WINDOWS_INSTALLER_OUTPUT_DIR ?= $(TOPDIR)/dist/windows
 WINDOWS_INSTALLER_VERSION ?=
@@ -62,7 +63,7 @@ test-amd-tracking:
 test-amd-driver-interop:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
 
-.PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson gstdebug \
+.PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson jetson-qt gstdebug \
 	hstream-job hstream-process-guard hstream-runtime-worker hstream-finalize hstream-calibration-export hstream-model-prepare hstream-prepared-model-validate hstream-model-infer hstream-cli run-hstream-cli hstream-ui hstream-web-job hstream-experiment-task hstream-workflow run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
@@ -87,7 +88,7 @@ arm64:
 	fi
 	$(BAZEL) build --config=opt --config=arm64 $(BAZEL_JOBS_FLAG) //...
 
-jetson:
+jetson jetson-qt:
 	@if [ "$(HOST_ARCH)" = "aarch64" ] && [ ! -e "$(JETSON_SYSROOT)" ]; then \
 		echo "Creating symlink $(JETSON_SYSROOT) -> / for native Jetson build"; \
 		sudo ln -sfn / "$(JETSON_SYSROOT)"; \
@@ -96,7 +97,7 @@ jetson:
 		echo "Jetson sysroot not found at $(JETSON_SYSROOT). Run JETSON_HOST=<user@jetson> scripts/sync_jetson_sysroot.sh [DEST]." >&2; \
 		exit 1; \
 	fi
-	$(BAZEL) build --config=jetson --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) $(BAZEL_JOBS_FLAG) //...
+	$(BAZEL) build --config=$@ --action_env=JETSON_SYSROOT=$(JETSON_SYSROOT) --define=JETSON_SYSROOT=$(JETSON_SYSROOT) $(BAZEL_JOBS_FLAG) //...
 
 test:
 	$(BAZEL) test --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
@@ -267,6 +268,7 @@ print_targets:
 		'x86_64         Build optimized for x86_64 (--cpu=k8, auto-adds Blackwell host flags when needed).' \
 		'arm64          Build optimized for native non-Jetson arm64/SBSA hosts (--config=arm64).' \
 		'jetson         Build optimized for Jetson (--config=jetson, needs $(JETSON_SYSROOT)).' \
+		'jetson-qt      Build for Jetson with Qt applications (--config=jetson-qt, needs Qt 6 development packages).' \
 		'amd-kernels    Build the portable GPU kernels and tests with native HIP/ROCm (see docs/amd-gpu.md).' \
 		'' \
 		'Apps' \
@@ -298,6 +300,7 @@ print_targets:
 		'deepstream-deb-ubuntu24 Copy the original DeepStream package to dist/ubuntu24.04.' \
 		'deepstream-deb-ubuntu26 Write the dependency-relaxed DeepStream package to dist/ubuntu26.04.' \
 		'deb-jetson     Build the Ubuntu 24.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
+		'               Add JETSON_QT=1 to deb-jetson or deploy to include the Qt UI on Jetson.' \
 		'deploy         Detect, build, and force-install on comma-separated NODES (default: current hostname).' \
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \

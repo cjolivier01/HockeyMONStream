@@ -19,7 +19,18 @@ config_setting(
     values = {"define": "target_platform=jetson"},
 )
 
+config_setting(
+    name = "jetson_qt_build",
+    define_values = {
+        "target_platform": "jetson",
+        "jetson_qt": "true",
+    },
+)
+
+# The more specific match enables the whole Qt dependency graph, including
+# the headless Qt helpers, without adding Qt to ordinary Jetson builds.
 QT_UI_COMPATIBILITY = select({
+    ":jetson_qt_build": [],
     ":jetson_build": ["@platforms//:incompatible"],
     "//conditions:default": [],
 })
@@ -456,7 +467,7 @@ cc_library(
         ":camera_experiment_preview",
         ":highlight_web_preview",
         "//src/apps/apps-common:preview_overlay_painter",
-        "//src/apps/apps-common:preview_overlay_scene_data",
+        "//src/apps/apps-common:preview_overlay_scene",
         "//src/apps/apps-common:web_preview_target",
         "//src/apps/apps-common:webrtc_signaling",
         "//src/apps/apps-common:webrtc_endpoint",

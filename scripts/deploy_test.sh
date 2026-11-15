@@ -184,4 +184,68 @@ expect_equal "$(deployment_action 1.2.4 1.2.3)" downgraded "downgrade action"
 expect_equal "$(deployment_action 1.2.4 1.2.3 hmstream)" "replaced legacy hmstream" \
   "legacy replacement action"
 
+# Exercise the deployment boundary with real Debian metadata, without building
+# on or installing anything to a remote node.
+if command -v dpkg-deb >/dev/null; then
+  fixture_root="$(mktemp -d)"
+  trap 'rm -rf "${fixture_root}"' EXIT
+  fixture_topdir="${fixture_root}/repo"
+  mkdir -p "${fixture_topdir}/scripts"
+  cat > "${fixture_topdir}/scripts/make_deb_jetson.sh" <<'BUILDER'
+#!/usr/bin/env bash
+set -euo pipefail
+for argument in "$@"; do
+  case "${argument}" in
+    --host=*) [[ "${argument#*=}" == stubby ]] ;;
+    --output-dir=*) output="${argument#*=}" ;;
+    --version=*) version="${argument#*=}" ;;
+    *) exit 1 ;;
+  esac
+done
+mkdir -p "${output}/fixture/DEBIAN"
+printf '%s\n' "${JETSON_QT}" > "${output}/requested-qt"
+cat > "${output}/fixture/DEBIAN/control" <<CONTROL
+Package: hstream
+Version: ${version}
+Architecture: arm64
+Maintainer: test <test@example.invalid>
+Description: Jetson deployment fixture
+X-HStream-Target-Ubuntu: 24.04
+X-HStream-Target-Platform: jetson
+X-HStream-Qt: ${TEST_PACKAGE_QT:-${JETSON_QT}}
+CONTROL
+dpkg-deb --build --root-owner-group "${output}/fixture" "${output}/hstream_${version}_arm64.deb" >/dev/null
+BUILDER
+  chmod +x "${fixture_topdir}/scripts/make_deb_jetson.sh"
+  PACKAGE_VERSION_NORMALIZED=1.2.3
+  TARGET_BUILD_HOST[jetson-ubuntu24.04-arm64]=stubby
+  for mode in 0 1; do
+    TOPDIR="${fixture_topdir}" DEPLOY_OUTPUT_DIR="${fixture_root}/dist" JETSON_QT="${mode}" \
+      build_target jetson-ubuntu24.04-arm64 >/dev/null || fail "Jetson Qt=${mode} package rejected"
+    expect_equal "$(cat "${fixture_root}/dist/jetson/requested-qt")" "${mode}" \
+      "deployment forwards Qt=${mode} to the Jetson builder"
+    if TOPDIR="${fixture_topdir}" DEPLOY_OUTPUT_DIR="${fixture_root}/dist" JETSON_QT="${mode}" \
+      TEST_PACKAGE_QT="$((1 - mode))" build_target jetson-ubuntu24.04-arm64 >/dev/null 2>&1; then
+      fail "deployment accepted the wrong Qt package variant for Qt=${mode}"
+    fi
+  done
+  if TOPDIR="${fixture_topdir}" DEPLOY_OUTPUT_DIR="${fixture_root}/dist" JETSON_QT=1 \
+    TEST_PACKAGE_QT=unknown build_target jetson-ubuntu24.04-arm64 >/dev/null 2>&1; then
+    fail "deployment accepted an unknown Qt package variant"
+  fi
+  rm -rf "${fixture_root}"
+  trap - EXIT
+fi
+
+if JETSON_QT=invalid require_local_commands >/dev/null 2>&1; then
+  fail "deployment accepted an invalid JETSON_QT option"
+fi
+for script in deploy.sh make_deb.sh make_deb_jetson.sh; do
+  if output="$(JETSON_QT=invalid NODES=stubby bash "${SCRIPT_DIR}/${script}" 2>&1)"; then
+    fail "${script} accepted an invalid JETSON_QT option"
+  fi
+  expect_equal "${output}" 'ERROR: JETSON_QT must be 0 or 1.' \
+    "${script} rejects invalid Qt options before repository, SSH or package operations"
+done
+
 echo "deploy_test: PASS"

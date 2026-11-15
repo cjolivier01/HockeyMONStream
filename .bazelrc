@@ -105,3 +105,7 @@ build:jetson --repo_env=CUDA_PATH=/opt/jetson-sysroot/usr/local/cuda
 # x86 nvcc otherwise assumes the pre-CUDA-13 aarch64-linux target directory.
 build:jetson --@rules_cuda//cuda:copts=--target-directory=sbsa-linux
 build:jetson --repo_env=HM_BAZEL_PREFER_FIRST_LOCAL_PATH=1
+
+# Qt applications are optional on Jetson, for native and cross builds alike.
+build:jetson-qt --config=jetson
+build:jetson-qt --define=jetson_qt=true

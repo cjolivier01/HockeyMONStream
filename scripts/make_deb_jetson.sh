@@ -5,6 +5,7 @@ set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JETSON_HOST="${JETSON_HOST:-stubby}"
+JETSON_QT="${JETSON_QT:-0}"
 OUTPUT_DIR=""
 PACKAGE_VERSION=""
 
@@ -15,6 +16,7 @@ Usage: scripts/make_deb_jetson.sh [--host=HOST] [--version=vX.Y.Z] [--output-dir
 The host must be a Jetson Linux 39 / Ubuntu 24.04 arm64 Jetson with DeepStream 9.1.
 The source is transferred as an immutable git archive; local tracked changes
 are never included.
+Set JETSON_QT=1 to include the Qt UI and its web/experiment helpers (default: 0).
 USAGE
 }
 
@@ -31,6 +33,11 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ "${JETSON_QT}" != 0 && "${JETSON_QT}" != 1 ]]; then
+  echo "ERROR: JETSON_QT must be 0 or 1." >&2
+  exit 1
+fi
 
 if [[ ! "${JETSON_HOST}" =~ ^[A-Za-z0-9_.@:-]+$ ]]; then
   echo "ERROR: invalid Jetson SSH host: ${JETSON_HOST}" >&2
@@ -125,10 +132,11 @@ rsync -a "${local_snapshot}/" "${JETSON_HOST}:${remote_root}/source/"
 rsync -a "${model_cache}/" "${JETSON_HOST}:${remote_root}/home/.cache/hstream/models/"
 
 echo "[make_deb_jetson] Building ${PACKAGE_VERSION} on ${JETSON_HOST}..."
-ssh -o BatchMode=yes "${JETSON_HOST}" bash -s -- "${remote_root}" "${PACKAGE_VERSION}" <<'REMOTE_BUILD'
+ssh -o BatchMode=yes "${JETSON_HOST}" bash -s -- "${remote_root}" "${PACKAGE_VERSION}" "${JETSON_QT}" <<'REMOTE_BUILD'
 set -euo pipefail
 remote_root="$1"
 package_version="$2"
+jetson_qt="$3"
 source_dir="${remote_root}/source"
 package_home="${remote_root}/home"
 persistent_cache_root="${HOME}/.cache/hstream/jetson-release-build"
@@ -168,6 +176,18 @@ build_packages=(
   ninja-build
   zlib1g-dev
 )
+qt_build_flags=()
+qt_targets=()
+if [[ "${jetson_qt}" == 1 ]]; then
+  build_packages+=(qt6-base-dev qt6-qpa-plugins)
+  # deb_jetson already includes the Jetson config and pins native Orin SASS.
+  qt_build_flags+=(--define=jetson_qt=true)
+  qt_targets+=(
+    //src/apps/hstream-ui:hstream-ui
+    //src/apps/hstream-ui:hstream-web-job
+    //src/apps/hstream-ui:hstream-experiment-task
+  )
+fi
 missing_build_packages=()
 for package_name in "${build_packages[@]}"; do
   if [[ "$(dpkg-query -W -f='${Status}' "${package_name}" 2>/dev/null || true)" != "install ok installed" ]]; then
@@ -226,6 +246,7 @@ bazelisk --batch --output_base="${output_base}" build \
   --action_env=TMPDIR=/var/tmp \
   --sandbox_tmpfs_path=/var/tmp \
   --config=opt --config=deb_jetson \
+  "${qt_build_flags[@]}" "${qt_targets[@]}" \
   //src/libs/onnx:session_test \
   //src/apps/hstream-cli:hstream-cli \
   //src/apps/hstream-assets:hstream-assets \
@@ -270,6 +291,13 @@ cuda_elfs=(
   bazel-bin/src/gst-plugins/gst-player-analytics/libgsthmplayeranalytics.so
 )
 cuda_elf_count=0
+if [[ "${jetson_qt}" == 1 ]]; then
+  cuda_elfs+=(
+    bazel-bin/src/apps/hstream-ui/hstream-ui
+    bazel-bin/src/apps/hstream-ui/hstream-web-job
+    bazel-bin/src/apps/hstream-ui/hstream-experiment-task
+  )
+fi
 for cuda_elf in "${cuda_elfs[@]}"; do
   cubins="$(${cuobjdump} --list-elf "${cuda_elf}" 2>/dev/null || true)"
   [[ -n "${cubins}" ]] || continue
@@ -294,6 +322,7 @@ fi
 HSTREAM_IMMUTABLE_SOURCE=1 \
 HSTREAM_TARGET_UBUNTU=24.04 \
 HSTREAM_TARGET_PLATFORM=jetson \
+JETSON_QT="${jetson_qt}" \
 HSTREAM_BAZEL_OUTPUT_BASE="${output_base}" \
 HSTREAM_CONTAINER_PACKAGE_STAGING=1 \
 scripts/make_deb.sh --version "${package_version}" --output-dir "${remote_root}/output"
@@ -314,6 +343,7 @@ rsync -a "${JETSON_HOST}:${remote_root}/output/" "${OUTPUT_DIR}/"
 
 deb_path="${OUTPUT_DIR}/hstream_${debian_version}_arm64.deb"
 if [[ ! -f "${deb_path}" || "$(dpkg-deb -f "${deb_path}" Architecture)" != "arm64" ||
+      "$(dpkg-deb -f "${deb_path}" X-HStream-Qt)" != "${JETSON_QT}" ||
       "$(dpkg-deb -f "${deb_path}" X-HStream-Target-Platform)" != "jetson" ]]; then
   echo "ERROR: Jetson build did not export the expected arm64 package." >&2
   exit 1
