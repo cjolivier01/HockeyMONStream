@@ -3710,14 +3710,17 @@ bool with_path_dialog(QPushButton* button, const std::function<bool(QFileDialog*
   bool seen = false;
   bool ok = false;
   QTimer poll;
+  QTimer deadline;
   QObject::connect(&poll, &QTimer::timeout, [&] {
     auto* dialog = qobject_cast<QFileDialog*>(QApplication::activeModalWidget());
     if (!dialog || seen)
       return;
     seen = true;
+    // Applying a selection can reload many controls after the chooser closes.
+    // Only the dialog interaction belongs under this deadline.
+    QObject::connect(dialog, &QDialog::finished, &deadline, &QTimer::stop);
     QTimer::singleShot(100, dialog, [&, dialog] { ok = handle(dialog); });
   });
-  QTimer deadline;
   deadline.setSingleShot(true);
   QObject::connect(&deadline, &QTimer::timeout, [&] {
     ok = false;
