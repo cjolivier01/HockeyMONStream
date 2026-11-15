@@ -63,7 +63,7 @@ test-amd-tracking:
 test-amd-driver-interop:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
 
-.PHONY: all print_targets perf debug test clean distclean expunge x86_64 arm64 jetson jetson-qt gstdebug \
+.PHONY: all print_targets perf perf-rocm debug test clean distclean expunge x86_64 arm64 jetson jetson-qt gstdebug \
 	hstream-job hstream-process-guard hstream-runtime-worker hstream-finalize hstream-calibration-export hstream-model-prepare hstream-prepared-model-validate hstream-model-infer hstream-cli run-hstream-cli hstream-ui hstream-web-job hstream-experiment-task hstream-workflow run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
@@ -71,6 +71,9 @@ test-amd-driver-interop:
 
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
+
+perf-rocm:
+	$(BAZEL) build --config=opt --config=rocm $(HOST_PLATFORM_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 debug:
 	$(BAZEL) build --config=debug $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
@@ -263,6 +266,7 @@ print_targets:
 		'Build Outputs' \
 		'-------------' \
 		'perf           Build everything with --config=opt (auto-adds arm64/Blackwell host flags when needed).' \
+		'perf-rocm      Full optimized ROCm compatibility build (including unsupported NVIDIA-only targets).' \
 		'debug          Build everything with --config=debug (auto-adds Blackwell host flags when needed).' \
 		'gstdebug       Build debug with extra GStreamer debug defines (--config=gstdebug).' \
 		'x86_64         Build optimized for x86_64 (--cpu=k8, auto-adds Blackwell host flags when needed).' \

@@ -42,6 +42,7 @@ package(default_visibility = ["//visibility:public"])
 exports_files(["hipcc-wrapper"])
 filegroup(name = "hipcc", srcs = ["hipcc-wrapper"])
 alias(name = "rocm_sdk_core", actual = ":runtime")
+alias(name = "hip_runtime", actual = ":runtime")
 cc_library(
     name = "runtime",
     hdrs = glob(["include/hip/**", "include/hiprand/**"]),

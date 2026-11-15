@@ -365,9 +365,11 @@ and CLI/UI runtime discovery still need to incorporate this qualified runtime.
 | Crop and preview | Shared HIP crop into VA output; native-window EGL Program preview with tracked-player boxes | Source/Stitched channels and Play/Rink diagnostics |
 | Desktop, jobs and publication | Saved Program playback and managed Program/4K archives | Additional live controls, exported job launch and highlight export |
 
-Do not pass `--config=rocm` to `//...` as an application build: many targets
-still directly depend on NVIDIA libraries. Compute tests do not establish
-end-to-end AMD playback or export support.
+`make perf-rocm` intentionally passes `--config=rocm` to `//...` as a
+full-scope compatibility check, matching the target set of `make perf`. It is
+not an AMD application build: many targets still directly depend on NVIDIA
+libraries. Compute tests do not establish end-to-end AMD playback or export
+support.
 
 ## Hardware evidence
 
