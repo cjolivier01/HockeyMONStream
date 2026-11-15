@@ -1,6 +1,9 @@
 TOPDIR := $(shell pwd)
 BAZEL ?= bazelisk
 BUILD_CONFIG ?= opt
+HOST_OS_VERSION := $(shell . /etc/os-release 2>/dev/null && printf '%s' "$$VERSION_ID")
+AMD_GSTREAMER_CACHE_ROOT ?= $(if $(XDG_CACHE_HOME),$(XDG_CACHE_HOME),$(HOME)/.cache)
+AMD_GSTREAMER_PREFIX ?= $(AMD_GSTREAMER_CACHE_ROOT)/hstream/gstva-$(HOST_OS_VERSION)
 
 # Forward `make -j N` to Bazel as --jobs=N. GNU make normalizes -jN/-j N/--jobs=N
 # into a single "-jN" word in MAKEFLAGS; a bare "-j" (unlimited) maps to Bazel's
@@ -9,6 +12,7 @@ BUILD_CONFIG ?= opt
 MAKE_JOBS_FLAG := $(firstword $(filter -j%,$(MAKEFLAGS)))
 BAZEL_JOBS ?= $(if $(MAKE_JOBS_FLAG),$(or $(patsubst -j%,%,$(MAKE_JOBS_FLAG)),auto),)
 BAZEL_JOBS_FLAG := $(if $(strip $(BAZEL_JOBS)),--jobs=$(strip $(BAZEL_JOBS)),)
+AMD_GSTREAMER_BUILD_JOBS ?= $(if $(filter auto,$(BAZEL_JOBS)),8,$(or $(BAZEL_JOBS),8))
 JETSON_SYSROOT ?= /opt/jetson-sysroot
 HOST_ARCH := $(shell uname -m)
 IS_JETSON_HOST := $(shell \
@@ -51,8 +55,13 @@ amd-kernels:
 test-amd-kernels:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu:portable_gpu_tests
 
-test-amd-video:
-	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/gpu/vaapi:va_stereo_video_test //src/libs/media:stereo_frame_plan_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_sink_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
+.PHONY: private-amd-gstreamer
+
+private-amd-gstreamer:
+	scripts/build_amd_gstreamer.sh --ensure "$(AMD_GSTREAMER_PREFIX)" "$(AMD_GSTREAMER_BUILD_JOBS)"
+
+test-amd-video: private-amd-gstreamer
+	"$(AMD_GSTREAMER_PREFIX)/run" $(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/vaapi:va_hip_frame_test //src/libs/gpu/vaapi:va_video_reader_test //src/libs/gpu/vaapi:va_video_playlist_test //src/libs/gpu/vaapi:va_stereo_video_test //src/libs/media:stereo_frame_plan_test //src/libs/media:mp4_video_track_test //src/libs/gpu/vaapi:va_probe_descriptors_test //src/libs/detection:va_detector_image_test //src/libs/program:va_program_sink_test //src/libs/program:va_program_output_test //src/libs/program:va_program_p010_output_test //src/libs/program:va_program_preview_test //src/libs/program:va_program_p010_preview_test //src/libs/program:encoded_colorimetry_test
 
 test-amd-inference:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_output=errors //src/libs/gpu/migraphx:session_test //src/libs/detection:gpu_test //src/libs/detection:postprocess_test //src/libs/detection:hip_detector_failure_test
@@ -63,7 +72,7 @@ test-amd-tracking:
 test-amd-driver-interop:
 	$(BAZEL) test --config=$(BUILD_CONFIG) --config=rocm $(BAZEL_JOBS_FLAG) --local_test_jobs=1 --test_env=LD_LIBRARY_PATH --test_env=GST_PLUGIN_PATH_1_0 --test_output=errors //src/libs/gpu/migraphx:mesa_inference_first_test //src/libs/gpu/migraphx:mesa_graphics_first_test
 
-.PHONY: all print_targets perf perf-rocm debug test clean distclean expunge x86_64 arm64 jetson jetson-qt gstdebug \
+.PHONY: all print_targets perf perf-rocm debug test clean distclean expunge x86_64 arm64 jetson jetson-qt gstdebug private-amd-gstreamer \
 	hstream-job hstream-process-guard hstream-runtime-worker hstream-finalize hstream-calibration-export hstream-model-prepare hstream-prepared-model-validate hstream-model-infer hstream-cli run-hstream-cli hstream-ui hstream-web-job hstream-experiment-task hstream-workflow run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
 	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
@@ -72,7 +81,7 @@ test-amd-driver-interop:
 perf:
 	$(BAZEL) build --config=opt $(HOST_PLATFORM_FLAGS) $(HOST_CUDA_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
-perf-rocm:
+perf-rocm: private-amd-gstreamer
 	$(BAZEL) build --config=opt --config=rocm $(HOST_PLATFORM_FLAGS) $(BAZEL_JOBS_FLAG) //...
 
 debug:
@@ -267,6 +276,7 @@ print_targets:
 		'-------------' \
 		'perf           Build everything with --config=opt (auto-adds arm64/Blackwell host flags when needed).' \
 		'perf-rocm      Full optimized ROCm compatibility build (including unsupported NVIDIA-only targets).' \
+		'private-amd-gstreamer Build or reuse the private patched AMD VA runtime.' \
 		'debug          Build everything with --config=debug (auto-adds Blackwell host flags when needed).' \
 		'gstdebug       Build debug with extra GStreamer debug defines (--config=gstdebug).' \
 		'x86_64         Build optimized for x86_64 (--cpu=k8, auto-adds Blackwell host flags when needed).' \
