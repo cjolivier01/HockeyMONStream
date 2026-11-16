@@ -310,6 +310,61 @@ class SetupTest(unittest.TestCase):
         self.assertFalse(remote.call_args.args[0]["tick"])
         self.assertFalse((self.registry / "setup-location.json").exists())
 
+    def test_delayed_relocation_cannot_replace_recovered_edits(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+
+        def concurrent_move(root, *args):
+            if root == self.registry:
+                return ["stubby"]
+            moved = setup.SetupStore(target).save(
+                {**self.draft, "registry": str(target), "server": "edited-server"}, None
+            )
+            write_json(
+                self.registry / "setup-location.json",
+                {"source_revision": request["revision"], "registry": str(target)},
+            )
+            return []
+
+        with patch.object(storage, "check", side_effect=concurrent_move):
+            with self.assertRaisesRegex(WorkflowError, "Setup moved"):
+                storage.prepare(request)
+        self.assertEqual(
+            storage.recovered(self.registry)["draft"]["server"], "edited-server"
+        )
+        self.assertEqual(list(self.root.glob("shared-registry-*")), [])
+
+    def test_relocation_requires_legacy_controller_retirement_on_its_host(self):
+        from hstream_workflow import setup_storage as storage
+        from hstream_workflow.processes import host_identity, process_identity
+
+        request = self.storage_request()
+        identity = {**host_identity(), **process_identity(os.getpid())}
+        heartbeat = self.registry / "heartbeat.json"
+
+        def remote(argv, timeout):
+            self.assertEqual(argv[-2], self.draft["server"])
+            return subprocess.check_output(
+                shlex.split(argv[-1]), text=True, timeout=timeout
+            )
+
+        for changed in ({}, {"host": "another-host"}):
+            write_json(heartbeat, {**identity, **changed})
+            with patch.object(
+                storage, "check", side_effect=[["stubby"], []]
+            ), patch.object(storage, "run_readonly", side_effect=remote):
+                with self.assertRaisesRegex(WorkflowError, "Stop the previous"):
+                    storage.prepare(request)
+            self.assertFalse((self.registry / "setup-location.json").exists())
+        write_json(heartbeat, {**identity, "boot_id": "retired-boot"})
+        with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
+            storage, "run_readonly", side_effect=remote
+        ):
+            moved, _ = storage.prepare(request)
+        self.assertEqual(moved["registry"], request["shared_registry"])
+
     def test_recovered_setup_locations_reject_cycles(self):
         from hstream_workflow import setup_storage as storage
 

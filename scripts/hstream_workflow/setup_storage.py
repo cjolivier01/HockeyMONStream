@@ -109,6 +109,45 @@ def recovered(root):
         )
 
 
+def require_retired_controller(root, server, timeout):
+    """Older controllers lack the service lock; check their PID on their host."""
+    heartbeat = root / "heartbeat.json"
+    if not heartbeat.exists():
+        return
+    identity = read_json(heartbeat)
+    require(
+        identity.get("boot_id")
+        and type(identity.get("pid")) is int
+        and type(identity.get("start_time")) is int,
+        "The previous controller has no verifiable process identity",
+    )
+    # Reuse the controller's exact host/boot/PID check without depending on a
+    # launcher or Python package in the folder that is being relocated.
+    script = Path(__file__).with_name("processes.py").read_text() + """
+import json, sys
+saved = json.loads(sys.argv[1])
+print(json.dumps({'retired': saved.get('host') == host_identity()['host'] and not same_process(saved)}))
+"""
+    result = run_readonly(
+        [
+            "ssh",
+            "-oBatchMode=yes",
+            "-oStrictHostKeyChecking=yes",
+            "-oConnectTimeout=" + str(timeout),
+            "--",
+            server,
+            shlex.join(["python3", "-c", script, json.dumps(identity)]),
+        ],
+        timeout,
+    )
+    require(
+        json.loads(result).get("retired") is True and read_json(heartbeat) == identity,
+        "Stop the previous HStream controller on "
+        + str(identity.get("host", server))
+        + " before moving setup. Check its process on that server; an old heartbeat alone does not mean it stopped.",
+    )
+
+
 def prepare(request):
     """Move only editable choices; never move active registries or test history."""
     from .setup_execution import generation, idle, remote
@@ -162,6 +201,10 @@ def prepare(request):
             SetupStore(root).read() == saved,
             "Setup choices changed while checking storage. Recover the saved setup.",
         )
+        require(
+            recovered(root) == saved,
+            "Setup moved while checking storage. Recover the saved setup before building again.",
+        )
         current = generation(root)[1] if (root / "setup-build.json").exists() else None
         require(
             current == previous,
@@ -171,6 +214,7 @@ def prepare(request):
             service_lock = locked(root / "controller-service.lock", blocking=False)
             with service_lock:
                 idle(root)
+                require_retired_controller(root, saved["draft"]["server"], timeout)
                 draft = {**saved["draft"], "registry": str(target)}
                 existing = SetupStore(target).read()
                 if existing["draft"] is not None and existing["draft"] != draft:
