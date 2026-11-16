@@ -161,13 +161,12 @@ class Controller:
                 "Resource profile changed before admission",
             )
         workflow_id = plan["workflow_id"]
-        directory = private_directory(
-            game / "_hockeymon/workflows" / workflow_id, create=True
-        )
+        directory = game / "_hockeymon/workflows" / workflow_id
         with self.registry.lock():
             ledger = self.registry.read()
             existing = ledger["workflows"].get(workflow_id)
             if existing:
+                directory = private_directory(directory)
                 require(
                     existing["game"] == str(game)
                     and existing["plan_digest"] == digest(plan),
@@ -175,9 +174,14 @@ class Controller:
                 )
             else:
                 require(
+                    digest(load_config(self.registry.root)) == digest(self.config),
+                    "Cluster settings changed before admission. Reload the profiles and try again.",
+                )
+                require(
                     len(ledger["workflows"]) < 4096,
                     "Workflow registry history limit reached",
                 )
+                directory = private_directory(directory, create=True)
                 # Seal all intent before native ownership acquisition. A service
                 # restart can discover and reconcile a lost acquire response.
                 if (directory / "plan.json").exists():

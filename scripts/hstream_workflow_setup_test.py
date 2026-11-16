@@ -233,6 +233,43 @@ class SetupTest(unittest.TestCase):
             execution.generation(self.registry)[1]["configuration"], config
         )
 
+    def test_interrupted_controller_copy_never_publishes_partial_modules(self):
+        self.save()
+        with patch.object(
+            execution.os, "fsync", side_effect=OSError("interrupted copy")
+        ):
+            with self.assertRaisesRegex(OSError, "interrupted copy"):
+                execution.deploy_controller(self.registry)
+        self.assertFalse(
+            list((self.registry / "setup-releases").rglob("hstream-workflow"))
+        )
+        launcher = execution.deploy_controller(self.registry)
+        self.assertTrue(os.access(launcher, os.X_OK))
+        self.assertEqual(
+            launcher.read_bytes(), execution.controller_files()[0].read_bytes()
+        )
+        self.assertEqual(execution.deploy_controller(self.registry), launcher)
+
+    def test_a_client_opened_before_activation_cannot_admit_old_profiles(self):
+        import hstream_workflow_controller_test as fixtures
+
+        fixture = fixtures.ControllerTest()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        config = read_json(fixture.registry / "config.json")
+        config["profiles"]["cpu"]["label"] = "Changed after the client opened"
+        write_json(fixture.registry / "config.json", config)
+        with self.assertRaisesRegex(WorkflowError, "settings changed before admission"):
+            fixture.controller.register(
+                fixture.plan, fixture.game, defer_admission=True
+            )
+        self.assertEqual(fixture.controller.registry.read()["workflows"], {})
+        self.assertFalse(
+            (
+                fixture.game / "_hockeymon/workflows" / fixture.plan["workflow_id"]
+            ).exists()
+        )
+
     def test_activation_requires_retired_controller_even_with_stale_heartbeat(self):
         from hstream_workflow.processes import host_identity, process_identity
 
@@ -272,6 +309,49 @@ class SetupTest(unittest.TestCase):
                 child.wait(timeout=5)
             write_json(self.registry / "heartbeat.json", retired)
             self.assertTrue(execution.activate(self.registry)["applied"])
+
+    def test_rebuilding_previous_choices_can_replace_a_newer_configuration(self):
+        saved = self.save()
+        original = copy.deepcopy(self.draft)
+
+        def build_current(saved):
+            with patch.object(
+                execution, "compile_configuration", return_value=self.compile()
+            ):
+                return execution.build(
+                    self.registry,
+                    {
+                        "revision": saved["revision"],
+                        "defaults": self.defaults,
+                        "metadata_resources": self.cpu,
+                    },
+                )
+
+        with patch.object(
+            execution,
+            "qualification_status",
+            return_value={"tested": True, "tests": []},
+        ), patch("hstream_workflow.profiles.preflight_runtime"):
+            first = build_current(saved)
+            execution.activate(self.registry)
+            self.draft["profiles"]["gpu"]["label"] = "Other computers"
+            saved = setup.SetupStore(self.registry).save(self.draft, saved["revision"])
+            build_current(saved)
+            execution.activate(self.registry)
+            installed = execution.current_revision(self.registry)
+            self.draft = original
+            saved = setup.SetupStore(self.registry).save(self.draft, saved["revision"])
+            restored = build_current(saved)
+            self.assertNotEqual(first["generation"], restored["generation"])
+            self.assertEqual(
+                execution.generation(self.registry)[1]["configuration_revision"],
+                installed,
+            )
+            execution.activate(self.registry)
+        self.assertEqual(
+            read_json(self.registry / "config.json")["profiles"]["gpu"]["label"],
+            original["profiles"]["gpu"]["label"],
+        )
 
     def test_discovery_recovers_managed_service_registry_with_spaces(self):
         # Run the actual remote probe against fixed local command fixtures.

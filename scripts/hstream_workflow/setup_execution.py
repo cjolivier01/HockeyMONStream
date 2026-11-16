@@ -12,6 +12,7 @@ import platform
 import re
 import shlex
 import socket
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from .files import (
     private_directory,
     read_bytes,
     read_json,
+    sync_directory,
     write_json,
 )
 from .profiles import DEFAULT_FIELDS, controller_files, load_config
@@ -61,15 +63,22 @@ def deploy_controller(registry):
                     "The saved controller release was changed",
                 )
             else:
-                descriptor = os.open(
-                    target,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                    0o700 if name == "hstream-workflow" else 0o600,
+                descriptor, temporary = tempfile.mkstemp(
+                    prefix=".setup-", dir=target.parent
                 )
-                with os.fdopen(descriptor, "wb") as output:
-                    output.write(data)
-                    output.flush()
-                    os.fsync(output.fileno())
+                try:
+                    with os.fdopen(descriptor, "wb") as output:
+                        os.fchmod(
+                            output.fileno(),
+                            0o700 if name == "hstream-workflow" else 0o600,
+                        )
+                        output.write(data)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    os.link(temporary, target, follow_symlinks=False)
+                    sync_directory(target.parent)
+                finally:
+                    os.unlink(temporary)
     return destination / "hstream-workflow"
 
 
@@ -346,7 +355,14 @@ def build(root, request):
         store["draft"], request["defaults"], request["metadata_resources"]
     )
     installed_launcher(configuration)
-    generation = digest({"draft": store, "configuration": configuration})
+    configuration_revision = current_revision(root)
+    generation = digest(
+        {
+            "draft": store,
+            "configuration": configuration,
+            "configuration_revision": configuration_revision,
+        }
+    )
     directory = private_directory(root / "setup-builds" / generation, create=True)
     with locked(directory / "build.lock"):
         if not (directory / "build.json").exists():
@@ -371,7 +387,7 @@ def build(root, request):
                     "schema": 1,
                     "revision": store["revision"],
                     "configuration": configuration,
-                    "configuration_revision": current_revision(root),
+                    "configuration_revision": configuration_revision,
                     "tests": {},
                     "host": socket.gethostname(),
                 },
