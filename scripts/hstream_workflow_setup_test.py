@@ -276,17 +276,32 @@ class SetupTest(unittest.TestCase):
             ],
             check=True,
         )
+        external = self.root / "vendor"
+        external.mkdir()
+        library.write_text("int external(void) { return 0; }")
+        subprocess.run(
+            [
+                "cc",
+                "-shared",
+                "-fPIC",
+                str(library),
+                "-o",
+                str(external / "libexternal.so"),
+            ],
+            check=True,
+        )
         program = self.root / "task.c"
         program.write_text(r"""#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 extern int value(void);
+extern int external(void);
 int main(int argc, char** argv) {
   if (argc > 1 && strcmp(argv[1], "--admission") == 0) {
-    printf("{\"value\": %d, \"versioned_plugins\": %d}", value(), getenv("GST_PLUGIN_PATH_1_0") != NULL);
+    printf("{\"value\": %d, \"versioned_plugins\": %d}", value() + external(), getenv("GST_PLUGIN_PATH_1_0") != NULL);
     return 0;
   }
-  return value();
+  return value() + external();
 }
 """)
         subprocess.run(
@@ -295,6 +310,8 @@ int main(int argc, char** argv) {
                 str(program),
                 "-L" + str(installation / "lib"),
                 "-lretained",
+                "-L" + str(external),
+                "-lexternal",
                 "-Wl,-rpath," + str(installation / "lib"),
                 "-o",
                 str(installation / "bin/hstream-experiment-task"),
@@ -315,42 +332,54 @@ int main(int argc, char** argv) {
             ],
             check=True,
         )
-        self.assertEqual(subprocess.run([prepared["task"]], check=False).returncode, 23)
-        profile = self.compile()["profiles"]["gpu"]
-        profile.update(runtime=prepared["runtime"], task_command=[prepared["task"]])
-        attempt = self.root / "attempt"
-        attempt.mkdir(mode=0o700)
-        for name in ("request.json", "profile.json", "settings.json"):
-            write_json(attempt / name, {})
-        request = {
-            "attempt_id": "retained",
-            "workflow_id": "workflow",
-            "epoch": 1,
-            "runtime": {},
-        }
-        executor.prepare(
-            attempt, request, profile, self.defaults, {"attempt_id": "retained"}
-        )
-        spec = read_json(attempt / "worker/request.json")["batch"]["spec"]
-        result = subprocess.run(
-            spec["argv"], env={**os.environ, **spec["environment"]}, check=False
-        )
-        self.assertEqual(result.returncode, 17)
-        profile["executor"] = "local"
-        profile["resources"]["gpus"] = 0
-        profile["runtime"]["storage_namespace"] = "retained"
-        controller = Controller.__new__(Controller)
-        controller.config = {
-            "admission_profile": "metadata",
-            "profiles": {"metadata": profile},
-        }
-        controller.defaults = self.defaults
-        self.assertIn("GST_PLUGIN_PATH_1_0", spec["unset_environment"])
-        with patch.dict(os.environ, {"GST_PLUGIN_PATH_1_0": "/unrelated/plugins"}):
+        with patch.dict(
+            os.environ,
+            {
+                "LD_LIBRARY_PATH": str(external) + ":" + str(installation / "lib"),
+                "GST_PLUGIN_PATH_1_0": "/unrelated/plugins",
+                "HSTREAM_SETUP_TEST_SECRET": "never write to a worker request",
+            },
+        ):
+            self.assertEqual(
+                subprocess.run([prepared["task"]], check=False).returncode, 23
+            )
+            profile = self.compile()["profiles"]["gpu"]
+            profile.update(runtime=prepared["runtime"], task_command=[prepared["task"]])
+            attempt = self.root / "attempt"
+            attempt.mkdir(mode=0o700)
+            for name in ("request.json", "profile.json", "settings.json"):
+                write_json(attempt / name, {})
+            request = {
+                "attempt_id": "retained",
+                "workflow_id": "workflow",
+                "epoch": 1,
+                "runtime": {},
+            }
+            executor.prepare(
+                attempt, request, profile, self.defaults, {"attempt_id": "retained"}
+            )
+            spec = read_json(attempt / "worker/request.json")["batch"]["spec"]
+            child_environment = dict(os.environ)
+            for key in spec["unset_environment"]:
+                child_environment.pop(key, None)
+            child_environment.update(spec["environment"])
+            result = subprocess.run(spec["argv"], env=child_environment, check=False)
+            self.assertEqual(result.returncode, 17)
+            profile["executor"] = "local"
+            profile["resources"]["gpus"] = 0
+            profile["runtime"]["storage_namespace"] = "retained"
+            controller = Controller.__new__(Controller)
+            controller.config = {
+                "admission_profile": "metadata",
+                "profiles": {"metadata": profile},
+            }
+            controller.defaults = self.defaults
+            self.assertIn("GST_PLUGIN_PATH_1_0", spec["unset_environment"])
             self.assertEqual(
                 controller._native(attempt, "inspect", {}),
                 {"value": 17, "versioned_plugins": 0},
             )
+            self.assertNotIn("HSTREAM_SETUP_TEST_SECRET", spec["environment"])
 
     def test_interrupted_copy_never_publishes_a_runtime(self):
         installation = self.installed_fixture("installed")
