@@ -4,6 +4,7 @@ This module never executes on compute. Scheduler jobs contain only the pinned
 C++ worker command; no controller process must stay alive for a batch to finish.
 """
 
+import os
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -50,6 +51,34 @@ def limits(profile, settings):
     }
 
 
+def installation_environment(runtime, inherited=None):
+    environment = dict(inherited) if inherited is not None else {}
+    # Packaged ELF RUNPATHs name the installation prefix. Prefer the retained
+    # copy before the loader starts the task, not after entering native main().
+    installation = runtime.get("root")
+    if installation:
+        installation = Path(installation)
+        pinned = [Path(path) for path in runtime["files"]]
+        libraries = [installation / "lib", installation / "lib/gst-plugins"]
+        libraries = [
+            path for path in libraries if any(item.parent == path for item in pinned)
+        ]
+        if libraries:
+            search = [str(path) for path in libraries]
+            if environment.get("LD_LIBRARY_PATH"):
+                search.append(environment["LD_LIBRARY_PATH"])
+            environment["LD_LIBRARY_PATH"] = ":".join(search)
+        plugins = installation / "lib/gst-plugins"
+        if any(path.parent == plugins for path in pinned):
+            # Native startup extends this with its vendor plugin directories.
+            # The versioned variable would hide those subsequent additions.
+            environment.pop("GST_PLUGIN_PATH_1_0", None)
+            environment["GST_PLUGIN_PATH"] = str(plugins)
+        if str(installation / "configs/baseline.yaml") in runtime["files"]:
+            environment["HM_CONFIG_ROOT"] = str(installation / "configs")
+    return environment
+
+
 def prepare(root, request, profile, settings, intent):
     runtime = profile["runtime"]
     worker_limits = limits(profile, settings)
@@ -57,6 +86,14 @@ def prepare(root, request, profile, settings, intent):
     directory = private_directory(root / "worker", create=True)
     scratch = private_directory(root / "runtime", create=True)
     environment = {
+        **installation_environment(
+            runtime,
+            (
+                {"LD_LIBRARY_PATH": os.environ["LD_LIBRARY_PATH"]}
+                if "LD_LIBRARY_PATH" in os.environ
+                else {}
+            ),
+        ),
         "HSTREAM_WORKFLOW_ATTEMPT": intent["attempt_id"],
         "HSTREAM_RUNTIME_CACHE_DIR": str(scratch),
         "HSTREAM_JOB_MANAGED_RUNTIME": "1",
@@ -95,6 +132,7 @@ def prepare(root, request, profile, settings, intent):
             "HSTREAM_ARCHIVE_RUN_ID",
             "HSTREAM_JOB_MANIFEST",
             "HSTREAM_USER_CONFIG_SNAPSHOT",
+            *(["GST_PLUGIN_PATH_1_0"] if "GST_PLUGIN_PATH" in environment else []),
         ],
         "timeout_ms": task_ms,
         "rotate_log": True,

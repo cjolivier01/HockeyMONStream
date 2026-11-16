@@ -22,6 +22,7 @@ from pathlib import Path
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from .files import locked, private_directory, read_json, sync_directory, write_json
+from .graph import SUCCESS, selected_stages
 from .schema import (
     WorkflowError,
     plan_digest,
@@ -149,18 +150,32 @@ def project_snapshot(plan, snapshot):
     )
     require(snapshot.get("state") in STATES, "Invalid workflow observation state")
     require(isinstance(snapshot.get("nodes"), list), "Expected bounded node snapshots")
+    selected = selected_stages(plan, snapshot)
+    selected_ids = {stage["id"] for stage in selected}
     source_nodes = {node["id"]: node for node in snapshot["nodes"]}
     require(
-        len(source_nodes) == len(snapshot["nodes"]) == len(plan["stages"]),
+        len(source_nodes) == len(snapshot["nodes"]) == len(selected),
         "Observer node membership mismatch",
     )
     stages, nodes = [], []
-    for stage in plan["stages"]:
+    for stage in selected:
         node = source_nodes.get(stage["id"])
         require(
             node is not None and node.get("state") in STATES, "Invalid observer stage"
         )
-        stages.append({key: stage[key] for key in ("id", "label", "dependencies")})
+        require(
+            node["state"] in SUCCESS or set(stage["dependencies"]) <= selected_ids,
+            "An unfinished observer stage depends on a removed candidate",
+        )
+        stages.append(
+            {
+                "id": stage["id"],
+                "label": stage["label"],
+                "dependencies": [
+                    parent for parent in stage["dependencies"] if parent in selected_ids
+                ],
+            }
+        )
         attempts = []
         require(
             isinstance(node.get("attempts"), list) and len(node["attempts"]) <= 64,

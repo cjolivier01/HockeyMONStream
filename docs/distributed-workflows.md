@@ -75,7 +75,16 @@ verified PNG bundle remains available if a following calibration fails. A failed
 unavailable prerequisite blocks descendants, while unrelated candidates
 continue. Retry creates a new attempt and observation epoch, preserving verified
 successful prerequisites. Retry is available after all attempts have stopped and
-recording ownership has been released. **Retry failed** requeues every failed or
+recording ownership has been released. **Start batch** also retries unfinished
+candidates still in the table, including cancelled work. Completed stages and
+verified frame selections stay reusable. Retrying a prerequisite resets all its
+remaining descendants; removed candidates are excluded from retry admission and
+ownership binding, while their previous attempt history stays on disk. Each
+retained workflow is retried once, then newly queued options run. Stop cancels
+the remaining sequence as well as the current workflow. Retry keeps each
+workflow's frozen profile and concurrency; new options use the chosen profile.
+
+**Retry failed** requeues every failed or
 unavailable stage in one request, preserving successful results and attempt
 history. Independent stages resume up to the batch's original parallel-stage
 limit; blocked descendants wait for their prerequisites. **Retry selected stage**

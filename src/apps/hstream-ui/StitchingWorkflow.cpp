@@ -661,6 +661,11 @@ struct StitchingWorkflow::Impl {
   QTimer* poll{nullptr};
   QJsonObject profiles, snapshot;
   QString workflow, selected_candidate, transient_notice;
+  QStringList candidate_keys, restart_workflows;
+  QString restart_profile;
+  int restart_parallel{0};
+  bool candidates_scoped{false}, restart_check{false}, restart_advance_pending{false};
+  std::optional<StitchingExperimentStore> restart_store;
   bool command_pending{false}, status_pending{false}, profiles_ready{false}, editing{true}, queued{false};
   bool attachment_active{true};
   bool restore_controls{false};
@@ -683,8 +688,9 @@ struct StitchingWorkflow::Impl {
     while (profile->count() > 1)
       profile->removeItem(1);
     if (registry.isEmpty()) {
-      const QString reason = "Distributed workflow is not configured. Choose Set up my cluster… to create or recover the "
-                             "Dagster/Slurm registry for this game.";
+      const QString reason =
+          "Distributed workflow is not configured. Choose Set up my cluster… to create or recover the "
+          "Dagster/Slurm registry for this game.";
       profile->setToolTip(reason);
       availability->setText("Distributed workflow unavailable");
       availability->setToolTip(reason);
@@ -868,9 +874,8 @@ struct StitchingWorkflow::Impl {
       }
     }
     notify(value, error, previous);
-    if ((terminal(state) && !snapshot.value("owner_released").toBool()) ||
-        snapshot.contains("controller_error") || snapshot.contains("cancel_error") ||
-        snapshot.contains("controller_warning"))
+    if ((terminal(state) && !snapshot.value("owner_released").toBool()) || snapshot.contains("controller_error") ||
+        snapshot.contains("cancel_error") || snapshot.contains("controller_warning"))
       transient_notice = value;
   }
   void call(QStringList arguments, std::function<void(QJsonObject, QString)> done) {
@@ -967,7 +972,8 @@ struct StitchingWorkflow::Impl {
     for (const auto& value : snapshot.value("nodes").toArray()) {
       const auto node = value.toObject();
       const auto state = node.value("state").toString();
-      if (state == "failed" || state == "unavailable")
+      if ((state == "failed" || state == "unavailable") &&
+          (!candidates_scoped || candidate_keys.contains(node.value("candidate_id").toString())))
         ids.append(node.value("id").toString());
     }
     return ids;
@@ -976,12 +982,84 @@ struct StitchingWorkflow::Impl {
     return editing && !command_pending && !owner->active() && !workflow.isEmpty() &&
         terminal(snapshot.value("state").toString());
   }
-  void retryStages(const QStringList& ids) {
-    if (!canRetry() || ids.isEmpty())
+  QStringList retainedCandidates() const {
+    QStringList result;
+    for (const auto& value : snapshot.value("nodes").toArray()) {
+      const auto key = value.toObject().value("candidate_id").toString();
+      if ((!candidates_scoped || candidate_keys.contains(key)) && !result.contains(key))
+        result.append(key);
+    }
+    return result;
+  }
+  void stopRestart() {
+    restart_store.reset();
+    restart_workflows.clear();
+    restart_check = false;
+  }
+  void nextRestart() {
+    if (!restart_store)
+      return;
+    if (!restart_workflows.isEmpty()) {
+      workflow = restart_workflows.takeFirst();
+      snapshot = {};
+      attachment_active = true;
+      restore_controls = true;
+      restart_check = true;
+      ++request_generation;
+      showMonitor(true);
+      poll->start();
+      refresh();
+    } else {
+      const auto store = *restart_store;
+      const auto selected_profile = restart_profile;
+      const int maximum = restart_parallel;
+      stopRestart();
+      const auto catalog = LoadStitchingExperimentStore(store);
+      if (!catalog.ok()) {
+        notify(text(catalog.status().ToString()), true);
+        return;
+      }
+      const bool queued_rows =
+          std::any_of(catalog->experiments.begin(), catalog->experiments.end(), [](const auto& row) {
+            return row.state == "queued" && row.workflow_id.empty();
+          });
+      profile->setCurrentIndex(profile->findData(selected_profile));
+      parallel->setValue(maximum);
+      if (queued_rows && owner->selected())
+        submitPlan(store, *catalog, false);
+      else if (owner->changed)
+        owner->changed();
+    }
+  }
+  void continueRestart() {
+    if (!restart_store || command_pending || retry_epoch >= 0 || !terminal(snapshot.value("state").toString()) ||
+        !snapshot.value("owner_released").toBool())
+      return;
+    if (restart_check) {
+      restart_check = false;
+      const auto retained = retainedCandidates();
+      QStringList ids;
+      for (const auto& value : snapshot.value("nodes").toArray()) {
+        const auto node = value.toObject();
+        if (retained.contains(node.value("candidate_id").toString()) && unsuccessful(node.value("state").toString()))
+          ids.append(node.value("id").toString());
+      }
+      if (!ids.isEmpty()) {
+        retryStages(ids, true);
+        return;
+      }
+    }
+    nextRestart();
+  }
+  void retryStages(const QStringList& ids, bool restarting = false) {
+    if ((!restarting && !canRetry()) || command_pending || ids.isEmpty())
       return;
     QStringList arguments{"retry", "--workflow", workflow, "--epoch", QString::number(snapshot.value("epoch").toInt())};
     for (const auto& id : ids)
       arguments << "--stage" << id;
+    if (candidates_scoped)
+      for (const auto& key : retainedCandidates())
+        arguments << "--candidate" << key;
     command_pending = true;
     ++request_generation;
     retry_epoch = snapshot.value("epoch").toInt();
@@ -991,8 +1069,10 @@ struct StitchingWorkflow::Impl {
     call(arguments, [this](QJsonObject value, QString error) {
       command_pending = false;
       if (!error.isEmpty()) {
-        if (value.value("client_not_started").toBool())
+        if (value.value("client_not_started").toBool()) {
           retry_epoch = -1;
+          stopRestart();
+        }
         if (retry_epoch >= 0) {
           notifyUnconfirmed(error + " Checking the retained workflow before retrying again.");
           refresh();
@@ -1016,6 +1096,8 @@ struct StitchingWorkflow::Impl {
         editing && queued && owner->selected() && profiles_ready && !command_pending && !owner->active());
     const auto node = selectedNode();
     retry->setEnabled(canRetry() && unsuccessful(node.value("state").toString()));
+    if (candidates_scoped && !candidate_keys.contains(node.value("candidate_id").toString()))
+      retry->setEnabled(false);
     retry_failed->setEnabled(canRetry() && !failedStages().isEmpty());
   }
   void renderDetails() {
@@ -1146,6 +1228,13 @@ struct StitchingWorkflow::Impl {
     if (owner->changed)
       owner->changed();
     resolveNotice();
+    if (restart_store && !restart_advance_pending) {
+      restart_advance_pending = true;
+      QTimer::singleShot(0, owner, [this] {
+        restart_advance_pending = false;
+        continueRestart();
+      });
+    }
   }
   void refresh() {
     if (workflow.isEmpty() || status_pending || command_pending)
@@ -1175,6 +1264,8 @@ struct StitchingWorkflow::Impl {
         // writes its epoch synchronously before launching any helpers. This
         // read began after that process exited; an unchanged released epoch
         // therefore proves rejection, while a new epoch proves acceptance.
+        if (result.value("epoch").toInt() == retry_epoch)
+          stopRestart();
         retry_epoch = -1;
       }
       render(std::move(result));
@@ -1482,6 +1573,8 @@ void StitchingWorkflow::restoreMonitor() {
     impl_->monitor_dialog->close();
 }
 bool StitchingWorkflow::active() const {
+  if (impl_->restart_store)
+    return true;
   if (impl_->snapshot.isEmpty() && impl_->retry_epoch < 0)
     return !impl_->workflow.isEmpty() && impl_->attachment_active;
   return !impl_->workflow.isEmpty() &&
@@ -1497,19 +1590,58 @@ bool StitchingWorkflow::hasSelection() const {
 QString StitchingWorkflow::workflowId() const {
   return impl_->workflow;
 }
+void StitchingWorkflow::setCandidates(const QStringList& keys) {
+  impl_->candidate_keys = keys;
+  impl_->candidates_scoped = true;
+}
 void StitchingWorkflow::setEditingEnabled(bool enabled, bool queued) {
   impl_->editing = enabled;
   impl_->queued = queued;
   impl_->controls();
 }
 void StitchingWorkflow::start(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog) {
-  impl_->submitPlan(store, catalog, false);
+  auto& s = *impl_;
+  if (active() || busy())
+    return;
+  s.restart_store = store;
+  s.restart_profile = s.profile->currentData().toString();
+  s.restart_parallel = s.parallel->value();
+  for (const auto& row : catalog.experiments) {
+    const auto id = text(row.workflow_id);
+    if (!id.isEmpty() && row.state != "complete" && !s.restart_workflows.contains(id))
+      s.restart_workflows.append(id);
+  }
+  if (s.restart_workflows.isEmpty()) {
+    s.stopRestart();
+    s.submitPlan(store, catalog, false);
+    return;
+  }
+  s.nextRestart();
 }
 void StitchingWorkflow::exportBatch(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog) {
   impl_->submitPlan(store, catalog, true);
 }
 void StitchingWorkflow::cancel(std::function<void(bool)> completed) {
   auto& s = *impl_;
+  const bool checking_history = s.restart_store && s.restart_check;
+  s.stopRestart();
+  if (checking_history) {
+    // No retry was sent while reading retained history. Cancelling this queue
+    // must not send an epoch-zero cancellation to an older workflow.
+    s.attachment_active = false;
+    if (completed)
+      completed(true);
+    if (changed)
+      changed();
+    return;
+  }
+  if (!active() && !busy()) {
+    if (completed)
+      completed(true);
+    if (changed)
+      changed();
+    return;
+  }
   if (!active() || busy())
     return;
   s.command_pending = true;

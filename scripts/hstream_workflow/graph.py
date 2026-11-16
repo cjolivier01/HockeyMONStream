@@ -11,6 +11,24 @@ TERMINAL = SUCCESS | UNSUCCESSFUL
 STATES = ACTIVE | TERMINAL | {"waiting", "ready"}
 
 
+def selected_stages(plan, state):
+    selected = state.get("candidate_ids")
+    if selected is not None:
+        require(
+            isinstance(selected, list)
+            and selected
+            and all(isinstance(key, str) for key in selected)
+            and len(selected) == len(set(selected))
+            and set(selected) <= {stage["candidate_id"] for stage in plan["stages"]},
+            "Invalid retained candidate selection",
+        )
+    return [
+        stage
+        for stage in plan["stages"]
+        if selected is None or stage["candidate_id"] in selected
+    ]
+
+
 def initial_state(plan):
     return {
         "schema": 1,
@@ -53,6 +71,26 @@ def validate_state(plan, state):
         set(state["nodes"]) == {stage["id"] for stage in plan["stages"]},
         "Stage state membership changed",
     )
+    selected = state.get("candidate_ids")
+    if selected is not None:
+        stages = selected_stages(plan, state)
+        keys = {stage["id"] for stage in stages}
+        require(
+            all(
+                state["nodes"][stage["id"]]["state"] in SUCCESS
+                or set(stage["dependencies"]) <= keys
+                for stage in stages
+            ),
+            "A retained candidate depends on a removed candidate",
+        )
+        require(
+            all(
+                node["state"] in TERMINAL
+                for key, node in state["nodes"].items()
+                if key not in keys
+            ),
+            "Removed candidates must be stopped before restarting",
+        )
     attempt_ids = set()
     for node in state["nodes"].values():
         require(
@@ -257,8 +295,12 @@ def cancel(plan, state):
     return refresh(plan, _commit(state, current))
 
 
-def retry(plan, state, stage_ids):
+def retry(plan, state, stage_ids, candidate_ids=None):
     current = _copy(plan, state)
+    if candidate_ids is not None:
+        current["candidate_ids"] = copy.deepcopy(candidate_ids)
+        validate_state(plan, current)
+    selected = {stage["id"] for stage in selected_stages(plan, current)}
     require(
         not any(node["state"] in ACTIVE for node in current["nodes"].values()),
         "Wait for every attempt to stop before retrying",
@@ -271,18 +313,16 @@ def retry(plan, state, stage_ids):
     )
     for key in stage_ids:
         require(
-            key in current["nodes"] and current["nodes"][key]["state"] in UNSUCCESSFUL,
+            key in selected and current["nodes"][key]["state"] in UNSUCCESSFUL,
             "Only unsuccessful stages can be retried",
         )
     reset = set(stage_ids)
     changed = True
     while changed:
         changed = False
-        for stage in plan["stages"]:
-            if (
-                stage["id"] not in reset
-                and current["nodes"][stage["id"]]["state"] in {"blocked", "cancelled"}
-                and any(parent in reset for parent in stage["dependencies"])
+        for stage in selected_stages(plan, current):
+            if stage["id"] not in reset and any(
+                parent in reset for parent in stage["dependencies"]
             ):
                 reset.add(stage["id"])
                 changed = True
@@ -297,7 +337,9 @@ def retry(plan, state, stage_ids):
 
 def snapshot(plan, state):
     current = _copy(plan, state)
-    states = [node["state"] for node in current["nodes"].values()]
+    selected = selected_stages(plan, current)
+    keys = {stage["id"] for stage in selected}
+    states = [current["nodes"][stage["id"]]["state"] for stage in selected]
     if "recovery" in states:
         outcome = "recovery"
     elif any(item in ACTIVE for item in states):
@@ -324,7 +366,10 @@ def snapshot(plan, state):
                     for key in ("id", "kind", "label", "candidate_id", "dependencies")
                 },
                 **copy.deepcopy(current["nodes"][stage["id"]]),
+                "dependencies": [
+                    parent for parent in stage["dependencies"] if parent in keys
+                ],
             }
-            for stage in plan["stages"]
+            for stage in selected
         ],
     }

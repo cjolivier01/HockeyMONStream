@@ -15,19 +15,21 @@ controller's admission, ownership or cleanup checks.
    also finds an existing controller's registry.
    When it finds installed HStream programs, **Use installed HStream for main
    server** copies that folder into the draft. This changes only the main-server
-   installation; review each computer profile's folder separately.
+   installation. Build also discovers the installed programs on each computer.
 2. Choose a computer and **Add selected computer**. Its queue and GPU request
    are filled in. Name the profile and choose its parallel-job limit. Advanced
    settings expose resources, installation paths, account, QoS and constraints.
-   Overlapping profiles must share concurrency limits.
-3. Check **Storage, software and dashboard settings**. Recordings and installed
-   runtimes must be available at the same absolute paths across the cluster.
+   Overlapping profiles share the lowest of their existing concurrency limits.
+3. Check **Storage, software and dashboard settings**. Recordings and the settings
+   folder must be available at the same absolute paths across the cluster.
    The main server needs the native experiment task and runtime worker too.
    Install the current HStream desktop package for each machine's OS/processor
    when these are missing. A checkout or interpreter-only installation is
    insufficient. Enter an existing Dagster observation folder if wanted.
-4. **Save and build registry** pins installed files, creates CPU preparation
-   settings and writes an isolated test registry. **Save setup draft** can save
+4. **Save and build registry** finds installed HStream on every selected computer,
+   repairs obsolete installation paths and prepares immutable shared copies.
+   Computers with different OS builds are grouped automatically. It creates CPU
+   preparation settings and writes an isolated test registry. **Save setup draft** can save
    incomplete choices without replacing the running configuration.
 5. Choose a sample recording with players on the ice. **Test next computer** runs
    preparation, calibration, player search, extraction, reuse and completion
@@ -41,18 +43,35 @@ controller's admission, ownership or cleanup checks.
 7. **Check installed setup**, then **Use this cluster** reloads the profile list.
 
 Defaults live in `workflow.setup` in `configs/baseline.yaml`. The suggested
-registry is `~/.local/state/hstream-workflows/registry`; keep it on durable shared
+registry is `~/hstream-workflows/registry`; keep it on durable shared
 storage. After reinstalling, choose **Recover saved setup**. The desktop also
 tries the saved/default folder automatically. Recovery reads older profiles and
 explains which parts need replacing.
+Before building, setup tests both reads and writes from the main server and every
+selected computer without relying on files already being shared. This handles
+hosts such as Jetsons whose `.local` directory intentionally uses local disk.
+If the old folder is not shared, setup verifies the baseline location, copies the
+editable choices there and remembers that location for recovery. Existing
+registries, test history and machine-local installations stay in place. A running
+controller, unfinished tests or recording ownership prevent automatic relocation;
+existing destination choices are preserved in a separate setup folder.
 `make deploy` installs the native programs (the desktop package uses
-`/opt/hstream/bin`) but does not rewrite saved installation paths or qualify
-profiles. If setup still names an old `hstream-workflows/releases/...` folder
-after deployment, recover the draft, run discovery and use the installed
-main-server folder. Check **Advanced profile settings** for outdated compute
-folders, then build and test again. Discovery alone never enables execution.
-Runtime file hashes must match on every computer using a profile; the same path
-on machines with different OS packages does not establish that match.
+`/opt/hstream/bin`). After deployment, **Save and build registry** repairs stale
+preview-release paths automatically. It copies each distinct installed package
+into `setup-runtimes/` under the registry, verifies its files and reuses matching
+copies. Package-owned files are copied; local backups are excluded. Custom usable
+installations remain selectable in Advanced profile settings. Missing programs
+still require installing HStream on that computer. Headless Jetson packages now
+include `hstream-experiment-task`; enabling the desktop UI is not necessary.
+
+Mixed OS or processor builds become separate execution profiles with readable
+computer names. Their job limits remain shared across the original overlapping
+profiles, so splitting a profile does not increase cluster capacity. The editor
+retains the original editable profiles and displays any lowered overlapping limits.
+Tasks select the prepared libraries and baseline before their native program
+starts, including packages whose ELF search path names the deployment prefix.
+Published copies stay in place for existing runs. Discovery and build never mark
+computers qualified: each one still needs its native sample test.
 Discovery also finds registries used by managed user services, including custom
 folders. If it finds several, it lists them for selection. Changing the settings
 folder starts a separate draft; it cannot carry another folder's save revision.
@@ -84,7 +103,11 @@ not certify every codec or replace browser workflow qualification.
 `setup.py` owns revision-checked `setup.json` drafts and read-only SSH discovery.
 Setup CLI commands bypass installed-controller dispatch to repair absent/invalid
 registries. `setup_execution.py` copies a content-addressed controller release,
-compiles pinned profiles and retains generations under `setup-builds/`. Tests use
+compiles pinned profiles and retains generations under `setup-builds/`.
+`setup_storage.py` verifies shared storage and recovers relocated drafts.
+`setup_runtime.py` discovers and snapshots node installations over SSH using the
+shared controller and a shared-file challenge. Preparation completes and the new
+generation validates before revision-checked draft repairs are committed. Tests use
 ordinary Controller plans, game ownership, reservations, receipts and retirement.
 `setup-test-only.json` prevents normal profile selection and publication in test
 registries. Activation requires every node's successful retired test, unchanged

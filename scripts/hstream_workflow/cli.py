@@ -95,6 +95,7 @@ def parser():
             command.add_argument("--epoch", required=True, type=int)
         if name == "retry":
             command.add_argument("--stage", required=True, action="append")
+            command.add_argument("--candidate", action="append")
         if name == "log":
             command.add_argument("--stage", required=True)
             command.add_argument("--attempt")
@@ -162,7 +163,9 @@ def main(argv=None):
         elif args.command == "cancel":
             result = controller.cancel(args.workflow, args.epoch)
         elif args.command == "retry":
-            result = controller.retry(args.workflow, args.stage, args.epoch)
+            result = controller.retry(
+                args.workflow, args.stage, args.epoch, args.candidate
+            )
         elif args.command == "events":
             result = controller.events(args.workflow, args.stage)
         elif args.command == "log":

@@ -93,10 +93,12 @@ make deploy NODES=stubby JETSON_QT=1
 These commands require a committed, clean local checkout and build its source
 snapshot on the Jetson.
 The package builder installs the Qt development packages when needed and
-includes `hstream-ui`, the web/experiment helpers, their runtime dependencies,
+includes `hstream-ui`, the web adapter, their runtime dependencies,
 and the desktop launcher. After deployment, run `hstream-ui` from the Jetson's
 desktop session. Omitting `JETSON_QT=1` keeps Jetson packages headless; installing
-Qt on the device alone does not opt in. The package records `X-HStream-Qt` as
+Qt on the device alone does not opt in. Every Jetson package includes the headless
+`hstream-experiment-task` and its Qt library dependencies so the computer can run
+Slurm experiment stages without installing the desktop UI. The package records `X-HStream-Qt` as
 `0` or `1`, and deployment checks that it matches the requested option.
 
 ## Deployment

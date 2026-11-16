@@ -34,6 +34,7 @@ class StitchingWorkflow : public QWidget {
   bool busy() const;
   bool hasSelection() const;
   QString workflowId() const;
+  void setCandidates(const QStringList& keys);
   void setEditingEnabled(bool enabled, bool queued);
   void start(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);
   void exportBatch(const StitchingExperimentStore& store, const StitchingExperimentCatalog& catalog);

@@ -13,6 +13,7 @@ import re
 import shlex
 import socket
 import tempfile
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -98,6 +99,22 @@ def remote(request):
         )
     timeout = request["timeout_seconds"]
     positive(timeout, "Setup timeout", 300)
+    storage_message = ""
+    if request["action"] == "build":
+        from .setup_storage import prepare
+
+        started = time.monotonic()
+        request, storage_message = prepare(request)
+        timeout -= int(time.monotonic() - started)
+        require(
+            timeout > 0,
+            "Checking shared storage exceeded the setup timeout. Check the computer connections and build again.",
+        )
+        request = {**request, "timeout_seconds": timeout}
+        root = private_directory(
+            absolute(request["registry"], "Shared settings folder")
+        )
+        draft = request["draft"]
     launcher = deploy_controller(root)
     path = root / ("setup-request-" + uuid4().hex + ".json")
     # The random challenge also proves that the server sees the same storage.
@@ -120,12 +137,14 @@ def remote(request):
             result.pop("challenge", None) == challenge,
             "The server cannot see the same settings folder",
         )
+        if storage_message:
+            result["message"] = storage_message + "\n" + result.get("message", "")
         return result
     finally:
         path.unlink(missing_ok=True)
 
 
-def inventory(root, *, cpu):
+def inventory(root, *, cpu, paths=None):
     """Pin an installed shared runtime, including libraries and configuration.
 
     The native worker rechecks every pin on each allocated node. Differing
@@ -189,7 +208,7 @@ def inventory(root, *, cpu):
     # its own immutable controller release; pinning both makes client dispatch
     # ambiguous. Native tasks do not execute the bundled controller copy.
     entries = []
-    for index, path in enumerate(root.rglob("*")):
+    for index, path in enumerate(root.rglob("*") if paths is None else paths):
         require(
             index < 20000,
             "Choose an installed HStream folder, not a source checkout or home directory",
@@ -236,7 +255,9 @@ def inventory(root, *, cpu):
     return str(task), runtime
 
 
-def compile_configuration(draft, defaults, metadata_resources, inspect=inventory):
+def compile_configuration(
+    draft, defaults, metadata_resources, inspect=inventory, prepared=None
+):
     draft = validate_draft(draft)
     require(draft["profiles"], "Choose at least one computer profile")
     require(draft["game_roots"], "Choose the shared folder containing your recordings")
@@ -253,7 +274,12 @@ def compile_configuration(draft, defaults, metadata_resources, inspect=inventory
     for key, value in metadata_resources.items():
         positive(value, key)
     namespace = "setup-" + digest(draft["registry"])[:24]
-    task, runtime = inspect(draft["controller_runtime"], cpu=True)
+    if prepared is None:
+        task, runtime = inspect(draft["controller_runtime"], cpu=True)
+    else:
+        task, runtime = prepared["metadata"]["task"], copy.deepcopy(
+            prepared["metadata"]["runtime"]
+        )
     runtime["storage_namespace"] = namespace
     runtime["files"].update(
         {
@@ -288,7 +314,28 @@ def compile_configuration(draft, defaults, metadata_resources, inspect=inventory
     }
     # Overlapping aliases share a counter. Never silently multiply capacity.
     groups = []
+    expanded = []
     for key, source in draft["profiles"].items():
+        if prepared is None:
+            expanded.append((key, source, None, source["nodes"]))
+            continue
+        variants = prepared["profiles"][key]
+        require(variants, source["label"] + ": choose at least one computer")
+        for variant in variants:
+            actual = copy.deepcopy(source)
+            actual["nodes"] = sorted(variant["nodes"])
+            profile_id = key
+            if len(variants) > 1:
+                profile_id = key[:80] + "-" + digest(actual["nodes"])[:12]
+                actual["label"] = (
+                    source["label"] + " — " + ", ".join(actual["nodes"])
+                )[:256]
+            expanded.append((profile_id, actual, variant, source["nodes"]))
+    for key, source, variant, pool_nodes in expanded:
+        require(
+            key not in profiles,
+            "Prepared profile IDs overlap; rename the duplicate profile",
+        )
         require(
             key != "metadata",
             "The profile ID metadata is reserved for file preparation",
@@ -297,7 +344,7 @@ def compile_configuration(draft, defaults, metadata_resources, inspect=inventory
             source["nodes"] and source["partition"] and source["gres"],
             source["label"] + ": choose computers, a queue and a GPU type",
         )
-        nodes = set(source["nodes"])
+        nodes = set(pool_nodes)
         matching = [group for group in groups if group[1] & nodes]
         identifiers = {key}
         for group in matching:
@@ -306,7 +353,10 @@ def compile_configuration(draft, defaults, metadata_resources, inspect=inventory
             nodes |= group[1]
         groups.append((identifiers, nodes))
         try:
-            task, runtime = inspect(source["runtime_root"], cpu=False)
+            if variant is None:
+                task, runtime = inspect(source["runtime_root"], cpu=False)
+            else:
+                task, runtime = variant["task"], copy.deepcopy(variant["runtime"])
         except WorkflowError as error:
             raise WorkflowError(source["label"] + ": " + str(error)) from error
         runtime["storage_namespace"] = namespace
@@ -364,7 +414,7 @@ def compile_configuration(draft, defaults, metadata_resources, inspect=inventory
     }
 
 
-def build(root, request):
+def build(root, request, prepared=None, repaired_draft=None):
     from .dispatch import installed_launcher
 
     store = SetupStore(root).read()
@@ -378,9 +428,20 @@ def build(root, request):
             all(row.get("finished", True) for row in previous["tests"]),
             "Resume or stop the previous test before rebuilding",
         )
-    configuration = compile_configuration(
-        store["draft"], request["defaults"], request["metadata_resources"]
-    )
+    expected_revision = store["revision"]
+    if repaired_draft is not None:
+        store = {"draft": repaired_draft, "revision": digest(repaired_draft)}
+    if prepared is None:
+        configuration = compile_configuration(
+            store["draft"], request["defaults"], request["metadata_resources"]
+        )
+    else:
+        configuration = compile_configuration(
+            store["draft"],
+            request["defaults"],
+            request["metadata_resources"],
+            prepared=prepared,
+        )
     installed_launcher(configuration)
     configuration_revision = current_revision(root)
     generation = digest(
@@ -420,9 +481,19 @@ def build(root, request):
                 },
                 exclusive=True,
             )
-        write_json(root / "setup-build.json", {"generation": generation})
+        # Validate the complete generation before committing repaired choices.
+        # Concurrent edits win over a slow runtime preparation.
+        with locked(root / "setup.lock"):
+            require(
+                SetupStore(root).read()["revision"] == expected_revision,
+                "These settings changed in another window. Recover them before building again.",
+            )
+            if repaired_draft is not None:
+                write_json(root / "setup.json", repaired_draft)
+            write_json(root / "setup-build.json", {"generation": generation})
     return {
         "generation": generation,
+        **store,
         "message": "Registry built. Test a sample recording on each chosen computer before applying it.",
     }
 
@@ -620,7 +691,13 @@ def qualification_status(root, *, tick):
             continue
         for node in profile["resources"]["nodes"]:
             test = saved["tests"].get(key + "/" + node)
-            row = {"profile": key, "node": node, "state": "not-tested", "passed": False}
+            row = {
+                "profile": key,
+                "label": profile.get("label", key),
+                "node": node,
+                "state": "not-tested",
+                "passed": False,
+            }
             if test:
                 controller, status, rejection = restore_test(test)
                 if rejection is not None:
@@ -874,12 +951,37 @@ def execute_locked(root, request):
             "Saved setup choices changed before the server received this action",
         )
     if action == "build":
-        result = build(root, request)
+        from .setup_runtime import prepare
+
+        store = SetupStore(root).read()
+        require(
+            store["revision"] == request["revision"],
+            "Setup choices changed. Recover the saved setup before building again.",
+        )
+        if (root / "setup-build.json").exists():
+            status = qualification_status(root, tick=False)
+            require(
+                all(row.get("finished", True) for row in status["tests"]),
+                "Resume or stop the previous test before rebuilding",
+            )
+        parallel = request["defaults"]["max_parallel"]
+        positive(parallel, "Runtime preparation parallelism", 256)
+        draft, prepared, messages = prepare(
+            root, store["draft"], request["timeout_seconds"], parallel
+        )
+        result = build(root, request, prepared=prepared, repaired_draft=draft)
+        result["message"] = "\n".join(
+            [
+                *messages,
+                "HStream is prepared on shared storage for every selected computer.",
+                result["message"],
+            ]
+        )
     elif action == "start-test":
         check_scheduler(request["timeout_seconds"])
         result = start_test(root, request)
     elif action == "test-status":
-        result = qualification_status(root, tick=True)
+        result = qualification_status(root, tick=request.get("tick", True))
     elif action == "cancel-test":
         _, saved = generation(root)
         for test in saved["tests"].values():

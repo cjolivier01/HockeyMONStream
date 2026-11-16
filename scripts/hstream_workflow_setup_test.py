@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hstream_workflow import setup, setup_execution as execution
+from hstream_workflow import (
+    setup,
+    setup_execution as execution,
+    setup_runtime as runtime_setup,
+)
 from hstream_workflow.files import locked, read_json, write_json
 from hstream_workflow.profiles import load_config
 from hstream_workflow.schema import WorkflowError, digest
@@ -187,6 +192,525 @@ class SetupTest(unittest.TestCase):
                 result["installed_runtime"], str(installation) if present else None
             )
             self.assertFalse(result["ready"])
+
+    def test_shared_storage_probe_needs_visible_marker_and_write_receipt(self):
+        from hstream_workflow import setup_storage as storage
+
+        self.save()
+
+        def remote(argv, timeout):
+            command = shlex.split(argv[-1])
+            self.assertEqual(command[:2], ["python3", "-c"])
+            if argv[-2] == "stubby":
+                command[3] = str(self.root / "local-overlay/absent-marker")
+            return subprocess.check_output(command, text=True, timeout=timeout)
+
+        with patch.object(storage, "run_readonly", side_effect=remote):
+            self.assertEqual(
+                storage.check(self.registry, ["mini", "stubby"], 30, 2), ["stubby"]
+            )
+        with patch.object(storage, "run_readonly", return_value='{"shared":true}'):
+            self.assertEqual(
+                storage.check(self.registry, ["stubby"], 30, 1), ["stubby"]
+            )
+        self.assertFalse(list(self.registry.glob("setup-storage-*.json")))
+
+    def storage_request(self):
+        saved = self.save()
+        target = self.root / "shared-registry"
+        target.mkdir(mode=0o700)
+        return {
+            "action": "build",
+            "registry": str(self.registry),
+            **saved,
+            "shared_registry": str(target),
+            "timeout_seconds": 30,
+            "defaults": self.defaults,
+            "metadata_resources": self.cpu,
+        }
+
+    def test_unshared_registry_recovers_in_shared_storage_without_moving_history(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        write_json(self.registry / "retained-history.json", {"history": "unchanged"})
+
+        def check(root, *args):
+            return ["stubby"] if Path(root) == self.registry else []
+
+        with patch.object(storage, "check", side_effect=check):
+            moved, message = storage.prepare(request)
+            repeated, _ = storage.prepare(request)
+        self.assertEqual(moved, repeated)
+        self.assertEqual(moved["registry"], request["shared_registry"])
+        self.assertIn("Created shared settings", message)
+        self.assertEqual(setup.SetupStore(self.registry).read()["draft"], self.draft)
+        self.assertEqual(
+            read_json(self.registry / "retained-history.json"), {"history": "unchanged"}
+        )
+        loaded = setup.handle_request(
+            {"action": "load", "registry": str(self.registry)}
+        )
+        self.assertEqual(loaded["draft"], moved["draft"])
+        self.assertEqual(loaded["progress"]["revision"], moved["revision"])
+        self.assertFalse(loaded["progress"]["installed"])
+        # Editing the original choices supersedes the old relocation reference.
+        changed = copy.deepcopy(self.draft)
+        changed["profiles"]["gpu"]["label"] = "New original choices"
+        setup.SetupStore(self.registry).save(changed, request["revision"])
+        self.assertEqual(storage.recovered(self.registry)["draft"], changed)
+
+    def test_relocation_preserves_existing_destination_and_concurrent_edits(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = {**self.draft, "registry": str(target), "server": "another-server"}
+        setup.SetupStore(target).save(existing, None)
+
+        def check(root, *args):
+            return ["stubby"] if Path(root) == self.registry else []
+
+        with patch.object(storage, "check", side_effect=check):
+            moved, _ = storage.prepare(request)
+        self.assertNotEqual(moved["registry"], str(target))
+        self.assertEqual(setup.SetupStore(target).read()["draft"], existing)
+        (self.registry / "setup-location.json").unlink()
+
+        def changed(root, *args):
+            if Path(root) != self.registry:
+                draft = {**self.draft, "server": "edited"}
+                setup.SetupStore(self.registry).save(draft, request["revision"])
+            return check(root)
+
+        with patch.object(storage, "check", side_effect=changed):
+            with self.assertRaisesRegex(WorkflowError, "choices changed"):
+                storage.prepare(request)
+        self.assertFalse((self.registry / "setup-location.json").exists())
+
+    def test_relocation_keeps_active_controller_and_unfinished_test_state(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        with patch.object(storage, "check", side_effect=[["stubby"], []]):
+            with locked(self.registry / "controller-service.lock"):
+                with self.assertRaisesRegex(WorkflowError, "Stop the controller"):
+                    storage.prepare(request)
+        self.assertFalse((self.registry / "setup-location.json").exists())
+        write_json(self.registry / "setup-build.json", {"generation": "fixture"})
+        with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
+            execution,
+            "generation",
+            return_value=(self.root, {"tests": {"gpu/stubby": {}}}),
+        ), patch.object(
+            execution, "remote", return_value={"tests": [{"finished": False}]}
+        ) as remote:
+            with self.assertRaisesRegex(WorkflowError, "unfinished sample"):
+                storage.prepare(request)
+        self.assertFalse(remote.call_args.args[0]["tick"])
+        self.assertFalse((self.registry / "setup-location.json").exists())
+
+    def test_delayed_relocation_cannot_replace_recovered_edits(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+
+        def concurrent_move(root, *args):
+            if root == self.registry:
+                return ["stubby"]
+            moved = setup.SetupStore(target).save(
+                {**self.draft, "registry": str(target), "server": "edited-server"}, None
+            )
+            write_json(
+                self.registry / "setup-location.json",
+                {"source_revision": request["revision"], "registry": str(target)},
+            )
+            return []
+
+        with patch.object(storage, "check", side_effect=concurrent_move):
+            with self.assertRaisesRegex(WorkflowError, "Setup moved"):
+                storage.prepare(request)
+        self.assertEqual(
+            storage.recovered(self.registry)["draft"]["server"], "edited-server"
+        )
+        self.assertEqual(list(self.root.glob("shared-registry-*")), [])
+
+    def test_relocation_never_reuses_a_destination_that_redirects_back(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+        pointer = {
+            "source_revision": existing["revision"],
+            "registry": str(self.registry),
+        }
+        write_json(target / "setup-location.json", pointer)
+        with patch.object(storage, "check", side_effect=[["stubby"], [], []]):
+            moved, _ = storage.prepare(request)
+        self.assertNotEqual(moved["registry"], str(target))
+        self.assertEqual(storage.recovered(self.registry)["draft"], moved["draft"])
+        self.assertEqual(setup.SetupStore(target).read(), existing)
+        self.assertEqual(read_json(target / "setup-location.json"), pointer)
+
+    def test_relocation_requires_legacy_controller_retirement_on_its_host(self):
+        from hstream_workflow import setup_storage as storage
+        from hstream_workflow.processes import host_identity, process_identity
+
+        request = self.storage_request()
+        identity = {**host_identity(), **process_identity(os.getpid())}
+        heartbeat = self.registry / "heartbeat.json"
+
+        def remote(argv, timeout):
+            self.assertEqual(argv[-2], self.draft["server"])
+            return subprocess.check_output(
+                shlex.split(argv[-1]), text=True, timeout=timeout
+            )
+
+        for changed in ({}, {"host": "another-host"}):
+            write_json(heartbeat, {**identity, **changed})
+            with patch.object(
+                storage, "check", side_effect=[["stubby"], []]
+            ), patch.object(storage, "run_readonly", side_effect=remote):
+                with self.assertRaisesRegex(WorkflowError, "Stop the previous"):
+                    storage.prepare(request)
+            self.assertFalse((self.registry / "setup-location.json").exists())
+        write_json(heartbeat, {**identity, "boot_id": "retired-boot"})
+        with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
+            storage, "run_readonly", side_effect=remote
+        ):
+            moved, _ = storage.prepare(request)
+        self.assertEqual(moved["registry"], request["shared_registry"])
+
+    def test_recovered_setup_locations_reject_cycles(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        other = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+        write_json(
+            self.registry / "setup-location.json",
+            {"source_revision": request["revision"], "registry": str(target)},
+        )
+        write_json(
+            target / "setup-location.json",
+            {"source_revision": other["revision"], "registry": str(self.registry)},
+        )
+        with self.assertRaisesRegex(WorkflowError, "loop"):
+            storage.recovered(self.registry)
+
+    def installed_fixture(self, name):
+        root = self.root / name
+        (root / "bin").mkdir(parents=True)
+        header = bytearray(20)
+        header[:4] = b"\x7fELF"
+        header[5] = 1
+        header[18:20] = (62).to_bytes(2, "little")
+        for program in (
+            "hstream-runtime-worker",
+            "hstream-experiment-task",
+            "hstream-cli",
+            "hstream-job",
+        ):
+            target = root / "bin" / program
+            target.write_bytes(header + name.encode())
+            target.chmod(0o755)
+        (root / "configs").mkdir()
+        (root / "configs/ds_hockey_app_config.yaml").write_text("settings: {}")
+        (root / "lib").mkdir()
+        (root / "lib/library.so.1").write_bytes(b"library")
+        (root / "lib/library.so").symlink_to("library.so.1")
+        return root
+
+    def test_missing_installation_recovers_from_path_and_snapshots_package_only(self):
+        installation = self.installed_fixture("installed")
+        owned = list(installation.rglob("*"))
+        (installation / "unowned-backup").write_text("not package data")
+        paths = {
+            name: str(installation / "bin" / name)
+            for name in ("hstream-runtime-worker", "hstream-experiment-task")
+        }
+        with patch.object(
+            runtime_setup.shutil, "which", side_effect=paths.get
+        ), patch.object(runtime_setup, "payload_paths", return_value=owned):
+            first = runtime_setup.snapshot(
+                self.registry, str(self.root / "deleted-preview"), cpu=False
+            )
+            second = runtime_setup.snapshot(self.registry, str(installation), cpu=False)
+        self.assertEqual(first, second)
+        self.assertEqual(first["source"], str(installation))
+        target = Path(first["runtime"]["root"])
+        self.assertFalse((target / "unowned-backup").exists())
+        self.assertEqual((target / "lib/library.so").read_bytes(), b"library")
+        self.assertTrue(os.access(first["task"], os.X_OK))
+        self.assertFalse(
+            os.access(target / "configs/ds_hockey_app_config.yaml", os.X_OK)
+        )
+        self.assertTrue(
+            all(Path(path).is_relative_to(target) for path in first["runtime"]["files"])
+        )
+        # A damaged retained version is never overwritten; the replacement is reusable.
+        Path(first["task"]).write_bytes(b"damaged")
+        with patch.object(runtime_setup, "payload_paths", return_value=owned):
+            repaired = runtime_setup.snapshot(
+                self.registry, str(installation), cpu=False
+            )
+            repeated = runtime_setup.snapshot(
+                self.registry, str(installation), cpu=False
+            )
+        self.assertNotEqual(repaired["task"], first["task"])
+        self.assertEqual(repeated, repaired)
+        self.assertEqual(Path(first["task"]).read_bytes(), b"damaged")
+
+    @unittest.skipUnless(shutil.which("cc"), "C compiler is unavailable")
+    def test_prepared_task_loads_retained_library_instead_of_deployed_prefix(self):
+        from hstream_workflow import executor
+        from hstream_workflow.controller import Controller
+
+        installation = self.installed_fixture("installed")
+        (installation / "lib/gst-plugins").mkdir()
+        (installation / "lib/gst-plugins/plugin.so").write_bytes(b"plugin")
+        library = self.root / "library.c"
+        library.write_text("int value(void) { return 17; }")
+        subprocess.run(
+            [
+                "cc",
+                "-shared",
+                "-fPIC",
+                str(library),
+                "-o",
+                str(installation / "lib/libretained.so"),
+            ],
+            check=True,
+        )
+        external = self.root / "vendor"
+        external.mkdir()
+        library.write_text("int external(void) { return 0; }")
+        subprocess.run(
+            [
+                "cc",
+                "-shared",
+                "-fPIC",
+                str(library),
+                "-o",
+                str(external / "libexternal.so"),
+            ],
+            check=True,
+        )
+        program = self.root / "task.c"
+        program.write_text(r"""#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+extern int value(void);
+extern int external(void);
+int main(int argc, char** argv) {
+  if (argc > 1 && strcmp(argv[1], "--admission") == 0) {
+    printf("{\"value\": %d, \"versioned_plugins\": %d}", value() + external(), getenv("GST_PLUGIN_PATH_1_0") != NULL);
+    return 0;
+  }
+  return value() + external();
+}
+""")
+        subprocess.run(
+            [
+                "cc",
+                str(program),
+                "-L" + str(installation / "lib"),
+                "-lretained",
+                "-L" + str(external),
+                "-lexternal",
+                "-Wl,-rpath," + str(installation / "lib"),
+                "-o",
+                str(installation / "bin/hstream-experiment-task"),
+            ],
+            check=True,
+        )
+        prepared = runtime_setup.snapshot(self.registry, str(installation), cpu=False)
+        # A subsequent deployment changes the absolute prefix embedded in ELF.
+        library.write_text("int value(void) { return 23; }")
+        subprocess.run(
+            [
+                "cc",
+                "-shared",
+                "-fPIC",
+                str(library),
+                "-o",
+                str(installation / "lib/libretained.so"),
+            ],
+            check=True,
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "LD_LIBRARY_PATH": str(external) + ":" + str(installation / "lib"),
+                "GST_PLUGIN_PATH_1_0": "/unrelated/plugins",
+                "HSTREAM_SETUP_TEST_SECRET": "never write to a worker request",
+            },
+        ):
+            self.assertEqual(
+                subprocess.run([prepared["task"]], check=False).returncode, 23
+            )
+            profile = self.compile()["profiles"]["gpu"]
+            profile.update(runtime=prepared["runtime"], task_command=[prepared["task"]])
+            attempt = self.root / "attempt"
+            attempt.mkdir(mode=0o700)
+            for name in ("request.json", "profile.json", "settings.json"):
+                write_json(attempt / name, {})
+            request = {
+                "attempt_id": "retained",
+                "workflow_id": "workflow",
+                "epoch": 1,
+                "runtime": {},
+            }
+            executor.prepare(
+                attempt, request, profile, self.defaults, {"attempt_id": "retained"}
+            )
+            spec = read_json(attempt / "worker/request.json")["batch"]["spec"]
+            child_environment = dict(os.environ)
+            for key in spec["unset_environment"]:
+                child_environment.pop(key, None)
+            child_environment.update(spec["environment"])
+            result = subprocess.run(spec["argv"], env=child_environment, check=False)
+            self.assertEqual(result.returncode, 17)
+            profile["executor"] = "local"
+            profile["resources"]["gpus"] = 0
+            profile["runtime"]["storage_namespace"] = "retained"
+            controller = Controller.__new__(Controller)
+            controller.config = {
+                "admission_profile": "metadata",
+                "profiles": {"metadata": profile},
+            }
+            controller.defaults = self.defaults
+            self.assertIn("GST_PLUGIN_PATH_1_0", spec["unset_environment"])
+            self.assertEqual(
+                controller._native(attempt, "inspect", {}),
+                {"value": 17, "versioned_plugins": 0},
+            )
+            self.assertNotIn("HSTREAM_SETUP_TEST_SECRET", spec["environment"])
+
+    def test_interrupted_copy_never_publishes_a_runtime(self):
+        installation = self.installed_fixture("installed")
+        with patch.object(
+            runtime_setup.shutil, "copyfileobj", side_effect=OSError("copy interrupted")
+        ):
+            with self.assertRaisesRegex(OSError, "interrupted"):
+                runtime_setup.snapshot(self.registry, str(installation), cpu=False)
+        self.assertFalse(
+            any(path.is_dir() for path in (self.registry / "setup-runtimes").iterdir())
+        )
+
+    def test_preparation_groups_builds_and_preserves_logical_capacity(self):
+        self.save()
+        self.draft["profiles"]["all-gpus"] = copy.deepcopy(
+            self.draft["profiles"]["gpu"]
+        )
+        self.draft["profiles"]["all-gpus"]["concurrency"] = 8
+        self.draft["profiles"]["all-gpus"]["nodes"].append("monster")
+
+        def installed(root, cpu):
+            task, runtime = self.inspect(root, cpu=cpu)
+            return {"source": "/opt/hstream", "task": task, "runtime": runtime}
+
+        def node(registry, name, preferred, timeout):
+            return installed(
+                "/shared/old-os" if name == "monster" else "/shared/new-os", False
+            )
+
+        with patch.object(
+            runtime_setup, "snapshot", return_value=installed("/shared/cpu", True)
+        ), patch.object(runtime_setup, "from_node", side_effect=node):
+            draft, prepared, messages = runtime_setup.prepare(
+                self.registry, self.draft, 30, 3
+            )
+        self.assertEqual(self.draft["profiles"]["all-gpus"]["concurrency"], 8)
+        self.assertEqual(draft["profiles"]["all-gpus"]["concurrency"], 3)
+        self.assertEqual(draft["profiles"]["gpu"]["runtime_root"], "/opt/hstream")
+        config = execution.compile_configuration(
+            draft, self.defaults, self.cpu, prepared=prepared
+        )
+        profiles = [
+            profile for key, profile in config["profiles"].items() if key != "metadata"
+        ]
+        self.assertEqual(len(profiles), 3)
+        self.assertEqual(len({profile["pool"] for profile in profiles}), 1)
+        self.assertEqual(
+            {node for profile in profiles for node in profile["resources"]["nodes"]},
+            {"mini", "meshy", "monster"},
+        )
+        for profile in profiles:
+            for node in profile["resources"]["nodes"]:
+                self.assertEqual(
+                    profile["qualified_nodes"][node]["runtime_identity"],
+                    profile["runtime"],
+                )
+                self.assertEqual(
+                    profile["runtime"]["root"],
+                    "/shared/old-os" if node == "monster" else "/shared/new-os",
+                )
+        self.assertTrue(messages)
+        write_json(self.registry / "config.json", config)
+        self.assertEqual(load_config(self.registry), config)
+
+    def test_repaired_draft_commits_only_after_validated_build(self):
+        saved = self.save()
+        repaired = copy.deepcopy(self.draft)
+        repaired["profiles"]["gpu"]["runtime_root"] = "/opt/hstream"
+        request = {
+            "revision": saved["revision"],
+            "defaults": self.defaults,
+            "metadata_resources": self.cpu,
+        }
+        with patch.object(
+            execution,
+            "compile_configuration",
+            side_effect=WorkflowError("invalid configuration"),
+        ):
+            with self.assertRaisesRegex(WorkflowError, "invalid configuration"):
+                execution.build(
+                    self.registry, request, prepared={}, repaired_draft=repaired
+                )
+        self.assertEqual(setup.SetupStore(self.registry).read(), saved)
+        with patch.object(
+            execution, "compile_configuration", return_value=self.compile()
+        ):
+            result = execution.build(
+                self.registry, request, prepared={}, repaired_draft=repaired
+            )
+        self.assertEqual(result["draft"], repaired)
+        self.assertEqual(result["revision"], digest(repaired))
+        self.assertTrue(setup.progress(self.registry)["build_current"])
+
+    def test_concurrent_edit_wins_over_runtime_preparation(self):
+        saved = self.save()
+        changed = copy.deepcopy(self.draft)
+        changed["server"] = "another-server"
+        configuration = self.compile()
+
+        def compile_after_edit(*args, **kwargs):
+            setup.SetupStore(self.registry).save(changed, saved["revision"])
+            return configuration
+
+        with patch.object(
+            execution, "compile_configuration", side_effect=compile_after_edit
+        ):
+            with self.assertRaisesRegex(WorkflowError, "another window"):
+                execution.build(
+                    self.registry,
+                    {
+                        "revision": saved["revision"],
+                        "defaults": self.defaults,
+                        "metadata_resources": self.cpu,
+                    },
+                    prepared={},
+                    repaired_draft=self.draft,
+                )
+        self.assertEqual(setup.SetupStore(self.registry).read()["draft"], changed)
+        self.assertFalse((self.registry / "setup-build.json").exists())
 
     def test_build_error_identifies_the_profile_with_a_missing_compute_installation(
         self,

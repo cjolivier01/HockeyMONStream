@@ -131,6 +131,20 @@ class ObserverTest(unittest.TestCase):
         self.plan = fixture_plan()
         self.snapshot = graph.snapshot(self.plan, graph.initial_state(self.plan))
 
+    def test_retry_observation_omits_removed_nodes_and_their_edges(self):
+        self.plan["stages"][0]["dependencies"] = ["independent"]
+        state = graph.initial_state(self.plan)
+        for node in state["nodes"].values():
+            node["state"] = "succeeded"
+        state["nodes"]["solve-A"]["state"] = "failed"
+        state = graph.retry(self.plan, state, ["solve-A"], ["baseline", "solve-A"])
+        self.snapshot = graph.snapshot(self.plan, state)
+        observation = self.publish()
+        registration, saved = read_observation(self.root, observation)
+        self.assertEqual([row["id"] for row in saved["nodes"]], ["baseline", "solve-A"])
+        self.assertEqual(registration["stages"][0]["dependencies"], [])
+        self.assertEqual(self.plan["stages"][0]["dependencies"], ["independent"])
+
     def tearDown(self):
         self.temp.cleanup()
 
