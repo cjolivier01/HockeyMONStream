@@ -68,6 +68,8 @@ def export_plan(registry, plan_path, output):
 def parser():
     root = argparse.ArgumentParser(description=__doc__)
     commands = root.add_subparsers(dest="command", required=True)
+    setup = commands.add_parser("setup", help="Create, inspect or edit cluster setup")
+    setup.add_argument("--request", required=True, type=Path)
     for name in (
         "profiles",
         "submit",
@@ -109,6 +111,17 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser().parse_args(argv)
     try:
+        if args.command == "setup":
+            from .setup import handle_request
+
+            try:
+                result = handle_request(read_json(args.request))
+            except (KeyError, TypeError) as error:
+                raise WorkflowError(
+                    "Incomplete or invalid setup request: " + str(error)
+                ) from error
+            print(json.dumps(result))
+            return 0
         dispatch(args.registry, argv)
         if args.command == "serve":
             serve(args.registry, args.once)

@@ -51,6 +51,10 @@ class Controller:
         self.defaults = self.config["defaults"]
 
     def profiles(self):
+        require(
+            not (self.registry.root / "setup-test-only.json").exists(),
+            "This is an unfinished cluster test. Apply tested settings in cluster setup before using its profiles.",
+        )
         return {
             "schema": 1,
             "admission_profile": self.config["admission_profile"],
@@ -136,6 +140,15 @@ class Controller:
 
     def _register(self, plan, game, *, defer_admission=False):
         plan = validate_plan(plan)
+        if (self.registry.root / "setup-test-only.json").exists():
+            require(
+                plan["kind"] == "cluster-qualification"
+                and plan["limits"]["max_parallel"] == 1
+                and all(
+                    "catalog_key" not in stage["inputs"] for stage in plan["stages"]
+                ),
+                "An unfinished setup registry can only run private qualification tests",
+            )
         if any(stage["kind"].startswith("experiment-") for stage in plan["stages"]):
             self._user_config_snapshot(plan)
         game = validate_game(self.config, game)
@@ -1217,6 +1230,7 @@ def serve(registry, once=False):
                 **host_identity(),
                 **process_identity(os.getpid()),
                 "time_ns": time.time_ns(),
+                "configuration_digest": digest(controller.config),
             },
         )
 

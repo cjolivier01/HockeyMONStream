@@ -5,6 +5,7 @@
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
 #include "src/apps/hstream-ui/LogTextEdit.h"
+#include "src/apps/hstream-ui/WorkflowSetupDialog.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
@@ -639,6 +640,7 @@ absl::StatusOr<QJsonObject> BuildStitchingWorkflowPlan(
 struct StitchingWorkflow::Impl {
   StitchingWorkflow* owner;
   QString game, registry, launcher;
+  YAML::Node settings;
   QProcessEnvironment environment;
   QComboBox* profile{nullptr};
   QPushButton* configure{nullptr};
@@ -681,7 +683,7 @@ struct StitchingWorkflow::Impl {
     while (profile->count() > 1)
       profile->removeItem(1);
     if (registry.isEmpty()) {
-      const QString reason = "Distributed workflow is not configured. Choose Configure workflow… to select the "
+      const QString reason = "Distributed workflow is not configured. Choose Set up my cluster… to create or recover the "
                              "Dagster/Slurm registry for this game.";
       profile->setToolTip(reason);
       availability->setText("Distributed workflow unavailable");
@@ -702,7 +704,7 @@ struct StitchingWorkflow::Impl {
         notify(reason, true);
         profile->setToolTip(reason);
         availability->setText("Distributed profiles unavailable");
-        availability->setToolTip(reason + " Use Configure workflow… to choose another registry.");
+        availability->setToolTip(reason + " Use Set up my cluster… to check or repair the saved settings.");
         controls();
         return;
       }
@@ -735,9 +737,10 @@ struct StitchingWorkflow::Impl {
   void configureRegistry() {
     if (command_pending || owner->active())
       return;
-    const QString selected = QFileDialog::getExistingDirectory(
-        owner, "Select Dagster/Slurm workflow registry", registry,
-        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    WorkflowSetupDialog setup(launcher, registry, game, environment, settings, owner);
+    if (setup.exec() != QDialog::Accepted)
+      return;
+    const QString selected = setup.selectedRegistry();
     if (selected.isEmpty())
       return;
     const QFileInfo directory(selected);
@@ -1305,6 +1308,7 @@ StitchingWorkflow::StitchingWorkflow(
   s.owner = this;
   s.game = game;
   s.environment = environment;
+  s.settings = YAML::Clone(settings);
   setObjectName("stitchingWorkflowPane");
   setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
   const auto configuration = settings["workflow"];
@@ -1328,9 +1332,9 @@ StitchingWorkflow::StitchingWorkflow(
   s.profile->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
   s.profile->setMinimumContentsLength(12);
   s.profile->addItem("Current runner (local; configure Dagster/Slurm)", "");
-  s.configure = new QPushButton(action_icon(ActionIcon::Open), "Configure workflow…", this);
+  s.configure = new QPushButton(action_icon(ActionIcon::Network), "Set up my cluster…", this);
   s.configure->setObjectName("configureStitchWorkflowButton");
-  s.configure->setToolTip("Choose the installed Dagster/Slurm workflow registry and save it for this game.");
+  s.configure->setToolTip("Find your computers, create or edit compute profiles, and test your cluster setup.");
   auto* profile_row = new QHBoxLayout();
   profile_row->addWidget(s.profile, 1);
   profile_row->addWidget(s.configure);

@@ -1293,6 +1293,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "shutdown_timeout_seconds",
                 "observer_timeout_seconds",
                 "metadata_resources",
+                "setup",
             )
         },
         "stitching_camera_profiles": baseline["stitching"]["camera_configs"],
@@ -1393,6 +1394,7 @@ def generate(root, *, native_revision=None, include_revision=True):
                 "src/apps/hstream-ui/StitchingExperimentDialog.cpp",
                 "src/apps/hstream-ui/CameraExperimentDialog.cpp",
                 "src/apps/hstream-ui/StitchingWorkflow.cpp",
+                "src/apps/hstream-ui/WorkflowSetupDialog.cpp",
                 "src/apps/hstream-ui/LogTextEdit.h",
                 "src/apps/hstream-ui/Int8PreparationDialog.cpp",
                 "src/apps/hstream-ui/BackendOptions.cpp",

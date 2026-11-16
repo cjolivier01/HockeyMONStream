@@ -3,6 +3,7 @@
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/ValueControlWheel.h"
+#include "src/apps/hstream-ui/WorkflowSetupDialog.h"
 
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QEventLoop>
@@ -332,9 +333,71 @@ void unconfiguredWorkflowExplainsHowToEnable(YAML::Node baseline) {
   require(wait([&] { return !availability->text().isEmpty(); }), "Unconfigured workflow did not explain its state");
   require(!selector->isEnabled() && configure->isEnabled(), "Unconfigured workflow did not expose setup action");
   require(
-      availability->text().contains("unavailable") && availability->toolTip().contains("Configure workflow") &&
+      availability->text().contains("unavailable") && availability->toolTip().contains("Set up my cluster") &&
           availability->toolTip().contains("Dagster/Slurm"),
       "Unconfigured workflow did not explain how to enable distributed execution");
+}
+
+void setupAssistant(const QString& root, YAML::Node baseline) {
+  const auto launcher = root + "/setup-helper";
+  write(launcher, R"PY(#!/usr/bin/env python3
+import json, pathlib, sys
+r=json.loads(pathlib.Path(sys.argv[-1]).read_text())
+root=pathlib.Path(__file__).parent
+if r['action']=='discover':
+ print(json.dumps({'checks':[{'name':'Server connection','ok':True,'message':'Connected to ripper'}], 'machines':[{'name':'mini','gpu':'gpu:rtx5090:1','partition':'gpu*','state':'idle'}]}))
+elif r['action']=='save':
+ (root/'saved-setup.json').write_text(json.dumps(r))
+ print(json.dumps({'revision':'saved','draft':r['draft']}))
+elif r['action']=='inspect': print(json.dumps({'ready':True,'checks':[]}))
+else: print(json.dumps({'message':'Fixture step complete'}))
+)PY");
+  QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  WorkflowSetupDialog dialog(
+      launcher,
+      root + "/settings",
+      root + "/recordings/game",
+      QProcessEnvironment::systemEnvironment(),
+      baseline,
+      nullptr);
+  dialog.show();
+  auto* server = widget<QLineEdit>(dialog, "workflowSetupServer");
+  auto* discover = widget<QPushButton>(dialog, "workflowSetupDiscover");
+  auto* computers = widget<QComboBox>(dialog, "workflowSetupComputers");
+  auto* rows = widget<QTableWidget>(dialog, "workflowSetupProfiles");
+  auto* save = widget<QPushButton>(dialog, "workflowSetupSave");
+  auto* use = widget<QPushButton>(dialog, "workflowSetupUse");
+  server->setText("ripper");
+  discover->click();
+  require(
+      wait([&] { return discover->isEnabled() && computers->currentText().contains("mini"); }),
+      "Discovery did not offer the returned computer");
+  QPushButton* add = nullptr;
+  for (auto* button : dialog.findChildren<QPushButton*>()) {
+    require(!button->icon().isNull(), "A cluster setup action has no icon");
+    if (button->text() == "Add selected computer")
+      add = button;
+  }
+  require(add != nullptr, "Missing add-computer action");
+  add->click();
+  require(rows->rowCount() == 1 && rows->item(0, 2)->text() == "mini", "Adding a discovered computer lost its name");
+  require(
+      rows->item(0, 3)->text() == "gpu" && rows->item(0, 4)->text() == "gpu:rtx5090:1",
+      "Discovered Slurm choices were not filled in");
+  auto* roots = widget<QPlainTextEdit>(dialog, "workflowSetupRecordings");
+  roots->setPlainText(root + "/recordings\n" + root + "/more-recordings");
+  save->click();
+  require(
+      wait([&] { return save->isEnabled() && QFileInfo::exists(root + "/saved-setup.json"); }),
+      "Setup draft was not saved");
+  require(
+      read(root + "/saved-setup.json").value("draft").toObject().value("game_roots").toArray().size() == 2,
+      "Saving dropped a recording folder");
+  require(!use->isEnabled(), "Saving an untested draft enabled execution");
+  const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT");
+  if (!screenshot.isEmpty())
+    require(dialog.grab().save(screenshot), "Cannot capture cluster setup");
+  dialog.close();
 }
 
 void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node baseline) {
@@ -2182,14 +2245,7 @@ void killedExperimentGuard(const QString& root) {
   auto environment = QProcessEnvironment::systemEnvironment();
   environment.insert("HSTREAM_TEST_WORKER_IDENTITY", worker_identity);
   StitchingExperimentDialog dialog(
-      game,
-      runner,
-      root,
-      game + "/_hockeymon/config.yaml",
-      environment,
-      100,
-      1,
-      "00:00:00");
+      game, runner, root, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
   dialog.show();
   auto* add = widget<QPushButton>(dialog, "addStitchExperimentsToBatchButton");
   auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
@@ -2269,6 +2325,7 @@ int main(int argc, char** argv) {
     store.directory = store.game_directory / "_hockeymon/stitching-experiments";
     plans(store);
     unconfiguredWorkflowExplainsHowToEnable(YAML::Clone(baseline->values));
+    setupAssistant(temporary.path(), YAML::Clone(baseline->values));
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
     profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));

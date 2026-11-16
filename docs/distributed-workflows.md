@@ -1,5 +1,8 @@
 # Running and troubleshooting distributed experiment workflows
 
+For guided registry creation, profile editing, connection checks and recovery,
+see [Set up an existing Slurm cluster](workflow-setup.md).
+
 Stitching Experiments can submit independent calibrations to a qualified local or
 Slurm resource profile. HStream owns the dependency graph, artifact verification,
 retries and cancellation. Slurm allocates resources and contains descendants.
