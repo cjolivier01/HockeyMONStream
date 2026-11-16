@@ -31,7 +31,8 @@ window open, with logs and an explicit retry available. A terminal job status
 alone does not authorize closing. The desktop and browser use the same graph states
 and preserve successful siblings when a different solve fails.
 
-Reopening inactive experiment history does not start or claim a workflow. When
+Reopening inactive experiment history restores the newest retained batch's graph,
+logs and retry controls, matching the browser. It does not start or claim a workflow. When
 the catalog marks that history inactive and no current workflow owns the game,
 an unavailable controller or obsolete registry must not turn the history into
 active work. Close, the window close button and Escape still dismiss the dialog;

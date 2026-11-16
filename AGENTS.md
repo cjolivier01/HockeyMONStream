@@ -143,9 +143,9 @@ Native preview widgets share `NativePreviewSurface`: while an external sink owns
   setup defaults synchronized. See `docs/workflow-setup.md`.
 
 - `src/apps/hstream-ui/StitchingWorkflow.*` distinguishes inactive experiment history from
-  an active workflow attachment before the first status response. The current
-  game owner overrides saved history; failed history lookups do not require
-  cancellation to close the dialog. See `docs/distributed-workflows.md`.
+  an active workflow attachment before the first status response. The dialog restores
+  the newest retained batch; the current game owner overrides saved history. Failed
+  history lookups do not require cancellation to close the dialog. See `docs/distributed-workflows.md`.
 
 - `common/RuntimeControlConfig.*` normalizes legacy UI/AMD aliases per input layer. Canonical motion overrides live under `rink.camera.motion_overrides`, tone under `video_out.tone`, launch preferences under `playback`, and capture under `telemetry.enabled`. `ProgramCameraMapping` applies motion at startup on both GPU backends; Qt/browser retain presentation IDs and scaling but save canonical values. See `docs/canonical-runtime-controls.md`.
 
