@@ -94,6 +94,7 @@ struct WorkflowSetupDialog::Impl {
   QPushButton *next, *back, *wizard_stop;
   QListWidget* machine_list;
   QSet<QString> attempted;
+  bool recovering_tests{false};
   bool cancel_pending{false};
 
   bool currentBuild() const {
@@ -276,6 +277,7 @@ struct WorkflowSetupDialog::Impl {
         showStep(4);
       else {
         attempted.clear();
+        recovering_tests = !tests_known;
         flow = Flow::Tests;
         if (!tests_known)
           resume->click();
@@ -346,6 +348,19 @@ struct WorkflowSetupDialog::Impl {
       flow = Flow::None;
       showStep(currentBuild() || test_running ? 3 : 2);
     } else if (flow == Flow::Tests && value.contains("tests")) {
+      if (recovering_tests) {
+        recovering_tests = false;
+        for (const auto& item : tests) {
+          const auto row = item.toObject();
+          if (row.value("finished").toBool() && !row.value("passed").toBool()) {
+            flow = Flow::None;
+            showProblem(
+                row.value("node").toString() +
+                " did not pass while setup was away. Check Test details below, then click Test my computers to try again.");
+            return;
+          }
+        }
+      }
       if (!currentBuild()) {
         flow = Flow::None;
         showStep(2);

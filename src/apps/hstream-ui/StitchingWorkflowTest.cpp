@@ -669,6 +669,15 @@ print(json.dumps({**value,'progress':p}))
     state.insert("phases", QJsonObject{{"mini", "running"}});
     write(directory + "/state.json", QJsonDocument(state).toJson());
   }
+  if (outcome == "recovered-terminal") {
+    auto state = read(directory + "/state.json");
+    state.insert("phases", QJsonObject{{"mini", "failed"}});
+    write(directory + "/state.json", QJsonDocument(state).toJson());
+    widget<QPushButton>(dialog, "workflowSetupRecover")->click();
+    require(
+        wait([&] { return next->isEnabled() && next->text() == "Continue the test"; }),
+        "Terminal recovery did not offer a status check");
+  }
   const auto previous_snapshot = qgetenv("HSTREAM_USER_CONFIG_SNAPSHOT");
   const bool had_snapshot = qEnvironmentVariableIsSet("HSTREAM_USER_CONFIG_SNAPSHOT");
   if (outcome == "snapshot-error")
@@ -738,7 +747,7 @@ print(json.dumps({**value,'progress':p}))
       QThread::msleep(20);
     }
     require(starts() == QStringList{"mini"}, "Stop launched the next computer");
-  } else if (outcome == "failure" || outcome == "recovered-failure") {
+  } else if (outcome == "failure" || outcome == "recovered-failure" || outcome == "recovered-terminal") {
     require(
         wait([&] { return next->isEnabled() && problem->text().contains("mini did not pass"); }),
         "Failed test did not explain the stopped sequence");
@@ -747,8 +756,15 @@ print(json.dumps({**value,'progress':p}))
       QThread::msleep(20);
     }
     require(
-        starts() == (outcome == "recovered-failure" ? QStringList{} : QStringList{"mini"}),
+        starts() == (outcome.startsWith("recovered-") ? QStringList{} : QStringList{"mini"}),
         "Failure automatically retried or advanced");
+    if (outcome == "recovered-terminal") {
+      next->click();
+      require(
+          wait([&] { return pages->currentIndex() == 4 && next->isEnabled(); }),
+          "Explicit retry did not continue after recovering a failure");
+      require(starts() == QStringList({"mini", "stubby"}), "Explicit retry repeated or skipped computers");
+    }
   } else {
     require(
         wait([&] { return pages->currentIndex() == 4 && next->isEnabled(); }), "One click did not test all computers");
@@ -2952,7 +2968,8 @@ int main(int argc, char** argv) {
             "lost-status",
             "snapshot-error",
             "recovered-cancel",
-            "recovered-failure"})
+            "recovered-failure",
+            "recovered-terminal"})
         setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
       std::cout << "Cluster setup wizard checks passed\n";
       return 0;
@@ -2972,7 +2989,8 @@ int main(int argc, char** argv) {
           "lost-status",
           "snapshot-error",
           "recovered-cancel",
-          "recovered-failure"})
+          "recovered-failure",
+          "recovered-terminal"})
       setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
