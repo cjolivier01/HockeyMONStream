@@ -336,6 +336,26 @@ class SetupTest(unittest.TestCase):
         )
         self.assertEqual(list(self.root.glob("shared-registry-*")), [])
 
+    def test_relocation_never_reuses_a_destination_that_redirects_back(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+        pointer = {
+            "source_revision": existing["revision"],
+            "registry": str(self.registry),
+        }
+        write_json(target / "setup-location.json", pointer)
+        with patch.object(storage, "check", side_effect=[["stubby"], [], []]):
+            moved, _ = storage.prepare(request)
+        self.assertNotEqual(moved["registry"], str(target))
+        self.assertEqual(storage.recovered(self.registry)["draft"], moved["draft"])
+        self.assertEqual(setup.SetupStore(target).read(), existing)
+        self.assertEqual(read_json(target / "setup-location.json"), pointer)
+
     def test_relocation_requires_legacy_controller_retirement_on_its_host(self):
         from hstream_workflow import setup_storage as storage
         from hstream_workflow.processes import host_identity, process_identity

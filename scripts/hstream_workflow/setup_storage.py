@@ -215,10 +215,31 @@ def prepare(request):
             with service_lock:
                 idle(root)
                 require_retired_controller(root, saved["draft"]["server"], timeout)
-                draft = {**saved["draft"], "registry": str(target)}
-                existing = SetupStore(target).read()
-                if existing["draft"] is not None and existing["draft"] != draft:
-                    # Existing choices belong to another setup. Keep them intact.
+
+                def publish(target):
+                    draft = {**saved["draft"], "registry": str(target)}
+                    # Hold the destination lock through pointer publication so
+                    # another relocation cannot create a cycle between checks.
+                    with locked(target / "setup.lock", blocking=False):
+                        existing = SetupStore(target).read()
+                        if (target / "setup-location.json").exists() or (
+                            existing["draft"] is not None and existing["draft"] != draft
+                        ):
+                            return None
+                        write_json(target / "setup.json", draft)
+                        write_json(
+                            root / "setup-location.json",
+                            {
+                                "source_revision": saved["revision"],
+                                "registry": str(target),
+                            },
+                        )
+                        return SetupStore(target).read()
+
+                moved = publish(target)
+                if moved is None:
+                    # Existing choices or relocation history belong to another
+                    # setup. Use a fresh verified sibling without changing them.
                     target = private_directory(
                         target.with_name(target.name + "-" + uuid4().hex[:12]),
                         create=True,
@@ -227,13 +248,11 @@ def prepare(request):
                         not check(target, computers, timeout, parallel),
                         "The new settings folder could not be verified on every computer",
                     )
-                    draft["registry"] = str(target)
-                    existing = SetupStore(target).read()
-                moved = SetupStore(target).save(draft, existing["revision"])
-                write_json(
-                    root / "setup-location.json",
-                    {"source_revision": saved["revision"], "registry": str(target)},
-                )
+                    moved = publish(target)
+                    require(
+                        moved is not None,
+                        "The shared settings folder changed; rebuild setup",
+                    )
         except BlockingIOError as error:
             raise WorkflowError(
                 "Stop the controller before moving its setup to shared storage. Running jobs and history stay in the original folder."
