@@ -387,6 +387,13 @@ queue query returned no row or failed. Slurm must use `proctrack/cgroup` and
 `task/cgroup`, with working accounting. A successful scheduler exit still needs
 a matching native receipt, content-verified artifacts, descendant shutdown and
 runtime cleanup before catalog adoption.
+An active `squeue` row, including `COMPLETING`, takes precedence over a terminal
+accounting record for the same job. Cancellation continues to target that
+allocation; accounting alone cannot authorize runtime cleanup, capacity release
+or game ownership release while the allocation is still live.
+A failed queue query can recover an accepted job's identity from accounting,
+but cannot establish shutdown. The workflow retains ownership in recovery and
+can still send cancellation to that exact job while waiting for queue access.
 
 Portable artifact schema 2 uses namespace, relative path, size and SHA256.
 Descriptor and path checks remain local to each host; an NFS `st_dev` value is

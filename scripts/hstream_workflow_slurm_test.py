@@ -100,14 +100,38 @@ class SlurmTest(unittest.TestCase):
         )
         self.assertEqual(self.calls[-1], ["scancel", "--clusters=fixture", "42"])
 
-    def test_accounting_proves_completion_during_queue_outage(self):
+    def test_accounting_recovers_identity_but_not_shutdown_during_queue_outage(self):
         self.errors["squeue"] = subprocess.CalledProcessError(1, "squeue")
         self.accounting = self.account()
         result = slurm.lookup(self.root, 1)
-        self.assertTrue(result["terminal"])
+        self.assertFalse(result["terminal"])
+        self.assertEqual(result["state"], "UNKNOWN")
+        self.assertEqual(result["accounting_state"], "COMPLETED")
         self.assertEqual(result["exit_code"], "0:0")
         slurm.cancel(self.root, 1)
-        self.assertFalse(any(args[0] == "scancel" for args in self.calls))
+        self.assertEqual(self.calls[-1], ["scancel", "--clusters=fixture", "42"])
+        self.assertEqual(read_json(self.root / "launch.json")["scheduler_id"], "42")
+        self.errors.clear()
+        self.queue = ""
+        self.assertTrue(slurm.lookup(self.root, 1)["terminal"])
+
+    def test_live_queue_keeps_accounted_job_active_until_cleanup_finishes(self):
+        for state in ("RUNNING", "COMPLETING"):
+            for terminal in ("COMPLETED", "CANCELLED", "FAILED"):
+                with self.subTest(queue=state, accounting=terminal):
+                    self.queue = self.row(state=state)
+                    self.accounting = self.account(state=terminal)
+                    result = slurm.lookup(self.root, 1)
+                    self.assertFalse(result["terminal"])
+                    self.assertEqual(result["state"], state)
+                    slurm.cancel(self.root, 1)
+                    self.assertEqual(
+                        self.calls[-1], ["scancel", "--clusters=fixture", "42"]
+                    )
+                    self.queue = ""
+                    result = slurm.lookup(self.root, 1)
+                    self.assertTrue(result["terminal"])
+                    self.assertEqual(result["state"], terminal)
 
     def test_unknown_acceptance_never_invents_terminal_or_retries_submission(self):
         self.errors["squeue"] = subprocess.TimeoutExpired("squeue", 1)

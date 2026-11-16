@@ -149,6 +149,7 @@ def lookup(root, timeout):
     )
     cluster_args = ["--clusters=" + intent["cluster"], "--user=" + intent["user"]]
     matches, errors = {}, []
+    queue_available = True
     try:
         output = run_command(
             [
@@ -184,7 +185,9 @@ def lookup(root, timeout):
                 "terminal": False,
             }
     except (OSError, subprocess.SubprocessError) as exc:
+        queue_available = False
         errors.append("Queue lookup unavailable: " + str(exc))
+    queued = set(matches)
     # Always query accounting, including when queue lookup failed or returned no row.
     try:
         output = run_command(
@@ -227,7 +230,12 @@ def lookup(root, timeout):
                 "terminal": state in TERMINAL,
                 "reason": state,
             }
-            if row["terminal"] or fields[0] not in matches:
+            # Accounting can record the outcome while the allocation is still
+            # COMPLETING. A live queue row keeps cleanup, cancellation and its
+            # resource lease active until the scheduler stops reporting it.
+            if fields[0] not in queued and (
+                row["terminal"] or fields[0] not in matches
+            ):
                 matches[fields[0]] = row
     except (OSError, subprocess.SubprocessError) as exc:
         errors.append("Accounting lookup unavailable: " + str(exc))
@@ -244,6 +252,13 @@ def lookup(root, timeout):
         launch is None or launch["scheduler_id"] == row["scheduler_id"],
         "Scheduler job identity changed",
     )
+    if row["terminal"] and not queue_available:
+        row.update(
+            accounting_state=row["state"],
+            state="UNKNOWN",
+            terminal=False,
+            reason="Queue lookup unavailable; allocation shutdown is unconfirmed",
+        )
     row["cluster"] = intent["cluster"]
     if launch is None:
         write_json(

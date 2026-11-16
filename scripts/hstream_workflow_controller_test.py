@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import pwd
 import subprocess
 import sys
 import tempfile
@@ -1149,6 +1150,56 @@ finally:
             self.assertEqual(self.controller.registry.read()["reservations"], {})
             self.assertFalse((root / "runtime").exists())
             self.assertFalse((root / "completion.json").exists())
+
+    def test_slurm_accounting_cannot_release_a_completing_allocation(self):
+        _profile, root, _request = self.slurm_attempt()
+        intent = read_json(root / "submission.json")
+        intent.update(cluster="fixture", user=pwd.getpwuid(os.getuid()).pw_name)
+        write_json(root / "submission.json", intent)
+        queued = True
+        queue_available = True
+
+        def command(arguments, _timeout):
+            if arguments[0] == "squeue":
+                if not queue_available:
+                    raise subprocess.CalledProcessError(1, arguments)
+                output = (
+                    f"42|{intent['name']}|COMPLETING|None|compute|"
+                    f"{intent['user']}|{root.name}\n"
+                    if queued
+                    else ""
+                )
+            elif arguments[0] == "sacct":
+                output = (
+                    f"42|{intent['name']}|FAILED|1:0|compute|"
+                    f"{intent['user']}|{root.name}|fixture\n"
+                )
+            else:
+                self.fail("Unexpected scheduler command: " + str(arguments))
+            return subprocess.CompletedProcess(arguments, 0, stdout=output)
+
+        with patch("hstream_workflow.slurm.run_command", side_effect=command):
+            self.controller.tick(self.plan["workflow_id"])
+            status = self.controller.status(self.plan["workflow_id"])
+            self.assertEqual(status["state"], "running")
+            self.assertFalse(status["owner_released"])
+            self.assertTrue((root / "runtime").exists())
+            self.assertEqual(len(self.controller.registry.read()["reservations"]), 1)
+            queue_available = False
+            self.controller.tick(self.plan["workflow_id"])
+            status = self.controller.status(self.plan["workflow_id"])
+            self.assertEqual(status["state"], "recovery")
+            self.assertFalse(status["owner_released"])
+            self.assertTrue((root / "runtime").exists())
+            self.assertEqual(len(self.controller.registry.read()["reservations"]), 1)
+            queue_available = True
+            queued = False
+            self.controller.tick(self.plan["workflow_id"])
+        status = self.controller.status(self.plan["workflow_id"])
+        self.assertEqual(status["state"], "failed")
+        self.assertTrue(status["owner_released"])
+        self.assertFalse((root / "runtime").exists())
+        self.assertEqual(self.controller.registry.read()["reservations"], {})
 
     def test_unproved_local_retirement_retains_ownership_and_scratch(self):
         _directory, root = self.completed_attempt_before_adoption()
