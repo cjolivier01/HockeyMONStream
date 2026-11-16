@@ -1,6 +1,8 @@
 #include "hstream/src/gst-plugins/gst-fieldmask/dsfieldmask_lib.h"
 #include "hstream/src/gst-plugins/gst-fieldmask/fieldmask_payload.h"
+#include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/StitchedOutputGenerationPayload.h"
@@ -10,9 +12,11 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include <unistd.h>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -231,6 +235,61 @@ int main() {
       std::cerr << "Spectator survived real rink pruning\n";
       return 18;
     }
+  }
+  // The runner's cancellation poll and UI ownership reads take this same lock.
+  // Contention must retain the sampled frame until authority can be checked,
+  // both before the first mask load and after its pixels have been cached.
+  for (bool cached : {false, true}) {
+    auto fresh_ctx = std::unique_ptr<DsFieldMaskCtx, decltype(&DsFieldMaskCtxDeinit)>(
+        DsFieldMaskCtxInit(&required_params), DsFieldMaskCtxDeinit);
+    auto held = hm::stitching::GameConfigLock::Acquire(tmpdir);
+    if (!held.ok()) {
+      std::cerr << "Cannot hold scan metadata lock: " << held.status() << '\n';
+      return 23;
+    }
+    std::promise<void> started;
+    auto processing = std::async(std::launch::async, [&] {
+      started.set_value();
+      return DsFieldMaskProcessFrame(nullptr, 0, frame_meta, cached ? required_ctx.get() : fresh_ctx.get(), false);
+    });
+    started.get_future().wait();
+    const bool waiting = processing.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout;
+    held->reset();
+    const auto resumed = processing.get();
+    if (!waiting || !resumed.ok() || frame_meta->num_obj_meta != 2) {
+      std::cerr << "Scan must wait for metadata contention and preserve pruning (cached=" << cached
+                << "): " << resumed << '\n';
+      return 24;
+    }
+  }
+
+  // Waiting is not permission to use stale authority. A new owner installed
+  // while the sampled frame waits must still fence the frame after unlock.
+  auto held_owner = hm::game_operation::Lock::Acquire(tmpdir);
+  if (!held_owner.ok()) {
+    std::cerr << "Cannot hold scan admission: " << held_owner.status() << '\n';
+    return 25;
+  }
+  std::promise<void> started;
+  auto fenced_frame = std::async(std::launch::async, [&] {
+    started.set_value();
+    return DsFieldMaskProcessFrame(nullptr, 0, frame_meta, required_ctx.get(), false);
+  });
+  started.get_future().wait();
+  const bool waiting = fenced_frame.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout;
+  auto newer_owner = hm::game_operation::LocalOwner("experiment", "newer-scan", "newer-scan-token");
+  const auto claimed = (*held_owner)->Claim(newer_owner);
+  held_owner->reset();
+  const auto fenced = fenced_frame.get();
+  auto cleanup_owner = hm::game_operation::Lock::Acquire(tmpdir);
+  const auto released = cleanup_owner.ok()
+      ? (*cleanup_owner)->Release(newer_owner.token, newer_owner.revision, true)
+      : cleanup_owner.status();
+  if (cleanup_owner.ok())
+    cleanup_owner->reset();
+  if (!waiting || !claimed.ok() || !absl::IsFailedPrecondition(fenced) || !released.ok()) {
+    std::cerr << "Scan must revalidate ownership after waiting: " << fenced << '\n';
+    return 26;
   }
   frame_meta->source_frame_width = 32;
   const auto wrong_size = DsFieldMaskProcessFrame(nullptr, 0, frame_meta, required_ctx.get(), false);

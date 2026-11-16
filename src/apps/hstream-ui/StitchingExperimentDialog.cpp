@@ -1468,6 +1468,21 @@ struct StitchingExperimentDialog::Impl {
       show_status(store_error + " Use Discard experiments to explicitly remove this retained history.", true);
       return;
     }
+    if (workflow && owned->isEmpty()) {
+      const StoredStitchingExperiment* attachment = nullptr;
+      // Catalog rows retain insertion order. Reopen the newest batch, as the
+      // browser does, while an active attachment takes precedence over history.
+      for (auto row = catalog->experiments.rbegin(); row != catalog->experiments.rend(); ++row) {
+        if (row->workflow_id.empty())
+          continue;
+        if (!attachment || row->workflow_active)
+          attachment = &*row;
+        if (row->workflow_active)
+          break;
+      }
+      if (attachment)
+        workflow->attach(QString::fromStdString(attachment->workflow_id), attachment->workflow_active);
+    }
     auto main =
         MainStitchingExperimentWorkspace(game_directory.toStdString(), displayed_settings, /*advisory_read=*/true);
     if (!main.ok()) {
@@ -1545,8 +1560,6 @@ struct StitchingExperimentDialog::Impl {
                                                                                    : std::string();
         if (record.workspace.game_directory.lexically_relative(store->directory).generic_string() == owner_key)
           candidate.selection_owner_sequence = candidate.sequence;
-        if (workflow && owned->isEmpty() && (workflow->workflowId().isEmpty() || record.workflow_active))
-          workflow->attach(QString::fromStdString(record.workflow_id), record.workflow_active);
         append_candidate(std::move(candidate));
         continue;
       }
@@ -4589,12 +4602,15 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     }
   };
   s.workflow->message = [&s](const QString& value, bool error, const QString& replaces) {
+    // Cleanup failure must restore Close/Cancel even when its earlier notice
+    // was replaced by the pending-close message.
+    if (error && s.close_after_workflow && s.close_cancel_sent) {
+      s.workflow_close_failed(value);
+      return;
+    }
     if (!replaces.isEmpty() && s.status->text() != replaces)
       return;
-    if (error && s.close_after_workflow && s.close_cancel_sent)
-      s.workflow_close_failed(value);
-    else
-      s.show_status(value, error);
+    s.show_status(value, error);
   };
   s.workflow->exportRequested = [&s] { s.submit_workflow(true); };
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });

@@ -287,7 +287,8 @@ absl::Status link_calibration_assets(
     const fs::path& source_game_directory,
     const fs::path& candidate_game_directory,
     const std::set<fs::path>& linked_videos,
-    bool allow_linked_inputs = false) {
+    bool allow_linked_inputs = false,
+    std::set<fs::path>* linked_inputs = nullptr) {
   std::set<fs::path> directories{fs::path{}};
   for (const fs::path& video : linked_videos)
     directories.insert(video.parent_path());
@@ -309,8 +310,11 @@ absl::Status link_calibration_assets(
       if (!std::regex_match(relative.filename().string(), kCalibrationAsset))
         return absl::InvalidArgumentError(
             "Experiment calibration asset resolves to a reserved file: " + entry.path().string());
-      if (linked_assets.insert(relative).second)
+      if (linked_assets.insert(relative).second) {
         HM_RETURN_IF_ERROR(link_input(source_game_directory / relative, candidate_game_directory, relative));
+        if (linked_inputs)
+          linked_inputs->insert(relative);
+      }
     }
   }
   return absl::OkStatus();
@@ -1277,7 +1281,8 @@ absl::StatusOr<StitchingExperimentWorkspace> SnapshotStitchingExperimentWorkspac
       HM_RETURN_IF_ERROR(link_auto_videos(source.game_directory, destination, &linked, true));
     if (linked.size() < 2)
       return absl::FailedPreconditionError("Workflow snapshot requires at least two camera videos");
-    HM_RETURN_IF_ERROR(link_calibration_assets(source.game_directory, destination, linked, true));
+    std::set<fs::path> linked_inputs = linked;
+    HM_RETURN_IF_ERROR(link_calibration_assets(source.game_directory, destination, linked, true, &linked_inputs));
     const auto state = source.game_directory / "_hockeymon";
     size_t entries = 0;
     uint64_t bytes = 0;
@@ -1298,6 +1303,15 @@ absl::StatusOr<StitchingExperimentWorkspace> SnapshotStitchingExperimentWorkspac
       }
       const auto type = it->symlink_status().type();
       const auto target = destination / "_hockeymon" / relative;
+      if (linked_inputs.count(fs::path("_hockeymon") / relative)) {
+        // Private media aliases and their sidecars were already validated and
+        // linked directly to the recording. Do not copy over those links or
+        // reject them with unrelated private symlinks below.
+        if (fs::symlink_status(target).type() != fs::file_type::symlink ||
+            fs::canonical(it->path()) != fs::read_symlink(target))
+          return absl::AbortedError("Workflow input changed after its alias was linked");
+        continue;
+      }
       if (type == fs::file_type::directory) {
         fs::create_directory(target);
       } else if (type == fs::file_type::regular) {

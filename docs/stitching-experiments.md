@@ -120,6 +120,10 @@ at the first calibration frame and defaults to 60 seconds, bounded to 300 second
 the existing detector and Program ice-mask pruning; people surviving that filter include players and referees.
 Tracking is not required. The baseline prepares its rink mask before scanning, while the scan requires that exact
 existing mask and adds no video readbacks. Selected synchronized pairs are replayed exactly for a separate calibration.
+The scan serializes its per-frame mask-authority check with game metadata access,
+including cancellation polling. Temporary lock contention waits for that access
+to finish; a changed owner or output authorization still fails validation before
+the sampled frame is scored.
 The first pair remains the anchor, and a one-frame candidate needs no scan. All variants with the same frame count share one frozen selection: changing control-point limits, matcher, image size or rotation
 runs only another solve. The first search duration is authoritative for that count. A different frame count can
 establish another selection; an incompatible reference time for an established count is an error. Baselines count toward the 64-row limit; removing one removes its dependent automatic rows.

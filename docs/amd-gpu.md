@@ -69,6 +69,9 @@ admission and retained-result adoption. The task's `--capabilities` reports
 scan, selected-frame materialization and solve before launching GPU work. The
 NVIDIA decoder/materialization graph does not provide an AMD fallback. Qt and
 the browser must reject a GPU stage on a profile that lacks this capability.
+The NVIDIA player scan's required-mask authority check waits through metadata
+lock contention and revalidates ownership afterward. This does not enable the
+unsupported AMD player-scan stage.
 Program admission and frozen user-configuration loading are shared with AMD.
 CPU tests exercise both the NVIDIA Configurator and AMD ProgramLaunchConfig
 after live Defaults change, including relative native-file provenance; they do

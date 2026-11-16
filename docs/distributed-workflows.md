@@ -31,7 +31,8 @@ window open, with logs and an explicit retry available. A terminal job status
 alone does not authorize closing. The desktop and browser use the same graph states
 and preserve successful siblings when a different solve fails.
 
-Reopening inactive experiment history does not start or claim a workflow. When
+Reopening inactive experiment history restores the newest retained batch's graph,
+logs and retry controls, matching the browser. It does not start or claim a workflow. When
 the catalog marks that history inactive and no current workflow owns the game,
 an unavailable controller or obsolete registry must not turn the history into
 active work. Close, the window close button and Escape still dismiss the dialog;
@@ -281,6 +282,9 @@ so later Defaults edits do not change sibling tasks. Queued candidate workspaces
 also retain their frozen experiment settings and manual matches.
 Successor snapshots preserve discovered camera aliases before Auto orientation
 has saved Left/Right playlists; an input-free snapshot fails during preparation.
+Configured aliases inside `_hockeymon/`, including camera calibration sidecars,
+remain direct links to their admitted original files through successive stages.
+Other private symlinks remain invalid snapshot inputs.
 
 Desktop and command-line clients may run from a different checkout than the
 installed controller. Registry commands resolve the controller pinned by the
@@ -383,6 +387,13 @@ queue query returned no row or failed. Slurm must use `proctrack/cgroup` and
 `task/cgroup`, with working accounting. A successful scheduler exit still needs
 a matching native receipt, content-verified artifacts, descendant shutdown and
 runtime cleanup before catalog adoption.
+An active `squeue` row, including `COMPLETING`, takes precedence over a terminal
+accounting record for the same job. Cancellation continues to target that
+allocation; accounting alone cannot authorize runtime cleanup, capacity release
+or game ownership release while the allocation is still live.
+A failed queue query can recover an accepted job's identity from accounting,
+but cannot establish shutdown. The workflow retains ownership in recovery and
+can still send cancellation to that exact job while waiting for queue access.
 
 Portable artifact schema 2 uses namespace, relative path, size and SHA256.
 Descriptor and path checks remain local to each host; an NFS `st_dev` value is

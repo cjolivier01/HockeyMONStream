@@ -179,9 +179,13 @@ absl::Status DsFieldMaskProcessFrame(
       return absl::FailedPreconditionError("Required rink mask changed during analysis");
     ctx->required_mask_mtime = mask_mtime;
     ctx->required_mask_size = mask_size;
+    // Cancellation polling also takes the admission lock. A sampled frame must
+    // wait for that metadata access, then validate the current authority; lock
+    // contention neither invalidates the scan nor permits unvalidated pruning.
     HM_RETURN_IF_ERROR(
         hm::stitching::validate_field_mask_publication_authority(
-            mask_path.parent_path().parent_path().string(), output_generation, output_authorization_id));
+            mask_path.parent_path().parent_path().string(), output_generation, output_authorization_id,
+            /*wait=*/true));
   }
 
   // Only consider the mask "obsolete" if we've already loaded one but it no longer matches the current frame size.

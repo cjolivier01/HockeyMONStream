@@ -261,7 +261,8 @@ elif operation=='status':
  unavailable=root/'status-unavailable'
  if unavailable.exists() and int(unavailable.read_text())>0:
   unavailable.write_text(str(int(unavailable.read_text())-1)); print('Workflow registration temporarily unavailable',file=sys.stderr); raise SystemExit(1)
- value=json.loads((root/'state.json').read_text())
+ state=root/('state-'+option('--workflow')+'.json')
+ value=json.loads((state if state.exists() else root/'state.json').read_text())
  if (root/'status-override.json').exists(): value=json.loads((root/'status-override.json').read_text())
 elif operation in ('cancel','retry'):
  if operation=='retry':
@@ -1466,6 +1467,14 @@ void dialogCancelLifecycle(
     require(QApplication::activeModalWidget() == dialog, "Fixture must exercise the real modal parent relationship");
     widget<QComboBox>(*dialog, "stitchWorkflowStage")->setCurrentIndex(0);
     auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(*dialog, "stitchingWorkflowPane"));
+    bool saw_stale_monitoring_error = false;
+    const auto message = workflow->message;
+    workflow->message = [&, message](const QString& value, bool error, const QString& replaces) {
+      if (error && value.startsWith("Workflow status is temporarily unavailable:") && !replaces.isEmpty() &&
+          replaces != widget<QLabel>(*dialog, "stitchExperimentStatus")->text())
+        saw_stale_monitoring_error = true;
+      message(value, error, replaces);
+    };
     const auto snapshot_changed = workflow->snapshotChanged;
     workflow->snapshotChanged = [&, snapshot_changed](const QJsonObject& value) {
       snapshot_changed(value);
@@ -1492,6 +1501,19 @@ void dialogCancelLifecycle(
     const bool retry = scenario == "cancel-error" || scenario == "lost-cancel-response";
     if (retry)
       write(root + (scenario == "cancel-error" ? "/reject-cancel" : "/lose-cancel-response"), "reject");
+    if (scenario == "status-unavailable") {
+      // Close replaces this notice with its cleanup wait. The successful cancel
+      // response retains a transient notice until ownership is released, so the
+      // next real status failure carries a now-stale presentation replacement.
+      write(root + "/status-unavailable", "1000");
+      require(
+          wait([&] {
+            return widget<QLabel>(*dialog, "stitchExperimentStatus")
+                ->text()
+                .startsWith("Workflow status is temporarily unavailable:");
+          }),
+          "Cannot seed a monitoring notice before closing");
+    }
     closeWorkflow(*dialog, route, true);
     if (retry) {
       require(
@@ -1518,9 +1540,12 @@ void dialogCancelLifecycle(
     if (scenario == "status-unavailable" || scenario == "cleanup-recovery" || scenario == "cleanup-error" ||
         scenario == "controller-error" || scenario == "controller-offline") {
       QString expected_error;
-      if (scenario == "status-unavailable")
-        write(root + "/status-unavailable", "2");
-      else {
+      if (scenario == "status-unavailable") {
+        require(
+            wait([&] { return saw_stale_monitoring_error; }),
+            "Cleanup monitoring did not deliver an error with a stale notice replacement");
+        expected_error = "Workflow cleanup is not confirmed; the window stays open. Close can retry.";
+      } else {
         auto stalled = read(root + "/state.json");
         if (scenario == "cleanup-recovery")
           stalled.insert("state", "recovery");
@@ -1548,6 +1573,13 @@ void dialogCancelLifecycle(
                   << " Cancel enabled=" << widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled()
                   << " Workflow busy=" << workflow->busy() << " active=" << workflow->active() << '\n'
                   << QJsonDocument(read(root + "/state.json")).toJson(QJsonDocument::Compact).toStdString() << '\n';
+      const auto screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_CLOSE_FAILURE_SCREENSHOT_DIR");
+      if (scenario == "status-unavailable" && !screenshots.isEmpty()) {
+        require(QDir().mkpath(screenshots), "Cannot prepare close failure screenshots");
+        require(
+            dialog->grab().save(screenshots + (retry_available ? "/after.png" : "/before.png")),
+            "Cannot capture monitoring failure during close");
+      }
       require(
           retry_available,
           "Monitoring or cleanup failure stranded the pending close instead of allowing explicit cancellation retry");
@@ -2243,6 +2275,132 @@ void dialogHistoricalWorkflow(const QString& root) {
   }
 }
 
+void dialogLatestWorkflow(const QString& root) {
+  const QString fixture = root + "/latest-workflow", game = fixture + "/game";
+  require(
+      QDir().mkpath(fixture + "/scripts") && QDir().mkpath(game + "/_hockeymon"),
+      "Cannot prepare latest workflow fixture");
+  write(fixture + "/scripts/hstream-workflow", kController);
+  require(
+      QFile::setPermissions(
+          fixture + "/scripts/hstream-workflow",
+          QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner),
+      "Cannot make latest workflow controller executable");
+  write(fixture + "/profiles.json", QJsonDocument(profiles()).toJson());
+  write(
+      game + "/_hockeymon/config.yaml",
+      ("game:\n  videos:\n    left: [left.mp4]\n    right: [right.mp4]\nworkflow:\n  registry: " + fixture +
+       "\n  poll_interval_ms: 100\n")
+          .toUtf8());
+  write(game + "/left.mp4", "left");
+  write(game + "/right.mp4", "right");
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", fixture);
+  {
+    StitchingExperimentDialog queued(
+        game, "/bin/false", fixture, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    queued.show();
+    widget<QLineEdit>(queued, "stitchExperimentControlPoints")->setText("100, 200");
+    widget<QPushButton>(queued, "addStitchExperimentsToBatchButton")->click();
+    require(
+        wait([&] { return widget<QPushButton>(queued, "startStitchExperimentBatchButton")->isEnabled(); }),
+        "Cannot prepare two retained batches");
+    queued.reject();
+    require(wait([&] { return !queued.isVisible(); }), "Cannot close queued batch fixture");
+  }
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open latest workflow store");
+  auto catalog = LoadStitchingExperimentStore(*store);
+  require(catalog.ok() && catalog->experiments.size() == 2, "Expected two retained experiments");
+  for (size_t index = 0; index < catalog->experiments.size(); ++index) {
+    auto& row = catalog->experiments[index];
+    row.workflow_id = index == 0 ? "first-batch" : "latest-batch";
+    row.workflow_directory = store->game_directory / "_hockeymon/workflows" / row.workflow_id;
+    row.state = "failed";
+    row.failure = "Calibration needs retry";
+    row.workflow_active = false;
+    auto owner = hm::game_operation::LocalOwner("workflow", row.workflow_id, "token-" + row.workflow_id);
+    owner.workflow_directory = row.workflow_directory.string();
+    {
+      auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+      require(lock.ok() && (*lock)->Claim(owner).ok(), "Cannot claim historical batch");
+    }
+    hm::game_operation::RegisterAuthorization(store->game_directory, owner.token);
+    require(SaveStitchingExperiment(*store, row).ok(), "Cannot persist historical batch");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(store->game_directory);
+      require(lock.ok() && (*lock)->Release(owner.token, owner.revision, true).ok(), "Cannot retire historical batch");
+    }
+    hm::game_operation::ForgetAuthorization(store->game_directory, owner.token);
+  }
+  const auto& latest = catalog->experiments.back();
+  const QString key =
+      QString::fromStdString(latest.workspace.game_directory.lexically_relative(store->directory).generic_string());
+  QJsonObject node{
+      {"id", "latest-solve"},
+      {"kind", "experiment-run"},
+      {"label", "Calibrate · 200 CP · #2"},
+      {"profile_id", "gpu"},
+      {"candidate_id", key},
+      {"state", "failed"},
+      {"dependencies", QJsonArray{}},
+      {"attempts", QJsonArray{QJsonObject{{"id", "latest-attempt"}, {"epoch", 0}, {"state", "failed"}}}}};
+  publishSnapshot(
+      fixture + "/state.json",
+      {{"workflow_id", "latest-batch"},
+       {"state", "failed"},
+       {"owner_released", true},
+       {"epoch", 0},
+       {"revision", 1},
+       {"limits", QJsonObject{{"max_parallel", 2}}},
+       {"nodes", QJsonArray{node}}});
+  auto first = read(fixture + "/state.json");
+  first.insert("workflow_id", "first-batch");
+  node.insert("id", "first-solve");
+  node.insert("label", "Calibrate · 100 CP · #1");
+  node.insert(
+      "candidate_id",
+      QString::fromStdString(
+          catalog->experiments.front().workspace.game_directory.lexically_relative(store->directory).generic_string()));
+  first.insert("nodes", QJsonArray{node});
+  publishSnapshot(fixture + "/state-first-batch.json", first);
+  StitchingExperimentDialog reopened(
+      game, "/bin/false", fixture, game + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+  reopened.show();
+  auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(reopened, "stitchingWorkflowPane"));
+  auto* table = widget<QTableWidget>(reopened, "stitchExperimentCandidates");
+  table->selectRow(1);
+  const QString screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_LATEST_SCREENSHOT_DIR");
+  if (!screenshots.isEmpty()) {
+    require(QDir().mkpath(screenshots), "Cannot prepare latest workflow screenshots");
+    widget<QTabWidget>(reopened, "stitchExperimentViewTabs")->setCurrentIndex(1);
+    require(
+        wait([&] { return widget<QComboBox>(reopened, "stitchWorkflowStage")->count() > 0; }),
+        "Latest workflow screenshot did not reach monitoring");
+    require(
+        reopened.grab().save(screenshots + (workflow->workflowId() == "latest-batch" ? "/after.png" : "/before.png")),
+        "Cannot capture latest workflow history");
+  }
+  require(workflow->workflowId() == "latest-batch", "Reopening selected the oldest batch instead of the latest batch");
+  auto* retry = widget<QPushButton>(reopened, "retryStitchWorkflowStageButton");
+  require(
+      wait([&] { return workflow->hasSelection() && retry->isEnabled(); }),
+      "Latest failed batch did not restore its stage and retry control");
+  workflow->showLog();
+  require(
+      wait([&] {
+        return widget<QPlainTextEdit>(reopened, "stitchWorkflowLog")
+            ->toPlainText()
+            .contains("latest-solve latest-attempt retained log");
+      }),
+      "Latest batch log was unavailable after reopening");
+  retry->click();
+  require(wait([&] { return workflow->active() && !workflow->busy(); }), "Latest batch could not be retried");
+  require(
+      controllerCalls(fixture, "retry") == 1 && workflow->workflowId() == "latest-batch",
+      "Retry did not target the latest retained batch");
+}
+
 void killedExperimentGuard(const QString& root) {
   const auto game = root + "/lost-guard-game";
   QDir().mkpath(game + "/_hockeymon");
@@ -2321,8 +2479,27 @@ int main(int argc, char** argv) {
     qputenv("HSTREAM_JOB_MANAGED_RUNTIME", "1");
     auto baseline = hm::baseline_config::load();
     require(baseline.ok(), "Cannot load baseline");
+    if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_CLOSE_ONLY") != 0) {
+      require(QDir().mkpath(temporary.path() + "/scripts"), "Cannot prepare close workflow fixture");
+      write(temporary.path() + "/scripts/hstream-workflow", kController);
+      require(
+          QFile::setPermissions(
+              temporary.path() + "/scripts/hstream-workflow",
+              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner),
+          "Cannot make close workflow controller executable");
+      write(temporary.path() + "/profiles.json", QJsonDocument(profiles()).toJson());
+      dialogOwnership(temporary.path());
+      std::cout << "Workflow ownership, close failures and explicit cancellation retry passed\n";
+      return 0;
+    }
+    if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_LATEST_ONLY") != 0) {
+      dialogLatestWorkflow(temporary.path());
+      std::cout << "Latest retained workflow restores stages, logs and retries\n";
+      return 0;
+    }
     if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_HISTORY_ONLY") != 0) {
       dialogHistoricalWorkflow(temporary.path());
+      dialogLatestWorkflow(temporary.path());
       std::cout << "Inactive workflow history closes through button, window and Escape with unavailable monitoring\n";
       return 0;
     }
@@ -2345,6 +2522,7 @@ int main(int argc, char** argv) {
     dialogCloseDuringRetry(temporary.path());
     dialogSubmissionRecovery(temporary.path());
     dialogHistoricalWorkflow(temporary.path());
+    dialogLatestWorkflow(temporary.path());
     killedExperimentGuard(temporary.path());
     std::cout
         << "Workflow DAG, async UI, retry/log history, wheel routing, close confirmation and verified cancellation passed\n";
