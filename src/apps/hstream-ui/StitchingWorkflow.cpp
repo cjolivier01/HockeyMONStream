@@ -744,7 +744,7 @@ struct StitchingWorkflow::Impl {
       return;
     }
     const std::filesystem::path game_path(game.toStdString());
-    auto lock = hm::stitching::GameConfigLock::Acquire(game_path);
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(game_path);
     if (!lock.ok()) {
       const QString reason = QString::fromStdString(lock.status().ToString());
       notify("Could not lock this game's configuration: " + reason, true);
@@ -754,7 +754,10 @@ struct StitchingWorkflow::Impl {
     YAML::Node config(YAML::NodeType::Map);
     const auto config_path = game_path / "_hockeymon/config.yaml";
     try {
-      if (QFileInfo::exists(QString::fromStdString(config_path.string())))
+      const QFileInfo existing(QString::fromStdString(config_path.string()));
+      if (existing.isSymLink() || (existing.exists() && !existing.isFile()))
+        throw std::runtime_error("Game configuration must be a regular file, not a symlink");
+      if (existing.exists())
         config = YAML::LoadFile(config_path.string());
       if (!config || config.IsNull())
         config = YAML::Node(YAML::NodeType::Map);
@@ -1319,7 +1322,7 @@ StitchingWorkflow::StitchingWorkflow(
   s.profile->setObjectName("stitchWorkflowProfile");
   s.profile->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
   s.profile->setMinimumContentsLength(12);
-  s.profile->addItem("Current runner (local)", "");
+  s.profile->addItem("Current runner (local; configure Dagster/Slurm)", "");
   s.configure = new QPushButton(action_icon(ActionIcon::Open), "Configure workflow…", this);
   s.configure->setObjectName("configureStitchWorkflowButton");
   s.configure->setToolTip("Choose the installed Dagster/Slurm workflow registry and save it for this game.");
@@ -1337,7 +1340,6 @@ StitchingWorkflow::StitchingWorkflow(
   s.export_batch = new QPushButton(action_icon(ActionIcon::Save), "Export batch", this);
   s.export_batch->setObjectName("exportStitchWorkflowButton");
   controls->addRow("Execution profile", profile_row);
-  controls->addRow("Distributed workflow", s.availability);
   auto* parallel_row = new QHBoxLayout();
   parallel_row->addWidget(s.parallel);
   parallel_row->addWidget(s.export_batch);
