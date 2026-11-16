@@ -4836,11 +4836,12 @@ absl::Status validate_live_output_publication_authority(
 absl::Status validate_field_mask_publication_authority(
     const std::string& game_dir,
     const std::string& expected_output_generation,
-    const std::string& expected_output_authorization_id) {
+    const std::string& expected_output_authorization_id,
+    bool wait) {
   if (game_dir.empty() || expected_output_generation.empty())
     return absl::InvalidArgumentError("A game directory and stitched-output generation are required");
   const fs::path root(game_dir);
-  auto config_lock = GameConfigTransactionLock::TryAcquire(root);
+  auto config_lock = wait ? GameConfigTransactionLock::Acquire(root) : GameConfigTransactionLock::TryAcquire(root);
   if (!config_lock.ok())
     return config_lock.status();
   try {

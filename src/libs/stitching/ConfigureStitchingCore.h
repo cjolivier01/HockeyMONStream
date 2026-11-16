@@ -275,13 +275,16 @@ bool is_field_mask_configured_for_stitching_config(
     const std::string& expected_invalidation_id = {},
     const std::optional<ValidatedStitchingArtifacts>& previously_validated = std::nullopt);
 
-// Nonblocking publication preflight used before retrying expensive field-mask
-// inference. A pending live rotation fences every producer except its exact
-// output generation and unique authorization epoch.
+// Publication preflight used before retrying expensive field-mask inference.
+// Nonblocking by default; an immutable analysis scan waits for metadata readers
+// and writers, then revalidates authority before consuming its sampled frame.
+// A pending live rotation fences every producer except its exact output
+// generation and unique authorization epoch.
 absl::Status validate_field_mask_publication_authority(
     const std::string& game_dir,
     const std::string& expected_output_generation,
-    const std::string& expected_output_authorization_id = {});
+    const std::string& expected_output_authorization_id = {},
+    bool wait = false);
 
 class FieldMaskPublicationAuthorityMonitor {
  public:
