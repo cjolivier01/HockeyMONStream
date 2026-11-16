@@ -40,7 +40,6 @@
 #include <QtWidgets/QVBoxLayout>
 
 #include <algorithm>
-#include <filesystem>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -664,6 +663,7 @@ struct StitchingWorkflow::Impl {
   bool attachment_active{true};
   bool restore_controls{false};
   int timeout_ms{0};
+  int profiles_generation{0};
   uint64_t request_generation{0};
   int retry_epoch{-1};
   bool log_pending{false};
@@ -675,13 +675,14 @@ struct StitchingWorkflow::Impl {
         QSizePolicy::Preferred, visible && !monitor_dialog ? QSizePolicy::Expanding : QSizePolicy::Maximum);
   }
   void loadProfiles() {
+    const int requested_generation = ++profiles_generation;
     profiles_ready = false;
     profiles = {};
     while (profile->count() > 1)
       profile->removeItem(1);
     if (registry.isEmpty()) {
       const QString reason = "Distributed workflow is not configured. Choose Configure workflow… to select the "
-                             "Dagster/Slurm registry saved in your user defaults.";
+                             "Dagster/Slurm registry for this game.";
       profile->setToolTip(reason);
       availability->setText(reason);
       controls();
@@ -691,8 +692,8 @@ struct StitchingWorkflow::Impl {
     availability->setText("Loading Dagster/Slurm execution profiles from " + registry + "…");
     controls();
     const QString requested_registry = registry;
-    call({"profiles"}, [this, requested_registry](QJsonObject value, QString error) {
-      if (requested_registry != registry)
+    call({"profiles"}, [this, requested_registry, requested_generation](QJsonObject value, QString error) {
+      if (requested_generation != profiles_generation || requested_registry != registry)
         return;
       if (!error.isEmpty()) {
         const QString reason = "Cannot load Dagster/Slurm profiles: " + error;
@@ -742,44 +743,31 @@ struct StitchingWorkflow::Impl {
       availability->setText(reason);
       return;
     }
-    if (environment.contains("HSTREAM_USER_CONFIG_SNAPSHOT")) {
-      const QString reason = "This run uses a frozen user configuration; configure workflow.registry in its source defaults file.";
-      notify(reason, true);
-      availability->setText(reason);
-      return;
-    }
-    const auto path = hm::user_config::defaults_path();
-    if (!path.ok()) {
-      const QString reason = QString::fromStdString(path.status().ToString());
-      notify("Could not save workflow registry: " + reason, true);
-      availability->setText("Could not save workflow registry: " + reason);
-      return;
-    }
-    std::error_code error;
-    std::filesystem::create_directories(path->parent_path(), error);
-    if (error) {
-      const QString reason = QString::fromStdString(error.message());
-      notify("Could not create the defaults directory: " + reason, true);
-      availability->setText("Could not create the defaults directory: " + reason);
-      return;
-    }
-    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(path->parent_path());
+    const std::filesystem::path game_path(game.toStdString());
+    auto lock = hm::stitching::GameConfigLock::Acquire(game_path);
     if (!lock.ok()) {
       const QString reason = QString::fromStdString(lock.status().ToString());
-      notify("Could not lock user defaults: " + reason, true);
-      availability->setText("Could not lock user defaults: " + reason);
+      notify("Could not lock this game's configuration: " + reason, true);
+      availability->setText("Could not lock this game's configuration: " + reason);
       return;
     }
-    const auto saved = hm::user_config::load_defaults();
-    if (!saved.ok()) {
-      const QString reason = QString::fromStdString(saved.status().ToString());
-      notify("Could not save workflow registry: " + reason, true);
-      availability->setText("Could not save workflow registry: " + reason);
+    YAML::Node config(YAML::NodeType::Map);
+    const auto config_path = game_path / "_hockeymon/config.yaml";
+    try {
+      if (QFileInfo::exists(QString::fromStdString(config_path.string())))
+        config = YAML::LoadFile(config_path.string());
+      if (!config || config.IsNull())
+        config = YAML::Node(YAML::NodeType::Map);
+      if (!config.IsMap())
+        throw std::runtime_error("Game configuration must be a YAML map");
+    } catch (const std::exception& error) {
+      const QString reason = QString::fromUtf8(error.what());
+      notify("Could not read this game's configuration: " + reason, true);
+      availability->setText("Could not read this game's configuration: " + reason);
       return;
     }
-    YAML::Node overlay = YAML::Clone(*saved);
-    overlay["workflow"]["registry"] = canonical.toStdString();
-    const auto published = hm::stitching::publish_named_file(*path, YAML::Dump(overlay) + "\n");
+    config["workflow"]["registry"] = canonical.toStdString();
+    const auto published = hm::stitching::publish_game_config(game_path, YAML::Dump(config) + "\n");
     if (!published.ok()) {
       const QString reason = QString::fromStdString(published.ToString());
       notify("Could not save workflow registry: " + reason, true);
@@ -787,7 +775,7 @@ struct StitchingWorkflow::Impl {
       return;
     }
     registry = canonical;
-    notify("Workflow registry saved in " + QString::fromStdString(path->string()) + ".");
+    notify("Workflow registry saved for this game.");
     loadProfiles();
   }
   void expandMonitor() {
@@ -1334,7 +1322,7 @@ StitchingWorkflow::StitchingWorkflow(
   s.profile->addItem("Current runner (local)", "");
   s.configure = new QPushButton(action_icon(ActionIcon::Open), "Configure workflow…", this);
   s.configure->setObjectName("configureStitchWorkflowButton");
-  s.configure->setToolTip("Choose the installed Dagster/Slurm workflow registry and save it in user defaults.");
+  s.configure->setToolTip("Choose the installed Dagster/Slurm workflow registry and save it for this game.");
   auto* profile_row = new QHBoxLayout();
   profile_row->addWidget(s.profile, 1);
   profile_row->addWidget(s.configure);
