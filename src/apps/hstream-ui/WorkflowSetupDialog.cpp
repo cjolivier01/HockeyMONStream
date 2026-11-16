@@ -364,7 +364,13 @@ struct WorkflowSetupDialog::Impl {
       if (tests_passed) {
         flow = Flow::None;
         showStep(4);
-      } else if (!test_running) {
+      } else if (test_running) {
+        for (const auto& item : tests) {
+          const auto row = item.toObject();
+          if (row.contains("status") && !row.value("finished").toBool())
+            attempted.insert(row.value("profile").toString() + "/" + row.value("node").toString());
+        }
+      } else {
         for (const auto& item : tests) {
           const auto row = item.toObject();
           if (!row.value("passed").toBool() &&

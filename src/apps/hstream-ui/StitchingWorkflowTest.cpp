@@ -557,7 +557,9 @@ elif action in ('test-status','start-test','cancel-test'):
   if mode=='lost-status' and 'running' in phases.values() and not s.get('lost_status'):
    s['lost_status']=True; error='Connection lost while checking test progress.'
   for node,phase in list(phases.items()):
-   if phase=='running' and mode not in ('cancel','recovered-cancel') and not error: phases[node]='failed' if mode=='failure' and node=='mini' else 'passed'
+   if phase=='running' and mode=='recovered-failure' and not s.get('recovered_seen'):
+    s['recovered_seen']=True; continue
+   if phase=='running' and mode not in ('cancel','recovered-cancel') and not error: phases[node]='failed' if mode in ('failure','recovered-failure') and node=='mini' else 'passed'
  if action=='start-test':
   phases[r['node']]='running'
   if mode=='lost-start' and not s.get('lost'):
@@ -662,7 +664,7 @@ print(json.dumps({**value,'progress':p}))
     next->click();
     require(wait([&] { return pages->currentIndex() == 3 && next->isEnabled(); }), "Saved progress did not resume");
   }
-  if (outcome == "recovered-cancel") {
+  if (outcome == "recovered-cancel" || outcome == "recovered-failure") {
     auto state = read(directory + "/state.json");
     state.insert("phases", QJsonObject{{"mini", "running"}});
     write(directory + "/state.json", QJsonDocument(state).toJson());
@@ -736,7 +738,7 @@ print(json.dumps({**value,'progress':p}))
       QThread::msleep(20);
     }
     require(starts() == QStringList{"mini"}, "Stop launched the next computer");
-  } else if (outcome == "failure") {
+  } else if (outcome == "failure" || outcome == "recovered-failure") {
     require(
         wait([&] { return next->isEnabled() && problem->text().contains("mini did not pass"); }),
         "Failed test did not explain the stopped sequence");
@@ -744,7 +746,9 @@ print(json.dumps({**value,'progress':p}))
       QCoreApplication::processEvents();
       QThread::msleep(20);
     }
-    require(starts() == QStringList{"mini"}, "Failure automatically retried or advanced");
+    require(
+        starts() == (outcome == "recovered-failure" ? QStringList{} : QStringList{"mini"}),
+        "Failure automatically retried or advanced");
   } else {
     require(
         wait([&] { return pages->currentIndex() == 4 && next->isEnabled(); }), "One click did not test all computers");
@@ -2947,7 +2951,8 @@ int main(int argc, char** argv) {
             "cancel-before-start",
             "lost-status",
             "snapshot-error",
-            "recovered-cancel"})
+            "recovered-cancel",
+            "recovered-failure"})
         setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
       std::cout << "Cluster setup wizard checks passed\n";
       return 0;
@@ -2966,7 +2971,8 @@ int main(int argc, char** argv) {
           "cancel-before-start",
           "lost-status",
           "snapshot-error",
-          "recovered-cancel"})
+          "recovered-cancel",
+          "recovered-failure"})
       setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
