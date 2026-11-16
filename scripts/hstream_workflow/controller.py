@@ -285,10 +285,11 @@ class Controller:
             owner["acquired"] = True
             write_json(directory / "owner.json", owner)
         if not owner["bound"] and not cancelled:
+            state = read_json(directory / "state.json")
             keys = sorted(
                 {
                     stage["inputs"]["catalog_key"]
-                    for stage in plan["stages"]
+                    for stage in graph.selected_stages(plan, state)
                     if isinstance(stage["inputs"].get("catalog_key"), str)
                 }
             )
@@ -463,7 +464,7 @@ class Controller:
                     )
         return self.status(workflow_id)
 
-    def retry(self, workflow_id, stages, expected_epoch=None):
+    def retry(self, workflow_id, stages, expected_epoch=None, candidate_ids=None):
         directory, _ = self.registry.lookup(workflow_id)
         with locked(directory / "controller.lock"), locked(
             directory / "control-intent.lock"
@@ -479,7 +480,7 @@ class Controller:
                 owner["released"],
                 "Wait for confirmed game ownership release before retrying",
             )
-            state = graph.retry(plan, previous, stages)
+            state = graph.retry(plan, previous, stages, candidate_ids)
             owner.update(
                 acquired=False, released=False, bound=False, token=str(uuid4())
             )

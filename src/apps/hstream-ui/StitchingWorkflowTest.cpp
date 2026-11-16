@@ -278,7 +278,7 @@ elif operation in ('cancel','retry'):
  else:
   value['epoch']+=1; value['state']='running'; value['owner_released']=False; value.pop('cancel_requested',None)
   ids=[args[i+1] for i,arg in enumerate(args) if arg=='--stage']
-  (root/'retry-stages.json').write_text(json.dumps({'ids':ids}))
+  (root/'retry-stages.json').write_text(json.dumps({'ids':ids,'candidates':[args[i+1] for i,arg in enumerate(args) if arg=='--candidate']}))
   for node in value['nodes']:
    if node['id'] not in ids: continue
    node['state']='running'
@@ -1154,6 +1154,75 @@ void retryFailedStages(const QString& root, YAML::Node baseline) {
   require(retried.value("limits") == state.value("limits"), "Bulk retry changed the parallel stage limit");
   require(retried.value("nodes").toArray()[0] == nodes[0], "Bulk retry changed a successful stage");
   require(!retry_failed->isEnabled(), "Running workflow enabled bulk retry");
+}
+
+void restartRetainedBatch(const QString& root, const StitchingExperimentStore& store, YAML::Node baseline) {
+  auto state = read(root + "/state.json");
+  auto rows = catalog(store);
+  rows.experiments.resize(1);
+  auto& row = rows.experiments.front();
+  row.state = "failed";
+  row.failure = "Interrupted calibration";
+  row.workflow_id = state.value("workflow_id").toString().toStdString();
+  const auto key =
+      QString::fromStdString(row.workspace.game_directory.lexically_relative(store.directory).generic_string());
+  QJsonArray nodes;
+  const QStringList states{"succeeded", "failed", "cancelled", "failed"};
+  for (int index = 0; index < states.size(); ++index) {
+    nodes.append(
+        QJsonObject{
+            {"id", QString("restart-%1").arg(index)},
+            {"candidate_id", index == 3 ? "removed" : key},
+            {"kind", "experiment-run"},
+            {"label", QString("Stage %1").arg(index)},
+            {"state", states[index]},
+            {"dependencies", QJsonArray{}},
+            {"attempts", QJsonArray{}},
+            {"reason", ""}});
+  }
+  state.insert("nodes", nodes);
+  state.insert("state", "failed");
+  state.insert("owner_released", true);
+  write(root + "/state.json", QJsonDocument(state).toJson());
+  require(QDir().mkpath(QString::fromStdString(store.directory.string())), "Cannot prepare restart catalog");
+  baseline["workflow"]["registry"] = root.toStdString();
+  baseline["workflow"]["poll_interval_ms"] = 100;
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("WORKFLOW_TEST_ROOT", root);
+  StitchingWorkflow pane(root + "/game", root, environment, baseline, nullptr);
+  pane.setCandidates({key});
+  pane.attach(state.value("workflow_id").toString(), false);
+  require(
+      wait([&] { return widget<QComboBox>(pane, "stitchWorkflowStage")->count() == 4; }),
+      "Restart fixture did not attach");
+  pane.start(store, rows);
+  bool stopped = false;
+  pane.cancel([&](bool result) { stopped = result; });
+  require(stopped && !pane.active(), "Stopping history lookup retained the restart queue");
+  require(
+      read(root + "/state.json").value("epoch") == state.value("epoch"), "Stopping history lookup submitted a retry");
+  pane.start(store, rows);
+  require(
+      wait([&] { return read(root + "/state.json").value("epoch").toInt() > state.value("epoch").toInt(); }),
+      "Start did not retry retained failures");
+  const auto retried = read(root + "/retry-stages.json");
+  require(
+      retried.value("ids").toArray() == QJsonArray{"restart-1", "restart-2"},
+      "Restart included a success or removed candidate");
+  require(retried.value("candidates").toArray() == QJsonArray{key}, "Restart did not scope catalog ownership");
+  auto current = read(root + "/state.json");
+  require(current.value("nodes").toArray()[0] == nodes[0], "Restart changed a successful prerequisite");
+  current.insert("state", "succeeded");
+  current.insert("owner_released", true);
+  QJsonArray completed;
+  for (int index = 0; index < 3; ++index) {
+    auto node = current.value("nodes").toArray()[index].toObject();
+    node.insert("state", "succeeded");
+    completed.append(node);
+  }
+  current.insert("nodes", completed);
+  write(root + "/state.json", QJsonDocument(current).toJson());
+  require(wait([&] { return !pane.active() && !pane.busy(); }), "Completed restart did not release the dialog");
 }
 
 int controllerCalls(const QString& root, const QByteArray& operation) {
@@ -2618,6 +2687,7 @@ int main(int argc, char** argv) {
     setupAssistant(temporary.path(), YAML::Clone(baseline->values));
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
+    restartRetainedBatch(temporary.path(), store, YAML::Clone(baseline->values));
     profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));
     dialogOwnership(temporary.path());
     dialogCloseDuringSubmission(temporary.path());

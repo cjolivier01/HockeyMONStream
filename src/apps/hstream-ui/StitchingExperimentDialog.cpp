@@ -685,6 +685,7 @@ struct StitchingExperimentDialog::Impl {
   int open_editor_after_row{-1};
   bool batch_started{false};
   bool batch_active{false};
+  bool local_after_workflows{false};
   bool cancelling{false};
   bool stopping_preview{false};
   bool closing{false};
@@ -853,8 +854,8 @@ struct StitchingExperimentDialog::Impl {
   }
 
   void submit_workflow(bool exporting) {
-    if (!store || !workflow || !workflow->selected() || preparation_worker || promotion_worker || preview_process ||
-        calibration_process)
+    if (!store || !workflow || (exporting && !workflow->selected()) || preparation_worker || promotion_worker ||
+        preview_process || calibration_process)
       return;
     if (!release_local_operation())
       return;
@@ -1021,6 +1022,15 @@ struct StitchingExperimentDialog::Impl {
          (candidate.stored && candidate.stored->state == "frozen"));
   }
 
+  static bool retryable_candidate(const Candidate& candidate) {
+    return !candidate.main_calibration && !candidate.complete && !candidate.queued && candidate.workspace &&
+        candidate.stored && !candidate.selection_reuse_blocked && !candidate.stored->workflow_active &&
+        candidate.stored->process_session_id == 0 && candidate.stored->process_token.empty() &&
+        candidate.stored->state != "quarantined" &&
+        (candidate.stored->state == "failed" || candidate.stored->state == "frozen" ||
+         !candidate.stored->workflow_id.empty());
+  }
+
   void update_controls() {
     for (const Candidate& candidate : candidates) {
       auto* item = table->item(candidate.row, 6);
@@ -1056,6 +1066,7 @@ struct StitchingExperimentDialog::Impl {
         !active_batch && !preview_owned && !promoting && !stopping && !closing;
     const auto queued_count =
         std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; });
+    const auto retry_count = std::count_if(candidates.begin(), candidates.end(), retryable_candidate);
     add_to_batch->setEnabled(editing_batch && feature_settings_error.isEmpty() && queued_count < 64);
     remove_from_batch->setEnabled(
         store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
@@ -1063,14 +1074,22 @@ struct StitchingExperimentDialog::Impl {
     clear_batch->setEnabled(
         store && !cleanup_unconfirmed && !active_batch && !preview_owned && !promoting && !stopping && !closing &&
         (!candidates.empty() || !store_error.isEmpty()));
-    start_batch->setEnabled(editing_batch && queued_count > 0);
+    start_batch->setEnabled(editing_batch && (queued_count > 0 || retry_count > 0));
+    start_batch->setToolTip(
+        "Run queued candidates and retry unfinished candidates still in this list. Successful stages are reused.");
     cancel->setEnabled((batch_active || remote) && !workflow_busy && !closing && !close_after_workflow);
     close_button->setText(close_after_workflow ? "Waiting for cleanup…" : "Close");
     close_button->setEnabled(!closing && !close_after_workflow);
     view_tabs->setTabEnabled(0, !closing && !close_after_workflow);
     table->setEnabled((!active_batch || remote) && !preview_owned && !promoting && !stopping && !closing);
-    if (workflow)
+    if (workflow) {
+      QStringList keys;
+      for (const auto& candidate : candidates)
+        if (!candidate_key(candidate).isEmpty())
+          keys.append(candidate_key(candidate));
+      workflow->setCandidates(keys);
       workflow->setEditingEnabled(editing_batch, queued_count > 0);
+    }
     const bool managed_view = workflow && !workflow->workflowId().isEmpty();
     log->setVisible(!managed_view || !log->document()->isEmpty());
     log->setMaximumHeight(managed_view ? 130 : QWIDGETSIZE_MAX);
@@ -2085,9 +2104,14 @@ struct StitchingExperimentDialog::Impl {
             ->setText(pending.selection_reuse_blocked ? "Unavailable: process ownership unconfirmed" : "Cancelled");
       }
       progress->setValue(std::min(running_candidate, static_cast<int>(candidates.size())));
+      const auto unfinished = std::count_if(candidates.begin(), candidates.end(), retryable_candidate);
       show_status(
           cancelling || closing
               ? "Batch cancelled. Completed candidates remain available; the main Program is unchanged."
+              : unfinished > 0
+              ? QString(
+                    "Batch complete. Press Start batch to retry %1 unfinished candidates; successful stages will be reused.")
+                    .arg(unfinished)
               : "Batch complete. Select a successful row and preview the seam in motion.");
       cancelling = false;
       batch_only_row = -1;
@@ -2102,7 +2126,34 @@ struct StitchingExperimentDialog::Impl {
     }
     Candidate& candidate = candidates[running_candidate];
     candidate.queued = false;
-    if (!candidate.has_selected_frames && candidate.baseline_sequence != 0 &&
+    std::optional<StitchingExperimentWorkspace> owner_workspace;
+    if (candidate.workspace && candidate.stored && !candidate.has_selected_frames &&
+        candidate.selection_owner_sequence == candidate.sequence) {
+      if (candidate.reservation_token.isEmpty())
+        candidate.reservation_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
+      auto saved = persist_candidate(candidate, "queued");
+      auto reserved = saved.ok() ? ReserveStitchingExperimentFrameCount(
+                                       *store,
+                                       candidate.settings.frame_count,
+                                       hm::stitch_frame_time_to_nanoseconds(candidate.settings.stitch_frame_time),
+                                       *candidate.workspace,
+                                       candidate.reservation_token.toStdString())
+                                 : absl::StatusOr<std::optional<StoredStitchingExperiment>>(saved);
+      if (!reserved.ok()) {
+        candidate.failure = QString::fromStdString(reserved.status().ToString());
+        (void)release_reservation(candidate);
+        (void)persist_candidate(candidate, "failed");
+        table->item(candidate.row, 5)->setText(candidate.failure);
+        QTimer::singleShot(0, dialog, [this] { launch_next_candidate(); });
+        return;
+      }
+      if (reserved->has_value()) {
+        owner_workspace = ResolvedStitchingExperimentWorkspace(**reserved);
+        candidate.phase = CandidatePhase::kCalibration;
+        (void)release_reservation(candidate);
+      }
+    }
+    if (!owner_workspace && !candidate.has_selected_frames && candidate.baseline_sequence != 0 &&
         candidate.selection_owner_sequence == candidate.sequence) {
       Candidate* baseline = baseline_for(candidate);
       if (!baseline || !baseline->complete || !baseline->workspace) {
@@ -2125,7 +2176,6 @@ struct StitchingExperimentDialog::Impl {
       QTimer::singleShot(0, dialog, [this]() { launch_next_candidate(); });
       return;
     }
-    std::optional<StitchingExperimentWorkspace> owner_workspace;
     if (!candidate.has_selected_frames && candidate.selection_owner_sequence != 0 &&
         candidate.selection_owner_sequence != candidate.sequence) {
       Candidate* owner = selection_owner_for(candidate);
@@ -2143,7 +2193,9 @@ struct StitchingExperimentDialog::Impl {
       owner_workspace = *owner->workspace;
     }
     const auto workspace = *candidate.workspace;
-    const auto expected_fingerprint = candidate.saved_selection_fingerprint;
+    const auto expected_fingerprint = candidate.has_selected_frames && candidate.stored
+        ? candidate.stored->selection_fingerprint
+        : candidate.saved_selection_fingerprint;
     auto result = std::make_shared<absl::StatusOr<std::string>>(absl::UnknownError("Frame preparation did not finish"));
     QThread* worker = QThread::create([workspace, owner_workspace, expected_fingerprint, result]() {
       auto fingerprint = ReusableStitchingExperimentSelectionFingerprint(workspace.game_directory, workspace.settings);
@@ -2912,15 +2964,18 @@ struct StitchingExperimentDialog::Impl {
     update_controls();
   }
 
-  void start_candidate_batch(int only_row = -1) {
+  void start_candidate_batch(int only_row = -1, bool local_only = false) {
     if (!store || batch_active || (workflow && workflow->active()) ||
-        !std::any_of(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; }))
+        !std::any_of(candidates.begin(), candidates.end(), [](const Candidate& item) {
+          return item.queued || retryable_candidate(item);
+        }))
       return;
     if (preparation_worker || !ensure_session())
       return;
     QStringList warnings;
     for (const auto& candidate : candidates) {
-      if (!candidate.queued || !candidate.workspace || (only_row >= 0 && candidate.row != only_row))
+      if ((!candidate.queued && !retryable_candidate(candidate)) || !candidate.workspace ||
+          (only_row >= 0 && candidate.row != only_row))
         continue;
       const auto warning = CameraChapterWarning(candidate.workspace->game_directory);
       if (!warning.isEmpty() && !warnings.contains(warning))
@@ -2928,15 +2983,45 @@ struct StitchingExperimentDialog::Impl {
     }
     if (!ConfirmCameraChapterWarning(dialog, warnings.join("\n")))
       return;
-    if (only_row < 0 && workflow && workflow->selected()) {
+    if (!claim_local_operation())
+      return;
+    for (auto& candidate : candidates) {
+      if (!retryable_candidate(candidate) || !candidate.stored->workflow_id.empty() ||
+          (only_row >= 0 && candidate.row != only_row))
+        continue;
+      candidate.queued = true;
+      candidate.failure.clear();
+      candidate.phase = CandidatePhase::kCalibration;
+      if (!candidate.has_selected_frames && candidate.baseline_sequence != 0 &&
+          candidate.stored->selection_owner_workspace_key ==
+              candidate.workspace->game_directory.lexically_relative(store->directory).generic_string())
+        candidate.selection_owner_sequence = candidate.sequence;
+      const auto saved = persist_candidate(candidate, "queued");
+      if (!saved.ok()) {
+        candidate.queued = false;
+        show_status(QString::fromStdString(saved.ToString()), true);
+        return;
+      }
+      table->item(candidate.row, 5)->setText("Queued");
+    }
+    const bool retained_workflows = std::any_of(candidates.begin(), candidates.end(), [](const auto& candidate) {
+      return retryable_candidate(candidate) && !candidate.stored->workflow_id.empty();
+    });
+    if (!local_only && only_row < 0 && workflow && (workflow->selected() || retained_workflows)) {
+      local_after_workflows = !workflow->selected() &&
+          std::any_of(candidates.begin(), candidates.end(), [](const auto& candidate) { return candidate.queued; });
       submit_workflow(false);
       return;
     }
-    if (!claim_local_operation())
-      return;
+    std::set<int> reserved_counts;
     for (Candidate& owner : candidates) {
       if (!owner.queued || (only_row >= 0 && owner.row != only_row) ||
           owner.selection_owner_sequence != owner.sequence || owner.has_selected_frames)
+        continue;
+      // A retained failed scan and newly added options can have separate
+      // immutable owners for the same count. Reserve the first; later owners
+      // acquire it when reached, reusing frames if the earlier scan succeeds.
+      if (!reserved_counts.insert(owner.settings.frame_count).second)
         continue;
       if (owner.reservation_token.isEmpty())
         owner.reservation_token = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -2951,14 +3036,17 @@ struct StitchingExperimentDialog::Impl {
           hm::stitch_frame_time_to_nanoseconds(owner.settings.stitch_frame_time),
           *owner.workspace,
           owner.reservation_token.toStdString());
-      if (!reserved.ok() || reserved->has_value()) {
+      if (reserved.ok() && reserved->has_value()) {
+        // Selection may have finished since these options were added. The
+        // per-candidate preparation below verifies and copies those frames.
+        (void)release_reservation(owner);
+        continue;
+      }
+      if (!reserved.ok()) {
         for (Candidate& pending : candidates)
           if (pending.queued && !pending.reservation_token.isEmpty())
             (void)release_reservation(pending);
-        show_status(
-            reserved.ok() ? "Another dialog already selected this frame count. Reopen this dialog to reuse it."
-                          : QString::fromStdString(reserved.status().ToString()),
-            true);
+        show_status(QString::fromStdString(reserved.status().ToString()), true);
         return;
       }
     }
@@ -4533,6 +4621,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   connect(s.clear_batch, &QPushButton::clicked, this, [&s]() { s.clear_candidate_batch(); });
   connect(s.start_batch, &QPushButton::clicked, this, [&s]() { s.start_candidate_batch(); });
   connect(s.cancel, &QPushButton::clicked, this, [&s]() {
+    s.local_after_workflows = false;
     if (s.workflow && s.workflow->active()) {
       s.workflow->cancel();
       return;
@@ -4543,8 +4632,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   });
   const auto select_ready_preview = [&s]() {
     const int row = s.table->currentRow();
-    if (!s.close_after_workflow && row >= 0 && row < static_cast<int>(s.candidates.size()) && s.candidates[row].complete &&
-        !s.candidates[row].selection_reuse_blocked) {
+    if (!s.close_after_workflow && row >= 0 && row < static_cast<int>(s.candidates.size()) &&
+        s.candidates[row].complete && !s.candidates[row].selection_reuse_blocked) {
       if (!s.restoring_candidates)
         s.select_attached_workflow = false;
       s.view_tabs->setCurrentIndex(0);
@@ -4585,6 +4674,11 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.update_controls();
     s.continue_workflow_close();
     s.maybe_finish_close();
+    if (s.local_after_workflows && !s.closing && !s.close_after_workflow && !s.workflow->active() &&
+        !s.workflow->busy()) {
+      s.local_after_workflows = false;
+      QTimer::singleShot(0, s.dialog, [&s] { s.start_candidate_batch(-1, true); });
+    }
   };
   s.workflow->snapshotChanged = [&s](const QJsonObject& value) {
     s.workflow_snapshot(value);

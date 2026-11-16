@@ -545,6 +545,34 @@ finally:
             len(self.controller.events(self.plan["workflow_id"], "a")["events"]), count
         )
 
+    def test_retry_omits_removed_candidates_from_binding_and_admission(self):
+        self.plan["stages"] = [
+            self.stage("a", fail=True, catalog_key="a"),
+            self.stage("b", fail=True, catalog_key="b"),
+        ]
+        self.controller.register(self.plan, self.game)
+        result = self.wait()
+        self.assertEqual(
+            [node["state"] for node in result["nodes"]], ["failed", "failed"]
+        )
+        native = self.controller._native
+        bindings = []
+
+        def record_native(directory, action, payload, **kwargs):
+            if action == "bind":
+                bindings.append(payload["catalog_keys"])
+            return native(directory, action, payload, **kwargs)
+
+        with patch.object(self.controller, "_native", side_effect=record_native):
+            self.controller.retry(self.plan["workflow_id"], ["a"], 0, ["a"])
+        self.assertEqual(bindings, [["a"]])
+        result = self.wait()
+        self.assertEqual([node["id"] for node in result["nodes"]], ["a"])
+        self.assertEqual(len(result["nodes"][0]["attempts"]), 2)
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        retained = read_json(directory / "state.json")
+        self.assertEqual(len(retained["nodes"]["b"]["attempts"]), 1)
+
     def test_failure_diagnostic_is_bounded_and_keeps_final_native_error(self):
         self.plan["stages"] = [
             self.stage(

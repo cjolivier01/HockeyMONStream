@@ -126,6 +126,62 @@ class GraphTest(unittest.TestCase):
         self.assertEqual(graph.snapshot(self.plan, self.state)["state"], "succeeded")
         self.assertEqual(len(self.state["nodes"]["a"]["attempts"]), 2)
 
+    def test_restart_excludes_removed_candidates_and_retains_successful_inputs(self):
+        for key in ("baseline", "scan", "frames", "ordinary"):
+            self.finish(key, self.begin(key))
+        for key in ("a", "b"):
+            self.finish(key, self.begin(key), "failed")
+        before = copy.deepcopy(self.state)
+        selected = ["baseline", "scan", "frames", "a", "ordinary"]
+        self.state = graph.retry(self.plan, self.state, ["a"], selected)
+        for key in ("baseline", "scan", "frames", "ordinary", "b"):
+            self.assertEqual(self.state["nodes"][key], before["nodes"][key])
+        self.assertEqual(
+            [row["id"] for row in graph.ready_stages(self.plan, self.state)], ["a"]
+        )
+        self.finish("a", self.begin("a"))
+        self.assertEqual(graph.snapshot(self.plan, self.state)["state"], "succeeded")
+        self.assertNotIn(
+            "b", [row["id"] for row in graph.snapshot(self.plan, self.state)["nodes"]]
+        )
+        with self.assertRaisesRegex(WorkflowError, "removed candidate"):
+            graph.retry(self.plan, before, ["a"], ["a"])
+
+    def test_successful_stage_survives_removal_of_its_finished_prerequisite(self):
+        self.plan["stages"][0]["dependencies"] = ["ordinary"]
+        self.state = graph.initial_state(self.plan)
+        for key in ("ordinary", "baseline", "scan", "frames", "b"):
+            self.finish(key, self.begin(key))
+        self.finish("a", self.begin("a"), "failed")
+        before = copy.deepcopy(self.state)
+        selected = ["baseline", "scan", "frames", "a", "b"]
+        self.state = graph.retry(self.plan, self.state, ["a"], selected)
+        self.assertEqual(self.state["nodes"]["baseline"], before["nodes"]["baseline"])
+        self.assertEqual(self.plan["stages"][0]["dependencies"], ["ordinary"])
+        self.assertEqual(
+            graph.snapshot(self.plan, self.state)["nodes"][0]["dependencies"], []
+        )
+        self.finish("a", self.begin("a"))
+        self.state["nodes"]["baseline"].update(state="failed", result=None)
+        with self.assertRaisesRegex(WorkflowError, "removed candidate"):
+            graph.retry(self.plan, self.state, ["baseline"])
+
+    def test_retry_invalidates_every_dependent_but_keeps_unrelated_success(self):
+        for key in ("baseline", "scan", "frames", "a", "b", "ordinary"):
+            self.finish(key, self.begin(key))
+        # Simulate a prerequisite whose output became unavailable after completion.
+        self.state["nodes"]["scan"].update(state="failed", result=None)
+        before = copy.deepcopy(self.state)
+        self.state = graph.retry(self.plan, self.state, ["scan"])
+        for key in ("frames", "a", "b"):
+            self.assertEqual(self.state["nodes"][key]["state"], "waiting")
+            self.assertIsNone(self.state["nodes"][key]["result"])
+            self.assertEqual(
+                self.state["nodes"][key]["attempts"], before["nodes"][key]["attempts"]
+            )
+        for key in ("baseline", "ordinary"):
+            self.assertEqual(self.state["nodes"][key], before["nodes"][key])
+
     def test_cancellation_wins_late_success_and_waits_for_cleanup(self):
         attempt = self.begin("baseline")
         self.state = graph.cancel(self.plan, self.state)

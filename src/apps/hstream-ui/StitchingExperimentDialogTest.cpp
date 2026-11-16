@@ -1317,6 +1317,58 @@ void exercise_queued_reopen(const QString& game, const QString& root) {
   }
 }
 
+void exercise_restart_remaining_failures(const QString& game, const QString& root) {
+  const QString calls = game + "/restart-calls";
+  const QString runner = game + "/restart-runner";
+  write(runner, "#!/bin/sh\nprintf 'RUN\\n' >> \"$HSTREAM_RESTART_CALLS\"\nexit 13\n");
+  require(
+      QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot prepare restart runner");
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HSTREAM_RESTART_CALLS", calls);
+  {
+    StitchingExperimentDialog dialog(
+        game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+    dialog.show();
+    widget<QCheckBox>(dialog, "stitchExperimentPreferPlayerFrames")->setChecked(false);
+    widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150,200");
+    add_options(dialog);
+    auto* start = widget<QPushButton>(dialog, "startStitchExperimentBatchButton");
+    auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
+    start->click();
+    require(
+        wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000),
+        "Initial failure batch stalled");
+    require(read(calls).count("RUN\n") == 3 && start->isEnabled(), "Start must allow failed rows to retry");
+    const auto screenshot = qEnvironmentVariable("HSTREAM_BATCH_RESTART_SCREENSHOT");
+    if (!screenshot.isEmpty())
+      require(dialog.grab().save(screenshot), "Cannot save batch restart screenshot");
+    auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    table->selectRow(1);
+    widget<QPushButton>(dialog, "removeStitchExperimentFromBatchButton")->click();
+    require(table->rowCount() == 2, "Removed failure stayed in the batch");
+    start->click();
+    require(wait_until([&] { return status->text().startsWith("Batch complete."); }, 10000), "Restarted batch stalled");
+    require(read(calls).count("RUN\n") == 5, "Restart did not run exactly the retained failures once");
+    dialog.reject();
+    require(wait_until([&] { return !dialog.isVisible(); }, 1000), "Restart dialog did not close");
+  }
+  StitchingExperimentDialog reopened(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+  reopened.show();
+  auto* start = widget<QPushButton>(reopened, "startStitchExperimentBatchButton");
+  require(start->isEnabled(), "Retained failures cannot restart after reopening");
+  start->click();
+  require(
+      wait_until(
+          [&] { return widget<QLabel>(reopened, "stitchExperimentStatus")->text().startsWith("Batch complete."); },
+          10000),
+      "Reopened restart stalled");
+  require(read(calls).count("RUN\n") == 7, "Reopened restart lost or duplicated candidates");
+  reopened.reject();
+  require(wait_until([&] { return !reopened.isVisible(); }, 1000), "Reopened restart did not close");
+}
+
 void exercise_preparation_failure(const QString& game, const QString& root) {
   auto environment = QProcessEnvironment::systemEnvironment();
   const QString arguments = root + "/partial-preparation-arguments.txt";
@@ -1640,6 +1692,13 @@ void exercise_baseline_retry(const QString& game, const QString& root, const std
           "A retried baseline and candidate must retain corrected camera and synchronization settings");
     }
   }
+  auto* start = widget<QPushButton>(reopened, "startStitchExperimentBatchButton");
+  start->click();
+  require(
+      wait_until(
+          [&] { return widget<QLabel>(reopened, "stitchExperimentStatus")->text().startsWith("Batch complete."); },
+          10000),
+      "Retried and newly queued selection owners blocked the batch before execution");
   if (fresh_baseline)
     answer_close_guard(reopened, "stitchExperimentCloseDiscard", false);
   else
@@ -4142,6 +4201,17 @@ int main(int argc, char** argv) {
         std::cout << "Stitching workflow saved-frame status checks passed\n";
         return 0;
       }
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_BATCH_RESTART_ONLY") != 0) {
+        exercise_player_queue(make_game("queue"), fixture.path());
+        exercise_restart_remaining_failures(make_game("restart"), fixture.path());
+        exercise_frozen_selection_recovery(make_game("scan"), fixture.path(), "scan");
+        exercise_frozen_selection_recovery(make_game("failed"), fixture.path(), "failed");
+        exercise_baseline_retry(make_game("mixed-unchanged"), fixture.path(), "unchanged");
+        exercise_baseline_retry(make_game("mixed-reference"), fixture.path(), "reference");
+        exercise_baseline_retry(make_game("mixed-source"), fixture.path(), "source");
+        std::cout << "Stitching batch restart and retained frame checks passed\n";
+        return 0;
+      }
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_SOURCE_CHANGE_ONLY") != 0) {
         exercise_queued_source_change(make_game("queued-source-change"), fixture.path(), false);
         exercise_queued_source_change(make_game("queued-source-copy-race"), fixture.path(), true);
@@ -4157,6 +4227,7 @@ int main(int argc, char** argv) {
       exercise_generated_matcher(make_game("generated-matcher"), fixture.path());
       exercise_player_queue(make_game("queue"), fixture.path());
       exercise_queued_reopen(make_game("queued-reopen"), fixture.path());
+      exercise_restart_remaining_failures(make_game("restart-failures"), fixture.path());
       exercise_baseline_retry(make_game("baseline-reference-retry"), fixture.path(), "reference");
       exercise_baseline_retry(make_game("baseline-source-retry"), fixture.path(), "source");
       exercise_baseline_retry(make_game("baseline-legacy-retry"), fixture.path(), "legacy");
