@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/stitcher"
@@ -10,13 +11,13 @@ cuda_library(
         "-Wno-deprecated-gpu-targets",
     ],
     visibility = ["//visibility:private"],
-    deps = [
+    deps = cuda_dependencies("high_bit_stitch_cuda", [
         ":high_bit_stitch_cuda_h",
         "//src/gst-plugins/gst-videoprep/playcropper:shadow_tone_curve",
         "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
         "@hm-cupano//src/pano:cuda_pano",
-    ],
+    ]),
 )
 
 cc_library(
@@ -24,13 +25,13 @@ cc_library(
     hdrs = ["cudaHighBitStitch.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("high_bit_stitch_cuda_h", [
         "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
         "@hm-cupano//src/pano:cuda_matrix",
         "@hm-cupano//src/pano:cuda_pano",
         "@opencv_linux//:opencv",
-    ],
+    ]),
 )
 
 cc_library(
@@ -43,7 +44,7 @@ cc_library(
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("stitcher", [
         "//src/libs/common:game_storage",
         ":high_bit_stitch_cuda",
         ":high_bit_stitch_cuda_h",
@@ -62,13 +63,13 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
         "@hm-cupano//src/pano:cuda_pano",
-    ],
+    ]),
 )
 
 cc_test(
     name = "high_bit_stitch_cuda_test",
     srcs = ["HighBitStitchCudaTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("high_bit_stitch_cuda_test", [
         ":high_bit_stitch_cuda",
         ":high_bit_stitch_cuda_h",
         "//src/gst-plugins/gst-videoprep/playcropper:shadow_tone_curve",
@@ -76,7 +77,7 @@ cc_test(
         "@deepstream//:deepstream_lib",
         "@hm-cupano//src/pano:cuda_matrix",
         "@hm-cupano//src/cuda:cuda_blend_cuda_lib",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -86,7 +87,7 @@ cc_test(
     srcs = [
         "OnePassStitcherTest.cpp",
     ],
-    deps = [
+    deps = cuda_dependencies("one_pass_stitcher_test", [
         ":stitcher",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "//src/libs/common:utils",
@@ -101,7 +102,7 @@ cc_test(
         "@local_cuda//:nppig",
         "@gstreamer",
         "@opencv_linux//:opencv",
-    ],
+    ], testonly = True),
     copts = [
         "-x",
         "c++",

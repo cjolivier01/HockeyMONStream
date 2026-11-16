@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
@@ -49,10 +50,10 @@ cuda_library(
         "-g",
     ],
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("kmeans_cuda_lib", [
         ":kmeans_lib_headers",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
 )
 
 cc_library(

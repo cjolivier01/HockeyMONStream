@@ -1,0 +1,11 @@
+diff --git a/BUILD.bazel b/BUILD.bazel
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -33,6 +33,7 @@
+ # Global switch for selecting HIP/ROCm backend
+ config_setting(
+     name = "use_hip",
++    flag_values = {"@kstream//:cuda_only": "false"},
+     values = {"define": "backend=hip"},
+ )
+ 

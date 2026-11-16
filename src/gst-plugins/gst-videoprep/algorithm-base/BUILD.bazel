@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/algorithm-base"
@@ -42,14 +43,14 @@ cc_library (
     ],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
-  deps = [
+  deps = cuda_dependencies("algorithm-base", [
         ":fatal-output-error",
         ":runtime-output-caps",
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "@com_google_absl//absl/status",
         "//toolchains/jetson:cuda_runtime",
-  ],
+  ]),
 )
 
 cc_test(
@@ -75,12 +76,12 @@ cc_test(
     name = "runtime_output_failure_test",
     srcs = ["RuntimeOutputFailureTest.cpp"],
     linkopts = ["-lnvdsbufferpool"],
-    deps = [
+    deps = cuda_dependencies("runtime_output_failure_test", [
         ":algorithm-base",
         "//toolchains/jetson:cuda_runtime",
         "@com_google_absl//absl/status",
         "@gstreamer",
         "@local_cuda//:nppc",
         "@local_cuda//:nppig",
-    ],
+    ], testonly = True),
 )

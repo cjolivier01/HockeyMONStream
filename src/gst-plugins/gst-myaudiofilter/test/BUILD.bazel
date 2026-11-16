@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 #
 # Test apps
 #
@@ -8,11 +10,11 @@ cc_binary(
   linkopts = [
     "-lGL",
   ],
-  deps=[
+  deps=cuda_dependencies("myaudioapp", [
     "@glib",
     "@gstreamer",
     "@jetson-utils//display",
     "//src/apps/apps-common:deepstream_apps_common",
-  ]
+  ])
 )
 

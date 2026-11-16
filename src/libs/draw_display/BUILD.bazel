@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("//bazel:gpu_library.bzl", "gpu_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
@@ -45,9 +46,9 @@ cc_library(
     name = "rink_mini_map",
     srcs = ["RinkMiniMapNv.cpp"],
     visibility = ["//visibility:public"],
-    deps = [":rink_mini_map_core", "//src/libs/common:preview_overlay_meta",
+    deps = cuda_dependencies("rink_mini_map", [":rink_mini_map_core", "//src/libs/common:preview_overlay_meta",
             "//src/libs/player_analytics:frame_meta", "//src/libs/stitching:stitching",
-            "@deepstream//:deepstream_lib"],
+            "@deepstream//:deepstream_lib"]),
 )
 
 cc_library(
@@ -74,7 +75,7 @@ cc_library(
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("draw_display", [
         "//src/libs/common:person_roles",
         ":draw",
         ":draw_display_cuda_lib",
@@ -83,13 +84,17 @@ cc_library(
         # "@deepstream//sources:deepstream_includes",
         "@com_google_absl//absl/status",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
 )
 
 cc_test(
     name = "rink_mini_map_test",
     srcs = ["RinkMiniMapTest.cpp"],
-    deps = [":analytics_overlay_headers", ":rink_mini_map", "//src/libs/stitching:stitching"],
+    deps = cuda_dependencies(
+        "rink_mini_map_test",
+        [":analytics_overlay_headers", ":rink_mini_map", "//src/libs/stitching:stitching"],
+        testonly = True,
+    ),
 )
 
 cc_library(
@@ -106,7 +111,7 @@ cc_library(
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("draw", [
         ":draw_display_cuda_lib",
         "@jetson-utils//image:image_format",
         "@jetson-utils//cuda:cuda_lib",
@@ -114,14 +119,14 @@ cc_library(
         # "@deepstream//sources:deepstream_includes",
         "@com_google_absl//absl/status",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
 )
 
 cc_test(
     name = "fonts_test",
     size = "small",
     srcs = ["FontsTest.cpp"],
-    deps = [":draw"],
+    deps = cuda_dependencies("fonts_test", [":draw"], testonly = True),
 )
 
 CUDA_DEBUG_OPTS = [
@@ -149,10 +154,10 @@ cuda_library(
     # + CUDA_DEBUG_OPTS
     ,
     visibility = ["//visibility:private"],
-    deps = [
+    deps = cuda_dependencies("draw_display_cuda_lib", [
         # "//src/libs/common:utils",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
 )
 
 cc_library(

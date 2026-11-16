@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 INCLUDE_PREFIX = "hstream/src/libs/common/"
 
 cc_library(
@@ -135,7 +137,7 @@ cc_library(
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("utils", [
         ":video_bitrate",
         ":config_yaml",
         ":config_path",
@@ -158,7 +160,7 @@ cc_library(
         "//toolchains/jetson:cuda_runtime",
         "@opencv_linux//:opencv",
         "@yaml-cpp",
-    ],
+    ]),
 )
 
 cc_library(
@@ -167,7 +169,7 @@ cc_library(
   hdrs = ["Status.h",],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
-  deps = [
+  deps = cuda_dependencies("status", [
     ":status_macros",
     "@deepstream//:deepstream_lib",
     "@hm//hockeymon/csrc/play_tracker",
@@ -175,7 +177,7 @@ cc_library(
     "@jetson-utils//image:image_format",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
-  ]
+  ])
 )
 
 cc_test(
@@ -385,10 +387,10 @@ cc_test(
 cc_test(
     name = "video_bit_depth_test",
     srcs = ["VideoBitDepthTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("video_bit_depth_test", [
         ":utils",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -457,14 +459,14 @@ cc_library(
     hdrs = ["Surface.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("surface", [
         ":status",
         "@deepstream//:deepstream_lib",
         "@glib",
         "@hm//hockeymon/csrc/play_tracker",
         "@hm-cupano//src/cuda:cuda_status",
         "@jetson-utils//image:image_format",
-    ],
+    ]),
 )
 
 cc_test(

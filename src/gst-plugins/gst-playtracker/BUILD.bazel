@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-playtracker"
@@ -81,7 +82,11 @@ cc_library(
 cc_test(
     name = "rink_camera_live_test",
     srcs = ["RinkCameraLiveTest.cpp"],
-    deps = [":playtracker_context", "//src/libs/stitching:stitched_output_generation_meta"],
+    deps = cuda_dependencies(
+        "rink_camera_live_test",
+        [":playtracker_context", "//src/libs/stitching:stitched_output_generation_meta"],
+        testonly = True,
+    ),
 )
 
 cc_test(
@@ -106,10 +111,10 @@ cc_test(
 cc_test(
     name = "playtracker_baseline_defaults_test",
     srcs = ["PlayTrackerBaselineDefaultsTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("playtracker_baseline_defaults_test", [
         ":playtracker_context",
         "@yaml-cpp",
-    ],
+    ], testonly = True),
 )
 
 cc_test(

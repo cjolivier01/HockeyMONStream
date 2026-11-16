@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-player-analytics"
@@ -9,7 +10,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     linkopts = ["-lcuda"],
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("processor", [
         ":frame_work_plan",
         "//src/libs/common:person_roles",
         "//src/libs/player_analytics:config",
@@ -25,7 +26,7 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@local_cuda//:cuda",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
 )
 
 gst_cc_plugin(
@@ -41,7 +42,7 @@ cc_binary(
     srcs = ["PlayerAnalyticsPluginTest.cpp"],
     data = [":libgsthmplayeranalytics.so"],
     linkopts = ["-ldl", "-lgstcheck-1.0", "-Wl,--export-dynamic"],
-    deps = [":processor", "@gstreamer"],
+    deps = cuda_dependencies("player_analytics_plugin_test", [":processor", "@gstreamer"]),
 )
 
 # Real odd-width EGL allocation/import regression; executes on native Jetson.
@@ -69,5 +70,5 @@ cc_binary(
 cc_binary(
     name = "player_analytics_semantic_test",
     srcs = ["PlayerAnalyticsSemanticTest.cpp"],
-    deps = [":processor", "@gstreamer", "@opencv_linux//:opencv"],
+    deps = cuda_dependencies("player_analytics_semantic_test", [":processor", "@gstreamer", "@opencv_linux//:opencv"]),
 )

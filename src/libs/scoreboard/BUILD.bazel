@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
@@ -9,7 +10,7 @@ cc_library(
     hdrs = ["Scoreboard.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("scoreboard", [
         ":scoreboard_cuda",
         ":placement",
         "//src/libs/common:utils",
@@ -18,7 +19,7 @@ cc_library(
         "@jetson-utils//cuda:cuda_lib",
         "@jetson-utils//display",
         "@opencv_linux//:opencv",
-    ],
+    ]),
 )
 
 cuda_library(
@@ -26,7 +27,7 @@ cuda_library(
     srcs = ["ScoreboardCuda.cu"],
     hdrs = ["ScoreboardCuda.h"],
     copts = ["-Xcompiler=-fPIC"],
-    deps = ["//toolchains/jetson:cuda_runtime"],
+    deps = cuda_dependencies("scoreboard_cuda", ["//toolchains/jetson:cuda_runtime"]),
 )
 
 cc_binary(

@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 exports_files(["HStreamWindow.cpp"])
 
 COMMON_COPTS = [
@@ -448,7 +450,11 @@ cc_test(
     srcs = ["CameraExperimentSourceTest.cpp"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":camera_experiment_source", "@yaml-cpp"],
+    deps = cuda_dependencies(
+        "camera_experiment_source_test",
+        [":camera_experiment_source", "@yaml-cpp"],
+        testonly = True,
+    ),
 )
 
 cc_library(
@@ -463,7 +469,7 @@ cc_library(
     hdrs = ["CameraExperimentWebPreview.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [
+    deps = cuda_dependencies("camera_experiment_web_preview", [
         ":camera_experiment_preview",
         ":highlight_web_preview",
         "//src/apps/apps-common:preview_overlay_painter",
@@ -473,7 +479,7 @@ cc_library(
         "//src/apps/apps-common:webrtc_endpoint",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ]),
 )
 
 cc_library(
@@ -484,7 +490,7 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
-    deps = [
+    deps = cuda_dependencies("camera_experiment_preview", [
         ":camera_preview_output",
         "//src/apps/apps-common:rink_mask_image",
         "//src/libs/common:preview_overlay_meta",
@@ -494,7 +500,7 @@ cc_library(
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@qt//:qt_widgets",
-    ],
+    ]),
 )
 
 cc_binary(
@@ -888,8 +894,8 @@ cc_library(
     hdrs = ["HighlightReelPipeline.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_web_preview", ":highlight_scene", ":highlight_mp4_audio", ":highlights_encode_settings", "//src/libs/highlights:texture_blend",
-            "//src/apps/apps-common:hm_gpu_preview", "@deepstream//:deepstream_lib", "@gstreamer", "@qt//:qt_gui"],
+    deps = cuda_dependencies("highlight_reel_pipeline", [":highlight_web_preview", ":highlight_scene", ":highlight_mp4_audio", ":highlights_encode_settings", "//src/libs/highlights:texture_blend",
+            "//src/apps/apps-common:hm_gpu_preview", "@deepstream//:deepstream_lib", "@gstreamer", "@qt//:qt_gui"]),
 )
 
 cc_library(
@@ -928,7 +934,11 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     tags = ["local", "manual", "requires-gpu"],
-    deps = [":archive_catalog", ":highlights_dialog", "@qt//:qt_widgets"],
+    deps = cuda_dependencies(
+        "highlights_dialog_test",
+        [":archive_catalog", ":highlights_dialog", "@qt//:qt_widgets"],
+        testonly = True,
+    ),
 )
 
 cc_library(
@@ -1100,7 +1110,11 @@ cc_test(
     srcs = ["CameraExperimentPluginTest.cpp"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":camera_experiment_preview", "@gstreamer", "@qt//:qt_core"],
+    deps = cuda_dependencies(
+        "camera_experiment_plugin_test",
+        [":camera_experiment_preview", "@gstreamer", "@qt//:qt_core"],
+        testonly = True,
+    ),
 )
 
 cc_test(
@@ -1110,7 +1124,11 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
-    deps = [":camera_experiment_dialog", ":camera_experiment_preview", "@qt//:qt_widgets", "@yaml-cpp"],
+    deps = cuda_dependencies(
+        "camera_experiment_dialog_test",
+        [":camera_experiment_dialog", ":camera_experiment_preview", "@qt//:qt_widgets", "@yaml-cpp"],
+        testonly = True,
+    ),
 )
 
 cc_test(
@@ -1461,7 +1479,11 @@ cc_test(
     tags = ["manual", "requires-gpu", "local"],
     env_inherit = ["DISPLAY", "XAUTHORITY"],
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_reel_pipeline", "@qt//:qt_widgets"],
+    deps = cuda_dependencies(
+        "highlight_reel_pipeline_test",
+        [":highlight_reel_pipeline", "@qt//:qt_widgets"],
+        testonly = True,
+    ),
 )
 
 cc_test(
@@ -1478,7 +1500,11 @@ cc_test(
     copts = COMMON_COPTS,
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_item_editor", ":highlight_scene", "@qt//:qt_widgets"],
+    deps = cuda_dependencies(
+        "highlight_item_editor_test",
+        [":highlight_item_editor", ":highlight_scene", "@qt//:qt_widgets"],
+        testonly = True,
+    ),
 )
 
 cc_test(
@@ -1497,7 +1523,11 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "xcb"},
     env_inherit = ["DISPLAY", "XAUTHORITY"],
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":highlight_item_editor", "@qt//:qt_widgets"],
+    deps = cuda_dependencies(
+        "highlight_item_editor_interaction_test",
+        [":highlight_item_editor", "@qt//:qt_widgets"],
+        testonly = True,
+    ),
 )
 
 cc_library(
@@ -1565,7 +1595,11 @@ cc_test(
     srcs = ["WebCameraExperimentHistoryTest.cpp"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
-    deps = [":web_camera_experiment", ":web_job_spec", "//src/libs/playtracker_replay", "@qt//:qt_core"],
+    deps = cuda_dependencies(
+        "web_camera_experiment_history_test",
+        [":web_camera_experiment", ":web_job_spec", "//src/libs/playtracker_replay", "@qt//:qt_core"],
+        testonly = True,
+    ),
 )
 
 cc_library(
@@ -1623,7 +1657,7 @@ cc_binary(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("hstream-web-job", [
         ":source_camera_player",
         ":camera_experiment_web_preview",
         "//src/libs/common:paced_playback_config",
@@ -1668,7 +1702,7 @@ cc_binary(
         "@qt//:qt_core",
         "@qt//:qt_gui",
         "@yaml-cpp",
-    ],
+    ]),
 )
 
 cc_test(

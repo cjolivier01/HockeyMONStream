@@ -1,0 +1,11 @@
+diff --git a/cuda/BUILD.bazel b/cuda/BUILD.bazel
+--- a/cuda/BUILD.bazel
++++ b/cuda/BUILD.bazel
+@@ -5,6 +5,7 @@
+ 
+ config_setting(
+     name = "use_hip",
++    flag_values = {"@kstream//:cuda_only": "false"},
+     define_values = {"jetson_use_hip": "true"},
+ )
+ 

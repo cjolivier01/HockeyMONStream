@@ -38,6 +38,7 @@ git_repository(
     patches = [
         "//third_party/patches:rules_cuda_sm120.patch",
         "//third_party/patches:rules_cuda_quote_includes.patch",
+        "//third_party/patches:rules_cuda_toolkit_discovery.patch",
     ],
     remote = "https://github.com/bazel-contrib/rules_cuda",
 )
@@ -211,6 +212,8 @@ git_repository(
 git_repository(
     name = "hm-cupano",
     commit = "ffc00431e008e3846442e5b1901e6e69513a380f",
+    patch_args = ["-p1"],
+    patches = ["//third_party/patches:hm_cupano_cuda_boundary.patch"],
     repo_mapping = {"@local_rocm": "@hstream_rocm"},
     remote = "ssh://git@github.com/cjolivier01/hm-cupano",
 )
@@ -219,7 +222,10 @@ git_repository(
     name = "jetson-utils",
     commit = "c34f73a80ee39093f749b01293cd9bed9ef0eaca",
     patch_args = ["-p1"],
-    patches = ["//third_party/patches:jetson_utils_libsoup3.patch"],
+    patches = [
+        "//third_party/patches:jetson_utils_libsoup3.patch",
+        "//third_party/patches:jetson_utils_cuda_boundary.patch",
+    ],
     repo_mapping = {"@rocm_sdk_includes": "@hstream_rocm"},
     remote = "ssh://git@github.com/cjolivier01/jetson-utils",
 )

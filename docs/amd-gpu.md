@@ -376,6 +376,21 @@ not an AMD application build: many targets still directly depend on NVIDIA
 libraries. Compute tests do not establish end-to-end AMD playback or export
 support.
 
+NVIDIA-only consumers use `bazel/cuda_dependencies.bzl` to keep their entire
+dependency graph on CUDA. The internal `cuda_only` build setting overrides the
+HIP request for those dependencies in HStream, hm-cupano and jetson-utils.
+Portable targets and the ROCm CLI/UI still select HIP in the same invocation;
+no target is removed from the build. A new NVIDIA-only consumer must put all
+its C++ dependencies behind this boundary, including CPU libraries, so the
+link does not combine two configured copies of the same shared library.
+The boundary is unchanged for ordinary CUDA and Jetson builds. It does not
+provide an AMD implementation of DeepStream, TensorRT or NPP workflows.
+
+This full compatibility build therefore needs both SDKs. CUDA discovery honors
+`CUDA_PATH` first, then `CUDA_HOME`, before the existing PATH-based discovery.
+The CUDA compiler dependency scan includes direct `lib64` entries and stubs,
+without following unrelated subdirectories in Debian's system library tree.
+
 ## Hardware evidence
 
 On the RX 9060 XT (`gfx1200`, ROCm 6.4.1), the shared portable suite passes.

@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/playcropper"
@@ -12,7 +13,7 @@ cc_library(
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("playcropper", [
         "//src/libs/common:game_storage",
         "//src/libs/common:person_roles",
         ":play_cropper_cuda_lib",
@@ -29,13 +30,13 @@ cc_library(
         "//src/libs/stitching",
         "@hm-cupano//src/pano:cuda_matrix",
         "@yaml-cpp",
-    ],
+    ]),
 )
 
 cc_test(
     name = "playcropper_runtime_sizing_test",
     srcs = ["PlayCropperRuntimeSizingTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("playcropper_runtime_sizing_test", [
         ":playcropper",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/stitching",
@@ -45,7 +46,7 @@ cc_test(
         "@local_cuda//:nppif",
         "@local_cuda//:nppig",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ], testonly = True),
     copts = [
         "-x",
         "c++",
@@ -59,7 +60,7 @@ cc_test(
 cc_test(
     name = "playcropper_metadata_alignment_test",
     srcs = ["PlayCropperMetadataAlignmentTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("playcropper_metadata_alignment_test", [
         "//src/gst-plugins/gst-playtracker:playtracker_context_header",
         "//src/gst-plugins/gst-videoprep/algorithm-base",
         "@deepstream//:deepstream_lib",
@@ -68,7 +69,7 @@ cc_test(
         "@local_cuda//:nppif",
         "@local_cuda//:nppig",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ], testonly = True),
     copts = [
         "-x",
         "c++",
@@ -88,14 +89,14 @@ cc_test(
 cc_test(
     name = "shadow_tone_cuda_test",
     srcs = ["ShadowToneCudaTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("shadow_tone_cuda_test", [
         ":play_cropper_cuda_lib",
         "//src/libs/program:frame_geometry",
         ":play_cropper_cuda_lib_h",
         ":shadow_tone_curve",
         "@deepstream//:deepstream_lib",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ], testonly = True),
 )
 
 cc_library(
@@ -127,14 +128,14 @@ cuda_library(
     ],
     # includes = ["."],
     visibility = ["//visibility:private"],
-    deps = [
+    deps = cuda_dependencies("play_cropper_cuda_lib", [
         "//src/libs/program:gpu",
         ":play_cropper_cuda_lib_h",
         ":shadow_tone_curve",
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
 )
 
 cc_library(
@@ -156,7 +157,7 @@ cc_library(
 cc_binary(
     name = "playcropper_player_overlay_test",
     srcs = ["PlayCropperPlayerOverlayTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("playcropper_player_overlay_test", [
         ":playcropper",
         "//src/apps/apps-common:rotation_frame_fence",
         "//src/gst-plugins/gst-playtracker:playtracker_context_header",
@@ -169,6 +170,6 @@ cc_binary(
         "@local_cuda//:nppif",
         "@local_cuda//:nppig",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
     linkopts = ["-lnvdsbufferpool"],
 )

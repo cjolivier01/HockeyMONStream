@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 INCLUDE_PREFIX = "hstream/src/libs/stitching"
 
 cc_library(
@@ -225,7 +227,10 @@ cc_library(
   hdrs = ["ConfigureStitching.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
-  deps = [":stitching_core", "//src/libs/common:utils_base", "//src/libs/common:surface"],
+  deps = cuda_dependencies(
+      "stitching",
+      [":stitching_core", "//src/libs/common:utils_base", "//src/libs/common:surface"],
+  ),
 )
 
 cc_library(
@@ -369,32 +374,32 @@ cc_test(
 cc_test(
   name = "scoreboard_selector_test",
   srcs = ["ScoreboardSelectorTest.cpp"],
-  deps = [
+  deps = cuda_dependencies("scoreboard_selector_test", [
     ":scoreboard_proposal",
     ":stitching",
     "@opencv_linux//:opencv",
     "@yaml-cpp",
-  ],
+  ], testonly = True),
 )
 
 cc_test(
     name = "field_mask_persistence_test",
   srcs = ["FieldMaskPersistenceTest.cpp"],
-  deps = [
+  deps = cuda_dependencies("field_mask_persistence_test", [
     ":stitching",
     ":transaction_state",
     "@opencv_linux//:opencv",
     "@yaml-cpp",
-  ],
+  ], testonly = True),
 )
 
 cc_test(
     name = "stitched_output_generation_payload_test",
     srcs = ["StitchedOutputGenerationPayloadTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("stitched_output_generation_payload_test", [
         ":stitching",
         "@deepstream//:deepstream_lib",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -593,7 +598,7 @@ cc_test(
 cc_test(
   name = "calibration_models_test",
   srcs = ["CalibrationModelsTest.cpp"],
-  deps = [":stitching"],
+  deps = cuda_dependencies("calibration_models_test", [":stitching"], testonly = True),
 )
 
 cc_test(
@@ -605,12 +610,12 @@ cc_test(
 cc_test(
   name = "orientation_test",
   srcs = ["OrientationTest.cpp"],
-  deps = [
+  deps = cuda_dependencies("orientation_test", [
     ":game_config",
     ":orientation_internal",
     ":stitching",
     "@yaml-cpp",
-  ],
+  ], testonly = True),
 )
 
 cc_test(
@@ -670,13 +675,13 @@ cc_test(
     "HOME",
     "PYTHON_BIN",
   ],
-  deps = [
+  deps = cuda_dependencies("python_parity_test", [
     ":feature_matcher",
     ":hugin_project",
     ":stitching",
     "@opencv_linux//:opencv",
     "@yaml-cpp",
-  ],
+  ], testonly = True),
 )
 
 cc_test(
@@ -763,14 +768,14 @@ cc_test(
   linkopts = [
     "-ltiff",
   ],
-  deps = [
+  deps = cuda_dependencies("configure_stitching_test", [
     "@hm-cupano//src/pano:canvas",
     ":canvas_constraint_check",
     ":player_frame_selection",
     ":stitching",
     "//src/libs/common:baseline_config",
     "@opencv_linux//:opencv",
-  ],
+  ], testonly = True),
 )
 
 cc_library(
@@ -797,7 +802,11 @@ cc_test(
 cc_test(
   name = "stitching_synchronization_test",
   srcs = ["StitchingSynchronizationTest.cpp"],
-  deps = [":stitching", "//src/libs/common:process"],
+  deps = cuda_dependencies(
+      "stitching_synchronization_test",
+      [":stitching", "//src/libs/common:process"],
+      testonly = True,
+  ),
 )
 
 cc_library(
@@ -914,7 +923,7 @@ cc_library(
 cc_test(
   name = "player_frame_overlap_test",
   srcs = ["PlayerFrameOverlapTest.cpp"],
-  deps = [":player_frame_overlap"],
+  deps = cuda_dependencies("player_frame_overlap_test", [":player_frame_overlap"], testonly = True),
 )
 
 cc_library(

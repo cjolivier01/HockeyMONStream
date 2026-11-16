@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
@@ -67,11 +68,11 @@ cuda_library(
         "-DWITH_CUDA",
         "-g",
     ],
-    deps = [
+    deps = cuda_dependencies("nvdsinfer_custom_impl_Yolo_cuda_lib", [
         "@deepstream//:deepstream_includes",
         ":nvdsinfer_custom_impl_Yolo_headers",
         "//toolchains/jetson:cuda_runtime",
-    ],
+    ]),
     visibility = ["//visibility:public"],
 )
 

@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 cc_library(
     name = "playtracker_replay",
     srcs = ["ReplaySession.cpp"],
@@ -46,7 +48,7 @@ cc_test(
     name = "playtracker_replay_test",
     visibility = ["//src/apps/hstream-ui:__pkg__"],
     srcs = ["ReplaySessionTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("playtracker_replay_test", [
         ":playtracker_replay",
         "@opencv_linux//:opencv",
         "//src/libs/recording",
@@ -55,5 +57,5 @@ cc_test(
         "//src/gst-plugins/gst-videoprep/playtracker:playtracker_telemetry_csv",
         "//src/gst-plugins/gst-playtracker:playtracker_context",
         "@yaml-cpp",
-    ],
+    ], testonly = True),
 )
