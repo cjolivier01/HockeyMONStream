@@ -1467,6 +1467,14 @@ void dialogCancelLifecycle(
     require(QApplication::activeModalWidget() == dialog, "Fixture must exercise the real modal parent relationship");
     widget<QComboBox>(*dialog, "stitchWorkflowStage")->setCurrentIndex(0);
     auto* workflow = static_cast<StitchingWorkflow*>(widget<QWidget>(*dialog, "stitchingWorkflowPane"));
+    bool saw_stale_monitoring_error = false;
+    const auto message = workflow->message;
+    workflow->message = [&, message](const QString& value, bool error, const QString& replaces) {
+      if (error && value.startsWith("Workflow status is temporarily unavailable:") && !replaces.isEmpty() &&
+          replaces != widget<QLabel>(*dialog, "stitchExperimentStatus")->text())
+        saw_stale_monitoring_error = true;
+      message(value, error, replaces);
+    };
     const auto snapshot_changed = workflow->snapshotChanged;
     workflow->snapshotChanged = [&, snapshot_changed](const QJsonObject& value) {
       snapshot_changed(value);
@@ -1493,6 +1501,19 @@ void dialogCancelLifecycle(
     const bool retry = scenario == "cancel-error" || scenario == "lost-cancel-response";
     if (retry)
       write(root + (scenario == "cancel-error" ? "/reject-cancel" : "/lose-cancel-response"), "reject");
+    if (scenario == "status-unavailable") {
+      // Close replaces this notice with its cleanup wait. The successful cancel
+      // response retains a transient notice until ownership is released, so the
+      // next real status failure carries a now-stale presentation replacement.
+      write(root + "/status-unavailable", "1000");
+      require(
+          wait([&] {
+            return widget<QLabel>(*dialog, "stitchExperimentStatus")
+                ->text()
+                .startsWith("Workflow status is temporarily unavailable:");
+          }),
+          "Cannot seed a monitoring notice before closing");
+    }
     closeWorkflow(*dialog, route, true);
     if (retry) {
       require(
@@ -1519,9 +1540,12 @@ void dialogCancelLifecycle(
     if (scenario == "status-unavailable" || scenario == "cleanup-recovery" || scenario == "cleanup-error" ||
         scenario == "controller-error" || scenario == "controller-offline") {
       QString expected_error;
-      if (scenario == "status-unavailable")
-        write(root + "/status-unavailable", "2");
-      else {
+      if (scenario == "status-unavailable") {
+        require(
+            wait([&] { return saw_stale_monitoring_error; }),
+            "Cleanup monitoring did not deliver an error with a stale notice replacement");
+        expected_error = "Workflow cleanup is not confirmed; the window stays open. Close can retry.";
+      } else {
         auto stalled = read(root + "/state.json");
         if (scenario == "cleanup-recovery")
           stalled.insert("state", "recovery");
@@ -1549,6 +1573,13 @@ void dialogCancelLifecycle(
                   << " Cancel enabled=" << widget<QPushButton>(*dialog, "cancelStitchExperimentsButton")->isEnabled()
                   << " Workflow busy=" << workflow->busy() << " active=" << workflow->active() << '\n'
                   << QJsonDocument(read(root + "/state.json")).toJson(QJsonDocument::Compact).toStdString() << '\n';
+      const auto screenshots = qEnvironmentVariable("HSTREAM_WORKFLOW_CLOSE_FAILURE_SCREENSHOT_DIR");
+      if (scenario == "status-unavailable" && !screenshots.isEmpty()) {
+        require(QDir().mkpath(screenshots), "Cannot prepare close failure screenshots");
+        require(
+            dialog->grab().save(screenshots + (retry_available ? "/after.png" : "/before.png")),
+            "Cannot capture monitoring failure during close");
+      }
       require(
           retry_available,
           "Monitoring or cleanup failure stranded the pending close instead of allowing explicit cancellation retry");
@@ -2448,6 +2479,19 @@ int main(int argc, char** argv) {
     qputenv("HSTREAM_JOB_MANAGED_RUNTIME", "1");
     auto baseline = hm::baseline_config::load();
     require(baseline.ok(), "Cannot load baseline");
+    if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_CLOSE_ONLY") != 0) {
+      require(QDir().mkpath(temporary.path() + "/scripts"), "Cannot prepare close workflow fixture");
+      write(temporary.path() + "/scripts/hstream-workflow", kController);
+      require(
+          QFile::setPermissions(
+              temporary.path() + "/scripts/hstream-workflow",
+              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner),
+          "Cannot make close workflow controller executable");
+      write(temporary.path() + "/profiles.json", QJsonDocument(profiles()).toJson());
+      dialogOwnership(temporary.path());
+      std::cout << "Workflow ownership, close failures and explicit cancellation retry passed\n";
+      return 0;
+    }
     if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_LATEST_ONLY") != 0) {
       dialogLatestWorkflow(temporary.path());
       std::cout << "Latest retained workflow restores stages, logs and retries\n";

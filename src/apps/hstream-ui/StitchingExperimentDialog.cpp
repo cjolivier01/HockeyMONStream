@@ -4602,12 +4602,15 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     }
   };
   s.workflow->message = [&s](const QString& value, bool error, const QString& replaces) {
+    // Cleanup failure must restore Close/Cancel even when its earlier notice
+    // was replaced by the pending-close message.
+    if (error && s.close_after_workflow && s.close_cancel_sent) {
+      s.workflow_close_failed(value);
+      return;
+    }
     if (!replaces.isEmpty() && s.status->text() != replaces)
       return;
-    if (error && s.close_after_workflow && s.close_cancel_sent)
-      s.workflow_close_failed(value);
-    else
-      s.show_status(value, error);
+    s.show_status(value, error);
   };
   s.workflow->exportRequested = [&s] { s.submit_workflow(true); };
   connect(close, &QPushButton::clicked, this, [this]() { this->close(); });
