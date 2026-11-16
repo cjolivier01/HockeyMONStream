@@ -1188,6 +1188,25 @@ cc_binary(
 )
 
 cc_test(
+    name = "gpu_preview_initialization_test",
+    srcs = ["GpuPreviewInitializationTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "xcb"},
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    linkopts = ["-lX11"],
+    tags = ["manual", "requires-display"],
+    target_compatible_with = QT_UI_COMPATIBILITY + select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "//src/apps/apps-common:hm_gpu_preview",
+        "@gstreamer",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_test(
     name = "hstream_ui_test",
     srcs = ["HStreamWindowTest.cpp", "FreshCalibrationEvidence.h"],
     # Drives the whole window through several thousand assertions, including
