@@ -559,17 +559,24 @@ def progress(root):
     try:
         saved = SetupStore(root).read()
         state["revision"] = saved["revision"]
+        built_revision = None
         if state["has_build"]:
             _, built = generation(root)
             state["build_current"] = (
                 bool(saved["draft"]) and built["revision"] == saved["revision"]
             )
+            if state["build_current"]:
+                built_revision = digest(built["configuration"])
         if (root / "setup-active.json").exists():
             active = read_json(root / "setup-active.json")
             state["applied"] = (
                 bool(saved["draft"])
                 and active["revision"] == saved["revision"]
                 and active["configuration_revision"] == current_revision(root)
+                and (
+                    built_revision is None
+                    or active["configuration_revision"] == built_revision
+                )
             )
     except (OSError, ValueError, KeyError, TypeError) as error:
         state["error"] = readable_error(error)

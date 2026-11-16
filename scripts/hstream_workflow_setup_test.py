@@ -549,6 +549,45 @@ class SetupTest(unittest.TestCase):
             write_json(self.registry / "heartbeat.json", retired)
             self.assertTrue(execution.activate(self.registry)["applied"])
 
+    def test_rebuilding_changed_programs_at_the_same_paths_needs_apply_again(self):
+        saved = self.save()
+        original = self.compile()
+        updated = copy.deepcopy(original)
+        for profile in updated["profiles"].values():
+            runtime = profile["runtime"]
+            runtime["files"][runtime["worker"]] = "c" * 64
+            for node in profile["qualified_nodes"].values():
+                node["runtime_identity"] = copy.deepcopy(runtime)
+
+        def build_config(config):
+            with patch.object(execution, "compile_configuration", return_value=config):
+                execution.build(
+                    self.registry,
+                    {
+                        "revision": saved["revision"],
+                        "defaults": self.defaults,
+                        "metadata_resources": self.cpu,
+                    },
+                )
+
+        with patch.object(
+            execution,
+            "qualification_status",
+            return_value={"tested": True, "tests": []},
+        ), patch("hstream_workflow.profiles.preflight_runtime"):
+            build_config(original)
+            execution.activate(self.registry)
+            self.assertTrue(setup.progress(self.registry)["applied"])
+            build_config(original)
+            self.assertTrue(setup.progress(self.registry)["applied"])
+            build_config(updated)
+            progress = setup.progress(self.registry)
+            self.assertEqual(progress["revision"], saved["revision"])
+            self.assertTrue(progress["build_current"])
+            self.assertFalse(progress["applied"])
+            execution.activate(self.registry)
+            self.assertTrue(setup.progress(self.registry)["applied"])
+
     def test_rebuilding_previous_choices_can_replace_a_newer_configuration(self):
         saved = self.save()
         original = copy.deepcopy(self.draft)
