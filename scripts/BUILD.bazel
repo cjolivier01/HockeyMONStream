@@ -62,6 +62,14 @@ py_library(
     visibility = ["//visibility:public"],
 )
 
+py_test(
+    name = "workflow_setup_test",
+    srcs = ["hstream_workflow_setup_test.py", "hstream_workflow_controller_test.py"],
+    main = "hstream_workflow_setup_test.py",
+    deps = [":workflow_library"],
+    data = ["hstream-workflow", "//src/apps/hstream-runtime-worker:hstream-runtime-worker"],
+)
+
 sh_test(
     name = "jetson_cuda_payload_listing_test",
     size = "small",

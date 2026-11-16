@@ -118,6 +118,8 @@ filegroup(
         "StitchingExperimentDialog.cpp",
         "StitchingExperimentDialog.h",
         "StitchingWorkflow.cpp",
+        "WorkflowSetupDialog.cpp",
+        "WorkflowSetupDialog.h",
         "StitchingWorkflow.h",        "TelemetryCsvPublisher.cpp",
         "TelemetryCsvPublisher.h",
         "hstream-ui.desktop",
@@ -680,8 +682,8 @@ cc_test(
 
 cc_library(
     name = "stitching_experiment_dialog",
-    srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp", "StitchingWorkflow.cpp"],
-    hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h", "StitchingExperimentDefaults.h", "StitchingWorkflow.h"],
+    srcs = ["CalibrationFrameView.cpp", "StitchingExperimentDialog.cpp", "StitchingWorkflow.cpp", "WorkflowSetupDialog.cpp"],
+    hdrs = ["CalibrationFrameView.h", "StitchingExperimentDialog.h", "StitchingExperimentDefaults.h", "StitchingWorkflow.h", "WorkflowSetupDialog.h"],
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],

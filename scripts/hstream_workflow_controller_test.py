@@ -325,6 +325,7 @@ class ControllerTest(unittest.TestCase):
         self.controller.config["profiles"]["cpu"]["capabilities"].append(
             "experiment-solve"
         )
+        write_json(self.registry / "config.json", self.controller.config)
         self.plan["stages"][0]["kind"] = "experiment-solve"
         # Reproduce a plan accepted by the earlier controller. Admission still
         # fails closed, but cancellation must release it without leaked attempts.

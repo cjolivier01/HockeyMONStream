@@ -136,6 +136,12 @@ Native preview widgets share `NativePreviewSurface`: while an external sink owns
 
 ## Architecture Overview
 
+- `WorkflowSetupDialog.*` and `scripts/hstream_workflow/setup*.py` own resumable
+  cluster configuration. Drafts never enable execution. Private test registries
+  admit only qualification graphs; each selected node must pass native stages
+  and cleanup before activation. Keep the site-admin browser editor and generated
+  setup defaults synchronized. See `docs/workflow-setup.md`.
+
 - `src/apps/hstream-ui/StitchingWorkflow.*` distinguishes inactive experiment history from
   an active workflow attachment before the first status response. The current
   game owner overrides saved history; failed history lookups do not require

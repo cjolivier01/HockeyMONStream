@@ -51,6 +51,10 @@ class Controller:
         self.defaults = self.config["defaults"]
 
     def profiles(self):
+        require(
+            not (self.registry.root / "setup-test-only.json").exists(),
+            "This is an unfinished cluster test. Apply tested settings in cluster setup before using its profiles.",
+        )
         return {
             "schema": 1,
             "admission_profile": self.config["admission_profile"],
@@ -136,6 +140,15 @@ class Controller:
 
     def _register(self, plan, game, *, defer_admission=False):
         plan = validate_plan(plan)
+        if (self.registry.root / "setup-test-only.json").exists():
+            require(
+                plan["kind"] == "cluster-qualification"
+                and plan["limits"]["max_parallel"] == 1
+                and all(
+                    "catalog_key" not in stage["inputs"] for stage in plan["stages"]
+                ),
+                "An unfinished setup registry can only run private qualification tests",
+            )
         if any(stage["kind"].startswith("experiment-") for stage in plan["stages"]):
             self._user_config_snapshot(plan)
         game = validate_game(self.config, game)
@@ -148,13 +161,12 @@ class Controller:
                 "Resource profile changed before admission",
             )
         workflow_id = plan["workflow_id"]
-        directory = private_directory(
-            game / "_hockeymon/workflows" / workflow_id, create=True
-        )
+        directory = game / "_hockeymon/workflows" / workflow_id
         with self.registry.lock():
             ledger = self.registry.read()
             existing = ledger["workflows"].get(workflow_id)
             if existing:
+                directory = private_directory(directory)
                 require(
                     existing["game"] == str(game)
                     and existing["plan_digest"] == digest(plan),
@@ -162,9 +174,14 @@ class Controller:
                 )
             else:
                 require(
+                    digest(load_config(self.registry.root)) == digest(self.config),
+                    "Cluster settings changed before admission. Reload the profiles and try again.",
+                )
+                require(
                     len(ledger["workflows"]) < 4096,
                     "Workflow registry history limit reached",
                 )
+                directory = private_directory(directory, create=True)
                 # Seal all intent before native ownership acquisition. A service
                 # restart can discover and reconcile a lost acquire response.
                 if (directory / "plan.json").exists():
@@ -1205,6 +1222,12 @@ class Controller:
 
 
 def serve(registry, once=False):
+    root = private_directory(registry)
+    with locked(root / "controller-service.lock", blocking=False):
+        _serve_locked(root, once)
+
+
+def _serve_locked(registry, once):
     controller = Controller(registry)
     stopped = threading.Event()
     errors = []
@@ -1217,6 +1240,7 @@ def serve(registry, once=False):
                 **host_identity(),
                 **process_identity(os.getpid()),
                 "time_ns": time.time_ns(),
+                "configuration_digest": digest(controller.config),
             },
         )
 
