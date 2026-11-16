@@ -1974,7 +1974,22 @@ namespace hm::gpu_preview {
 
 void initialize_process() {
 #if defined(__x86_64__) || defined(__aarch64__)
-  initialize_xlib_once();
+  static std::once_flag once;
+  std::call_once(once, [] {
+    initialize_xlib_once();
+#if defined(__x86_64__)
+    // CUDA textures must belong to an NVIDIA GL context, even when an AMD or
+    // Intel GPU drives the X screen. Select GLVND/PRIME before Qt, GStreamer or
+    // another GLX user caches the screen's default (possibly Mesa) vendor.
+    // Preserve an explicitly selected vendor or offload policy. Jetson uses
+    // its native display driver rather than desktop PRIME render offload.
+    if (!std::getenv("__GLX_VENDOR_LIBRARY_NAME") && !std::getenv("__NV_PRIME_RENDER_OFFLOAD")) {
+      if (setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 0) != 0 || setenv("__NV_PRIME_RENDER_OFFLOAD", "1", 0) != 0) {
+        throw std::runtime_error("Could not select NVIDIA OpenGL for CUDA preview interop");
+      }
+    }
+#endif
+  });
 #endif
 }
 

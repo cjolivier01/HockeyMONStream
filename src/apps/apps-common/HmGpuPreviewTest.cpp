@@ -32,6 +32,7 @@
 #include <thread>
 #include <vector>
 
+#include <sys/wait.h>
 #include <unistd.h>
 
 GST_DEBUG_CATEGORY(NVDS_APP);
@@ -39,6 +40,61 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 namespace {
 
 namespace fs = std::filesystem;
+
+bool run_process_environment_test() {
+  struct Selection {
+    const char* vendor;
+    const char* offload;
+    const char* provider;
+  };
+  for (const Selection& selection : {
+           Selection{nullptr, nullptr, nullptr},
+           Selection{"mesa", nullptr, nullptr},
+           Selection{nullptr, "0", nullptr},
+           Selection{"nvidia", "0", "NVIDIA-G1"},
+           Selection{nullptr, nullptr, "NVIDIA-G1"},
+       }) {
+    // Each child starts before GStreamer/Xlib initialization. Environment
+    // changes stay private and cannot alter the hardware rendering checks.
+    const pid_t child = fork();
+    if (child < 0)
+      return false;
+    if (child == 0) {
+      const auto assign = [](const char* key, const char* value) {
+        return value ? setenv(key, value, 1) : unsetenv(key);
+      };
+      if (assign("__GLX_VENDOR_LIBRARY_NAME", selection.vendor) ||
+          assign("__NV_PRIME_RENDER_OFFLOAD", selection.offload) ||
+          assign("__NV_PRIME_RENDER_OFFLOAD_PROVIDER", selection.provider))
+        _exit(2);
+      hm::gpu_preview::initialize_process();
+      hm::gpu_preview::initialize_process();
+      Selection expected = selection;
+#if defined(__x86_64__)
+      if (!selection.vendor && !selection.offload) {
+        expected.vendor = "nvidia";
+        expected.offload = "1";
+      }
+#endif
+      const auto matches = [](const char* key, const char* value) {
+        const char* actual = std::getenv(key);
+        return value ? actual && std::string(actual) == value : actual == nullptr;
+      };
+      _exit(
+          matches("__GLX_VENDOR_LIBRARY_NAME", expected.vendor) &&
+                  matches("__NV_PRIME_RENDER_OFFLOAD", expected.offload) &&
+                  matches("__NV_PRIME_RENDER_OFFLOAD_PROVIDER", expected.provider)
+              ? 0
+              : 3);
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+      std::cerr << "Preview initialization did not preserve the selected GLX/offload policy\n";
+      return false;
+    }
+  }
+  return true;
+}
 
 class TempDirectory {
  public:
@@ -1245,6 +1301,11 @@ bool run_renderer_test(Display* display, Window window) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (!run_process_environment_test())
+    return 1;
+  hm::gpu_preview::initialize_process();
+  if (argc == 2 && std::string(argv[1]) == "--process-init-only")
+    return 0;
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   if (!hm::gpu_preview::renderer_available() || !hm::gpu_preview::register_elements()) {

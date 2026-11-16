@@ -1168,7 +1168,7 @@ cc_binary(
     ] + select({
         "//:use_hip": [],
         # NVIDIA preview dependencies need the driver API stub for packaging.
-        "//conditions:default": ["@local_cuda//:cuda"],
+        "//conditions:default": ["//src/apps/apps-common:hm_gpu_preview", "@local_cuda//:cuda"],
     }),
 )
 
