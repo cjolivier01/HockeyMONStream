@@ -1168,7 +1168,7 @@ cc_binary(
     ] + select({
         "//:use_hip": [],
         # NVIDIA preview dependencies need the driver API stub for packaging.
-        "//conditions:default": ["@local_cuda//:cuda"],
+        "//conditions:default": ["//src/apps/apps-common:hm_gpu_preview", "@local_cuda//:cuda"],
     }),
 )
 
@@ -1185,6 +1185,25 @@ cc_binary(
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = ["@opencv_linux//:opencv"],
+)
+
+cc_test(
+    name = "gpu_preview_initialization_test",
+    srcs = ["GpuPreviewInitializationTest.cpp"],
+    copts = COMMON_COPTS,
+    env = {"QT_QPA_PLATFORM": "xcb"},
+    env_inherit = ["DISPLAY", "XAUTHORITY"],
+    linkopts = ["-lX11"],
+    tags = ["manual", "requires-display"],
+    target_compatible_with = QT_UI_COMPATIBILITY + select({
+        "//:use_hip": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "//src/apps/apps-common:hm_gpu_preview",
+        "@gstreamer",
+        "@qt//:qt_widgets",
+    ],
 )
 
 cc_test(

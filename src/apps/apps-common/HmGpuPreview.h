@@ -60,9 +60,12 @@ struct PreviewOverlayInspection {
 
 inline constexpr std::size_t kMaximumPresentedFrameCaptureBytes = 32U * 1024U * 1024U;
 
-// Registers hmpreviewisolation and hmgpupreviewsink as process-local
-// GStreamer factories. The renderer is available on x86_64 and ARM64/X11.
+// Initialize before Qt/GStreamer or any Xlib/GLX use. On desktop NVIDIA builds
+// this selects NVIDIA render offload unless the caller supplied a GLX policy.
 void initialize_process();
+// Register hmpreviewisolation/hmgpupreviewsink and the X11 error handler after
+// QApplication startup, which installs its own handler. Available on x86_64
+// and ARM64/X11; initialize_process() must precede graphics initialization.
 bool register_elements();
 bool renderer_available();
 

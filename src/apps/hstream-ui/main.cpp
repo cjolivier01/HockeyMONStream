@@ -3,6 +3,10 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
 #include "src/apps/hstream-ui/ValueControlWheel.h"
 
+#ifndef HSTREAM_USE_HIP
+#include "hstream/src/apps/apps-common/HmGpuPreview.h"
+#endif
+
 #include <QtCore/QCommandLineParser>
 #include <QtCore/QDebug>
 #include <QtCore/QtGlobal>
@@ -33,6 +37,9 @@ int main(int argc, char** argv) {
   hm::diagnostics::Initialize("hstream-ui", argc ? argv[0] : nullptr);
   install_qt_diagnostics();
   hm::ui_internal::configure_application_identity();
+#ifndef HSTREAM_USE_HIP
+  hm::gpu_preview::initialize_process();
+#endif
 #if defined(Q_OS_LINUX)
   // DeepStream's EGL render sink consumes an X11 Window handle. On a Wayland
   // desktop Qt otherwise returns a wl_surface pointer from winId(), which the

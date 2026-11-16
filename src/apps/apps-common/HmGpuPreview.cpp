@@ -620,12 +620,17 @@ int preview_x_error_handler(Display* display, XErrorEvent* event) noexcept {
   return 0;
 }
 
-void initialize_xlib_once() {
+void initialize_xlib_threads_once() {
   static std::once_flag once;
-  std::call_once(once, [] {
-    XInitThreads();
-    XSetErrorHandler(preview_x_error_handler);
-  });
+  std::call_once(once, [] { XInitThreads(); });
+}
+
+void initialize_xlib_once() {
+  initialize_xlib_threads_once();
+  // Qt's XCB startup replaces the process-wide Xlib error handler. Install
+  // ours only when the preview is registered/used, after QApplication exists.
+  static std::once_flag once;
+  std::call_once(once, [] { XSetErrorHandler(preview_x_error_handler); });
 }
 
 void post_sink_failure(GstHmGpuPreviewSink* self, const char* message) noexcept {
@@ -1974,7 +1979,22 @@ namespace hm::gpu_preview {
 
 void initialize_process() {
 #if defined(__x86_64__) || defined(__aarch64__)
-  initialize_xlib_once();
+  static std::once_flag once;
+  std::call_once(once, [] {
+    initialize_xlib_threads_once();
+#if defined(__x86_64__)
+    // CUDA textures must belong to an NVIDIA GL context, even when an AMD or
+    // Intel GPU drives the X screen. Select GLVND/PRIME before Qt, GStreamer or
+    // another GLX user caches the screen's default (possibly Mesa) vendor.
+    // Preserve an explicitly selected vendor or offload policy. Jetson uses
+    // its native display driver rather than desktop PRIME render offload.
+    if (!std::getenv("__GLX_VENDOR_LIBRARY_NAME") && !std::getenv("__NV_PRIME_RENDER_OFFLOAD")) {
+      if (setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 0) != 0 || setenv("__NV_PRIME_RENDER_OFFLOAD", "1", 0) != 0) {
+        throw std::runtime_error("Could not select NVIDIA OpenGL for CUDA preview interop");
+      }
+    }
+#endif
+  });
 #endif
 }
 
@@ -1988,6 +2008,9 @@ bool renderer_available() {
 
 bool register_elements() {
   initialize_process();
+#if defined(__x86_64__) || defined(__aarch64__)
+  initialize_xlib_once();
+#endif
   static gsize registration_result = 0;
   if (g_once_init_enter(&registration_result)) {
     gboolean registered =

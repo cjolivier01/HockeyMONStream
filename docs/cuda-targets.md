@@ -40,6 +40,30 @@ Adding native `sm_86` avoids JIT for these kernels on that card. A cache
 cannot repair unsupported PTX; fallback GPUs need a compatible driver or
 a build with a compatible toolkit/native target.
 
+## Desktop GPU previews
+
+The NVIDIA preview shares CUDA textures with OpenGL, so both contexts must
+use the NVIDIA GPU. On a desktop driven by an AMD or Intel GPU, the default
+Mesa context cannot serve that preview: `cudaGLGetDevices` returns an error.
+Desktop NVIDIA startup selects NVIDIA GLVND and PRIME render offload before
+Qt or GStreamer initializes graphics. The application keeps frames on the GPU;
+PRIME handles presentation through the desktop GPU.
+
+Explicit `__GLX_VENDOR_LIBRARY_NAME` or `__NV_PRIME_RENDER_OFFLOAD` settings
+are preserved. `__NV_PRIME_RENDER_OFFLOAD_PROVIDER` can select a particular
+NVIDIA provider; it must match the pipeline's CUDA GPU. Jetson retains its
+native display path, and AMD builds retain their Mesa/EGL preview path.
+
+For an older NVIDIA binary, launch it with the same selection explicitly:
+
+```bash
+__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia ./hstream-ui
+```
+
+This addresses OpenGL device selection independently of the PTX/toolkit
+compatibility described above. The X server and NVIDIA driver must support
+PRIME render offload.
+
 ## Overrides and verification
 
 For a machine with another GPU and an older driver, include its native
