@@ -51,6 +51,10 @@ editable choices there and remembers that location for recovery. Existing
 registries, test history and machine-local installations stay in place. A running
 controller, unfinished tests or recording ownership prevent automatic relocation;
 existing destination choices are preserved in a separate setup folder.
+If the shared location already has the same saved choices, Prepare resumes that
+independent setup instead of migrating the old registry. Missing old experiment
+history cannot prevent this recovery. Unfinished qualification tests still need
+cleanup, and the destination still needs its own successful tests and activation.
 `make deploy` installs the native programs (the desktop package uses
 `/opt/hstream/bin`). After deployment, **Prepare computers** repairs stale
 preview-release paths automatically. It copies each distinct installed package
@@ -128,3 +132,5 @@ Qt runs the helper asynchronously. Browser GETs are cache-only; explicit admin
 POSTs call the installed setup CLI. Set the local web request timeout above the
 baseline setup timeout for long inventories. After response loss, resume status
 before retrying. Both editors retain log scroll position and follow at the tail.
+Desktop setup actions and messages are also recorded in the normal HStream
+diagnostic log; browser setup failures appear in the website's server log.

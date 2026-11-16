@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/WorkflowSetupDialog.h"
 
+#include <QtCore/QDebug>
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonArray>
@@ -542,6 +543,8 @@ struct WorkflowSetupDialog::Impl {
     updateButtons();
   }
   void message(const QString& text, const QString& source = "setup") {
+    if (results->toPlainText() != text)
+      qInfo().noquote() << "Workflow setup" << source << text;
     results->setLogText(text, source);
   }
   void invalidate() {
@@ -556,6 +559,7 @@ struct WorkflowSetupDialog::Impl {
       return;
     accepted_registry.clear();
     const auto action = request.value("action").toString();
+    qInfo().noquote() << "Workflow setup action=" << action << "registry=" << request.value("registry").toString();
     if (action == "start-test" && flow == Flow::Tests)
       attempted.insert(request.value("profile").toString() + "/" + request.value("node").toString());
     if (action == "inspect" || action == "start-service" || action == "stop-service")

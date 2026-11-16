@@ -288,6 +288,110 @@ class SetupTest(unittest.TestCase):
                 storage.prepare(request)
         self.assertFalse((self.registry / "setup-location.json").exists())
 
+    def test_existing_shared_setup_resumes_without_adopting_broken_old_history(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+        ledger = {
+            "schema": 1,
+            "reservations": {},
+            "workflows": {
+                "old-run": {
+                    "game": "/recordings/old-game",
+                    "directory": "/missing/old-run",
+                }
+            },
+        }
+        write_json(self.registry / "registry.json", ledger)
+        write_json(target / "retained-history.json", {"keep": True})
+        with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
+            execution, "idle", side_effect=AssertionError("Must not adopt old history")
+        ), locked(self.registry / "controller-service.lock"):
+            resumed, message = storage.prepare(request)
+        self.assertEqual(resumed["registry"], str(target))
+        self.assertEqual(resumed["revision"], existing["revision"])
+        self.assertEqual(resumed["draft"], existing["draft"])
+        self.assertIn("Recovered your existing shared setup", message)
+        self.assertFalse((self.registry / "setup-location.json").exists())
+        self.assertEqual(read_json(self.registry / "registry.json"), ledger)
+        self.assertEqual(read_json(target / "retained-history.json"), {"keep": True})
+
+    def test_missing_experiment_history_explains_the_recording_and_full_path(self):
+        self.save()
+        directory = self.root / "missing-old-guid"
+        write_json(
+            self.registry / "registry.json",
+            {
+                "schema": 1,
+                "reservations": {},
+                "workflows": {
+                    "old-run": {
+                        "game": "/recordings/old-game",
+                        "directory": str(directory),
+                    }
+                },
+            },
+        )
+        with self.assertRaisesRegex(
+            WorkflowError, "history is missing for old-game"
+        ) as raised:
+            execution.idle(self.registry)
+        self.assertIn(str(directory / "owner.json"), str(raised.exception))
+        self.assertFalse(directory.exists())
+
+    def test_shared_recovery_rechecks_relocation_under_destination_lock(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+
+        @contextmanager
+        def relocating_lock(path, **kwargs):
+            if (
+                Path(path) == target / "setup.lock"
+                and not (target / "setup-location.json").exists()
+            ):
+                write_json(
+                    target / "setup-location.json",
+                    {
+                        "source_revision": existing["revision"],
+                        "registry": str(self.registry),
+                    },
+                )
+            with locked(path, **kwargs):
+                yield
+
+        with patch.object(
+            storage,
+            "check",
+            side_effect=lambda path, *args: ["stubby"] if path == self.registry else [],
+        ), patch.object(storage, "locked", relocating_lock):
+            resumed, _ = storage.prepare(request)
+        self.assertNotEqual(resumed["registry"], str(target))
+        self.assertTrue((target / "setup-location.json").exists())
+
+    def test_remote_build_refuses_a_draft_relocated_after_recovery(self):
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        setup.SetupStore(target).save({**self.draft, "registry": str(target)}, None)
+        write_json(
+            self.registry / "setup-location.json",
+            {"source_revision": request["revision"], "registry": str(target)},
+        )
+        with patch.object(runtime_setup, "prepare") as prepare:
+            with self.assertRaisesRegex(WorkflowError, "setup moved"):
+                execution.execute(
+                    {**request, "on_server": True, "challenge": "fixture"}
+                )
+        prepare.assert_not_called()
+
     def test_relocation_keeps_active_controller_and_unfinished_test_state(self):
         from hstream_workflow import setup_storage as storage
 
@@ -298,6 +402,9 @@ class SetupTest(unittest.TestCase):
                     storage.prepare(request)
         self.assertFalse((self.registry / "setup-location.json").exists())
         write_json(self.registry / "setup-build.json", {"generation": "fixture"})
+        setup.SetupStore(Path(request["shared_registry"])).save(
+            {**self.draft, "registry": request["shared_registry"]}, None
+        )
         with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
             execution,
             "generation",

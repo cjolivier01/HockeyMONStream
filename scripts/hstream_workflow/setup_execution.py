@@ -764,8 +764,19 @@ def idle(root):
         "Wait for running experiments and cleanup before applying cluster changes",
     )
     for entry in ledger["workflows"].values():
+        owner_path = Path(entry["directory"]) / "owner.json"
+        try:
+            owner = read_json(owner_path)
+        except FileNotFoundError as error:
+            raise WorkflowError(
+                "An older experiment's history is missing for "
+                + Path(entry["game"]).name
+                + ". Setup cannot verify that it finished. Recover the existing shared setup, "
+                "or restore this experiment's history before replacing its registry. Missing file: "
+                + str(owner_path)
+            ) from error
         require(
-            read_json(Path(entry["directory"]) / "owner.json")["released"],
+            owner["released"],
             "An experiment still owns a recording. Finish or stop it before applying cluster changes.",
         )
 
@@ -955,8 +966,13 @@ def execute_locked(root, request):
         )
     if action == "build":
         from .setup_runtime import prepare
+        from .setup_storage import recovered
 
         store = SetupStore(root).read()
+        require(
+            recovered(root) == store,
+            "This setup moved while preparing. Recover the saved setup and try Prepare computers again.",
+        )
         require(
             store["revision"] == request["revision"],
             "Setup choices changed. Recover the saved setup before building again.",

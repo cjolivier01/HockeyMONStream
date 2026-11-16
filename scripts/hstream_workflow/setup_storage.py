@@ -210,6 +210,21 @@ def prepare(request):
             current == previous,
             "Sample tests changed while checking storage. Resume/check tests before rebuilding.",
         )
+        # A previous setup may already have prepared these exact choices on
+        # shared storage. Resume that independent draft without migrating or
+        # retiring the old registry, whose historical files may be unavailable.
+        # Normal qualification and activation still operate on the destination.
+        with locked(target / "setup.lock", blocking=False):
+            existing = SetupStore(target).read()
+            if not (target / "setup-location.json").exists() and existing["draft"] == {
+                **saved["draft"],
+                "registry": str(target),
+            }:
+                return {
+                    **request,
+                    **existing,
+                    "registry": str(target),
+                }, "Recovered your existing shared setup in " + str(target) + "."
         try:
             service_lock = locked(root / "controller-service.lock", blocking=False)
             with service_lock:
