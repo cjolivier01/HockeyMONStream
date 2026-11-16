@@ -356,12 +356,16 @@ if r['action']=='discover':
   sys.exit(2)
  print(json.dumps({'checks':[{'name':'Server connection','ok':True,'message':'Connected to ripper'}], 'installed_runtime':str(root/'installed'), 'machines':[{'name':'mini','gpu':'gpu:rtx5090:1','partition':'gpu*','state':'idle'}]}))
 elif r['action']=='save':
+ p['revision']='saved'
  (root/'saved-setup.json').write_text(json.dumps(r))
  reply({'revision':'saved','draft':r['draft']})
-elif r['action'] in ('load','import'): reply({'revision':'saved','draft':json.loads((root/'saved-setup.json').read_text())['draft']})
+elif r['action'] in ('load','import'): reply({'revision':p['revision'],'draft':json.loads((root/'saved-setup.json').read_text())['draft']})
 elif r['action']=='build':
- p.update(has_build=True,build_current=True)
- reply({'generation':'built','message':'Registry built'})
+ p.update(has_build=True,build_current=True,revision='repaired')
+ d=r['draft']
+ for profile in d['profiles'].values(): profile['runtime_root']=str(root/'installed')
+ (root/'saved-setup.json').write_text(json.dumps({**r,'draft':d}))
+ reply({'generation':'built','message':'Recovered the installed programs in /opt/hstream. HStream is prepared on shared storage for every selected computer. Registry built. Test a sample recording on each chosen computer before applying it.','draft':d,'revision':'repaired'})
 elif r['action'] in ('test-status','start-test','cancel-test'):
  phase=root/'setup-test-phase'
  if r['action']=='start-test': phase.write_text('running')
@@ -455,15 +459,17 @@ else: reply({'message':'Fixture step complete'})
   require(
       read(root + "/saved-setup.json").value("revision").isNull(),
       "New registry inherited the previous folder's revision");
+  build->click();
+  require(wait([&] { return test->isEnabled(); }), "Building did not enable testing");
+  require(
+      rows->item(0, 9)->text() == root + "/installed", "Building did not refresh the repaired compute installation");
+  require(!apply->isEnabled() && !start->isEnabled(), "Building offered Apply or Start before tests");
   const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT");
   if (!screenshot.isEmpty()) {
     dialog.resize(1050, 1000);
     QCoreApplication::processEvents();
     require(dialog.grab().save(screenshot), "Cannot capture cluster setup");
   }
-  build->click();
-  require(wait([&] { return test->isEnabled(); }), "Building did not enable testing");
-  require(!apply->isEnabled() && !start->isEnabled(), "Building offered Apply or Start before tests");
   widget<QPushButton>(dialog, "workflowSetupRecover")->click();
   require(wait([&] { return resume->isEnabled(); }), "Recovery did not offer saved test status");
   require(!test->isEnabled() && !apply->isEnabled(), "Recovery assumed old tests were ready");

@@ -594,6 +594,10 @@ def _handle_request(request):
     """The desktop and operator UI use the same typed setup operations."""
     require(isinstance(request, dict), "Expected setup request")
     action = request.get("action")
+    if action == "prepare-runtime":
+        from .setup_runtime import on_node
+
+        return on_node(request)
     if action == "discover":
         return discover(request["server"], request["timeout_seconds"])
     if action == "inspect":

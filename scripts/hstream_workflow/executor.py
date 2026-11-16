@@ -62,6 +62,24 @@ def prepare(root, request, profile, settings, intent):
         "HSTREAM_JOB_MANAGED_RUNTIME": "1",
     }
     files = dict(runtime["files"])
+    # Packaged ELF RUNPATHs name the installation prefix. Prefer the retained
+    # copy before the loader starts the task, not after entering native main().
+    installation = runtime.get("root")
+    if installation:
+        installation = Path(installation)
+        pinned = [Path(path) for path in files]
+        libraries = [installation / "lib", installation / "lib/gst-plugins"]
+        libraries = [
+            path for path in libraries if any(item.parent == path for item in pinned)
+        ]
+        if libraries:
+            environment["LD_LIBRARY_PATH"] = ":".join(map(str, libraries))
+        plugins = installation / "lib/gst-plugins"
+        if any(path.parent == plugins for path in pinned):
+            for key in ("GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0"):
+                environment[key] = str(plugins)
+        if str(installation / "configs/baseline.yaml") in files:
+            environment["HM_CONFIG_ROOT"] = str(installation / "configs")
     for name in ("request.json", "profile.json", "settings.json"):
         path = root / name
         files[str(path)] = file_digest(path, 8 * 1024 * 1024)["sha256"]

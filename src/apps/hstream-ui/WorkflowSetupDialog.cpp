@@ -430,8 +430,8 @@ struct WorkflowSetupDialog::Impl {
     bool running = false;
     for (const auto& item : tests) {
       const auto row = item.toObject();
-      lines << row.value("profile").toString() + " / " + row.value("node").toString() + ": " +
-              row.value("state").toString();
+      lines << row.value("label").toString(row.value("profile").toString()) + " / " + row.value("node").toString() +
+              ": " + row.value("state").toString();
       const auto status = row.value("status").toObject();
       for (const auto& stage : status.value("nodes").toArray()) {
         const auto node = stage.toObject();
@@ -652,8 +652,8 @@ WorkflowSetupDialog::WorkflowSetupDialog(
     s.invalidate();
     s.message(
         "Main-server installation set to " + s.installed_runtime +
-        ". Save and build registry to check it. Computer profiles keep their own installation folders; "
-        "check those in Advanced profile settings. Each computer still needs to pass its test.");
+        ". Save and build registry to check it. Setup automatically prepares the installed programs for each selected computer. "
+        "Each computer still needs to pass its test.");
   });
   connect(s.registry, &QLineEdit::textChanged, this, [&s] {
     if (!s.loading) {
@@ -785,11 +785,13 @@ WorkflowSetupDialog::WorkflowSetupDialog(
       resources.insert(key, s.settings["workflow"]["metadata_resources"][key].as<int>());
     s.operation("save", {{"revision", s.revision}}, [&s, defaults, resources](QJsonObject saved) {
       s.revision = saved.value("revision");
-      s.message("Building the registry and checking the installed HStream files on the main server…");
+      s.message("Preparing installed HStream programs on the selected computers and building the registry…");
       s.operation(
           "build",
           {{"revision", s.revision}, {"defaults", defaults}, {"metadata_resources", resources}},
           [&s](QJsonObject value) {
+            if (value.value("draft").isObject())
+              s.load(value.value("draft").toObject());
             s.tests = {};
             s.report(value);
           });
