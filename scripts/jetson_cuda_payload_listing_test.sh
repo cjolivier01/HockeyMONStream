@@ -11,7 +11,10 @@ mode=$1
 elf=$2
 case "${elf}" in
   host-only)
-    echo "cuobjdump fatal   : '${elf}' does not contain device code" >&2
+    echo "cuobjdump info    : File '${elf}' does not contain device code" >&2
+    ;;
+  host-only-fatal)
+    echo "cuobjdump fatal   : File '${elf}' does not contain device code" >&2
     exit 255
     ;;
   ptx-only)
@@ -39,6 +42,7 @@ chmod +x "${inspector}"
 
 for mode in --list-elf --list-ptx; do
   [[ -z $("${listing_script}" "${inspector}" "${mode}" host-only) ]]
+  [[ -z $("${listing_script}" "${inspector}" "${mode}" host-only-fatal) ]]
   for bad in missing broken; do
     if "${listing_script}" "${inspector}" "${mode}" "${bad}" >"${test_root}/out" 2>"${test_root}/err"; then
       echo "Inspector failure was hidden: ${bad} ${mode}" >&2
