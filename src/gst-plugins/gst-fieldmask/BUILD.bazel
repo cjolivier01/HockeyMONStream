@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("@gst_plugin_dev//buildfiles:gst_plugin.bzl", "gst_cc_plugin")
 
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-fieldmask"
@@ -12,7 +13,7 @@ cc_library(
     ],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("dsfieldmask_lib", [
         ":fieldmask_payload",
         "//src/libs/detection:rink_detection_mask",
         "//src/libs/common:utils",
@@ -20,7 +21,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@deepstream//:deepstream_lib",
         "@opencv_linux//:opencv",
-    ],
+    ]),
 )
 
 gst_cc_plugin(
@@ -85,9 +86,9 @@ cc_test(
     ],
     linkopts = [
     ],
-    deps = [
+    deps = cuda_dependencies("dsfieldmask_noop_test", [
         ":dsfieldmask_lib",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -102,8 +103,8 @@ cc_test(
     ],
     linkopts = [
     ],
-    deps = [
+    deps = cuda_dependencies("dsfieldmask_load_existing_mask_test", [
         ":dsfieldmask_lib",
         "//src/libs/stitching",
-    ],
+    ], testonly = True),
 )

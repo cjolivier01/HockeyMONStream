@@ -1,0 +1,45 @@
+diff --git a/cuda/private/repositories.bzl b/cuda/private/repositories.bzl
+--- a/cuda/private/repositories.bzl
++++ b/cuda/private/repositories.bzl
+@@ -30,7 +30,7 @@
+ 
+     The path to CUDA Toolkit is determined as:
+       - the value of `toolkit_path` passed to local_cuda as an attribute
+-      - taken from `CUDA_PATH` environment variable or
++      - taken from `CUDA_PATH` or `CUDA_HOME` environment variables or
+       - determined through 'which ptxas' or
+       - defaults to '/usr/local/cuda'
+ 
+@@ -43,6 +43,8 @@
+     cuda_path = repository_ctx.attr.toolkit_path
+     if cuda_path == "":
+         cuda_path = repository_ctx.os.environ.get("CUDA_PATH", None)
++    if cuda_path == None:
++        cuda_path = repository_ctx.os.environ.get("CUDA_HOME", None) or None
+     if cuda_path == None:
+         ptxas_path = repository_ctx.which("ptxas")
+         if ptxas_path:
+@@ -207,7 +209,7 @@
+     attrs = {"toolkit_path": attr.string(mandatory = False)},
+     configure = True,
+     local = True,
+-    environ = ["CUDA_PATH", "PATH", "CUDA_CLANG_PATH", "BAZEL_LLVM"],
++    environ = ["CUDA_PATH", "CUDA_HOME", "PATH", "CUDA_CLANG_PATH", "BAZEL_LLVM"],
+     # remotable = True,
+ )
+ 
+diff --git a/cuda/runtime/BUILD.local_cuda b/cuda/runtime/BUILD.local_cuda
+--- a/cuda/runtime/BUILD.local_cuda
++++ b/cuda/runtime/BUILD.local_cuda
+@@ -19,7 +19,10 @@
+             "cuda/version.json",
+             "cuda/version.txt",
+             "cuda/bin/**",
+-            "cuda/lib64/**",
++            # Debian maps lib64 to the system library tree, which may contain
++            # unrelated directory symlink cycles (for example HDF5).
++            "cuda/lib64/*",
++            "cuda/lib64/stubs/*",
+             "cuda/nvvm/**",
+         ],
+         allow_empty = True,

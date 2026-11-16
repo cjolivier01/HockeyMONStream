@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 INCLUDE_PREFIX = "hstream/src/gst-plugins/gst-videoprep/playtracker"
 
 cc_library(
@@ -24,7 +26,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     copts = ["-std=c++17"],
-    deps = [
+    deps = cuda_dependencies("playtracker", [
         "//src/libs/tracking:camera_seek_state",
         "//src/libs/common:person_roles",
         "//src/libs/publication",
@@ -37,7 +39,7 @@ cc_library(
         "//src/libs/common:decoded_frame_sequence_meta",
         "//src/libs/common:detection_snapshot_meta",
         "//src/libs/draw_display",
-    ],
+    ]),
 )
 
 cc_test(
@@ -72,7 +74,7 @@ cc_test(
     srcs = [
         "PlayTrackerPrivInitTest.cpp",
     ],
-    deps = [
+    deps = cuda_dependencies("playtracker_priv_init_test", [
         "//src/libs/tracking:camera_seek_state",
         "//src/libs/publication",
         "//src/libs/playtracker_replay",
@@ -86,7 +88,7 @@ cc_test(
         "@local_cuda//:nppc",
         "@local_cuda//:nppif",
         "@local_cuda//:nppig",
-    ],
+    ], testonly = True),
     copts = [
         "-x",
         "c++",

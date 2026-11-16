@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 def gst_cc_plugin(
         name,
         interfaces = [],
@@ -12,13 +14,13 @@ def gst_cc_plugin(
         name = "lib" + name + ".so",
         srcs = srcs + hdrs,
         visibility = visibility,
-        deps = deps + [
+        deps = cuda_dependencies(name, deps + [
             "@deepstream//:deepstream_lib",
             "@gstreamer",
             "@yaml-cpp",
             "//toolchains/jetson:cuda_runtime",
             "@local_cuda//:cuda",
-        ],
+        ]),
         copts=[
           "-fPIC",
         ] + copts,

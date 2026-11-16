@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 exports_files([
   "PipelineApp.cpp",
   "configurator.cpp",
@@ -240,7 +242,7 @@ cc_test(
     ],
     copts = HSTREAM_CLI_COPTS,
     linkopts = HSTREAM_CLI_LINKOPTS,
-    deps = HSTREAM_CLI_DEPS,
+    deps = cuda_dependencies("archive_nfs_fallback_test", HSTREAM_CLI_DEPS, testonly = True),
 )
 
 cc_test(
@@ -248,7 +250,7 @@ cc_test(
     srcs = ["ConfiguratorFailureContextTest.cpp", "StitcherOnePassConfig.h", "StitchingCalibrationMode.h", "configurator.cpp", "configurator.h", "deepstream_app.h"],
     copts = HSTREAM_CLI_COPTS,
     linkopts = HSTREAM_CLI_LINKOPTS,
-    deps = HSTREAM_CLI_DEPS,
+    deps = cuda_dependencies("configurator_failure_context_test", HSTREAM_CLI_DEPS, testonly = True),
 )
 
 cc_test(
@@ -263,7 +265,7 @@ cc_test(
     ],
     copts = HSTREAM_CLI_COPTS,
     linkopts = HSTREAM_CLI_LINKOPTS + ["-ltiff"],
-    deps = HSTREAM_CLI_DEPS,
+    deps = cuda_dependencies("configurator_rink_mask_precision_test", HSTREAM_CLI_DEPS, testonly = True),
     tags = ["local"],
 )
 
@@ -280,7 +282,7 @@ cc_test(
     copts = HSTREAM_CLI_COPTS,
     data = ["//configs:ds_hockey_app_config.yaml"],
     linkopts = HSTREAM_CLI_LINKOPTS,
-    deps = HSTREAM_CLI_DEPS,
+    deps = cuda_dependencies("configurator_persistence_test", HSTREAM_CLI_DEPS, testonly = True),
 )
 
 cc_test(
@@ -292,7 +294,7 @@ cc_test(
     ] + glob(["*.h"]),
     copts = HSTREAM_CLI_COPTS,
     linkopts = HSTREAM_CLI_LINKOPTS,
-    deps = HSTREAM_CLI_DEPS,
+    deps = cuda_dependencies("pipeline_graceful_stop_test", HSTREAM_CLI_DEPS, testonly = True),
 )
 
 cc_test(
@@ -324,12 +326,12 @@ cc_test(
         "PipelineAssetOptionsTest.cpp",
     ],
     copts = HSTREAM_CLI_COPTS,
-    deps = [
+    deps = cuda_dependencies("pipeline_asset_options_test", [
         "//src/libs/assets:asset_manager",
     "//src/libs/common:tensorrt_gpu_identity",
         "//src/libs/common:utils",
         "@yaml-cpp",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -561,12 +563,12 @@ cc_test(
     args = ["$(location //configs:ds_hockey_app_config.yaml)"],
     copts = HSTREAM_CLI_COPTS,
     data = ["//configs:ds_hockey_app_config.yaml"],
-    deps = [
+    deps = cuda_dependencies("stitching_calibration_mode_test", [
         "//src/libs/assets:asset_manager",
     "//src/libs/common:tensorrt_gpu_identity",
         "//src/libs/stitching",
         "@yaml-cpp",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -625,7 +627,7 @@ cc_test(
         "-ldl",
         "-lm",
     ],
-    deps = [
+    deps = cuda_dependencies("plugin_property_yaml_parser_test", [
         "//src/apps/apps-common:deepstream_apps_common",
         "//src/libs/common:baseline_config",
         "//src/libs/common:utils",
@@ -634,7 +636,7 @@ cc_test(
         "@deepstream//:deepstream_lib",
         "@gstreamer",
         "@yaml-cpp",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -671,13 +673,13 @@ cc_test(
 cc_test(
     name = "player_frame_scan_mask_test",
     srcs = ["PlayerFrameScanMask.h", "PlayerFrameScanMaskTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("player_frame_scan_mask_test", [
         "//src/gst-plugins/gst-fieldmask:fieldmask_payload",
         "//src/libs/stitching",
         "@com_google_absl//absl/status:status",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -717,7 +719,7 @@ cc_test(
         "//configs:player-analytics/semantics-example.yaml",
     ],
     linkopts = HSTREAM_CLI_LINKOPTS,
-    deps = HSTREAM_CLI_DEPS,
+    deps = cuda_dependencies("player_analytics_mapping_test", HSTREAM_CLI_DEPS, testonly = True),
 )
 
 py_test(

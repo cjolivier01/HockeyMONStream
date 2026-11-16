@@ -1,3 +1,13 @@
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
+# An explicit dependency boundary overrides the legacy backend request without
+# changing the selected backend for unrelated targets in the same build.
+bool_flag(
+    name = "cuda_only",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
 exports_files([
     ".bazelrc",
     "run.sh",
@@ -6,6 +16,13 @@ exports_files([
 config_setting(
     name = "use_hip",
     values = {"define": "backend=hip"},
+    flag_values = {":cuda_only": "false"},
+)
+
+config_setting(
+    name = "use_jetson_hip",
+    define_values = {"jetson_use_hip": "true"},
+    flag_values = {":cuda_only": "false"},
 )
 
 config_setting(

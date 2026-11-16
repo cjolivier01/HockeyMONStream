@@ -1,3 +1,5 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
 cc_library(
@@ -18,13 +20,20 @@ cc_test(
 cc_binary(
     name = "tiled_inference_fixture",
     srcs = ["TiledInferenceFixture.cpp"],
-    deps = [":deepstream_apps_common", "@deepstream//:deepstream_lib", "@gstreamer", "@local_cuda//:cuda_runtime", "@opencv_linux//:opencv", "@yaml-cpp"],
+    deps = cuda_dependencies(
+        "tiled_inference_fixture",
+        [":deepstream_apps_common", "@deepstream//:deepstream_lib", "@gstreamer", "@local_cuda//:cuda_runtime", "@opencv_linux//:opencv", "@yaml-cpp"],
+    ),
 )
 
 cc_test(
     name = "primary_gie_tiling_test",
     srcs = ["PrimaryGieTilingTest.cpp"],
-    deps = [":deepstream_apps_common", "@gstreamer", "@yaml-cpp"],
+    deps = cuda_dependencies(
+        "primary_gie_tiling_test",
+        [":deepstream_apps_common", "@gstreamer", "@yaml-cpp"],
+        testonly = True,
+    ),
 )
 
 cc_library(
@@ -73,7 +82,11 @@ cc_test(
 cc_test(
     name = "web_preview_sink_ownership_test",
     srcs = ["WebPreviewSinkOwnershipTest.cpp"],
-    deps = [":deepstream_apps_common", ":preview_route_graph", "@gstreamer"],
+    deps = cuda_dependencies(
+        "web_preview_sink_ownership_test",
+        [":deepstream_apps_common", ":preview_route_graph", "@gstreamer"],
+        testonly = True,
+    ),
 )
 
 cc_library(
@@ -133,7 +146,7 @@ cc_test(
     name = "selected_preview_stream_gpu_test",
     srcs = ["SelectedPreviewStreamGpuTest.cpp"],
     tags = ["manual", "requires-gpu", "local"],
-    deps = [
+    deps = cuda_dependencies("selected_preview_stream_gpu_test", [
         ":hm_gpu_preview",
         ":preview_route_graph",
         ":preview_route_owner",
@@ -145,7 +158,7 @@ cc_test(
         ":web_preview_target",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_library(
@@ -154,14 +167,14 @@ cc_library(
     hdrs = ["PreviewGpuSurface.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("preview_gpu_surface", [
         ":selected_preview_stream",
         "//src/libs/draw_display:opaque_video_canvas",
         "//src/libs/draw_display:opaque_video_canvas_headers",
         "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ]),
 )
 
 cc_library(
@@ -234,7 +247,7 @@ cc_library(
     hdrs = ["WebPreviewTarget.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("web_preview_target", [
         ":preview_gpu_surface",
         ":preview_rtp_gate",
         ":preview_transport_monitor",
@@ -243,7 +256,7 @@ cc_library(
         ":web_preview_observer",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ]),
 )
 
 cc_library(
@@ -481,7 +494,7 @@ cc_library(
 cc_test(
     name = "preview_overlay_scene_test",
     srcs = ["PreviewOverlaySceneTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("preview_overlay_scene_test", [
         ":preview_overlay_scene",
         "//src/libs/common:utils",
         "//src/libs/common:preview_overlay_meta",
@@ -489,7 +502,7 @@ cc_test(
         "//src/libs/player_analytics:frame_meta",
         "//src/libs/stitching:stitching",
         "@deepstream//:deepstream_lib",
-    ],
+    ], testonly = True),
 )
 
 cc_library(
@@ -575,7 +588,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     linkopts = ["-lGL", "-lX11"],
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("hm_gpu_preview", [
         ":preview_capture_receipt",
         "//src/libs/draw_display:rink_mini_map_options",
         ":rink_mask_image",
@@ -592,7 +605,7 @@ cc_library(
         "//src/libs/draw_display:analytics_overlay_gl",
         "//src/libs/draw_display:player_overlays",
         "//src/libs/draw_display:rink_mini_map",
-    ],
+    ]),
 )
 
 cc_library(
@@ -601,25 +614,25 @@ cc_library(
     hdrs = ["ArchiveWatermark.h"],
     copts = ["-std=c++17"],
     include_prefix = INCLUDE_PREFIX,
-    deps = [
+    deps = cuda_dependencies("archive_watermark", [
         "//src/libs/draw_display:analytics_overlay",
         "//src/libs/draw_display:analytics_overlay_atlas",
         "//src/libs/draw_display:watermark",
         "//toolchains/jetson:cuda_runtime",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ]),
 )
 
 cc_test(
     name = "archive_watermark_test",
     srcs = ["ArchiveWatermarkTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("archive_watermark_test", [
         ":archive_watermark",
         "//src/libs/draw_display:analytics_overlay",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_library(
@@ -716,7 +729,7 @@ cc_library(
         "//conditions:default": [],
     }),
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("deepstream_apps_common", [
         ":tiled_inference",
         "//src/libs/detection:tile_inference_config",
         ":preview_route_graph",
@@ -750,24 +763,24 @@ cc_library(
         "@json_glib",
         "@libsoup",
         "@opencv_linux//:opencv",
-    ],
+    ]),
 )
 
 cc_binary(
     name = "uri_playlist_switch_test",
     srcs = ["UriPlaylistSwitchTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("uri_playlist_switch_test", [
         ":deepstream_apps_common",
-    ],
+    ]),
 )
 
 cc_test(
     name = "uri_playlist_discovery_test",
     srcs = ["UriPlaylistDiscoveryTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("uri_playlist_discovery_test", [
         ":deepstream_apps_common",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -781,10 +794,10 @@ cc_test(
 cc_test(
     name = "sink_interpolation_parser_test",
     srcs = ["SinkInterpolationParserTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("sink_interpolation_parser_test", [
         ":deepstream_apps_common",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -809,10 +822,10 @@ cc_test(
     name = "uri_playlist_frame_barrier_test",
     srcs = ["UriPlaylistFrameBarrierTest.cpp"],
     size = "medium",
-    deps = [
+    deps = cuda_dependencies("uri_playlist_frame_barrier_test", [
         ":deepstream_apps_common",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
@@ -831,12 +844,12 @@ cc_test(
     copts = ["-DIN_GSTVIDEOPREP_PLUGIN=1"],
     args = ["$(location //src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so)"],
     data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
-    deps = [
+    deps = cuda_dependencies("program_track_color_demand_test", [
         "//src/gst-plugins/gst-videoprep:test_headers",
         ":deepstream_apps_common",
         "//src/libs/common:track_color_meta",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_library(
@@ -862,7 +875,7 @@ cc_test(
 cc_binary(
     name = "player_analytics_routing_test",
     srcs = ["PlayerAnalyticsRoutingTest.cpp"],
-    deps = [
+    deps = cuda_dependencies("player_analytics_routing_test", [
         ":deepstream_apps_common",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/common:track_color_meta",
@@ -870,7 +883,7 @@ cc_binary(
         "//src/libs/player_analytics:frame_meta",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ]),
 )
 
 
@@ -882,7 +895,7 @@ cc_binary(
         "@platforms//cpu:x86_64": [],
         "//conditions:default": ["@platforms//:incompatible"],
     }),
-    deps = [
+    deps = cuda_dependencies("hm_gpu_preview_player_overlay_test", [
         ":hm_gpu_preview",
         "//src/libs/common:preview_overlay_meta",
         "//src/libs/player_analytics:frame_meta",
@@ -890,7 +903,7 @@ cc_binary(
         "//src/libs/stitching:stitching",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
-    ],
+    ]),
 )
 
 cc_library(
@@ -921,7 +934,7 @@ cc_binary(
     name = "webrtc_preview_test_server",
     testonly = True,
     srcs = ["WebRtcPreviewTestServer.cpp"],
-    deps = [
+    deps = cuda_dependencies("webrtc_preview_test_server", [
         ":deepstream_apps_common",
         ":preview_rtp_gate",
         ":preview_transport_monitor",
@@ -929,14 +942,18 @@ cc_binary(
         ":web_preview_observer",
         ":webrtc_endpoint",
         "@gstreamer",
-    ],
+    ], testonly = True),
 )
 
 cc_test(
     name = "web_preview_signaling_test",
     srcs = ["WebPreviewSignalingTest.cpp"],
     tags = ["local"],
-    deps = [":deepstream_apps_common", ":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@libsoup"],
+    deps = cuda_dependencies(
+        "web_preview_signaling_test",
+        [":deepstream_apps_common", ":web_preview_observer", ":webrtc_endpoint", "@gstreamer", "@libsoup"],
+        testonly = True,
+    ),
 )
 
 cc_library(

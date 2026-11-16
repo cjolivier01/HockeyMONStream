@@ -1,7 +1,10 @@
 exports_files([
+    "hm_cupano_cuda_boundary.patch",
+    "jetson_utils_cuda_boundary.patch",
     "jetson_utils_libsoup3.patch",
     "abseil_aarch64_signal_stack.patch",
     "rules_cuda_sm120.patch",
     "rules_cuda_quote_includes.patch",
+    "rules_cuda_toolkit_discovery.patch",
     "yaml_cpp_preserve_quoted_scalars.patch",
 ])

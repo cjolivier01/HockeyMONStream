@@ -1,3 +1,4 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
 load("//bazel:gpu_library.bzl", "gpu_library")
 
 INCLUDE_PREFIX = "hstream/src/libs/player_analytics/runtime/"
@@ -61,7 +62,10 @@ cc_binary(
 cc_binary(
     name = "pose_fixture_test",
     srcs = ["PoseFixtureTest.cpp"],
-    deps = [":native_engine", ":pose_affine", ":pose_gpu", "@opencv_linux//:opencv"],
+    deps = cuda_dependencies(
+        "pose_fixture_test",
+        [":native_engine", ":pose_affine", ":pose_gpu", "@opencv_linux//:opencv"],
+    ),
 )
 
 cc_library(
@@ -108,11 +112,14 @@ cc_test(
 cc_binary(
     name = "semantic_engine_test",
     srcs = ["SemanticEngineTest.cpp"],
-    deps = [":native_engine", ":semantic_roi", ":semantic_gpu"],
+    deps = cuda_dependencies("semantic_engine_test", [":native_engine", ":semantic_roi", ":semantic_gpu"]),
 )
 
 cc_binary(
     name = "jersey_fixture_test",
     srcs = ["JerseyFixtureTest.cpp"],
-    deps = [":native_engine", ":semantic_roi", ":semantic_gpu", "@opencv_linux//:opencv"],
+    deps = cuda_dependencies(
+        "jersey_fixture_test",
+        [":native_engine", ":semantic_roi", ":semantic_gpu", "@opencv_linux//:opencv"],
+    ),
 )

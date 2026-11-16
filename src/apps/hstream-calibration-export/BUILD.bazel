@@ -1,9 +1,11 @@
+load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+
 cc_binary(
     name = "hstream-calibration-export",
     srcs = ["main.cpp"],
     linkopts = ["-lcrypto"],
     visibility = ["//visibility:public"],
-    deps = [
+    deps = cuda_dependencies("hstream-calibration-export", [
         "//src/libs/common:game_storage",
         "//src/libs/common:baseline_config",
         "//src/libs/common:user_config",
@@ -14,5 +16,5 @@ cc_binary(
         "//src/libs/stitching:stitching",
         "//src/libs/stitching:playback_rink_map",
         "@yaml-cpp",
-    ],
+    ]),
 )
