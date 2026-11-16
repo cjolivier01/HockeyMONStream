@@ -137,7 +137,9 @@ Native preview widgets share `NativePreviewSurface`: while an external sink owns
 ## Architecture Overview
 
 - `WorkflowSetupDialog.*` and `scripts/hstream_workflow/setup*.py` own resumable
-  cluster configuration. `setup_runtime.py` prepares immutable shared copies of
+  cluster configuration. `setup_storage.py` verifies shared reads/writes before
+  deploying helpers and recovers relocated drafts without moving active history.
+  `setup_runtime.py` prepares immutable shared copies of
   installed node packages and splits mixed builds without multiplying pool limits.
   Drafts never enable execution. Private test registries
   admit only qualification graphs; each selected node must pass native stages

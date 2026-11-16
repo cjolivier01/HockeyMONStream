@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -191,6 +192,142 @@ class SetupTest(unittest.TestCase):
                 result["installed_runtime"], str(installation) if present else None
             )
             self.assertFalse(result["ready"])
+
+    def test_shared_storage_probe_needs_visible_marker_and_write_receipt(self):
+        from hstream_workflow import setup_storage as storage
+
+        self.save()
+
+        def remote(argv, timeout):
+            command = shlex.split(argv[-1])
+            self.assertEqual(command[:2], ["python3", "-c"])
+            if argv[-2] == "stubby":
+                command[3] = str(self.root / "local-overlay/absent-marker")
+            return subprocess.check_output(command, text=True, timeout=timeout)
+
+        with patch.object(storage, "run_readonly", side_effect=remote):
+            self.assertEqual(
+                storage.check(self.registry, ["mini", "stubby"], 30, 2), ["stubby"]
+            )
+        with patch.object(storage, "run_readonly", return_value='{"shared":true}'):
+            self.assertEqual(
+                storage.check(self.registry, ["stubby"], 30, 1), ["stubby"]
+            )
+        self.assertFalse(list(self.registry.glob("setup-storage-*.json")))
+
+    def storage_request(self):
+        saved = self.save()
+        target = self.root / "shared-registry"
+        target.mkdir(mode=0o700)
+        return {
+            "action": "build",
+            "registry": str(self.registry),
+            **saved,
+            "shared_registry": str(target),
+            "timeout_seconds": 30,
+            "defaults": self.defaults,
+            "metadata_resources": self.cpu,
+        }
+
+    def test_unshared_registry_recovers_in_shared_storage_without_moving_history(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        write_json(self.registry / "retained-history.json", {"history": "unchanged"})
+
+        def check(root, *args):
+            return ["stubby"] if Path(root) == self.registry else []
+
+        with patch.object(storage, "check", side_effect=check):
+            moved, message = storage.prepare(request)
+            repeated, _ = storage.prepare(request)
+        self.assertEqual(moved, repeated)
+        self.assertEqual(moved["registry"], request["shared_registry"])
+        self.assertIn("Created shared settings", message)
+        self.assertEqual(setup.SetupStore(self.registry).read()["draft"], self.draft)
+        self.assertEqual(
+            read_json(self.registry / "retained-history.json"), {"history": "unchanged"}
+        )
+        loaded = setup.handle_request(
+            {"action": "load", "registry": str(self.registry)}
+        )
+        self.assertEqual(loaded["draft"], moved["draft"])
+        self.assertEqual(loaded["progress"]["revision"], moved["revision"])
+        self.assertFalse(loaded["progress"]["installed"])
+        # Editing the original choices supersedes the old relocation reference.
+        changed = copy.deepcopy(self.draft)
+        changed["profiles"]["gpu"]["label"] = "New original choices"
+        setup.SetupStore(self.registry).save(changed, request["revision"])
+        self.assertEqual(storage.recovered(self.registry)["draft"], changed)
+
+    def test_relocation_preserves_existing_destination_and_concurrent_edits(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = {**self.draft, "registry": str(target), "server": "another-server"}
+        setup.SetupStore(target).save(existing, None)
+
+        def check(root, *args):
+            return ["stubby"] if Path(root) == self.registry else []
+
+        with patch.object(storage, "check", side_effect=check):
+            moved, _ = storage.prepare(request)
+        self.assertNotEqual(moved["registry"], str(target))
+        self.assertEqual(setup.SetupStore(target).read()["draft"], existing)
+        (self.registry / "setup-location.json").unlink()
+
+        def changed(root, *args):
+            if Path(root) != self.registry:
+                draft = {**self.draft, "server": "edited"}
+                setup.SetupStore(self.registry).save(draft, request["revision"])
+            return check(root)
+
+        with patch.object(storage, "check", side_effect=changed):
+            with self.assertRaisesRegex(WorkflowError, "choices changed"):
+                storage.prepare(request)
+        self.assertFalse((self.registry / "setup-location.json").exists())
+
+    def test_relocation_keeps_active_controller_and_unfinished_test_state(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        with patch.object(storage, "check", side_effect=[["stubby"], []]):
+            with locked(self.registry / "controller-service.lock"):
+                with self.assertRaisesRegex(WorkflowError, "Stop the controller"):
+                    storage.prepare(request)
+        self.assertFalse((self.registry / "setup-location.json").exists())
+        write_json(self.registry / "setup-build.json", {"generation": "fixture"})
+        with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
+            execution,
+            "generation",
+            return_value=(self.root, {"tests": {"gpu/stubby": {}}}),
+        ), patch.object(
+            execution, "remote", return_value={"tests": [{"finished": False}]}
+        ) as remote:
+            with self.assertRaisesRegex(WorkflowError, "unfinished sample"):
+                storage.prepare(request)
+        self.assertFalse(remote.call_args.args[0]["tick"])
+        self.assertFalse((self.registry / "setup-location.json").exists())
+
+    def test_recovered_setup_locations_reject_cycles(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        other = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+        write_json(
+            self.registry / "setup-location.json",
+            {"source_revision": request["revision"], "registry": str(target)},
+        )
+        write_json(
+            target / "setup-location.json",
+            {"source_revision": other["revision"], "registry": str(self.registry)},
+        )
+        with self.assertRaisesRegex(WorkflowError, "loop"):
+            storage.recovered(self.registry)
 
     def installed_fixture(self, name):
         root = self.root / name

@@ -586,7 +586,10 @@ def progress(root):
 def handle_request(request):
     result = _handle_request(request)
     if request.get("action") != "discover":
-        result["progress"] = progress(absolute(request["registry"], "Settings folder"))
+        location = (
+            result["draft"]["registry"] if result.get("draft") else request["registry"]
+        )
+        result["progress"] = progress(absolute(location, "Settings folder"))
     return result
 
 
@@ -610,7 +613,9 @@ def _handle_request(request):
         path = absolute(request["registry"], "Settings folder")
         if not path.exists():
             return {"draft": None, "revision": None}
-        return SetupStore(path).read()
+        from .setup_storage import recovered
+
+        return recovered(path)
     if action == "save":
         return SetupStore(request["registry"]).save(
             request["draft"], request["revision"]

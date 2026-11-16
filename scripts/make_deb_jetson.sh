@@ -16,7 +16,8 @@ Usage: scripts/make_deb_jetson.sh [--host=HOST] [--version=vX.Y.Z] [--output-dir
 The host must be a Jetson Linux 39 / Ubuntu 24.04 arm64 Jetson with DeepStream 9.1.
 The source is transferred as an immutable git archive; local tracked changes
 are never included.
-Set JETSON_QT=1 to include the Qt UI and its web/experiment helpers (default: 0).
+Set JETSON_QT=1 to include the desktop UI and web adapter (default: 0).
+The headless experiment task is always included for Slurm execution.
 USAGE
 }
 
@@ -176,16 +177,15 @@ build_packages=(
   ninja-build
   zlib1g-dev
 )
-qt_build_flags=()
-qt_targets=()
+# The headless experiment task needs Qt libraries even without the desktop UI.
+build_packages+=(qt6-base-dev)
+qt_build_flags=(--define=jetson_qt=true)
+qt_targets=(//src/apps/hstream-ui:hstream-experiment-task)
 if [[ "${jetson_qt}" == 1 ]]; then
-  build_packages+=(qt6-base-dev qt6-qpa-plugins qt6-image-formats-plugins)
-  # deb_jetson already includes the Jetson config and pins Orin PTX.
-  qt_build_flags+=(--define=jetson_qt=true)
+  build_packages+=(qt6-qpa-plugins qt6-image-formats-plugins)
   qt_targets+=(
     //src/apps/hstream-ui:hstream-ui
     //src/apps/hstream-ui:hstream-web-job
-    //src/apps/hstream-ui:hstream-experiment-task
   )
 fi
 missing_build_packages=()
@@ -280,6 +280,7 @@ fi
 HM_REQUIRE_CUDA_TESTS=1 bazel-bin/src/libs/onnx/session_test
 
 cuda_elfs=(
+  bazel-bin/src/apps/hstream-ui/hstream-experiment-task
   bazel-bin/src/apps/hstream-cli/hstream-cli
   bazel-bin/src/apps/hstream-calibration-export/hstream-calibration-export
   bazel-bin/src/apps/hstream-assets/hstream-assets
@@ -295,7 +296,6 @@ if [[ "${jetson_qt}" == 1 ]]; then
   cuda_elfs+=(
     bazel-bin/src/apps/hstream-ui/hstream-ui
     bazel-bin/src/apps/hstream-ui/hstream-web-job
-    bazel-bin/src/apps/hstream-ui/hstream-experiment-task
   )
 fi
 for cuda_elf in "${cuda_elfs[@]}"; do

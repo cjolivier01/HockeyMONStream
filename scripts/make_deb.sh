@@ -218,7 +218,7 @@ if [[ "${PACKAGE_QT}" == 1 && ! -f "${HSTREAM_WEB_JOB}" ]]; then
   echo "ERROR: ${HSTREAM_WEB_JOB} not found. Run 'make hstream-web-job' first." >&2
   exit 1
 fi
-if [[ "${PACKAGE_QT}" == 1 && ! -f "${HSTREAM_EXPERIMENT_TASK}" ]]; then
+if [[ ! -f "${HSTREAM_EXPERIMENT_TASK}" ]]; then
   echo "ERROR: ${HSTREAM_EXPERIMENT_TASK} not found. Build hstream-experiment-task for the target platform first." >&2
   exit 1
 fi
@@ -255,10 +255,10 @@ validate_elf_arch "${HSTREAM_CLI}"
 validate_elf_arch "${HSTREAM_CALIBRATION_EXPORT}"
 validate_elf_arch "${HSTREAM_ASSETS}"
 validate_elf_arch "${HSTREAM_PLAYER_MODEL_BUILDER}"
+validate_elf_arch "${HSTREAM_EXPERIMENT_TASK}"
 if [[ "${PACKAGE_QT}" == 1 ]]; then
   validate_elf_arch "${HSTREAM_UI}"
   validate_elf_arch "${HSTREAM_WEB_JOB}"
-  validate_elf_arch "${HSTREAM_EXPERIMENT_TASK}"
 fi
 
 # ---------- ensure tools ----------
@@ -423,10 +423,10 @@ package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-assets")
 cp "${HSTREAM_PLAYER_MODEL_BUILDER}" "${STAGING}${INSTALL_PREFIX}/bin/player-model-builder"
 patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/player-model-builder"
 package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/player-model-builder")
+cp "${HSTREAM_EXPERIMENT_TASK}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
+patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
+package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task")
 if [[ "${PACKAGE_QT}" == 1 ]]; then
-  cp "${HSTREAM_EXPERIMENT_TASK}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
-  patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task"
-  package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-experiment-task")
   cp "${HSTREAM_UI}" "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   patchelf_rpath "${STAGING}${INSTALL_PREFIX}/bin/hstream-ui"
   package_elfs+=("${STAGING}${INSTALL_PREFIX}/bin/hstream-ui")
@@ -451,9 +451,9 @@ echo "[make_deb] Collecting bundled shared libs..."
 declare -A seen_libs
 
 # Collect from the binaries and the exact HStream-owned plugin set.
-all_elfs=("${HSTREAM_CLI}" "${HSTREAM_CALIBRATION_EXPORT}" "${HSTREAM_ASSETS}" "${HSTREAM_PLAYER_MODEL_BUILDER}" "${HSTREAM_GST_PLUGINS[@]}")
+all_elfs=("${HSTREAM_CLI}" "${HSTREAM_CALIBRATION_EXPORT}" "${HSTREAM_ASSETS}" "${HSTREAM_PLAYER_MODEL_BUILDER}" "${HSTREAM_EXPERIMENT_TASK}" "${HSTREAM_GST_PLUGINS[@]}")
 if [[ "${PACKAGE_QT}" == 1 ]]; then
-  all_elfs+=("${HSTREAM_UI}" "${HSTREAM_WEB_JOB}" "${HSTREAM_EXPERIMENT_TASK}")
+  all_elfs+=("${HSTREAM_UI}" "${HSTREAM_WEB_JOB}")
 fi
 
 for elf in "${all_elfs[@]}"; do
@@ -1124,9 +1124,7 @@ install -m 0644 "${TOPDIR}/scripts/hstream_workflow/"*.py "${STAGING}${INSTALL_P
 install -m 0755 "${TOPDIR}/scripts/hstream-workflow" "${STAGING}${INSTALL_PREFIX}/scripts/hstream-workflow"
 install -m 0755 "${TOPDIR}/scripts/install_workflow_services.py" "${STAGING}${INSTALL_PREFIX}/scripts/install_workflow_services.py"
 ln -s "${INSTALL_PREFIX}/scripts/hstream-workflow" "${STAGING}/usr/bin/hstream-workflow"
-if [[ "${PACKAGE_QT}" == 1 ]]; then
-  ln -s "${INSTALL_PREFIX}/bin/hstream-experiment-task" "${STAGING}/usr/bin/hstream-experiment-task"
-fi
+ln -s "${INSTALL_PREFIX}/bin/hstream-experiment-task" "${STAGING}/usr/bin/hstream-experiment-task"
 for int8_helper in prepare_recording_int8.py quantize_detector_onnx.py benchmark_model_precision.py; do
   install -m 0755 "${TOPDIR}/scripts/${int8_helper}" "${STAGING}${INSTALL_PREFIX}/scripts/${int8_helper}"
 done

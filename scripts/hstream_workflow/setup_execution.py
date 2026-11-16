@@ -13,6 +13,7 @@ import re
 import shlex
 import socket
 import tempfile
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -98,6 +99,22 @@ def remote(request):
         )
     timeout = request["timeout_seconds"]
     positive(timeout, "Setup timeout", 300)
+    storage_message = ""
+    if request["action"] == "build":
+        from .setup_storage import prepare
+
+        started = time.monotonic()
+        request, storage_message = prepare(request)
+        timeout -= int(time.monotonic() - started)
+        require(
+            timeout > 0,
+            "Checking shared storage exceeded the setup timeout. Check the computer connections and build again.",
+        )
+        request = {**request, "timeout_seconds": timeout}
+        root = private_directory(
+            absolute(request["registry"], "Shared settings folder")
+        )
+        draft = request["draft"]
     launcher = deploy_controller(root)
     path = root / ("setup-request-" + uuid4().hex + ".json")
     # The random challenge also proves that the server sees the same storage.
@@ -120,6 +137,8 @@ def remote(request):
             result.pop("challenge", None) == challenge,
             "The server cannot see the same settings folder",
         )
+        if storage_message:
+            result["message"] = storage_message + "\n" + result.get("message", "")
         return result
     finally:
         path.unlink(missing_ok=True)
@@ -962,7 +981,7 @@ def execute_locked(root, request):
         check_scheduler(request["timeout_seconds"])
         result = start_test(root, request)
     elif action == "test-status":
-        result = qualification_status(root, tick=True)
+        result = qualification_status(root, tick=request.get("tick", True))
     elif action == "cancel-test":
         _, saved = generation(root)
         for test in saved["tests"].values():

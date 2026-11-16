@@ -43,17 +43,26 @@ controller's admission, ownership or cleanup checks.
 7. **Check installed setup**, then **Use this cluster** reloads the profile list.
 
 Defaults live in `workflow.setup` in `configs/baseline.yaml`. The suggested
-registry is `~/.local/state/hstream-workflows/registry`; keep it on durable shared
+registry is `~/hstream-workflows/registry`; keep it on durable shared
 storage. After reinstalling, choose **Recover saved setup**. The desktop also
 tries the saved/default folder automatically. Recovery reads older profiles and
 explains which parts need replacing.
+Before building, setup tests both reads and writes from the main server and every
+selected computer without relying on files already being shared. This handles
+hosts such as Jetsons whose `.local` directory intentionally uses local disk.
+If the old folder is not shared, setup verifies the baseline location, copies the
+editable choices there and remembers that location for recovery. Existing
+registries, test history and machine-local installations stay in place. A running
+controller, unfinished tests or recording ownership prevent automatic relocation;
+existing destination choices are preserved in a separate setup folder.
 `make deploy` installs the native programs (the desktop package uses
 `/opt/hstream/bin`). After deployment, **Save and build registry** repairs stale
 preview-release paths automatically. It copies each distinct installed package
 into `setup-runtimes/` under the registry, verifies its files and reuses matching
 copies. Package-owned files are copied; local backups are excluded. Custom usable
 installations remain selectable in Advanced profile settings. Missing programs
-still require installing HStream on that computer.
+still require installing HStream on that computer. Headless Jetson packages now
+include `hstream-experiment-task`; enabling the desktop UI is not necessary.
 
 Mixed OS or processor builds become separate execution profiles with readable
 computer names. Their job limits remain shared across the original overlapping
@@ -95,6 +104,7 @@ not certify every codec or replace browser workflow qualification.
 Setup CLI commands bypass installed-controller dispatch to repair absent/invalid
 registries. `setup_execution.py` copies a content-addressed controller release,
 compiles pinned profiles and retains generations under `setup-builds/`.
+`setup_storage.py` verifies shared storage and recovers relocated drafts.
 `setup_runtime.py` discovers and snapshots node installations over SSH using the
 shared controller and a shared-file challenge. Preparation completes and the new
 generation validates before revision-checked draft repairs are committed. Tests use

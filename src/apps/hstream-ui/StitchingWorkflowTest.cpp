@@ -363,9 +363,11 @@ elif r['action'] in ('load','import'): reply({'revision':p['revision'],'draft':j
 elif r['action']=='build':
  p.update(has_build=True,build_current=True,revision='repaired')
  d=r['draft']
+ d['registry']=str(root/'shared-registry')
+ assert r['shared_registry'].startswith('/')
  for profile in d['profiles'].values(): profile['runtime_root']=str(root/'installed')
  (root/'saved-setup.json').write_text(json.dumps({**r,'draft':d}))
- reply({'generation':'built','message':'Recovered the installed programs in /opt/hstream. HStream is prepared on shared storage for every selected computer. Registry built. Test a sample recording on each chosen computer before applying it.','draft':d,'revision':'repaired'})
+ reply({'generation':'built','message':'Created shared settings outside machine-local storage. Recovered the installed programs in /opt/hstream. HStream is prepared on shared storage for every selected computer. Registry built. Test a sample recording on each chosen computer before applying it.','draft':d,'revision':'repaired'})
 elif r['action'] in ('test-status','start-test','cancel-test'):
  phase=root/'setup-test-phase'
  if r['action']=='start-test': phase.write_text('running')

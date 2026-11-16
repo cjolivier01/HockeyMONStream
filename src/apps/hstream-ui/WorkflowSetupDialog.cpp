@@ -783,12 +783,19 @@ WorkflowSetupDialog::WorkflowSetupDialog(
       defaults.insert(key, s.settings["workflow"][key].as<int>());
     for (const char* key : {"cpus", "memory_mb", "time_seconds"})
       resources.insert(key, s.settings["workflow"]["metadata_resources"][key].as<int>());
-    s.operation("save", {{"revision", s.revision}}, [&s, defaults, resources](QJsonObject saved) {
+    QString shared_registry =
+        QString::fromStdString(s.settings["workflow"]["setup"]["registry_path"].as<std::string>());
+    if (shared_registry.startsWith("~/"))
+      shared_registry.replace(0, 1, QDir::homePath());
+    s.operation("save", {{"revision", s.revision}}, [&s, defaults, resources, shared_registry](QJsonObject saved) {
       s.revision = saved.value("revision");
       s.message("Preparing installed HStream programs on the selected computers and building the registry…");
       s.operation(
           "build",
-          {{"revision", s.revision}, {"defaults", defaults}, {"metadata_resources", resources}},
+          {{"revision", s.revision},
+           {"defaults", defaults},
+           {"metadata_resources", resources},
+           {"shared_registry", shared_registry}},
           [&s](QJsonObject value) {
             if (value.value("draft").isObject())
               s.load(value.value("draft").toObject());
