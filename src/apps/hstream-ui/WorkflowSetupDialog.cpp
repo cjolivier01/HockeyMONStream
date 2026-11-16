@@ -91,6 +91,7 @@ struct WorkflowSetupDialog::Impl {
     const bool built = progress.value("has_build").toBool();
     const bool build_current = current && progress.value("build_current").toBool();
     const bool applied = current && progress.value("applied").toBool();
+    const bool saved_server = revision.isString() && !saved_draft.value("server").toString().isEmpty();
     const bool folder = QDir::isAbsolutePath(registry->text().trimmed());
     const bool server_set = !server->text().trimmed().isEmpty();
     const bool choices = server_set && folder && profiles->rowCount() > 0 &&
@@ -122,8 +123,11 @@ struct WorkflowSetupDialog::Impl {
             : test_running ? "Wait for the unfinished test, or stop it."
             : tests_passed ? "Every selected computer has passed. Apply tested settings next."
                            : "Choose the full folder path of a sample recording first.");
-    enable(resume, built, "Save and build registry first.");
-    enable(stop, built && (!tests_known || test_running), "There is no unfinished test to stop.");
+    enable(resume, built && saved_server, "Save the main server choice and build the registry first.");
+    enable(
+        stop,
+        built && saved_server && (!tests_known || test_running),
+        !saved_server ? "Save the main server choice first." : "There is no unfinished test to stop.");
     enable(
         apply,
         build_current && tests_known && tests_passed && !test_running && !applied && controller_state != 1,
@@ -138,8 +142,9 @@ struct WorkflowSetupDialog::Impl {
         "Apply tested settings first. If already started, check the installed setup.");
     enable(
         stop_service,
-        progress.value("installed").toBool() && controller_state != -1,
-        "No installed controller is known to need stopping. Recover or check an existing setup first.");
+        saved_server && progress.value("installed").toBool() && controller_state != -1,
+        !saved_server ? "Save the main server choice first."
+                      : "No installed controller is known to need stopping. Recover or check an existing setup first.");
     enable(check, folder, "Choose the shared settings folder first.");
     enable(use, !accepted_registry.isEmpty(), "Check installed setup successfully before using the cluster.");
     use_installed->setEnabled(idle && !installed_runtime.isEmpty() && installed_server == server->text().trimmed());
@@ -150,6 +155,8 @@ struct WorkflowSetupDialog::Impl {
       next = "Enter your main server, then Find computers / test connection. You can also Recover saved setup.";
     else if (!accepted_registry.isEmpty())
       next = "Setup is ready. Use this cluster to return to your experiment.";
+    else if (built && !saved_server)
+      next = "Save setup draft to record the main server, then Resume / check tests.";
     else if (built && !tests_known)
       next = "Resume / check tests to recover the saved test progress.";
     else if (test_running)
