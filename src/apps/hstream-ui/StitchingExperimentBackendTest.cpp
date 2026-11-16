@@ -140,6 +140,23 @@ bool private_input_inventory(const fs::path& root) {
     ok &= expect(
         fs::read_symlink(subsequent->game_directory / alias) == fs::canonical(game / alias),
         "clone-of-clone aliases must still reference the original file directly");
+  auto snapshot = SnapshotStitchingExperimentWorkspace(*workspace, experiments / "attempt");
+  if (!expect(snapshot.ok(), "workflow snapshots must retain admitted private camera and calibration aliases")) {
+    if (!snapshot.ok())
+      std::cerr << snapshot.status() << '\n';
+    return false;
+  }
+  ok &= input_inventory(snapshot->game_directory, aliases);
+  for (const auto& alias : aliases)
+    ok &= expect(
+        fs::read_symlink(snapshot->game_directory / alias) == fs::canonical(game / alias),
+        "workflow private input aliases must reference the original file directly");
+  snapshot = SnapshotStitchingExperimentWorkspace(*snapshot, experiments / "next-attempt");
+  ok &= expect(snapshot.ok(), "private input aliases must survive successive workflow stages");
+  fs::create_symlink(game / "recordings/left.mp4", workspace->game_directory / "_hockeymon/unowned.mp4");
+  ok &= expect(
+      !SnapshotStitchingExperimentWorkspace(*workspace, experiments / "unowned-attempt").ok(),
+      "workflow snapshots must still reject private links outside admitted inputs");
   return ok;
 }
 

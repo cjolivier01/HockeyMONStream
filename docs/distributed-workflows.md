@@ -281,6 +281,9 @@ so later Defaults edits do not change sibling tasks. Queued candidate workspaces
 also retain their frozen experiment settings and manual matches.
 Successor snapshots preserve discovered camera aliases before Auto orientation
 has saved Left/Right playlists; an input-free snapshot fails during preparation.
+Configured aliases inside `_hockeymon/`, including camera calibration sidecars,
+remain direct links to their admitted original files through successive stages.
+Other private symlinks remain invalid snapshot inputs.
 
 Desktop and command-line clients may run from a different checkout than the
 installed controller. Registry commands resolve the controller pinned by the
