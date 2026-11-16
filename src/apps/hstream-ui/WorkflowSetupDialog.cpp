@@ -7,6 +7,7 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QPointer>
 #include <QtCore/QProcess>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QTemporaryFile>
 #include <QtCore/QTimer>
 #include <QtWidgets/QComboBox>
@@ -43,11 +44,21 @@ QJsonValue jsonValue(const YAML::Node& value) {
   }
   return QString::fromStdString(value.as<std::string>());
 }
+QString readableError(QString message) {
+  for (int depth = 0; depth < 4; ++depth) {
+    const auto error = QJsonDocument::fromJson(message.toUtf8()).object().value("error");
+    if (!error.isString())
+      break;
+    message = error.toString();
+  }
+  return message.trimmed();
+}
 } // namespace
 
 struct WorkflowSetupDialog::Impl {
   WorkflowSetupDialog* owner;
   QString launcher, accepted_registry;
+  QString installed_runtime, installed_server;
   QProcessEnvironment environment;
   YAML::Node settings;
   QLineEdit *server, *registry, *controller_runtime, *dashboard, *sample;
@@ -55,10 +66,14 @@ struct WorkflowSetupDialog::Impl {
   QComboBox* computers;
   QTableWidget* profiles;
   LogTextEdit* results;
-  QPushButton *discover, *reload, *save, *check, *use, *add, *remove;
+  QLabel* next_step;
+  QPushButton *discover, *reload, *save, *check, *use, *add, *remove, *use_installed;
   QPushButton *build, *test, *resume, *stop, *apply, *start, *stop_service;
   QJsonValue revision{QJsonValue::Null};
   QJsonObject retained_profiles;
+  QJsonObject saved_draft, progress;
+  bool tests_known{false}, tests_passed{false}, test_running{false};
+  int controller_state{0}; // Unknown, running, or stopped.
   QJsonValue observer{QJsonValue::Null};
   QPointer<QProcess> process;
   int timeout;
@@ -67,10 +82,142 @@ struct WorkflowSetupDialog::Impl {
   QTimer* poll;
   QJsonArray tests;
 
+  void updateButtons() {
+    if (loading)
+      return;
+    const bool idle = !process;
+    const bool clean = !saved_draft.isEmpty() && saved_draft == draft();
+    const bool current = clean && progress.value("revision") == revision;
+    const bool built = progress.value("has_build").toBool();
+    const bool build_current = current && progress.value("build_current").toBool();
+    const bool applied = current && progress.value("applied").toBool();
+    const bool saved_server = revision.isString() && !saved_draft.value("server").toString().isEmpty();
+    const bool folder = QDir::isAbsolutePath(registry->text().trimmed());
+    const bool server_set = !server->text().trimmed().isEmpty();
+    const bool choices = server_set && folder && profiles->rowCount() > 0 &&
+        !recordings->toPlainText().trimmed().isEmpty() && QDir::isAbsolutePath(controller_runtime->text().trimmed());
+    const auto enable = [idle](QPushButton* button, bool available, const QString& reason) {
+      button->setEnabled(idle && available);
+      button->setToolTip(available ? QString{} : reason);
+    };
+    enable(discover, server_set, "Enter your main server name first.");
+    enable(reload, folder, "Choose the shared settings folder first.");
+    enable(
+        save,
+        folder && QDir::isAbsolutePath(controller_runtime->text().trimmed()),
+        "Choose the settings and HStream installation folders first.");
+    enable(add, profiles->rowCount() < 64, "At most 64 profiles can be saved.");
+    enable(remove, profiles->currentRow() >= 0, "Select a profile row to remove.");
+    enable(
+        build,
+        choices && (!built || (tests_known && !test_running)),
+        built && (!tests_known || test_running)
+            ? "Resume / check tests, and stop any unfinished test before rebuilding."
+            : "Enter the server and recording folder, and add at least one computer profile.");
+    enable(
+        test,
+        build_current && tests_known && !tests_passed && !test_running &&
+            QDir::isAbsolutePath(sample->text().trimmed()),
+        !build_current     ? "Save and build the current choices first."
+            : !tests_known ? "Resume / check tests first."
+            : test_running ? "Wait for the unfinished test, or stop it."
+            : tests_passed ? "Every selected computer has passed. Apply tested settings next."
+                           : "Choose the full folder path of a sample recording first.");
+    enable(resume, built && saved_server, "Save the main server choice and build the registry first.");
+    enable(
+        stop,
+        built && saved_server && (!tests_known || test_running),
+        !saved_server ? "Save the main server choice first." : "There is no unfinished test to stop.");
+    enable(
+        apply,
+        build_current && tests_known && tests_passed && !test_running && !applied && controller_state != 1,
+        applied              ? "These tested settings are already applied."
+            : !build_current ? "Save and build the current choices first."
+            : !tests_known   ? "Resume / check tests first."
+            : !tests_passed  ? "Every selected computer must pass its test first."
+                             : "Stop the controller before applying tested settings.");
+    enable(
+        start,
+        applied && controller_state != 1,
+        "Apply tested settings first. If already started, check the installed setup.");
+    enable(
+        stop_service,
+        saved_server && progress.value("installed").toBool() && controller_state != -1,
+        !saved_server ? "Save the main server choice first."
+                      : "No installed controller is known to need stopping. Recover or check an existing setup first.");
+    enable(check, folder, "Choose the shared settings folder first.");
+    enable(use, !accepted_registry.isEmpty(), "Check installed setup successfully before using the cluster.");
+    use_installed->setEnabled(idle && !installed_runtime.isEmpty() && installed_server == server->text().trimmed());
+    QString next;
+    if (!idle)
+      next = "Working… wait for this step to finish.";
+    else if (!server_set)
+      next = "Enter your main server, then Find computers / test connection. You can also Recover saved setup.";
+    else if (!accepted_registry.isEmpty())
+      next = "Setup is ready. Use this cluster to return to your experiment.";
+    else if (built && !saved_server)
+      next = "Save setup draft to record the main server, then Resume / check tests.";
+    else if (built && !tests_known)
+      next = "Resume / check tests to recover the saved test progress.";
+    else if (test_running)
+      next = "A test is unfinished. Keep this window open to follow it, or Stop test.";
+    else if (!choices)
+      next = "Find computers and add a profile. Check the recording and installation folders.";
+    else if (!build_current)
+      next = "Save and build registry to check these choices.";
+    else if (!tests_passed)
+      next = "Choose a sample recording, then Test next computer. Repeat until every selected computer passes.";
+    else if (!applied && controller_state == 1)
+      next = "Stop controller after existing jobs finish, then Apply tested settings.";
+    else if (!applied)
+      next = "Apply tested settings to install the tested profiles.";
+    else if (controller_state == 1)
+      next = "Check installed setup to verify the controller is ready.";
+    else
+      next = "Start controller, then Check installed setup.";
+    next_step->setText("Next: " + next);
+  }
+  void remember(const QJsonObject& value, const QString& action) {
+    if (action == "load" || action == "import") {
+      tests_known = false;
+      controller_state = 0;
+    }
+    if (value.value("draft").isObject())
+      saved_draft = value.value("draft").toObject();
+    if (value.contains("revision"))
+      revision = value.value("revision");
+    if (value.value("progress").isObject())
+      progress = value.value("progress").toObject();
+    if (action == "build") {
+      tests_known = true;
+      tests_passed = false;
+      test_running = false;
+    }
+    if (value.contains("tests")) {
+      tests_known = true;
+      tests_passed = value.value("tested").toBool();
+      test_running = false;
+      for (const auto& item : value.value("tests").toArray()) {
+        const auto row = item.toObject();
+        test_running |= row.contains("status") && !row.value("finished").toBool();
+      }
+    }
+    if (action == "start-service" || value.value("ready").toBool())
+      controller_state = 1;
+    if (action == "stop-service")
+      controller_state = -1;
+  }
+  void installedRuntime(const QString& path = {}) {
+    installed_runtime = path;
+    installed_server = server->text().trimmed();
+    use_installed->setEnabled(!path.isEmpty());
+    use_installed->setToolTip(path.isEmpty() ? "Find computers / test connection first." : path);
+  }
   void busy(bool value) {
     for (auto* button :
          {discover, reload, save, check, add, remove, build, test, resume, stop, apply, start, stop_service})
       button->setEnabled(!value);
+    use_installed->setEnabled(!value && !installed_runtime.isEmpty() && installed_server == server->text().trimmed());
     server->setEnabled(!value);
     registry->setEnabled(!value);
     recordings->setEnabled(!value);
@@ -80,6 +227,7 @@ struct WorkflowSetupDialog::Impl {
     computers->setEnabled(!value);
     if (value)
       use->setEnabled(false);
+    updateButtons();
   }
   void message(const QString& text, const QString& source = "setup") {
     results->setLogText(text, source);
@@ -88,11 +236,16 @@ struct WorkflowSetupDialog::Impl {
     if (!loading) {
       use->setEnabled(false);
       accepted_registry.clear();
+      updateButtons();
     }
   }
   void call(QJsonObject request, std::function<void(QJsonObject)> done) {
     if (process)
       return;
+    accepted_registry.clear();
+    const auto action = request.value("action").toString();
+    if (action == "inspect" || action == "start-service" || action == "stop-service")
+      controller_state = 0;
     auto temporary = std::make_shared<QTemporaryFile>();
     if (!temporary->open()) {
       message("Could not create the setup request: " + temporary->errorString());
@@ -108,7 +261,7 @@ struct WorkflowSetupDialog::Impl {
     auto* timer = new QTimer(child);
     timer->setSingleShot(true);
     auto complete = std::make_shared<bool>(false);
-    auto finish = [this, child, timer, bytes, errors, temporary, complete, done](int code) {
+    auto finish = [this, child, timer, bytes, errors, temporary, complete, done, action](int code) {
       if (*complete)
         return;
       *complete = true;
@@ -120,13 +273,18 @@ struct WorkflowSetupDialog::Impl {
       QJsonParseError parse;
       const auto document = QJsonDocument::fromJson(*bytes, &parse);
       if (code != 0 || parse.error != QJsonParseError::NoError || !document.isObject()) {
-        auto message = QJsonDocument::fromJson(*errors).object().value("error").toString();
+        auto message = readableError(QString::fromUtf8(*errors));
         if (message.isEmpty())
-          message = errors->isEmpty() ? child->errorString() : QString::fromUtf8(errors->left(4096));
-        this->message("Setup could not finish this step.\n" + message);
+          message = child->errorString();
+        this->message(message.left(8192));
         polling = false;
-      } else
+        if (action == "build" || action == "start-test" || action == "test-status" || action == "cancel-test")
+          tests_known = false;
+      } else {
+        remember(document.object(), action);
         done(document.object());
+      }
+      updateButtons();
       child->deleteLater();
     };
     QObject::connect(child, &QProcess::readyReadStandardOutput, owner, [child, bytes] {
@@ -205,6 +363,7 @@ struct WorkflowSetupDialog::Impl {
     invalidate();
   }
   void row(const QString& id, const QJsonObject& value) {
+    const QSignalBlocker blocked(profiles);
     const int index = profiles->rowCount();
     profiles->insertRow(index);
     auto* name = new QTableWidgetItem(id);
@@ -326,6 +485,10 @@ WorkflowSetupDialog::WorkflowSetupDialog(
       this);
   introduction->setWordWrap(true);
   layout->addWidget(introduction);
+  s.next_step = new QLabel(this);
+  s.next_step->setObjectName("workflowSetupNext");
+  s.next_step->setWordWrap(true);
+  layout->addWidget(s.next_step);
   auto* connection = new QGroupBox("1. Find my cluster", this);
   auto* form = new QFormLayout(connection);
   s.server = new QLineEdit(connection);
@@ -349,6 +512,7 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   location_form->addRow("Keep cluster settings in", s.registry);
   location_form->addRow("Recording folders (one per line)", s.recordings);
   s.controller_runtime = new QLineEdit(QString::fromStdString(setup["runtime_path"].as<std::string>()), connection);
+  s.controller_runtime->setObjectName("workflowSetupRuntime");
   location_form->addRow("HStream installation on main server", s.controller_runtime);
   s.dashboard = new QLineEdit(connection);
   s.dashboard->setPlaceholderText("Optional: existing Dagster observation folder");
@@ -361,6 +525,11 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   actions->addWidget(s.discover);
   actions->addWidget(s.reload);
   form->addRow(actions);
+  s.use_installed =
+      new QPushButton(action_icon(ActionIcon::Apply), "Use installed HStream for main server", connection);
+  s.use_installed->setObjectName("workflowSetupUseInstalled");
+  s.installedRuntime();
+  form->addRow(s.use_installed);
   auto* show_locations =
       new QPushButton(action_icon(ActionIcon::Open), "Storage, software and dashboard settings…", connection);
   show_locations->setCheckable(true);
@@ -432,14 +601,19 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   s.build = new QPushButton(action_icon(ActionIcon::Add), "Save and build registry", testing);
   s.build->setObjectName("workflowSetupBuild");
   s.test = new QPushButton(action_icon(ActionIcon::Play), "Test next computer", testing);
+  s.test->setObjectName("workflowSetupTest");
   s.resume = new QPushButton(action_icon(ActionIcon::Inspect), "Resume / check tests", testing);
+  s.resume->setObjectName("workflowSetupResume");
   s.stop = new QPushButton(action_icon(ActionIcon::Stop), "Stop test", testing);
+  s.stop->setObjectName("workflowSetupStopTest");
   for (auto* button : {s.build, s.test, s.resume, s.stop})
     test_buttons->addWidget(button);
   testing_layout->addRow(test_buttons);
   auto* install_buttons = new QHBoxLayout;
   s.apply = new QPushButton(action_icon(ActionIcon::Apply), "Apply tested settings", testing);
+  s.apply->setObjectName("workflowSetupApply");
   s.start = new QPushButton(action_icon(ActionIcon::Play), "Start controller", testing);
+  s.start->setObjectName("workflowSetupStart");
   s.stop_service = new QPushButton(action_icon(ActionIcon::Stop), "Stop controller", testing);
   install_buttons->addWidget(s.stop_service);
   install_buttons->addWidget(s.apply);
@@ -456,6 +630,7 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   layout->addWidget(s.results);
   auto* buttons = new QHBoxLayout();
   s.check = new QPushButton(action_icon(ActionIcon::Inspect), "Check installed setup", this);
+  s.check->setObjectName("workflowSetupCheck");
   s.use = new QPushButton(action_icon(ActionIcon::Apply), "Use this cluster", this);
   s.use->setObjectName("workflowSetupUse");
   s.use->setEnabled(false);
@@ -469,18 +644,40 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   connect(s.use, &QPushButton::clicked, this, &QDialog::accept);
   for (auto* control : {s.server, s.registry, s.controller_runtime, s.dashboard})
     connect(control, &QLineEdit::textChanged, this, [&s] { s.invalidate(); });
+  connect(s.server, &QLineEdit::textChanged, this, [&s] { s.installedRuntime(); });
+  connect(s.use_installed, &QPushButton::clicked, this, [&s] {
+    if (s.installed_runtime.isEmpty() || s.installed_server != s.server->text().trimmed())
+      return;
+    s.controller_runtime->setText(s.installed_runtime);
+    s.invalidate();
+    s.message(
+        "Main-server installation set to " + s.installed_runtime +
+        ". Save and build registry to check it. Computer profiles keep their own installation folders; "
+        "check those in Advanced profile settings. Each computer still needs to pass its test.");
+  });
   connect(s.registry, &QLineEdit::textChanged, this, [&s] {
-    if (!s.loading)
+    if (!s.loading) {
       s.revision = QJsonValue::Null;
+      s.saved_draft = {};
+      s.progress = {};
+      s.tests_known = false;
+      s.polling = false;
+      s.controller_state = 0;
+      s.updateButtons();
+    }
   });
   connect(s.recordings, &QPlainTextEdit::textChanged, this, [&s] { s.invalidate(); });
   connect(s.profiles, &QTableWidget::itemChanged, this, [&s] { s.invalidate(); });
+  connect(s.profiles, &QTableWidget::itemSelectionChanged, this, [&s] { s.updateButtons(); });
+  connect(s.sample, &QLineEdit::textChanged, this, [&s] { s.updateButtons(); });
   connect(s.discover, &QPushButton::clicked, this, [&s] {
+    s.installedRuntime();
     s.results->setPlainText("Connecting to " + s.server->text() + " and asking which computers are available…");
     s.call(
         {{"action", "discover"}, {"server", s.server->text().trimmed()}, {"timeout_seconds", s.timeout}},
         [&s](QJsonObject value) {
           s.report(value);
+          s.installedRuntime(value.value("installed_runtime").toString());
           s.computers->clear();
           for (const auto& item : value.value("machines").toArray()) {
             const auto machine = item.toObject();
@@ -644,6 +841,7 @@ WorkflowSetupDialog::WorkflowSetupDialog(
       s.operation("test-status", {}, [&s](QJsonObject value) { s.testStatus(value); });
   });
   s.poll->start();
+  s.updateButtons();
   if (QFileInfo::exists(QDir(s.registry->text()).filePath("setup.json")) ||
       QFileInfo::exists(QDir(s.registry->text()).filePath("config.json")))
     QTimer::singleShot(0, s.reload, &QPushButton::click);

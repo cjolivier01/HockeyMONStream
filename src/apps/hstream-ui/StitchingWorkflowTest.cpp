@@ -345,13 +345,36 @@ void setupAssistant(const QString& root, YAML::Node baseline) {
 import json, pathlib, sys
 r=json.loads(pathlib.Path(sys.argv[-1]).read_text())
 root=pathlib.Path(__file__).parent
+state=root/'setup-progress.json'
+p=json.loads(state.read_text()) if state.exists() else {'revision':'saved','has_build':False,'build_current':False,'applied':False,'installed':False}
+def reply(value):
+ state.write_text(json.dumps(p))
+ print(json.dumps({**value,'progress':p}))
 if r['action']=='discover':
- print(json.dumps({'checks':[{'name':'Server connection','ok':True,'message':'Connected to ripper'}], 'machines':[{'name':'mini','gpu':'gpu:rtx5090:1','partition':'gpu*','state':'idle'}]}))
+ if r['server']=='unreachable':
+  print(json.dumps({'error':json.dumps({'error':'Could not connect. Check the main server name.'})}), file=sys.stderr)
+  sys.exit(2)
+ print(json.dumps({'checks':[{'name':'Server connection','ok':True,'message':'Connected to ripper'}], 'installed_runtime':str(root/'installed'), 'machines':[{'name':'mini','gpu':'gpu:rtx5090:1','partition':'gpu*','state':'idle'}]}))
 elif r['action']=='save':
  (root/'saved-setup.json').write_text(json.dumps(r))
- print(json.dumps({'revision':'saved','draft':r['draft']}))
-elif r['action']=='inspect': print(json.dumps({'ready':True,'checks':[]}))
-else: print(json.dumps({'message':'Fixture step complete'}))
+ reply({'revision':'saved','draft':r['draft']})
+elif r['action'] in ('load','import'): reply({'revision':'saved','draft':json.loads((root/'saved-setup.json').read_text())['draft']})
+elif r['action']=='build':
+ p.update(has_build=True,build_current=True)
+ reply({'generation':'built','message':'Registry built'})
+elif r['action'] in ('test-status','start-test','cancel-test'):
+ phase=root/'setup-test-phase'
+ if r['action']=='start-test': phase.write_text('running')
+ if r['action']=='cancel-test': phase.write_text('canceled')
+ stage=phase.read_text() if phase.exists() else 'not-tested'
+ row={'profile':'gpu-1','node':'mini','state':stage,'passed':stage=='passed'}
+ if stage!='not-tested': row.update(status={'state':stage},finished=stage!='running')
+ reply({'tests':[row],'tested':stage=='passed','current':True})
+elif r['action']=='activate':
+ p.update(applied=True,installed=True)
+ reply({'applied':True})
+elif r['action']=='inspect': reply({'ready':not (root/'setup-controller-stopped').exists(),'checks':[]})
+else: reply({'message':'Fixture step complete'})
 )PY");
   QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
   WorkflowSetupDialog dialog(
@@ -368,11 +391,27 @@ else: print(json.dumps({'message':'Fixture step complete'}))
   auto* rows = widget<QTableWidget>(dialog, "workflowSetupProfiles");
   auto* save = widget<QPushButton>(dialog, "workflowSetupSave");
   auto* use = widget<QPushButton>(dialog, "workflowSetupUse");
+  auto* use_installed = widget<QPushButton>(dialog, "workflowSetupUseInstalled");
+  auto* runtime = widget<QLineEdit>(dialog, "workflowSetupRuntime");
+  auto* build = widget<QPushButton>(dialog, "workflowSetupBuild");
+  auto* test = widget<QPushButton>(dialog, "workflowSetupTest");
+  auto* resume = widget<QPushButton>(dialog, "workflowSetupResume");
+  auto* stop_test = widget<QPushButton>(dialog, "workflowSetupStopTest");
+  auto* apply = widget<QPushButton>(dialog, "workflowSetupApply");
+  auto* start = widget<QPushButton>(dialog, "workflowSetupStart");
+  require(
+      !test->isEnabled() && !apply->isEnabled() && !start->isEnabled() && !stop_test->isEnabled(),
+      "A new setup offered actions before their prerequisites");
+  require(!test->toolTip().isEmpty(), "A disabled setup action has no explanation");
+  runtime->setText(root + "/old-release");
+  require(!use_installed->isEnabled(), "An installation was offered before discovery");
   server->setText("ripper");
   discover->click();
   require(
       wait([&] { return discover->isEnabled() && computers->currentText().contains("mini"); }),
       "Discovery did not offer the returned computer");
+  require(runtime->text() == root + "/old-release", "Discovery silently changed the saved installation");
+  require(use_installed->isEnabled(), "Discovery did not offer the installed main-server programs");
   QPushButton* add = nullptr;
   for (auto* button : dialog.findChildren<QPushButton*>()) {
     require(!button->icon().isNull(), "A cluster setup action has no icon");
@@ -385,6 +424,12 @@ else: print(json.dumps({'message':'Fixture step complete'}))
   require(
       rows->item(0, 3)->text() == "gpu" && rows->item(0, 4)->text() == "gpu:rtx5090:1",
       "Discovered Slurm choices were not filled in");
+  const auto compute_runtime = rows->item(0, 9)->text();
+  use_installed->click();
+  require(runtime->text() == root + "/installed", "Using the installed programs did not change the draft");
+  require(rows->item(0, 9)->text() == compute_runtime, "Main-server repair changed a compute profile");
+  require(!use->isEnabled(), "Finding the installation enabled an untested cluster");
+  require(!QFileInfo::exists(root + "/saved-setup.json"), "Repairing the installation silently saved the draft");
   auto* roots = widget<QPlainTextEdit>(dialog, "workflowSetupRecordings");
   roots->setPlainText(root + "/recordings\n" + root + "/more-recordings");
   save->click();
@@ -394,6 +439,10 @@ else: print(json.dumps({'message':'Fixture step complete'}))
   require(
       read(root + "/saved-setup.json").value("draft").toObject().value("game_roots").toArray().size() == 2,
       "Saving dropped a recording folder");
+  require(
+      read(root + "/saved-setup.json").value("draft").toObject().value("controller_runtime").toString() ==
+          root + "/installed",
+      "Saving lost the repaired main-server installation");
   require(!use->isEnabled(), "Saving an untested draft enabled execution");
   widget<QLineEdit>(dialog, "workflowSetupFolder")->setText(root + "/another-registry");
   save->click();
@@ -407,8 +456,53 @@ else: print(json.dumps({'message':'Fixture step complete'}))
       read(root + "/saved-setup.json").value("revision").isNull(),
       "New registry inherited the previous folder's revision");
   const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT");
-  if (!screenshot.isEmpty())
+  if (!screenshot.isEmpty()) {
+    dialog.resize(1050, 1000);
+    QCoreApplication::processEvents();
     require(dialog.grab().save(screenshot), "Cannot capture cluster setup");
+  }
+  build->click();
+  require(wait([&] { return test->isEnabled(); }), "Building did not enable testing");
+  require(!apply->isEnabled() && !start->isEnabled(), "Building offered Apply or Start before tests");
+  widget<QPushButton>(dialog, "workflowSetupRecover")->click();
+  require(wait([&] { return resume->isEnabled(); }), "Recovery did not offer saved test status");
+  require(!test->isEnabled() && !apply->isEnabled(), "Recovery assumed old tests were ready");
+  resume->click();
+  require(wait([&] { return test->isEnabled(); }), "Checking saved tests did not restore the next action");
+  test->click();
+  require(wait([&] { return stop_test->isEnabled() && resume->isEnabled(); }), "An active test did not offer Stop");
+  require(
+      !test->isEnabled() && !apply->isEnabled() && !build->isEnabled(), "An active test offered conflicting actions");
+  write(root + "/setup-test-phase", "passed");
+  require(wait([&] { return apply->isEnabled(); }), "Passing all tests did not enable Apply");
+  require(!test->isEnabled() && !stop_test->isEnabled(), "Finished tests still offered Test or Stop");
+  const auto label = rows->item(0, 1)->text();
+  rows->item(0, 1)->setText("Edited after testing");
+  require(!apply->isEnabled(), "Editing a tested profile left Apply enabled");
+  rows->item(0, 1)->setText(label);
+  require(apply->isEnabled(), "Restoring the tested choices did not restore Apply");
+  apply->click();
+  require(wait([&] { return start->isEnabled(); }), "Applying did not enable Start controller");
+  require(!apply->isEnabled(), "Applied settings still offered Apply");
+  start->click();
+  require(
+      wait([&] { return discover->isEnabled() && !start->isEnabled(); }), "A started controller still offered Start");
+  write(root + "/setup-controller-stopped", "stopped");
+  widget<QPushButton>(dialog, "workflowSetupCheck")->click();
+  require(wait([&] { return start->isEnabled(); }), "A failed readiness check left Start disabled");
+  require(!use->isEnabled(), "A failed readiness check left Use this cluster enabled");
+  require(
+      widget<QLabel>(dialog, "workflowSetupNext")->text().contains("Start controller"),
+      "A failed readiness check did not explain how to restart");
+  server->setText("unreachable");
+  require(!use_installed->isEnabled(), "Changing servers retained the old installation suggestion");
+  discover->click();
+  auto* results = widget<QPlainTextEdit>(dialog, "workflowSetupResults");
+  require(
+      wait([&] { return discover->isEnabled() && results->toPlainText().contains("Could not connect."); }),
+      "Connection failure was not displayed");
+  require(!results->toPlainText().contains("{\"error\""), "Setup displayed a nested JSON error");
+  require(!use_installed->isEnabled(), "A failed connection reenabled the stale installation");
   dialog.close();
 }
 

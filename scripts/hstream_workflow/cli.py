@@ -185,6 +185,10 @@ def main(argv=None):
         return 2
     except (OSError, WorkflowError, ValueError) as exc:
         response = {"error": str(exc)[:8192]}
+        if args.command == "setup":
+            from .setup import readable_error
+
+            response["error"] = readable_error(exc)[:8192]
         if args.command == "submit":
             try:
                 plan = validate_plan(read_json(args.plan))

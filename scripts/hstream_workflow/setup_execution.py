@@ -26,7 +26,7 @@ from .files import (
     write_json,
 )
 from .profiles import DEFAULT_FIELDS, controller_files, load_config
-from .schema import digest, positive, require, validate_plan
+from .schema import WorkflowError, digest, positive, require, validate_plan
 from .setup import SetupStore, absolute, run_readonly, validate_draft
 
 CPU = ["experiment-create", "experiment-reuse-selection", "experiment-complete"]
@@ -131,9 +131,26 @@ def inventory(root, *, cpu):
     The native worker rechecks every pin on each allocated node. Differing
     installations fail qualification instead of borrowing dispatcher evidence.
     """
-    root = absolute(root, "HStream installation").resolve(strict=True)
+    root = absolute(root, "HStream installation").resolve()
+    location = "main server" if cpu else "compute profile"
+    next_step = (
+        "Click Find computers / test connection, then Use installed HStream for main server."
+        if cpu
+        else "Open Advanced profile settings and choose the current HStream installation folder for these computers."
+    )
+    repair = (
+        "If make deploy just succeeded, the saved folder may refer to an older installation. "
+        + next_step
+        + " Then Save and build registry again."
+    )
     require(
-        root.is_dir() and root != Path("/"), "Choose an HStream installation folder"
+        root.is_dir() and root != Path("/"),
+        "The "
+        + location
+        + " has an unavailable HStream installation folder: "
+        + str(root)
+        + ".\n"
+        + repair,
     )
     binary = root / "bin" if (root / "bin").is_dir() else root
     task = binary / "hstream-experiment-task"
@@ -141,10 +158,15 @@ def inventory(root, *, cpu):
     for path in (task, worker):
         require(
             path.is_file() and not path.is_symlink() and os.access(path, os.X_OK),
-            "Install the current HStream desktop runtime in "
+            "The "
+            + location
+            + " still points to a folder without the required HStream job programs.\n"
+            "Saved folder: "
             + str(root)
-            + ". Missing executable: "
-            + str(path),
+            + "\nMissing program: "
+            + path.name
+            + "\n"
+            + repair,
         )
     # ELF machine identity works for cross-architecture installations without
     # executing a foreign binary on the controller.
@@ -283,7 +305,10 @@ def compile_configuration(draft, defaults, metadata_resources, inspect=inventory
             identifiers |= group[0]
             nodes |= group[1]
         groups.append((identifiers, nodes))
-        task, runtime = inspect(source["runtime_root"], cpu=False)
+        try:
+            task, runtime = inspect(source["runtime_root"], cpu=False)
+        except WorkflowError as error:
+            raise WorkflowError(source["label"] + ": " + str(error)) from error
         runtime["storage_namespace"] = namespace
         profiles[key] = {
             "label": source["label"],
@@ -403,6 +428,10 @@ def build(root, request):
 
 
 def generation(root):
+    require(
+        (root / "setup-build.json").exists(),
+        "Build the setup before testing or applying it. Click Save and build registry. If that step reported a problem, correct it first.",
+    )
     identity = read_json(root / "setup-build.json")["generation"]
     require(
         isinstance(identity, str) and re.fullmatch("[a-f0-9]{64}", identity),
@@ -758,12 +787,16 @@ def activate_stopped(root):
 def start_service(root, timeout):
     from .dispatch import installed_launcher
 
-    config = load_config(root)
+    require(
+        (root / "setup-active.json").exists(),
+        "This setup has not been applied yet. First Save and build registry, test each computer, and Apply tested settings. Then Start controller.",
+    )
     active = read_json(root / "setup-active.json")
     require(
         active["configuration_revision"] == current_revision(root),
         "Apply tested settings before starting the managed controller",
     )
+    config = load_config(root)
     launcher = installed_launcher(config)
     unit = "hstream-workflow-" + digest(str(root))[:16] + ".service"
     directory = private_directory(Path.home() / ".config/systemd/user", create=True)
