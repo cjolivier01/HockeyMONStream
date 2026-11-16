@@ -111,6 +111,83 @@ class SetupTest(unittest.TestCase):
         self.assertFalse(setup.inspect_registry(self.registry, 30)["ready"])
         self.assertEqual(before, (self.registry / "config.json").read_bytes())
 
+    def test_transport_errors_explain_legacy_profiles_without_nested_json(self):
+        legacy = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles"
+        wrapped = json.dumps({"error": json.dumps({"error": legacy})})
+        with self.assertRaises(WorkflowError) as raised:
+            setup.run_readonly(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; print(sys.argv[1], file=sys.stderr); sys.exit(2)",
+                    wrapped,
+                ],
+                10,
+            )
+        message = str(raised.exception)
+        self.assertIn("make deploy installs the programs", message)
+        self.assertIn("Save and build registry", message)
+        self.assertNotIn('{"error"', message)
+        self.assertEqual(
+            setup.readable_error('{"error": "Permission denied"}'), "Permission denied"
+        )
+
+    def test_start_before_apply_explains_required_steps_without_loading_legacy_config(
+        self,
+    ):
+        self.save()
+        config = self.compile()
+        del config["profiles"]["gpu"]["runtime"]["worker"]
+        write_json(self.registry / "config.json", config)
+        with patch.object(execution, "run_readonly") as run:
+            with self.assertRaisesRegex(WorkflowError, "Apply tested settings"):
+                execution.start_service(self.registry, 30)
+            run.assert_not_called()
+
+    def test_missing_runtime_names_saved_folder_and_repair_action(self):
+        old = self.root / "old-release"
+        for cpu, action in (
+            (True, "Use installed HStream for main server"),
+            (False, "Advanced profile settings"),
+        ):
+            with self.assertRaises(WorkflowError) as raised:
+                execution.inventory(str(old), cpu=cpu)
+            self.assertIn(str(old), str(raised.exception))
+            self.assertIn(action, str(raised.exception))
+        old.mkdir()
+        shutil.copyfile(sys.executable, old / "hstream-experiment-task")
+        (old / "hstream-experiment-task").chmod(0o700)
+        with self.assertRaises(WorkflowError) as raised:
+            execution.inventory(str(old), cpu=True)
+        self.assertIn("hstream-runtime-worker", str(raised.exception))
+        self.assertIn("make deploy just succeeded", str(raised.exception))
+
+    def test_discovery_resolves_installed_program_links_without_qualifying(self):
+        binary = self.root / "commands"
+        binary.mkdir()
+        installation = self.root / "installed"
+        (installation / "bin").mkdir(parents=True)
+        for name in ("hstream-runtime-worker", "hstream-experiment-task"):
+            program = installation / "bin" / name
+            shutil.copyfile(sys.executable, program)
+            program.chmod(0o700)
+            (binary / name).symlink_to(program)
+        for present in (True, False):
+            if not present:
+                (binary / "hstream-runtime-worker").unlink()
+            output = subprocess.check_output(
+                [sys.executable, "-c", setup.PROBE, "10"],
+                env={**os.environ, "HOME": str(self.root), "PATH": str(binary)},
+                text=True,
+                timeout=15,
+            )
+            with patch.object(setup, "run_readonly", return_value=output):
+                result = setup.discover("ripper", 10)
+            self.assertEqual(
+                result["installed_runtime"], str(installation) if present else None
+            )
+            self.assertFalse(result["ready"])
+
     def test_save_response_cannot_borrow_a_concurrent_writers_revision(self):
         second = copy.deepcopy(self.draft)
         second["profiles"]["gpu"]["label"] = "Another window"
@@ -173,6 +250,13 @@ class SetupTest(unittest.TestCase):
             )
         self.assertFalse((self.registry / "config.json").exists())
         status = execution.qualification_status(self.registry, tick=False)
+        progress = setup.handle_request(
+            {"action": "load", "registry": str(self.registry)}
+        )["progress"]
+        self.assertTrue(progress["has_build"])
+        self.assertTrue(progress["build_current"])
+        self.assertFalse(progress["applied"])
+        self.assertFalse(progress["installed"])
         self.assertFalse(status["tested"])
         self.assertEqual([row["node"] for row in status["tests"]], ["mini", "meshy"])
         with self.assertRaisesRegex(WorkflowError, "Every computer"):
@@ -180,6 +264,10 @@ class SetupTest(unittest.TestCase):
         self.assertEqual(
             execution.generation(self.registry)[0].name, result["generation"]
         )
+        changed = copy.deepcopy(self.draft)
+        changed["profiles"]["gpu"]["label"] = "Edited after building"
+        setup.SetupStore(self.registry).save(changed, saved["revision"])
+        self.assertFalse(setup.progress(self.registry)["build_current"])
 
     def test_qualification_requires_every_real_stage_and_one_explicit_node(self):
         plan = execution.test_plan(

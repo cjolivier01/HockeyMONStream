@@ -190,7 +190,7 @@ def import_configuration(registry, server):
             issues.append(
                 {
                     "profile": key,
-                    "message": "This profile uses an older HStream version. Install the native worker and test this profile again.",
+                    "message": "This profile was saved by an older HStream version. Deployment updates the programs, but saved profiles keep their installation folders. Choose the current folder in Advanced profile settings, then build and test the setup again.",
                 }
             )
     admission = config["profiles"].get(config.get("admission_profile"), {})
@@ -214,6 +214,27 @@ def import_configuration(registry, server):
         }
     )
     return {"draft": value, "issues": issues, "configuration_revision": digest(config)}
+
+
+def readable_error(value):
+    """Unwrap transported CLI failures without displaying JSON as the message."""
+    message = str(value).strip()
+    for _ in range(4):
+        try:
+            decoded = json.loads(message)
+        except ValueError:
+            break
+        if not isinstance(decoded, dict) or not isinstance(decoded.get("error"), str):
+            break
+        message = decoded["error"].strip()
+    if message.startswith("Slurm profiles need a pinned runtime.worker"):
+        return (
+            "These saved computer profiles need to be updated for the current HStream job worker. "
+            "Running make deploy installs the programs; it does not rebuild saved profiles.\n"
+            "Recover the saved setup, check the installation folders, then use Save and build registry and Test next computer. "
+            "Apply tested settings before starting the controller."
+        )
+    return message
 
 
 def run_readonly(argv, timeout):
@@ -242,7 +263,9 @@ def run_readonly(argv, timeout):
         )
     if process.returncode:
         raise WorkflowError(
-            (stderr.strip() or stdout.strip() or "The connection test failed")[:4096]
+            readable_error(
+                stderr.strip() or stdout.strip() or "The connection test failed"
+            )[:4096]
         )
     return stdout
 
@@ -278,6 +301,22 @@ if units["ok"]:
         except (OSError, ValueError):
             pass
         managed.append(service)
+worker, task = shutil.which("hstream-runtime-worker"), shutil.which("hstream-experiment-task")
+installed_runtime = None
+if worker and task:
+    try:
+        worker, task = str(Path(worker).resolve(strict=True)), str(Path(task).resolve(strict=True))
+        programs = [Path(worker), Path(task)]
+        valid = all(path.is_file() and os.access(path, os.X_OK) for path in programs)
+        if valid:
+            for path in programs:
+                with path.open("rb") as source:
+                    valid = valid and source.read(4) == b"\x7fELF"
+        if valid and programs[0].parent == programs[1].parent:
+            directory = programs[0].parent
+            installed_runtime = str(directory.parent if directory.name == "bin" else directory)
+    except OSError:
+        pass
 print(json.dumps({
     "host": socket.gethostname(), "uid": os.getuid(), "home": os.path.expanduser("~"),
     "slurm": configuration,
@@ -286,8 +325,7 @@ print(json.dumps({
     "accounting": command(["sacct", "--noheader", "--allocations", "--starttime=now", "--format=JobID", *cluster_args]),
     "controller": command(["systemctl", "show", "hstream-workflow-controller", "--property=ActiveState,ExecStart"]),
     "managed_controllers": managed,
-    "worker": shutil.which("hstream-runtime-worker"),
-    "task": shutil.which("hstream-experiment-task")
+    "worker": worker, "task": task, "installed_runtime": installed_runtime
 }))
 """
 
@@ -328,6 +366,19 @@ def discover(server, timeout):
             "message": "Connected to " + raw["host"],
         }
     ]
+    installed_runtime = raw.get("installed_runtime")
+    checks.append(
+        {
+            "name": "HStream on the main server",
+            "ok": bool(installed_runtime),
+            "message": (
+                "Installed programs found in " + installed_runtime
+                if installed_runtime
+                else "Could not find the installed HStream job programs on this server."
+            ),
+            "next": "Check that make deploy succeeded for this server, then run this connection check again.",
+        }
+    )
     for key, name in (
         ("slurm", "Job scheduler"),
         ("queue", "Cluster connection"),
@@ -400,6 +451,7 @@ def discover(server, timeout):
         ),
         "worker": raw["worker"],
         "task": raw["task"],
+        "installed_runtime": installed_runtime,
         "next": (
             "Found several saved setups. Choose a folder under Storage, software and dashboard settings, then Recover saved setup:\n"
             + "\n".join(paths)
@@ -482,14 +534,56 @@ def inspect_registry(registry, timeout, draft=None):
             }
         )
     except (OSError, ValueError, KeyError) as error:
-        checks.append({"name": "Cluster readiness", "ok": False, "message": str(error)})
+        checks.append(
+            {"name": "Cluster readiness", "ok": False, "message": readable_error(error)}
+        )
     return {
         "ready": bool(checks) and all(item["ok"] for item in checks),
         "checks": checks,
     }
 
 
+def progress(root):
+    """Advisory button prerequisites from saved files, never job admission."""
+    from .setup_execution import current_revision, generation
+
+    state = {
+        "revision": None,
+        "has_build": (root / "setup-build.json").exists(),
+        "build_current": False,
+        "applied": False,
+        "installed": (root / "config.json").exists(),
+    }
+    if not root.exists():
+        return state
+    try:
+        saved = SetupStore(root).read()
+        state["revision"] = saved["revision"]
+        if state["has_build"]:
+            _, built = generation(root)
+            state["build_current"] = (
+                bool(saved["draft"]) and built["revision"] == saved["revision"]
+            )
+        if (root / "setup-active.json").exists():
+            active = read_json(root / "setup-active.json")
+            state["applied"] = (
+                bool(saved["draft"])
+                and active["revision"] == saved["revision"]
+                and active["configuration_revision"] == current_revision(root)
+            )
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        state["error"] = readable_error(error)
+    return state
+
+
 def handle_request(request):
+    result = _handle_request(request)
+    if request.get("action") != "discover":
+        result["progress"] = progress(absolute(request["registry"], "Settings folder"))
+    return result
+
+
+def _handle_request(request):
     """The desktop and operator UI use the same typed setup operations."""
     require(isinstance(request, dict), "Expected setup request")
     action = request.get("action")

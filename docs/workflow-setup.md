@@ -3,10 +3,19 @@
 Open **Stitching Experiments → Workflow → Set up my cluster**. A registry is the
 shared folder containing cluster settings and experiment history. The editor
 creates its JSON files for you.
+The **Next** line explains what to do now. Buttons stay disabled until their
+prerequisites are known, with a tooltip explaining why. Recovered builds need
+**Resume / check tests** before continuing; changing tested choices disables
+Apply until the current choices are built and tested. Recovery and Stop remain
+available for unfinished or uncertain tests. These hints do not replace the
+controller's admission, ownership or cleanup checks.
 
 1. Enter the main server name, such as `ripper`, and **Find computers / test
    connection**. This checks SSH, Slurm, accounting and cgroup containment. It
    also finds an existing controller's registry.
+   When it finds installed HStream programs, **Use installed HStream for main
+   server** copies that folder into the draft. This changes only the main-server
+   installation; review each computer profile's folder separately.
 2. Choose a computer and **Add selected computer**. Its queue and GPU request
    are filled in. Name the profile and choose its parallel-job limit. Advanced
    settings expose resources, installation paths, account, QoS and constraints.
@@ -36,6 +45,14 @@ registry is `~/.local/state/hstream-workflows/registry`; keep it on durable shar
 storage. After reinstalling, choose **Recover saved setup**. The desktop also
 tries the saved/default folder automatically. Recovery reads older profiles and
 explains which parts need replacing.
+`make deploy` installs the native programs (the desktop package uses
+`/opt/hstream/bin`) but does not rewrite saved installation paths or qualify
+profiles. If setup still names an old `hstream-workflows/releases/...` folder
+after deployment, recover the draft, run discovery and use the installed
+main-server folder. Check **Advanced profile settings** for outdated compute
+folders, then build and test again. Discovery alone never enables execution.
+Runtime file hashes must match on every computer using a profile; the same path
+on machines with different OS packages does not establish that match.
 Discovery also finds registries used by managed user services, including custom
 folders. If it finds several, it lists them for selection. Changing the settings
 folder starts a separate draft; it cannot carry another folder's save revision.
