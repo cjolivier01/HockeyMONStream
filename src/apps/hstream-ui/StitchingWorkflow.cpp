@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/StitchingWorkflow.h"
 
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/stitching/GameConfig.h"
 #include "src/apps/hstream-ui/ActionIcons.h"
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
 #include "src/apps/hstream-ui/LogTextEdit.h"
@@ -640,6 +641,8 @@ struct StitchingWorkflow::Impl {
   QString game, registry, launcher;
   QProcessEnvironment environment;
   QComboBox* profile{nullptr};
+  QPushButton* configure{nullptr};
+  QLabel* availability{nullptr};
   QSpinBox* parallel{nullptr};
   QPushButton* export_batch{nullptr};
   QGroupBox* monitor{nullptr};
@@ -660,6 +663,7 @@ struct StitchingWorkflow::Impl {
   bool attachment_active{true};
   bool restore_controls{false};
   int timeout_ms{0};
+  int profiles_generation{0};
   uint64_t request_generation{0};
   int retry_epoch{-1};
   bool log_pending{false};
@@ -669,6 +673,118 @@ struct StitchingWorkflow::Impl {
     monitor->setVisible(visible);
     owner->setSizePolicy(
         QSizePolicy::Preferred, visible && !monitor_dialog ? QSizePolicy::Expanding : QSizePolicy::Maximum);
+  }
+  void loadProfiles() {
+    const int requested_generation = ++profiles_generation;
+    profiles_ready = false;
+    profiles = {};
+    while (profile->count() > 1)
+      profile->removeItem(1);
+    if (registry.isEmpty()) {
+      const QString reason = "Distributed workflow is not configured. Choose Configure workflow… to select the "
+                             "Dagster/Slurm registry for this game.";
+      profile->setToolTip(reason);
+      availability->setText("Distributed workflow unavailable");
+      availability->setToolTip(reason);
+      controls();
+      return;
+    }
+    profile->setToolTip({});
+    availability->setText("Loading distributed profiles…");
+    availability->setToolTip("Loading Dagster/Slurm execution profiles from " + registry + "…");
+    controls();
+    const QString requested_registry = registry;
+    call({"profiles"}, [this, requested_registry, requested_generation](QJsonObject value, QString error) {
+      if (requested_generation != profiles_generation || requested_registry != registry)
+        return;
+      if (!error.isEmpty()) {
+        const QString reason = "Cannot load Dagster/Slurm profiles: " + error;
+        notify(reason, true);
+        profile->setToolTip(reason);
+        availability->setText("Distributed profiles unavailable");
+        availability->setToolTip(reason + " Use Configure workflow… to choose another registry.");
+        controls();
+        return;
+      }
+      profiles = value;
+      for (const auto& candidate : value.value("profiles").toArray()) {
+        const auto object = candidate.toObject();
+        const auto capabilities = object.value("capabilities").toArray();
+        if (!capabilities.contains("experiment-run"))
+          continue;
+        const auto id = object.value("id").toString();
+        const auto label = object.value("label").toString();
+        profile->addItem((label.isEmpty() ? id : label) + " (" + object.value("executor").toString() + ")", id);
+      }
+      profiles_ready = true;
+      if (profile->count() == 1) {
+        const QString reason = "This registry has no execution profile that supports stitching experiments.";
+        profile->setToolTip(reason);
+        availability->setText("No compatible distributed profile");
+        availability->setToolTip(reason);
+      } else {
+        availability->setText("Choose a Dagster/Slurm execution profile, then start the batch.");
+        availability->setToolTip({});
+      }
+      restoreAttachedControls();
+      controls();
+      if (owner->changed)
+        owner->changed();
+    });
+  }
+  void configureRegistry() {
+    if (command_pending || owner->active())
+      return;
+    const QString selected = QFileDialog::getExistingDirectory(
+        owner, "Select Dagster/Slurm workflow registry", registry,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (selected.isEmpty())
+      return;
+    const QFileInfo directory(selected);
+    const QString canonical = directory.canonicalFilePath();
+    if (canonical.isEmpty() || !QFileInfo(QDir(canonical).filePath("config.json")).isFile()) {
+      const QString reason = "The selected directory must be a workflow registry containing config.json.";
+      notify(reason, true);
+      availability->setText(reason);
+      return;
+    }
+    const std::filesystem::path game_path(game.toStdString());
+    auto lock = hm::stitching::GameConfigTransactionLock::Acquire(game_path);
+    if (!lock.ok()) {
+      const QString reason = QString::fromStdString(lock.status().ToString());
+      notify("Could not lock this game's configuration: " + reason, true);
+      availability->setText("Could not lock this game's configuration: " + reason);
+      return;
+    }
+    YAML::Node config(YAML::NodeType::Map);
+    const auto config_path = game_path / "_hockeymon/config.yaml";
+    try {
+      const QFileInfo existing(QString::fromStdString(config_path.string()));
+      if (existing.isSymLink() || (existing.exists() && !existing.isFile()))
+        throw std::runtime_error("Game configuration must be a regular file, not a symlink");
+      if (existing.exists())
+        config = YAML::LoadFile(config_path.string());
+      if (!config || config.IsNull())
+        config = YAML::Node(YAML::NodeType::Map);
+      if (!config.IsMap())
+        throw std::runtime_error("Game configuration must be a YAML map");
+    } catch (const std::exception& error) {
+      const QString reason = QString::fromUtf8(error.what());
+      notify("Could not read this game's configuration: " + reason, true);
+      availability->setText("Could not read this game's configuration: " + reason);
+      return;
+    }
+    config["workflow"]["registry"] = canonical.toStdString();
+    const auto published = hm::stitching::publish_game_config(game_path, YAML::Dump(config) + "\n");
+    if (!published.ok()) {
+      const QString reason = QString::fromStdString(published.ToString());
+      notify("Could not save workflow registry: " + reason, true);
+      availability->setText("Could not save workflow registry: " + reason);
+      return;
+    }
+    registry = canonical;
+    notify("Workflow registry saved for this game.");
+    loadProfiles();
   }
   void expandMonitor() {
     if (monitor_dialog) {
@@ -891,6 +1007,7 @@ struct StitchingWorkflow::Impl {
   }
   void controls() {
     profile->setEnabled(editing && !command_pending && !owner->active() && profiles_ready);
+    configure->setEnabled(editing && !command_pending && !owner->active());
     parallel->setEnabled(profile->isEnabled() && owner->selected());
     export_batch->setEnabled(
         editing && queued && owner->selected() && profiles_ready && !command_pending && !owner->active());
@@ -1210,14 +1327,27 @@ StitchingWorkflow::StitchingWorkflow(
   s.profile->setObjectName("stitchWorkflowProfile");
   s.profile->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
   s.profile->setMinimumContentsLength(12);
-  s.profile->addItem("Current runner", "");
+  s.profile->addItem("Current runner (local; configure Dagster/Slurm)", "");
+  s.configure = new QPushButton(action_icon(ActionIcon::Open), "Configure workflow…", this);
+  s.configure->setObjectName("configureStitchWorkflowButton");
+  s.configure->setToolTip("Choose the installed Dagster/Slurm workflow registry and save it for this game.");
+  auto* profile_row = new QHBoxLayout();
+  profile_row->addWidget(s.profile, 1);
+  profile_row->addWidget(s.configure);
+  s.availability = new QLabel(this);
+  s.availability->setObjectName("stitchWorkflowAvailability");
+  s.availability->setWordWrap(false);
+  s.availability->setMinimumWidth(0);
+  s.availability->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  s.availability->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  profile_row->addWidget(s.availability, 1);
   s.parallel = new QSpinBox(this);
   s.parallel->setObjectName("stitchWorkflowParallel");
   s.parallel->setRange(1, 256);
   s.parallel->setValue(configuration["max_parallel"].as<int>());
   s.export_batch = new QPushButton(action_icon(ActionIcon::Save), "Export batch", this);
   s.export_batch->setObjectName("exportStitchWorkflowButton");
-  controls->addRow("Execution profile", s.profile);
+  controls->addRow("Execution profile", profile_row);
   auto* parallel_row = new QHBoxLayout();
   parallel_row->addWidget(s.parallel);
   parallel_row->addWidget(s.export_batch);
@@ -1295,6 +1425,7 @@ StitchingWorkflow::StitchingWorkflow(
     if (s.owner->changed)
       s.owner->changed();
   });
+  connect(s.configure, &QPushButton::clicked, this, [&s] { s.configureRegistry(); });
   connect(s.export_batch, &QPushButton::clicked, this, [this] {
     if (exportRequested)
       exportRequested();
@@ -1322,33 +1453,7 @@ StitchingWorkflow::StitchingWorkflow(
       s.retryStages(s.failedStages());
   });
   s.controls();
-  if (s.registry.isEmpty())
-    s.profile->setToolTip("Configure workflow.registry to enable managed local and Slurm profiles.");
-  else
-    QTimer::singleShot(0, this, [&s] {
-      s.call({"profiles"}, [&s](QJsonObject value, QString error) {
-        if (!error.isEmpty()) {
-          s.notify(error, true);
-          s.profile->setToolTip(error);
-          return;
-        }
-        s.profiles = value;
-        for (const auto& profile : value.value("profiles").toArray()) {
-          const auto object = profile.toObject();
-          const auto capabilities = object.value("capabilities").toArray();
-          if (!capabilities.contains("experiment-run"))
-            continue;
-          const auto id = object.value("id").toString();
-          const auto label = object.value("label").toString();
-          s.profile->addItem((label.isEmpty() ? id : label) + " (" + object.value("executor").toString() + ")", id);
-        }
-        s.profiles_ready = true;
-        s.restoreAttachedControls();
-        s.controls();
-        if (s.owner->changed)
-          s.owner->changed();
-      });
-    });
+  QTimer::singleShot(0, this, [&s] { s.loadProfiles(); });
 }
 StitchingWorkflow::~StitchingWorkflow() {
   impl_->poll->stop();
