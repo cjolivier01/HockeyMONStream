@@ -148,7 +148,7 @@ class SetupStore:
                 "These settings changed in another window. Reload them before saving.",
             )
             write_json(self.root / "setup.json", value)
-        return self.read()
+            return {"draft": value, "revision": digest(value)}
 
 
 def import_configuration(registry, server):
@@ -421,8 +421,24 @@ def inspect_registry(registry, timeout, draft=None):
         )
         if draft is not None:
             expected = import_configuration(registry, draft["server"])["draft"]
+            chosen = validate_draft(draft)
+            active_path = Path(registry) / "setup-active.json"
+            active = read_json(active_path) if active_path.exists() else {}
+            # An applied revision binds the user's original installation aliases
+            # to the canonical, qualified runtime pins. Do not resolve aliases
+            # anew on a possibly different desktop OS.
+            applied = active.get("revision") == digest(chosen) and active.get(
+                "configuration_revision"
+            ) == digest(config)
+            for value in (chosen, expected):
+                for field in ("registry", "controller_runtime", "observer_registry"):
+                    if value[field] is not None:
+                        value[field] = str(Path(value[field]))
+                value["game_roots"] = [str(Path(path)) for path in value["game_roots"]]
+                for profile in value["profiles"].values():
+                    profile["runtime_root"] = str(Path(profile["runtime_root"]))
             require(
-                validate_draft(draft) == expected,
+                applied or chosen == expected,
                 "The choices in this window differ from the installed settings. Build, test and apply them, or recover the installed setup.",
             )
         checks.append(

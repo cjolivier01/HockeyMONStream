@@ -1,6 +1,7 @@
 """Registry creation, recovery and qualification admission regressions."""
 
 import copy
+from contextlib import contextmanager
 import json
 import os
 import shutil
@@ -109,6 +110,25 @@ class SetupTest(unittest.TestCase):
         self.assertIn("older", imported["issues"][0]["message"])
         self.assertFalse(setup.inspect_registry(self.registry, 30)["ready"])
         self.assertEqual(before, (self.registry / "config.json").read_bytes())
+
+    def test_save_response_cannot_borrow_a_concurrent_writers_revision(self):
+        second = copy.deepcopy(self.draft)
+        second["profiles"]["gpu"]["label"] = "Another window"
+
+        @contextmanager
+        def competing_save(path):
+            with locked(path):
+                yield
+            with locked(path):
+                write_json(self.registry / "setup.json", second)
+
+        with patch.object(setup, "locked", competing_save):
+            first = self.save()
+        self.assertEqual(first["draft"], self.draft)
+        self.assertEqual(first["revision"], digest(self.draft))
+        self.assertEqual(setup.SetupStore(self.registry).read()["draft"], second)
+        with self.assertRaisesRegex(WorkflowError, "another window"):
+            setup.SetupStore(self.registry).save(self.draft, first["revision"])
 
     def test_builder_produces_complete_native_configuration_and_aliases_share_capacity(
         self,
@@ -249,6 +269,118 @@ class SetupTest(unittest.TestCase):
             launcher.read_bytes(), execution.controller_files()[0].read_bytes()
         )
         self.assertEqual(execution.deploy_controller(self.registry), launcher)
+
+    def test_interrupted_service_creation_can_retry_without_manual_removal(self):
+        self.save()
+        config = self.compile()
+        write_json(self.registry / "config.json", config)
+        write_json(
+            self.registry / "setup-active.json",
+            {"configuration_revision": digest(config)},
+        )
+        home = self.root / "service-home"
+        with patch.object(Path, "home", return_value=home), patch.object(
+            execution, "run_readonly"
+        ):
+            with patch.object(
+                execution.os, "fsync", side_effect=OSError("interrupted unit")
+            ):
+                with self.assertRaisesRegex(OSError, "interrupted unit"):
+                    execution.start_service(self.registry, 30)
+            self.assertFalse(list(home.rglob("*.service")))
+            result = execution.start_service(self.registry, 30)
+            unit = home / ".config/systemd/user" / result["service"]
+            self.assertIn("ExecStart=", unit.read_text())
+            execution.stop_service(self.registry, 30)
+            self.assertFalse(unit.exists())
+
+    def test_definitely_rejected_test_can_be_stopped_corrected_and_rebuilt(self):
+        self.draft["profiles"]["gpu"]["time_seconds"] = 30 * 24 * 3600
+        saved = self.save()
+        game = self.root / "recordings/sample"
+        game.mkdir(parents=True)
+        request = {
+            "revision": saved["revision"],
+            "defaults": self.defaults,
+            "metadata_resources": self.cpu,
+        }
+        with patch.object(
+            execution, "compile_configuration", return_value=self.compile()
+        ):
+            execution.build(self.registry, request)
+        result = execution.start_test(
+            self.registry,
+            {
+                "profile": "gpu",
+                "node": "mini",
+                "game": str(game),
+                "scan_seconds": 60,
+                "user_config_snapshot": {"schema": 1, "source_path": "", "values": {}},
+            },
+        )
+        rejected = result["tests"][0]
+        self.assertEqual(rejected["state"], "rejected")
+        self.assertTrue(rejected["finished"])
+        self.assertFalse(rejected["passed"])
+        self.assertIn("30 days", rejected["log"])
+        execution.execute(
+            {
+                "registry": str(self.registry),
+                "action": "cancel-test",
+                "challenge": "test",
+            }
+        )
+        self.draft["profiles"]["gpu"]["time_seconds"] = 1800
+        saved = setup.SetupStore(self.registry).save(self.draft, saved["revision"])
+        request["revision"] = saved["revision"]
+        with patch.object(
+            execution, "compile_configuration", return_value=self.compile()
+        ):
+            execution.build(self.registry, request)
+        self.assertEqual(
+            execution.qualification_status(self.registry, tick=False)["tests"][0][
+                "state"
+            ],
+            "not-tested",
+        )
+
+    def test_ambiguous_registration_never_becomes_a_terminal_rejection(self):
+        saved = self.save()
+        game = self.root / "recordings/sample"
+        game.mkdir(parents=True)
+        with patch.object(
+            execution, "compile_configuration", return_value=self.compile()
+        ):
+            execution.build(
+                self.registry,
+                {
+                    "revision": saved["revision"],
+                    "defaults": self.defaults,
+                    "metadata_resources": self.cpu,
+                },
+            )
+        with patch(
+            "hstream_workflow.controller.Controller.register",
+            side_effect=WorkflowError("Response lost"),
+        ):
+            with self.assertRaisesRegex(WorkflowError, "Response lost"):
+                execution.start_test(
+                    self.registry,
+                    {
+                        "profile": "gpu",
+                        "node": "mini",
+                        "game": str(game),
+                        "scan_seconds": 60,
+                        "user_config_snapshot": {
+                            "schema": 1,
+                            "source_path": "",
+                            "values": {},
+                        },
+                    },
+                )
+            with self.assertRaisesRegex(WorkflowError, "Response lost"):
+                execution.qualification_status(self.registry, tick=False)
+        self.assertFalse(list(self.registry.rglob("rejected.json")))
 
     def test_a_client_opened_before_activation_cannot_admit_old_profiles(self):
         import hstream_workflow_controller_test as fixtures
@@ -489,6 +621,34 @@ class SetupTest(unittest.TestCase):
             result = setup.inspect_registry(self.registry, 30)
         self.assertFalse(result["ready"])
         self.assertIn("not loaded", result["checks"][-1]["message"])
+
+    def test_readiness_preserves_qualified_installation_aliases(self):
+        self.save()
+        config = self.compile()
+        write_json(self.registry / "config.json", config)
+        write_json(
+            self.registry / "heartbeat.json",
+            {
+                "host": "another-host",
+                "time_ns": time.time_ns(),
+                "configuration_digest": digest(config),
+            },
+        )
+        for path in ("/installed/cpu/", "/installation-alias"):
+            draft = copy.deepcopy(self.draft)
+            draft["controller_runtime"] = path
+            draft["profiles"]["gpu"]["runtime_root"] = "/installed/gpu/"
+            if path.endswith("/"):
+                self.assertTrue(
+                    setup.inspect_registry(self.registry, 30, draft)["ready"]
+                )
+            write_json(
+                self.registry / "setup-active.json",
+                {"revision": digest(draft), "configuration_revision": digest(config)},
+            )
+            self.assertTrue(setup.inspect_registry(self.registry, 30, draft)["ready"])
+            draft["profiles"]["gpu"]["cpus"] += 1
+            self.assertFalse(setup.inspect_registry(self.registry, 30, draft)["ready"])
 
     def test_qualification_resumes_real_native_workers_before_releasing_sample(self):
         import hstream_workflow_controller_test as fixtures

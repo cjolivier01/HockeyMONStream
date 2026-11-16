@@ -44,6 +44,9 @@ Closing setup retains test intent and ownership. The current native stage can
 finish independently; **Resume / check tests** schedules later stages when you
 reopen. **Stop test** uses normal epoch-fenced cancellation and cleanup. Never
 delete test folders to dismiss an ownership or cleanup error.
+If the controller proves a test was rejected before admission, setup records that
+result and lets you correct the draft and rebuild. Lost responses and unresolved
+Slurm acceptance never count as rejection or completed cleanup.
 
 The editor configures HStream on an existing Slurm cluster. It does not install
 Slurm, GPU drivers, native packages or a Dagster server. The existing service

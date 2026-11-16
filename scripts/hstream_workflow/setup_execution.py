@@ -38,6 +38,21 @@ GPU = [
 ]
 
 
+def publish_file(path, data, mode):
+    """Install complete bytes exclusively; interruptions never publish a prefix."""
+    descriptor, temporary = tempfile.mkstemp(prefix=".setup-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            os.fchmod(output.fileno(), mode)
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary, path, follow_symlinks=False)
+        sync_directory(path.parent)
+    finally:
+        os.unlink(temporary)
+
+
 def deploy_controller(registry):
     """Copy this client's controller to an immutable, content-addressed release."""
     sources = controller_files()
@@ -63,22 +78,9 @@ def deploy_controller(registry):
                     "The saved controller release was changed",
                 )
             else:
-                descriptor, temporary = tempfile.mkstemp(
-                    prefix=".setup-", dir=target.parent
+                publish_file(
+                    target, data, 0o700 if name == "hstream-workflow" else 0o600
                 )
-                try:
-                    with os.fdopen(descriptor, "wb") as output:
-                        os.fchmod(
-                            output.fileno(),
-                            0o700 if name == "hstream-workflow" else 0o600,
-                        )
-                        output.write(data)
-                        output.flush()
-                        os.fsync(output.fileno())
-                    os.link(temporary, target, follow_symlinks=False)
-                    sync_directory(target.parent)
-                finally:
-                    os.unlink(temporary)
     return destination / "hstream-workflow"
 
 
@@ -488,7 +490,6 @@ def test_plan(configuration, profile_id, node, game, snapshot, scan_seconds):
 
 
 def start_test(root, request):
-    from .controller import Controller
     from .profiles import validate_game
 
     directory, saved = generation(root)
@@ -510,9 +511,9 @@ def start_test(root, request):
         saved = read_json(directory / "build.json")
         # One test at a time also preserves a recording's single operation owner.
         for test in saved["tests"].values():
-            status = Controller(test["registry"]).status(test["workflow"])
+            _, status, rejection = restore_test(test)
             require(
-                status["owner_released"],
+                rejection is not None or status["owner_released"],
                 "A previous test is still running or needs cleanup. Resume or stop it first.",
             )
         plan = test_plan(
@@ -535,20 +536,54 @@ def start_test(root, request):
         # Record resumable intent before admission; a response lost after register
         # must never cause another independent test to be started.
         write_json(test_root / "plan.json", plan, exclusive=True)
-        saved["tests"][key + "/" + node] = {
+        test = {
             "registry": str(test_root),
             "workflow": plan["workflow_id"],
             "profile": key,
             "node": node,
         }
+        saved["tests"][key + "/" + node] = test
         write_json(directory / "build.json", saved)
-        Controller(test_root).register(plan, game, defer_admission=True)
+        restore_test(test)
     return qualification_status(root, tick=False)
 
 
-def qualification_status(root, *, tick):
-    from .controller import Controller
+def restore_test(test):
+    from .controller import Controller, SubmissionRejected
 
+    root = Path(test["registry"])
+    plan = read_json(root / "plan.json")
+    rejected = root / "rejected.json"
+    if rejected.exists():
+        record = read_json(rejected)
+        require(
+            record["workflow"] == test["workflow"]
+            and record["plan_digest"] == digest(plan),
+            "The saved test rejection belongs to another plan",
+        )
+        return None, None, record["reason"]
+    controller = Controller(root)
+    try:
+        status = controller.register(
+            plan, plan["source_identity"]["game_directory"], defer_admission=True
+        )
+    except SubmissionRejected as error:
+        # This exception proves absence under the registry lock. Never infer
+        # rejection from response loss, an unknown status or a scheduler outage.
+        write_json(
+            rejected,
+            {
+                "workflow": test["workflow"],
+                "plan_digest": digest(plan),
+                "reason": str(error),
+            },
+            exclusive=True,
+        )
+        return None, None, str(error)
+    return controller, status, None
+
+
+def qualification_status(root, *, tick):
     directory, saved = generation(root)
     rows = []
     for key, profile in saved["configuration"]["profiles"].items():
@@ -558,16 +593,19 @@ def qualification_status(root, *, tick):
             test = saved["tests"].get(key + "/" + node)
             row = {"profile": key, "node": node, "state": "not-tested", "passed": False}
             if test:
-                controller = Controller(test["registry"])
-                plan = read_json(Path(test["registry"]) / "plan.json")
-                controller.register(
-                    plan,
-                    plan["source_identity"]["game_directory"],
-                    defer_admission=True,
-                )
+                controller, status, rejection = restore_test(test)
+                if rejection is not None:
+                    row.update(
+                        state="rejected",
+                        finished=True,
+                        log=rejection
+                        + "\nCorrect the setup, then save and build again. No job was admitted.",
+                    )
+                    rows.append(row)
+                    continue
                 if tick:
                     controller.tick(test["workflow"])
-                status = controller.status(test["workflow"])
+                    status = controller.status(test["workflow"])
                 row.update(
                     state=status["state"],
                     passed=status["state"] == "succeeded" and status["owner_released"],
@@ -761,11 +799,7 @@ def start_service(root, timeout):
             + str(path),
         )
     else:
-        descriptor = os.open(
-            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-        )
-        with os.fdopen(descriptor, "w") as output:
-            output.write(content)
+        publish_file(path, content.encode(), 0o600)
     run_readonly(["systemctl", "--user", "daemon-reload"], timeout)
     run_readonly(["systemctl", "--user", "enable", "--now", unit], timeout)
     return {
@@ -814,13 +848,10 @@ def execute_locked(root, request):
     elif action == "test-status":
         result = qualification_status(root, tick=True)
     elif action == "cancel-test":
-        from .controller import Controller
-
         _, saved = generation(root)
         for test in saved["tests"].values():
-            controller = Controller(test["registry"])
-            status = controller.status(test["workflow"])
-            if not status["owner_released"]:
+            controller, status, rejection = restore_test(test)
+            if rejection is None and not status["owner_released"]:
                 controller.cancel(test["workflow"], status["epoch"])
         result = qualification_status(root, tick=True)
     elif action == "activate":
