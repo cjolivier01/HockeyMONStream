@@ -332,7 +332,8 @@ void unconfiguredWorkflowExplainsHowToEnable(YAML::Node baseline) {
   require(wait([&] { return !availability->text().isEmpty(); }), "Unconfigured workflow did not explain its state");
   require(!selector->isEnabled() && configure->isEnabled(), "Unconfigured workflow did not expose setup action");
   require(
-      availability->text().contains("Configure workflow") && availability->text().contains("Dagster/Slurm"),
+      availability->text().contains("unavailable") && availability->toolTip().contains("Configure workflow") &&
+          availability->toolTip().contains("Dagster/Slurm"),
       "Unconfigured workflow did not explain how to enable distributed execution");
 }
 

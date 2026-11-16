@@ -684,12 +684,14 @@ struct StitchingWorkflow::Impl {
       const QString reason = "Distributed workflow is not configured. Choose Configure workflow… to select the "
                              "Dagster/Slurm registry for this game.";
       profile->setToolTip(reason);
-      availability->setText(reason);
+      availability->setText("Distributed workflow unavailable");
+      availability->setToolTip(reason);
       controls();
       return;
     }
     profile->setToolTip({});
-    availability->setText("Loading Dagster/Slurm execution profiles from " + registry + "…");
+    availability->setText("Loading distributed profiles…");
+    availability->setToolTip("Loading Dagster/Slurm execution profiles from " + registry + "…");
     controls();
     const QString requested_registry = registry;
     call({"profiles"}, [this, requested_registry, requested_generation](QJsonObject value, QString error) {
@@ -699,7 +701,8 @@ struct StitchingWorkflow::Impl {
         const QString reason = "Cannot load Dagster/Slurm profiles: " + error;
         notify(reason, true);
         profile->setToolTip(reason);
-        availability->setText(reason + " Use Configure workflow… to choose another registry.");
+        availability->setText("Distributed profiles unavailable");
+        availability->setToolTip(reason + " Use Configure workflow… to choose another registry.");
         controls();
         return;
       }
@@ -717,9 +720,11 @@ struct StitchingWorkflow::Impl {
       if (profile->count() == 1) {
         const QString reason = "This registry has no execution profile that supports stitching experiments.";
         profile->setToolTip(reason);
-        availability->setText(reason);
+        availability->setText("No compatible distributed profile");
+        availability->setToolTip(reason);
       } else {
         availability->setText("Choose a Dagster/Slurm execution profile, then start the batch.");
+        availability->setToolTip({});
       }
       restoreAttachedControls();
       controls();
@@ -1331,8 +1336,11 @@ StitchingWorkflow::StitchingWorkflow(
   profile_row->addWidget(s.configure);
   s.availability = new QLabel(this);
   s.availability->setObjectName("stitchWorkflowAvailability");
-  s.availability->setWordWrap(true);
+  s.availability->setWordWrap(false);
+  s.availability->setMinimumWidth(0);
+  s.availability->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   s.availability->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  profile_row->addWidget(s.availability, 1);
   s.parallel = new QSpinBox(this);
   s.parallel->setObjectName("stitchWorkflowParallel");
   s.parallel->setRange(1, 256);
