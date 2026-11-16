@@ -1218,6 +1218,12 @@ class Controller:
 
 
 def serve(registry, once=False):
+    root = private_directory(registry)
+    with locked(root / "controller-service.lock", blocking=False):
+        _serve_locked(root, once)
+
+
+def _serve_locked(registry, once):
     controller = Controller(registry)
     stopped = threading.Event()
     errors = []

@@ -36,6 +36,9 @@ registry is `~/.local/state/hstream-workflows/registry`; keep it on durable shar
 storage. After reinstalling, choose **Recover saved setup**. The desktop also
 tries the saved/default folder automatically. Recovery reads older profiles and
 explains which parts need replacing.
+Discovery also finds registries used by managed user services, including custom
+folders. If it finds several, it lists them for selection. Changing the settings
+folder starts a separate draft; it cannot carry another folder's save revision.
 
 Closing setup retains test intent and ownership. The current native stage can
 finish independently; **Resume / check tests** schedules later stages when you
@@ -66,6 +69,10 @@ ordinary Controller plans, game ownership, reservations, receipts and retirement
 `setup-test-only.json` prevents normal profile selection and publication in test
 registries. Activation requires every node's successful retired test, unchanged
 draft/configuration revisions, unchanged runtime pins and an idle registry.
+The controller holds a service lock for its lifetime so activation cannot race
+startup. Older services must have a verifiably retired process on the main server;
+a stale heartbeat alone never permits replacing their configuration. Interrupted
+builds reuse only matching immutable generation inputs.
 
 Qt runs the helper asynchronously. Browser GETs are cache-only; explicit admin
 POSTs call the installed setup CLI. Set the local web request timeout above the

@@ -394,6 +394,17 @@ else: print(json.dumps({'message':'Fixture step complete'}))
       read(root + "/saved-setup.json").value("draft").toObject().value("game_roots").toArray().size() == 2,
       "Saving dropped a recording folder");
   require(!use->isEnabled(), "Saving an untested draft enabled execution");
+  widget<QLineEdit>(dialog, "workflowSetupFolder")->setText(root + "/another-registry");
+  save->click();
+  require(
+      wait([&] {
+        return save->isEnabled() &&
+            read(root + "/saved-setup.json").value("registry").toString() == root + "/another-registry";
+      }),
+      "Saving in a new registry did not finish");
+  require(
+      read(root + "/saved-setup.json").value("revision").isNull(),
+      "New registry inherited the previous folder's revision");
   const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT");
   if (!screenshot.isEmpty())
     require(dialog.grab().save(screenshot), "Cannot capture cluster setup");

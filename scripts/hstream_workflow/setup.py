@@ -251,6 +251,7 @@ def run_readonly(argv, timeout):
 # Paths and server names are never interpolated into its source.
 PROBE = r"""
 import json, os, re, shutil, socket, subprocess, sys, time
+from pathlib import Path
 deadline = time.monotonic() + int(sys.argv[1])
 def command(args):
     try:
@@ -261,6 +262,22 @@ def command(args):
 configuration = command(["scontrol", "show", "config"])
 cluster = re.search(r"^ClusterName\s*=\s*([A-Za-z0-9_.-]+)\s*$", configuration["text"], re.MULTILINE)
 cluster_args = ["--clusters=" + cluster.group(1)] if cluster else []
+units = command(["systemctl", "--user", "list-unit-files", "--type=service", "--no-legend", "hstream-workflow-*.service"])
+managed = []
+if units["ok"]:
+    names = re.findall(r"\bhstream-workflow-[a-f0-9]{16}\.service\b", units["text"])
+    for name in sorted(set(names))[:64]:
+        service = command(["systemctl", "--user", "show", name, "--property=ActiveState,ExecStart"])
+        try:
+            with (Path.home() / ".config/systemd/user" / name).open() as source:
+                first = source.readline(8192)
+            if first.startswith("# HStream registry: "):
+                value = json.loads(first.removeprefix("# HStream registry: "))
+                if isinstance(value, str) and value.startswith("/"):
+                    service["registry"] = value
+        except (OSError, ValueError):
+            pass
+        managed.append(service)
 print(json.dumps({
     "host": socket.gethostname(), "uid": os.getuid(), "home": os.path.expanduser("~"),
     "slurm": configuration,
@@ -268,6 +285,7 @@ print(json.dumps({
     "queue": command(["squeue", "--noheader", "--format=%i", *cluster_args]),
     "accounting": command(["sacct", "--noheader", "--allocations", "--starttime=now", "--format=JobID", *cluster_args]),
     "controller": command(["systemctl", "show", "hstream-workflow-controller", "--property=ActiveState,ExecStart"]),
+    "managed_controllers": managed,
     "worker": shutil.which("hstream-runtime-worker"),
     "task": shutil.which("hstream-experiment-task")
 }))
@@ -355,8 +373,19 @@ def discover(server, timeout):
                         )
                     )
                 )
-    service = raw["controller"]["text"]
-    match = re.search(r"--registry\s+[\"']?([^\s;\"']+)", service)
+    services = [raw["controller"], *raw.get("managed_controllers", [])]
+    paths = set()
+    for service in services:
+        if service.get("registry"):
+            paths.add(service["registry"])
+            continue
+        if service["ok"]:
+            match = re.search(
+                r"""--registry\s+("(?:\\.|[^"\\])*"|'[^']*'|[^\s;]+)""", service["text"]
+            )
+            if match:
+                paths.add(shlex.split(match.group(1))[0])
+    paths = sorted(paths)
     return {
         "ready": False,
         "checks": checks,
@@ -364,11 +393,19 @@ def discover(server, timeout):
         "home": raw["home"],
         "uid": raw["uid"],
         "machines": machines,
-        "service_registry": match.group(1) if match else None,
-        "controller_active": "ActiveState=active" in service,
+        "service_registry": paths[0] if len(paths) == 1 else None,
+        "service_registries": paths,
+        "controller_active": any(
+            "ActiveState=active" in service["text"] for service in services
+        ),
         "worker": raw["worker"],
         "task": raw["task"],
-        "next": "Connection checked. Select the machines to use, then test HStream with a sample recording.",
+        "next": (
+            "Found several saved setups. Choose a folder under Storage, software and dashboard settings, then Recover saved setup:\n"
+            + "\n".join(paths)
+            if len(paths) > 1
+            else "Connection checked. Select the machines to use, then test HStream with a sample recording."
+        ),
     }
 
 

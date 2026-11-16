@@ -469,6 +469,10 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   connect(s.use, &QPushButton::clicked, this, &QDialog::accept);
   for (auto* control : {s.server, s.registry, s.controller_runtime, s.dashboard})
     connect(control, &QLineEdit::textChanged, this, [&s] { s.invalidate(); });
+  connect(s.registry, &QLineEdit::textChanged, this, [&s] {
+    if (!s.loading)
+      s.revision = QJsonValue::Null;
+  });
   connect(s.recordings, &QPlainTextEdit::textChanged, this, [&s] { s.invalidate(); });
   connect(s.profiles, &QTableWidget::itemChanged, this, [&s] { s.invalidate(); });
   connect(s.discover, &QPushButton::clicked, this, [&s] {

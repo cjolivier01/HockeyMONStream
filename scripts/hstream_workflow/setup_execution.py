@@ -152,12 +152,30 @@ def inventory(root, *, cpu):
             "The main-server installation is for another processor",
         )
     files = {}
+    # Installed desktop packages also bundle a Python controller. Setup deploys
+    # its own immutable controller release; pinning both makes client dispatch
+    # ambiguous. Native tasks do not execute the bundled controller copy.
+    entries = []
     for index, path in enumerate(root.rglob("*")):
         require(
             index < 20000,
             "Choose an installed HStream folder, not a source checkout or home directory",
         )
+        entries.append(path)
+    bundled_controllers = {
+        path.parent
+        for path in entries
+        if path.name == "hstream-workflow"
+        and (path.parent / "hstream_workflow" / "cli.py").is_file()
+    }
+    for path in entries:
         if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+            continue
+        if any(
+            path == directory / "hstream-workflow"
+            or path.is_relative_to(directory / "hstream_workflow")
+            for directory in bundled_controllers
+        ):
             continue
         if path.is_file():
             canonical = path.resolve(strict=True)
@@ -311,6 +329,8 @@ def compile_configuration(draft, defaults, metadata_resources, inspect=inventory
 
 
 def build(root, request):
+    from .dispatch import installed_launcher
+
     store = SetupStore(root).read()
     require(
         store["revision"] == request["revision"],
@@ -325,18 +345,25 @@ def build(root, request):
     configuration = compile_configuration(
         store["draft"], request["defaults"], request["metadata_resources"]
     )
+    installed_launcher(configuration)
     generation = digest({"draft": store, "configuration": configuration})
     directory = private_directory(root / "setup-builds" / generation, create=True)
     with locked(directory / "build.lock"):
         if not (directory / "build.json").exists():
-            write_json(
-                directory / "setup-test-only.json", {"schema": 1}, exclusive=True
-            )
-            write_json(
-                directory / "config.json",
-                {**configuration, "observer_registry": None},
-                exclusive=True,
-            )
+            # A lost response or interrupted write can leave part of this
+            # deterministic generation. Reuse only matching immutable inputs.
+            for name, value in {
+                "setup-test-only.json": {"schema": 1},
+                "config.json": {**configuration, "observer_registry": None},
+            }.items():
+                path = directory / name
+                if path.exists():
+                    require(
+                        read_json(path) == value,
+                        "Interrupted setup inputs changed: " + str(path),
+                    )
+                else:
+                    write_json(path, value, exclusive=True)
             load_config(directory)
             write_json(
                 directory / "build.json",
@@ -581,6 +608,18 @@ def idle(root):
 
 
 def activate(root):
+    # The service holds this lock from before reading configuration until exit.
+    # Nonblocking acquisition also excludes a concurrently starting controller.
+    try:
+        with locked(root / "controller-service.lock", blocking=False):
+            return activate_stopped(root)
+    except BlockingIOError as error:
+        raise ValueError(
+            "Stop the HStream controller before applying settings"
+        ) from error
+
+
+def activate_stopped(root):
     from .state import Registry
     from .profiles import preflight_runtime
 
@@ -607,16 +646,27 @@ def activate(root):
         idle(root)
         for profile in saved["configuration"]["profiles"].values():
             preflight_runtime(profile)
-        # A running controller retains its startup configuration. Require it to
-        # be stopped rather than allowing the UI and dispatcher to disagree.
+        # Older services do not hold controller-service.lock. Heartbeat age is
+        # not retirement proof: an idle or paused process can still resume.
         heartbeat = root / "heartbeat.json"
         if heartbeat.exists():
-            import time
+            from .processes import host_identity, same_process
 
+            identity = read_json(heartbeat)
             require(
-                time.time_ns() - read_json(heartbeat)["time_ns"]
-                > saved["configuration"]["defaults"]["command_timeout_seconds"] * 1e9,
-                "Stop the existing HStream controller service on the main server before applying. Running Slurm jobs must finish first.",
+                identity.get("host") == host_identity()["host"],
+                "Apply settings on the previous controller's server after stopping it: "
+                + str(identity.get("host", "unknown")),
+            )
+            require(
+                identity.get("boot_id")
+                and isinstance(identity.get("pid"), int)
+                and isinstance(identity.get("start_time"), int),
+                "The previous controller has no verifiable process identity",
+            )
+            require(
+                not same_process(identity),
+                "Stop the existing HStream controller service on the main server before applying. A stale heartbeat does not mean the process stopped.",
             )
         if (root / "config.json").exists() and current_revision(
             root
@@ -677,6 +727,7 @@ def start_service(root, timeout):
         )
 
     content = (
+        "# HStream registry: " + json.dumps(str(root)) + "\n"
         "[Unit]\nDescription=HStream experiment controller\nAfter=network-online.target\n\n[Service]\n"
         "Type=simple\nUMask=0077\nKillMode=process\nRestart=on-failure\nExecStart="
         + quote(launcher)

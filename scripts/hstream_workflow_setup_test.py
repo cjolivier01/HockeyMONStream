@@ -2,6 +2,8 @@
 
 import copy
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hstream_workflow import setup, setup_execution as execution
-from hstream_workflow.files import read_json, write_json
+from hstream_workflow.files import locked, read_json, write_json
 from hstream_workflow.profiles import load_config
 from hstream_workflow.schema import WorkflowError, digest
 
@@ -179,6 +181,129 @@ class SetupTest(unittest.TestCase):
         scan = next(stage for stage in plan["stages"] if stage["id"] == "scan")
         self.assertEqual(scan["inputs"]["search_duration_seconds"], 60)
         self.assertEqual(plan["limits"]["max_parallel"], 1)
+
+    def test_packaged_runtime_selects_only_the_setup_controller(self):
+        from hstream_workflow.dispatch import installed_launcher
+        from hstream_workflow.profiles import controller_files
+
+        package = self.root / "installed"
+        (package / "bin").mkdir(parents=True)
+        for name in ("hstream-experiment-task", "hstream-runtime-worker"):
+            shutil.copy2(shutil.which("true"), package / "bin" / name)
+        (package / "scripts/hstream_workflow").mkdir(parents=True)
+        (package / "scripts/hstream-workflow").write_text("old controller")
+        (package / "scripts/hstream_workflow/cli.py").write_text("old module")
+        self.draft["controller_runtime"] = str(package)
+        config = execution.compile_configuration(
+            self.draft,
+            self.defaults,
+            self.cpu,
+            lambda root, cpu: (
+                execution.inventory(root, cpu=True)
+                if cpu
+                else self.inspect(root, cpu=False)
+            ),
+        )
+        self.assertEqual(installed_launcher(config), controller_files()[0])
+        self.assertNotIn(
+            str(package / "scripts/hstream-workflow"),
+            config["profiles"]["metadata"]["runtime"]["files"],
+        )
+
+    def test_interrupted_generation_can_resume_without_erasing_inputs(self):
+        saved = self.save()
+        config = self.compile()
+        request = {
+            "revision": saved["revision"],
+            "defaults": self.defaults,
+            "metadata_resources": self.cpu,
+        }
+
+        def interrupted(path, value, **kwargs):
+            if Path(path).name == "config.json":
+                raise RuntimeError("interrupted")
+            write_json(path, value, **kwargs)
+
+        with patch.object(execution, "compile_configuration", return_value=config):
+            with patch.object(execution, "write_json", side_effect=interrupted):
+                with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                    execution.build(self.registry, request)
+            execution.build(self.registry, request)
+        self.assertEqual(
+            execution.generation(self.registry)[1]["configuration"], config
+        )
+
+    def test_activation_requires_retired_controller_even_with_stale_heartbeat(self):
+        from hstream_workflow.processes import host_identity, process_identity
+
+        saved = self.save()
+        config = self.compile()
+        with patch.object(execution, "compile_configuration", return_value=config):
+            execution.build(
+                self.registry,
+                {
+                    "revision": saved["revision"],
+                    "defaults": self.defaults,
+                    "metadata_resources": self.cpu,
+                },
+            )
+        heartbeat = {**host_identity(), **process_identity(os.getpid()), "time_ns": 0}
+        write_json(self.registry / "heartbeat.json", heartbeat)
+        with patch.object(
+            execution, "qualification_status", return_value={"tested": True}
+        ), patch("hstream_workflow.profiles.preflight_runtime"):
+            with self.assertRaisesRegex(WorkflowError, "stale heartbeat"):
+                execution.activate(self.registry)
+            self.assertFalse((self.registry / "config.json").exists())
+            with locked(self.registry / "controller-service.lock"):
+                with self.assertRaisesRegex(ValueError, "Stop the HStream controller"):
+                    execution.activate(self.registry)
+            child = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(30)"]
+            )
+            try:
+                retired = {
+                    **host_identity(),
+                    **process_identity(child.pid),
+                    "time_ns": 0,
+                }
+            finally:
+                child.terminate()
+                child.wait(timeout=5)
+            write_json(self.registry / "heartbeat.json", retired)
+            self.assertTrue(execution.activate(self.registry)["applied"])
+
+    def test_discovery_recovers_managed_service_registry_with_spaces(self):
+        # Run the actual remote probe against fixed local command fixtures.
+        binary = self.root / "commands"
+        binary.mkdir()
+        unit = "hstream-workflow-0123456789abcdef.service"
+        units = self.root / ".config/systemd/user"
+        units.mkdir(parents=True)
+        registry = str(self.root / "custom cluster")
+        (units / unit).write_text(
+            "# HStream registry: " + json.dumps(registry) + "\n[Unit]\n"
+        )
+        for name in ("systemctl", "scontrol", "sinfo", "squeue", "sacct"):
+            path = binary / name
+            path.write_text(
+                "#!/usr/bin/python3\nimport sys\n"
+                + "if 'list-unit-files' in sys.argv: print('"
+                + unit
+                + " enabled')\n"
+                + "elif 'show' in sys.argv: print('ActiveState=active')\n"
+            )
+            path.chmod(0o700)
+        output = subprocess.check_output(
+            [sys.executable, "-c", setup.PROBE, "30"],
+            env={**os.environ, "HOME": str(self.root), "PATH": str(binary)},
+            text=True,
+            timeout=10,
+        )
+        with patch.object(setup, "run_readonly", return_value=output):
+            result = setup.discover("ripper", 30)
+        self.assertEqual(result["service_registry"], registry)
+        self.assertFalse(result["ready"])
 
     def test_remote_rejects_unsaved_edits_before_ssh_or_code_deployment(self):
         self.save()
