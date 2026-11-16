@@ -89,6 +89,7 @@ class Controller:
                     str(request),
                 ],
                 stdin=subprocess.DEVNULL,
+                env=executor.installation_environment(helper["runtime"], os.environ),
                 capture_output=True,
                 # Keep the publication/admission barrier alive in the native
                 # helper if the controller dies before its response arrives.

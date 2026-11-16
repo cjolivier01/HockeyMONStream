@@ -50,24 +50,14 @@ def limits(profile, settings):
     }
 
 
-def prepare(root, request, profile, settings, intent):
-    runtime = profile["runtime"]
-    worker_limits = limits(profile, settings)
-    worker = runtime["worker"]
-    directory = private_directory(root / "worker", create=True)
-    scratch = private_directory(root / "runtime", create=True)
-    environment = {
-        "HSTREAM_WORKFLOW_ATTEMPT": intent["attempt_id"],
-        "HSTREAM_RUNTIME_CACHE_DIR": str(scratch),
-        "HSTREAM_JOB_MANAGED_RUNTIME": "1",
-    }
-    files = dict(runtime["files"])
+def installation_environment(runtime, inherited=None):
+    environment = dict(inherited) if inherited is not None else {}
     # Packaged ELF RUNPATHs name the installation prefix. Prefer the retained
     # copy before the loader starts the task, not after entering native main().
     installation = runtime.get("root")
     if installation:
         installation = Path(installation)
-        pinned = [Path(path) for path in files]
+        pinned = [Path(path) for path in runtime["files"]]
         libraries = [installation / "lib", installation / "lib/gst-plugins"]
         libraries = [
             path for path in libraries if any(item.parent == path for item in pinned)
@@ -76,10 +66,28 @@ def prepare(root, request, profile, settings, intent):
             environment["LD_LIBRARY_PATH"] = ":".join(map(str, libraries))
         plugins = installation / "lib/gst-plugins"
         if any(path.parent == plugins for path in pinned):
-            for key in ("GST_PLUGIN_PATH", "GST_PLUGIN_PATH_1_0"):
-                environment[key] = str(plugins)
-        if str(installation / "configs/baseline.yaml") in files:
+            # Native startup extends this with its vendor plugin directories.
+            # The versioned variable would hide those subsequent additions.
+            environment.pop("GST_PLUGIN_PATH_1_0", None)
+            environment["GST_PLUGIN_PATH"] = str(plugins)
+        if str(installation / "configs/baseline.yaml") in runtime["files"]:
             environment["HM_CONFIG_ROOT"] = str(installation / "configs")
+    return environment
+
+
+def prepare(root, request, profile, settings, intent):
+    runtime = profile["runtime"]
+    worker_limits = limits(profile, settings)
+    worker = runtime["worker"]
+    directory = private_directory(root / "worker", create=True)
+    scratch = private_directory(root / "runtime", create=True)
+    environment = {
+        **installation_environment(runtime),
+        "HSTREAM_WORKFLOW_ATTEMPT": intent["attempt_id"],
+        "HSTREAM_RUNTIME_CACHE_DIR": str(scratch),
+        "HSTREAM_JOB_MANAGED_RUNTIME": "1",
+    }
+    files = dict(runtime["files"])
     for name in ("request.json", "profile.json", "settings.json"):
         path = root / name
         files[str(path)] = file_digest(path, 8 * 1024 * 1024)["sha256"]
@@ -113,6 +121,7 @@ def prepare(root, request, profile, settings, intent):
             "HSTREAM_ARCHIVE_RUN_ID",
             "HSTREAM_JOB_MANIFEST",
             "HSTREAM_USER_CONFIG_SNAPSHOT",
+            *(["GST_PLUGIN_PATH_1_0"] if "GST_PLUGIN_PATH" in environment else []),
         ],
         "timeout_ms": task_ms,
         "rotate_log": True,

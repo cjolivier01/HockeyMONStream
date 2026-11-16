@@ -258,8 +258,11 @@ class SetupTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("cc"), "C compiler is unavailable")
     def test_prepared_task_loads_retained_library_instead_of_deployed_prefix(self):
         from hstream_workflow import executor
+        from hstream_workflow.controller import Controller
 
         installation = self.installed_fixture("installed")
+        (installation / "lib/gst-plugins").mkdir()
+        (installation / "lib/gst-plugins/plugin.so").write_bytes(b"plugin")
         library = self.root / "library.c"
         library.write_text("int value(void) { return 17; }")
         subprocess.run(
@@ -274,7 +277,18 @@ class SetupTest(unittest.TestCase):
             check=True,
         )
         program = self.root / "task.c"
-        program.write_text("extern int value(void); int main(void) { return value(); }")
+        program.write_text(r"""#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+extern int value(void);
+int main(int argc, char** argv) {
+  if (argc > 1 && strcmp(argv[1], "--admission") == 0) {
+    printf("{\"value\": %d, \"versioned_plugins\": %d}", value(), getenv("GST_PLUGIN_PATH_1_0") != NULL);
+    return 0;
+  }
+  return value();
+}
+""")
         subprocess.run(
             [
                 "cc",
@@ -322,6 +336,21 @@ class SetupTest(unittest.TestCase):
             spec["argv"], env={**os.environ, **spec["environment"]}, check=False
         )
         self.assertEqual(result.returncode, 17)
+        profile["executor"] = "local"
+        profile["resources"]["gpus"] = 0
+        profile["runtime"]["storage_namespace"] = "retained"
+        controller = Controller.__new__(Controller)
+        controller.config = {
+            "admission_profile": "metadata",
+            "profiles": {"metadata": profile},
+        }
+        controller.defaults = self.defaults
+        self.assertIn("GST_PLUGIN_PATH_1_0", spec["unset_environment"])
+        with patch.dict(os.environ, {"GST_PLUGIN_PATH_1_0": "/unrelated/plugins"}):
+            self.assertEqual(
+                controller._native(attempt, "inspect", {}),
+                {"value": 17, "versioned_plugins": 0},
+            )
 
     def test_interrupted_copy_never_publishes_a_runtime(self):
         installation = self.installed_fixture("installed")
