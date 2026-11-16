@@ -554,8 +554,10 @@ elif action in ('test-status','start-test','cancel-test'):
   (root/'status-started').write_text('started')
   while (root/'hold-status').exists(): time.sleep(.01)
  if action=='test-status':
+  if mode=='lost-status' and 'running' in phases.values() and not s.get('lost_status'):
+   s['lost_status']=True; error='Connection lost while checking test progress.'
   for node,phase in list(phases.items()):
-   if phase=='running' and mode!='cancel': phases[node]='failed' if mode=='failure' and node=='mini' else 'passed'
+   if phase=='running' and mode not in ('cancel','recovered-cancel') and not error: phases[node]='failed' if mode=='failure' and node=='mini' else 'passed'
  if action=='start-test':
   phases[r['node']]='running'
   if mode=='lost-start' and not s.get('lost'):
@@ -627,15 +629,87 @@ print(json.dumps({**value,'progress':p}))
   };
   require(starts().isEmpty(), "Preparing silently started tests");
   if (outcome == "success") {
+    widget<QComboBox>(dialog, "workflowSetupComputers")->clear();
     widget<QPushButton>(dialog, "workflowSetupRecover")->click();
     require(
         wait([&] { return next->isEnabled() && next->text() == "Continue the test"; }),
         "Recovery did not return to the unfinished test step");
     require(starts().isEmpty(), "Recovering silently started tests");
+    back->click();
+    back->click();
+    auto* table = widget<QTableWidget>(dialog, "workflowSetupProfiles");
+    auto profileValues = [&] {
+      QStringList rows;
+      for (int row = 0; row < table->rowCount(); ++row) {
+        QStringList cells;
+        for (int column = 0; column < table->columnCount(); ++column)
+          cells << table->item(row, column)->text();
+        rows << cells.join('|');
+      }
+      rows.sort();
+      return rows;
+    };
+    const auto before = profileValues();
+    machines->item(0)->setCheckState(Qt::Unchecked);
+    machines->item(1)->setCheckState(Qt::Unchecked);
+    QCoreApplication::processEvents();
+    require(machines->count() == 2 && !next->isEnabled(), "Recovered computer choices disappeared");
+    machines->item(0)->setCheckState(Qt::Checked);
+    machines->item(1)->setCheckState(Qt::Checked);
+    require(profileValues() == before && next->isEnabled(), "Reselecting lost the saved computer settings");
+    next->click();
+    require(wait([&] { return pages->currentIndex() == 2 && next->isEnabled(); }), "Choices did not save");
+    next->click();
+    require(wait([&] { return pages->currentIndex() == 3 && next->isEnabled(); }), "Saved progress did not resume");
   }
+  if (outcome == "recovered-cancel") {
+    auto state = read(directory + "/state.json");
+    state.insert("phases", QJsonObject{{"mini", "running"}});
+    write(directory + "/state.json", QJsonDocument(state).toJson());
+  }
+  const auto previous_snapshot = qgetenv("HSTREAM_USER_CONFIG_SNAPSHOT");
+  const bool had_snapshot = qEnvironmentVariableIsSet("HSTREAM_USER_CONFIG_SNAPSHOT");
+  if (outcome == "snapshot-error")
+    qputenv("HSTREAM_USER_CONFIG_SNAPSHOT", (directory + "/missing-snapshot.json").toUtf8());
   if (outcome == "cancel-before-start")
     write(directory + "/hold-status", "hold");
   next->click();
+  if (outcome == "snapshot-error") {
+    require(
+        wait([&] { return next->isEnabled() && problem->text().contains("Cannot open frozen user configuration"); }),
+        "Invalid Defaults did not stop testing with a visible error");
+    const int count = calls().size();
+    for (int i = 0; i < 20; ++i) {
+      QCoreApplication::processEvents();
+      QThread::msleep(20);
+    }
+    require(calls().size() == count && starts().isEmpty(), "Invalid Defaults repeatedly retried testing");
+    if (had_snapshot)
+      qputenv("HSTREAM_USER_CONFIG_SNAPSHOT", previous_snapshot);
+    else
+      qunsetenv("HSTREAM_USER_CONFIG_SNAPSHOT");
+    dialog.close();
+    return;
+  }
+  if (outcome == "lost-status") {
+    require(
+        wait([&] { return next->isEnabled() && problem->text().contains("checking test progress"); }),
+        "Lost progress disabled primary recovery");
+    next->click();
+  }
+  if (outcome == "recovered-cancel") {
+    auto* stop = widget<QPushButton>(dialog, "workflowSetupStopTest");
+    require(wait([&] { return stop->isEnabled(); }), "Recovered test did not offer advanced Stop");
+    stop->click();
+    require(wait([&] { return next->isEnabled(); }), "Advanced Stop did not finish cleanup");
+    for (int i = 0; i < 20; ++i) {
+      QCoreApplication::processEvents();
+      QThread::msleep(20);
+    }
+    require(starts().isEmpty(), "Advanced Stop restarted a recovered test");
+    dialog.close();
+    return;
+  }
   if (outcome == "cancel-before-start") {
     require(wait([&] { return QFileInfo::exists(directory + "/status-started"); }), "Status did not start");
     widget<QPushButton>(dialog, "workflowSetupCancelChecks")->click();
@@ -2865,7 +2939,15 @@ int main(int argc, char** argv) {
     }
     if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_SETUP_ONLY") != 0) {
       setupAssistant(temporary.path(), YAML::Clone(baseline->values));
-      for (const auto& outcome : {"success", "failure", "cancel", "lost-start", "cancel-before-start"})
+      for (const auto& outcome :
+           {"success",
+            "failure",
+            "cancel",
+            "lost-start",
+            "cancel-before-start",
+            "lost-status",
+            "snapshot-error",
+            "recovered-cancel"})
         setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
       std::cout << "Cluster setup wizard checks passed\n";
       return 0;
@@ -2876,7 +2958,15 @@ int main(int argc, char** argv) {
     plans(store);
     unconfiguredWorkflowExplainsHowToEnable(YAML::Clone(baseline->values));
     setupAssistant(temporary.path(), YAML::Clone(baseline->values));
-    for (const auto& outcome : {"success", "failure", "cancel", "lost-start", "cancel-before-start"})
+    for (const auto& outcome :
+         {"success",
+          "failure",
+          "cancel",
+          "lost-start",
+          "cancel-before-start",
+          "lost-status",
+          "snapshot-error",
+          "recovered-cancel"})
       setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));

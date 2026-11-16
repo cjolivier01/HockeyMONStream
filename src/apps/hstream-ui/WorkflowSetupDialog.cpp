@@ -75,6 +75,7 @@ struct WorkflowSetupDialog::Impl {
   QPushButton *build, *test, *resume, *stop, *apply, *start, *stop_service;
   QJsonValue revision{QJsonValue::Null};
   QJsonObject retained_profiles;
+  QJsonObject unchecked_profiles;
   QJsonObject saved_draft, progress;
   bool tests_known{false}, tests_passed{false}, test_running{false};
   int controller_state{0}; // Unknown, running, or stopped.
@@ -192,7 +193,7 @@ struct WorkflowSetupDialog::Impl {
     }
     next_step->setText(instruction);
     next->setText(label);
-    next->setEnabled(idle && enabled && !test_running);
+    next->setEnabled(idle && enabled && (!test_running || (step == 3 && !tests_known)));
     next->setToolTip(enabled ? QString{} : instruction);
     next->setIcon(action_icon(step == 4 ? ActionIcon::Apply : step == 3 ? ActionIcon::Play : ActionIcon::Next));
     back->setEnabled(idle && step > 0 && !test_running);
@@ -246,6 +247,8 @@ struct WorkflowSetupDialog::Impl {
     }
     for (const auto& name : chosen)
       append(name, "saved choice", -1);
+    for (auto entry = unchecked_profiles.begin(); entry != unchecked_profiles.end(); ++entry)
+      append(entry.key(), "saved choice", -1);
   }
   void nextStep() {
     showProblem({});
@@ -538,7 +541,12 @@ struct WorkflowSetupDialog::Impl {
       controller_state = 0;
     auto temporary = std::make_shared<QTemporaryFile>();
     if (!temporary->open()) {
-      message("Could not create the setup request: " + temporary->errorString());
+      const auto error = "Could not create the setup request: " + temporary->errorString();
+      flow = Flow::None;
+      polling = false;
+      message(error);
+      showProblem(error);
+      updateButtons();
       return;
     }
     temporary->write(QJsonDocument(request).toJson(QJsonDocument::Compact));
@@ -656,6 +664,7 @@ struct WorkflowSetupDialog::Impl {
     dashboard->setText(value.value("observer_registry").toString());
     observer = value.value("observer_registry");
     retained_profiles = value.value("profiles").toObject();
+    unchecked_profiles = {};
     profiles->setRowCount(0);
     for (auto entry = retained_profiles.begin(); entry != retained_profiles.end(); ++entry)
       row(entry.key(), entry.value().toObject());
@@ -1044,11 +1053,35 @@ WorkflowSetupDialog::WorkflowSetupDialog(
     const QString name = item->data(Qt::UserRole).toString();
     if (item->checkState() == Qt::Checked) {
       const int index = item->data(Qt::UserRole + 1).toInt();
-      if (index >= 0) {
+      if (s.unchecked_profiles.contains(name)) {
+        const QSignalBlocker blocked(s.profiles);
+        const auto remembered = s.unchecked_profiles.take(name).toObject();
+        for (auto entry = remembered.begin(); entry != remembered.end(); ++entry) {
+          int existing = -1;
+          for (int row = 0; row < s.profiles->rowCount(); ++row)
+            if (s.profiles->item(row, 0)->text() == entry.key())
+              existing = row;
+          if (existing >= 0) {
+            auto* nodes = s.profiles->item(existing, 2);
+            nodes->setText(nodes->text() + ", " + name);
+          } else {
+            auto value = entry.value().toObject();
+            value.insert("nodes", QJsonArray{name});
+            s.retained_profiles.insert(entry.key(), value);
+            s.row(entry.key(), value);
+          }
+        }
+      } else if (index >= 0) {
         s.computers->setCurrentIndex(index);
         s.add->click();
       }
     } else {
+      QJsonObject remembered;
+      const auto current = s.draft().value("profiles").toObject();
+      for (auto entry = current.begin(); entry != current.end(); ++entry)
+        if (entry.value().toObject().value("nodes").toArray().contains(name))
+          remembered.insert(entry.key(), entry.value());
+      s.unchecked_profiles.insert(name, remembered);
       const QSignalBlocker blocked(s.profiles);
       for (int row = s.profiles->rowCount() - 1; row >= 0; --row) {
         auto nodes = s.profiles->item(row, 2)->text().split(',', Qt::SkipEmptyParts);
@@ -1060,8 +1093,9 @@ WorkflowSetupDialog::WorkflowSetupDialog(
         else
           s.profiles->item(row, 2)->setText(nodes.join(", "));
       }
-      s.invalidate();
     }
+    QTimer::singleShot(0, s.owner, [&s] { s.syncMachines(); });
+    s.invalidate();
   });
   connect(close, &QPushButton::clicked, this, &QDialog::reject);
   connect(s.use, &QPushButton::clicked, this, &QDialog::accept);
@@ -1236,6 +1270,8 @@ WorkflowSetupDialog::WorkflowSetupDialog(
     s.operation("test-status", {}, [&s](QJsonObject value) { s.testStatus(value); });
   });
   connect(s.stop, &QPushButton::clicked, this, [&s] {
+    s.flow = Impl::Flow::None;
+    s.polling = false;
     s.operation("cancel-test", {}, [&s](QJsonObject value) { s.testStatus(value); });
   });
   connect(s.test, &QPushButton::clicked, this, [&s] {
@@ -1249,7 +1285,10 @@ WorkflowSetupDialog::WorkflowSetupDialog(
           continue;
         const auto snapshot = hm::user_config::load_snapshot();
         if (!snapshot.ok()) {
-          s.message(QString::fromStdString(snapshot.status().ToString()));
+          s.flow = Impl::Flow::None;
+          const auto error = QString::fromStdString(snapshot.status().ToString());
+          s.message(error);
+          s.showProblem(error);
           return;
         }
         s.operation(
