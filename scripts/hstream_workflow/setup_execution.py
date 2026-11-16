@@ -26,7 +26,7 @@ from .files import (
     write_json,
 )
 from .profiles import DEFAULT_FIELDS, controller_files, load_config
-from .schema import digest, positive, require, validate_plan
+from .schema import WorkflowError, digest, positive, require, validate_plan
 from .setup import SetupStore, absolute, run_readonly, validate_draft
 
 CPU = ["experiment-create", "experiment-reuse-selection", "experiment-complete"]

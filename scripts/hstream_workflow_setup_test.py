@@ -188,6 +188,25 @@ class SetupTest(unittest.TestCase):
             )
             self.assertFalse(result["ready"])
 
+    def test_build_error_identifies_the_profile_with_a_missing_compute_installation(
+        self,
+    ):
+        self.draft["profiles"]["gpu"]["runtime_root"] = str(self.root / "missing-gpu")
+
+        def inspect(root, *, cpu):
+            return (
+                self.inspect(root, cpu=True)
+                if cpu
+                else execution.inventory(root, cpu=False)
+            )
+
+        with self.assertRaises(WorkflowError) as raised:
+            execution.compile_configuration(
+                self.draft, self.defaults, self.cpu, inspect
+            )
+        self.assertIn("Fast computers:", str(raised.exception))
+        self.assertIn("Advanced profile settings", str(raised.exception))
+
     def test_save_response_cannot_borrow_a_concurrent_writers_revision(self):
         second = copy.deepcopy(self.draft)
         second["profiles"]["gpu"]["label"] = "Another window"

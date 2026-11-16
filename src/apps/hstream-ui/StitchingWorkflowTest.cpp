@@ -373,7 +373,7 @@ elif r['action'] in ('test-status','start-test','cancel-test'):
 elif r['action']=='activate':
  p.update(applied=True,installed=True)
  reply({'applied':True})
-elif r['action']=='inspect': reply({'ready':True,'checks':[]})
+elif r['action']=='inspect': reply({'ready':not (root/'setup-controller-stopped').exists(),'checks':[]})
 else: reply({'message':'Fixture step complete'})
 )PY");
   QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
@@ -487,6 +487,13 @@ else: reply({'message':'Fixture step complete'})
   start->click();
   require(
       wait([&] { return discover->isEnabled() && !start->isEnabled(); }), "A started controller still offered Start");
+  write(root + "/setup-controller-stopped", "stopped");
+  widget<QPushButton>(dialog, "workflowSetupCheck")->click();
+  require(wait([&] { return start->isEnabled(); }), "A failed readiness check left Start disabled");
+  require(!use->isEnabled(), "A failed readiness check left Use this cluster enabled");
+  require(
+      widget<QLabel>(dialog, "workflowSetupNext")->text().contains("Start controller"),
+      "A failed readiness check did not explain how to restart");
   server->setText("unreachable");
   require(!use_installed->isEnabled(), "Changing servers retained the old installation suggestion");
   discover->click();

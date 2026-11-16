@@ -243,6 +243,9 @@ struct WorkflowSetupDialog::Impl {
     if (process)
       return;
     accepted_registry.clear();
+    const auto action = request.value("action").toString();
+    if (action == "inspect" || action == "start-service" || action == "stop-service")
+      controller_state = 0;
     auto temporary = std::make_shared<QTemporaryFile>();
     if (!temporary->open()) {
       message("Could not create the setup request: " + temporary->errorString());
@@ -258,7 +261,6 @@ struct WorkflowSetupDialog::Impl {
     auto* timer = new QTimer(child);
     timer->setSingleShot(true);
     auto complete = std::make_shared<bool>(false);
-    const auto action = request.value("action").toString();
     auto finish = [this, child, timer, bytes, errors, temporary, complete, done, action](int code) {
       if (*complete)
         return;
@@ -628,6 +630,7 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   layout->addWidget(s.results);
   auto* buttons = new QHBoxLayout();
   s.check = new QPushButton(action_icon(ActionIcon::Inspect), "Check installed setup", this);
+  s.check->setObjectName("workflowSetupCheck");
   s.use = new QPushButton(action_icon(ActionIcon::Apply), "Use this cluster", this);
   s.use->setObjectName("workflowSetupUse");
   s.use->setEnabled(false);
