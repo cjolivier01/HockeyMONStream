@@ -323,6 +323,19 @@ void profileResponseBounds(const QString& root, YAML::Node baseline) {
   write(root + "/profiles.json", QJsonDocument(profiles()).toJson());
 }
 
+void unconfiguredWorkflowExplainsHowToEnable(YAML::Node baseline) {
+  baseline["workflow"]["registry"] = YAML::Node(YAML::NodeType::Null);
+  StitchingWorkflow pane("/tmp/game", "/tmp", QProcessEnvironment::systemEnvironment(), baseline, nullptr);
+  auto* selector = widget<QComboBox>(pane, "stitchWorkflowProfile");
+  auto* configure = widget<QPushButton>(pane, "configureStitchWorkflowButton");
+  auto* availability = widget<QLabel>(pane, "stitchWorkflowAvailability");
+  require(wait([&] { return !availability->text().isEmpty(); }), "Unconfigured workflow did not explain its state");
+  require(!selector->isEnabled() && configure->isEnabled(), "Unconfigured workflow did not expose setup action");
+  require(
+      availability->text().contains("Configure workflow") && availability->text().contains("Dagster/Slurm"),
+      "Unconfigured workflow did not explain how to enable distributed execution");
+}
+
 void ui(const QString& root, const StitchingExperimentStore& store, YAML::Node baseline) {
   QDir().mkpath(root + "/scripts");
   write(root + "/scripts/hstream-workflow", kController);
@@ -2254,6 +2267,7 @@ int main(int argc, char** argv) {
     store.game_directory = temporary.path().toStdString() + "/game";
     store.directory = store.game_directory / "_hockeymon/stitching-experiments";
     plans(store);
+    unconfiguredWorkflowExplainsHowToEnable(YAML::Clone(baseline->values));
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
     profileResponseBounds(temporary.path(), YAML::Clone(baseline->values));
