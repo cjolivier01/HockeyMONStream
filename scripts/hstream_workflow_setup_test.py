@@ -1356,6 +1356,7 @@ int main(int argc, char** argv) {
         }
         first = execution.start_test(self.registry, request)
         self.assertFalse(first["tested"])
+        self.assertEqual(first["tests"][0]["game"], str(fixture.game))
         with self.assertRaisesRegex(WorkflowError, "previous test"):
             execution.start_test(self.registry, request)
         deadline = time.monotonic() + 45

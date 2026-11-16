@@ -699,6 +699,9 @@ def qualification_status(root, *, tick):
                 "passed": False,
             }
             if test:
+                row["game"] = read_json(Path(test["registry"]) / "plan.json")[
+                    "source_identity"
+                ]["game_directory"]
                 controller, status, rejection = restore_test(test)
                 if rejection is not None:
                     row.update(

@@ -29,6 +29,7 @@
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QLineEdit>
+#include <QtWidgets/QListWidget>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPlainTextEdit>
@@ -36,6 +37,7 @@
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QSpinBox>
+#include <QtWidgets/QStackedWidget>
 #include <QtWidgets/QTabBar>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QTableWidget>
@@ -411,8 +413,13 @@ else: reply({'message':'Fixture step complete'})
   require(!test->toolTip().isEmpty(), "A disabled setup action has no explanation");
   runtime->setText(root + "/old-release");
   require(!use_installed->isEnabled(), "An installation was offered before discovery");
+  auto* next = widget<QPushButton>(dialog, "workflowSetupContinue");
+  auto* pages = widget<QStackedWidget>(dialog, "workflowSetupPages");
+  require(
+      pages->currentIndex() == 0 && !rows->isVisible() && !test->isVisible(),
+      "Setup exposed later steps on its first screen");
   server->setText("ripper");
-  discover->click();
+  next->click();
   require(
       wait([&] { return discover->isEnabled() && computers->currentText().contains("mini"); }),
       "Discovery did not offer the returned computer");
@@ -425,7 +432,9 @@ else: reply({'message':'Fixture step complete'})
       add = button;
   }
   require(add != nullptr, "Missing add-computer action");
-  add->click();
+  require(pages->currentIndex() == 1 && !next->isEnabled(), "Computer choices did not wait for a selection");
+  auto* machine_list = widget<QListWidget>(dialog, "workflowSetupMachineList");
+  machine_list->item(0)->setCheckState(Qt::Checked);
   require(rows->rowCount() == 1 && rows->item(0, 2)->text() == "mini", "Adding a discovered computer lost its name");
   require(
       rows->item(0, 3)->text() == "gpu" && rows->item(0, 4)->text() == "gpu:rtx5090:1",
@@ -461,14 +470,17 @@ else: reply({'message':'Fixture step complete'})
   require(
       read(root + "/saved-setup.json").value("revision").isNull(),
       "New registry inherited the previous folder's revision");
-  build->click();
-  require(wait([&] { return test->isEnabled(); }), "Building did not enable testing");
+  next->click();
+  require(
+      wait([&] { return pages->currentIndex() == 2 && !test->isVisible(); }), "Prepare screen leaked test controls");
+  next->click();
+  require(wait([&] { return test->isEnabled() && pages->currentIndex() == 3; }), "Building did not advance to testing");
   require(
       rows->item(0, 9)->text() == root + "/installed", "Building did not refresh the repaired compute installation");
   require(!apply->isEnabled() && !start->isEnabled(), "Building offered Apply or Start before tests");
   const auto screenshot = qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT");
   if (!screenshot.isEmpty()) {
-    dialog.resize(1050, 1000);
+    dialog.resize(820, 660);
     QCoreApplication::processEvents();
     require(dialog.grab().save(screenshot), "Cannot capture cluster setup");
   }
@@ -500,7 +512,7 @@ else: reply({'message':'Fixture step complete'})
   require(wait([&] { return start->isEnabled(); }), "A failed readiness check left Start disabled");
   require(!use->isEnabled(), "A failed readiness check left Use this cluster enabled");
   require(
-      widget<QLabel>(dialog, "workflowSetupNext")->text().contains("Start controller"),
+      !widget<QLabel>(dialog, "workflowSetupNext")->text().isEmpty(),
       "A failed readiness check did not explain how to restart");
   server->setText("unreachable");
   require(!use_installed->isEnabled(), "Changing servers retained the old installation suggestion");
@@ -511,6 +523,178 @@ else: reply({'message':'Fixture step complete'})
       "Connection failure was not displayed");
   require(!results->toPlainText().contains("{\"error\""), "Setup displayed a nested JSON error");
   require(!use_installed->isEnabled(), "A failed connection reenabled the stale installation");
+  dialog.close();
+}
+
+void setupWizardSequence(const QString& root, YAML::Node baseline, const QString& outcome) {
+  const QString directory = root + "/wizard-" + outcome;
+  require(QDir().mkpath(directory), "Cannot create wizard fixture");
+  const QString launcher = directory + "/helper";
+  write(launcher, R"PY(#!/usr/bin/env python3
+import json, pathlib, sys, time
+r=json.loads(pathlib.Path(sys.argv[-1]).read_text())
+root=pathlib.Path(__file__).parent
+mode=root.name.removeprefix('wizard-')
+path=root/'state.json'
+s=json.loads(path.read_text()) if path.exists() else {'progress':{'revision':'saved','has_build':False,'build_current':False,'applied':False,'installed':False},'phases':{},'calls':[]}
+s['calls'].append(r)
+p=s['progress']; phases=s['phases']; action=r['action']
+error=None
+if action=='discover':
+ value={'checks':[{'name':'Server connection','ok':True,'message':'Connected'}], 'machines':[{'name':name,'gpu':'gpu:1','partition':'gpu','state':'idle'} for name in ('mini','stubby')]}
+elif action=='save':
+ s['draft']=r['draft']; value={'draft':s['draft'],'revision':p['revision']}
+elif action=='build':
+ p.update(has_build=True,build_current=True)
+ value={'draft':s['draft'],'revision':p['revision']}
+elif action in ('load','import'):
+ value={'draft':s['draft'],'revision':p['revision']}
+elif action in ('test-status','start-test','cancel-test'):
+ if action=='test-status' and (root/'hold-status').exists():
+  (root/'status-started').write_text('started')
+  while (root/'hold-status').exists(): time.sleep(.01)
+ if action=='test-status':
+  for node,phase in list(phases.items()):
+   if phase=='running' and mode!='cancel': phases[node]='failed' if mode=='failure' and node=='mini' else 'passed'
+ if action=='start-test':
+  phases[r['node']]='running'
+  if mode=='lost-start' and not s.get('lost'):
+   s['lost']=True; error='Connection lost. The submitted test may still be running.'
+ if action=='cancel-test':
+  phases.update({node:'cancelled' for node,phase in phases.items() if phase=='running'})
+ rows=[]
+ for key,profile in s['draft']['profiles'].items():
+  for node in profile['nodes']:
+   phase=phases.get(node,'not-tested')
+   row={'profile':key,'node':node,'state':phase,'passed':phase=='passed'}
+   if phase!='not-tested': row.update(status={'state':phase},finished=phase!='running')
+   rows.append(row)
+ value={'tests':rows,'tested':all(row['passed'] for row in rows),'current':True}
+elif action=='activate':
+ assert set(phases.values())=={'passed'}
+ p.update(applied=True,installed=True); value={'applied':True}
+elif action=='inspect': value={'ready':True,'checks':[]}
+else: value={}
+path.write_text(json.dumps(s))
+if error:
+ print(json.dumps({'error':error}),file=sys.stderr); sys.exit(2)
+print(json.dumps({**value,'progress':p}))
+)PY");
+  QFile::setPermissions(launcher, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+  baseline["workflow"]["poll_interval_ms"] = 100;
+  WorkflowSetupDialog dialog(
+      launcher,
+      directory + "/registry",
+      directory + "/recordings/game",
+      QProcessEnvironment::systemEnvironment(),
+      baseline,
+      nullptr);
+  dialog.show();
+  auto capture = [&](const QString& name) {
+    if (outcome != "success" || qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT").isEmpty())
+      return;
+    QCoreApplication::processEvents();
+    require(dialog.grab().save("/tmp/wizard-qt-" + name + ".png"), "Cannot capture wizard step");
+  };
+  capture("1-connect");
+  auto* next = widget<QPushButton>(dialog, "workflowSetupContinue");
+  auto* pages = widget<QStackedWidget>(dialog, "workflowSetupPages");
+  auto* back = widget<QPushButton>(dialog, "workflowSetupBack");
+  auto* problem = widget<QLabel>(dialog, "workflowSetupProblem");
+  widget<QLineEdit>(dialog, "workflowSetupServer")->setText("ripper");
+  next->click();
+  require(
+      wait([&] { return pages->currentIndex() == 1 && next->text() == "Continue"; }),
+      "Wizard did not finish discovery");
+  auto* machines = widget<QListWidget>(dialog, "workflowSetupMachineList");
+  require(machines->count() == 2 && !next->isEnabled(), "Wizard did not require an explicit computer choice");
+  machines->item(0)->setCheckState(Qt::Checked);
+  machines->item(1)->setCheckState(Qt::Checked);
+  capture("2-computers");
+  next->click();
+  require(wait([&] { return pages->currentIndex() == 2; }), "Wizard did not show preparation");
+  capture("3-prepare");
+  next->click();
+  require(wait([&] { return pages->currentIndex() == 3 && next->isEnabled(); }), "Wizard did not finish preparation");
+  capture("4-test");
+  auto calls = [&] { return read(directory + "/state.json").value("calls").toArray(); };
+  auto starts = [&] {
+    QStringList result;
+    for (const auto& item : calls())
+      if (item.toObject().value("action").toString() == "start-test")
+        result << item.toObject().value("node").toString();
+    return result;
+  };
+  require(starts().isEmpty(), "Preparing silently started tests");
+  if (outcome == "success") {
+    widget<QPushButton>(dialog, "workflowSetupRecover")->click();
+    require(
+        wait([&] { return next->isEnabled() && next->text() == "Continue the test"; }),
+        "Recovery did not return to the unfinished test step");
+    require(starts().isEmpty(), "Recovering silently started tests");
+  }
+  if (outcome == "cancel-before-start")
+    write(directory + "/hold-status", "hold");
+  next->click();
+  if (outcome == "cancel-before-start") {
+    require(wait([&] { return QFileInfo::exists(directory + "/status-started"); }), "Status did not start");
+    widget<QPushButton>(dialog, "workflowSetupCancelChecks")->click();
+    QFile::remove(directory + "/hold-status");
+    require(wait([&] { return next->isEnabled(); }), "Pending status cancellation did not finish");
+    require(starts().isEmpty(), "Stop during status still submitted a test");
+    dialog.close();
+    return;
+  }
+  if (outcome == "lost-start") {
+    require(
+        wait([&] { return next->isEnabled() && problem->text().contains("may still be running"); }),
+        "Lost admission did not offer recovery");
+    next->click();
+  }
+  if (outcome == "cancel") {
+    auto* stop = widget<QPushButton>(dialog, "workflowSetupCancelChecks");
+    require(wait([&] { return starts().size() == 1 && stop->isVisible(); }), "Test did not offer Stop");
+    require(!back->isEnabled(), "Back allowed edits during a test");
+    stop->click();
+    require(wait([&] { return next->isEnabled(); }), "Stopping did not finish cleanup");
+    for (int i = 0; i < 20; ++i) {
+      QCoreApplication::processEvents();
+      QThread::msleep(20);
+    }
+    require(starts() == QStringList{"mini"}, "Stop launched the next computer");
+  } else if (outcome == "failure") {
+    require(
+        wait([&] { return next->isEnabled() && problem->text().contains("mini did not pass"); }),
+        "Failed test did not explain the stopped sequence");
+    for (int i = 0; i < 20; ++i) {
+      QCoreApplication::processEvents();
+      QThread::msleep(20);
+    }
+    require(starts() == QStringList{"mini"}, "Failure automatically retried or advanced");
+  } else {
+    require(
+        wait([&] { return pages->currentIndex() == 4 && next->isEnabled(); }), "One click did not test all computers");
+    require(starts() == QStringList({"mini", "stubby"}), "Test sequence repeated or skipped a computer");
+    require(
+        !read(directory + "/state.json").value("progress").toObject().value("applied").toBool(),
+        "Tests silently activated the cluster");
+    capture("5-enable");
+    next->click();
+    require(
+        wait([&] { return next->text() == "Use these computers" && next->isEnabled(); }),
+        "Enable did not apply, start and inspect the cluster");
+    const auto history = calls();
+    require(
+        history[history.size() - 3].toObject().value("action") == "activate" &&
+            history[history.size() - 2].toObject().value("action") == "start-service" &&
+            history.last().toObject().value("action") == "inspect",
+        "Enable commands ran out of order");
+    capture("6-ready");
+    next->click();
+    require(
+        dialog.result() == QDialog::Accepted && dialog.selectedRegistry() == directory + "/registry",
+        "Finish did not select the tested registry");
+  }
   dialog.close();
 }
 
@@ -2679,12 +2863,21 @@ int main(int argc, char** argv) {
       std::cout << "Workflow submission diagnostics and dialog recovery passed\n";
       return 0;
     }
+    if (qEnvironmentVariableIntValue("HSTREAM_WORKFLOW_SETUP_ONLY") != 0) {
+      setupAssistant(temporary.path(), YAML::Clone(baseline->values));
+      for (const auto& outcome : {"success", "failure", "cancel", "lost-start", "cancel-before-start"})
+        setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
+      std::cout << "Cluster setup wizard checks passed\n";
+      return 0;
+    }
     StitchingExperimentStore store;
     store.game_directory = temporary.path().toStdString() + "/game";
     store.directory = store.game_directory / "_hockeymon/stitching-experiments";
     plans(store);
     unconfiguredWorkflowExplainsHowToEnable(YAML::Clone(baseline->values));
     setupAssistant(temporary.path(), YAML::Clone(baseline->values));
+    for (const auto& outcome : {"success", "failure", "cancel", "lost-start", "cancel-before-start"})
+      setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));
     restartRetainedBatch(temporary.path(), store, YAML::Clone(baseline->values));
