@@ -19,7 +19,7 @@ from .setup import absolute, run_readonly, validate_draft
 
 # Protocol support, not a configurable processing default. Old readers reject
 # catalogs written by the current desktop before any GPU stage can start.
-REQUIRED_FEATURES = ["experiment-control-point-selection-v1"]
+REQUIRED_FEATURES = ["experiment-control-point-selection-v1", "cluster-readiness-v1"]
 
 
 def has_current_features(features):

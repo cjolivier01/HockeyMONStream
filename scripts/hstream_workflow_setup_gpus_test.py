@@ -75,10 +75,19 @@ class SetupGpuChoicesTest(unittest.TestCase):
     def test_untyped_and_compound_requests_are_not_reinterpreted(self):
         for gres in ("gpu:1", "gpu:2", "gpu:rtx:1,mps:50", "mps:100"):
             with self.subTest(gres=gres):
-                self.assertFalse(needs_inventory(self.profile(gres)))
+                self.assertEqual(
+                    needs_inventory(self.profile(gres)), gres in {"gpu:1", "gpu:2"}
+                )
                 choices, messages = resolve_profiles(self.profile(gres), "")
                 self.assertEqual(choices["saved"]["mini"], gres)
                 self.assertEqual(messages, [])
+
+    def test_generic_gpu_matches_only_a_single_reported_type(self):
+        choices, _ = resolve_profiles(self.profile("gpu:1"), "mini|gpu|gpu:rtx5090:1")
+        self.assertEqual(choices["saved"]["mini"], "gpu:rtx5090:1")
+        for inventory in ("mini|gpu|gpu:rtx5090:1,gpu:a100:1", "mini|gpu|gpu:2", ""):
+            choices, _ = resolve_profiles(self.profile("gpu:1"), inventory)
+            self.assertEqual(choices["saved"]["mini"], "gpu:1")
 
     def test_bad_or_conflicting_inventory_is_not_used(self):
         for inventory in (

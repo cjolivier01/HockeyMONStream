@@ -16,12 +16,13 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    settings storage, repairs obsolete installation paths and prepares immutable
    copies for each platform. It does not install missing HStream packages.
    Activity appears as shared storage is checked and each computer verifies or
-   copies its installed files. The recording test checks access to the actual videos.
-4. **Test.** Choose one recording with players on the ice, then **Test my
-   computers**. Every selected computer runs in turn. Successful computers are
+   copies its installed files.
+4. **Test.** Choose **Test my computers** to run a short native GPU and shared-storage
+   check on each selected computer. The open recording supplies the shared folder;
+   no video is read, scanned or calibrated. Successful computers are
    retained. The screen shows the current computer, GPU choice, check number,
-   completed stages and remaining checks. Several GPU choices on the same computer
-   require separate checks. A queued stage says it is waiting for Slurm and shows
+   completed stages and remaining checks. Equivalent GPU choices on the same computer
+   share one check. Different runtimes or resource requirements remain separate. A queued stage says it is waiting for Slurm and shows
    the scheduler reason; it does not claim to be running. Test details include the
    current native stage log. Resume stays disabled while automatic checking runs,
    and Stop remains available across polls. Stopping and continuing skips passed
@@ -29,7 +30,7 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    the failed stage, its cause and what to do next, including after reopening setup.
    Recovered diagnostics from successful stages are not reported as the failure.
    Cleanup stays explicit until the controller proves the test stopped. The test
-   uses private copies and does not promote results to the recording. Stop testing
+   writes only private readiness receipts and does not promote results to the recording. Stop testing
    cancels the current test and prevents later computers from starting, including
    when a status response is still pending. Unknown submission results must be
    recovered before another test can start. Closing retains the current native
@@ -102,7 +103,17 @@ Numeric model names are exact choices: a missing A10 never becomes an A100.
 Tasks select the prepared libraries and baseline before their native program
 starts, including packages whose ELF search path names the deployment prefix.
 Published copies stay in place for existing runs. Discovery and build never mark
-computers qualified: each one still needs its native sample test.
+computers qualified: each one still needs its native GPU/storage check.
+
+Setup qualifies deployment readiness, not video processing quality or memory capacity
+for every recording. A normal stitching experiment performs calibration and player
+scanning after setup. The quick check uses the ordinary Slurm/native worker protocol,
+GPU allocation, artifact verification, process retirement and game ownership. Its
+execution deadline is bounded by `workflow.command_timeout_seconds`; scheduler queue
+time is shown separately. Matching node, runtime pins, command, capabilities and all
+allocation resources are required to reuse a result across profile aliases. Generic
+GPU requests become exact types only on computers reporting one available GPU type.
+Unchanged prepared generations retain successful checks after Stop and Resume.
 Discovery also finds registries used by managed user services, including custom
 folders. If it finds several, it lists them for selection. Changing the settings
 folder starts a separate draft; it cannot carry another folder's save revision.

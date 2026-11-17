@@ -1668,6 +1668,7 @@ cc_binary(
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":experiment_task_runtime", ":stitching_experiment_store", ":web_job_spec",
         "//src/libs/common:game_operation_owner", "//src/libs/common:game_storage",
+        "//src/libs/gpu:runtime",
         "//src/libs/stitching:hugin_project", "//src/libs/stitching:transaction_state",
         "@qt//:qt_core", "@yaml-cpp"],
 )

@@ -23,6 +23,8 @@ capabilities = json.loads(
     subprocess.check_output([str(binary), "--capabilities"], text=True)
 )
 assert "experiment-control-point-selection-v1" in capabilities["features"]
+assert "cluster-readiness-v1" in capabilities["features"]
+assert "experiment-probe" in capabilities["operations"]
 expected_backend = sys.argv[2]
 assert capabilities["gpu_backend"] == expected_backend
 assert capabilities["gpu_operations_supported"] == (expected_backend == "nvidia")
@@ -140,6 +142,35 @@ if expected_backend == "amd":
         rejected.returncode != 0 and "AMD automatic calibration" in rejected.stdout
     ), (rejected.stdout, rejected.stderr)
     assert not (unsupported / "native-result.json").exists()
+# A readiness check cannot succeed without an actual allocated GPU, even when
+# shared storage and the owner's authority are valid.
+probe = directory / "attempts/probe-no-allocation"
+probe.mkdir()
+probe_request = dict(
+    request,
+    operation="experiment-probe",
+    inputs={},
+    root=str(probe),
+    attempt_id=probe.name,
+    result_path=str(probe / "native-result.json"),
+)
+probe_path = probe / "request.json"
+probe_path.write_text(json.dumps(probe_request))
+rejected = subprocess.run(
+    [str(binary), "--request", str(probe_path)],
+    capture_output=True,
+    text=True,
+    timeout=30,
+    env=dict(os.environ, CUDA_VISIBLE_DEVICES=""),
+)
+assert rejected.returncode != 0, rejected.stdout
+assert (
+    "qualified NVIDIA allocation"
+    if expected_backend == "nvidia"
+    else "AMD automatic calibration"
+) in rejected.stdout
+assert not (probe / "native-result.json").exists()
+
 # A prepare successor must retain identity while owning separate mutable files.
 second = directory / "attempts/attempt-snapshot"
 second.mkdir(parents=True)

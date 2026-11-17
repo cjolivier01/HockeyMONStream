@@ -1424,7 +1424,7 @@ int main(int argc, char** argv) {
         setup.SetupStore(self.registry).save(changed, saved["revision"])
         self.assertFalse(setup.progress(self.registry)["build_current"])
 
-    def test_qualification_requires_every_real_stage_and_one_explicit_node(self):
+    def test_qualification_runs_only_a_bounded_native_probe_on_one_explicit_node(self):
         plan = execution.test_plan(
             self.compile(),
             "gpu",
@@ -1436,14 +1436,52 @@ int main(int argc, char** argv) {
         self.assertEqual(plan["profiles"]["gpu"]["resources"]["nodes"], ["mini"])
         self.assertEqual(
             set(stage["kind"] for stage in plan["stages"]),
-            set(execution.CPU + execution.GPU),
+            {"experiment-probe"},
         )
         self.assertTrue(
             all("catalog_key" not in stage["inputs"] for stage in plan["stages"])
         )
-        scan = next(stage for stage in plan["stages"] if stage["id"] == "scan")
-        self.assertEqual(scan["inputs"]["search_duration_seconds"], 60)
+        self.assertEqual(len(plan["stages"]), 1)
+        self.assertEqual(plan["stages"][0]["inputs"], {})
+        self.assertEqual(plan["profiles"]["gpu"]["resources"]["time_seconds"], 30)
         self.assertEqual(plan["limits"]["max_parallel"], 1)
+
+    def test_equivalent_choices_share_proof_but_distinct_requests_do_not(self):
+        config = self.compile()
+        alias = copy.deepcopy(config["profiles"]["gpu"])
+        alias.update(
+            label="Another name",
+            pool="another-pool",
+            limits={"concurrency": 1, "per_user": 1},
+        )
+        config["profiles"]["alias"] = alias
+        saved = {
+            "configuration": config,
+            "setup_features": runtime_setup.REQUIRED_FEATURES,
+        }
+        self.assertEqual(
+            execution.qualification_checks(saved),
+            [("gpu", "mini", ["gpu", "alias"]), ("gpu", "meshy", ["gpu", "alias"])],
+        )
+        for field, value in (
+            ("gres", "gpu:a100:1"),
+            ("partition", "other"),
+            ("memory_mb", 20000),
+            ("account", "other"),
+        ):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(saved)
+                changed["configuration"]["profiles"]["alias"]["resources"][
+                    field
+                ] = value
+                self.assertEqual(len(execution.qualification_checks(changed)), 4)
+        changed = copy.deepcopy(saved)
+        changed["configuration"]["profiles"]["alias"]["runtime"]["files"]["/other"] = (
+            "c" * 64
+        )
+        self.assertEqual(len(execution.qualification_checks(changed)), 4)
+        saved["setup_features"] = []
+        self.assertEqual(len(execution.qualification_checks(saved)), 4)
 
     def test_packaged_runtime_selects_only_the_setup_controller(self):
         from hstream_workflow.dispatch import installed_launcher
@@ -1551,16 +1589,28 @@ int main(int argc, char** argv) {
             execution, "compile_configuration", return_value=self.compile()
         ):
             execution.build(self.registry, request)
-        result = execution.start_test(
-            self.registry,
-            {
-                "profile": "gpu",
-                "node": "mini",
-                "game": str(game),
-                "scan_seconds": 60,
-                "user_config_snapshot": {"schema": 1, "source_path": "", "values": {}},
-            },
-        )
+        original_plan = execution.test_plan
+
+        def rejected_plan(*args):
+            plan = original_plan(*args)
+            plan["profiles"]["gpu"]["resources"]["time_seconds"] = 30 * 24 * 3600
+            return plan
+
+        with patch.object(execution, "test_plan", side_effect=rejected_plan):
+            result = execution.start_test(
+                self.registry,
+                {
+                    "profile": "gpu",
+                    "node": "mini",
+                    "game": str(game),
+                    "scan_seconds": 60,
+                    "user_config_snapshot": {
+                        "schema": 1,
+                        "source_path": "",
+                        "values": {},
+                    },
+                },
+            )
         rejected = result["tests"][0]
         self.assertEqual(rejected["state"], "rejected")
         self.assertTrue(rejected["finished"])
@@ -1960,6 +2010,8 @@ int main(int argc, char** argv) {
             profile["resources"]["nodes"] = ["mini"] if key == "gpu" else []
             profile["pool"] = key
             config["profiles"][key] = profile
+        config["profiles"]["alias"] = copy.deepcopy(config["profiles"]["gpu"])
+        config["profiles"]["alias"]["label"] = "Another GPU choice"
         with patch.object(execution, "compile_configuration", return_value=config):
             execution.build(
                 self.registry,
@@ -1979,6 +2031,8 @@ int main(int argc, char** argv) {
         }
         first = execution.start_test(self.registry, request)
         self.assertFalse(first["tested"])
+        self.assertEqual(len(first["tests"]), 1)
+        self.assertEqual(set(first["tests"][0]["profiles"]), {"gpu", "alias"})
         self.assertEqual(first["tests"][0]["game"], str(fixture.game))
         with self.assertRaisesRegex(WorkflowError, "previous test"):
             execution.start_test(self.registry, request)
@@ -1990,7 +2044,7 @@ int main(int argc, char** argv) {
             time.sleep(0.02)
         self.assertTrue(status["tested"], status)
         self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
-        self.assertEqual(len(status["tests"][0]["status"]["nodes"]), 10)
+        self.assertEqual(len(status["tests"][0]["status"]["nodes"]), 1)
         self.assertTrue(
             all(
                 len(stage["attempts"]) == 1

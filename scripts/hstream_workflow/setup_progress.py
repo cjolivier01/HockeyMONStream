@@ -31,6 +31,7 @@ def forward(line):
 
 def stage_label(stage):
     labels = {
+        "probe": "Check HStream, GPU and shared storage",
         "prepare": "Prepare a private recording",
         "prepare-target": "Check the recording on this computer",
         "baseline": "Line up the cameras and find the ice",

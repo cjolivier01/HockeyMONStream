@@ -1,5 +1,6 @@
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/gpu/Runtime.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/ExperimentTaskRuntime.h"
@@ -13,6 +14,7 @@
 #include <cmath>
 #include <csignal>
 #include <iostream>
+#include <memory>
 #include <regex>
 #include <set>
 #include <stdexcept>
@@ -344,6 +346,31 @@ void run_process(
       !interrupted && child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0,
       "Native experiment failed or was cancelled; inspect attempt log");
 }
+QJsonObject probe_gpu() {
+  const auto cuda = [](cudaError_t result) {
+    require(result == cudaSuccess, "The GPU check failed: " + std::string(cudaGetErrorString(result)));
+  };
+  std::cerr << "Checking the allocated GPU…" << std::endl;
+  int count = 0;
+  cuda(cudaGetDeviceCount(&count));
+  require(count == 1, "The computer check requires exactly one visible GPU");
+  cuda(cudaSetDevice(0));
+  cudaDeviceProp device{};
+  cuda(cudaGetDeviceProperties(&device, 0));
+  void* memory = nullptr;
+  cuda(cudaMalloc(&memory, sizeof(unsigned int)));
+  const auto release = [](void* pointer) { cudaFree(pointer); };
+  std::unique_ptr<void, decltype(release)> allocation(memory, release);
+  cuda(cudaMemset(memory, 0x5a, sizeof(unsigned int)));
+  cuda(cudaDeviceSynchronize());
+  unsigned int actual = 0;
+  // Four bytes verify GPU execution; no video frames are decoded or copied.
+  cuda(cudaMemcpy(&actual, memory, sizeof(actual), cudaMemcpyDeviceToHost));
+  require(actual == 0x5a5a5a5aU, "The GPU returned an unexpected result");
+  cuda(cudaFree(allocation.release()));
+  std::cerr << "GPU check passed: " << device.name << ". Writing the shared-storage result…" << std::endl;
+  return {{"gpu", QString::fromUtf8(device.name)}, {"readiness", "cluster-readiness-v1"}};
+}
 QJsonObject execute_task(const QJsonObject& document) {
   require(document.value("schema").toInt() == 1, "Unsupported experiment task schema");
   const auto game = absolute_directory(document, "game");
@@ -376,6 +403,7 @@ QJsonObject execute_task(const QJsonObject& document) {
       {"plan_digest", text(digest)},
       {"storage_namespace", text(namespace_id)}};
   const std::set<std::string> operations{
+      "experiment-probe",
       "experiment-create",
       "experiment-baseline",
       "experiment-scan",
@@ -384,7 +412,8 @@ QJsonObject execute_task(const QJsonObject& document) {
       "experiment-reuse-selection",
       "experiment-complete"};
   require(operations.count(request.operation), "Unsupported experiment task kind");
-  const bool gpu = request.operation == "experiment-baseline" || request.operation == "experiment-scan" ||
+  const bool probe = request.operation == "experiment-probe";
+  const bool gpu = probe || request.operation == "experiment-baseline" || request.operation == "experiment-scan" ||
       request.operation == "experiment-materialize" || request.operation == "experiment-run";
   if (gpu) {
 #ifdef HSTREAM_USE_HIP
@@ -401,7 +430,10 @@ QJsonObject execute_task(const QJsonObject& document) {
   StitchingExperimentWorkspace candidate;
   bool available = true;
   std::string diagnostic;
-  if (request.operation == "experiment-create" && request.payload.contains("workspace")) {
+  QJsonObject outputs;
+  if (probe) {
+    outputs = probe_gpu();
+  } else if (request.operation == "experiment-create" && request.payload.contains("workspace")) {
     candidate = take(SnapshotStitchingExperimentWorkspace(read_workspace("workspace"), root / "work/candidate"));
   } else if (request.operation == "experiment-create") {
     fs::path source = game;
@@ -447,14 +479,16 @@ QJsonObject execute_task(const QJsonObject& document) {
   }
   require(!interrupted, "Task cancelled before publication");
   verify_owner(game, identity(owner, "token"), workflow);
-  const auto selection =
-      take(ReusableStitchingExperimentSelectionFingerprint(candidate.game_directory, candidate.settings));
-  QJsonObject outputs{
-      {"workspace", workspace_json(candidate)},
-      {"selection_available", available && !selection.empty()},
-      {"selection_fingerprint", text(selection)},
-      {"materialized", hm::experiment::materialized(candidate)},
-      {"inputs_available", hm::experiment::materialized(candidate)}};
+  if (!probe) {
+    const auto selection =
+        take(ReusableStitchingExperimentSelectionFingerprint(candidate.game_directory, candidate.settings));
+    outputs = QJsonObject{
+        {"workspace", workspace_json(candidate)},
+        {"selection_available", available && !selection.empty()},
+        {"selection_fingerprint", text(selection)},
+        {"materialized", hm::experiment::materialized(candidate)},
+        {"inputs_available", hm::experiment::materialized(candidate)}};
+  }
   const bool complete = request.operation == "experiment-baseline" || request.operation == "experiment-run" ||
       request.operation == "experiment-complete";
   if (request.payload.contains("catalog_key") && (complete || request.operation == "experiment-materialize")) {
@@ -465,14 +499,15 @@ QJsonObject execute_task(const QJsonObject& document) {
   WriteObject(metadata, outputs);
   QJsonArray artifacts{Artifact(request, metadata, "metadata")};
   size_t count = 0;
-  for (const auto& entry : fs::recursive_directory_iterator(candidate.game_directory / "_hockeymon")) {
-    require(++count <= 20000, "Task output exceeds file bound");
-    const auto name = entry.path().filename().string();
-    if (!entry.is_regular_file() || entry.is_symlink() || entry.file_size() == 0 || name.front() == '.' ||
-        name == "manifest.json")
-      continue;
-    artifacts.append(Artifact(request, entry.path(), "calibration"));
-  }
+  if (!probe)
+    for (const auto& entry : fs::recursive_directory_iterator(candidate.game_directory / "_hockeymon")) {
+      require(++count <= 20000, "Task output exceeds file bound");
+      const auto name = entry.path().filename().string();
+      if (!entry.is_regular_file() || entry.is_symlink() || entry.file_size() == 0 || name.front() == '.' ||
+          name == "manifest.json")
+        continue;
+      artifacts.append(Artifact(request, entry.path(), "calibration"));
+    }
   QJsonObject result{
       {"schema", 1},
       {"workflow_id", text(workflow)},
@@ -505,9 +540,11 @@ int main(int argc, char** argv) {
                "experiment-materialization-v1",
                "workflow-portable-artifacts-v2",
                "game-operation-admission-v1",
+               "cluster-readiness-v1",
                "experiment-control-point-selection-v1"}},
           {"operations",
            QJsonArray{
+               "experiment-probe",
                "experiment-create",
                "experiment-baseline",
                "experiment-scan",

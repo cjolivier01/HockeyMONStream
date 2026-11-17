@@ -117,7 +117,7 @@ struct WorkflowSetupDialog::Impl {
         "Which computer is in charge?",
         "Which computers should help?",
         "Let's get them ready",
-        "Try a recording",
+        "Check your computers",
         "Use your computers"};
     heading->setText(titles[step]);
     step_label->setText(QString("Step %1 of 5 · Connect → Computers → Prepare → Test → Finish").arg(step + 1));
@@ -170,7 +170,7 @@ struct WorkflowSetupDialog::Impl {
           : tests_passed         ? "Every computer passed. Click Continue."
           : !problem->text().isEmpty()
           ? "Read the test problem above before trying again. Passed checks are kept."
-          : "Choose a recording with players on the ice. One click tests all selected computers.";
+          : "Run the quick HStream and GPU checks. No video processing; passed checks are kept.";
     } else {
       label = !accepted_registry.isEmpty() ? "Use these computers"
           : applied                        ? "Finish setup"
@@ -378,7 +378,7 @@ struct WorkflowSetupDialog::Impl {
       }
       if (!tests_passed && !test_running && !QDir::isAbsolutePath(sample->text().trimmed())) {
         flow = Flow::None;
-        showProblem("Choose a recording to try, then test again.");
+        showProblem("Choose a shared recording folder for the storage check, then test again.");
         return;
       }
       if (tests_passed) {
@@ -463,7 +463,7 @@ struct WorkflowSetupDialog::Impl {
             : !tests_known ? "Resume / check tests first."
             : test_running ? "Wait for the unfinished test, or stop it."
             : tests_passed ? "Every selected computer has passed. Apply tested settings next."
-                           : "Choose the full folder path of a sample recording first.");
+                           : "Choose a shared recording folder for the storage check first.");
     enable(
         apply,
         build_current && tests_known && tests_passed && !test_running && !applied && controller_state != 1,
@@ -1047,8 +1047,9 @@ WorkflowSetupDialog::WorkflowSetupDialog(
 
   auto* test_page = page(
       3,
-      "Choose one recording with players on the ice. HStream will test every selected computer, "
-      "one after another. It uses private copies and keeps your recording unchanged.");
+      "Start HStream on each computer and check its GPU and shared storage. "
+      "Equivalent GPU choices share one check. No video is processed. "
+      "Your recording stays unchanged; full stitching runs when you start an experiment.");
   s.recording_name = new QLabel(this);
   test_page->addWidget(s.recording_name);
   s.sample = new QLineEdit(game, this);
@@ -1060,7 +1061,7 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   test_page->addLayout(sample_form);
   connect(browse_sample, &QPushButton::clicked, this, [&s] {
     const auto chosen =
-        QFileDialog::getExistingDirectory(s.owner, "Choose a recording with players on the ice", s.sample->text());
+        QFileDialog::getExistingDirectory(s.owner, "Choose a recording folder for the storage check", s.sample->text());
     if (!chosen.isEmpty())
       s.sample->setText(chosen);
   });

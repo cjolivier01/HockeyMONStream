@@ -8,7 +8,11 @@ _TYPED_GPU = re.compile(r"gpu:([A-Za-z0-9_.+\-]+):([0-9]+)")
 
 
 def needs_inventory(profiles):
-    return any(_TYPED_GPU.fullmatch(profile["gres"]) for profile in profiles.values())
+    return any(
+        _TYPED_GPU.fullmatch(profile["gres"])
+        or re.fullmatch(r"gpu:[0-9]+", profile["gres"])
+        for profile in profiles.values()
+    )
 
 
 def resolve_profiles(profiles, inventory):
@@ -45,11 +49,13 @@ def resolve_profiles(profiles, inventory):
         choices = resolved[key] = {}
         for node in profile["nodes"]:
             choices[node] = request
-            # Preserve untyped and compound/custom resource requests. This
-            # repair interprets only the single typed GPU choice it can prove.
-            if not match:
+            untyped = re.fullmatch(r"gpu:([0-9]+)", request)
+            # Compound/custom GPU requests retain their exact meaning.
+            if not match and not untyped:
                 continue
-            wanted, count = match.group(1), int(match.group(2))
+            wanted = match.group(1) if match else None
+            count_text = match.group(2) if match else untyped.group(1)
+            count = int(count_text)
             available = {}
             partitions = profile["partition"].split(",")
             found = False
@@ -59,6 +65,12 @@ def resolve_profiles(profiles, inventory):
                     for gpu, capacity in machines[(node, partition)].items():
                         available[gpu] = max(available.get(gpu, 0), capacity)
             prefix = profile["label"] + " · " + node + ": "
+            if untyped:
+                # A single reported type makes the generic and typed choices
+                # equivalent. Leave mixed/unknown GPU inventories unchanged.
+                if len(available) == 1 and next(iter(available.values())) >= count > 0:
+                    choices[node] = "gpu:" + next(iter(available)) + ":" + count_text
+                continue
             require(
                 found,
                 prefix
@@ -93,7 +105,7 @@ def resolve_profiles(profiles, inventory):
                 + ". Open Advanced profile settings and choose an exact GPU type, or remove this computer from the choice.",
             )
             if candidates[0] != wanted:
-                choices[node] = "gpu:" + candidates[0] + ":" + match.group(2)
+                choices[node] = "gpu:" + candidates[0] + ":" + count_text
             if choices[node] != request:
                 messages.append(
                     prefix
