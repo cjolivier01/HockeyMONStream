@@ -90,6 +90,12 @@ new tasks execute without another Prepare, registry rebuild or GPU test.
 Custom installation folders remain selectable in Advanced profile settings.
 Missing programs still require installing HStream on that computer. Headless
 Jetson packages include the experiment helper; the desktop UI is optional.
+For an existing setup that uses copied programs, recover the saved setup and run
+**Prepare computers → Test my computers → Enable** once. Enable stops the old
+managed controller, replaces its service entry and updates both desktop and
+website profiles together. After that transition, later deployments need no new
+Prepare or qualification pass. Old copied folders are left unused.
+
 Operators are responsible for jobs and long-running processes during deployment;
 setup does not drain GPUs, block deployment or preserve executable releases.
 Restart an already running UI/controller when changing its own loaded code.
@@ -176,16 +182,16 @@ not certify every codec or replace browser workflow qualification.
 
 `setup.py` owns revision-checked `setup.json` drafts and read-only SSH discovery.
 Setup CLI commands bypass installed-controller dispatch to repair absent/invalid
-registries. `setup_execution.py` copies a content-addressed controller release,
-compiles pinned profiles and retains generations under `setup-builds/`.
+registries. `setup_execution.py` invokes the installed controller, compiles deployed
+profiles and retains configuration generations under `setup-builds/`.
 `setup_storage.py` verifies shared storage and recovers relocated drafts.
-`setup_runtime.py` discovers and snapshots node installations over SSH using the
-shared controller and a shared-file challenge. Preparation completes and the new
+`setup_runtime.py` checks node installations over SSH using each node’s installed
+controller and a shared-file challenge. Preparation completes and the new
 generation validates before revision-checked draft repairs are committed. Tests use
 ordinary Controller plans, game ownership, reservations, receipts and retirement.
 `setup-test-only.json` prevents normal profile selection and publication in test
 registries. Activation requires every node's successful retired test, unchanged
-draft/configuration revisions, unchanged runtime pins and an idle registry.
+draft/configuration revisions, valid runtime choices and an idle registry.
 The controller holds a service lock for its lifetime so activation cannot race
 startup. Older services must have a verifiably retired process on the main server;
 a stale heartbeat alone never permits replacing their configuration. Interrupted

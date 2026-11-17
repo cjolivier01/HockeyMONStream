@@ -1298,45 +1298,6 @@ int main(int argc, char** argv) {
 
         validate_profile(profile)
 
-    def test_snapshot_registry_migration_uses_only_the_applied_draft(self):
-        from hstream_workflow.profiles import deployed_configuration
-
-        saved = self.save()
-        config = self.compile()
-        original = copy.deepcopy(config)
-        for key, profile in config["profiles"].items():
-            runtime = profile["runtime"]
-            original_root = runtime["root"]
-            copied = str(self.registry / "setup-runtimes" / key)
-            for name in ("root", "worker"):
-                runtime[name] = runtime[name].replace(original_root, copied)
-            runtime["files"] = {
-                path.replace(original_root, copied): value
-                for path, value in runtime["files"].items()
-            }
-            profile["task_command"][0] = profile["task_command"][0].replace(
-                original_root, copied
-            )
-            for evidence in profile["qualified_nodes"].values():
-                evidence["runtime_identity"] = copy.deepcopy(runtime)
-        write_json(
-            self.registry / "setup-active.json",
-            {"revision": saved["revision"], "configuration_revision": digest(config)},
-        )
-        migrated = deployed_configuration(config, self.registry)
-        for key, profile in migrated["profiles"].items():
-            self.assertEqual(
-                profile["task_command"], original["profiles"][key]["task_command"]
-            )
-            self.assertEqual(
-                profile["resources"], original["profiles"][key]["resources"]
-            )
-            self.assertEqual(profile["runtime"]["installation"], "deployed")
-        self.draft["profiles"]["gpu"]["runtime_root"] = "/unapplied/programs"
-        setup.SetupStore(self.registry).save(self.draft, saved["revision"])
-        with self.assertRaisesRegex(WorkflowError, "unfinished edits"):
-            deployed_configuration(config, self.registry)
-
     def test_preparation_groups_builds_and_preserves_logical_capacity(self):
         self.save()
         self.draft["profiles"]["all-gpus"] = copy.deepcopy(
