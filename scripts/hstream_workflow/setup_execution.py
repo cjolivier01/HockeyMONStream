@@ -6,6 +6,7 @@ Closing the editor does not revoke ownership or erase test evidence.
 """
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import platform
@@ -449,12 +450,14 @@ def build(root, request, prepared=None, repaired_draft=None):
     installed_launcher(configuration)
     configuration_revision = current_revision(root)
     setup_features = prepared.get("features", []) if prepared else []
+    gpu_supported = bool(prepared and prepared.get("gpu_supported") is True)
     generation = digest(
         {
             "draft": store,
             "configuration": configuration,
             "configuration_revision": configuration_revision,
             "setup_features": setup_features,
+            "gpu_supported": gpu_supported,
         }
     )
     directory = private_directory(root / "setup-builds" / generation, create=True)
@@ -482,6 +485,7 @@ def build(root, request, prepared=None, repaired_draft=None):
                     "revision": store["revision"],
                     "configuration": configuration,
                     "setup_features": setup_features,
+                    "gpu_supported": gpu_supported,
                     "configuration_revision": configuration_revision,
                     "tests": {},
                     "host": socket.gethostname(),
@@ -611,44 +615,93 @@ def start_test(root, request):
             key = representative
             break
     game = validate_game(config, request["game"])
+    parallel = request.get("all_computers", False)
+    require(type(parallel) is bool, "Choose whether to check all computers")
     with locked(directory / "build.lock"):
         saved = read_json(directory / "build.json")
-        # One test at a time also preserves a recording's single operation owner.
-        for test in saved["tests"].values():
+        active, complete = {}, set()
+        from .setup_checks import is_deferred
+
+        for identity, test in saved["tests"].items():
             _, status, rejection = restore_test(test)
-            require(
-                rejection is not None or status["owner_released"],
-                "A previous test is still running or needs cleanup. Resume or stop it first.",
+            if rejection is None:
+                if not status["owner_released"]:
+                    active[identity] = test
+                elif status["state"] == "succeeded" or (
+                    saved.get("gpu_supported") and is_deferred(test, status)
+                ):
+                    complete.add(identity)
+        require(
+            parallel or not active,
+            "A previous test is still running or needs cleanup. Resume or stop it first.",
+        )
+        targets = [(key, node)]
+        if parallel:
+            targets += [
+                (k, n)
+                for k, n, _ in qualification_checks(saved)
+                if (k, n) != (key, node)
+            ]
+        for key, node in targets:
+            identity = key + "/" + node
+            if identity in complete or identity in active:
+                continue
+            if len(active) >= config["defaults"]["max_parallel"]:
+                break
+            if any(test["node"] == node for test in active.values()):
+                continue
+            profile = config["profiles"][key]
+            in_pool = sum(
+                config["profiles"][t["profile"]]["pool"] == profile["pool"]
+                for t in active.values()
             )
-        plan = test_plan(
-            config,
-            key,
-            node,
-            game,
-            request["user_config_snapshot"],
-            request["scan_seconds"],
-        )
-        test_root = private_directory(
-            directory / "tests" / plan["workflow_id"], create=True
-        )
-        write_json(test_root / "setup-test-only.json", {"schema": 1}, exclusive=True)
-        write_json(
-            test_root / "config.json",
-            {**config, "profiles": plan["profiles"], "observer_registry": None},
-            exclusive=True,
-        )
-        # Record resumable intent before admission; a response lost after register
-        # must never cause another independent test to be started.
-        write_json(test_root / "plan.json", plan, exclusive=True)
-        test = {
-            "registry": str(test_root),
-            "workflow": plan["workflow_id"],
-            "profile": key,
-            "node": node,
-        }
-        saved["tests"][key + "/" + node] = test
-        write_json(directory / "build.json", saved)
-        restore_test(test)
+            if in_pool >= min(profile["limits"].values()):
+                continue
+            # The probe reads no recording inputs. Give each computer a private
+            # empty game for ordinary native ownership and verified receipts.
+            probe_game = (
+                private_directory(
+                    game
+                    / "_hockeymon/cluster-checks"
+                    / directory.name
+                    / digest(identity),
+                    create=True,
+                )
+                if parallel
+                else game
+            )
+            plan = test_plan(
+                config,
+                key,
+                node,
+                probe_game,
+                request["user_config_snapshot"],
+                request["scan_seconds"],
+            )
+            test_root = private_directory(
+                directory / "tests" / plan["workflow_id"], create=True
+            )
+            write_json(
+                test_root / "setup-test-only.json", {"schema": 1}, exclusive=True
+            )
+            write_json(
+                test_root / "config.json",
+                {**config, "profiles": plan["profiles"], "observer_registry": None},
+                exclusive=True,
+            )
+            write_json(test_root / "plan.json", plan, exclusive=True)
+            test = {
+                "registry": str(test_root),
+                "workflow": plan["workflow_id"],
+                "profile": key,
+                "node": node,
+                "sample": str(game),
+            }
+            saved["tests"][identity] = test
+            # Seal each resumable intent before admission or a lost response.
+            write_json(directory / "build.json", saved)
+            restore_test(test)
+            active[identity] = test
     return qualification_status(root, tick=False)
 
 
@@ -692,8 +745,10 @@ def qualification_status(root, *, tick):
 
     directory, saved = generation(root)
     current_programs = has_current_features(saved.get("setup_features"))
-    rows = []
-    for key, node, aliases in qualification_checks(saved):
+    from .setup_checks import defer_busy, is_deferred
+
+    def check(target):
+        key, node, aliases = target
         profile = saved["configuration"]["profiles"][key]
         test = saved["tests"].get(key + "/" + node)
         row = {
@@ -709,9 +764,12 @@ def qualification_status(root, *, tick):
             "passed": False,
         }
         if test:
-            row["game"] = read_json(Path(test["registry"]) / "plan.json")[
-                "source_identity"
-            ]["game_directory"]
+            row["game"] = (
+                test.get("sample")
+                or read_json(Path(test["registry"]) / "plan.json")["source_identity"][
+                    "game_directory"
+                ]
+            )
             controller, status, rejection = restore_test(test)
             if rejection is not None:
                 explanation = (
@@ -724,9 +782,8 @@ def qualification_status(root, *, tick):
                     log=explanation,
                     next=explanation,
                 )
-                rows.append(row)
-                continue
-            if tick and (current_programs or not status["owner_released"]):
+                return row
+            if tick and not status["owner_released"]:
                 if not current_programs:
                     # Older clients may have saved intent before their first
                     # poll, or lost an acquire/submission response. Cancel
@@ -734,6 +791,12 @@ def qualification_status(root, *, tick):
                     # inspection and cleanup remain available, but neither
                     # ownership acquisition nor a new stage can be admitted.
                     status = controller.cancel(test["workflow"], status["epoch"])
+                status = defer_busy(
+                    controller,
+                    test,
+                    status,
+                    enabled=current_programs and saved.get("gpu_supported") is True,
+                )
                 controller.tick(test["workflow"])
                 status = controller.status(test["workflow"])
             row.update(
@@ -782,11 +845,28 @@ def qualification_status(root, *, tick):
                     "This test uses HStream programs that have not been checked for current stitching settings. "
                     + instruction
                 )
-        rows.append(row)
+            if saved.get("gpu_supported") is True and is_deferred(test, status):
+                row.update(
+                    state="deferred",
+                    ready=True,
+                    finished=True,
+                    next="Slurm resources are busy. Connection, storage and installed HStream are ready; the GPU check is deferred. Workflows will wait for a free GPU.",
+                )
+        row["ready"] = row.get("ready", row["passed"])
+        return row
+
+    targets = qualification_checks(saved)
+    if tick:
+        with ThreadPoolExecutor(
+            max_workers=saved["configuration"]["defaults"]["max_parallel"]
+        ) as workers:
+            rows = list(workers.map(check, targets))
+    else:
+        rows = list(map(check, targets))
     return {
         "tests": rows,
         "test_progress": test_summary(rows),
-        "tested": bool(rows) and all(row["passed"] for row in rows),
+        "tested": bool(rows) and all(row.get("ready", row["passed"]) for row in rows),
         "current": saved["revision"] == SetupStore(root).read()["revision"],
         "message": "Quick checks start HStream on each computer and verify its GPU and shared storage. No video is processed. Passed checks are kept.",
     }
@@ -866,7 +946,7 @@ def activate_stopped(root):
         status = qualification_status(root, tick=False)
         require(
             status["tested"],
-            "Every computer must pass the sample experiment before it can be enabled",
+            "Every computer needs a finished check or a safely deferred busy GPU check before it can be enabled",
         )
         target_revision = digest(saved["configuration"])
         require(
@@ -875,8 +955,11 @@ def activate_stopped(root):
             "The installed settings changed. Rebuild before applying.",
         )
         idle(root)
+        # One activation verifies shared files once across equivalent aliases.
+        # This cache lasts only for this operation; every worker still checks its pins.
+        verified = set()
         for profile in saved["configuration"]["profiles"].values():
-            preflight_runtime(profile)
+            preflight_runtime(profile, verified)
         # Older services do not hold controller-service.lock. Heartbeat age is
         # not retirement proof: an idle or paused process can still resume.
         heartbeat = root / "heartbeat.json"

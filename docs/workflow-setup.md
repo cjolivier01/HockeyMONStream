@@ -22,13 +22,23 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    no video is read, scanned or calibrated. Successful computers are
    retained. The screen shows the current computer, GPU choice, check number,
    completed stages and remaining checks. Equivalent GPU choices on the same computer
-   share one check. Different runtimes or resource requirements remain separate. A queued stage says it is waiting for Slurm and shows
+   share one check. Different runtimes or resource requirements remain separate.
+   Free computers run in parallel within the configured global and profile limits.
+   Each check owns a private empty folder, so checking one computer does not lock
+   the recording or prevent another computer from being checked. A queued stage says it is waiting for Slurm and shows
    the scheduler reason; it does not claim to be running. Test details include the
    current native stage log. Resume stays disabled while automatic checking runs,
    and Stop remains available across polls. Stopping and continuing skips passed
    checks for the current prepared setup; a failure stops the sequence and shows
    the failed stage, its cause and what to do next, including after reopening setup.
    Recovered diagnostics from successful stages are not reported as the failure.
+   A GPU occupied by another Slurm job does not block setup. An exactly identified
+   pending allocation waiting for resources or priority is cancelled through the
+   ordinary supervised path and shown as **Busy — GPU check deferred**. It is
+   never marked passed. Preparation must already have verified the supported
+   NVIDIA runtime and shared storage. Unknown submission, unsupported runtime,
+   a probe failure, or unproved cleanup still blocks enabling. A cancellation
+   that races with execution is not accepted as a deferred check.
    Cleanup stays explicit until the controller proves the test stopped. The test
    writes only private readiness receipts and does not promote results to the recording. Stop testing
    cancels the current test and prevents later computers from starting, including
@@ -40,7 +50,8 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    qualification through normal cancellation before scheduling any more stages.
    Cleanup must finish before preparing again. Read-only status does not request
    cancellation, and completed test history remains intact.
-5. **Finish.** **Enable these computers** checks for existing work, stops the
+5. **Finish.** Passed checks and safely deferred busy GPU checks allow
+   **Enable these computers**. It checks for existing work, stops the
    managed service when needed, applies tested settings, starts the service and
    verifies readiness in order. Failure stops this sequence. Existing service
    locks, native qualification, ownership and revision checks remain authoritative.
@@ -108,7 +119,9 @@ computers qualified: each one still needs its native GPU/storage check.
 Setup qualifies deployment readiness, not video processing quality or memory capacity
 for every recording. A normal stitching experiment performs calibration and player
 scanning after setup. The quick check uses the ordinary Slurm/native worker protocol,
-GPU allocation, artifact verification, process retirement and game ownership. Its
+GPU allocation, artifact verification, process retirement and game ownership. Checks use `workflow.max_parallel` and the shared profile limits. Native retirement
+receipts are opened through pinned directories so stale NFS absence caches do not
+add a delay to each finished job. Its
 execution deadline is bounded by `workflow.command_timeout_seconds`; scheduler queue
 time is shown separately. Matching node, runtime pins, command, capabilities and all
 allocation resources are required to reuse a result across profile aliases. Generic

@@ -99,18 +99,25 @@ def summary(rows):
     """One presentation for both clients, keeping computer and profile counts distinct."""
     computers = list(dict.fromkeys(row["node"] for row in rows))
     passed = sum(bool(row["passed"]) for row in rows)
+    deferred = sum(row["state"] == "deferred" for row in rows)
     complete = sum(
-        all(row["passed"] for row in rows if row["node"] == node) for node in computers
+        all(row.get("ready", row["passed"]) for row in rows if row["node"] == node)
+        for node in computers
     )
     lines = [
-        f"{complete} of {len(computers)} computers ready · {passed} of {len(rows)} checks passed · {len(rows) - passed} remaining."
+        f"{complete} of {len(computers)} computers ready · {passed} of {len(rows)} checks passed · {len(rows) - passed - deferred} remaining."
     ]
+    if deferred:
+        lines.append(
+            f"{deferred} GPU checks deferred because Slurm is busy. Installed HStream and shared storage are ready."
+        )
     if len(rows) > len(computers):
         lines.append(
             "Some computers have several GPU choices. Each choice needs its own check."
         )
-    current, next_check = "", ""
+    current_checks, next_check = [], ""
     for index, row in enumerate(rows, 1):
+        current = ""
         name = f"{row['node']} · {row.get('label', row['profile'])}"
         title = f"Check {index} of {len(rows)} · computer {computers.index(row['node']) + 1} of {len(computers)} · {name}"
         status = row.get("status", {})
@@ -133,6 +140,8 @@ def summary(rows):
         )
         if row["passed"]:
             state = "Passed"
+        elif row["state"] == "deferred":
+            state = "Busy — GPU check deferred"
         elif row["state"] == "not-tested":
             state = "Waiting for its turn"
         elif row["state"] == "cancelled" and row.get("finished"):
@@ -167,12 +176,14 @@ def summary(rows):
             state += "\n    " + row["next"].replace("\n", "\n    ")
             if not row.get("finished"):
                 current = title + "\n" + state
-        if not row["passed"] and not next_check:
+        if current:
+            current_checks.append(current)
+        if not row.get("ready", row["passed"]) and not next_check:
             next_check = title
         lines.append(f"{index}. {name}: {state}")
     return {
         "summary": "\n".join(lines),
-        "current": current,
+        "current": "\n\n".join(current_checks),
         "next": next_check,
         "passed": passed,
         "total": len(rows),

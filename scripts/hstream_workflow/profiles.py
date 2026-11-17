@@ -98,9 +98,11 @@ def validate_game(config, game):
     return game
 
 
-def preflight_runtime(profile):
+def preflight_runtime(profile, verified=None):
     validate_profile(profile)
     for path, expected in profile["runtime"]["files"].items():
+        if verified is not None and (path, expected) in verified:
+            continue
         # Runtime binaries can be large, but must still be bounded. This is a
         # protocol safety bound, not an application configuration default.
         actual = file_digest(path, 8 * 1024**3)
@@ -108,6 +110,8 @@ def preflight_runtime(profile):
             actual["sha256"] == expected,
             "The frozen native deployment changed: " + path,
         )
+        if verified is not None:
+            verified.add((path, expected))
     require(
         os.access(profile["task_command"][0], os.X_OK),
         "Native task executable is not executable",

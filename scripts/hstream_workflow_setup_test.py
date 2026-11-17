@@ -1992,6 +1992,86 @@ int main(int argc, char** argv) {
             draft["profiles"]["gpu"]["cpus"] += 1
             self.assertFalse(setup.inspect_registry(self.registry, 30, draft)["ready"])
 
+    def test_parallel_checks_use_separate_owners_and_keep_shared_pool_limits(self):
+        import hstream_workflow_controller_test as fixtures
+
+        fixture = fixtures.ControllerTest()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        self.draft["game_roots"] = [str(fixture.root)]
+        self.draft["profiles"]["gpu"]["nodes"] = ["mini", "meshy", "monster"]
+        saved = self.save()
+        config = self.compile()
+        for key in ("metadata", "gpu"):
+            profile = copy.deepcopy(fixture.profile)
+            profile["capabilities"] = execution.CPU + execution.GPU
+            profile["resources"]["nodes"] = (
+                self.draft["profiles"]["gpu"]["nodes"] if key == "gpu" else []
+            )
+            profile["pool"] = key
+            profile["limits"] = {"concurrency": 2, "per_user": 2}
+            config["profiles"][key] = profile
+        with patch.object(execution, "compile_configuration", return_value=config):
+            execution.build(
+                self.registry,
+                {
+                    "revision": saved["revision"],
+                    "defaults": self.defaults,
+                    "metadata_resources": self.cpu,
+                },
+                prepared=self.verified,
+            )
+        request = {
+            "profile": "gpu",
+            "node": "mini",
+            "game": str(fixture.game),
+            "scan_seconds": 60,
+            "all_computers": True,
+            "user_config_snapshot": {"schema": 1, "source_path": "", "values": {}},
+        }
+        original = execution.test_plan
+
+        def slow_probe(*args):
+            plan = original(*args)
+            plan["stages"][0]["inputs"] = {"delay": 2}
+            return plan
+
+        with patch.object(execution, "test_plan", side_effect=slow_probe):
+            first = execution.start_test(self.registry, request)
+        self.assertEqual(sum(bool(row.get("status")) for row in first["tests"]), 2)
+        directory, built = execution.generation(self.registry)
+        initial_tests = copy.deepcopy(built["tests"])
+        execution.start_test(self.registry, request)
+        self.assertEqual(execution.generation(self.registry)[1]["tests"], initial_tests)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status = execution.qualification_status(self.registry, tick=True)
+            if sum(row["passed"] for row in status["tests"]) == 2:
+                break
+            time.sleep(0.02)
+        self.assertEqual(sum(row["passed"] for row in status["tests"]), 2, status)
+        windows = []
+        for test in initial_tests.values():
+            plan = read_json(Path(test["registry"]) / "plan.json")
+            game = Path(plan["source_identity"]["game_directory"])
+            self.assertNotEqual(game, fixture.game)
+            self.assertEqual(test["sample"], str(fixture.game))
+            attempt = next(
+                (
+                    game / "_hockeymon/workflows" / test["workflow"] / "attempts"
+                ).iterdir()
+            )
+            worker = read_json(attempt / "worker/state.json")
+            windows.append((worker["started_ms"], worker["time_ms"]))
+        self.assertLess(
+            max(start for start, _ in windows), min(end for _, end in windows)
+        )
+        execution.start_test(self.registry, request)
+        final = execution.generation(self.registry)[1]["tests"]
+        self.assertEqual(len(final), 3)
+        for key, test in initial_tests.items():
+            self.assertEqual(final[key], test)
+
     def test_qualification_resumes_real_native_workers_before_releasing_sample(self):
         import hstream_workflow_controller_test as fixtures
 

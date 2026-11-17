@@ -28,7 +28,7 @@ def has_current_features(features):
     )
 
 
-def require_current_task(prepared, timeout, deployment_nodes):
+def require_current_task(prepared, timeout, deployment_nodes, *, gpu=False):
     from .executor import installation_environment
 
     try:
@@ -56,7 +56,14 @@ def require_current_task(prepared, timeout, deployment_nodes):
         + shlex.join(["make", "deploy", "NODES=" + ",".join(deployment_nodes)])
         + ", then click Prepare computers again. Your saved experiments do not need to be deleted.",
     )
-    return {**prepared, "features": REQUIRED_FEATURES}
+    if gpu:
+        require(
+            capabilities.get("gpu_backend") == "nvidia"
+            and capabilities.get("gpu_operations_supported") is True,
+            "This installed HStream does not support automatic stitching on this computer's GPU. "
+            "Choose a computer with the NVIDIA stitching runtime before preparing again.",
+        )
+    return {**prepared, "features": REQUIRED_FEATURES, "gpu_supported": gpu}
 
 
 def installed_root(preferred, *, cpu):
@@ -254,6 +261,7 @@ def on_node(request):
             snapshot(root, request["runtime_root"], cpu=False),
             request["timeout_seconds"],
             request["deployment_nodes"],
+            gpu=True,
         ),
         "challenge": request["challenge"],
     }
@@ -363,7 +371,14 @@ def prepare(registry, draft, timeout, parallel):
 
     with ThreadPoolExecutor(max_workers=parallel) as workers:
         results = dict(workers.map(collect, requested))
-    prepared = {"metadata": cpu, "profiles": {}, "features": REQUIRED_FEATURES}
+    prepared = {
+        "metadata": cpu,
+        "profiles": {},
+        "features": REQUIRED_FEATURES,
+        "gpu_supported": all(
+            result.get("gpu_supported") is True for result in results.values()
+        ),
+    }
     for key, profile in draft["profiles"].items():
         versions = {}
         sources = set()

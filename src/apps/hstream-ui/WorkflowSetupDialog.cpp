@@ -49,6 +49,9 @@ QJsonValue jsonValue(const YAML::Node& value) {
   }
   return QString::fromStdString(value.as<std::string>());
 }
+bool checkReady(const QJsonObject& row) {
+  return row.value("passed").toBool() || row.value("ready").toBool();
+}
 QString readableError(QString message) {
   for (int depth = 0; depth < 4; ++depth) {
     const auto error = QJsonDocument::fromJson(message.toUtf8()).object().value("error");
@@ -167,7 +170,7 @@ struct WorkflowSetupDialog::Impl {
                               : "Test my computers";
       enabled = !currentBuild() || tests_passed || (!tests_known ? resume->isEnabled() : test->isEnabled());
       instruction = test_running ? "Testing is in progress. You can leave this open or stop the test."
-          : tests_passed         ? "Every computer passed. Click Continue."
+          : tests_passed         ? "Computer checks are finished. Click Continue."
           : !problem->text().isEmpty()
           ? "Read the test problem above before trying again. Passed checks are kept."
           : "Run the quick HStream and GPU checks. No video processing; passed checks are kept.";
@@ -181,10 +184,11 @@ struct WorkflowSetupDialog::Impl {
                                                  : "Click " + label +
               ". HStream will save the tested settings, start the background service and check that it works.";
       finish_summary->setText(
-          !accepted_registry.isEmpty()
-              ? "Your computers are ready to run stitching experiments."
-              : "Every selected computer has passed. Enabling checks for running experiments before changing settings. "
-                "It restarts HStream’s background service if needed. This does not start an experiment.");
+          test_summary->text() + "\n\n" +
+          (!accepted_registry.isEmpty()
+               ? "Your computers are ready to run stitching experiments."
+               : "Computer checks are finished; busy GPU checks may be deferred. Enabling checks for running experiments before changing settings. "
+                 "It restarts HStream’s background service if needed. This does not start an experiment."));
     }
     if (!idle || test_running) {
       if (flow == Flow::Tests || test_running)
@@ -357,7 +361,7 @@ struct WorkflowSetupDialog::Impl {
         recovering_tests = false;
         for (const auto& item : tests) {
           const auto row = item.toObject();
-          if (row.value("finished").toBool() && !row.value("passed").toBool()) {
+          if (row.value("finished").toBool() && !checkReady(row)) {
             flow = Flow::None;
             showProblem(
                 row.value("node").toString() + " did not pass while setup was away. " +
@@ -393,7 +397,7 @@ struct WorkflowSetupDialog::Impl {
       } else {
         for (const auto& item : tests) {
           const auto row = item.toObject();
-          if (!row.value("passed").toBool() &&
+          if (!checkReady(row) &&
               attempted.contains(row.value("profile").toString() + "/" + row.value("node").toString())) {
             flow = Flow::None;
             showProblem(
@@ -462,15 +466,16 @@ struct WorkflowSetupDialog::Impl {
         !build_current     ? "Save and build the current choices first."
             : !tests_known ? "Resume / check tests first."
             : test_running ? "Wait for the unfinished test, or stop it."
-            : tests_passed ? "Every selected computer has passed. Apply tested settings next."
-                           : "Choose a shared recording folder for the storage check first.");
+            : tests_passed
+            ? "Computer checks are finished; busy GPU checks may be deferred. Apply tested settings next."
+            : "Choose a shared recording folder for the storage check first.");
     enable(
         apply,
         build_current && tests_known && tests_passed && !test_running && !applied && controller_state != 1,
         applied              ? "These tested settings are already applied."
             : !build_current ? "Save and build the current choices first."
             : !tests_known   ? "Resume / check tests first."
-            : !tests_passed  ? "Every selected computer must pass its test first."
+            : !tests_passed  ? "Finish computer checks first; busy GPUs can be deferred."
                              : "Stop the controller before applying tested settings.");
     enable(
         start,
@@ -787,7 +792,7 @@ struct WorkflowSetupDialog::Impl {
         return;
       for (const auto& item : s.tests) {
         const auto row = item.toObject();
-        if (row.value("passed").toBool())
+        if (checkReady(row))
           continue;
         const auto snapshot = hm::user_config::load_snapshot();
         if (!snapshot.ok()) {
@@ -801,6 +806,7 @@ struct WorkflowSetupDialog::Impl {
             "start-test",
             {{"profile", row.value("profile")},
              {"node", row.value("node")},
+             {"all_computers", s.flow == Flow::Tests},
              {"game", s.sample->text().trimmed()},
              {"scan_seconds", s.settings["hstream_ui"]["stitching_experiments"]["scan_duration_seconds"].as<int>()},
              {"user_config_snapshot",
@@ -842,7 +848,7 @@ struct WorkflowSetupDialog::Impl {
     }
     lines << value.value("message").toString();
     if (value.value("tested").toBool())
-      lines << "All selected computers passed. Apply tested settings to enable these profiles.";
+      lines << "Computer checks are finished. Apply the prepared settings to enable these profiles.";
     message(lines.join('\n'), "tests");
     polling = running;
     const auto details = value.value("test_progress").toObject();
@@ -853,6 +859,7 @@ struct WorkflowSetupDialog::Impl {
       const auto row = item.toObject();
       status_lines << row.value("node").toString() + ": " +
               (row.value("passed").toBool()                        ? "Passed"
+                   : row.value("state").toString() == "deferred"   ? "Busy — GPU check deferred"
                    : row.value("state").toString() == "not-tested" ? "Waiting for its turn"
                    : row.value("finished").toBool()                ? "Needs attention"
                                                                    : "Testing / waiting for a computer");
@@ -1048,7 +1055,7 @@ WorkflowSetupDialog::WorkflowSetupDialog(
   auto* test_page = page(
       3,
       "Start HStream on each computer and check its GPU and shared storage. "
-      "Equivalent GPU choices share one check. No video is processed. "
+      "Equivalent GPU choices share one check. Free computers are checked in parallel; busy GPUs are deferred. No video is processed. "
       "Your recording stays unchanged; full stitching runs when you start an experiment.");
   s.recording_name = new QLabel(this);
   test_page->addWidget(s.recording_name);
