@@ -445,7 +445,10 @@ class Controller:
                 expected_epoch is None or expected_epoch == state["epoch"],
                 "Stale workflow epoch",
             )
-            if not all(
+            # Terminal stages can still have an unresolved ownership release
+            # (including a lost acquire response). Fence cleanup before another
+            # tick so it can inspect that claim without acquiring a new one.
+            if not read_json(directory / "owner.json")["released"] or not all(
                 node["state"] in graph.TERMINAL for node in state["nodes"].values()
             ):
                 write_json(

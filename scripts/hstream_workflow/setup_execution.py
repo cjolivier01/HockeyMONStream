@@ -326,6 +326,7 @@ def compile_configuration(
         for variant in variants:
             actual = copy.deepcopy(source)
             actual["nodes"] = sorted(variant["nodes"])
+            actual["gres"] = variant.get("gres", source["gres"])
             profile_id = key
             if len(variants) > 1:
                 profile_id = key[:80] + "-" + digest(actual["nodes"])[:12]
@@ -689,7 +690,10 @@ def restore_test(test):
 
 
 def qualification_status(root, *, tick):
+    from .setup_runtime import has_current_features
+
     directory, saved = generation(root)
+    current_programs = has_current_features(saved.get("setup_features"))
     rows = []
     for key, profile in saved["configuration"]["profiles"].items():
         if key == "metadata":
@@ -721,7 +725,14 @@ def qualification_status(root, *, tick):
                     )
                     rows.append(row)
                     continue
-                if tick:
+                if tick and (current_programs or not status["owner_released"]):
+                    if not current_programs:
+                        # Older clients may have saved intent before their first
+                        # poll, or lost an acquire/submission response. Cancel
+                        # through the normal fenced path before any tick: owner
+                        # inspection and cleanup remain available, but neither
+                        # ownership acquisition nor a new stage can be admitted.
+                        status = controller.cancel(test["workflow"], status["epoch"])
                     controller.tick(test["workflow"])
                     status = controller.status(test["workflow"])
                 row.update(
@@ -753,6 +764,23 @@ def qualification_status(root, *, tick):
                             row["next"] = failure_detail(
                                 stage, row.get("log", ""), finished=row["finished"]
                             )
+                if not current_programs and (
+                    not row["finished"] or status.get("cancel_requested")
+                ):
+                    if row["finished"]:
+                        instruction = "The old test has stopped. Go back to Prepare computers before testing again."
+                    elif status.get("cancel_requested") or status.get(
+                        "cancellation_pending"
+                    ):
+                        instruction = "The old test is stopping before any more stages can start. Wait for cleanup, then go back to Prepare computers."
+                    else:
+                        instruction = (
+                            "Stop this old test before going back to Prepare computers."
+                        )
+                    row["next"] = (
+                        "This test uses HStream programs that have not been checked for current stitching settings. "
+                        + instruction
+                    )
             rows.append(row)
     return {
         "tests": rows,

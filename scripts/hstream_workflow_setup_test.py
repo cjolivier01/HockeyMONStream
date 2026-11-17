@@ -164,6 +164,189 @@ class SetupTest(unittest.TestCase):
         self.assertNotEqual(execution.generation(self.registry)[0], old_directory)
         self.assertEqual(read_json(old_directory / "build.json"), old)
 
+    def legacy_qualification(self):
+        """Reproduce durable test intent saved by a client before compatibility checks."""
+        import hstream_workflow_controller_test as fixtures
+
+        fixture = fixtures.ControllerTest()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        self.draft["game_roots"] = [str(fixture.root)]
+        self.draft["profiles"]["gpu"]["nodes"] = ["mini"]
+        saved = self.save()
+        config = self.compile()
+        for key in ("metadata", "gpu"):
+            profile = copy.deepcopy(fixture.profile)
+            profile["capabilities"] = execution.CPU + execution.GPU
+            profile["resources"]["nodes"] = ["mini"] if key == "gpu" else []
+            profile["pool"] = key
+            config["profiles"][key] = profile
+        with patch.object(execution, "compile_configuration", return_value=config):
+            execution.build(
+                self.registry,
+                {
+                    "revision": saved["revision"],
+                    "defaults": self.defaults,
+                    "metadata_resources": self.cpu,
+                },
+            )
+        # This internal call models the old client's durable pre-poll intent;
+        # the current start-test API rejects this generation before calling it.
+        execution.start_test(
+            self.registry,
+            {
+                "profile": "gpu",
+                "node": "mini",
+                "game": str(fixture.game),
+                "scan_seconds": 60,
+                "user_config_snapshot": {"schema": 1, "source_path": "", "values": {}},
+            },
+        )
+        test = execution.generation(self.registry)[1]["tests"]["gpu/mini"]
+        controller, _, _ = execution.restore_test(test)
+        fixture.controller = controller
+        directory, _ = controller.registry.lookup(test["workflow"])
+        self.assertFalse(setup.progress(self.registry)["build_current"])
+        return fixture, test, controller, directory
+
+    def legacy_status(self, *, tick=True):
+        return execution.execute_locked(
+            self.registry,
+            {"action": "test-status", "challenge": "test", "tick": tick},
+        )["tests"][0]
+
+    def test_unchecked_dormant_intent_is_readable_and_cannot_admit_on_poll(self):
+        from hstream_workflow.controller import Controller
+
+        fixture, test, controller, directory = self.legacy_qualification()
+        roots = [directory, Path(test["registry"])]
+        before = {
+            path: path.read_bytes()
+            for root in roots
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        with patch.object(
+            Controller,
+            "_native",
+            side_effect=AssertionError("Read-only status invoked native helper"),
+        ):
+            row = self.legacy_status(tick=False)
+        self.assertFalse(row["finished"])
+        self.assertIn("Stop this old test", row["next"])
+        self.assertEqual(
+            before,
+            {
+                path: path.read_bytes()
+                for root in roots
+                for path in root.rglob("*")
+                if path.is_file()
+            },
+        )
+        actions = []
+        native = Controller._native
+
+        def record(instance, directory, action, payload, **kwargs):
+            actions.append(action)
+            return native(instance, directory, action, payload, **kwargs)
+
+        with patch.object(
+            Controller, "_native", autospec=True, side_effect=record
+        ), patch.object(
+            Controller,
+            "_admit",
+            side_effect=AssertionError("Unchecked test admitted a stage"),
+        ):
+            row = self.legacy_status()
+        self.assertTrue(row["finished"])
+        self.assertFalse(row["passed"])
+        self.assertIn("old test has stopped", row["next"])
+        self.assertNotIn("acquire", actions)
+        self.assertNotIn("bind", actions)
+        self.assertTrue(all(not stage["attempts"] for stage in row["status"]["nodes"]))
+        self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(controller.registry.read()["reservations"], {})
+
+    def test_unchecked_test_recovers_lost_acquire_without_acquiring_again(self):
+        from hstream_workflow.controller import Controller
+
+        fixture, test, controller, directory = self.legacy_qualification()
+        native = controller._native
+
+        def lose_response(directory, action, payload, **kwargs):
+            result = native(directory, action, payload, **kwargs)
+            if action == "acquire":
+                raise OSError("Lost ownership response")
+            return result
+
+        with patch.object(
+            controller, "_native", side_effect=lose_response
+        ), self.assertRaisesRegex(OSError, "Lost ownership"):
+            controller.tick(test["workflow"])
+        self.assertFalse(read_json(directory / "owner.json")["acquired"])
+        self.assertTrue((fixture.game / "_hockeymon/test-owner.json").exists())
+        native = Controller._native
+
+        def cleanup_only(instance, directory, action, payload, **kwargs):
+            self.assertNotIn(action, {"acquire", "bind"})
+            return native(instance, directory, action, payload, **kwargs)
+
+        with patch.object(
+            Controller, "_native", autospec=True, side_effect=cleanup_only
+        ), patch.object(
+            Controller,
+            "_admit",
+            side_effect=AssertionError("Unchecked test admitted a stage"),
+        ):
+            row = self.legacy_status()
+        self.assertTrue(row["finished"])
+        self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(controller.registry.read()["reservations"], {})
+
+    def test_unchecked_admitted_test_cancels_and_retires_without_new_stages(self):
+        from hstream_workflow.controller import Controller
+
+        fixture, test, controller, directory = self.legacy_qualification()
+        controller.tick(test["workflow"])
+        self.assertTrue(read_json(directory / "owner.json")["acquired"])
+        before = controller.status(test["workflow"])
+        attempts = [
+            attempt["id"] for stage in before["nodes"] for attempt in stage["attempts"]
+        ]
+        self.assertEqual(len(attempts), 1)
+        pins = {
+            path: path.read_bytes()
+            for path in [
+                directory / "plan.json",
+                Path(test["registry"]) / "config.json",
+            ]
+        }
+        with patch.object(
+            Controller,
+            "_admit",
+            side_effect=AssertionError("Unchecked test admitted a stage"),
+        ):
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                row = self.legacy_status()
+                if row["finished"]:
+                    break
+                self.assertIn("old test is stopping", row["next"])
+                time.sleep(0.02)
+        self.assertTrue(row["finished"], row)
+        self.assertFalse(row["passed"])
+        self.assertEqual(
+            attempts,
+            [
+                attempt["id"]
+                for stage in row["status"]["nodes"]
+                for attempt in stage["attempts"]
+            ],
+        )
+        self.assertEqual(pins, {path: path.read_bytes() for path in pins})
+        self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(controller.registry.read()["reservations"], {})
+
     def test_new_registry_draft_can_be_saved_reopened_and_conflicts_preserve_last_save(
         self,
     ):
@@ -310,6 +493,7 @@ print('{"ready":true}')
         )
         prepared = {
             "revision": saved["revision"],
+            "setup_features": runtime_setup.REQUIRED_FEATURES,
             "configuration": self.compile(),
             "tests": {"gpu/mini": {"registry": str(test_registry), "workflow": "test"}},
         }
@@ -1042,6 +1226,10 @@ int main(int argc, char** argv) {
         with patch.object(
             runtime_setup, "snapshot", return_value=installed("/shared/cpu", True)
         ), patch.object(runtime_setup, "from_node", side_effect=node), patch.object(
+            runtime_setup,
+            "run_readonly",
+            return_value="mini|gpu|gpu:rtx5090:1\nmeshy|gpu|gpu:rtx5090:1\nmonster|gpu|gpu:rtx5090:1\n",
+        ), patch.object(
             runtime_setup,
             "require_current_task",
             side_effect=lambda value, timeout, deployment_nodes: value,
@@ -1779,6 +1967,7 @@ int main(int argc, char** argv) {
                     "defaults": self.defaults,
                     "metadata_resources": self.cpu,
                 },
+                prepared=self.verified,
             )
         request = {
             "profile": "gpu",

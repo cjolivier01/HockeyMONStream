@@ -35,6 +35,10 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    recovered before another test can start. Closing retains the current native
    stage; later stages wait until setup is reopened and testing is continued.
    The original recording is recovered from the test plan if the field is empty.
+   Resuming an unfinished test from an unchecked setup stops that old
+   qualification through normal cancellation before scheduling any more stages.
+   Cleanup must finish before preparing again. Read-only status does not request
+   cancellation, and completed test history remains intact.
 5. **Finish.** **Enable these computers** checks for existing work, stops the
    managed service when needed, applies tested settings, starts the service and
    verifies readiness in order. Failure stops this sequence. Existing service
@@ -89,6 +93,12 @@ Mixed OS or processor builds become separate execution profiles with readable
 computer names. Their job limits remain shared across the original overlapping
 profiles, so splitting a profile does not increase cluster capacity. The editor
 retains the original editable profiles and displays any lowered overlapping limits.
+Prepare also checks typed GPU choices against Slurm's current computers and queues.
+A saved family such as `gpu:rtx:1` becomes each selected computer's exact GPU type
+when that family has one matching model there. The update appears in Prepare's
+activity log; GPU counts, other resource requests and the selected computers stay
+the same. Unknown or ambiguous choices stop before copying runtimes or testing.
+Numeric model names are exact choices: a missing A10 never becomes an A100.
 Tasks select the prepared libraries and baseline before their native program
 starts, including packages whose ELF search path names the deployment prefix.
 Published copies stay in place for existing runs. Discovery and build never mark

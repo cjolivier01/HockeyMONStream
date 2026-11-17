@@ -304,6 +304,8 @@ def from_node(registry, node, preferred, timeout, deployment_nodes):
 
 
 def prepare(registry, draft, timeout, parallel):
+    from .setup_gpus import needs_inventory, resolve_profiles
+
     draft = validate_draft(draft)
     require(
         draft["profiles"]
@@ -311,7 +313,15 @@ def prepare(registry, draft, timeout, parallel):
         "Choose computers for each profile before building",
     )
     deadline = time.monotonic() + timeout
-    messages = []
+    inventory = ""
+    if needs_inventory(draft["profiles"]):
+        emit("Checking the GPU choices reported by Slurm…")
+        inventory = run_readonly(
+            ["sinfo", "--noheader", "--Node", "--format=%N|%P|%G"], timeout
+        )
+    gpu_choices, messages = resolve_profiles(draft["profiles"], inventory)
+    for message in messages:
+        emit(message)
     deployment_nodes = sorted(
         {draft["server"]}
         | {node for profile in draft["profiles"].values() for node in profile["nodes"]}
@@ -361,8 +371,13 @@ def prepare(registry, draft, timeout, parallel):
             result = results[(node, profile["runtime_root"])]
             sources.add(result["source"])
             group = versions.setdefault(
-                digest(result["runtime"]),
-                {"nodes": [], "task": result["task"], "runtime": result["runtime"]},
+                digest({"runtime": result["runtime"], "gres": gpu_choices[key][node]}),
+                {
+                    "nodes": [],
+                    "task": result["task"],
+                    "runtime": result["runtime"],
+                    "gres": gpu_choices[key][node],
+                },
             )
             group["nodes"].append(node)
         if len(sources) == 1 and profile["runtime_root"] not in sources:
