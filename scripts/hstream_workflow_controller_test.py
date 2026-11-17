@@ -826,8 +826,26 @@ finally:
         self.assertFalse(failures)
         self.assertEqual(len(outcomes), 1)
         self.assertEqual(result["state"], "succeeded")
-        self.assertFalse(read_json(directory / "state.json")["cancel_requested"])
-        self.assertFalse((directory / "cancel-intent.json").exists())
+        # Cancellation can now fence final owner cleanup after publication.
+        # That intent must not undo the adopted result or claim ownership again.
+        state = read_json(directory / "state.json")
+        self.assertEqual(state["nodes"]["a"]["state"], "succeeded")
+        adopted = read_json(self.game / "_hockeymon/test-adopt.json")
+        self.assertEqual(adopted["workflow_id"], self.plan["workflow_id"])
+        self.assertEqual(adopted["catalog_key"], "candidate")
+        self.assertEqual(adopted["workspace"], {"fixture": "result"})
+        self.assertTrue(
+            self.controller.status(self.plan["workflow_id"])["owner_released"]
+        )
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        with patch.object(
+            self.controller,
+            "_native",
+            side_effect=AssertionError("Completed history reacquired ownership"),
+        ):
+            self.controller.tick(self.plan["workflow_id"])
+        self.assertEqual(state["nodes"], read_json(directory / "state.json")["nodes"])
+        self.assertEqual(adopted, read_json(self.game / "_hockeymon/test-adopt.json"))
 
     def test_cancel_reconciles_committed_adoption_after_lost_response(self):
         for adoption, action in (
