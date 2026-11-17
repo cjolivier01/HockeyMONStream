@@ -260,7 +260,7 @@ bool Run(
       observations.archived_pcm.size() != kBuffers * kFrames * kChannels)
     return false;
   for (int index = 0; index < kBuffers; ++index) {
-    if (observations.archived_pts[index] != index * 10 * GST_MSECOND)
+    if (observations.archived_pts[index] != static_cast<GstClockTime>(index) * 10 * GST_MSECOND)
       return false;
     for (int sample = 0; sample < kFrames * kChannels; ++sample)
       if (observations.archived_pcm[index * kFrames * kChannels + sample] != float(index + 1))
