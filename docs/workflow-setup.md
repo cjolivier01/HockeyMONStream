@@ -1,50 +1,53 @@
 # Set up an existing Slurm cluster
 
-Open **Stitching Experiments → Workflow → Set up my cluster**. A registry is the
-shared folder containing cluster settings and experiment history. The editor
-creates its JSON files for you.
-The **Next** line explains what to do now. Buttons stay disabled until their
-prerequisites are known, with a tooltip explaining why. Recovered builds need
-**Resume / check tests** before continuing; changing tested choices disables
-Apply until the current choices are built and tested. Recovery and Stop remain
-available for unfinished or uncertain tests. These hints do not replace the
-controller's admission, ownership or cleanup checks.
+Open **Stitching Experiments → Workflow → Set up my cluster**. Setup shows one
+screen at a time with Back and one main action. The desktop uses the recording
+already open in the experiment dialog. Advanced settings stay collapsed.
 
-1. Enter the main server name, such as `ripper`, and **Find computers / test
-   connection**. This checks SSH, Slurm, accounting and cgroup containment. It
-   also finds an existing controller's registry.
-   When it finds installed HStream programs, **Use installed HStream for main
-   server** copies that folder into the draft. This changes only the main-server
-   installation. Build also discovers the installed programs on each computer.
-2. Choose a computer and **Add selected computer**. Its queue and GPU request
-   are filled in. Name the profile and choose its parallel-job limit. Advanced
-   settings expose resources, installation paths, account, QoS and constraints.
-   Overlapping profiles share the lowest of their existing concurrency limits.
-3. Check **Storage, software and dashboard settings**. Recordings and the settings
-   folder must be available at the same absolute paths across the cluster.
-   The main server needs the native experiment task and runtime worker too.
-   Install the current HStream desktop package for each machine's OS/processor
-   when these are missing. A checkout or interpreter-only installation is
-   insufficient. Enter an existing Dagster observation folder if wanted.
-4. **Save and build registry** finds installed HStream on every selected computer,
-   repairs obsolete installation paths and prepares immutable shared copies.
-   Computers with different OS builds are grouped automatically. It creates CPU
-   preparation settings and writes an isolated test registry. **Save setup draft** can save
-   incomplete choices without replacing the running configuration.
-5. Choose a sample recording with players on the ice. **Test next computer** runs
-   preparation, calibration, player search, extraction, reuse and completion
-   through the normal native controller and Slurm worker. Each selected computer
-   must pass. Tests use private copies and never promote results to the recording.
-6. Finish existing experiments, stop the controller and **Apply tested settings**.
-   The previous configuration is backed up. **Start controller** starts a user
-   systemd service on the main server. An older administrator-owned system
-   service must be stopped there explicitly; the editor displays the command.
-   Enable user lingering there for operation after logout.
-7. **Check installed setup**, then **Use this cluster** reloads the profile list.
+1. **Connect.** Enter the main server name, such as `ripper`, and choose
+   **Find my computers**. This checks the connection and the existing scheduler.
+   Failed checks stay on this screen with their explanation. An existing saved
+   setup is recovered automatically; **Continue saved setup** can retry recovery.
+2. **Computers.** Tick the computers to use. Available and busy computers are
+   labeled in plain language. **Search again** refreshes discovery. Continue saves
+   the choices; advanced job settings retain editable profiles and resource limits.
+3. **Prepare.** Confirm the folder holding the game folders and choose
+   **Prepare computers**. Setup discovers installed programs, verifies shared
+   settings storage, repairs obsolete installation paths and prepares immutable
+   copies for each platform. It does not install missing HStream packages.
+   Activity appears as shared storage is checked and each computer verifies or
+   copies its installed files. The recording test checks access to the actual videos.
+4. **Test.** Choose one recording with players on the ice, then **Test my
+   computers**. Every selected computer runs in turn. Successful computers are
+   retained. The screen shows the current computer, GPU choice, check number,
+   completed stages and remaining checks. Several GPU choices on the same computer
+   require separate checks. A queued stage says it is waiting for Slurm and shows
+   the scheduler reason; it does not claim to be running. Test details include the
+   current native stage log. Resume stays disabled while automatic checking runs,
+   and Stop remains available across polls. Stopping and continuing skips passed
+   checks for the current prepared setup; a failure stops the sequence and is shown on this screen. The test
+   uses private copies and does not promote results to the recording. Stop testing
+   cancels the current test and prevents later computers from starting, including
+   when a status response is still pending. Unknown submission results must be
+   recovered before another test can start. Closing retains the current native
+   stage; later stages wait until setup is reopened and testing is continued.
+   The original recording is recovered from the test plan if the field is empty.
+5. **Finish.** **Enable these computers** checks for existing work, stops the
+   managed service when needed, applies tested settings, starts the service and
+   verifies readiness in order. Failure stops this sequence. Existing service
+   locks, native qualification, ownership and revision checks remain authoritative.
+   **Use these computers** returns to Stitching Experiments with the tested setup.
+
+An older administrator-owned system service cannot be stopped by this wizard.
+Its refusal and the exact administrative action remain visible. The wizard does
+not force-release ownership or treat a connection check as qualification.
+The technical log and individual build/test/service actions remain available
+under collapsed details for diagnosis. Editing tested choices requires preparation
+and testing again; recovery resumes the saved step without submitting a new test.
 
 Defaults live in `workflow.setup` in `configs/baseline.yaml`. The suggested
 registry is `~/hstream-workflows/registry`; keep it on durable shared
-storage. After reinstalling, choose **Recover saved setup**. The desktop also
+storage. After reinstalling, choose **Continue saved setup**. The desktop also
 tries the saved/default folder automatically. Recovery reads older profiles and
 explains which parts need replacing.
 Before building, setup tests both reads and writes from the main server and every
@@ -55,8 +58,12 @@ editable choices there and remembers that location for recovery. Existing
 registries, test history and machine-local installations stay in place. A running
 controller, unfinished tests or recording ownership prevent automatic relocation;
 existing destination choices are preserved in a separate setup folder.
+If the shared location already has the same saved choices, Prepare resumes that
+independent setup instead of migrating the old registry. Missing old experiment
+history cannot prevent this recovery. Unfinished qualification tests still need
+cleanup, and the destination still needs its own successful tests and activation.
 `make deploy` installs the native programs (the desktop package uses
-`/opt/hstream/bin`). After deployment, **Save and build registry** repairs stale
+`/opt/hstream/bin`). After deployment, **Prepare computers** repairs stale
 preview-release paths automatically. It copies each distinct installed package
 into `setup-runtimes/` under the registry, verifies its files and reuses matching
 copies. Package-owned files are copied; local backups are excluded. Custom usable
@@ -95,8 +102,19 @@ The browser Workflow pane links to the same operations in **Cluster setup
 (administrator)**. Only site administrators on the local Studio can use them.
 Ordinary members and the public portal cannot edit host paths. Tests use operator
 recordings outside managed tenant storage, preserving ownership and quota rules.
-After applying, select the registry's `web-profiles.json` and Dagster folder in
-Studio deployment, restart web/dispatcher together and run normal readiness.
+The browser has a folder picker for shared folders visible to the website. It
+lists directory names only, skips symlink/hidden folders and excludes managed
+uploads. Administrators can select original recordings without typing paths.
+
+After enabling the cluster, **Save website connection** saves the generated
+`web-profiles.json` and existing observation folder into deployment settings with
+revision checks. It preserves other deployment fields. This does not restart the
+website: that needs the website installer's service access. Setup provides exact
+settings and restart/check commands as downloadable instructions. **Check website
+connection** requires the website and dispatcher's reported connection to match
+and their cached readiness to pass. A missing progress service is reported as an
+unfinished website requirement. The browser never claims that saving settings
+alone finishes deployment.
 The browser adapter's contract/receipt checks remain required; a sample test does
 not certify every codec or replace browser workflow qualification.
 
@@ -121,3 +139,5 @@ Qt runs the helper asynchronously. Browser GETs are cache-only; explicit admin
 POSTs call the installed setup CLI. Set the local web request timeout above the
 baseline setup timeout for long inventories. After response loss, resume status
 before retrying. Both editors retain log scroll position and follow at the tail.
+Desktop setup actions and messages are also recorded in the normal HStream
+diagnostic log; browser setup failures appear in the website's server log.

@@ -146,6 +146,9 @@ Native preview widgets share `NativePreviewSurface`: while an external sink owns
   and cleanup before activation. Keep the site-admin browser editor and generated
   setup defaults synchronized. Saved-progress summaries guide both editors' button
   states; discovery may suggest installed programs but never qualifies them.
+  The five-step wizard saves computer choices, tests nodes once in sequence and
+  stops on failure/cancellation. Enabling sequences the existing guarded service
+  actions; recovery never bypasses qualification or recording ownership.
   See `docs/workflow-setup.md`.
 
 - `src/apps/hstream-ui/StitchingWorkflow.*` distinguishes inactive experiment history from

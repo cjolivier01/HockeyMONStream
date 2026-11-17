@@ -116,6 +116,111 @@ class SetupTest(unittest.TestCase):
         self.assertFalse(setup.inspect_registry(self.registry, 30)["ready"])
         self.assertEqual(before, (self.registry / "config.json").read_bytes())
 
+    def test_transport_forwards_fragmented_progress_before_helper_finishes(self):
+        from hstream_workflow import setup_progress
+
+        acknowledgement = self.root / "progress-seen"
+        script = """
+import json, pathlib, sys, time
+line = ('HSTREAM_SETUP_PROGRESS ' + json.dumps({'message': 'stubby: checking…'}, ensure_ascii=False) + '\\n').encode()
+sys.stderr.buffer.write(line[:-3]); sys.stderr.flush()
+time.sleep(.15)
+sys.stderr.buffer.write(line[-3:]); sys.stderr.flush()
+deadline = time.monotonic() + 3
+while not pathlib.Path(sys.argv[1]).exists() and time.monotonic() < deadline: time.sleep(.01)
+assert pathlib.Path(sys.argv[1]).exists(), 'progress was buffered until exit'
+print('{"ready":true}')
+"""
+
+        def received(message):
+            self.assertEqual(message, "stubby: checking…")
+            acknowledgement.touch()
+
+        with patch.object(setup_progress, "emit", side_effect=received):
+            self.assertEqual(
+                json.loads(
+                    setup.run_readonly(
+                        [sys.executable, "-c", script, str(acknowledgement)], 5
+                    )
+                ),
+                {"ready": True},
+            )
+
+    def test_progress_counts_checks_separately_and_explains_scheduler_wait(self):
+        from hstream_workflow.setup_progress import summary
+
+        rows = [
+            {
+                "node": "mini",
+                "profile": "gpu",
+                "state": "succeeded",
+                "passed": True,
+                "finished": True,
+            },
+            {
+                "node": "monster",
+                "profile": "gpu",
+                "state": "running",
+                "passed": False,
+                "finished": False,
+                "status": {
+                    "nodes": [
+                        {"id": "prepare", "state": "succeeded"},
+                        {
+                            "id": "prepare-target",
+                            "state": "queued",
+                            "reason": "(Resources)",
+                            "resources": {"nodes": ["monster"]},
+                        },
+                    ]
+                },
+            },
+            {"node": "mini", "profile": "rtx", "state": "not-tested", "passed": False},
+        ]
+        result = summary(rows)
+        self.assertIn(
+            "0 of 2 computers ready · 1 of 3 checks passed · 2 remaining",
+            result["summary"],
+        )
+        self.assertIn("Check 2 of 3 · computer 2 of 2 · monster", result["current"])
+        self.assertIn("Waiting for Slurm to make monster available", result["current"])
+        self.assertIn("1 of 2 stages complete", result["current"])
+        self.assertIn("Resources", result["current"])
+        self.assertEqual(
+            result["next"], "Check 2 of 3 · computer 2 of 2 · monster · gpu"
+        )
+
+    def test_metadata_queue_names_the_stage_host_not_the_selected_gpu(self):
+        from hstream_workflow.setup_progress import summary
+
+        stage = {
+            "id": "prepare",
+            "state": "queued",
+            "reason": "(Resources)",
+            "profile_id": "metadata",
+            "resources": {"nodes": ["ripper"]},
+        }
+        rows = [
+            {
+                "node": "mini",
+                "profile": "gpu",
+                "state": "running",
+                "passed": False,
+                "finished": False,
+                "status": {"nodes": [stage]},
+            }
+        ]
+        value = summary(rows)["current"]
+        self.assertIn("computer 1 of 1 · mini", value)
+        self.assertIn("Waiting for Slurm to make ripper available", value)
+        self.assertNotIn("make mini available", value)
+        stage["resources"]["nodes"] = []
+        value = summary(rows)["current"]
+        self.assertIn(
+            "Waiting for Slurm resources for: Prepare a private recording", value
+        )
+        self.assertNotIn("make mini available", value)
+
     def test_transport_errors_explain_legacy_profiles_without_nested_json(self):
         legacy = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles"
         wrapped = json.dumps({"error": json.dumps({"error": legacy})})
@@ -288,6 +393,110 @@ class SetupTest(unittest.TestCase):
                 storage.prepare(request)
         self.assertFalse((self.registry / "setup-location.json").exists())
 
+    def test_existing_shared_setup_resumes_without_adopting_broken_old_history(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+        ledger = {
+            "schema": 1,
+            "reservations": {},
+            "workflows": {
+                "old-run": {
+                    "game": "/recordings/old-game",
+                    "directory": "/missing/old-run",
+                }
+            },
+        }
+        write_json(self.registry / "registry.json", ledger)
+        write_json(target / "retained-history.json", {"keep": True})
+        with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
+            execution, "idle", side_effect=AssertionError("Must not adopt old history")
+        ), locked(self.registry / "controller-service.lock"):
+            resumed, message = storage.prepare(request)
+        self.assertEqual(resumed["registry"], str(target))
+        self.assertEqual(resumed["revision"], existing["revision"])
+        self.assertEqual(resumed["draft"], existing["draft"])
+        self.assertIn("Recovered your existing shared setup", message)
+        self.assertFalse((self.registry / "setup-location.json").exists())
+        self.assertEqual(read_json(self.registry / "registry.json"), ledger)
+        self.assertEqual(read_json(target / "retained-history.json"), {"keep": True})
+
+    def test_missing_experiment_history_explains_the_recording_and_full_path(self):
+        self.save()
+        directory = self.root / "missing-old-guid"
+        write_json(
+            self.registry / "registry.json",
+            {
+                "schema": 1,
+                "reservations": {},
+                "workflows": {
+                    "old-run": {
+                        "game": "/recordings/old-game",
+                        "directory": str(directory),
+                    }
+                },
+            },
+        )
+        with self.assertRaisesRegex(
+            WorkflowError, "history is missing for old-game"
+        ) as raised:
+            execution.idle(self.registry)
+        self.assertIn(str(directory / "owner.json"), str(raised.exception))
+        self.assertFalse(directory.exists())
+
+    def test_shared_recovery_rechecks_relocation_under_destination_lock(self):
+        from hstream_workflow import setup_storage as storage
+
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        existing = setup.SetupStore(target).save(
+            {**self.draft, "registry": str(target)}, None
+        )
+
+        @contextmanager
+        def relocating_lock(path, **kwargs):
+            if (
+                Path(path) == target / "setup.lock"
+                and not (target / "setup-location.json").exists()
+            ):
+                write_json(
+                    target / "setup-location.json",
+                    {
+                        "source_revision": existing["revision"],
+                        "registry": str(self.registry),
+                    },
+                )
+            with locked(path, **kwargs):
+                yield
+
+        with patch.object(
+            storage,
+            "check",
+            side_effect=lambda path, *args: ["stubby"] if path == self.registry else [],
+        ), patch.object(storage, "locked", relocating_lock):
+            resumed, _ = storage.prepare(request)
+        self.assertNotEqual(resumed["registry"], str(target))
+        self.assertTrue((target / "setup-location.json").exists())
+
+    def test_remote_build_refuses_a_draft_relocated_after_recovery(self):
+        request = self.storage_request()
+        target = Path(request["shared_registry"])
+        setup.SetupStore(target).save({**self.draft, "registry": str(target)}, None)
+        write_json(
+            self.registry / "setup-location.json",
+            {"source_revision": request["revision"], "registry": str(target)},
+        )
+        with patch.object(runtime_setup, "prepare") as prepare:
+            with self.assertRaisesRegex(WorkflowError, "setup moved"):
+                execution.execute(
+                    {**request, "on_server": True, "challenge": "fixture"}
+                )
+        prepare.assert_not_called()
+
     def test_relocation_keeps_active_controller_and_unfinished_test_state(self):
         from hstream_workflow import setup_storage as storage
 
@@ -298,6 +507,9 @@ class SetupTest(unittest.TestCase):
                     storage.prepare(request)
         self.assertFalse((self.registry / "setup-location.json").exists())
         write_json(self.registry / "setup-build.json", {"generation": "fixture"})
+        setup.SetupStore(Path(request["shared_registry"])).save(
+            {**self.draft, "registry": request["shared_registry"]}, None
+        )
         with patch.object(storage, "check", side_effect=[["stubby"], []]), patch.object(
             execution,
             "generation",
@@ -1356,6 +1568,7 @@ int main(int argc, char** argv) {
         }
         first = execution.start_test(self.registry, request)
         self.assertFalse(first["tested"])
+        self.assertEqual(first["tests"][0]["game"], str(fixture.game))
         with self.assertRaisesRegex(WorkflowError, "previous test"):
             execution.start_test(self.registry, request)
         deadline = time.monotonic() + 45
