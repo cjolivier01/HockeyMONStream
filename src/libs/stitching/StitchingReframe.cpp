@@ -88,6 +88,14 @@ absl::StatusOr<YAML::Node> effective_config(const YAML::Node& config) {
     }
   }
   overlay(effective, config);
+  // A retained request predates the selection switch when neither its private
+  // config nor source tuple records a mode. Resume that request with Legacy;
+  // an explicit new choice must still invalidate the saved solver tuple.
+  const auto intent = node_at(calibration(config), {"reframe"});
+  const auto selection = node_at(config, {"stitching", "control_point_selection"});
+  if (intent.IsMap() && (!selection || selection.IsNull()) &&
+      !node_at(intent, {"source_solver", "control_point_selection"}))
+    effective["stitching"]["control_point_selection"] = "legacy";
   return effective;
 }
 
@@ -145,6 +153,9 @@ std::string solver_text(const YAML::Node& solver) {
   // Rebuild each leaf independently so YAML aliases cannot couple a numeric
   // setting to a filename or fingerprint outside this allowlist.
   auto normalized = canonical(solver);
+  // Version-1 intents saved before the switch used the Legacy matcher policy.
+  if (!normalized["control_point_selection"])
+    normalized["control_point_selection"] = "legacy";
   for (const char* key : {"camera_fov", "frame_offsets", "offsets", "source_rotation"})
     normalize_numbers(node_at(normalized, {key}));
   for (const char* key : {"distortion", "center_offset"})

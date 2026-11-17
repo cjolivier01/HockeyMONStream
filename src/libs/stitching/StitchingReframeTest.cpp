@@ -234,6 +234,21 @@ bool test_serialized_intent(const fs::path& root) {
   ok &= expect(valid.ok(), "runtime accepts equal numeric values after outer launch serialization");
   if (!valid.ok())
     std::cerr << valid.status() << '\n';
+  auto historical = YAML::Clone(roundtrip);
+  historical["stitching"].remove("control_point_selection");
+  auto historical_record = historical["hstream_ui"]["stitching_calibration"]["reframe"];
+  historical_record["source_solver"].remove("control_point_selection");
+  historical_record["source_backend_generation"].remove("control_point_selection");
+  ok &= expect(
+      ValidateStitchingReframeIntentLocked(root, historical).ok(),
+      "Pending pre-switch reframe resumes with its original Legacy policy");
+  historical["stitching"]["control_point_selection"] = "legacy";
+  ok &= expect(
+      ValidateStitchingReframeIntentLocked(root, historical).ok(), "Explicit Legacy accepts a pre-switch solver tuple");
+  historical["stitching"]["control_point_selection"] = "quality-coverage";
+  ok &= expect(
+      !ValidateStitchingReframeIntentLocked(root, historical).ok(),
+      "Explicit new selection rejects a pre-switch solver tuple");
   for (const char* change : {"crop", "offset", "video", "video-alias", "unknown", "infinite", "malformed"}) {
     auto changed = YAML::Clone(roundtrip);
     auto intent = changed["hstream_ui"]["stitching_calibration"]["reframe"];

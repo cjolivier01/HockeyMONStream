@@ -11744,6 +11744,49 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
     }
   }
   qputenv("PATH", crop_original_path);
+  // Old completed games have neither a selection key nor a claim field. A
+  // simultaneous view edit must compare against that Legacy solve on both
+  // Save and Play, while leaving new candidate defaults unchanged.
+  QTemporaryDir selection_backup;
+  const fs::path crop_state = config_path.parent_path();
+  const fs::path selection_state = fs::path(selection_backup.path().toStdString()) / "state";
+  fs::copy(crop_state, selection_state, fs::copy_options::recursive);
+  auto* match_selection = require_child<QComboBox>(window, "controlPointSelectionCombo");
+  if (!match_selection)
+    return false;
+  for (bool play : {false, true}) {
+    for (const char* mode : {"legacy", "quality-coverage"}) {
+      fs::remove_all(crop_state);
+      fs::copy(selection_state, crop_state, fs::copy_options::recursive);
+      auto historical = YAML::Clone(crop_preview_config);
+      historical["stitching"].remove("control_point_selection");
+      historical["hstream_ui"].remove("generated_control_point_selection");
+      historical["hstream_ui"]["stitching_calibration"]["backend_generation"].remove("control_point_selection");
+      std::ofstream(config_path) << YAML::Dump(historical);
+      QByteArray historical_provenance = crop_provenance;
+      historical_provenance.replace("version=18\n", "version=14\n");
+      historical_provenance.remove(
+          historical_provenance.indexOf("control-point-selection="), historical_provenance.size());
+      if (!write_crop_fixture(crop_game.filePath("_hockeymon/stitching_canvas_provenance"), historical_provenance))
+        return false;
+      HStreamWindowTestAccess::reloadSavedControls(window);
+      match_selection->setCurrentIndex(match_selection->findData(mode));
+      HStreamWindowTestAccess::setTestLevelingRotation(window, -36);
+      const bool accepted =
+          play ? HStreamWindowTestAccess::prepareStitchingRun(window) : HStreamWindowTestAccess::savePreset(window);
+      const auto changed = YAML::LoadFile(config_path.string());
+      const auto intent = changed["hstream_ui"]["stitching_calibration"]["reframe"];
+      if (!expect(
+              accepted && intent.IsMap() == (std::string(mode) == "legacy"),
+              "Old completed view edits must reframe Legacy or regenerate the new selection on Save and Play")) {
+        std::cerr << window->logText().toStdString() << '\n';
+        return false;
+      }
+    }
+  }
+  fs::remove_all(crop_state);
+  fs::copy(selection_state, crop_state, fs::copy_options::recursive);
+  HStreamWindowTestAccess::reloadSavedControls(window);
   HStreamWindowTestAccess::setTestLevelingRotation(window, -36);
   if (!expect(save->isEnabled(), "Changing the completed view must enable Save before capturing a reframe"))
     return false;

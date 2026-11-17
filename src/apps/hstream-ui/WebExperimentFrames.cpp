@@ -55,6 +55,8 @@ StitchingExperimentPlayerSelection ScanExperimentFrames(
     YAML::Node arguments(YAML::NodeType::Sequence);
     for (const auto& argument : std::vector<std::string>{
              "--enable-sinks=FAKE",
+             "--options=stitching.control_point_selection=" +
+                 baseline.settings.control_point_selection.value_or("legacy"),
              "--stitching-player-scan-output=" + report.string(),
              "--stitching-player-scan-interval-ms=" + std::to_string(controls.scan_interval_ms),
              "--stitching-player-scan-frame-count=" + std::to_string(candidate.settings.frame_count),
