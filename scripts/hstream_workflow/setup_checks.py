@@ -24,7 +24,10 @@ def defer_busy(controller, test, status, *, enabled):
         if (
             attempt["backend"] != "slurm"
             or details.get("state") != "PENDING"
-            or details.get("reason") not in {"Resources", "Priority"}
+            # squeue's %R wraps pending reasons in parentheses. Retained
+            # observations from other adapters may contain the bare reason.
+            or details.get("reason")
+            not in {"Resources", "Priority", "(Resources)", "(Priority)"}
             or not details.get("scheduler_id")
             or not details.get("cluster")
         ):

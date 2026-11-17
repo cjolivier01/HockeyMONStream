@@ -78,8 +78,6 @@ class BusyCheckTest(unittest.TestCase):
         from hstream_workflow import slurm
         from hstream_workflow.files import write_json
 
-        controller = Mock()
-        defer_busy(controller, self.test, self.status, enabled=True)
         root = Path(self.temp.name)
         user = pwd.getpwuid(os.getuid()).pw_name
         write_json(
@@ -96,6 +94,21 @@ class BusyCheckTest(unittest.TestCase):
             root / "launch.json",
             {"attempt_id": "attempt", "scheduler_id": "7", "cluster": "local"},
         )
+        # These are the real squeue %R and sacct values from a blocked check.
+        with patch.object(
+            slurm,
+            "run_command",
+            side_effect=[
+                SimpleNamespace(stdout=f"7|test-job|PENDING|(Resources)||{user}|attempt\n"),
+                SimpleNamespace(stdout=f"7|test-job|PENDING|0:0|None assigned|{user}|attempt|local\n"),
+            ],
+        ):
+            queued = slurm.lookup(root, 30)
+        self.assertEqual(queued["reason"], "(Resources)")
+        self.status["nodes"][0]["attempts"][0]["details"] = queued
+        controller = Mock()
+        defer_busy(controller, self.test, self.status, enabled=True)
+        controller.cancel.assert_called_once_with("qualification", 0)
         with patch.object(
             slurm,
             "run_command",
@@ -136,6 +149,7 @@ class BusyCheckTest(unittest.TestCase):
         for state, reason, enabled in (
             ("UNKNOWN", "Resources", True),
             ("PENDING", "BadConstraints", True),
+            ("PENDING", "(BadConstraints)", True),
             ("FAILED", "Resources", True),
             ("PENDING", "Resources", False),
         ):
