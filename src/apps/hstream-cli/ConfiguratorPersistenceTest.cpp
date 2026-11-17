@@ -6068,7 +6068,7 @@ game:
 
   // A persisted native width is the old view, not a new CLI geometry edit.
   // OpenCV makes a false reframe immediately observable without native tools.
-  for (int width_case = 0; width_case < 10; ++width_case) {
+  for (int width_case = 0; width_case < 11; ++width_case) {
     const std::string name = "saved-native-width-" + std::to_string(width_case);
     const fs::path directory = games / name;
     fs::create_directories(directory);
@@ -6085,6 +6085,9 @@ game:
     saved["stitching"]["run_autooptimizer"] = false;
     saved["stitching"]["control_point_execution_provider"] = "cpu";
     saved["stitching"]["control_point_resolution"] = "native";
+    if (width_case != 10)
+      saved["stitching"]["control_point_selection"] =
+          YAML::Clone(test_baseline["stitching"]["control_point_selection"]);
     const auto saved_camera = hm::stitching::read_stitch_camera_selection(test_baseline);
     if (!saved_camera.ok())
       return 1;
@@ -6120,7 +6123,7 @@ game:
     ok &= expect(width_config.configure().ok(), "Saved native-width fixture must load");
     if (width_case >= 7)
       ok &= expect(width_config.underlay_config("pipeline", structural_path.string()), "Structural stitcher must load");
-    if (width_case == 5 || width_case == 6 || width_case == 9)
+    if (width_case == 5 || width_case == 6 || width_case >= 9)
       ok &= expect(
           width_config.apply_config_item("stitching.max_output_width", width_case == 5 ? "4096" : "3072").ok(),
           "CLI width override fixture must apply");
@@ -6257,11 +6260,22 @@ game:
     calibration["stale_from"] = "canvas";
     calibration["artifacts_invalidated"] = false;
     calibration["reframe"] = "malformed-but-must-preserve-the-alignment";
+    protected_config["stitching"].remove("control_point_selection");
     const std::string saved = YAML::Dump(protected_config) + "\n";
     ok &= expect(hm::stitching::publish_game_config(reframe_dir, saved).ok(), "pending view fixture must publish");
     std::ofstream(reframe_dir / "_hockeymon/autooptimiser_out.pto") << "saved accepted alignment\n";
     hm::Configurator protected_view("protected-reframe", baseline_root.string(), hm::Configurator::kUseConfigFileGpu);
     ok &= expect(protected_view.configure().ok(), "pending view must load without triggering cleanup");
+    ok &= expect(
+        protected_view.config()["stitching"]["control_point_selection"].as<std::string>() == "legacy",
+        "CLI startup must freeze an old pending request before merging the new default");
+    ok &= expect(
+        protected_view.apply_config_item("stitching.control_point_selection", "quality-coverage").ok() &&
+            protected_view.config()["stitching"]["control_point_selection"].as<std::string>() == "quality-coverage",
+        "An explicit CLI mode change must override the inherited pending request");
+    ok &= expect(
+        protected_view.apply_config_item("stitching.control_point_selection", "legacy").ok(),
+        "Restore the recorded request for the malformed-intent cleanup check");
     const auto launch = protected_view.complete_configuration(false, false, false, "protected-view");
     std::ifstream after_file(reframe_dir / "_hockeymon/config.yaml");
     const std::string after((std::istreambuf_iterator<char>(after_file)), std::istreambuf_iterator<char>());

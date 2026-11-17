@@ -555,7 +555,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
     // over that lower layer, including hidden crop and leveling controls.
     auto before_effective = YAML::Clone(before_defaults);
     merge(before_effective, original);
-    if (!cleaned_source && !fresh_source && !pending_reset)
+    if (!cleaned_source && !fresh_source && (!pending_reset || reset_stage == "canvas"))
       before_effective["stitching"]["control_point_selection"] =
           st::ControlPointSelectionName(take(st::read_saved_control_point_selection(original)));
     before_effective["stitching"]["max_output_width"] =

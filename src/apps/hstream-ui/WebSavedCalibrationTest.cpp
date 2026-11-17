@@ -331,7 +331,18 @@ void restart_pending_reset(const QString& binary, const fs::path& source, const 
   const auto saved = YAML::Load(original);
   const auto stage = saved["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>();
   for (const std::string failure :
-       {"", "no-force", "missing-marker", "owner", "stage", "status", "claim", "cleanup", "hash", "live", "reframe"}) {
+       {"",
+        "historical",
+        "no-force",
+        "missing-marker",
+        "owner",
+        "stage",
+        "status",
+        "claim",
+        "cleanup",
+        "hash",
+        "live",
+        "reframe"}) {
     if (failure == "reframe" && stage != "canvas")
       continue;
     QTemporaryDir temporary;
@@ -339,6 +350,14 @@ void restart_pending_reset(const QString& binary, const fs::path& source, const 
     fs::copy(source, game, fs::copy_options::recursive);
     auto config = YAML::Load(original);
     auto state = config["hstream_ui"]["stitching_calibration"];
+    if (failure == "historical") {
+      config["stitching"].remove("control_point_selection");
+      config["hstream_ui"].remove("generated_control_point_selection");
+      if (stage == "canvas") {
+        state["reframe"]["source_solver"].remove("control_point_selection");
+        state["reframe"]["source_backend_generation"].remove("control_point_selection");
+      }
+    }
     if (failure == "status")
       state["status"] = "complete";
     if (failure == "claim")
@@ -366,8 +385,9 @@ void restart_pending_reset(const QString& binary, const fs::path& source, const 
         {"defaults", QJsonObject{}},
         {"sources", QJsonArray{}},
         {"force_reconfigure", failure != "no-force"}};
-    const auto result = invoke(binary, root, "calibration-controls-stage", payload, failure.empty());
-    if (!failure.empty()) {
+    const bool accepted = failure.empty() || failure == "historical";
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload, accepted);
+    if (!accepted) {
       expect(
           read(game / "_hockeymon/config.yaml") == initial &&
               read(game / "_hockeymon/mapping_0000.tif") == read(source / "_hockeymon/mapping_0000.tif") &&

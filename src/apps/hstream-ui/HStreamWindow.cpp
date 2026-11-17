@@ -10452,7 +10452,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
           read_stitch_frame_time(config, &saved_stitch_frame_time, nullptr, default_stitch_frame_time_);
       saved_sync_method = read_stitching_iteration_settings(config, default_iteration_settings_).sync_method;
       saved_selection = controlPointSelectionFromGameConfig(config);
-      if (config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete") {
+      if (config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete" ||
+          hm::stitching::HasStitchingReframeIntent(config)) {
         const auto recorded = hm::stitching::read_saved_control_point_selection(config);
         if (!recorded.ok())
           throw std::invalid_argument(recorded.status().ToString());
@@ -10677,6 +10678,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       // The UI resolves canonical/native width aliases with explicit layer
       // precedence; freeze that resolved value in the shared comparison.
       before_effective["stitching"]["max_output_width"] = saved_max_output_width;
+      before_effective["stitching"]["control_point_selection"] = saved_selection.toStdString();
       desired_effective["stitching"]["max_output_width"] = active_stitch_max_output_width_;
       const auto plan = hm::stitching::PrepareStitchingCalibrationControlsLocked(
           config_path.parent_path().parent_path(),
@@ -19853,6 +19855,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
       YAML::Node before_effective = merge_yaml_maps(baseline_config_, before_config);
       YAML::Node desired_effective = merge_yaml_maps(baseline_config_, config);
       before_effective["stitching"]["max_output_width"] = previous_max_output_width;
+      before_effective["stitching"]["control_point_selection"] = saved_control_point_selection_.toStdString();
       desired_effective["stitching"]["max_output_width"] = selected_max_output_width;
       const auto reframe = hm::stitching::PrepareStitchingReframeIntentLocked(
           config_path.parent_path().parent_path(), before_effective, desired_effective, desired_owner, config);
@@ -21502,7 +21505,8 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     saved_control_config_load_error_.clear();
     captureSavedControlState();
     if (!editing_defaults_ &&
-        config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete") {
+        (config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete" ||
+         hm::stitching::HasStitchingReframeIntent(config))) {
       const auto recorded = hm::stitching::read_saved_control_point_selection(config);
       if (!recorded.ok())
         throw std::invalid_argument(recorded.status().ToString());
