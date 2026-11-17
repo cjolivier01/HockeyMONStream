@@ -44,6 +44,7 @@ class SlurmTest(unittest.TestCase):
             }
         }
         self.calls = []
+        self.inventory = "compute-a\ncompute-b\ncompute-c\n"
         self.queue = self.row()
         self.accounting = ""
         self.acceptance = "42;fixture\n"
@@ -67,6 +68,7 @@ class SlurmTest(unittest.TestCase):
             raise self.errors[arguments[0]]
         values = {
             "scontrol": "ClusterName = fixture\nProctrackType = proctrack/cgroup\nTaskPlugin = task/cgroup,task/affinity\n",
+            "sinfo": self.inventory,
             "squeue": self.queue,
             "sacct": self.accounting,
             "sbatch": self.acceptance,

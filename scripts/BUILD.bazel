@@ -74,6 +74,7 @@ py_test(
     name = "workflow_setup_checks_test",
     size = "small",
     srcs = ["hstream_workflow_setup_checks_test.py"],
+    main = "hstream_workflow_setup_checks_test.py",
     deps = [":workflow_library"],
 )
 
