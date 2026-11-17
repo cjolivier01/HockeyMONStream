@@ -326,7 +326,8 @@ def validate_profile(profile):
             isinstance(worker, str)
             and Path(worker).is_absolute()
             and worker in runtime["files"],
-            "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles",
+            "These saved computer profiles need an update. Open cluster setup and choose "
+            "Prepare computers, then Test my computers and Enable these computers.",
         )
     qualified = profile["qualified_nodes"]
     require(isinstance(qualified, dict), "Expected qualified target evidence")

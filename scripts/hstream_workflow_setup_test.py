@@ -525,7 +525,7 @@ print('{"ready":true}')
             result = execution.qualification_status(self.registry, tick=False)
             row = result["tests"][0]
             controller.log.assert_called_once_with("test", "scan")
-            self.assertIn("Find matching frames failed", row["next"])
+            self.assertIn("Look for players in the video failed", row["next"])
             self.assertIn("GPU ran out of available memory", row["next"])
             self.assertIn("other GPU work", row["next"])
             self.assertIn(
@@ -544,7 +544,7 @@ print('{"ready":true}')
             # An unreadable log must leave the known failed stage and scheduler cause visible.
             controller.log.side_effect = FileNotFoundError("No task log")
             row = execution.qualification_status(self.registry, tick=False)["tests"][0]
-            self.assertIn("Find matching frames failed", row["next"])
+            self.assertIn("Look for players in the video failed", row["next"])
             self.assertIn("Slurm stopped", row["next"])
             self.assertNotIn("GPU ran out", row["next"])
 
@@ -553,7 +553,7 @@ print('{"ready":true}')
                 state="recovery", reason="Waiting for exact supervised receipt"
             )
             row = execution.qualification_status(self.registry, tick=False)["tests"][0]
-            self.assertIn("Find matching frames needs attention", row["next"])
+            self.assertIn("Look for players in the video needs attention", row["next"])
             self.assertIn("Waiting for exact supervised receipt", row["next"])
             self.assertNotIn("failed:", row["next"])
             self.assertFalse(row["finished"])
@@ -619,8 +619,9 @@ print('{"ready":true}')
                 10,
             )
         message = str(raised.exception)
-        self.assertIn("make deploy installs the programs", message)
-        self.assertIn("Save and build registry", message)
+        self.assertIn("Prepare computers", message)
+        self.assertIn("Test my computers", message)
+        self.assertIn("Enable these computers", message)
         self.assertNotIn('{"error"', message)
         self.assertEqual(
             setup.readable_error('{"error": "Permission denied"}'), "Permission denied"

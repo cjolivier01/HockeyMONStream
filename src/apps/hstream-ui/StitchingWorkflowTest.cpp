@@ -579,7 +579,7 @@ elif action in ('test-status','start-test','cancel-test'):
    phase=phases.get(node,'not-tested')
    row={'profile':key,'node':node,'state':phase,'passed':phase=='passed'}
    if phase!='not-tested': row.update(status={'state':phase},finished=phase!='running')
-   if phase=='failed': row['next']='Find matching frames failed: The GPU ran out of available memory.\nWait for other GPU work on this computer to finish, then test again.'
+   if phase=='failed': row['next']='Look for players in the video failed: The GPU ran out of available memory.\nWait for other GPU work on this computer to finish, then test again.'
    rows.append(row)
  value={'tests':rows,'tested':all(row['passed'] for row in rows),'current':True}
  if mode=='progress-resume':
@@ -809,7 +809,7 @@ print(json.dumps({**value,'progress':p}))
         wait([&] { return next->isEnabled() && problem->text().contains("mini did not pass"); }),
         "Failed test did not explain the stopped sequence");
     require(
-        problem->text().contains("Find matching frames failed: The GPU ran out of available memory.") &&
+        problem->text().contains("Look for players in the video failed: The GPU ran out of available memory.") &&
             problem->text().contains("Wait for other GPU work"),
         "Failed or recovered test hid the stage, cause or recovery action");
     for (int i = 0; i < 20; ++i) {

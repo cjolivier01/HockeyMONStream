@@ -33,8 +33,8 @@ def stage_label(stage):
     labels = {
         "prepare": "Prepare a private recording",
         "prepare-target": "Check the recording on this computer",
-        "baseline": "Read sample frames",
-        "scan": "Find matching frames",
+        "baseline": "Line up the cameras and find the ice",
+        "scan": "Look for players in the video",
         "materialize": "Save the frame selection",
         "reuse": "Prepare calibration",
         "reuse-target": "Load calibration inputs",

@@ -230,10 +230,8 @@ def readable_error(value):
         message = decoded["error"].strip()
     if message.startswith("Slurm profiles need a pinned runtime.worker"):
         return (
-            "These saved computer profiles need to be updated for the current HStream job worker. "
-            "Running make deploy installs the programs; it does not rebuild saved profiles.\n"
-            "Recover the saved setup, check the installation folders, then use Save and build registry and Test next computer. "
-            "Apply tested settings before starting the controller."
+            "These saved computer profiles need an update. Open cluster setup and choose "
+            "Prepare computers, then Test my computers and Enable these computers."
         )
     return message
 
