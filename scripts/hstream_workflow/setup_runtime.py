@@ -27,6 +27,14 @@ def has_current_features(features):
     )
 
 
+def has_current_preparation(saved):
+    """Old copied installations must pass through Prepare once after upgrade."""
+    return has_current_features(saved.get("setup_features")) and not any(
+        "setup-runtimes" in Path(profile.get("runtime", {}).get("root", "")).parts
+        for profile in saved.get("configuration", {}).get("profiles", {}).values()
+    )
+
+
 def require_current_task(prepared, timeout, deployment_nodes, *, gpu=False):
     from .executor import installation_environment
 

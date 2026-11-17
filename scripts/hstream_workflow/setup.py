@@ -570,7 +570,7 @@ def inspect_registry(registry, timeout, draft=None):
 def progress(root):
     """Advisory button prerequisites from saved files, never job admission."""
     from .setup_execution import current_revision, generation
-    from .setup_runtime import has_current_features
+    from .setup_runtime import has_current_preparation
 
     state = {
         "revision": None,
@@ -590,7 +590,7 @@ def progress(root):
             state["build_current"] = (
                 bool(saved["draft"])
                 and built["revision"] == saved["revision"]
-                and has_current_features(built.get("setup_features"))
+                and has_current_preparation(built)
             )
             if bool(saved["draft"]) and built["revision"] == saved["revision"]:
                 built_revision = digest(built["configuration"])

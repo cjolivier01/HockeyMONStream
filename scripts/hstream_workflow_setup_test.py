@@ -1543,6 +1543,29 @@ int main(int argc, char** argv) {
         self.assertEqual(plan["profiles"]["gpu"]["resources"]["time_seconds"], 30)
         self.assertEqual(plan["limits"]["max_parallel"], 1)
 
+    def test_copied_runtime_setup_requires_preparation_even_when_applied(self):
+        saved = self.save()
+        config = self.compile()
+        built = {"revision": saved["revision"], "configuration": config,
+                 "setup_features": runtime_setup.REQUIRED_FEATURES}
+        write_json(self.registry / "config.json", config)
+        write_json(self.registry / "setup-build.json", {})
+        write_json(self.registry / "setup-active.json", {
+            "revision": saved["revision"], "configuration_revision": digest(config)})
+        with patch.object(execution, "generation", return_value=(self.registry, built)):
+            self.assertTrue(setup.progress(self.registry)["applied"])
+            for profile in config["profiles"].values():
+                profile["runtime"]["root"] = str(self.registry / "setup-runtimes" / "old")
+            write_json(self.registry / "config.json", config)
+            write_json(self.registry / "setup-active.json", {
+                "revision": saved["revision"], "configuration_revision": digest(config)})
+            progress = setup.progress(self.registry)
+            self.assertTrue(progress["installed"])
+            self.assertFalse(progress["build_current"])
+            self.assertFalse(progress["applied"])
+            with self.assertRaisesRegex(WorkflowError, "Go back to Prepare"):
+                execution.require_current_setup(built)
+
     def test_equivalent_choices_share_proof_but_distinct_requests_do_not(self):
         config = self.compile()
         alias = copy.deepcopy(config["profiles"]["gpu"])

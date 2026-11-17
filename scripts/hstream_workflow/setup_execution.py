@@ -711,10 +711,10 @@ def restore_test(test):
 
 
 def qualification_status(root, *, tick):
-    from .setup_runtime import has_current_features
+    from .setup_runtime import has_current_preparation
 
     directory, saved = generation(root)
-    current_programs = has_current_features(saved.get("setup_features"))
+    current_programs = has_current_preparation(saved)
     from .setup_checks import defer_busy, is_deferred
 
     def check(target):
@@ -877,10 +877,10 @@ def idle(root):
 
 
 def require_current_setup(saved):
-    from .setup_runtime import has_current_features
+    from .setup_runtime import has_current_preparation
 
     require(
-        has_current_features(saved.get("setup_features")),
+        has_current_preparation(saved),
         "These prepared computers have not been checked for current stitching settings. "
         "Go back to Prepare computers before testing or enabling them. "
         "If HStream is outdated, update the main server and all selected computers.",
