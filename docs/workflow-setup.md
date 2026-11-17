@@ -25,7 +25,10 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    the scheduler reason; it does not claim to be running. Test details include the
    current native stage log. Resume stays disabled while automatic checking runs,
    and Stop remains available across polls. Stopping and continuing skips passed
-   checks for the current prepared setup; a failure stops the sequence and is shown on this screen. The test
+   checks for the current prepared setup; a failure stops the sequence and shows
+   the failed stage, its cause and what to do next, including after reopening setup.
+   Recovered diagnostics from successful stages are not reported as the failure.
+   Cleanup stays explicit until the controller proves the test stopped. The test
    uses private copies and does not promote results to the recording. Stop testing
    cancels the current test and prevents later computers from starting, including
    when a status response is still pending. Unknown submission results must be

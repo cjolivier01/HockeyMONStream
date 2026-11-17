@@ -29,6 +29,7 @@ from .files import (
 from .profiles import DEFAULT_FIELDS, controller_files, load_config
 from .schema import WorkflowError, digest, positive, require, validate_plan
 from .setup import SetupStore, absolute, run_readonly, validate_draft
+from .setup_progress import failure_detail
 from .setup_progress import summary as test_summary
 
 CPU = ["experiment-create", "experiment-reuse-selection", "experiment-complete"]
@@ -708,11 +709,15 @@ def qualification_status(root, *, tick):
                 ]["game_directory"]
                 controller, status, rejection = restore_test(test)
                 if rejection is not None:
+                    explanation = (
+                        rejection
+                        + "\nCorrect the setup, then save and build again. No job was admitted."
+                    )
                     row.update(
                         state="rejected",
                         finished=True,
-                        log=rejection
-                        + "\nCorrect the setup, then save and build again. No job was admitted.",
+                        log=explanation,
+                        next=explanation,
                     )
                     rows.append(row)
                     continue
@@ -726,22 +731,28 @@ def qualification_status(root, *, tick):
                     status=status,
                 )
                 # The controller owns bounded live and failed-stage log reads.
-                if status["state"] in {"failed", "recovery"}:
-                    row["next"] = (
-                        "Inspect the test stage and its log. Correct the installation or sample recording, then test again."
-                    )
                 if status["state"] in {"failed", "recovery", "running"}:
-                    for stage in status["nodes"]:
-                        if (
-                            stage["state"] in {"failed", "recovery", "running"}
-                            and stage["attempts"]
-                        ):
+                    # A later running/cleanup stage must not hide the failed
+                    # attempt or substitute an earlier, recovered diagnostic.
+                    stages = [
+                        stage
+                        for state in ("failed", "recovery", "running")
+                        for stage in status["nodes"]
+                        if stage["state"] == state
+                    ]
+                    if stages:
+                        stage = stages[0]
+                        if stage["attempts"]:
                             try:
                                 row["log"] = controller.log(
                                     test["workflow"], stage["id"]
                                 )["text"][-32768:]
                             except (OSError, ValueError):
                                 pass
+                        if stage["state"] in {"failed", "recovery"}:
+                            row["next"] = failure_detail(
+                                stage, row.get("log", ""), finished=row["finished"]
+                            )
             rows.append(row)
     return {
         "tests": rows,

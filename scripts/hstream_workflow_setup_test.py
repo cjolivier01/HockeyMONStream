@@ -12,7 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from hstream_workflow import (
     setup,
@@ -299,6 +299,110 @@ print('{"ready":true}')
             "Waiting for Slurm resources for: Prepare a private recording", value
         )
         self.assertNotIn("make mini available", value)
+
+    def test_failed_test_explains_its_stage_without_using_other_stage_logs(self):
+        saved = self.save()
+        test_registry = self.root / "test-registry"
+        test_registry.mkdir(mode=0o700)
+        write_json(
+            test_registry / "plan.json",
+            {"source_identity": {"game_directory": str(self.root / "recordings/game")}},
+        )
+        prepared = {
+            "revision": saved["revision"],
+            "configuration": self.compile(),
+            "tests": {"gpu/mini": {"registry": str(test_registry), "workflow": "test"}},
+        }
+        status = {
+            "state": "failed",
+            "owner_released": True,
+            "nodes": [
+                {"id": "baseline", "state": "succeeded", "attempts": [{"id": "old"}]},
+                {
+                    "id": "scan",
+                    "state": "failed",
+                    "reason": "Slurm stopped without a successful supervised native receipt: FAILED",
+                    "attempts": [{"id": "current"}],
+                },
+                {"id": "complete", "state": "running", "attempts": [{"id": "cleanup"}]},
+            ],
+        }
+        controller = Mock()
+        controller.log.return_value = {
+            "text": "ERROR from hmstitcher0: Video preparation failed: INTERNAL: Could not acquire an output buffer\n"
+            "Cuda failure: status=2\nError(-1) in buffer allocation\n"
+            "FATAL: Pipeline graceful stop did not finish within 13 s; shutdown is wedged.\n"
+        }
+        with patch.object(
+            execution, "generation", return_value=(self.registry, prepared)
+        ), patch.object(
+            execution, "restore_test", return_value=(controller, status, None)
+        ):
+            result = execution.qualification_status(self.registry, tick=False)
+            row = result["tests"][0]
+            controller.log.assert_called_once_with("test", "scan")
+            self.assertIn("Find matching frames failed", row["next"])
+            self.assertIn("GPU ran out of available memory", row["next"])
+            self.assertIn("other GPU work", row["next"])
+            self.assertIn(
+                row["next"].splitlines()[0], result["test_progress"]["summary"]
+            )
+            self.assertFalse(row["passed"])
+            self.assertFalse(result["tested"])
+
+            # The process has failed but retirement has not completed yet.
+            status.update(state="recovery", owner_released=False)
+            row = execution.qualification_status(self.registry, tick=False)["tests"][0]
+            self.assertIn("Wait for cleanup before testing again", row["next"])
+            self.assertNotIn("then test again", row["next"])
+            self.assertFalse(row["finished"])
+
+            # An unreadable log must leave the known failed stage and scheduler cause visible.
+            controller.log.side_effect = FileNotFoundError("No task log")
+            row = execution.qualification_status(self.registry, tick=False)["tests"][0]
+            self.assertIn("Find matching frames failed", row["next"])
+            self.assertIn("Slurm stopped", row["next"])
+            self.assertNotIn("GPU ran out", row["next"])
+
+            # Unresolved receipt/retirement is not itself proof that the native stage failed.
+            status["nodes"][1].update(
+                state="recovery", reason="Waiting for exact supervised receipt"
+            )
+            row = execution.qualification_status(self.registry, tick=False)["tests"][0]
+            self.assertIn("Find matching frames needs attention", row["next"])
+            self.assertIn("Waiting for exact supervised receipt", row["next"])
+            self.assertNotIn("failed:", row["next"])
+            self.assertFalse(row["finished"])
+
+    def test_failure_hints_ignore_recovered_errors_and_distinguish_host_memory(self):
+        from hstream_workflow.setup_progress import failure_detail
+
+        stage = {"id": "scan", "reason": "Slurm job failed"}
+        recovered = (
+            "CUDA error: out of memory\nFalling back to CPU\nCPU inference succeeded\n"
+        )
+        detail = failure_detail(
+            stage,
+            recovered
+            + "ERROR from source0: Cannot open recording: Permission denied\n",
+            finished=True,
+        )
+        self.assertIn("Permission denied", detail)
+        self.assertNotIn("GPU", detail)
+        self.assertNotIn("out of memory", detail)
+        detail = failure_detail(stage, recovered, finished=True)
+        self.assertIn("Slurm job failed", detail)
+        self.assertNotIn("GPU", detail)
+        detail = failure_detail(
+            stage, '{"error":"Host allocator ran out of memory"}\n', finished=True
+        )
+        self.assertIn("Host allocator ran out of memory", detail)
+        self.assertNotIn("GPU", detail)
+        for error in ("CUDA error: out of memory", "hipErrorOutOfMemory"):
+            self.assertIn(
+                "GPU ran out of available memory",
+                failure_detail(stage, json.dumps({"error": error}), finished=True),
+            )
 
     def test_transport_errors_explain_legacy_profiles_without_nested_json(self):
         legacy = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles"

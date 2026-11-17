@@ -1,6 +1,7 @@
 """Human-readable setup activity; never qualification or execution evidence."""
 
 import json
+import re
 import sys
 import threading
 
@@ -26,6 +27,73 @@ def forward(line):
         return False
     emit(value["message"])
     return True
+
+
+def stage_label(stage):
+    labels = {
+        "prepare": "Prepare a private recording",
+        "prepare-target": "Check the recording on this computer",
+        "baseline": "Read sample frames",
+        "scan": "Find matching frames",
+        "materialize": "Save the frame selection",
+        "reuse": "Prepare calibration",
+        "reuse-target": "Load calibration inputs",
+        "calibrate": "Test stitching",
+        "complete-target": "Verify stitching results",
+        "complete": "Finish and clean up",
+    }
+    return labels.get(stage["id"], stage.get("label", stage["id"]))
+
+
+def failure_detail(stage, log, *, finished):
+    """Explain this attempt only; log hints never change qualification or cleanup."""
+    lines = re.sub(r"\x1b\[[0-9;]*m", "", log[-32768:]).splitlines()
+    cause = ""
+    context = ""
+    # A pipeline bus error is terminal. Earlier SDK errors may have recovered
+    # (for example an ONNX CUDA allocation that successfully falls back to CPU).
+    for index, line in enumerate(lines):
+        if line.startswith("ERROR from "):
+            cause = line
+            context = "\n".join(lines[index : index + 4]).lower()
+            break
+    if not cause:
+        for line in reversed(lines):
+            try:
+                error = json.loads(line).get("error", "")
+            except (ValueError, AttributeError):
+                continue
+            if isinstance(error, str) and error and "inspect attempt log" not in error:
+                cause = error
+                context = error.lower()
+                break
+    if not cause:
+        cause = stage.get("reason") or "The test stopped without a successful result."
+        context = cause.lower()
+    action = (
+        "Open Test details for the full log, correct this problem, then test again."
+    )
+    allocation = "could not acquire an output buffer" in context
+    oom = "cuda failure: status=2" in context or (
+        any(marker in context for marker in ("cuda", "gpu", "hip"))
+        and any(marker in context for marker in ("out of memory", "outofmemory"))
+    )
+    if allocation or oom:
+        cause = (
+            "The GPU ran out of available memory."
+            if oom
+            else "The GPU could not allocate a video buffer."
+        )
+        action = (
+            "Wait for other GPU work on this computer to finish or choose a computer "
+            "with more available GPU memory, then test again."
+        )
+    if not finished:
+        action = "HStream has not confirmed that this test stopped. Wait for cleanup before testing again."
+    # Keep arbitrary native diagnostics readable and bounded in the main banner.
+    cause = " ".join(cause.split())[:600]
+    outcome = "needs attention" if stage.get("state") == "recovery" else "failed"
+    return f"{stage_label(stage)} {outcome}: {cause}\n{action}"
 
 
 def summary(rows):
@@ -77,19 +145,7 @@ def summary(rows):
         if status and not row.get("finished"):
             if active:
                 done = sum(stage["state"] == "succeeded" for stage in stages)
-                labels = {
-                    "prepare": "Prepare a private recording",
-                    "prepare-target": "Check the recording on this computer",
-                    "baseline": "Read sample frames",
-                    "scan": "Find matching frames",
-                    "materialize": "Save the frame selection",
-                    "reuse": "Prepare calibration",
-                    "reuse-target": "Load calibration inputs",
-                    "calibrate": "Test stitching",
-                    "complete-target": "Verify stitching results",
-                    "complete": "Finish and clean up",
-                }
-                detail = labels.get(active["id"], active.get("label", active["id"]))
+                detail = stage_label(active)
                 reason = active.get("reason", "")
                 if active["state"] == "queued":
                     hosts = active.get("resources", {}).get("nodes", [])
@@ -108,6 +164,10 @@ def summary(rows):
                 if active["state"] == "queued":
                     state += "\n    This stage has not started on the computer. You can wait or stop testing; passed checks are kept."
             current = title + "\n" + state
+        if row.get("next"):
+            state += "\n    " + row["next"].replace("\n", "\n    ")
+            if not row.get("finished"):
+                current = title + "\n" + state
         if not row["passed"] and not next_check:
             next_check = title
         lines.append(f"{index}. {name}: {state}")

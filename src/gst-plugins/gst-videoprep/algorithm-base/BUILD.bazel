@@ -45,12 +45,31 @@ cc_library (
   visibility = ["//visibility:public"],
   deps = cuda_dependencies("algorithm-base", [
         ":fatal-output-error",
+        ":output-buffer-pool",
         ":runtime-output-caps",
         "//src/libs/common:utils",
         "@deepstream//:deepstream_lib",
         "@com_google_absl//absl/status",
         "//toolchains/jetson:cuda_runtime",
   ]),
+)
+
+cc_library(
+    name = "output-buffer-pool",
+    srcs = ["OutputBufferPool.cpp"],
+    hdrs = ["OutputBufferPool.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "output_buffer_pool_test",
+    srcs = ["OutputBufferPoolTest.cpp"],
+    deps = [":output-buffer-pool"],
 )
 
 cc_test(

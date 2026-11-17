@@ -358,8 +358,9 @@ struct WorkflowSetupDialog::Impl {
           if (row.value("finished").toBool() && !row.value("passed").toBool()) {
             flow = Flow::None;
             showProblem(
-                row.value("node").toString() +
-                " did not pass while setup was away. Check Test details below, then click Test my computers to try again.");
+                row.value("node").toString() + " did not pass while setup was away. " +
+                row.value("next").toString(
+                    "Check Test details below, then click Test my computers to try again."));
             return;
           }
         }
