@@ -65,6 +65,7 @@ def is_deferred(test, status):
         and intent.get("cluster") == details.get("cluster")
         and details.get("state") == "CANCELLED"
         and details.get("host") == ""
+        and details.get("never_allocated") is True
         and details.get("terminal") is True
         and details.get("stopped") is True
         and details.get("cleanup_complete") is True

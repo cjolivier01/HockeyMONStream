@@ -223,6 +223,9 @@ def lookup(root, timeout):
                 "scheduler_id": fields[0],
                 "state": state,
                 "exit_code": fields[3],
+                # Presentation also normalizes Unknown/N/A, but those values
+                # cannot prove that an allocation never received a computer.
+                "never_allocated": fields[4] in {"None assigned", "None", "(null)"},
                 "host": (
                     ""
                     if fields[4]

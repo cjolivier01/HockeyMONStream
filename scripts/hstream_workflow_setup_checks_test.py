@@ -51,6 +51,7 @@ class BusyCheckTest(unittest.TestCase):
         details.update(
             state="CANCELLED",
             host="",
+            never_allocated=True,
             terminal=True,
             stopped=True,
             cleanup_complete=True,
@@ -58,6 +59,7 @@ class BusyCheckTest(unittest.TestCase):
         self.assertTrue(is_deferred(self.test, stopped))
         for field, value in (
             ("host", "mini"),
+            ("never_allocated", False),
             ("state", "FAILED"),
             ("scheduler_id", "8"),
             ("stopped", False),
@@ -106,12 +108,29 @@ class BusyCheckTest(unittest.TestCase):
         ):
             observation = slurm.lookup(root, 30)
         self.assertEqual(observation["host"], "")
+        self.assertTrue(observation["never_allocated"])
         stopped = copy.deepcopy(self.status)
         stopped["owner_released"] = True
         stopped["nodes"][0]["attempts"][0]["details"] = dict(
             observation, stopped=True, cleanup_complete=True
         )
         self.assertTrue(is_deferred(self.test, stopped))
+        for unknown in ("Unknown", "N/A"):
+            with patch.object(
+                slurm,
+                "run_command",
+                side_effect=[
+                    SimpleNamespace(stdout=""),
+                    SimpleNamespace(
+                        stdout=f"7|test-job|CANCELLED|0:0|{unknown}|{user}|attempt|local\n"
+                    ),
+                ],
+            ):
+                observation = slurm.lookup(root, 30)
+            stopped["nodes"][0]["attempts"][0]["details"] = dict(
+                observation, stopped=True, cleanup_complete=True
+            )
+            self.assertFalse(is_deferred(self.test, stopped))
 
     def test_unknown_failure_and_unsupported_preparation_cannot_defer(self):
         for state, reason, enabled in (
