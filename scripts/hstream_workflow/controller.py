@@ -416,8 +416,13 @@ class Controller:
             current = self._native(directory, "inspect", {"game": owner["game"]}).get(
                 "owner"
             )
+            if current is None:
+                # Release may have committed before its reply was lost. There
+                # is no native claim to cancel; only the ordinary terminal
+                # retirement path below may mark workflow ownership released.
+                return
             require(
-                current is not None and current.get("token") == owner["token"],
+                current.get("token") == owner["token"],
                 "Game owner changed during cancellation",
             )
             if not current.get("cancel_requested"):
