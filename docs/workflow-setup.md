@@ -114,14 +114,16 @@ Numeric model names are exact choices: a missing A10 never becomes an A100.
 Tasks select the prepared libraries and baseline before their native program
 starts, including packages whose ELF search path names the deployment prefix.
 Published copies stay in place for existing runs. Discovery and build never mark
-computers qualified: each one still needs its native GPU/storage check.
+computers qualified: each still needs a completed check or a safely deferred busy
+allocation after supported-runtime preparation.
 
 Setup qualifies deployment readiness, not video processing quality or memory capacity
 for every recording. A normal stitching experiment performs calibration and player
 scanning after setup. The quick check uses the ordinary Slurm/native worker protocol,
-GPU allocation, artifact verification, process retirement and game ownership. Checks use `workflow.max_parallel` and the shared profile limits. Native retirement
+GPU allocation, artifact verification, process retirement and game ownership.
+Checks use `workflow.max_parallel` and the shared profile limits. Native retirement
 receipts are opened through pinned directories so stale NFS absence caches do not
-add a delay to each finished job. Its
+add a delay to each finished job. The probe
 execution deadline is bounded by `workflow.command_timeout_seconds`; scheduler queue
 time is shown separately. Matching node, runtime pins, command, capabilities and all
 allocation resources are required to reuse a result across profile aliases. Generic

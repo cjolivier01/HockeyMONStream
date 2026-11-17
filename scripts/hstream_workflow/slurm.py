@@ -179,7 +179,8 @@ def lookup(root, timeout):
                 "reason": fields[3],
                 "host": (
                     ""
-                    if fields[4] in {"(null)", "None", "Unknown", "N/A"}
+                    if fields[4]
+                    in {"(null)", "None", "None assigned", "Unknown", "N/A"}
                     else fields[4]
                 ),
                 "terminal": False,
@@ -224,7 +225,8 @@ def lookup(root, timeout):
                 "exit_code": fields[3],
                 "host": (
                     ""
-                    if fields[4] in {"(null)", "None", "Unknown", "N/A"}
+                    if fields[4]
+                    in {"(null)", "None", "None assigned", "Unknown", "N/A"}
                     else fields[4]
                 ),
                 "terminal": state in TERMINAL,

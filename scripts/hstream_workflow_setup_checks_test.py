@@ -70,6 +70,49 @@ class BusyCheckTest(unittest.TestCase):
         stopped["owner_released"] = False
         self.assertFalse(is_deferred(self.test, stopped))
 
+    def test_slurm_accounting_never_assigned_sentinel_allows_deferred_cleanup(self):
+        import os, pwd
+        from types import SimpleNamespace
+        from hstream_workflow import slurm
+        from hstream_workflow.files import write_json
+
+        controller = Mock()
+        defer_busy(controller, self.test, self.status, enabled=True)
+        root = Path(self.temp.name)
+        user = pwd.getpwuid(os.getuid()).pw_name
+        write_json(
+            root / "submission.json",
+            {
+                "attempt_id": "attempt",
+                "name": "test-job",
+                "cluster": "local",
+                "user": user,
+                "submitted_after": "2026-01-01",
+            },
+        )
+        write_json(
+            root / "launch.json",
+            {"attempt_id": "attempt", "scheduler_id": "7", "cluster": "local"},
+        )
+        with patch.object(
+            slurm,
+            "run_command",
+            side_effect=[
+                SimpleNamespace(stdout=""),
+                SimpleNamespace(
+                    stdout=f"7|test-job|CANCELLED|0:0|None assigned|{user}|attempt|local\n"
+                ),
+            ],
+        ):
+            observation = slurm.lookup(root, 30)
+        self.assertEqual(observation["host"], "")
+        stopped = copy.deepcopy(self.status)
+        stopped["owner_released"] = True
+        stopped["nodes"][0]["attempts"][0]["details"] = dict(
+            observation, stopped=True, cleanup_complete=True
+        )
+        self.assertTrue(is_deferred(self.test, stopped))
+
     def test_unknown_failure_and_unsupported_preparation_cannot_defer(self):
         for state, reason, enabled in (
             ("UNKNOWN", "Resources", True),
