@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <QtCore/QByteArrayView>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
@@ -253,7 +254,7 @@ QJsonObject Artifact(const Request& request, const fs::path& path, const QString
       if (count < 0 && errno == EINTR)
         continue;
       require(count > 0, "Artifact changed while hashing");
-      hash.addData(buffer.data(), count);
+      hash.addData(QByteArrayView(buffer.data(), static_cast<qsizetype>(count)));
       remaining -= count;
     }
     struct stat after{}, named{};

@@ -40,7 +40,8 @@ absl::StatusOr<RinkMaskBoard> suggestBoard(
     if (stats.at<int>(i, cv::CC_STAT_AREA) > stats.at<int>(largest, cv::CC_STAT_AREA))
       largest = i;
   const int left = stats.at<int>(largest, cv::CC_STAT_LEFT), width = stats.at<int>(largest, cv::CC_STAT_WIDTH);
-  if (width < mask.cols / 2 || stats.at<int>(largest, cv::CC_STAT_AREA) < mask.total() / 20)
+  const size_t area = static_cast<size_t>(stats.at<int>(largest, cv::CC_STAT_AREA));
+  if (width < mask.cols / 2 || area < mask.total() / 20)
     return absl::NotFoundError("Too little continuous ice is visible to suggest the " + side + " boards");
   // Exclude the rounded ends and padding; inspect only the requested edge.
   const int start = left + width / 5, end = left + 4 * width / 5;

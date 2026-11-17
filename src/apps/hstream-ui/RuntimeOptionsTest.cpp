@@ -22,7 +22,7 @@ int main() {
   const auto missing = resolve_gpu_memory_profile("auto", std::nullopt, query);
   if (unavailable.ok() || missing.ok() || queries != 3)
     return 1;
-  for (const QString explicit_profile : {QStringLiteral("standard"), QStringLiteral("low")}) {
+  for (const QString& explicit_profile : {QStringLiteral("standard"), QStringLiteral("low")}) {
     const auto resolved = resolve_gpu_memory_profile(explicit_profile, 4, query);
     if (!resolved.ok() || *resolved != explicit_profile || queries != 3)
       return 1;
