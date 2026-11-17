@@ -545,6 +545,8 @@ if action=='discover':
 elif action=='save':
  s['draft']=r['draft']; value={'draft':s['draft'],'revision':p['revision']}
 elif action=='build':
+ if mode=='old-helper' and not s.get('upgraded'):
+  s['upgraded']=True; path.write_text(json.dumps(s)); print(json.dumps({'error':'The installed HStream on ripper is too old to read current stitching experiments. Run make deploy NODES=ripper,mini,stubby, then click Prepare computers again.'}),file=sys.stderr); sys.exit(1)
  if mode=='progress-resume':
   sys.stderr.write('HSTREAM_SETUP_PRO'); sys.stderr.flush(); time.sleep(.05)
   sys.stderr.write('GRESS '+json.dumps({'message':'stubby: checking installed programs…'})+'\n'); sys.stderr.flush()
@@ -626,6 +628,13 @@ print(json.dumps({**value,'progress':p}))
   require(wait([&] { return pages->currentIndex() == 2; }), "Wizard did not show preparation");
   capture("3-prepare");
   next->click();
+  if (outcome == "old-helper") {
+    require(
+        wait([&] { return next->isEnabled() && problem->text().contains("make deploy NODES=ripper,mini,stubby"); }),
+        "Old helper did not show the deployment command");
+    require(pages->currentIndex() == 2, "An incompatible helper advanced to computer testing");
+    next->click();
+  }
   if (outcome == "progress-resume") {
     require(
         wait([&] {
@@ -3008,6 +3017,7 @@ int main(int argc, char** argv) {
       setupAssistant(temporary.path(), YAML::Clone(baseline->values));
       for (const auto& outcome :
            {"success",
+            "old-helper",
             "failure",
             "cancel",
             "lost-start",

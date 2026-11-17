@@ -71,6 +71,17 @@ installations remain selectable in Advanced profile settings. Missing programs
 still require installing HStream on that computer. Headless Jetson packages now
 include `hstream-experiment-task`; enabling the desktop UI is not necessary.
 
+Preparation also asks each installed experiment helper whether it can read the
+current stitching settings, including saved control-point selection modes. An
+older helper stops preparation with a deployment command naming the main server
+and all selected computers. Building a desktop from source does not update those
+installed helpers. To update the whole cluster, pass its nodes explicitly, for
+example `make deploy NODES=ripper,monster,mini,meshy,stubby`; plain `make deploy`
+targets the local computer. Older prepared generations without this compatibility
+check return to Prepare. They cannot begin a new test, acquire its recording or
+enable their profiles, even if their earlier tests passed.
+Their saved test history and immutable runtimes remain intact.
+
 Mixed OS or processor builds become separate execution profiles with readable
 computer names. Their job limits remain shared across the original overlapping
 profiles, so splitting a profile does not increase cluster capacity. The editor

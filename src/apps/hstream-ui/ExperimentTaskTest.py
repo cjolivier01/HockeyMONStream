@@ -22,6 +22,7 @@ binary = pathlib.Path(sys.argv[1]).resolve()
 capabilities = json.loads(
     subprocess.check_output([str(binary), "--capabilities"], text=True)
 )
+assert "experiment-control-point-selection-v1" in capabilities["features"]
 expected_backend = sys.argv[2]
 assert capabilities["gpu_backend"] == expected_backend
 assert capabilities["gpu_operations_supported"] == (expected_backend == "nvidia")
@@ -192,12 +193,22 @@ descriptor = dict(
     game_directory=str(missing),
     game_id=missing.name,
     invalidation_id="accepted-generation",
-    settings=dict(control_points=30, frame_count=1, stitch_frame_time="00:00:00"),
+    settings=dict(
+        control_points=30,
+        frame_count=1,
+        stitch_frame_time="00:00:00",
+        control_point_selection="quality-coverage",
+    ),
 )
 row = dict(
     key=catalog_key,
     owner="catalog-generation",
-    settings=dict(control_points=30, frame_count=1, reference="00:00:00"),
+    settings=dict(
+        control_points=30,
+        frame_count=1,
+        reference="00:00:00",
+        control_point_selection="quality-coverage",
+    ),
     state="queued",
     selection="",
     artifact_generation="",

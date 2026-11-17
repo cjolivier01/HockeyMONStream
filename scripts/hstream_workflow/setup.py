@@ -238,12 +238,12 @@ def readable_error(value):
     return message
 
 
-def run_readonly(argv, timeout):
+def run_readonly(argv, timeout, *, env=None):
     """Time-limited inspection with bounded returned output and no prompts."""
     positive(timeout, "Connection timeout", 300)
     with tempfile.TemporaryFile() as out, tempfile.NamedTemporaryFile() as err:
         process = subprocess.Popen(
-            argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err
+            argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err, env=env
         )
         deadline = time.monotonic() + timeout
         pending = b""
@@ -572,6 +572,7 @@ def inspect_registry(registry, timeout, draft=None):
 def progress(root):
     """Advisory button prerequisites from saved files, never job admission."""
     from .setup_execution import current_revision, generation
+    from .setup_runtime import has_current_features
 
     state = {
         "revision": None,
@@ -589,14 +590,17 @@ def progress(root):
         if state["has_build"]:
             _, built = generation(root)
             state["build_current"] = (
-                bool(saved["draft"]) and built["revision"] == saved["revision"]
+                bool(saved["draft"])
+                and built["revision"] == saved["revision"]
+                and has_current_features(built.get("setup_features"))
             )
-            if state["build_current"]:
+            if bool(saved["draft"]) and built["revision"] == saved["revision"]:
                 built_revision = digest(built["configuration"])
         if (root / "setup-active.json").exists():
             active = read_json(root / "setup-active.json")
             state["applied"] = (
                 bool(saved["draft"])
+                and (not state["has_build"] or state["build_current"])
                 and active["revision"] == saved["revision"]
                 and active["configuration_revision"] == current_revision(root)
                 and (
