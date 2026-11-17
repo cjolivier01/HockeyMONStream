@@ -1172,7 +1172,9 @@ WorkflowSetupDialog::WorkflowSetupDialog(
         }
       } else if (index >= 0) {
         s.computers->setCurrentIndex(index);
+        s.add->setProperty("genericComputer", true);
         s.add->click();
+        s.add->setProperty("genericComputer", false);
       }
     } else {
       QJsonObject remembered;
@@ -1289,15 +1291,43 @@ WorkflowSetupDialog::WorkflowSetupDialog(
     } while (s.retained_profiles.contains(id));
     const auto defaults = setup["gpu_resources"];
     const auto machine = s.computers->currentData().toJsonObject();
+    const bool generic = s.add->property("genericComputer").toBool();
+    if (generic && !s.retained_profiles.contains("gpu"))
+      id = "gpu";
+    const auto any_gpu = QString::fromStdString(setup["gpu_request"].as<std::string>());
+    if (generic) {
+      for (int row = 0; row < s.profiles->rowCount(); ++row) {
+        if (s.profiles->item(row, 4)->text() != any_gpu)
+          continue;
+        auto nodes = s.profiles->item(row, 2)->text().split(',', Qt::SkipEmptyParts);
+        const auto name = machine.value("name").toString();
+        if (!nodes.contains(name))
+          nodes << name;
+        s.profiles->item(row, 2)->setText(nodes.join(", "));
+        auto partitions = s.profiles->item(row, 3)->text().split(',', Qt::SkipEmptyParts);
+        const auto partition = machine.value("partition").toString().remove('*');
+        if (!partitions.contains(partition))
+          partitions << partition;
+        s.profiles->item(row, 3)->setText(partitions.join(','));
+        s.invalidate();
+        return;
+      }
+    }
     auto gpu = machine.value("gpu").toString().split(',').first().section('(', 0, 0);
     const int last = gpu.lastIndexOf(':');
     if (last >= 0)
       gpu = gpu.left(last) + ":1";
     QJsonObject value{
-        {"label", machine.isEmpty() ? "New GPU profile" : machine.value("name").toString()},
+        {"label",
+         generic                 ? "Any qualified GPU"
+             : machine.isEmpty() ? "New GPU profile"
+                                 : machine.value("name").toString()},
         {"nodes", machine.isEmpty() ? QJsonArray{} : QJsonArray{machine.value("name")}},
         {"partition", machine.value("partition").toString().remove('*')},
-        {"gres", machine.isEmpty() || gpu == "(null)" ? "" : gpu},
+        {"gres",
+         generic                                    ? any_gpu
+             : machine.isEmpty() || gpu == "(null)" ? ""
+                                                    : gpu},
         {"cpus", defaults["cpus"].as<int>()},
         {"memory_mb", defaults["memory_mb"].as<int>()},
         {"time_seconds", defaults["time_seconds"].as<int>()},

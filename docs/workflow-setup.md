@@ -13,10 +13,10 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    the choices; advanced job settings retain editable profiles and resource limits.
 3. **Prepare.** Confirm the folder holding the game folders and choose
    **Prepare computers**. Setup discovers installed programs, verifies shared
-   settings storage, repairs obsolete installation paths and prepares immutable
-   copies for each platform. It does not install missing HStream packages.
-   Activity appears as shared storage is checked and each computer verifies or
-   copies its installed files.
+   settings storage and repairs obsolete installation paths. Jobs use each computer’s
+   deployed HStream installation directly. It does not install missing HStream packages.
+   Activity names the deployment folder checked on each computer. No installation
+   is copied to shared storage.
 4. **Test.** Choose **Test my computers** to run a short native GPU and shared-storage
    check on each selected computer. The open recording supplies the shared folder;
    no video is read, scanned or calibrated. Successful computers are
@@ -83,12 +83,22 @@ history cannot prevent this recovery. Unfinished qualification tests still need
 cleanup, and the destination still needs its own successful tests and activation.
 `make deploy` installs the native programs (the desktop package uses
 `/opt/hstream/bin`). After deployment, **Prepare computers** repairs stale
-preview-release paths automatically. It copies each distinct installed package
-into `setup-runtimes/` under the registry, verifies its files and reuses matching
-copies. Package-owned files are copied; local backups are excluded. Custom usable
-installations remain selectable in Advanced profile settings. Missing programs
-still require installing HStream on that computer. Headless Jetson packages now
-include `hstream-experiment-task`; enabling the desktop UI is not necessary.
+preview-release paths automatically. Programs, libraries and configuration run
+from the deployment directory, normally `/opt/hstream`. Setup does not create
+`setup-runtimes/` or `setup-releases/` copies. A later `make deploy` updates what
+new tasks execute without another Prepare, registry rebuild or GPU test.
+Custom installation folders remain selectable in Advanced profile settings.
+Missing programs still require installing HStream on that computer. Headless
+Jetson packages include the experiment helper; the desktop UI is optional.
+For an existing setup that uses copied programs, recover the saved setup and run
+**Prepare computers → Test my computers → Enable** once. Enable stops the old
+managed controller, replaces its service entry and updates both desktop and
+website profiles together. After that transition, later deployments need no new
+Prepare or qualification pass. Old copied folders are left unused.
+
+Operators are responsible for jobs and long-running processes during deployment;
+setup does not drain GPUs, block deployment or preserve executable releases.
+Restart an already running UI/controller when changing its own loaded code.
 
 Preparation also asks each installed experiment helper whether it can read the
 current stitching settings, including saved control-point selection modes. An
@@ -101,19 +111,21 @@ check return to Prepare. They cannot begin a new test, acquire its recording or
 enable their profiles, even if their earlier tests passed.
 Their saved test history and immutable runtimes remain intact.
 
-Mixed OS or processor builds become separate execution profiles with readable
-computer names. Their job limits remain shared across the original overlapping
-profiles, so splitting a profile does not increase cluster capacity. The editor
-retains the original editable profiles and displays any lowered overlapping limits.
+The normal computer selection creates one **Any qualified GPU** profile. Its
+`gpu:1` request stays generic, and Slurm chooses among the selected computers.
+Different OS, GPU models and x86/ARM builds do not split this profile: the native
+worker resolves the installed executables on the allocated computer. Specific
+GPU requests remain optional in Advanced profile settings. Overlapping profiles
+still share job limits.
 Prepare also checks typed GPU choices against Slurm's current computers and queues.
 A saved family such as `gpu:rtx:1` becomes each selected computer's exact GPU type
 when that family has one matching model there. The update appears in Prepare's
 activity log; GPU counts, other resource requests and the selected computers stay
-the same. Unknown or ambiguous choices stop before copying runtimes or testing.
+the same. Unknown or ambiguous typed choices stop before testing.
 Numeric model names are exact choices: a missing A10 never becomes an A100.
-Tasks select the prepared libraries and baseline before their native program
-starts, including packages whose ELF search path names the deployment prefix.
-Published copies stay in place for existing runs. Discovery and build never mark
+Tasks use the deployed libraries and baseline. The native worker records and
+rechecks the selected executable bytes for that attempt; immutable request and
+result bindings remain checked. Discovery and build never mark
 computers qualified: each still needs a completed check or a safely deferred busy
 allocation after supported-runtime preparation.
 
@@ -170,16 +182,16 @@ not certify every codec or replace browser workflow qualification.
 
 `setup.py` owns revision-checked `setup.json` drafts and read-only SSH discovery.
 Setup CLI commands bypass installed-controller dispatch to repair absent/invalid
-registries. `setup_execution.py` copies a content-addressed controller release,
-compiles pinned profiles and retains generations under `setup-builds/`.
+registries. `setup_execution.py` invokes the installed controller, compiles deployed
+profiles and retains configuration generations under `setup-builds/`.
 `setup_storage.py` verifies shared storage and recovers relocated drafts.
-`setup_runtime.py` discovers and snapshots node installations over SSH using the
-shared controller and a shared-file challenge. Preparation completes and the new
+`setup_runtime.py` checks node installations over SSH using each node’s installed
+controller and a shared-file challenge. Preparation completes and the new
 generation validates before revision-checked draft repairs are committed. Tests use
 ordinary Controller plans, game ownership, reservations, receipts and retirement.
 `setup-test-only.json` prevents normal profile selection and publication in test
 registries. Activation requires every node's successful retired test, unchanged
-draft/configuration revisions, unchanged runtime pins and an idle registry.
+draft/configuration revisions, valid runtime choices and an idle registry.
 The controller holds a service lock for its lifetime so activation cannot race
 startup. Older services must have a verifiably retired process on the main server;
 a stale heartbeat alone never permits replacing their configuration. Interrupted

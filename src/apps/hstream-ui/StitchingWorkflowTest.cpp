@@ -437,7 +437,7 @@ else: reply({'message':'Fixture step complete'})
   machine_list->item(0)->setCheckState(Qt::Checked);
   require(rows->rowCount() == 1 && rows->item(0, 2)->text() == "mini", "Adding a discovered computer lost its name");
   require(
-      rows->item(0, 3)->text() == "gpu" && rows->item(0, 4)->text() == "gpu:rtx5090:1",
+      rows->item(0, 3)->text() == "gpu" && rows->item(0, 4)->text() == "gpu:1",
       "Discovered Slurm choices were not filled in");
   const auto compute_runtime = rows->item(0, 9)->text();
   use_installed->click();
@@ -627,6 +627,12 @@ print(json.dumps({**value,'progress':p}))
   require(machines->count() == 2 && !next->isEnabled(), "Wizard did not require an explicit computer choice");
   machines->item(0)->setCheckState(Qt::Checked);
   machines->item(1)->setCheckState(Qt::Checked);
+  auto* pool = widget<QTableWidget>(dialog, "workflowSetupProfiles");
+  require(
+      pool->rowCount() == 1 && pool->item(0, 0)->text() == "gpu" &&
+          pool->item(0, 1)->text() == "Any qualified GPU" && pool->item(0, 4)->text() == "gpu:1" &&
+          pool->item(0, 2)->text().contains("mini") && pool->item(0, 2)->text().contains("stubby"),
+      "Basic computer choices did not share one generic GPU pool");
   capture("2-computers");
   next->click();
   require(wait([&] { return pages->currentIndex() == 2; }), "Wizard did not show preparation");

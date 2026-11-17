@@ -100,6 +100,12 @@ def validate_game(config, game):
 
 def preflight_runtime(profile, verified=None):
     validate_profile(profile)
+    if profile["runtime"].get("installation") == "deployed":
+        require(
+            os.access(profile["task_command"][0], os.X_OK),
+            "HStream is not installed in the configured deployment folder",
+        )
+        return
     for path, expected in profile["runtime"]["files"].items():
         if verified is not None and (path, expected) in verified:
             continue

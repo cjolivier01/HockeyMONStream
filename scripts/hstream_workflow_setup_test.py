@@ -1024,48 +1024,32 @@ print('{"ready":true}')
         (root / "lib/library.so").symlink_to("library.so.1")
         return root
 
-    def test_missing_installation_recovers_from_path_and_snapshots_package_only(self):
+    def test_prepare_uses_deployment_without_copying_or_retaining_old_bytes(self):
         installation = self.installed_fixture("installed")
         owned = list(installation.rglob("*"))
-        (installation / "unowned-backup").write_text("not package data")
         paths = {
             name: str(installation / "bin" / name)
             for name in ("hstream-runtime-worker", "hstream-experiment-task")
         }
-        with patch.object(
-            runtime_setup.shutil, "which", side_effect=paths.get
-        ), patch.object(runtime_setup, "payload_paths", return_value=owned):
+        with (
+            patch.object(runtime_setup.shutil, "which", side_effect=paths.get),
+            patch.object(runtime_setup, "payload_paths", return_value=owned),
+        ):
             first = runtime_setup.snapshot(
-                self.registry, str(self.root / "deleted-preview"), cpu=False
+                self.registry, str(self.root / "missing"), cpu=False
             )
+            with Path(first["task"]).open("ab") as output:
+                output.write(b"new deployment")
             second = runtime_setup.snapshot(self.registry, str(installation), cpu=False)
         self.assertEqual(first, second)
-        self.assertEqual(first["source"], str(installation))
-        target = Path(first["runtime"]["root"])
-        self.assertFalse((target / "unowned-backup").exists())
-        self.assertEqual((target / "lib/library.so").read_bytes(), b"library")
-        self.assertTrue(os.access(first["task"], os.X_OK))
-        self.assertFalse(
-            os.access(target / "configs/ds_hockey_app_config.yaml", os.X_OK)
-        )
-        self.assertTrue(
-            all(Path(path).is_relative_to(target) for path in first["runtime"]["files"])
-        )
-        # A damaged retained version is never overwritten; the replacement is reusable.
-        Path(first["task"]).write_bytes(b"damaged")
-        with patch.object(runtime_setup, "payload_paths", return_value=owned):
-            repaired = runtime_setup.snapshot(
-                self.registry, str(installation), cpu=False
-            )
-            repeated = runtime_setup.snapshot(
-                self.registry, str(installation), cpu=False
-            )
-        self.assertNotEqual(repaired["task"], first["task"])
-        self.assertEqual(repeated, repaired)
-        self.assertEqual(Path(first["task"]).read_bytes(), b"damaged")
+        self.assertEqual(first["runtime"]["root"], str(installation))
+        self.assertEqual(first["runtime"]["files"], {})
+        self.assertEqual(first["runtime"]["installation"], "deployed")
+        self.assertEqual(first["runtime"]["architecture"], "native")
+        self.assertFalse((self.registry / "setup-runtimes").exists())
 
     @unittest.skipUnless(shutil.which("cc"), "C compiler is unavailable")
-    def test_prepared_task_loads_retained_library_instead_of_deployed_prefix(self):
+    def test_prepared_task_and_admission_use_updated_deployment_libraries(self):
         from hstream_workflow import executor
         from hstream_workflow.controller import Controller
 
@@ -1127,6 +1111,14 @@ int main(int argc, char** argv) {
             ],
             check=True,
         )
+        native_worker = os.environ.get("HSTREAM_RUNTIME_WORKER")
+        if native_worker:
+            shutil.copyfile(native_worker, installation / "bin/hstream-runtime-worker")
+            (installation / "bin/hstream-runtime-worker").chmod(0o755)
+            guard = Path(native_worker).parent / "hstream-process-guard"
+            if guard.is_file():
+                shutil.copyfile(guard, installation / "bin/hstream-process-guard")
+                (installation / "bin/hstream-process-guard").chmod(0o755)
         prepared = runtime_setup.snapshot(self.registry, str(installation), cpu=False)
         # A subsequent deployment changes the absolute prefix embedded in ELF.
         library.write_text("int value(void) { return 23; }")
@@ -1159,13 +1151,17 @@ int main(int argc, char** argv) {
             for name in ("request.json", "profile.json", "settings.json"):
                 write_json(attempt / name, {})
             request = {
-                "attempt_id": "retained",
+                "attempt_id": "8fafb25a-9c58-48a2-827c-2f32e0e071a0",
                 "workflow_id": "workflow",
                 "epoch": 1,
                 "runtime": {},
             }
             executor.prepare(
-                attempt, request, profile, self.defaults, {"attempt_id": "retained"}
+                attempt,
+                request,
+                profile,
+                self.defaults,
+                {"attempt_id": "8fafb25a-9c58-48a2-827c-2f32e0e071a0"},
             )
             spec = read_json(attempt / "worker/request.json")["batch"]["spec"]
             child_environment = dict(os.environ)
@@ -1173,7 +1169,33 @@ int main(int argc, char** argv) {
                 child_environment.pop(key, None)
             child_environment.update(spec["environment"])
             result = subprocess.run(spec["argv"], env=child_environment, check=False)
-            self.assertEqual(result.returncode, 17)
+            self.assertEqual(result.returncode, 23)
+            admitted = read_json(attempt / "worker/request.json")
+            self.assertNotIn("architecture", admitted)
+            self.assertIn(prepared["task"], admitted["resolve_files"])
+            self.assertEqual(
+                set(admitted["files"]),
+                {
+                    str(attempt / name)
+                    for name in ("request.json", "profile.json", "settings.json")
+                },
+            )
+            if native_worker:
+                completed = subprocess.run(
+                    [
+                        str(installation / "bin/hstream-runtime-worker"),
+                        "--request",
+                        str(attempt / "worker/request.json"),
+                    ],
+                    capture_output=True,
+                    timeout=15,
+                )
+                result = read_json(attempt / "worker/result.json")
+                self.assertTrue(result["stopped"], completed.stderr.decode())
+                self.assertTrue(result["tasks"], result)
+                self.assertEqual(
+                    next(iter(result["tasks"].values()))["returncode"], 23, result
+                )
             profile["executor"] = "local"
             profile["resources"]["gpus"] = 0
             profile["runtime"]["storage_namespace"] = "retained"
@@ -1186,20 +1208,95 @@ int main(int argc, char** argv) {
             self.assertIn("GST_PLUGIN_PATH_1_0", spec["unset_environment"])
             self.assertEqual(
                 controller._native(attempt, "inspect", {}),
-                {"value": 17, "versioned_plugins": 0},
+                {"value": 23, "versioned_plugins": 0},
             )
             self.assertNotIn("HSTREAM_SETUP_TEST_SECRET", spec["environment"])
 
-    def test_interrupted_copy_never_publishes_a_runtime(self):
+    def test_prepare_does_not_copy_even_when_copying_is_unavailable(self):
         installation = self.installed_fixture("installed")
         with patch.object(
-            runtime_setup.shutil, "copyfileobj", side_effect=OSError("copy interrupted")
+            runtime_setup.shutil, "copyfileobj", side_effect=OSError("copy forbidden")
         ):
-            with self.assertRaisesRegex(OSError, "interrupted"):
-                runtime_setup.snapshot(self.registry, str(installation), cpu=False)
-        self.assertFalse(
-            any(path.is_dir() for path in (self.registry / "setup-runtimes").iterdir())
+            result = runtime_setup.snapshot(self.registry, str(installation), cpu=False)
+        self.assertEqual(
+            result["task"], str(installation / "bin/hstream-experiment-task")
         )
+        self.assertFalse((self.registry / "setup-runtimes").exists())
+
+    def test_slurm_requests_one_available_pool_node_instead_of_every_node(self):
+        from types import SimpleNamespace
+        from hstream_workflow import slurm
+        profile = self.compile()["profiles"]["gpu"]
+        profile["resources"]["gres"] = "gpu:1"
+        root = self.root / "allocation"
+        root.mkdir(mode=0o700)
+        write_json(root / "submission.json", {"backend": "slurm", "name": "test-pool", "attempt_id": "attempt"})
+        commands = []
+        def execute(argv, timeout):
+            commands.append(argv)
+            if argv[0] == "scontrol":
+                return SimpleNamespace(stdout="ClusterName = local\nProctrackType = proctrack/cgroup\nTaskPlugin = task/cgroup\n")
+            if argv[0] == "sinfo":
+                return SimpleNamespace(stdout="mini\nmeshy\nstubby\n")
+            self.assertEqual(argv[0], "sbatch")
+            return SimpleNamespace(stdout="41;local\n")
+        with patch.object(slurm, "run_command", side_effect=execute):
+            slurm.submit(root, profile, ["/installed/bin/hstream-runtime-worker"], 30)
+        submitted = commands[-1]
+        self.assertIn("--nodes=1", submitted)
+        self.assertIn("--gres=gpu:1", submitted)
+        self.assertIn("--exclude=stubby", submitted)
+        self.assertFalse(any(arg.startswith("--nodelist=") for arg in submitted))
+
+    def test_any_gpu_is_one_pool_across_deployed_architectures(self):
+        self.draft["profiles"]["gpu"].update(
+            gres="gpu:1", nodes=["mini", "monster", "stubby"]
+        )
+
+        def installed(cpu):
+            task, runtime = self.inspect("/opt/hstream", cpu=cpu)
+            runtime.update(
+                installation="deployed",
+                files={},
+                architecture="x86_64" if cpu else "native",
+            )
+            return {
+                "source": "/opt/hstream",
+                "task": task,
+                "runtime": runtime,
+                "features": runtime_setup.REQUIRED_FEATURES,
+                "gpu_supported": not cpu,
+            }
+
+        with (
+            patch.object(runtime_setup, "snapshot", return_value=installed(True)),
+            patch.object(
+                runtime_setup, "from_node", side_effect=lambda *args: installed(False)
+            ),
+            patch.object(
+                runtime_setup,
+                "require_current_task",
+                side_effect=lambda value, *args: value,
+            ),
+            patch.object(
+                runtime_setup,
+                "run_readonly",
+                return_value="mini|gpu|gpu:rtx5090:1\nmonster|gpu|gpu:rtx4090:1\nstubby|gpu|gpu:orin:1\n",
+            ),
+        ):
+            draft, prepared, _ = runtime_setup.prepare(self.registry, self.draft, 30, 3)
+        config = execution.compile_configuration(
+            draft, self.defaults, self.cpu, prepared=prepared
+        )
+        self.assertEqual(set(config["profiles"]), {"metadata", "gpu"})
+        profile = config["profiles"]["gpu"]
+        self.assertEqual(profile["resources"]["gres"], "gpu:1")
+        self.assertEqual(profile["resources"]["nodes"], ["mini", "monster", "stubby"])
+        self.assertEqual(profile["runtime"]["architecture"], "native")
+        self.assertEqual(profile["runtime"]["files"], {})
+        from hstream_workflow.schema import validate_profile
+
+        validate_profile(profile)
 
     def test_preparation_groups_builds_and_preserves_logical_capacity(self):
         self.save()
@@ -1446,6 +1543,29 @@ int main(int argc, char** argv) {
         self.assertEqual(plan["profiles"]["gpu"]["resources"]["time_seconds"], 30)
         self.assertEqual(plan["limits"]["max_parallel"], 1)
 
+    def test_copied_runtime_setup_requires_preparation_even_when_applied(self):
+        saved = self.save()
+        config = self.compile()
+        built = {"revision": saved["revision"], "configuration": config,
+                 "setup_features": runtime_setup.REQUIRED_FEATURES}
+        write_json(self.registry / "config.json", config)
+        write_json(self.registry / "setup-build.json", {})
+        write_json(self.registry / "setup-active.json", {
+            "revision": saved["revision"], "configuration_revision": digest(config)})
+        with patch.object(execution, "generation", return_value=(self.registry, built)):
+            self.assertTrue(setup.progress(self.registry)["applied"])
+            for profile in config["profiles"].values():
+                profile["runtime"]["root"] = str(self.registry / "setup-runtimes" / "old")
+            write_json(self.registry / "config.json", config)
+            write_json(self.registry / "setup-active.json", {
+                "revision": saved["revision"], "configuration_revision": digest(config)})
+            progress = setup.progress(self.registry)
+            self.assertTrue(progress["installed"])
+            self.assertFalse(progress["build_current"])
+            self.assertFalse(progress["applied"])
+            with self.assertRaisesRegex(WorkflowError, "Go back to Prepare"):
+                execution.require_current_setup(built)
+
     def test_equivalent_choices_share_proof_but_distinct_requests_do_not(self):
         config = self.compile()
         alias = copy.deepcopy(config["profiles"]["gpu"])
@@ -1534,22 +1654,27 @@ int main(int argc, char** argv) {
             execution.generation(self.registry)[1]["configuration"], config
         )
 
-    def test_interrupted_controller_copy_never_publishes_partial_modules(self):
+    def test_remote_uses_deployed_controller_without_copying_modules(self):
         self.save()
-        with patch.object(
-            execution.os, "fsync", side_effect=OSError("interrupted copy")
-        ):
-            with self.assertRaisesRegex(OSError, "interrupted copy"):
-                execution.deploy_controller(self.registry)
-        self.assertFalse(
-            list((self.registry / "setup-releases").rglob("hstream-workflow"))
-        )
-        launcher = execution.deploy_controller(self.registry)
-        self.assertTrue(os.access(launcher, os.X_OK))
-        self.assertEqual(
-            launcher.read_bytes(), execution.controller_files()[0].read_bytes()
-        )
-        self.assertEqual(execution.deploy_controller(self.registry), launcher)
+
+        def remote(argv, timeout):
+            command = shlex.split(argv[-1])
+            self.assertEqual(command[:3], ["hstream-workflow", "setup", "--request"])
+            request = read_json(command[3])
+            return json.dumps(
+                {"challenge": request["challenge"], "message": "installed controller"}
+            )
+
+        with patch.object(execution, "run_readonly", side_effect=remote):
+            result = execution.remote(
+                {
+                    "action": "test-status",
+                    "registry": str(self.registry),
+                    "timeout_seconds": 30,
+                }
+            )
+        self.assertEqual(result["message"], "installed controller")
+        self.assertFalse((self.registry / "setup-releases").exists())
 
     def test_interrupted_service_creation_can_retry_without_manual_removal(self):
         self.save()
@@ -1856,7 +1981,7 @@ int main(int argc, char** argv) {
         self.save()
         changed = copy.deepcopy(self.draft)
         changed["server"] = "different"
-        with patch.object(execution, "deploy_controller") as deploy:
+        with patch.object(execution, "run_readonly") as deploy:
             with self.assertRaisesRegex(WorkflowError, "Save the edited"):
                 execution.remote(
                     {

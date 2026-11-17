@@ -36,8 +36,12 @@ hashes in `state.json`'s `files` map and the path aliases in `tools`. Existing
 qualified hashes always win: discovery cannot replace a conflicting pin.
 Controllers use this for explicit deployment qualification across different OS
 builds, verify the native contract and recheck the captured bytes before adopting
-the result. Subsequent sessions send the qualified `files` hashes and node and
-architecture constraints; they do not rediscover or silently adopt replacements.
+the result. Frozen deployment profiles send the qualified `files` hashes and node and
+architecture constraints. Explicit `installation: deployed` standalone profiles
+resolve their named executables/configuration per attempt instead, so deployment
+updates take effect without copying an installation or rebuilding the registry.
+An `architecture: native` profile uses the native worker on the Slurm-selected
+computer; the request still restricts eligible nodes and pins all job inputs.
 Artifact inspection still rejects leaf symlinks. Executables still run through
 their verified descriptors and are checked again before each launch.
 

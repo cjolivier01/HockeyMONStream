@@ -1,4 +1,4 @@
-"""Prepare immutable shared runtimes from programs already installed on nodes."""
+"""Check the installed deployment on each selected computer."""
 
 import json
 import os
@@ -6,16 +6,15 @@ import shlex
 import shutil
 import socket
 import subprocess
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
-from .files import file_digest, locked, private_directory, sync_directory, write_json
-from .setup_progress import emit
+from .files import private_directory, write_json
 from .schema import WorkflowError, digest, identifier, require
 from .setup import absolute, run_readonly, validate_draft
+from .setup_progress import emit
 
 # Protocol support, not a configurable processing default. Old readers reject
 # catalogs written by the current desktop before any GPU stage can start.
@@ -25,6 +24,14 @@ REQUIRED_FEATURES = ["experiment-control-point-selection-v1", "cluster-readiness
 def has_current_features(features):
     return isinstance(features, list) and all(
         feature in features for feature in REQUIRED_FEATURES
+    )
+
+
+def has_current_preparation(saved):
+    """Old copied installations must pass through Prepare once after upgrade."""
+    return has_current_features(saved.get("setup_features")) and not any(
+        "setup-runtimes" in Path(profile.get("runtime", {}).get("root", "")).parts
+        for profile in saved.get("configuration", {}).get("profiles", {}).values()
     )
 
 
@@ -121,133 +128,20 @@ def payload_paths(root):
 
 
 def snapshot(registry, preferred, *, cpu):
+    """Describe the deployment in place; never make a second installation."""
     from .setup_execution import inventory
 
     host = socket.gethostname()
-    emit(host + ": finding installed HStream programs…")
+    emit(host + ": checking installed HStream programs…")
     source = installed_root(preferred, cpu=cpu)
-    paths = payload_paths(source)
-    emit(host + ": checking installed program files…")
-    task, runtime = inventory(str(source), cpu=cpu, paths=paths)
-    files = {
-        str(Path(path).relative_to(source)): value
-        for path, value in runtime["files"].items()
-    }
-    links = {}
-    for path in paths:
-        if path.is_symlink():
-            target = path.resolve(strict=True)
-            require(
-                target.is_relative_to(source),
-                "An installed HStream link leaves its installation: " + str(path),
-            )
-            if str(target) in runtime["files"] or target.is_dir():
-                links[str(path.relative_to(source))] = str(target.relative_to(source))
-    modes = {name: bool((source / name).stat().st_mode & 0o111) for name in files}
-    identity = digest({"files": files, "links": links, "executable": modes})
-    store = private_directory(Path(registry) / "setup-runtimes", create=True)
-
-    def verify(root):
-        present = {
-            str(path.relative_to(root))
-            for path in root.rglob("*")
-            if path.is_file() or path.is_symlink()
-        }
-        require(present == set(files) | set(links), "Prepared HStream contents changed")
-        for name, expected in files.items():
-            path = root / name
-            require(
-                path.is_file() and not path.is_symlink(),
-                "Prepared HStream file is missing: " + str(path),
-            )
-            require(
-                file_digest(path, 8 * 1024**3)["sha256"] == expected,
-                "Prepared HStream file changed: " + str(path),
-            )
-            require(
-                bool(path.stat().st_mode & 0o111) == modes[name],
-                "Prepared HStream permissions changed",
-            )
-        for name, target in links.items():
-            require(
-                (root / name).is_symlink()
-                and (root / name).resolve(strict=True) == root / target,
-                "Prepared HStream link changed",
-            )
-
-    with locked(store / (identity + ".lock")):
-        destination = store / identity
-        candidates = [destination, *sorted(store.glob(identity + "-*"))]
-        for candidate in candidates:
-            if not candidate.exists():
-                continue
-            try:
-                private_directory(candidate)
-                emit(host + ": verifying an existing shared copy…")
-                verify(candidate)
-            except (OSError, ValueError):
-                continue
-            destination = candidate
-            break
-        else:
-            if destination.exists():
-                # Never replace a version retained by an admitted run.
-                destination = store / (identity + "-" + uuid4().hex)
-        if not destination.exists():
-            with tempfile.TemporaryDirectory(
-                prefix=".preparing-", dir=store
-            ) as temporary:
-                staging = Path(temporary) / "runtime"
-                staging.mkdir(mode=0o700)
-                emit(host + ": copying installed programs to shared storage…")
-                for index, name in enumerate(files, 1):
-                    if index == 1 or index % 100 == 0 or index == len(files):
-                        emit(f"{host}: copying file {index} of {len(files)}")
-                    target = staging / name
-                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    with (source / name).open("rb") as incoming, target.open(
-                        "xb"
-                    ) as output:
-                        shutil.copyfileobj(incoming, output, 1024 * 1024)
-                        output.flush()
-                        os.fsync(output.fileno())
-                    target.chmod(0o700 if modes[name] else 0o600)
-                for name, target in links.items():
-                    alias = staging / name
-                    alias.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    alias.symlink_to(os.path.relpath(staging / target, alias.parent))
-                emit(host + ": verifying the new shared copy…")
-                verify(staging)
-                # Do not combine files from an installation that changed mid-copy.
-                _, after = inventory(str(source), cpu=cpu, paths=payload_paths(source))
-                require(
-                    after == runtime,
-                    "HStream was updated while setup was preparing it on "
-                    + socket.gethostname()
-                    + ". Build again to use the completed update.",
-                )
-                os.rename(staging, destination)
-                sync_directory(store)
-
-    emit(host + ": HStream programs ready.")
-
-    def remap(path):
-        return str(destination / Path(path).relative_to(source))
-
-    prepared = {
-        **runtime,
-        "root": str(destination),
-        "files": {remap(path): value for path, value in runtime["files"].items()},
-    }
-    for key in ("worker", "cli", "exporter", "config"):
-        if key in prepared:
-            prepared[key] = remap(prepared[key])
-    return {
-        "source": str(source),
-        "task": remap(task),
-        "runtime": prepared,
-        "host": socket.gethostname(),
-    }
+    task, runtime = inventory(str(source), cpu=cpu, paths=payload_paths(source))
+    # Deployment paths are durable configuration. Bytes are resolved by the
+    # allocated native worker for each attempt, after Slurm chooses its host.
+    runtime.update(installation="deployed", files={})
+    if not cpu:
+        runtime["architecture"] = "native"
+    emit(host + ": using installed HStream in " + str(source))
+    return {"source": str(source), "task": task, "runtime": runtime, "host": host}
 
 
 def on_node(request):
@@ -274,7 +168,7 @@ def from_node(registry, node, preferred, timeout, deployment_nodes):
     write_json(
         path,
         {
-            "action": "prepare-runtime",
+            "action": "prepare-installed-runtime",
             "on_node": True,
             "registry": str(registry),
             "runtime_root": preferred,
@@ -284,7 +178,7 @@ def from_node(registry, node, preferred, timeout, deployment_nodes):
         },
         exclusive=True,
     )
-    launcher = Path(__file__).resolve().parents[1] / "hstream-workflow"
+    launcher = "hstream-workflow"
     try:
         output = run_readonly(
             [
@@ -356,7 +250,7 @@ def prepare(registry, draft, timeout, parallel):
         remaining = int(deadline - time.monotonic())
         require(
             remaining > 0,
-            "Preparing HStream took longer than the connection timeout. Build again to reuse the completed copies.",
+            "Preparing HStream took longer than the connection timeout. Try Prepare again to check the remaining computers.",
         )
         node, source = item
         emit(node + ": connecting to prepare HStream…")

@@ -11,6 +11,7 @@ from .files import read_json, sync_directory, write_json
 from .schema import WorkflowError, require
 
 JOB_ID = re.compile(r"[1-9][0-9]{0,19}\Z")
+NODE_NAME = re.compile(r"[A-Za-z0-9_.-]{1,255}\Z")
 TERMINAL = {
     "COMPLETED",
     "CANCELLED",
@@ -35,6 +36,33 @@ def run_command(arguments, timeout):
         check=True,
         env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
     )
+
+
+def pool_arguments(nodes, cluster, timeout):
+    """A Slurm nodelist requires all listed nodes; exclude outside the pool."""
+    if len(nodes) == 1:
+        return ["--nodelist=" + nodes[0]]
+    output = run_command(
+        [
+            "sinfo",
+            "--clusters=" + cluster,
+            "--all",
+            "--Node",
+            "--noheader",
+            "--format=%N",
+        ],
+        timeout,
+    ).stdout
+    known = set(output.split())
+    require(
+        known and all(NODE_NAME.fullmatch(node) for node in known),
+        "Slurm computer inventory is unavailable",
+    )
+    require(
+        set(nodes) <= known, "A selected computer is absent from this Slurm cluster"
+    )
+    excluded = sorted(known - set(nodes))
+    return ["--exclude=" + ",".join(excluded)] if excluded else []
 
 
 def submit(root, profile, supervisor_command, timeout):
@@ -89,7 +117,7 @@ def submit(root, profile, supervisor_command, timeout):
         "--mem=" + str(resource["memory_mb"]) + "M",
         "--time=" + str((resource["time_seconds"] + 59) // 60),
         "--partition=" + resource["partition"],
-        "--nodelist=" + ",".join(resource["nodes"]),
+        *pool_arguments(resource["nodes"], intent["cluster"], timeout),
     ]
     for key in ("gres", "constraint", "account", "qos"):
         if resource[key]:
