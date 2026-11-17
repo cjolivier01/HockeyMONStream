@@ -170,6 +170,7 @@ print('{"ready":true}')
                             "id": "prepare-target",
                             "state": "queued",
                             "reason": "(Resources)",
+                            "resources": {"nodes": ["monster"]},
                         },
                     ]
                 },
@@ -188,6 +189,37 @@ print('{"ready":true}')
         self.assertEqual(
             result["next"], "Check 2 of 3 · computer 2 of 2 · monster · gpu"
         )
+
+    def test_metadata_queue_names_the_stage_host_not_the_selected_gpu(self):
+        from hstream_workflow.setup_progress import summary
+
+        stage = {
+            "id": "prepare",
+            "state": "queued",
+            "reason": "(Resources)",
+            "profile_id": "metadata",
+            "resources": {"nodes": ["ripper"]},
+        }
+        rows = [
+            {
+                "node": "mini",
+                "profile": "gpu",
+                "state": "running",
+                "passed": False,
+                "finished": False,
+                "status": {"nodes": [stage]},
+            }
+        ]
+        value = summary(rows)["current"]
+        self.assertIn("computer 1 of 1 · mini", value)
+        self.assertIn("Waiting for Slurm to make ripper available", value)
+        self.assertNotIn("make mini available", value)
+        stage["resources"]["nodes"] = []
+        value = summary(rows)["current"]
+        self.assertIn(
+            "Waiting for Slurm resources for: Prepare a private recording", value
+        )
+        self.assertNotIn("make mini available", value)
 
     def test_transport_errors_explain_legacy_profiles_without_nested_json(self):
         legacy = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles"

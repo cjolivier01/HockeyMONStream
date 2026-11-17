@@ -92,7 +92,12 @@ def summary(rows):
                 detail = labels.get(active["id"], active.get("label", active["id"]))
                 reason = active.get("reason", "")
                 if active["state"] == "queued":
-                    state = f"Waiting for Slurm to make {row['node']} available"
+                    hosts = active.get("resources", {}).get("nodes", [])
+                    state = (
+                        "Waiting for Slurm to make " + ", ".join(hosts) + " available"
+                        if hosts
+                        else "Waiting for Slurm resources for: " + detail
+                    )
                 elif active["state"] == "ready":
                     state = "Waiting to start the next stage"
                 else:
