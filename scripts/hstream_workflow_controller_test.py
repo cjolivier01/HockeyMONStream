@@ -367,6 +367,114 @@ class ControllerTest(unittest.TestCase):
         self.controller.retry(self.plan["workflow_id"], ["a", "b"], expected_epoch=0)
         self.assertEqual(self.wait()["state"], "succeeded")
 
+    def test_cancel_terminal_stages_retires_unreleased_claim_and_keeps_results(self):
+        native = self.controller._native
+
+        def lose_release(directory, action, payload, **kwargs):
+            if action == "release":
+                raise OSError("Release unavailable")
+            return native(directory, action, payload, **kwargs)
+
+        self.controller.register(self.plan, self.game)
+        with patch.object(self.controller, "_native", side_effect=lose_release):
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                try:
+                    self.controller.tick(self.plan["workflow_id"])
+                except OSError as error:
+                    self.assertEqual(str(error), "Release unavailable")
+                    break
+                time.sleep(0.02)
+        before = self.controller.status(self.plan["workflow_id"])
+        self.assertEqual(before["state"], "succeeded")
+        self.assertFalse(before["owner_released"])
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+        # Reconstruct an unacknowledged ownership record alongside terminal
+        # results: a false acquired flag must never authorize a fresh claim.
+        owner = read_json(directory / "owner.json")
+        owner.update(acquired=False, bound=False)
+        owner.pop("record", None)
+        write_json(directory / "owner.json", owner)
+        self.assertTrue((self.game / "_hockeymon/test-owner.json").exists())
+        actions = []
+
+        def cleanup_only(directory, action, payload, **kwargs):
+            actions.append(action)
+            self.assertNotIn(action, {"acquire", "bind"})
+            return native(directory, action, payload, **kwargs)
+
+        with patch.object(self.controller, "_native", side_effect=cleanup_only):
+            self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+            self.assertTrue((directory / "cancel-intent.json").exists())
+            self.controller.tick(self.plan["workflow_id"])
+        after = self.controller.status(self.plan["workflow_id"])
+        self.assertTrue(after["owner_released"])
+        self.assertEqual(after["state"], "succeeded")
+        self.assertEqual(before["nodes"], after["nodes"])
+        self.assertIn("release", actions)
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        history = {
+            path: path.read_bytes() for path in directory.iterdir() if path.is_file()
+        }
+        self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+        self.assertEqual(
+            history,
+            {path: path.read_bytes() for path in directory.iterdir() if path.is_file()},
+        )
+
+    def test_cancel_recovers_a_committed_release_with_a_lost_response(self):
+        native = self.controller._native
+
+        def lose_release_reply(directory, action, payload, **kwargs):
+            result = native(directory, action, payload, **kwargs)
+            if action == "release":
+                raise OSError("Release reply lost")
+            return result
+
+        self.controller.register(self.plan, self.game)
+        with patch.object(self.controller, "_native", side_effect=lose_release_reply):
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                try:
+                    self.controller.tick(self.plan["workflow_id"])
+                except OSError as error:
+                    self.assertEqual(str(error), "Release reply lost")
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("The worker did not reach native release")
+        before = self.controller.status(self.plan["workflow_id"])
+        self.assertEqual(before["state"], "succeeded")
+        self.assertFalse(before["owner_released"])
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        directory, _ = self.controller.registry.lookup(self.plan["workflow_id"])
+
+        # A different present owner must still stop cancellation/reconciliation.
+        with patch.object(
+            self.controller,
+            "_native",
+            return_value={"owner": {"token": "another-owner"}},
+        ):
+            self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+            with self.assertRaisesRegex(WorkflowError, "Game owner changed"):
+                self.controller.tick(self.plan["workflow_id"])
+        self.assertFalse(
+            self.controller.status(self.plan["workflow_id"])["owner_released"]
+        )
+
+        with patch.object(self.controller, "_native", wraps=native) as control:
+            self.controller.cancel(self.plan["workflow_id"], expected_epoch=0)
+            # Cancellation itself never promotes absence to successful cleanup.
+            self.assertFalse(read_json(directory / "owner.json")["released"])
+            self.controller.tick(self.plan["workflow_id"])
+        self.assertTrue(
+            all(call.args[1] == "inspect" for call in control.call_args_list)
+        )
+        after = self.controller.status(self.plan["workflow_id"])
+        self.assertTrue(after["owner_released"])
+        self.assertEqual(after["state"], "succeeded")
+        self.assertEqual(before["nodes"], after["nodes"])
+
     def test_cancel_waits_for_orphaned_native_acquire_helper(self):
         (self.game / "hold-acquire").touch()
         plan = self.root / "plan.json"
@@ -771,8 +879,26 @@ finally:
         self.assertFalse(failures)
         self.assertEqual(len(outcomes), 1)
         self.assertEqual(result["state"], "succeeded")
-        self.assertFalse(read_json(directory / "state.json")["cancel_requested"])
-        self.assertFalse((directory / "cancel-intent.json").exists())
+        # Cancellation can now fence final owner cleanup after publication.
+        # That intent must not undo the adopted result or claim ownership again.
+        state = read_json(directory / "state.json")
+        self.assertEqual(state["nodes"]["a"]["state"], "succeeded")
+        adopted = read_json(self.game / "_hockeymon/test-adopt.json")
+        self.assertEqual(adopted["workflow_id"], self.plan["workflow_id"])
+        self.assertEqual(adopted["catalog_key"], "candidate")
+        self.assertEqual(adopted["workspace"], {"fixture": "result"})
+        self.assertTrue(
+            self.controller.status(self.plan["workflow_id"])["owner_released"]
+        )
+        self.assertFalse((self.game / "_hockeymon/test-owner.json").exists())
+        with patch.object(
+            self.controller,
+            "_native",
+            side_effect=AssertionError("Completed history reacquired ownership"),
+        ):
+            self.controller.tick(self.plan["workflow_id"])
+        self.assertEqual(state["nodes"], read_json(directory / "state.json")["nodes"])
+        self.assertEqual(adopted, read_json(self.game / "_hockeymon/test-adopt.json"))
 
     def test_cancel_reconciles_committed_adoption_after_lost_response(self):
         for adoption, action in (

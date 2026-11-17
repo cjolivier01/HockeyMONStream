@@ -1,5 +1,6 @@
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/FatalOutputError.h"
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/OutputBufferPool.h"
 #include "hstream/src/libs/common/ApplicationPayload.h"
 #include "hstream/src/libs/common/Status.h"
 
@@ -690,6 +691,18 @@ GstFlowReturn CustomAlgorithmBase::AcquireOutputBuffer(
   return GST_FLOW_FLUSHING;
 }
 
+absl::Status CustomAlgorithmBase::OutputBufferFailureStatus(GstFlowReturn flow) const {
+  size_t free_bytes = 0, total_bytes = 0;
+  // The output worker already selected m_gpuId before acquiring buffers. Query
+  // only after a failure; steady-state processing never synchronizes for this.
+  const auto result = cudaMemGetInfo(&free_bytes, &total_bytes);
+  std::optional<videoprep::OutputGpuMemory> memory;
+  if (result == cudaSuccess)
+    memory = videoprep::OutputGpuMemory{free_bytes, total_bytes};
+  return videoprep::output_buffer_failure_status(
+      m_dsBufferPool, flow, m_gpuId, memory, result == cudaSuccess ? "" : cudaGetErrorString(result));
+}
+
 bool CustomAlgorithmBase::PacketGenerationIsCurrent(const PacketInfo& packet_info) const {
   return packet_info.flush_generation == flush_generation_.load(std::memory_order_acquire);
 }
@@ -1006,8 +1019,7 @@ void CustomAlgorithmBase::OutputThread(void) {
         if (result != GST_FLOW_OK) {
           if (result != GST_FLOW_FLUSHING) {
             update_last_flow_ret(GST_FLOW_ERROR);
-            videoprep::post_fatal_output_error(
-                GST_ELEMENT(m_element), absl::InternalError("Could not acquire an output buffer"));
+            videoprep::post_fatal_output_error(GST_ELEMENT(m_element), OutputBufferFailureStatus(result));
             RequestShutdown();
           }
           gst_buffer_unref(packetInfo.inbuf);
@@ -1201,7 +1213,7 @@ absl::Status CustomAlgorithmBase::InsertCustomFrame(PacketInfo* packetInfo) {
     if (result == GST_FLOW_FLUSHING)
       return absl::CancelledError("Output acquisition cancelled");
     GST_ERROR_OBJECT(m_element, "InsertCustomFrame failed error = %d, exiting...", result);
-    return absl::InternalError("InsertCustomFrame failed");
+    return OutputBufferFailureStatus(result);
   }
   // TODO: Copy meta and transform if required
   if (!gst_buffer_copy_into(newGstOutBuf, packetInfo->inbuf, GST_BUFFER_COPY_META, 0, -1)) {

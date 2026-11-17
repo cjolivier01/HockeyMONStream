@@ -98,6 +98,7 @@ class CustomAlgorithmBase : public videoprep::VideoPrepPriv {
   // blocking the GLib main loop that owns the state transition.
   void RequestShutdown();
   GstFlowReturn AcquireOutputBuffer(GstBufferPool* pool, GstBuffer** buffer, const PacketInfo& packet);
+  absl::Status OutputBufferFailureStatus(GstFlowReturn flow) const;
 
  private:
   /* Helper Function to Extract Batch Meta from buffer */

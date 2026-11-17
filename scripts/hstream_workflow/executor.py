@@ -178,14 +178,19 @@ def prepare(root, request, profile, settings, intent):
 def completion(root):
     """Adopt native retirement proof before deleting controller-owned scratch."""
     root = Path(root)
-    if (root / "completion.json").exists():
+    try:
         return read_json(root / "completion.json")
+    except FileNotFoundError:
+        pass
     result_path = root / "worker/result.json"
-    if not result_path.exists():
+    # Open through the pinned parent directories even after an earlier miss.
+    # An exists() shortcut can retain an NFS negative lookup for 30 seconds.
+    try:
+        result = read_json(result_path)
+    except FileNotFoundError:
         return None
     intent = read_json(root / "submission.json")
     admitted = read_json(root / "worker/request.json")
-    result = read_json(result_path)
     require(
         result.get("schema") == admitted["schema"] == SCHEMA
         and result.get("id") == admitted["id"] == intent["attempt_id"]

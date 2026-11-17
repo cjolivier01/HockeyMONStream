@@ -697,12 +697,43 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   const fs::path report_path = root / "inherited-camera-report.yaml";
   if (!write(report_path, YAML::Dump(PlayerFrameSelectionReportYaml(report))))
     return false;
+  // A real recording can already have retained player frames. A new scan must
+  // replace their selection without inheriting their materialization marker.
+  auto previous_plan = plan;
+  previous_plan.selected.front().pair.cameras.front().source_pts_ns += kPlayerFrameSecond;
+  const auto previous_fingerprint = PlayerFrameSelectionFingerprint(previous_plan);
+  if (!previous_fingerprint.ok())
+    return false;
+  previous_plan.fingerprint = *previous_fingerprint;
+  const fs::path previous_image = root / "previous-selected-frame.png";
+  if (!cv::imwrite(previous_image.string(), cv::Mat(8, 8, CV_8UC3, cv::Scalar(1, 2, 3))))
+    return false;
+  const std::vector<std::array<fs::path, 2>> previous_images{
+      {previous_image, previous_image}, {previous_image, previous_image}};
+  for (const auto& workspace : {*baseline, *candidate}) {
+    if (!PublishPlayerFrameInputs(workspace.game_directory, previous_plan, previous_images).ok())
+      return false;
+    auto prior = YAML::LoadFile((workspace.game_directory / "_hockeymon/config.yaml").string());
+    prior["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(previous_plan);
+    prior["stitching"]["calibration_frame_inputs_fingerprint"] = previous_plan.fingerprint;
+    if (!write(workspace.game_directory / "_hockeymon/config.yaml", YAML::Dump(prior)))
+      return false;
+  }
   const auto prepared = PreparePlayerSelectedStitchingExperiment(*baseline, *candidate, report_path);
   if (!prepared.ok()) {
     std::cerr << prepared.status() << '\n';
     return false;
   }
   const YAML::Node frozen = YAML::LoadFile((candidate->game_directory / "_hockeymon/config.yaml").string());
+  const auto selected_fingerprint = ReusableStitchingExperimentSelectionFingerprint(candidate->game_directory, varied);
+  const auto retained_inputs = LoadPlayerFrameInputs(candidate->game_directory, previous_plan);
+  const auto fresh_inputs = LoadPlayerFrameInputs(candidate->game_directory, plan);
+  if (!expect(
+          !frozen["stitching"]["calibration_frame_inputs_fingerprint"].IsDefined() && selected_fingerprint.ok() &&
+              *selected_fingerprint == plan.fingerprint && retained_inputs.ok() && retained_inputs->has_value() &&
+              fresh_inputs.ok() && !fresh_inputs->has_value(),
+          "a fresh scan must retain old cache files without claiming they materialize its new selection"))
+    return false;
   const auto frozen_camera = read_stitch_camera_selection(frozen);
   if (!prepared->available || !frozen_camera.ok() || *frozen_camera != camera ||
       frozen["stitching"]["stitch_frame_time"].IsDefined() ||

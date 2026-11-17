@@ -12,7 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from hstream_workflow import (
     setup,
@@ -63,6 +63,7 @@ class SetupTest(unittest.TestCase):
             "observer_timeout_seconds": 86400,
         }
         self.cpu = {"cpus": 1, "memory_mb": 4096, "time_seconds": 600}
+        self.verified = {"features": runtime_setup.REQUIRED_FEATURES}
 
     def inspect(self, root, *, cpu):
         task, worker = (
@@ -84,6 +85,267 @@ class SetupTest(unittest.TestCase):
         return execution.compile_configuration(
             self.draft, self.defaults, self.cpu, self.inspect
         )
+
+    def test_runtime_compatibility_is_checked_before_build_or_admission(self):
+        prepared = {
+            "task": "/installed/bin/hstream-experiment-task",
+            "runtime": {"root": "/installed", "files": {}},
+        }
+        for features in (None, [], "experiment-control-point-selection-v1", {}):
+            with patch.object(
+                runtime_setup,
+                "run_readonly",
+                return_value=json.dumps({"features": features}),
+            ):
+                with self.assertRaisesRegex(
+                    WorkflowError, "make deploy NODES=ripper,mini"
+                ):
+                    runtime_setup.require_current_task(prepared, 30, ["ripper", "mini"])
+        with patch.object(
+            runtime_setup,
+            "run_readonly",
+            return_value=json.dumps({"features": runtime_setup.REQUIRED_FEATURES}),
+        ):
+            self.assertEqual(
+                runtime_setup.require_current_task(prepared, 30, ["ripper", "mini"])[
+                    "features"
+                ],
+                runtime_setup.REQUIRED_FEATURES,
+            )
+        self.save()
+        with patch.object(
+            execution,
+            "generation",
+            return_value=(self.registry, {"setup_features": []}),
+        ), patch.object(execution, "check_scheduler") as scheduler, patch.object(
+            execution, "start_test"
+        ) as start:
+            with self.assertRaisesRegex(WorkflowError, "Go back to Prepare computers"):
+                execution.execute_locked(
+                    self.registry, {"action": "start-test", "draft": self.draft}
+                )
+            scheduler.assert_not_called()
+            start.assert_not_called()
+        self.assertFalse((self.registry / "registry.json").exists())
+
+    def test_old_prepared_setup_returns_to_prepare_without_changing_history(self):
+        saved = self.save()
+        request = {
+            "revision": saved["revision"],
+            "defaults": self.defaults,
+            "metadata_resources": self.cpu,
+        }
+        with patch.object(
+            execution, "compile_configuration", return_value=self.compile()
+        ):
+            execution.build(self.registry, request)
+            old_directory, old = execution.generation(self.registry)
+            self.assertFalse(setup.progress(self.registry)["build_current"])
+            with patch.object(
+                execution, "qualification_status", return_value={"tested": True}
+            ), patch("hstream_workflow.profiles.preflight_runtime") as runtime:
+                with self.assertRaisesRegex(
+                    WorkflowError, "Go back to Prepare computers"
+                ):
+                    execution.activate(self.registry)
+                runtime.assert_not_called()
+                self.assertFalse((self.registry / "config.json").exists())
+            write_json(self.registry / "config.json", old["configuration"])
+            write_json(
+                self.registry / "setup-active.json",
+                {
+                    "revision": saved["revision"],
+                    "configuration_revision": digest(old["configuration"]),
+                },
+            )
+            self.assertFalse(setup.progress(self.registry)["applied"])
+            execution.build(self.registry, request, prepared=self.verified)
+        self.assertTrue(setup.progress(self.registry)["build_current"])
+        self.assertNotEqual(execution.generation(self.registry)[0], old_directory)
+        self.assertEqual(read_json(old_directory / "build.json"), old)
+
+    def legacy_qualification(self):
+        """Reproduce durable test intent saved by a client before compatibility checks."""
+        import hstream_workflow_controller_test as fixtures
+
+        fixture = fixtures.ControllerTest()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        self.draft["game_roots"] = [str(fixture.root)]
+        self.draft["profiles"]["gpu"]["nodes"] = ["mini"]
+        saved = self.save()
+        config = self.compile()
+        for key in ("metadata", "gpu"):
+            profile = copy.deepcopy(fixture.profile)
+            profile["capabilities"] = execution.CPU + execution.GPU
+            profile["resources"]["nodes"] = ["mini"] if key == "gpu" else []
+            profile["pool"] = key
+            config["profiles"][key] = profile
+        with patch.object(execution, "compile_configuration", return_value=config):
+            execution.build(
+                self.registry,
+                {
+                    "revision": saved["revision"],
+                    "defaults": self.defaults,
+                    "metadata_resources": self.cpu,
+                },
+            )
+        # This internal call models the old client's durable pre-poll intent;
+        # the current start-test API rejects this generation before calling it.
+        execution.start_test(
+            self.registry,
+            {
+                "profile": "gpu",
+                "node": "mini",
+                "game": str(fixture.game),
+                "scan_seconds": 60,
+                "user_config_snapshot": {"schema": 1, "source_path": "", "values": {}},
+            },
+        )
+        test = execution.generation(self.registry)[1]["tests"]["gpu/mini"]
+        controller, _, _ = execution.restore_test(test)
+        fixture.controller = controller
+        directory, _ = controller.registry.lookup(test["workflow"])
+        self.assertFalse(setup.progress(self.registry)["build_current"])
+        return fixture, test, controller, directory
+
+    def legacy_status(self, *, tick=True):
+        return execution.execute_locked(
+            self.registry,
+            {"action": "test-status", "challenge": "test", "tick": tick},
+        )["tests"][0]
+
+    def test_unchecked_dormant_intent_is_readable_and_cannot_admit_on_poll(self):
+        from hstream_workflow.controller import Controller
+
+        fixture, test, controller, directory = self.legacy_qualification()
+        roots = [directory, Path(test["registry"])]
+        before = {
+            path: path.read_bytes()
+            for root in roots
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+        with patch.object(
+            Controller,
+            "_native",
+            side_effect=AssertionError("Read-only status invoked native helper"),
+        ):
+            row = self.legacy_status(tick=False)
+        self.assertFalse(row["finished"])
+        self.assertIn("Stop this old test", row["next"])
+        self.assertEqual(
+            before,
+            {
+                path: path.read_bytes()
+                for root in roots
+                for path in root.rglob("*")
+                if path.is_file()
+            },
+        )
+        actions = []
+        native = Controller._native
+
+        def record(instance, directory, action, payload, **kwargs):
+            actions.append(action)
+            return native(instance, directory, action, payload, **kwargs)
+
+        with patch.object(
+            Controller, "_native", autospec=True, side_effect=record
+        ), patch.object(
+            Controller,
+            "_admit",
+            side_effect=AssertionError("Unchecked test admitted a stage"),
+        ):
+            row = self.legacy_status()
+        self.assertTrue(row["finished"])
+        self.assertFalse(row["passed"])
+        self.assertIn("old test has stopped", row["next"])
+        self.assertNotIn("acquire", actions)
+        self.assertNotIn("bind", actions)
+        self.assertTrue(all(not stage["attempts"] for stage in row["status"]["nodes"]))
+        self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(controller.registry.read()["reservations"], {})
+
+    def test_unchecked_test_recovers_lost_acquire_without_acquiring_again(self):
+        from hstream_workflow.controller import Controller
+
+        fixture, test, controller, directory = self.legacy_qualification()
+        native = controller._native
+
+        def lose_response(directory, action, payload, **kwargs):
+            result = native(directory, action, payload, **kwargs)
+            if action == "acquire":
+                raise OSError("Lost ownership response")
+            return result
+
+        with patch.object(
+            controller, "_native", side_effect=lose_response
+        ), self.assertRaisesRegex(OSError, "Lost ownership"):
+            controller.tick(test["workflow"])
+        self.assertFalse(read_json(directory / "owner.json")["acquired"])
+        self.assertTrue((fixture.game / "_hockeymon/test-owner.json").exists())
+        native = Controller._native
+
+        def cleanup_only(instance, directory, action, payload, **kwargs):
+            self.assertNotIn(action, {"acquire", "bind"})
+            return native(instance, directory, action, payload, **kwargs)
+
+        with patch.object(
+            Controller, "_native", autospec=True, side_effect=cleanup_only
+        ), patch.object(
+            Controller,
+            "_admit",
+            side_effect=AssertionError("Unchecked test admitted a stage"),
+        ):
+            row = self.legacy_status()
+        self.assertTrue(row["finished"])
+        self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(controller.registry.read()["reservations"], {})
+
+    def test_unchecked_admitted_test_cancels_and_retires_without_new_stages(self):
+        from hstream_workflow.controller import Controller
+
+        fixture, test, controller, directory = self.legacy_qualification()
+        controller.tick(test["workflow"])
+        self.assertTrue(read_json(directory / "owner.json")["acquired"])
+        before = controller.status(test["workflow"])
+        attempts = [
+            attempt["id"] for stage in before["nodes"] for attempt in stage["attempts"]
+        ]
+        self.assertEqual(len(attempts), 1)
+        pins = {
+            path: path.read_bytes()
+            for path in [
+                directory / "plan.json",
+                Path(test["registry"]) / "config.json",
+            ]
+        }
+        with patch.object(
+            Controller,
+            "_admit",
+            side_effect=AssertionError("Unchecked test admitted a stage"),
+        ):
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                row = self.legacy_status()
+                if row["finished"]:
+                    break
+                self.assertIn("old test is stopping", row["next"])
+                time.sleep(0.02)
+        self.assertTrue(row["finished"], row)
+        self.assertFalse(row["passed"])
+        self.assertEqual(
+            attempts,
+            [
+                attempt["id"]
+                for stage in row["status"]["nodes"]
+                for attempt in stage["attempts"]
+            ],
+        )
+        self.assertEqual(pins, {path: path.read_bytes() for path in pins})
+        self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
+        self.assertEqual(controller.registry.read()["reservations"], {})
 
     def test_new_registry_draft_can_be_saved_reopened_and_conflicts_preserve_last_save(
         self,
@@ -221,6 +483,128 @@ print('{"ready":true}')
         )
         self.assertNotIn("make mini available", value)
 
+    def test_failed_test_explains_its_stage_without_using_other_stage_logs(self):
+        saved = self.save()
+        test_registry = self.root / "test-registry"
+        test_registry.mkdir(mode=0o700)
+        write_json(
+            test_registry / "plan.json",
+            {"source_identity": {"game_directory": str(self.root / "recordings/game")}},
+        )
+        prepared = {
+            "revision": saved["revision"],
+            "setup_features": runtime_setup.REQUIRED_FEATURES,
+            "configuration": self.compile(),
+            "tests": {"gpu/mini": {"registry": str(test_registry), "workflow": "test"}},
+        }
+        status = {
+            "state": "failed",
+            "owner_released": True,
+            "nodes": [
+                {"id": "baseline", "state": "succeeded", "attempts": [{"id": "old"}]},
+                {
+                    "id": "scan",
+                    "state": "failed",
+                    "reason": "Slurm stopped without a successful supervised native receipt: FAILED",
+                    "attempts": [{"id": "current"}],
+                },
+                {"id": "complete", "state": "running", "attempts": [{"id": "cleanup"}]},
+            ],
+        }
+        controller = Mock()
+        controller.log.return_value = {
+            "text": "ERROR from hmstitcher0: Video preparation failed: INTERNAL: Could not acquire an output buffer\n"
+            "Cuda failure: status=2\nError(-1) in buffer allocation\n"
+            "FATAL: Pipeline graceful stop did not finish within 13 s; shutdown is wedged.\n"
+        }
+        with patch.object(
+            execution, "generation", return_value=(self.registry, prepared)
+        ), patch.object(
+            execution, "restore_test", return_value=(controller, status, None)
+        ):
+            result = execution.qualification_status(self.registry, tick=False)
+            row = result["tests"][0]
+            controller.log.assert_called_once_with("test", "scan")
+            self.assertIn("Look for players in the video failed", row["next"])
+            self.assertIn("GPU ran out of available memory", row["next"])
+            self.assertIn("other GPU work", row["next"])
+            self.assertIn(
+                row["next"].splitlines()[0], result["test_progress"]["summary"]
+            )
+            self.assertFalse(row["passed"])
+            self.assertFalse(result["tested"])
+
+            # The process has failed but retirement has not completed yet.
+            status.update(state="recovery", owner_released=False)
+            row = execution.qualification_status(self.registry, tick=False)["tests"][0]
+            self.assertIn("Wait for cleanup before testing again", row["next"])
+            self.assertNotIn("then test again", row["next"])
+            self.assertFalse(row["finished"])
+
+            # An unreadable log must leave the known failed stage and scheduler cause visible.
+            controller.log.side_effect = FileNotFoundError("No task log")
+            row = execution.qualification_status(self.registry, tick=False)["tests"][0]
+            self.assertIn("Look for players in the video failed", row["next"])
+            self.assertIn("Slurm stopped", row["next"])
+            self.assertNotIn("GPU ran out", row["next"])
+
+            # Unresolved receipt/retirement is not itself proof that the native stage failed.
+            status["nodes"][1].update(
+                state="recovery", reason="Waiting for exact supervised receipt"
+            )
+            row = execution.qualification_status(self.registry, tick=False)["tests"][0]
+            self.assertIn("Look for players in the video needs attention", row["next"])
+            self.assertIn("Waiting for exact supervised receipt", row["next"])
+            self.assertNotIn("failed:", row["next"])
+            self.assertFalse(row["finished"])
+
+    def test_failure_hints_ignore_recovered_errors_and_distinguish_host_memory(self):
+        from hstream_workflow.setup_progress import failure_detail
+
+        stage = {"id": "scan", "reason": "Slurm job failed"}
+        recovered = (
+            "CUDA error: out of memory\nFalling back to CPU\nCPU inference succeeded\n"
+        )
+        detail = failure_detail(
+            stage,
+            recovered
+            + "ERROR from source0: Cannot open recording: Permission denied\n",
+            finished=True,
+        )
+        self.assertIn("Permission denied", detail)
+        self.assertNotIn("GPU", detail)
+        self.assertNotIn("out of memory", detail)
+        detail = failure_detail(stage, recovered, finished=True)
+        self.assertIn("Slurm job failed", detail)
+        self.assertNotIn("GPU", detail)
+        detail = failure_detail(
+            stage, '{"error":"Host allocator ran out of memory"}\n', finished=True
+        )
+        self.assertIn("Host allocator ran out of memory", detail)
+        self.assertNotIn("GPU", detail)
+        for error in ("CUDA error: out of memory", "hipErrorOutOfMemory"):
+            self.assertIn(
+                "GPU ran out of available memory",
+                failure_detail(stage, json.dumps({"error": error}), finished=True),
+            )
+        for code in (200, 209):
+            detail = failure_detail(
+                stage,
+                f"ERROR from hmstitcher0: CUDA kernel failed\nCuda failure: status={code}\n",
+                finished=True,
+            )
+            self.assertIn("CUDA kernel failed", detail)
+            self.assertNotIn("ran out of available memory", detail)
+            self.assertNotIn("other GPU work", detail)
+        detail = failure_detail(
+            stage,
+            "ERROR from hmstitcher0: Could not acquire an output buffer (GPU): not-negotiated (-4)\n",
+            finished=True,
+        )
+        self.assertIn("not-negotiated", detail)
+        self.assertIn("could not provide a video buffer", detail)
+        self.assertNotIn("more available GPU memory", detail)
+
     def test_transport_errors_explain_legacy_profiles_without_nested_json(self):
         legacy = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles"
         wrapped = json.dumps({"error": json.dumps({"error": legacy})})
@@ -235,8 +619,9 @@ print('{"ready":true}')
                 10,
             )
         message = str(raised.exception)
-        self.assertIn("make deploy installs the programs", message)
-        self.assertIn("Save and build registry", message)
+        self.assertIn("Prepare computers", message)
+        self.assertIn("Test my computers", message)
+        self.assertIn("Enable these computers", message)
         self.assertNotIn('{"error"', message)
         self.assertEqual(
             setup.readable_error('{"error": "Permission denied"}'), "Permission denied"
@@ -826,16 +1211,30 @@ int main(int argc, char** argv) {
 
         def installed(root, cpu):
             task, runtime = self.inspect(root, cpu=cpu)
-            return {"source": "/opt/hstream", "task": task, "runtime": runtime}
+            return {
+                "source": "/opt/hstream",
+                "task": task,
+                "runtime": runtime,
+                "features": runtime_setup.REQUIRED_FEATURES,
+            }
 
-        def node(registry, name, preferred, timeout):
+        def node(registry, name, preferred, timeout, deployment_nodes):
+            self.assertEqual(deployment_nodes, ["meshy", "mini", "monster", "ripper"])
             return installed(
                 "/shared/old-os" if name == "monster" else "/shared/new-os", False
             )
 
         with patch.object(
             runtime_setup, "snapshot", return_value=installed("/shared/cpu", True)
-        ), patch.object(runtime_setup, "from_node", side_effect=node):
+        ), patch.object(runtime_setup, "from_node", side_effect=node), patch.object(
+            runtime_setup,
+            "run_readonly",
+            return_value="mini|gpu|gpu:rtx5090:1\nmeshy|gpu|gpu:rtx5090:1\nmonster|gpu|gpu:rtx5090:1\n",
+        ), patch.object(
+            runtime_setup,
+            "require_current_task",
+            side_effect=lambda value, timeout, deployment_nodes: value,
+        ):
             draft, prepared, messages = runtime_setup.prepare(
                 self.registry, self.draft, 30, 3
             )
@@ -891,7 +1290,7 @@ int main(int argc, char** argv) {
             execution, "compile_configuration", return_value=self.compile()
         ):
             result = execution.build(
-                self.registry, request, prepared={}, repaired_draft=repaired
+                self.registry, request, prepared=self.verified, repaired_draft=repaired
             )
         self.assertEqual(result["draft"], repaired)
         self.assertEqual(result["revision"], digest(repaired))
@@ -1002,6 +1401,7 @@ int main(int argc, char** argv) {
                     "defaults": self.defaults,
                     "metadata_resources": self.cpu,
                 },
+                prepared=self.verified,
             )
         self.assertFalse((self.registry / "config.json").exists())
         status = execution.qualification_status(self.registry, tick=False)
@@ -1024,7 +1424,7 @@ int main(int argc, char** argv) {
         setup.SetupStore(self.registry).save(changed, saved["revision"])
         self.assertFalse(setup.progress(self.registry)["build_current"])
 
-    def test_qualification_requires_every_real_stage_and_one_explicit_node(self):
+    def test_qualification_runs_only_a_bounded_native_probe_on_one_explicit_node(self):
         plan = execution.test_plan(
             self.compile(),
             "gpu",
@@ -1036,14 +1436,52 @@ int main(int argc, char** argv) {
         self.assertEqual(plan["profiles"]["gpu"]["resources"]["nodes"], ["mini"])
         self.assertEqual(
             set(stage["kind"] for stage in plan["stages"]),
-            set(execution.CPU + execution.GPU),
+            {"experiment-probe"},
         )
         self.assertTrue(
             all("catalog_key" not in stage["inputs"] for stage in plan["stages"])
         )
-        scan = next(stage for stage in plan["stages"] if stage["id"] == "scan")
-        self.assertEqual(scan["inputs"]["search_duration_seconds"], 60)
+        self.assertEqual(len(plan["stages"]), 1)
+        self.assertEqual(plan["stages"][0]["inputs"], {})
+        self.assertEqual(plan["profiles"]["gpu"]["resources"]["time_seconds"], 30)
         self.assertEqual(plan["limits"]["max_parallel"], 1)
+
+    def test_equivalent_choices_share_proof_but_distinct_requests_do_not(self):
+        config = self.compile()
+        alias = copy.deepcopy(config["profiles"]["gpu"])
+        alias.update(
+            label="Another name",
+            pool="another-pool",
+            limits={"concurrency": 1, "per_user": 1},
+        )
+        config["profiles"]["alias"] = alias
+        saved = {
+            "configuration": config,
+            "setup_features": runtime_setup.REQUIRED_FEATURES,
+        }
+        self.assertEqual(
+            execution.qualification_checks(saved),
+            [("gpu", "mini", ["gpu", "alias"]), ("gpu", "meshy", ["gpu", "alias"])],
+        )
+        for field, value in (
+            ("gres", "gpu:a100:1"),
+            ("partition", "other"),
+            ("memory_mb", 20000),
+            ("account", "other"),
+        ):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(saved)
+                changed["configuration"]["profiles"]["alias"]["resources"][
+                    field
+                ] = value
+                self.assertEqual(len(execution.qualification_checks(changed)), 4)
+        changed = copy.deepcopy(saved)
+        changed["configuration"]["profiles"]["alias"]["runtime"]["files"]["/other"] = (
+            "c" * 64
+        )
+        self.assertEqual(len(execution.qualification_checks(changed)), 4)
+        saved["setup_features"] = []
+        self.assertEqual(len(execution.qualification_checks(saved)), 4)
 
     def test_packaged_runtime_selects_only_the_setup_controller(self):
         from hstream_workflow.dispatch import installed_launcher
@@ -1151,16 +1589,28 @@ int main(int argc, char** argv) {
             execution, "compile_configuration", return_value=self.compile()
         ):
             execution.build(self.registry, request)
-        result = execution.start_test(
-            self.registry,
-            {
-                "profile": "gpu",
-                "node": "mini",
-                "game": str(game),
-                "scan_seconds": 60,
-                "user_config_snapshot": {"schema": 1, "source_path": "", "values": {}},
-            },
-        )
+        original_plan = execution.test_plan
+
+        def rejected_plan(*args):
+            plan = original_plan(*args)
+            plan["profiles"]["gpu"]["resources"]["time_seconds"] = 30 * 24 * 3600
+            return plan
+
+        with patch.object(execution, "test_plan", side_effect=rejected_plan):
+            result = execution.start_test(
+                self.registry,
+                {
+                    "profile": "gpu",
+                    "node": "mini",
+                    "game": str(game),
+                    "scan_seconds": 60,
+                    "user_config_snapshot": {
+                        "schema": 1,
+                        "source_path": "",
+                        "values": {},
+                    },
+                },
+            )
         rejected = result["tests"][0]
         self.assertEqual(rejected["state"], "rejected")
         self.assertTrue(rejected["finished"])
@@ -1258,6 +1708,7 @@ int main(int argc, char** argv) {
                     "defaults": self.defaults,
                     "metadata_resources": self.cpu,
                 },
+                prepared=self.verified,
             )
         heartbeat = {**host_identity(), **process_identity(os.getpid()), "time_ns": 0}
         write_json(self.registry / "heartbeat.json", heartbeat)
@@ -1304,6 +1755,7 @@ int main(int argc, char** argv) {
                         "defaults": self.defaults,
                         "metadata_resources": self.cpu,
                     },
+                    prepared=self.verified,
                 )
 
         with patch.object(
@@ -1339,6 +1791,7 @@ int main(int argc, char** argv) {
                         "defaults": self.defaults,
                         "metadata_resources": self.cpu,
                     },
+                    prepared=self.verified,
                 )
 
         with patch.object(
@@ -1456,7 +1909,14 @@ int main(int argc, char** argv) {
             execution,
             "run_readonly",
             side_effect=[configuration, WorkflowError("Connection failed")],
-        ) as command, patch.object(execution, "start_test") as start:
+        ) as command, patch.object(execution, "start_test") as start, patch.object(
+            execution,
+            "generation",
+            return_value=(
+                self.registry,
+                {"setup_features": runtime_setup.REQUIRED_FEATURES},
+            ),
+        ):
             with self.assertRaisesRegex(ValueError, "main submission server"):
                 execution.execute(
                     {
@@ -1532,6 +1992,86 @@ int main(int argc, char** argv) {
             draft["profiles"]["gpu"]["cpus"] += 1
             self.assertFalse(setup.inspect_registry(self.registry, 30, draft)["ready"])
 
+    def test_parallel_checks_use_separate_owners_and_keep_shared_pool_limits(self):
+        import hstream_workflow_controller_test as fixtures
+
+        fixture = fixtures.ControllerTest()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        self.draft["game_roots"] = [str(fixture.root)]
+        self.draft["profiles"]["gpu"]["nodes"] = ["mini", "meshy", "monster"]
+        saved = self.save()
+        config = self.compile()
+        for key in ("metadata", "gpu"):
+            profile = copy.deepcopy(fixture.profile)
+            profile["capabilities"] = execution.CPU + execution.GPU
+            profile["resources"]["nodes"] = (
+                self.draft["profiles"]["gpu"]["nodes"] if key == "gpu" else []
+            )
+            profile["pool"] = key
+            profile["limits"] = {"concurrency": 2, "per_user": 2}
+            config["profiles"][key] = profile
+        with patch.object(execution, "compile_configuration", return_value=config):
+            execution.build(
+                self.registry,
+                {
+                    "revision": saved["revision"],
+                    "defaults": self.defaults,
+                    "metadata_resources": self.cpu,
+                },
+                prepared=self.verified,
+            )
+        request = {
+            "profile": "gpu",
+            "node": "mini",
+            "game": str(fixture.game),
+            "scan_seconds": 60,
+            "all_computers": True,
+            "user_config_snapshot": {"schema": 1, "source_path": "", "values": {}},
+        }
+        original = execution.test_plan
+
+        def slow_probe(*args):
+            plan = original(*args)
+            plan["stages"][0]["inputs"] = {"delay": 2}
+            return plan
+
+        with patch.object(execution, "test_plan", side_effect=slow_probe):
+            first = execution.start_test(self.registry, request)
+        self.assertEqual(sum(bool(row.get("status")) for row in first["tests"]), 2)
+        directory, built = execution.generation(self.registry)
+        initial_tests = copy.deepcopy(built["tests"])
+        execution.start_test(self.registry, request)
+        self.assertEqual(execution.generation(self.registry)[1]["tests"], initial_tests)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status = execution.qualification_status(self.registry, tick=True)
+            if sum(row["passed"] for row in status["tests"]) == 2:
+                break
+            time.sleep(0.02)
+        self.assertEqual(sum(row["passed"] for row in status["tests"]), 2, status)
+        windows = []
+        for test in initial_tests.values():
+            plan = read_json(Path(test["registry"]) / "plan.json")
+            game = Path(plan["source_identity"]["game_directory"])
+            self.assertNotEqual(game, fixture.game)
+            self.assertEqual(test["sample"], str(fixture.game))
+            attempt = next(
+                (
+                    game / "_hockeymon/workflows" / test["workflow"] / "attempts"
+                ).iterdir()
+            )
+            worker = read_json(attempt / "worker/state.json")
+            windows.append((worker["started_ms"], worker["time_ms"]))
+        self.assertLess(
+            max(start for start, _ in windows), min(end for _, end in windows)
+        )
+        execution.start_test(self.registry, request)
+        final = execution.generation(self.registry)[1]["tests"]
+        self.assertEqual(len(final), 3)
+        for key, test in initial_tests.items():
+            self.assertEqual(final[key], test)
+
     def test_qualification_resumes_real_native_workers_before_releasing_sample(self):
         import hstream_workflow_controller_test as fixtures
 
@@ -1550,6 +2090,8 @@ int main(int argc, char** argv) {
             profile["resources"]["nodes"] = ["mini"] if key == "gpu" else []
             profile["pool"] = key
             config["profiles"][key] = profile
+        config["profiles"]["alias"] = copy.deepcopy(config["profiles"]["gpu"])
+        config["profiles"]["alias"]["label"] = "Another GPU choice"
         with patch.object(execution, "compile_configuration", return_value=config):
             execution.build(
                 self.registry,
@@ -1558,6 +2100,7 @@ int main(int argc, char** argv) {
                     "defaults": self.defaults,
                     "metadata_resources": self.cpu,
                 },
+                prepared=self.verified,
             )
         request = {
             "profile": "gpu",
@@ -1568,6 +2111,8 @@ int main(int argc, char** argv) {
         }
         first = execution.start_test(self.registry, request)
         self.assertFalse(first["tested"])
+        self.assertEqual(len(first["tests"]), 1)
+        self.assertEqual(set(first["tests"][0]["profiles"]), {"gpu", "alias"})
         self.assertEqual(first["tests"][0]["game"], str(fixture.game))
         with self.assertRaisesRegex(WorkflowError, "previous test"):
             execution.start_test(self.registry, request)
@@ -1579,7 +2124,7 @@ int main(int argc, char** argv) {
             time.sleep(0.02)
         self.assertTrue(status["tested"], status)
         self.assertFalse((fixture.game / "_hockeymon/test-owner.json").exists())
-        self.assertEqual(len(status["tests"][0]["status"]["nodes"]), 10)
+        self.assertEqual(len(status["tests"][0]["status"]["nodes"]), 1)
         self.assertTrue(
             all(
                 len(stage["attempts"]) == 1

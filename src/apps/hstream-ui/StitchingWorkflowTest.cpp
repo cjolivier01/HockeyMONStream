@@ -545,6 +545,8 @@ if action=='discover':
 elif action=='save':
  s['draft']=r['draft']; value={'draft':s['draft'],'revision':p['revision']}
 elif action=='build':
+ if mode=='old-helper' and not s.get('upgraded'):
+  s['upgraded']=True; path.write_text(json.dumps(s)); print(json.dumps({'error':'The installed HStream on ripper is too old to read current stitching experiments. Run make deploy NODES=ripper,mini,stubby, then click Prepare computers again.'}),file=sys.stderr); sys.exit(1)
  if mode=='progress-resume':
   sys.stderr.write('HSTREAM_SETUP_PRO'); sys.stderr.flush(); time.sleep(.05)
   sys.stderr.write('GRESS '+json.dumps({'message':'stubby: checking installed programs…'})+'\n'); sys.stderr.flush()
@@ -564,9 +566,12 @@ elif action in ('test-status','start-test','cancel-test'):
    if phase=='running' and mode=='recovered-failure' and not s.get('recovered_seen'):
     s['recovered_seen']=True; continue
    if phase=='running' and mode=='progress-resume' and node=='stubby' and not (root/'resume-test').exists(): continue
-   if phase=='running' and mode not in ('cancel','recovered-cancel') and not error: phases[node]='failed' if mode in ('failure','recovered-failure') and node=='mini' else 'passed'
+   if phase=='running' and mode not in ('cancel','recovered-cancel') and not error: phases[node]='failed' if mode in ('failure','recovered-failure') and node=='mini' else ('deferred' if mode=='busy' and node=='stubby' else 'passed')
  if action=='start-test':
   phases[r['node']]='running'
+  if mode=='busy':
+   assert r['all_computers'] is True
+   phases.update(mini='running',stubby='running')
   if mode=='lost-start' and not s.get('lost'):
    s['lost']=True; error='Connection lost. The submitted test may still be running.'
  if action=='cancel-test':
@@ -575,14 +580,15 @@ elif action in ('test-status','start-test','cancel-test'):
  for key,profile in s['draft']['profiles'].items():
   for node in profile['nodes']:
    phase=phases.get(node,'not-tested')
-   row={'profile':key,'node':node,'state':phase,'passed':phase=='passed'}
+   row={'profile':key,'node':node,'state':phase,'passed':phase=='passed','ready':phase in ('passed','deferred')}
    if phase!='not-tested': row.update(status={'state':phase},finished=phase!='running')
+   if phase=='failed': row['next']='Look for players in the video failed: The GPU ran out of available memory.\nWait for other GPU work on this computer to finish, then test again.'
    rows.append(row)
- value={'tests':rows,'tested':all(row['passed'] for row in rows),'current':True}
+ value={'tests':rows,'tested':all(row['ready'] for row in rows),'current':True}
  if mode=='progress-resume':
   value['test_progress']={'summary':'mini: Passed\nCheck 2 of 2 · computer 2 of 2 · stubby · GPU\n1 of 2 checks passed · 1 remaining', 'current':'Check 2 of 2 · computer 2 of 2 · stubby · GPU\nWaiting for Slurm to make stubby available · (Resources)', 'next':'Check 2 of 2 · stubby · GPU'}
 elif action=='activate':
- assert set(phases.values())=={'passed'}
+ assert set(phases.values())==({'passed','deferred'} if mode=='busy' else {'passed'})
  p.update(applied=True,installed=True); value={'applied':True}
 elif action=='inspect': value={'ready':True,'checks':[]}
 else: value={}
@@ -626,6 +632,13 @@ print(json.dumps({**value,'progress':p}))
   require(wait([&] { return pages->currentIndex() == 2; }), "Wizard did not show preparation");
   capture("3-prepare");
   next->click();
+  if (outcome == "old-helper") {
+    require(
+        wait([&] { return next->isEnabled() && problem->text().contains("make deploy NODES=ripper,mini,stubby"); }),
+        "Old helper did not show the deployment command");
+    require(pages->currentIndex() == 2, "An incompatible helper advanced to computer testing");
+    next->click();
+  }
   if (outcome == "progress-resume") {
     require(
         wait([&] {
@@ -798,6 +811,13 @@ print(json.dumps({**value,'progress':p}))
     require(
         wait([&] { return next->isEnabled() && problem->text().contains("mini did not pass"); }),
         "Failed test did not explain the stopped sequence");
+    require(
+        problem->text().contains("Look for players in the video failed: The GPU ran out of available memory.") &&
+            problem->text().contains("Wait for other GPU work"),
+        "Failed or recovered test hid the stage, cause or recovery action");
+    require(
+        widget<QLabel>(dialog, "workflowSetupNext")->text().contains("Read the test problem above"),
+        "Failed test instruction incorrectly returned to choosing a recording");
     for (int i = 0; i < 20; ++i) {
       QCoreApplication::processEvents();
       QThread::msleep(20);
@@ -815,7 +835,13 @@ print(json.dumps({**value,'progress':p}))
   } else {
     require(
         wait([&] { return pages->currentIndex() == 4 && next->isEnabled(); }), "One click did not test all computers");
-    require(starts() == QStringList({"mini", "stubby"}), "Test sequence repeated or skipped a computer");
+    require(
+        starts() == (outcome == "busy" ? QStringList{"mini"} : QStringList{"mini", "stubby"}),
+        "Test sequence repeated or skipped a computer");
+    if (outcome == "busy")
+      require(
+          widget<QLabel>(dialog, "workflowSetupTestSummary")->text().contains("GPU check deferred"),
+          "Busy GPU was reported as passed");
     require(
         !read(directory + "/state.json").value("progress").toObject().value("applied").toBool(),
         "Tests silently activated the cluster");
@@ -3008,6 +3034,8 @@ int main(int argc, char** argv) {
       setupAssistant(temporary.path(), YAML::Clone(baseline->values));
       for (const auto& outcome :
            {"success",
+            "busy",
+            "old-helper",
             "failure",
             "cancel",
             "lost-start",
@@ -3030,6 +3058,7 @@ int main(int argc, char** argv) {
     setupAssistant(temporary.path(), YAML::Clone(baseline->values));
     for (const auto& outcome :
          {"success",
+          "busy",
           "failure",
           "cancel",
           "lost-start",

@@ -17,6 +17,54 @@ from .setup_progress import emit
 from .schema import WorkflowError, digest, identifier, require
 from .setup import absolute, run_readonly, validate_draft
 
+# Protocol support, not a configurable processing default. Old readers reject
+# catalogs written by the current desktop before any GPU stage can start.
+REQUIRED_FEATURES = ["experiment-control-point-selection-v1", "cluster-readiness-v1"]
+
+
+def has_current_features(features):
+    return isinstance(features, list) and all(
+        feature in features for feature in REQUIRED_FEATURES
+    )
+
+
+def require_current_task(prepared, timeout, deployment_nodes, *, gpu=False):
+    from .executor import installation_environment
+
+    try:
+        capabilities = json.loads(
+            run_readonly(
+                [prepared["task"], "--capabilities"],
+                timeout,
+                env=installation_environment(prepared["runtime"], os.environ),
+            )
+        )
+    except (OSError, ValueError) as error:
+        raise WorkflowError(
+            "Could not check the installed HStream helper on "
+            + socket.gethostname()
+            + ": "
+            + str(error)
+        ) from error
+    require(
+        isinstance(capabilities, dict)
+        and has_current_features(capabilities.get("features")),
+        "The installed HStream on "
+        + socket.gethostname()
+        + " is too old to read current stitching experiments. "
+        "From the current HStream source folder, run "
+        + shlex.join(["make", "deploy", "NODES=" + ",".join(deployment_nodes)])
+        + ", then click Prepare computers again. Your saved experiments do not need to be deleted.",
+    )
+    if gpu:
+        require(
+            capabilities.get("gpu_backend") == "nvidia"
+            and capabilities.get("gpu_operations_supported") is True,
+            "This installed HStream does not support automatic stitching on this computer's GPU. "
+            "Choose a computer with the NVIDIA stitching runtime before preparing again.",
+        )
+    return {**prepared, "features": REQUIRED_FEATURES, "gpu_supported": gpu}
+
 
 def installed_root(preferred, *, cpu):
     """Keep usable explicit installations; recover missing ones from PATH."""
@@ -209,12 +257,17 @@ def on_node(request):
     )
     root = private_directory(absolute(request["registry"], "Settings folder"))
     return {
-        **snapshot(root, request["runtime_root"], cpu=False),
+        **require_current_task(
+            snapshot(root, request["runtime_root"], cpu=False),
+            request["timeout_seconds"],
+            request["deployment_nodes"],
+            gpu=True,
+        ),
         "challenge": request["challenge"],
     }
 
 
-def from_node(registry, node, preferred, timeout):
+def from_node(registry, node, preferred, timeout, deployment_nodes):
     identifier(node, "Computer")
     path = Path(registry) / ("setup-runtime-request-" + uuid4().hex + ".json")
     challenge = uuid4().hex
@@ -225,6 +278,8 @@ def from_node(registry, node, preferred, timeout):
             "on_node": True,
             "registry": str(registry),
             "runtime_root": preferred,
+            "timeout_seconds": timeout,
+            "deployment_nodes": deployment_nodes,
             "challenge": challenge,
         },
         exclusive=True,
@@ -257,6 +312,8 @@ def from_node(registry, node, preferred, timeout):
 
 
 def prepare(registry, draft, timeout, parallel):
+    from .setup_gpus import needs_inventory, resolve_profiles
+
     draft = validate_draft(draft)
     require(
         draft["profiles"]
@@ -264,8 +321,24 @@ def prepare(registry, draft, timeout, parallel):
         "Choose computers for each profile before building",
     )
     deadline = time.monotonic() + timeout
-    messages = []
-    cpu = snapshot(registry, draft["controller_runtime"], cpu=True)
+    inventory = ""
+    if needs_inventory(draft["profiles"]):
+        emit("Checking the GPU choices reported by Slurm…")
+        inventory = run_readonly(
+            ["sinfo", "--noheader", "--Node", "--format=%N|%P|%G"], timeout
+        )
+    gpu_choices, messages = resolve_profiles(draft["profiles"], inventory)
+    for message in messages:
+        emit(message)
+    deployment_nodes = sorted(
+        {draft["server"]}
+        | {node for profile in draft["profiles"].values() for node in profile["nodes"]}
+    )
+    cpu = require_current_task(
+        snapshot(registry, draft["controller_runtime"], cpu=True),
+        timeout,
+        deployment_nodes,
+    )
     if draft["controller_runtime"] != cpu["source"]:
         messages.append(
             "Updated the main-server installation to " + cpu["source"] + "."
@@ -287,13 +360,25 @@ def prepare(registry, draft, timeout, parallel):
         )
         node, source = item
         emit(node + ": connecting to prepare HStream…")
-        result = from_node(registry, node, source, remaining)
+        result = from_node(registry, node, source, remaining, deployment_nodes)
+        require(
+            has_current_features(result.get("features")),
+            node
+            + ": the setup helper did not verify support for current stitching experiments. Prepare computers again with the current HStream workflow tools.",
+        )
         emit(node + ": preparation complete.")
         return item, result
 
     with ThreadPoolExecutor(max_workers=parallel) as workers:
         results = dict(workers.map(collect, requested))
-    prepared = {"metadata": cpu, "profiles": {}}
+    prepared = {
+        "metadata": cpu,
+        "profiles": {},
+        "features": REQUIRED_FEATURES,
+        "gpu_supported": all(
+            result.get("gpu_supported") is True for result in results.values()
+        ),
+    }
     for key, profile in draft["profiles"].items():
         versions = {}
         sources = set()
@@ -301,8 +386,13 @@ def prepare(registry, draft, timeout, parallel):
             result = results[(node, profile["runtime_root"])]
             sources.add(result["source"])
             group = versions.setdefault(
-                digest(result["runtime"]),
-                {"nodes": [], "task": result["task"], "runtime": result["runtime"]},
+                digest({"runtime": result["runtime"], "gres": gpu_choices[key][node]}),
+                {
+                    "nodes": [],
+                    "task": result["task"],
+                    "runtime": result["runtime"],
+                    "gres": gpu_choices[key][node],
+                },
             )
             group["nodes"].append(node)
         if len(sources) == 1 and profile["runtime_root"] not in sources:

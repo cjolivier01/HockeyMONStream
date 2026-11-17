@@ -1738,6 +1738,10 @@ absl::StatusOr<StitchingExperimentPlayerSelection> PreparePlayerSelectedStitchin
     // anchor was independently checked against the candidate settings above.
     YAML::Node selected_source = YAML::Clone(source_config);
     selected_source["stitching"]["calibration_frame_selection"] = hm::stitching::PlayerFrameSelectionPlanYaml(plan);
+    // The fresh scan has selected new frames; the baseline's retained images
+    // still belong to its previous selection. Materialization must publish the
+    // new bundle before this candidate can claim those images are available.
+    selected_source["stitching"].remove("calibration_frame_inputs_fingerprint");
     HM_RETURN_IF_ERROR(copy_selected_frame_inputs(
         config,
         selected_source,

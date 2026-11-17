@@ -416,8 +416,13 @@ class Controller:
             current = self._native(directory, "inspect", {"game": owner["game"]}).get(
                 "owner"
             )
+            if current is None:
+                # Release may have committed before its reply was lost. There
+                # is no native claim to cancel; only the ordinary terminal
+                # retirement path below may mark workflow ownership released.
+                return
             require(
-                current is not None and current.get("token") == owner["token"],
+                current.get("token") == owner["token"],
                 "Game owner changed during cancellation",
             )
             if not current.get("cancel_requested"):
@@ -445,7 +450,10 @@ class Controller:
                 expected_epoch is None or expected_epoch == state["epoch"],
                 "Stale workflow epoch",
             )
-            if not all(
+            # Terminal stages can still have an unresolved ownership release
+            # (including a lost acquire response). Fence cleanup before another
+            # tick so it can inspect that claim without acquiring a new one.
+            if not read_json(directory / "owner.json")["released"] or not all(
                 node["state"] in graph.TERMINAL for node in state["nodes"].values()
             ):
                 write_json(

@@ -1,6 +1,7 @@
 #pragma once
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/hmcustomlib_interface.hpp"
 
+#include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/OutputBufferPool.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
 
 // #include "deepstream/sources/includes/nvbufsurface.h"
@@ -233,18 +234,11 @@ inline GstBufferPool* DSCustomLibraryBase::CreateBufferPool(BufferPoolConfig* po
   GST_INFO_OBJECT(
       m_element, " %s Allocating Buffers in NVM Buffer Pool for Max_Views=%d\n", __func__, pool_config->batch_size);
 
-  /* set config for the created buffer pool */
-  if (!gst_buffer_pool_set_config(m_buf_pool, config)) {
-    GST_WARNING("bufferpool configuration failed");
-    return NULL;
-  }
-
-  gboolean is_active = gst_buffer_pool_set_active(m_buf_pool, TRUE);
-  if (!is_active) {
-    GST_WARNING(" Failed to allocate the buffers inside the output pool");
-    return NULL;
-  } else {
+  m_buf_pool = videoprep::configure_output_pool(m_buf_pool, config);
+  if (m_buf_pool) {
     GST_DEBUG(" Output buffer pool (%p) successfully created with %d buffers", m_buf_pool, pool_config->max_buffers);
+  } else {
+    GST_WARNING("Failed to configure or allocate the output buffer pool");
   }
   return m_buf_pool;
 }

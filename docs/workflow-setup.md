@@ -16,23 +16,42 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    settings storage, repairs obsolete installation paths and prepares immutable
    copies for each platform. It does not install missing HStream packages.
    Activity appears as shared storage is checked and each computer verifies or
-   copies its installed files. The recording test checks access to the actual videos.
-4. **Test.** Choose one recording with players on the ice, then **Test my
-   computers**. Every selected computer runs in turn. Successful computers are
+   copies its installed files.
+4. **Test.** Choose **Test my computers** to run a short native GPU and shared-storage
+   check on each selected computer. The open recording supplies the shared folder;
+   no video is read, scanned or calibrated. Successful computers are
    retained. The screen shows the current computer, GPU choice, check number,
-   completed stages and remaining checks. Several GPU choices on the same computer
-   require separate checks. A queued stage says it is waiting for Slurm and shows
+   completed stages and remaining checks. Equivalent GPU choices on the same computer
+   share one check. Different runtimes or resource requirements remain separate.
+   Free computers run in parallel within the configured global and profile limits.
+   Each check owns a private empty folder, so checking one computer does not lock
+   the recording or prevent another computer from being checked. A queued stage says it is waiting for Slurm and shows
    the scheduler reason; it does not claim to be running. Test details include the
    current native stage log. Resume stays disabled while automatic checking runs,
    and Stop remains available across polls. Stopping and continuing skips passed
-   checks for the current prepared setup; a failure stops the sequence and is shown on this screen. The test
-   uses private copies and does not promote results to the recording. Stop testing
+   checks for the current prepared setup; a failure stops the sequence and shows
+   the failed stage, its cause and what to do next, including after reopening setup.
+   Recovered diagnostics from successful stages are not reported as the failure.
+   A GPU occupied by another Slurm job does not block setup. An exactly identified
+   pending allocation waiting for resources or priority is cancelled through the
+   ordinary supervised path and shown as **Busy — GPU check deferred**. It is
+   never marked passed. Preparation must already have verified the supported
+   NVIDIA runtime and shared storage. Unknown submission, unsupported runtime,
+   a probe failure, or unproved cleanup still blocks enabling. A cancellation
+   that races with execution is not accepted as a deferred check.
+   Cleanup stays explicit until the controller proves the test stopped. The test
+   writes only private readiness receipts and does not promote results to the recording. Stop testing
    cancels the current test and prevents later computers from starting, including
    when a status response is still pending. Unknown submission results must be
    recovered before another test can start. Closing retains the current native
    stage; later stages wait until setup is reopened and testing is continued.
    The original recording is recovered from the test plan if the field is empty.
-5. **Finish.** **Enable these computers** checks for existing work, stops the
+   Resuming an unfinished test from an unchecked setup stops that old
+   qualification through normal cancellation before scheduling any more stages.
+   Cleanup must finish before preparing again. Read-only status does not request
+   cancellation, and completed test history remains intact.
+5. **Finish.** Passed checks and safely deferred busy GPU checks allow
+   **Enable these computers**. It checks for existing work, stops the
    managed service when needed, applies tested settings, starts the service and
    verifies readiness in order. Failure stops this sequence. Existing service
    locks, native qualification, ownership and revision checks remain authoritative.
@@ -71,14 +90,45 @@ installations remain selectable in Advanced profile settings. Missing programs
 still require installing HStream on that computer. Headless Jetson packages now
 include `hstream-experiment-task`; enabling the desktop UI is not necessary.
 
+Preparation also asks each installed experiment helper whether it can read the
+current stitching settings, including saved control-point selection modes. An
+older helper stops preparation with a deployment command naming the main server
+and all selected computers. Building a desktop from source does not update those
+installed helpers. To update the whole cluster, pass its nodes explicitly, for
+example `make deploy NODES=ripper,monster,mini,meshy,stubby`; plain `make deploy`
+targets the local computer. Older prepared generations without this compatibility
+check return to Prepare. They cannot begin a new test, acquire its recording or
+enable their profiles, even if their earlier tests passed.
+Their saved test history and immutable runtimes remain intact.
+
 Mixed OS or processor builds become separate execution profiles with readable
 computer names. Their job limits remain shared across the original overlapping
 profiles, so splitting a profile does not increase cluster capacity. The editor
 retains the original editable profiles and displays any lowered overlapping limits.
+Prepare also checks typed GPU choices against Slurm's current computers and queues.
+A saved family such as `gpu:rtx:1` becomes each selected computer's exact GPU type
+when that family has one matching model there. The update appears in Prepare's
+activity log; GPU counts, other resource requests and the selected computers stay
+the same. Unknown or ambiguous choices stop before copying runtimes or testing.
+Numeric model names are exact choices: a missing A10 never becomes an A100.
 Tasks select the prepared libraries and baseline before their native program
 starts, including packages whose ELF search path names the deployment prefix.
 Published copies stay in place for existing runs. Discovery and build never mark
-computers qualified: each one still needs its native sample test.
+computers qualified: each still needs a completed check or a safely deferred busy
+allocation after supported-runtime preparation.
+
+Setup qualifies deployment readiness, not video processing quality or memory capacity
+for every recording. A normal stitching experiment performs calibration and player
+scanning after setup. The quick check uses the ordinary Slurm/native worker protocol,
+GPU allocation, artifact verification, process retirement and game ownership.
+Checks use `workflow.max_parallel` and the shared profile limits. Native retirement
+receipts are opened through pinned directories so stale NFS absence caches do not
+add a delay to each finished job. The probe
+execution deadline is bounded by `workflow.command_timeout_seconds`; scheduler queue
+time is shown separately. Matching node, runtime pins, command, capabilities and all
+allocation resources are required to reuse a result across profile aliases. Generic
+GPU requests become exact types only on computers reporting one available GPU type.
+Unchanged prepared generations retain successful checks after Stop and Resume.
 Discovery also finds registries used by managed user services, including custom
 folders. If it finds several, it lists them for selection. Changing the settings
 folder starts a separate draft; it cannot carry another folder's save revision.

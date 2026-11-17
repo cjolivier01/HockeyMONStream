@@ -1,11 +1,12 @@
 """Build and qualify a private registry using the ordinary native workflow graph.
 
 Unqualified profiles exist only in a setup generation. Activation requires every
-node's actual calibration graph to succeed, including native retirement proof.
+node's runtime/GPU probe to succeed, including native retirement proof.
 Closing the editor does not revoke ownership or erase test evidence.
 """
 
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import platform
@@ -29,10 +30,12 @@ from .files import (
 from .profiles import DEFAULT_FIELDS, controller_files, load_config
 from .schema import WorkflowError, digest, positive, require, validate_plan
 from .setup import SetupStore, absolute, run_readonly, validate_draft
+from .setup_progress import failure_detail
 from .setup_progress import summary as test_summary
 
 CPU = ["experiment-create", "experiment-reuse-selection", "experiment-complete"]
 GPU = [
+    "experiment-probe",
     "experiment-baseline",
     "experiment-scan",
     "experiment-materialize",
@@ -325,6 +328,7 @@ def compile_configuration(
         for variant in variants:
             actual = copy.deepcopy(source)
             actual["nodes"] = sorted(variant["nodes"])
+            actual["gres"] = variant.get("gres", source["gres"])
             profile_id = key
             if len(variants) > 1:
                 profile_id = key[:80] + "-" + digest(actual["nodes"])[:12]
@@ -445,11 +449,15 @@ def build(root, request, prepared=None, repaired_draft=None):
         )
     installed_launcher(configuration)
     configuration_revision = current_revision(root)
+    setup_features = prepared.get("features", []) if prepared else []
+    gpu_supported = bool(prepared and prepared.get("gpu_supported") is True)
     generation = digest(
         {
             "draft": store,
             "configuration": configuration,
             "configuration_revision": configuration_revision,
+            "setup_features": setup_features,
+            "gpu_supported": gpu_supported,
         }
     )
     directory = private_directory(root / "setup-builds" / generation, create=True)
@@ -476,6 +484,8 @@ def build(root, request, prepared=None, repaired_draft=None):
                     "schema": 1,
                     "revision": store["revision"],
                     "configuration": configuration,
+                    "setup_features": setup_features,
+                    "gpu_supported": gpu_supported,
                     "configuration_revision": configuration_revision,
                     "tests": {},
                     "host": socket.gethostname(),
@@ -495,7 +505,7 @@ def build(root, request, prepared=None, repaired_draft=None):
     return {
         "generation": generation,
         **store,
-        "message": "Registry built. Test a sample recording on each chosen computer before applying it.",
+        "message": "Computers prepared. Run the quick HStream and GPU checks, then enable your computers.",
     }
 
 
@@ -513,68 +523,48 @@ def generation(root):
     return path, read_json(path / "build.json")
 
 
+def qualification_checks(saved):
+    """Share proof only for identical node, runtime and allocation requirements.
+
+    Preparation resolves generic GPUs only when Slurm reports one exact type.
+    Legacy generations keep their original rows so their jobs can still retire.
+    """
+    grouped = {}
+    quick = "cluster-readiness-v1" in saved.get("setup_features", [])
+    for key, profile in saved["configuration"]["profiles"].items():
+        if key == "metadata":
+            continue
+        for node in profile["resources"]["nodes"]:
+            identity = (
+                digest(
+                    {
+                        "node": node,
+                        "executor": profile["executor"],
+                        "task_command": profile["task_command"],
+                        "runtime": profile["runtime"],
+                        "capabilities": profile["capabilities"],
+                        "resources": {**profile["resources"], "nodes": [node]},
+                    }
+                )
+                if quick
+                else key + "/" + node
+            )
+            grouped.setdefault(identity, []).append((key, node))
+    return [
+        (members[0][0], members[0][1], [key for key, _ in members])
+        for members in grouped.values()
+    ]
+
+
 def test_plan(configuration, profile_id, node, game, snapshot, scan_seconds):
-    profiles = copy.deepcopy(configuration["profiles"])
-    gpu = profiles[profile_id]
+    # scan_seconds remains accepted for older desktop/browser request schemas.
+    # Setup validates deployment readiness. Recording processing belongs to an
+    # ordinary stitching experiment, not a mandatory cluster configuration test.
+    gpu = copy.deepcopy(configuration["profiles"][profile_id])
     gpu["resources"]["nodes"] = [node]
-    # Store a separate per-node registry so admission checks use exact profiles.
-    profiles = {profile_id: gpu, "metadata": profiles["metadata"]}
-    stages = []
-
-    def ref(stage):
-        return {"stage": stage, "output": "workspace"}
-
-    def add(name, kind, dependencies, inputs, cpu=False):
-        stages.append(
-            {
-                "id": name,
-                "kind": "experiment-" + kind,
-                "label": name,
-                "candidate_id": "setup",
-                "dependencies": dependencies,
-                "inputs": inputs,
-                "profile_id": "metadata" if cpu else profile_id,
-            }
-        )
-
-    add("prepare", "create", [], {"settings": {}}, True)
-    add("prepare-target", "create", ["prepare"], {"workspace": ref("prepare")})
-    add(
-        "baseline", "baseline", ["prepare-target"], {"workspace": ref("prepare-target")}
-    )
-    positive(scan_seconds, "Player search seconds", 300)
-    add(
-        "scan",
-        "scan",
-        ["prepare-target", "baseline"],
-        {
-            "workspace": ref("prepare-target"),
-            "baseline_workspace": ref("baseline"),
-            "search_duration_seconds": scan_seconds,
-        },
-    )
-    add("materialize", "materialize", ["scan"], {"workspace": ref("scan")})
-    add(
-        "reuse",
-        "reuse-selection",
-        ["prepare", "materialize"],
-        {"workspace": ref("prepare"), "selection_workspace": ref("materialize")},
-        True,
-    )
-    add(
-        "reuse-target",
-        "reuse-selection",
-        ["prepare-target", "materialize", "reuse"],
-        {"workspace": ref("prepare-target"), "selection_workspace": ref("materialize")},
-    )
-    add("calibrate", "run", ["reuse-target"], {"workspace": ref("reuse-target")})
-    add("complete-target", "complete", ["calibrate"], {"workspace": ref("calibrate")})
-    add(
-        "complete",
-        "complete",
-        ["complete-target"],
-        {"workspace": ref("complete-target")},
-        True,
+    gpu["resources"]["time_seconds"] = min(
+        gpu["resources"]["time_seconds"],
+        configuration["defaults"]["command_timeout_seconds"],
     )
     plan = {
         "schema": 1,
@@ -583,8 +573,21 @@ def test_plan(configuration, profile_id, node, game, snapshot, scan_seconds):
         "source_identity": {"game_directory": str(game)},
         "configuration_digest": digest(configuration),
         "runtime_identity": {**gpu["runtime"], "user_config_snapshot": snapshot},
-        "profiles": profiles,
-        "stages": stages,
+        "profiles": {
+            profile_id: gpu,
+            "metadata": copy.deepcopy(configuration["profiles"]["metadata"]),
+        },
+        "stages": [
+            {
+                "id": "probe",
+                "kind": "experiment-probe",
+                "label": "Check HStream and the GPU",
+                "candidate_id": "setup",
+                "dependencies": [],
+                "inputs": {},
+                "profile_id": profile_id,
+            }
+        ],
         "limits": {"max_parallel": 1},
     }
     return validate_plan(plan)
@@ -607,45 +610,98 @@ def start_test(root, request):
         node in config["profiles"][key]["resources"]["nodes"],
         "Choose a computer in this profile",
     )
+    for representative, computer, aliases in qualification_checks(saved):
+        if node == computer and key in aliases:
+            key = representative
+            break
     game = validate_game(config, request["game"])
+    parallel = request.get("all_computers", False)
+    require(type(parallel) is bool, "Choose whether to check all computers")
     with locked(directory / "build.lock"):
         saved = read_json(directory / "build.json")
-        # One test at a time also preserves a recording's single operation owner.
-        for test in saved["tests"].values():
+        active, complete = {}, set()
+        from .setup_checks import is_deferred
+
+        for identity, test in saved["tests"].items():
             _, status, rejection = restore_test(test)
-            require(
-                rejection is not None or status["owner_released"],
-                "A previous test is still running or needs cleanup. Resume or stop it first.",
+            if rejection is None:
+                if not status["owner_released"]:
+                    active[identity] = test
+                elif status["state"] == "succeeded" or (
+                    saved.get("gpu_supported") and is_deferred(test, status)
+                ):
+                    complete.add(identity)
+        require(
+            parallel or not active,
+            "A previous test is still running or needs cleanup. Resume or stop it first.",
+        )
+        targets = [(key, node)]
+        if parallel:
+            targets += [
+                (k, n)
+                for k, n, _ in qualification_checks(saved)
+                if (k, n) != (key, node)
+            ]
+        for key, node in targets:
+            identity = key + "/" + node
+            if identity in complete or identity in active:
+                continue
+            if len(active) >= config["defaults"]["max_parallel"]:
+                break
+            if any(test["node"] == node for test in active.values()):
+                continue
+            profile = config["profiles"][key]
+            in_pool = sum(
+                config["profiles"][t["profile"]]["pool"] == profile["pool"]
+                for t in active.values()
             )
-        plan = test_plan(
-            config,
-            key,
-            node,
-            game,
-            request["user_config_snapshot"],
-            request["scan_seconds"],
-        )
-        test_root = private_directory(
-            directory / "tests" / plan["workflow_id"], create=True
-        )
-        write_json(test_root / "setup-test-only.json", {"schema": 1}, exclusive=True)
-        write_json(
-            test_root / "config.json",
-            {**config, "profiles": plan["profiles"], "observer_registry": None},
-            exclusive=True,
-        )
-        # Record resumable intent before admission; a response lost after register
-        # must never cause another independent test to be started.
-        write_json(test_root / "plan.json", plan, exclusive=True)
-        test = {
-            "registry": str(test_root),
-            "workflow": plan["workflow_id"],
-            "profile": key,
-            "node": node,
-        }
-        saved["tests"][key + "/" + node] = test
-        write_json(directory / "build.json", saved)
-        restore_test(test)
+            if in_pool >= min(profile["limits"].values()):
+                continue
+            # The probe reads no recording inputs. Give each computer a private
+            # empty game for ordinary native ownership and verified receipts.
+            probe_game = (
+                private_directory(
+                    game
+                    / "_hockeymon/cluster-checks"
+                    / directory.name
+                    / digest(identity),
+                    create=True,
+                )
+                if parallel
+                else game
+            )
+            plan = test_plan(
+                config,
+                key,
+                node,
+                probe_game,
+                request["user_config_snapshot"],
+                request["scan_seconds"],
+            )
+            test_root = private_directory(
+                directory / "tests" / plan["workflow_id"], create=True
+            )
+            write_json(
+                test_root / "setup-test-only.json", {"schema": 1}, exclusive=True
+            )
+            write_json(
+                test_root / "config.json",
+                {**config, "profiles": plan["profiles"], "observer_registry": None},
+                exclusive=True,
+            )
+            write_json(test_root / "plan.json", plan, exclusive=True)
+            test = {
+                "registry": str(test_root),
+                "workflow": plan["workflow_id"],
+                "profile": key,
+                "node": node,
+                "sample": str(game),
+            }
+            saved["tests"][identity] = test
+            # Seal each resumable intent before admission or a lost response.
+            write_json(directory / "build.json", saved)
+            restore_test(test)
+            active[identity] = test
     return qualification_status(root, tick=False)
 
 
@@ -685,67 +741,134 @@ def restore_test(test):
 
 
 def qualification_status(root, *, tick):
+    from .setup_runtime import has_current_features
+
     directory, saved = generation(root)
-    rows = []
-    for key, profile in saved["configuration"]["profiles"].items():
-        if key == "metadata":
-            continue
-        for node in profile["resources"]["nodes"]:
-            test = saved["tests"].get(key + "/" + node)
-            row = {
-                "profile": key,
-                "label": profile.get("label", key),
-                "node": node,
-                "state": "not-tested",
-                "passed": False,
-            }
-            if test:
-                row["game"] = read_json(Path(test["registry"]) / "plan.json")[
-                    "source_identity"
-                ]["game_directory"]
-                controller, status, rejection = restore_test(test)
-                if rejection is not None:
-                    row.update(
-                        state="rejected",
-                        finished=True,
-                        log=rejection
-                        + "\nCorrect the setup, then save and build again. No job was admitted.",
-                    )
-                    rows.append(row)
-                    continue
-                if tick:
-                    controller.tick(test["workflow"])
-                    status = controller.status(test["workflow"])
-                row.update(
-                    state=status["state"],
-                    passed=status["state"] == "succeeded" and status["owner_released"],
-                    finished=status["owner_released"],
-                    status=status,
+    current_programs = has_current_features(saved.get("setup_features"))
+    from .setup_checks import defer_busy, is_deferred
+
+    def check(target):
+        key, node, aliases = target
+        profile = saved["configuration"]["profiles"][key]
+        test = saved["tests"].get(key + "/" + node)
+        row = {
+            "profile": key,
+            "label": (
+                "HStream and GPU"
+                if "cluster-readiness-v1" in saved.get("setup_features", [])
+                else profile.get("label", key)
+            ),
+            "profiles": aliases,
+            "node": node,
+            "state": "not-tested",
+            "passed": False,
+        }
+        if test:
+            row["game"] = (
+                test.get("sample")
+                or read_json(Path(test["registry"]) / "plan.json")["source_identity"][
+                    "game_directory"
+                ]
+            )
+            controller, status, rejection = restore_test(test)
+            if rejection is not None:
+                explanation = (
+                    rejection
+                    + "\nCorrect the setup, then save and build again. No job was admitted."
                 )
-                # The controller owns bounded live and failed-stage log reads.
-                if status["state"] in {"failed", "recovery"}:
-                    row["next"] = (
-                        "Inspect the test stage and its log. Correct the installation or sample recording, then test again."
+                row.update(
+                    state="rejected",
+                    finished=True,
+                    log=explanation,
+                    next=explanation,
+                )
+                return row
+            if tick and not status["owner_released"]:
+                if not current_programs:
+                    # Older clients may have saved intent before their first
+                    # poll, or lost an acquire/submission response. Cancel
+                    # through the normal fenced path before any tick: owner
+                    # inspection and cleanup remain available, but neither
+                    # ownership acquisition nor a new stage can be admitted.
+                    status = controller.cancel(test["workflow"], status["epoch"])
+                status = defer_busy(
+                    controller,
+                    test,
+                    status,
+                    enabled=current_programs and saved.get("gpu_supported") is True,
+                )
+                controller.tick(test["workflow"])
+                status = controller.status(test["workflow"])
+            row.update(
+                state=status["state"],
+                passed=status["state"] == "succeeded" and status["owner_released"],
+                finished=status["owner_released"],
+                status=status,
+            )
+            # The controller owns bounded live and failed-stage log reads.
+            if status["state"] in {"failed", "recovery", "running"}:
+                # A later running/cleanup stage must not hide the failed
+                # attempt or substitute an earlier, recovered diagnostic.
+                stages = [
+                    stage
+                    for state in ("failed", "recovery", "running")
+                    for stage in status["nodes"]
+                    if stage["state"] == state
+                ]
+                if stages:
+                    stage = stages[0]
+                    if stage["attempts"]:
+                        try:
+                            row["log"] = controller.log(test["workflow"], stage["id"])[
+                                "text"
+                            ][-32768:]
+                        except (OSError, ValueError):
+                            pass
+                    if stage["state"] in {"failed", "recovery"}:
+                        row["next"] = failure_detail(
+                            stage, row.get("log", ""), finished=row["finished"]
+                        )
+            if not current_programs and (
+                not row["finished"] or status.get("cancel_requested")
+            ):
+                if row["finished"]:
+                    instruction = "The old test has stopped. Go back to Prepare computers before testing again."
+                elif status.get("cancel_requested") or status.get(
+                    "cancellation_pending"
+                ):
+                    instruction = "The old test is stopping before any more stages can start. Wait for cleanup, then go back to Prepare computers."
+                else:
+                    instruction = (
+                        "Stop this old test before going back to Prepare computers."
                     )
-                if status["state"] in {"failed", "recovery", "running"}:
-                    for stage in status["nodes"]:
-                        if (
-                            stage["state"] in {"failed", "recovery", "running"}
-                            and stage["attempts"]
-                        ):
-                            try:
-                                row["log"] = controller.log(
-                                    test["workflow"], stage["id"]
-                                )["text"][-32768:]
-                            except (OSError, ValueError):
-                                pass
-            rows.append(row)
+                row["next"] = (
+                    "This test uses HStream programs that have not been checked for current stitching settings. "
+                    + instruction
+                )
+            if saved.get("gpu_supported") is True and is_deferred(test, status):
+                row.update(
+                    state="deferred",
+                    ready=True,
+                    finished=True,
+                    next="Slurm resources are busy. Connection, storage and installed HStream are ready; the GPU check is deferred. Workflows will wait for a free GPU.",
+                )
+        row["ready"] = row.get("ready", row["passed"])
+        return row
+
+    targets = qualification_checks(saved)
+    if tick:
+        with ThreadPoolExecutor(
+            max_workers=saved["configuration"]["defaults"]["max_parallel"]
+        ) as workers:
+            rows = list(workers.map(check, targets))
+    else:
+        rows = list(map(check, targets))
     return {
         "tests": rows,
         "test_progress": test_summary(rows),
-        "tested": bool(rows) and all(row["passed"] for row in rows),
+        "tested": bool(rows) and all(row.get("ready", row["passed"]) for row in rows),
         "current": saved["revision"] == SetupStore(root).read()["revision"],
-        "message": "Tests use private experiment copies. Keep this window open to schedule their next stages; reopen to resume.",
+        "message": "Quick checks start HStream on each computer and verify its GPU and shared storage. No video is processed. Passed checks are kept.",
     }
 
 
@@ -783,6 +906,17 @@ def idle(root):
         )
 
 
+def require_current_setup(saved):
+    from .setup_runtime import has_current_features
+
+    require(
+        has_current_features(saved.get("setup_features")),
+        "These prepared computers have not been checked for current stitching settings. "
+        "Go back to Prepare computers before testing or enabling them. "
+        "If HStream is outdated, update the main server and all selected computers.",
+    )
+
+
 def activate(root):
     # The service holds this lock from before reading configuration until exit.
     # Nonblocking acquisition also excludes a concurrently starting controller.
@@ -804,6 +938,7 @@ def activate_stopped(root):
         root
     ).lock():
         saved = read_json(directory / "build.json")
+        require_current_setup(saved)
         require(
             saved["revision"] == SetupStore(root).read()["revision"],
             "Test the changed setup before applying it",
@@ -811,7 +946,7 @@ def activate_stopped(root):
         status = qualification_status(root, tick=False)
         require(
             status["tested"],
-            "Every computer must pass the sample experiment before it can be enabled",
+            "Every computer needs a finished check or a safely deferred busy GPU check before it can be enabled",
         )
         target_revision = digest(saved["configuration"])
         require(
@@ -820,8 +955,11 @@ def activate_stopped(root):
             "The installed settings changed. Rebuild before applying.",
         )
         idle(root)
+        # One activation verifies shared files once across equivalent aliases.
+        # This cache lasts only for this operation; every worker still checks its pins.
+        verified = set()
         for profile in saved["configuration"]["profiles"].values():
-            preflight_runtime(profile)
+            preflight_runtime(profile, verified)
         # Older services do not hold controller-service.lock. Heartbeat age is
         # not retirement proof: an idle or paused process can still resume.
         heartbeat = root / "heartbeat.json"
@@ -999,6 +1137,8 @@ def execute_locked(root, request):
             ]
         )
     elif action == "start-test":
+        _, saved = generation(root)
+        require_current_setup(saved)
         check_scheduler(request["timeout_seconds"])
         result = start_test(root, request)
     elif action == "test-status":
