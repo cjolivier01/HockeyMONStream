@@ -10,6 +10,14 @@ from .schema import require
 
 def installed_launcher(config):
     profiles = config["profiles"]
+    runtime = profiles[config["admission_profile"]]["runtime"]
+    if runtime.get("installation") == "deployed":
+        launcher = Path(runtime["root"]) / "scripts/hstream-workflow"
+        require(
+            launcher.is_file() and os.access(launcher, os.X_OK),
+            "The deployed HStream controller is unavailable: " + str(launcher),
+        )
+        return launcher
     pins = profiles[config["admission_profile"]]["runtime"]["files"]
     candidates = [
         Path(path)

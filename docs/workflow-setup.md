@@ -13,10 +13,10 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    the choices; advanced job settings retain editable profiles and resource limits.
 3. **Prepare.** Confirm the folder holding the game folders and choose
    **Prepare computers**. Setup discovers installed programs, verifies shared
-   settings storage, repairs obsolete installation paths and prepares immutable
-   copies for each platform. It does not install missing HStream packages.
-   Activity appears as shared storage is checked and each computer verifies or
-   copies its installed files.
+   settings storage and repairs obsolete installation paths. Jobs use each computer’s
+   deployed HStream installation directly. It does not install missing HStream packages.
+   Activity names the deployment folder checked on each computer. No installation
+   is copied to shared storage.
 4. **Test.** Choose **Test my computers** to run a short native GPU and shared-storage
    check on each selected computer. The open recording supplies the shared folder;
    no video is read, scanned or calibrated. Successful computers are
@@ -83,12 +83,16 @@ history cannot prevent this recovery. Unfinished qualification tests still need
 cleanup, and the destination still needs its own successful tests and activation.
 `make deploy` installs the native programs (the desktop package uses
 `/opt/hstream/bin`). After deployment, **Prepare computers** repairs stale
-preview-release paths automatically. It copies each distinct installed package
-into `setup-runtimes/` under the registry, verifies its files and reuses matching
-copies. Package-owned files are copied; local backups are excluded. Custom usable
-installations remain selectable in Advanced profile settings. Missing programs
-still require installing HStream on that computer. Headless Jetson packages now
-include `hstream-experiment-task`; enabling the desktop UI is not necessary.
+preview-release paths automatically. Programs, libraries and configuration run
+from the deployment directory, normally `/opt/hstream`. Setup does not create
+`setup-runtimes/` or `setup-releases/` copies. A later `make deploy` updates what
+new tasks execute without another Prepare, registry rebuild or GPU test.
+Custom installation folders remain selectable in Advanced profile settings.
+Missing programs still require installing HStream on that computer. Headless
+Jetson packages include the experiment helper; the desktop UI is optional.
+Operators are responsible for jobs and long-running processes during deployment;
+setup does not drain GPUs, block deployment or preserve executable releases.
+Restart an already running UI/controller when changing its own loaded code.
 
 Preparation also asks each installed experiment helper whether it can read the
 current stitching settings, including saved control-point selection modes. An
@@ -101,19 +105,21 @@ check return to Prepare. They cannot begin a new test, acquire its recording or
 enable their profiles, even if their earlier tests passed.
 Their saved test history and immutable runtimes remain intact.
 
-Mixed OS or processor builds become separate execution profiles with readable
-computer names. Their job limits remain shared across the original overlapping
-profiles, so splitting a profile does not increase cluster capacity. The editor
-retains the original editable profiles and displays any lowered overlapping limits.
+The normal computer selection creates one **Any qualified GPU** profile. Its
+`gpu:1` request stays generic, and Slurm chooses among the selected computers.
+Different OS, GPU models and x86/ARM builds do not split this profile: the native
+worker resolves the installed executables on the allocated computer. Specific
+GPU requests remain optional in Advanced profile settings. Overlapping profiles
+still share job limits.
 Prepare also checks typed GPU choices against Slurm's current computers and queues.
 A saved family such as `gpu:rtx:1` becomes each selected computer's exact GPU type
 when that family has one matching model there. The update appears in Prepare's
 activity log; GPU counts, other resource requests and the selected computers stay
-the same. Unknown or ambiguous choices stop before copying runtimes or testing.
+the same. Unknown or ambiguous typed choices stop before testing.
 Numeric model names are exact choices: a missing A10 never becomes an A100.
-Tasks select the prepared libraries and baseline before their native program
-starts, including packages whose ELF search path names the deployment prefix.
-Published copies stay in place for existing runs. Discovery and build never mark
+Tasks use the deployed libraries and baseline. The native worker records and
+rechecks the selected executable bytes for that attempt; immutable request and
+result bindings remain checked. Discovery and build never mark
 computers qualified: each still needs a completed check or a safely deferred busy
 allocation after supported-runtime preparation.
 

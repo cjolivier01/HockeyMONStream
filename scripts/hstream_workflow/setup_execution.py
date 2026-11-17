@@ -6,7 +6,6 @@ Closing the editor does not revoke ownership or erase test evidence.
 """
 
 import copy
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import platform
@@ -15,6 +14,7 @@ import shlex
 import socket
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -58,37 +58,6 @@ def publish_file(path, data, mode):
         os.unlink(temporary)
 
 
-def deploy_controller(registry):
-    """Copy this client's controller to an immutable, content-addressed release."""
-    sources = controller_files()
-    content = {
-        str(path.relative_to(sources[0].parent)): read_bytes(path) for path in sources
-    }
-    identity = digest(
-        {
-            name: __import__("hashlib").sha256(data).hexdigest()
-            for name, data in content.items()
-        }
-    )
-    destination = private_directory(
-        Path(registry) / "setup-releases" / identity / "scripts", create=True
-    )
-    with locked(Path(registry) / "setup-release.lock"):
-        for name, data in content.items():
-            target = destination / name
-            private_directory(target.parent, create=True)
-            if target.exists():
-                require(
-                    read_bytes(target) == data,
-                    "The saved controller release was changed",
-                )
-            else:
-                publish_file(
-                    target, data, 0o700 if name == "hstream-workflow" else 0o600
-                )
-    return destination / "hstream-workflow"
-
-
 def remote(request):
     root = private_directory(
         absolute(request["registry"], "Settings folder"), create=True
@@ -119,7 +88,7 @@ def remote(request):
             absolute(request["registry"], "Shared settings folder")
         )
         draft = request["draft"]
-    launcher = deploy_controller(root)
+    launcher = "hstream-workflow"
     path = root / ("setup-request-" + uuid4().hex + ".json")
     # The random challenge also proves that the server sees the same storage.
     challenge = uuid4().hex
@@ -208,9 +177,8 @@ def inventory(root, *, cpu, paths=None):
             "The main-server installation is for another processor",
         )
     files = {}
-    # Installed desktop packages also bundle a Python controller. Setup deploys
-    # its own immutable controller release; pinning both makes client dispatch
-    # ambiguous. Native tasks do not execute the bundled controller copy.
+    # Compute tasks do not execute the bundled Python controller. Its identity
+    # belongs to the admission profile, separately from native task programs.
     entries = []
     for index, path in enumerate(root.rglob("*") if paths is None else paths):
         require(
@@ -281,16 +249,18 @@ def compile_configuration(
     if prepared is None:
         task, runtime = inspect(draft["controller_runtime"], cpu=True)
     else:
-        task, runtime = prepared["metadata"]["task"], copy.deepcopy(
-            prepared["metadata"]["runtime"]
+        task, runtime = (
+            prepared["metadata"]["task"],
+            copy.deepcopy(prepared["metadata"]["runtime"]),
         )
     runtime["storage_namespace"] = namespace
-    runtime["files"].update(
-        {
-            str(path): file_digest(path, 8 * 1024 * 1024)["sha256"]
-            for path in controller_files()
-        }
-    )
+    if runtime.get("installation") != "deployed":
+        runtime["files"].update(
+            {
+                str(path): file_digest(path, 8 * 1024 * 1024)["sha256"]
+                for path in controller_files()
+            }
+        )
     profiles = {
         "metadata": {
             "label": "Prepare experiment files",
@@ -930,13 +900,15 @@ def activate(root):
 
 
 def activate_stopped(root):
-    from .state import Registry
     from .profiles import preflight_runtime
+    from .state import Registry
 
     directory, saved = generation(root)
-    with locked(root / "setup.lock"), locked(directory / "build.lock"), Registry(
-        root
-    ).lock():
+    with (
+        locked(root / "setup.lock"),
+        locked(directory / "build.lock"),
+        Registry(root).lock(),
+    ):
         saved = read_json(directory / "build.json")
         require_current_setup(saved)
         require(
@@ -959,7 +931,11 @@ def activate_stopped(root):
         # This cache lasts only for this operation; every worker still checks its pins.
         verified = set()
         for profile in saved["configuration"]["profiles"].values():
-            preflight_runtime(profile, verified)
+            if (
+                profile["executor"] == "local"
+                or profile["runtime"].get("installation") != "deployed"
+            ):
+                preflight_runtime(profile, verified)
         # Older services do not hold controller-service.lock. Heartbeat age is
         # not retirement proof: an idle or paused process can still resume.
         heartbeat = root / "heartbeat.json"
@@ -1132,7 +1108,7 @@ def execute_locked(root, request):
         result["message"] = "\n".join(
             [
                 *messages,
-                "HStream is prepared on shared storage for every selected computer.",
+                "Installed HStream programs and shared settings are ready on every selected computer.",
                 result["message"],
             ]
         )

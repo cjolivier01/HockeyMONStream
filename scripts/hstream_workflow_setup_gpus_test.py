@@ -82,9 +82,9 @@ class SetupGpuChoicesTest(unittest.TestCase):
                 self.assertEqual(choices["saved"]["mini"], gres)
                 self.assertEqual(messages, [])
 
-    def test_generic_gpu_matches_only_a_single_reported_type(self):
+    def test_generic_gpu_stays_generic_for_single_and_mixed_types(self):
         choices, _ = resolve_profiles(self.profile("gpu:1"), "mini|gpu|gpu:rtx5090:1")
-        self.assertEqual(choices["saved"]["mini"], "gpu:rtx5090:1")
+        self.assertEqual(choices["saved"]["mini"], "gpu:1")
         for inventory in ("mini|gpu|gpu:rtx5090:1,gpu:a100:1", "mini|gpu|gpu:2", ""):
             choices, _ = resolve_profiles(self.profile("gpu:1"), inventory)
             self.assertEqual(choices["saved"]["mini"], "gpu:1")

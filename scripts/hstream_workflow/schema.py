@@ -295,13 +295,40 @@ def validate_profile(profile):
     for key, value in profile["limits"].items():
         positive(value, key, 256)
     runtime = profile["runtime"]
+    deployed = isinstance(runtime, dict) and runtime.get("installation") == "deployed"
     require(
         isinstance(runtime, dict)
         and isinstance(runtime.get("files"), dict)
-        and runtime["files"],
+        and (deployed or runtime["files"]),
         "Runtime needs pinned executable/config digests",
     )
-    require(command[0] in runtime["files"], "Native task executable is not pinned")
+    if deployed:
+        root = runtime.get("root")
+        require(
+            isinstance(root, str) and Path(root).is_absolute() and root != "/",
+            "Invalid deployment folder",
+        )
+        require(
+            not runtime["files"],
+            "Deployment profiles resolve program bytes on the allocated computer",
+        )
+        for path in [
+            command[0],
+            *[
+                runtime[key]
+                for key in ("worker", "cli", "exporter", "config")
+                if key in runtime
+            ],
+        ]:
+            require(
+                isinstance(path, str)
+                and Path(path).is_absolute()
+                and Path(path).is_relative_to(root)
+                and ".." not in Path(path).parts,
+                "Program path leaves its deployment folder",
+            )
+    else:
+        require(command[0] in runtime["files"], "Native task executable is not pinned")
     for path, value in runtime["files"].items():
         require(
             isinstance(path, str) and Path(path).is_absolute(),
@@ -313,7 +340,8 @@ def validate_profile(profile):
         )
     text(runtime.get("storage_namespace"), "storage namespace", 128)
     require(
-        runtime.get("architecture") in {"x86_64", "aarch64"},
+        runtime.get("architecture")
+        in ({"x86_64", "aarch64", "native"} if deployed else {"x86_64", "aarch64"}),
         "Unsupported runtime architecture",
     )
     require(
@@ -325,7 +353,7 @@ def validate_profile(profile):
         require(
             isinstance(worker, str)
             and Path(worker).is_absolute()
-            and worker in runtime["files"],
+            and (deployed or worker in runtime["files"]),
             "These saved computer profiles need an update. Open cluster setup and choose "
             "Prepare computers, then Test my computers and Enable these computers.",
         )

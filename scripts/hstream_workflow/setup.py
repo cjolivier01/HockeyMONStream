@@ -625,7 +625,7 @@ def _handle_request(request):
     """The desktop and operator UI use the same typed setup operations."""
     require(isinstance(request, dict), "Expected setup request")
     action = request.get("action")
-    if action == "prepare-runtime":
+    if action in {"prepare-runtime", "prepare-installed-runtime"}:
         from .setup_runtime import on_node
 
         return on_node(request)

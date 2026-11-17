@@ -49,8 +49,9 @@ and GID. Shared-storage ownership must match on submission, compute, web and
 dispatcher hosts. Provision matching Slurm/Munge identities before bootstrap;
 do not renumber live service accounts or rotate Munge material as an install step.
 
-Mount the recording, private state and immutable runtime paths at the same absolute
-locations on every eligible host. Cross-host filesystem locking must work. Test
+Mount recording and private state paths at the same absolute locations on every
+eligible host. Install HStream at the same deployment path on each host; its
+programs may be host-local and architecture-specific. Cross-host filesystem locking must work. Test
 that one host's exclusive workflow/admission lock prevents acquisition on another
 host. Local PID absence is not proof that a remote task stopped.
 
@@ -61,9 +62,12 @@ web/dispatcher mounts; device numbers may differ. Qualify this mapping before
 enabling that deployment. A mount translating inode identities is unsupported
 until it has an independent CPU read verifier; equal paths alone are insufficient.
 
-Every Slurm target must provide the pinned native task executable, configuration,
-models and a qualified native runtime. Each execution profile names the pinned
-C++ worker as `runtime.worker` and includes its hash in `runtime.files`. Qualify
+Every Slurm target must provide the native task executable, configuration, models
+and a qualified native runtime. Setup profiles use `runtime.installation: deployed`
+and resolve the installed programs on the chosen computer for each attempt.
+`make deploy` updates what subsequent tasks execute; the operator manages running
+jobs and restarts already-loaded services. No secondary runtime copy is prepared.
+Legacy frozen profiles still name exact hashes in `runtime.files`. Qualify
 `native-batch-v1` support before admitting standalone work. Interpreter-only
 `runtime.python` profiles no longer admit Slurm work; replace them and requalify
 every target. Compute profiles do not need the Python controller or launcher.

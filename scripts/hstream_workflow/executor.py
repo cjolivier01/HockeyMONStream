@@ -22,7 +22,10 @@ def limits(profile, settings):
     require(
         isinstance(worker, str)
         and Path(worker).is_absolute()
-        and worker in profile["runtime"]["files"],
+        and (
+            profile["runtime"].get("installation") == "deployed"
+            or worker in profile["runtime"]["files"]
+        ),
         "Standalone execution needs a pinned absolute runtime.worker",
     )
     poll_ms = min(settings["poll_interval_ms"], 1000)
@@ -58,10 +61,13 @@ def installation_environment(runtime, inherited=None):
     installation = runtime.get("root")
     if installation:
         installation = Path(installation)
+        deployed = runtime.get("installation") == "deployed"
         pinned = [Path(path) for path in runtime["files"]]
         libraries = [installation / "lib", installation / "lib/gst-plugins"]
         libraries = [
-            path for path in libraries if any(item.parent == path for item in pinned)
+            path
+            for path in libraries
+            if deployed or any(item.parent == path for item in pinned)
         ]
         if libraries:
             search = [str(path) for path in libraries]
@@ -69,12 +75,12 @@ def installation_environment(runtime, inherited=None):
                 search.append(environment["LD_LIBRARY_PATH"])
             environment["LD_LIBRARY_PATH"] = ":".join(search)
         plugins = installation / "lib/gst-plugins"
-        if any(path.parent == plugins for path in pinned):
+        if deployed or any(path.parent == plugins for path in pinned):
             # Native startup extends this with its vendor plugin directories.
             # The versioned variable would hide those subsequent additions.
             environment.pop("GST_PLUGIN_PATH_1_0", None)
             environment["GST_PLUGIN_PATH"] = str(plugins)
-        if str(installation / "configs/baseline.yaml") in runtime["files"]:
+        if deployed or str(installation / "configs/baseline.yaml") in runtime["files"]:
             environment["HM_CONFIG_ROOT"] = str(installation / "configs")
     return environment
 
@@ -168,6 +174,22 @@ def prepare(root, request, profile, settings, intent):
     }
     if profile["executor"] == "slurm":
         value["nodes"] = profile["resources"]["nodes"]
+    if runtime.get("installation") == "deployed":
+        # Resolve only explicitly granted program/configuration paths on compute.
+        # Request, profile and settings documents above remain exact byte pins.
+        value["resolve_files"] = sorted(
+            {
+                worker,
+                profile["task_command"][0],
+                *[
+                    runtime[key]
+                    for key in ("cli", "exporter", "config")
+                    if key in runtime
+                ],
+            }
+        )
+        if runtime["architecture"] == "native":
+            value.pop("architecture")
     require(len(files) <= 4096, "Native worker accepts at most 4096 pinned files")
     path = directory / "request.json"
     write_json(path, value, exclusive=True)

@@ -66,10 +66,8 @@ def resolve_profiles(profiles, inventory):
                         available[gpu] = max(available.get(gpu, 0), capacity)
             prefix = profile["label"] + " · " + node + ": "
             if untyped:
-                # A single reported type makes the generic and typed choices
-                # equivalent. Leave mixed/unknown GPU inventories unchanged.
-                if len(available) == 1 and next(iter(available.values())) >= count > 0:
-                    choices[node] = "gpu:" + next(iter(available)) + ":" + count_text
+                # An untyped request deliberately lets Slurm choose the GPU.
+                # Do not turn the user's Any GPU choice into typed host profiles.
                 continue
             require(
                 found,
