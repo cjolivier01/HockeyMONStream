@@ -257,7 +257,10 @@ def run_readonly(argv, timeout):
                         and os.fstat(err.fileno()).st_size <= 1024 * 1024,
                         "Connection response is too large",
                     )
-                    pending += reader.read()
+                    pending += reader.read(1024 * 1024 + 1)
+                    require(
+                        reader.tell() <= 1024 * 1024, "Connection response is too large"
+                    )
                     while b"\n" in pending:
                         line, pending = pending.split(b"\n", 1)
                         if not forward(line.decode(errors="replace")):
@@ -279,7 +282,9 @@ def run_readonly(argv, timeout):
             process.wait()
         diagnostics.append(pending)
         out.seek(0)
-        stdout, stderr = out.read().decode(errors="replace"), b"\n".join(
+        output = out.read(1024 * 1024 + 1)
+        require(len(output) <= 1024 * 1024, "Connection response is too large")
+        stdout, stderr = output.decode(errors="replace"), b"\n".join(
             diagnostics
         ).decode(errors="replace")
     if process.returncode:
