@@ -141,6 +141,24 @@ class SetupTest(unittest.TestCase):
             execution.build(self.registry, request)
             old_directory, old = execution.generation(self.registry)
             self.assertFalse(setup.progress(self.registry)["build_current"])
+            with patch.object(
+                execution, "qualification_status", return_value={"tested": True}
+            ), patch("hstream_workflow.profiles.preflight_runtime") as runtime:
+                with self.assertRaisesRegex(
+                    WorkflowError, "Go back to Prepare computers"
+                ):
+                    execution.activate(self.registry)
+                runtime.assert_not_called()
+                self.assertFalse((self.registry / "config.json").exists())
+            write_json(self.registry / "config.json", old["configuration"])
+            write_json(
+                self.registry / "setup-active.json",
+                {
+                    "revision": saved["revision"],
+                    "configuration_revision": digest(old["configuration"]),
+                },
+            )
+            self.assertFalse(setup.progress(self.registry)["applied"])
             execution.build(self.registry, request, prepared=self.verified)
         self.assertTrue(setup.progress(self.registry)["build_current"])
         self.assertNotEqual(execution.generation(self.registry)[0], old_directory)
@@ -1330,6 +1348,7 @@ int main(int argc, char** argv) {
                     "defaults": self.defaults,
                     "metadata_resources": self.cpu,
                 },
+                prepared=self.verified,
             )
         heartbeat = {**host_identity(), **process_identity(os.getpid()), "time_ns": 0}
         write_json(self.registry / "heartbeat.json", heartbeat)
@@ -1412,6 +1431,7 @@ int main(int argc, char** argv) {
                         "defaults": self.defaults,
                         "metadata_resources": self.cpu,
                     },
+                    prepared=self.verified,
                 )
 
         with patch.object(

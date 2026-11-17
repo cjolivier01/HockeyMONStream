@@ -78,7 +78,8 @@ and all selected computers. Building a desktop from source does not update those
 installed helpers. To update the whole cluster, pass its nodes explicitly, for
 example `make deploy NODES=ripper,monster,mini,meshy,stubby`; plain `make deploy`
 targets the local computer. Older prepared generations without this compatibility
-check return to Prepare. They cannot begin a new test or acquire its recording.
+check return to Prepare. They cannot begin a new test, acquire its recording or
+enable their profiles, even if their earlier tests passed.
 Their saved test history and immutable runtimes remain intact.
 
 Mixed OS or processor builds become separate execution profiles with readable

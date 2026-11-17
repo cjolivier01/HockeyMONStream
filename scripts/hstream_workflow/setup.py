@@ -600,6 +600,7 @@ def progress(root):
             active = read_json(root / "setup-active.json")
             state["applied"] = (
                 bool(saved["draft"])
+                and (not state["has_build"] or state["build_current"])
                 and active["revision"] == saved["revision"]
                 and active["configuration_revision"] == current_revision(root)
                 and (
