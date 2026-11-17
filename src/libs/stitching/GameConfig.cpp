@@ -1799,6 +1799,24 @@ absl::StatusOr<ControlPointSelection> read_control_point_selection(const YAML::N
   }
 }
 
+absl::StatusOr<ControlPointSelection> read_saved_control_point_selection(const YAML::Node& config) {
+  try {
+    const auto stitching = config["stitching"];
+    if (stitching && stitching.IsMap() && stitching["control_point_selection"] &&
+        !stitching["control_point_selection"].IsNull())
+      return read_control_point_selection(config);
+    const auto ui = config["hstream_ui"];
+    const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
+    const auto claim = calibration && calibration.IsMap() ? calibration["backend_generation"] : YAML::Node();
+    if (claim && claim.IsMap() && claim["control_point_selection"] &&
+        claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>(""))
+      return ParseControlPointSelection(claim["control_point_selection"].as<std::string>());
+    return ControlPointSelection::kLegacy;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid saved control-point selection: ") + error.what());
+  }
+}
+
 bool restore_generated_control_point_selection(YAML::Node& config) {
   const YAML::Node values = config;
   const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();
@@ -2925,7 +2943,7 @@ absl::Status validate_backend_generation_claim(
     ControlPointResolution worker_resolution;
     HM_ASSIGN_OR_RETURN(worker_resolution, read_control_point_resolution(config));
     ControlPointSelection worker_match_selection;
-    HM_ASSIGN_OR_RETURN(worker_match_selection, read_control_point_selection(config));
+    HM_ASSIGN_OR_RETURN(worker_match_selection, read_saved_control_point_selection(config));
     ControlPointFiltering worker_filtering;
     HM_ASSIGN_OR_RETURN(worker_filtering, read_control_point_filtering(config));
     hm::onnx::ExecutionProvider worker_provider;

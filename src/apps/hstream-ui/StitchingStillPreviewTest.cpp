@@ -429,6 +429,17 @@ void exercise() {
       hm::stitching::reserve_stitching_backend_generation_in_config(config, "preview-generation", choices).ok(),
       "Cannot prepare generation claim");
   const auto claimed = QByteArray::fromStdString(YAML::Dump(config));
+  auto historical = YAML::Clone(config);
+  historical["stitching"].remove("control_point_selection");
+  historical["hstream_ui"]["stitching_calibration"]["backend_generation"].remove("control_point_selection");
+  write(game.filePath("_hockeymon/config.yaml"), QByteArray::fromStdString(YAML::Dump(historical)));
+  require(!read_still(game.path()).image.isNull(), "Historical experiment stills must remain visible");
+  require(
+      read_still(game.path(), "stitching: {control_point_selection: quality-coverage}").image.isNull(),
+      "A new selection draft must not validate historical automatic matches");
+  require(
+      !read_still(game.path(), "stitching: {control_point_selection: legacy}").image.isNull(),
+      "An explicit Legacy draft must validate the historical claim");
   write(game.filePath("_hockeymon/config.yaml"), claimed);
   const auto isolated_home = qgetenv("HOME");
   qunsetenv("HOME");

@@ -1361,12 +1361,24 @@ absl::StatusOr<StitchingExperimentWorkspace> SnapshotStitchingExperimentWorkspac
         return absl::FailedPreconditionError("Workflow snapshot contains a symlink or special private file");
       }
     }
+    // Freeze pre-switch workspaces in the successor without changing the sealed source.
+    hm::stitching::ControlPointSelection saved_mode;
+    HM_ASSIGN_OR_RETURN(saved_mode, hm::stitching::read_saved_control_point_selection(config));
+    const std::string selection = hm::stitching::ControlPointSelectionName(saved_mode);
+    if (source.settings.control_point_selection && *source.settings.control_point_selection != selection)
+      return absl::AbortedError("Snapshot match selection differs from its saved workspace");
+    if (!config["stitching"]["control_point_selection"] || config["hstream_ui"]["generated_control_point_selection"]) {
+      config["stitching"]["control_point_selection"] = selection;
+      config["hstream_ui"].remove("generated_control_point_selection");
+      HM_RETURN_IF_ERROR(hm::stitching::publish_game_config(destination, YAML::Dump(config) + "\n"));
+    }
     HM_RETURN_IF_ERROR(hm::game_storage::RefreshManifest(destination, "workflow-snapshot"));
     HM_RETURN_IF_ERROR(sync_workspace_directory_tree(**pinned));
     for (auto ancestor = ancestors.rbegin(); ancestor != ancestors.rend(); ++ancestor)
       HM_RETURN_IF_ERROR(sync_workspace_directory(*ancestor));
     cleanup.retain = true;
     auto result = source;
+    result.settings.control_point_selection = selection;
     result.root = destination_root;
     result.game_directory = destination_root / source.game_id;
     return result;
@@ -1540,7 +1552,10 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
-    copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_selection");
+    hm::stitching::ControlPointSelection selected_mode;
+    HM_ASSIGN_OR_RETURN(selected_mode, hm::stitching::read_saved_control_point_selection(selected));
+    current["stitching"]["control_point_selection"] = hm::stitching::ControlPointSelectionName(selected_mode);
+    current["hstream_ui"].remove("generated_control_point_selection");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_resolution");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_filtering");
     // Experiment previews do not offer crop selection. Leave the promoted

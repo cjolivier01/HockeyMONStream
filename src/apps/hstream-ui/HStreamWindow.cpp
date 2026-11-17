@@ -10452,6 +10452,12 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
           read_stitch_frame_time(config, &saved_stitch_frame_time, nullptr, default_stitch_frame_time_);
       saved_sync_method = read_stitching_iteration_settings(config, default_iteration_settings_).sync_method;
       saved_selection = controlPointSelectionFromGameConfig(config);
+      if (config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete") {
+        const auto recorded = hm::stitching::read_saved_control_point_selection(config);
+        if (!recorded.ok())
+          throw std::invalid_argument(recorded.status().ToString());
+        saved_selection = hm::stitching::ControlPointSelectionName(*recorded);
+      }
       saved_resolution = controlPointResolutionFromGameConfig(config);
       saved_filtering = controlPointFilteringFromGameConfig(config);
       YAML::Node control_point_matcher;
@@ -21495,6 +21501,13 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     loadPlayerAnalyticsConfig(config);
     saved_control_config_load_error_.clear();
     captureSavedControlState();
+    if (!editing_defaults_ &&
+        config["hstream_ui"]["stitching_calibration"]["status"].as<std::string>("") == "complete") {
+      const auto recorded = hm::stitching::read_saved_control_point_selection(config);
+      if (!recorded.ok())
+        throw std::invalid_argument(recorded.status().ToString());
+      saved_control_point_selection_ = hm::stitching::ControlPointSelectionName(*recorded);
+    }
     // Metadata may have changed with the selected recordings. Keep the on-disk
     // optics as the comparison baseline so Save/Play invalidates old maps.
     const auto persisted_camera =

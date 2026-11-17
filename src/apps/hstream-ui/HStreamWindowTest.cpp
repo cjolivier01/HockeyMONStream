@@ -867,6 +867,7 @@ for line in sys.stdin:
     window->active_control_point_matcher_ = window->controlPointMatcher();
     window->active_control_point_filtering_ = window->control_point_filtering_;
     window->active_control_point_resolution_ = window->control_point_resolution_;
+    window->active_control_point_selection_ = window->control_point_selection_;
     window->active_mapping_backend_ = window->mappingBackend();
     window->active_camera_selection_ = window->stitchCameraSelection();
     window->active_auto_input_lens_frozen_ = window->autoInputLensFrozen();
@@ -1679,6 +1680,7 @@ for line in sys.stdin:
         {"max_output_width", window->active_stitch_max_output_width_},
         {"reference", window->active_stitch_frame_time_},
         {"matcher", window->active_control_point_matcher_},
+        {"match_selection", window->active_control_point_selection_},
         {"resolution", window->active_control_point_resolution_},
         {"mapping_backend", window->active_mapping_backend_},
         {"camera_yaml", QString::fromStdString(YAML::Dump(camera))},
@@ -11504,6 +11506,10 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   crop_choices.control_point_resolution = *crop_resolution;
   crop_choices.control_point_execution_provider = *crop_provider;
   crop_choices.control_point_filtering = *crop_filtering;
+  const auto crop_selection = hm::stitching::read_control_point_selection(crop_preview_config);
+  if (!expect(crop_selection.ok(), "Crop source must resolve its match selection"))
+    return false;
+  crop_choices.control_point_selection = *crop_selection;
   const auto crop_claim = hm::stitching::reserve_stitching_backend_generation_in_config(
       crop_preview_config, "ui-crop-completed-source", crop_choices);
   if (!expect(
@@ -11522,7 +11528,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   crop_image.fill(Qt::gray);
   const QByteArray crop_default_lens = QByteArray::fromStdString(hm::stitching::SerializeStitchInputLens({}));
   const QByteArray crop_provenance =
-      "version=14\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
+      "version=18\nmax-output-width=0\nmax-canvas-dimension=0\nsource-canvas-width=800\nsource-canvas-height=400\n"
       "canvas-width=800\ncanvas-height=240\nmax-output-width-applied=0\nmax-canvas-dimension-applied=0\n"
       "mapping-backend=nona\nprojection=cylindrical\nprojection-parameters=none\n"
       "projection-auto-fov=" +
@@ -11543,7 +11549,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       QByteArray(hm::stitching::ControlPointResolutionName(*crop_resolution)) +
       "\ncalibration-frame-selection=none\ncalibration-frame-diagnostics=none\ninput-lens=" + crop_default_lens +
       "\ncontrol-point-filtering=" + QByteArray::number(crop_filtering->epipolar_ransac) + "," +
-      QByteArray::number(crop_filtering->homography_consistency) + "\n";
+      QByteArray::number(crop_filtering->homography_consistency) +
+      "\ncontrol-point-selection=" + QByteArray(hm::stitching::ControlPointSelectionName(*crop_selection)) + "\n";
   if (!expect(
           crop_tools.isValid() && QDir().mkpath(crop_game.filePath("_hockeymon")) &&
               crop_image.save(crop_game.filePath("_hockeymon/left.png")) &&
@@ -11637,7 +11644,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   // Version 7 predates explicit rotation/crop fields, but the runner can reuse
   // its default zero-rotation/full-crop view. It still needs startup review.
   const QByteArray legacy_provenance =
-      crop_provenance.left(crop_provenance.indexOf("projection-rotation-0=")).replace("version=14", "version=7");
+      crop_provenance.left(crop_provenance.indexOf("projection-rotation-0=")).replace("version=18", "version=7");
   auto legacy_config = YAML::Clone(crop_preview_config);
   hm::stitching::write_control_point_filtering(
       legacy_config,
@@ -11890,7 +11897,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   const auto original_crop_generation_bytes = original_crop_generation.readAll();
   original_crop_generation.close();
   QByteArray duplicate_provenance = crop_provenance;
-  duplicate_provenance.replace("version=14\n", "version=16\n");
+  duplicate_provenance.replace("version=18\n", "version=20\n");
   const auto duplicate_cameras =
       QByteArray::fromStdString(hm::stitching::SerializeStitchInputCameras(duplicate_camera.input_cameras));
   duplicate_provenance.insert(

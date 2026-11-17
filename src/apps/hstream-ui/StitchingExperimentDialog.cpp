@@ -912,6 +912,8 @@ struct StitchingExperimentDialog::Impl {
         "-c",
         pipeline_config,
         QString("--options=%1").arg(kStitchedPreviewOptions),
+        QString("--options=stitching.control_point_selection=%1")
+            .arg(QString::fromStdString(candidate.workspace->settings.control_point_selection.value_or("legacy"))),
     };
     // Preparation and player scans construct the stitcher too. Pass the chosen supported mode
     // there as well so an inherited offline-only mode cannot prevent the candidate from running.
@@ -2401,7 +2403,7 @@ struct StitchingExperimentDialog::Impl {
         hm::stitch_frame_time_to_nanoseconds(left.stitch_frame_time) ==
         hm::stitch_frame_time_to_nanoseconds(right.stitch_frame_time) &&
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
-        left.control_point_selection == right.control_point_selection &&
+        left.control_point_selection.value_or("legacy") == right.control_point_selection.value_or("legacy") &&
         left.control_point_resolution == right.control_point_resolution &&
         left.control_point_filtering == right.control_point_filtering &&
         left.control_point_matcher == right.control_point_matcher &&

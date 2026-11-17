@@ -293,6 +293,8 @@ void run_experiment(
              "--stitch-frame-time=" + saved.settings.stitch_frame_time,
              "-t=1"})
       arguments.push_back(argument);
+    arguments.push_back(
+        "--options=stitching.control_point_selection=" + saved.settings.control_point_selection.value_or("legacy"));
     if (saved.settings.player_scan_playback_start)
       arguments.push_back("--start-time=" + *saved.settings.player_scan_playback_start);
     if (require_mask && !materialize)

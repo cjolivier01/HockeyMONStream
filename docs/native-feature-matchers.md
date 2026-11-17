@@ -121,7 +121,10 @@ or `legacy`. Stitching Experiments has the same selector plus **Both (compare in
 one batch)**. Both expands each matrix combination into two candidates; the
 **Match selection** results column records which mode ran. The mode participates
 in deduplication, frozen worker settings, promotion and calibration invalidation.
-Older saved results without a recorded mode are interpreted as legacy. Switching
+Older saved results and queued workspaces without a recorded mode are interpreted
+as legacy, including preview, retry, workflow snapshots and promotion. Historical
+claims are authenticated against their recorded mode before applying the next
+launch’s default. Switching
 modes regenerates automatic control points while retaining selected input frames.
 
 The new mode changes two stages of AKAZE matching:

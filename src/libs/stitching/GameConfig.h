@@ -218,6 +218,9 @@ bool restore_generated_control_point_filtering(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_filtering(YAML::Node& config, const YAML::Node& effective);
 
 absl::StatusOr<ControlPointSelection> read_control_point_selection(const YAML::Node& config);
+// Only for an existing saved calibration/workspace. A missing mode predates
+// the switch; a frozen generation claim takes precedence over today's default.
+absl::StatusOr<ControlPointSelection> read_saved_control_point_selection(const YAML::Node& config);
 bool restore_generated_control_point_selection(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_selection(YAML::Node& config, const YAML::Node& effective);
 

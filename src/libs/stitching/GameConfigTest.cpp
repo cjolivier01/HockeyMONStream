@@ -225,6 +225,10 @@ int main() {
   ok &= test_player_frame_selection_state(root / "player-selection");
 
   using hm::stitching::ControlPointSelection;
+  const auto historic_selection = hm::stitching::read_saved_control_point_selection(YAML::Load("{}"));
+  ok &= expect(
+      historic_selection.ok() && *historic_selection == hm::stitching::ControlPointSelection::kLegacy,
+      "Only historical missing selections resolve to Legacy");
   const auto selection_default = hm::stitching::read_control_point_selection(YAML::Node());
   ok &= expect(
       selection_default.ok() && *selection_default == ControlPointSelection::kQualityCoverage,

@@ -232,6 +232,21 @@ void restart_controls_staging(const QString& binary, const fs::path& source) {
   expect(
       hm::web::Capabilities().value("features").toArray().contains("calibration-controls-restart-v1"),
       "Explicit Restart must advertise its deployment capability");
+  for (const bool force : {false, true}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    auto old = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
+    old["stitching"].remove("control_point_selection");
+    old["hstream_ui"]["stitching_calibration"]["backend_generation"].remove("control_point_selection");
+    write(game / "_hockeymon/config.yaml", YAML::Dump(old));
+    auto payload = controls_payload(game, {}, {});
+    payload["force_reconfigure"] = force;
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload);
+    expect(
+        result.value("pending").toBool() && result.value("start_stage").toString() == (force ? "input" : "features"),
+        "Old claims authenticate before Play or Restart adopts the new default");
+  }
   for (const std::string evidence : {"none", "manual", "selected-manual"}) {
     for (const std::string action : {"play", "false", "restart", "null", "number", "string", "array", "object"}) {
       if (evidence != "none" && action != "play" && action != "false" && action != "restart")

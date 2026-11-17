@@ -144,7 +144,7 @@ bool same_settings(const StitchingExperimentSettings& left, const StitchingExper
   return left.player_scan_playback_start == right.player_scan_playback_start &&
       left.control_points == right.control_points && left.frame_count == right.frame_count &&
       left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
-      left.control_point_selection == right.control_point_selection &&
+      left.control_point_selection.value_or("legacy") == right.control_point_selection.value_or("legacy") &&
       left.control_point_resolution == right.control_point_resolution &&
       left.control_point_filtering == right.control_point_filtering &&
       left.control_point_matcher == right.control_point_matcher &&
