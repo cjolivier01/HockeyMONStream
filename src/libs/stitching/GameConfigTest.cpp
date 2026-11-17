@@ -177,6 +177,7 @@ bool test_player_frame_selection_state(const fs::path& root) {
   config["stitching"]["run_autooptimizer"] = false;
   config["hstream_ui"]["stitching_calibration"]["status"] = "pending";
   config["hstream_ui"]["stitching_calibration"]["invalidation_id"] = "player-plan-generation";
+  config["stitching"]["control_point_selection"] = "legacy";
   StitchingBackendChoices choices{"superpoint-lightglue", "opencv-magsac", "rectilinear", false};
   choices.calibration_frame_selection_fingerprint = plan.fingerprint;
   ok &= expect(
@@ -223,6 +224,21 @@ int main() {
   std::ofstream(saved_state(root) / "config.yaml") << "unrelated:\n  keep: true\n";
   ok &= test_player_frame_selection_state(root / "player-selection");
 
+  using hm::stitching::ControlPointSelection;
+  const auto selection_default = hm::stitching::read_control_point_selection(YAML::Node());
+  ok &= expect(
+      selection_default.ok() && *selection_default == ControlPointSelection::kQualityCoverage,
+      "Missing match selection must resolve the new baseline mode");
+  for (const char* mode : {"legacy", "quality-coverage"}) {
+    const auto config = YAML::Load(std::string("stitching: {control_point_selection: ") + mode + "}");
+    const auto selection = hm::stitching::read_control_point_selection(config);
+    ok &= expect(
+        selection.ok() && std::string(hm::stitching::ControlPointSelectionName(*selection)) == mode,
+        "Explicit selection must round trip independently of the baseline");
+  }
+  ok &= expect(
+      !hm::stitching::read_control_point_selection(YAML::Load("stitching: {control_point_selection: both}")).ok(),
+      "Both is a matrix expansion, never a runnable selection mode");
   using hm::stitching::ControlPointFiltering;
   using hm::stitching::ControlPointMatcher;
   using hm::stitching::read_control_point_filtering;
@@ -1287,6 +1303,7 @@ stitching:
   backend_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   // Historical claims without a resolution field always mean native, including on Jetson.
   backend_generation["stitching"]["control_point_resolution"] = "native";
+  backend_generation["stitching"]["control_point_selection"] = "legacy";
   backend_generation["stitching"]["mapping_backend"] = "opencv-magsac";
   backend_generation["stitching"]["projection"] = "rectilinear";
   backend_generation["stitching"]["run_autooptimizer"] = false;
@@ -1313,6 +1330,15 @@ stitching:
               "rectilinear" &&
           hm::stitching::validate_stitching_backend_generation(**claimed, "backend-generation-a", magsac_choices).ok(),
       "a calibration generation must migrate, reserve, and validate one immutable worker backend tuple");
+  if (claimed.ok() && claimed->has_value()) {
+    auto changed_selection = YAML::Clone(**claimed);
+    changed_selection["stitching"]["control_point_selection"] = "quality-coverage";
+    ok &= expect(
+        absl::IsAborted(
+            hm::stitching::validate_stitching_backend_generation(
+                changed_selection, "backend-generation-a", magsac_choices)),
+        "Changing match selection must fence an admitted legacy worker");
+  }
   const absl::Status conflicting_reservation =
       hm::stitching::reserve_stitching_backend_generation(root, "backend-generation-a", affine_choices);
   auto after_conflict = hm::stitching::load_game_config_file(saved_state(root) / "config.yaml");
@@ -1448,6 +1474,7 @@ stitching:
   }
 
   YAML::Node camera_override_generation(YAML::NodeType::Map);
+  camera_override_generation["stitching"]["control_point_selection"] = "legacy";
   camera_override_generation["stitching"]["camera_configs"] = YAML::Clone(camera_config["stitching"]["camera_configs"]);
   camera_override_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   camera_override_generation["stitching"]["mapping_backend"] = "opencv-magsac";
@@ -1500,6 +1527,7 @@ stitching:
       "new calibration generations must preserve their claimed input lens");
 
   YAML::Node parameter_generation(YAML::NodeType::Map);
+  parameter_generation["stitching"]["control_point_selection"] = "legacy";
   parameter_generation["stitching"]["camera_config"] = "gopro-mission-1";
   parameter_generation["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   parameter_generation["stitching"]["camera_configs"] = YAML::Clone(camera_config["stitching"]["camera_configs"]);

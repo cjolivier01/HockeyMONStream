@@ -96,6 +96,7 @@ int main(int argc, char** argv) {
   const auto legacy_preferences = Read(home.filePath(".hstream/hstream.yaml"));
   HStreamWindow window;
   auto* selector = Find<QComboBox>(window, "gameSelector");
+  auto* selection = Find<QComboBox>(window, "controlPointSelectionCombo");
   auto* width = Find<QSpinBox>(window, "stitchMaxOutputWidthSpin");
   auto* save = Find<QPushButton>(window, "savePresetButton");
   auto* reset = Find<QPushButton>(window, "resetDefaultsButton");
@@ -116,12 +117,17 @@ int main(int argc, char** argv) {
   output_position->setCurrentIndex(output_position->findData("lower-left"));
   const int baseline_width = width->value();
   const auto baseline_zoom = window.cameraControlValue("Zoom_In_Aggressiveness");
+  Require(selection->currentData() == "quality-coverage", "Main UI must default to the new match selection");
+  selection->setCurrentIndex(selection->findData("legacy"));
   width->setValue(6000);
   auto* blend = Find<QComboBox>(window, "blendModeCombo");
   blend->setCurrentIndex(blend->findData("alpha"));
   Require(save->isEnabled() && HStreamWindowTestAccess::Save(window), "Cannot save default width");
   Require(!save->isEnabled(), "Saved Defaults must be clean");
   auto defaults = YAML::LoadFile(defaults_path.toStdString());
+  Require(
+      defaults["stitching"]["control_point_selection"].as<std::string>() == "legacy",
+      "Match selection must save in Defaults");
   Require(defaults["stitching"]["max_output_width"].as<int>() == 6000, "Defaults saved to wrong path/value");
   Require(
       defaults["output"]["rink-map"]["enable"].as<bool>() &&
@@ -131,7 +137,8 @@ int main(int argc, char** argv) {
   Require(Read(baseline_path) == original_baseline, "Saving defaults changed baseline.yaml");
   selector->setCurrentIndex(selector->findText("inherit"));
   Require(
-      width->value() == 6000 && reset->isHidden() && blend->currentData() == "alpha",
+      selection->currentData() == "legacy" && width->value() == 6000 && reset->isHidden() &&
+          blend->currentData() == "alpha",
       "Game did not inherit defaults or old native blend alias overrode Defaults");
   selector->setCurrentIndex(selector->findText("override"));
   Require(width->value() == 6200, "Game override must outrank defaults");
@@ -190,6 +197,7 @@ int main(int argc, char** argv) {
   selector->setCurrentIndex(0);
   const auto before_reset = Read(defaults_path);
   reset->click();
+  Require(selection->currentData() == "quality-coverage", "Reset must restore the baseline match selection");
   Require(width->value() == baseline_width && save->isEnabled(), "Reset did not stage baseline settings");
   Require(!output_map->isChecked(), "Reset did not clear output map");
   Require(Read(defaults_path) == before_reset, "Reset wrote defaults before Save Preset");
@@ -203,6 +211,7 @@ int main(int argc, char** argv) {
   Require(Read(home.filePath(".hstream/hstream.yaml")) == legacy_preferences, "Defaults modified legacy preferences");
   selector->setCurrentIndex(0);
   reset->click();
+  Require(selection->currentData() == "quality-coverage", "Reset must restore the baseline match selection");
   width->setValue(5800);
   Require(HStreamWindowTestAccess::Save(window), "Cannot edit after reset");
   Require(

@@ -282,6 +282,9 @@ absl::StatusOr<StitchingCalibrationControls> ReadStitchingCalibrationControls(co
     ControlPointResolution resolution;
     HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(effective));
     result.resolution = ControlPointResolutionName(resolution);
+    ControlPointSelection selection;
+    HM_ASSIGN_OR_RETURN(selection, read_control_point_selection(effective));
+    result.selection = ControlPointSelectionName(selection);
     hm::onnx::ExecutionProvider provider;
     HM_ASSIGN_OR_RETURN(provider, read_control_point_execution_provider(effective));
     result.execution_provider = hm::onnx::ExecutionProviderName(provider);
@@ -348,7 +351,8 @@ absl::StatusOr<bool> ApplyStitchingCalibrationInputEdits(
         "Cannot change the reference time while keeping the selected calibration frames. Restore the saved "
         "reference time, or explicitly change the frame count to select a new frame set.");
   const bool matcher_changed = saved.matcher != desired.matcher || saved.resolution != desired.resolution ||
-      saved.execution_provider != desired.execution_provider || saved.filtering != desired.filtering;
+      saved.selection != desired.selection || saved.execution_provider != desired.execution_provider ||
+      saved.filtering != desired.filtering;
   const bool release_manual = force || sources_changed || time_changed || saved.sync_method != desired.sync_method ||
       !before.control_points_present || saved.control_points != desired.control_points || !before.frame_count_present ||
       saved.frame_count != desired.frame_count || matcher_changed || saved.camera != desired.camera;
@@ -385,7 +389,8 @@ absl::StatusOr<StitchingCalibrationPlan> PrepareStitchingCalibrationControlsLock
     c.frame_time = !before.frame_time_valid || saved.frame_time != desired.frame_time;
     c.sync_method = saved.sync_method != desired.sync_method;
     c.matcher = saved.matcher != desired.matcher || saved.resolution != desired.resolution ||
-        saved.execution_provider != desired.execution_provider || saved.filtering != desired.filtering;
+        saved.selection != desired.selection || saved.execution_provider != desired.execution_provider ||
+        saved.filtering != desired.filtering;
     c.backend = saved.backend != desired.backend;
     c.camera = saved.camera != desired.camera;
     c.autooptimizer =

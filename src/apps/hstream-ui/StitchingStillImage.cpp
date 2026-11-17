@@ -127,6 +127,10 @@ bool settings_match(const YAML::Node& config, const QByteArray& expected_setting
   choices.projection_parameters = *parameters;
   choices.projection_framing = *framing;
   choices.camera = *camera;
+  const auto match_selection = hm::stitching::read_control_point_selection(effective);
+  if (!match_selection.ok())
+    return false;
+  choices.control_point_selection = *match_selection;
   choices.control_point_resolution = *resolution;
   const auto filtering = hm::stitching::read_control_point_filtering(effective);
   if (!filtering.ok())

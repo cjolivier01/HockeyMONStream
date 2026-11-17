@@ -114,6 +114,40 @@ results on real footage.
   `2c4515cbfd4866663db0ca1b3e02c55163dc5a75`. The UI spells out that this is
   the EfficientLoFTR variant rather than the original Kornia LoFTR graph.
 
+### Match selection
+
+**Alignment → Match selection** chooses `quality-coverage` (the shipped default)
+or `legacy`. Stitching Experiments has the same selector plus **Both (compare in
+one batch)**. Both expands each matrix combination into two candidates; the
+**Match selection** results column records which mode ran. The mode participates
+in deduplication, frozen worker settings, promotion and calibration invalidation.
+Older saved results without a recorded mode are interpreted as legacy. Switching
+modes regenerates automatic control points while retaining selected input frames.
+
+The new mode changes two stages of AKAZE matching:
+
+1. After detection, discard responses below `0.0001`, then select up to 2000
+   points with strongest-first adaptive-radius suppression. This spreads the
+   detector budget before descriptor matching instead of taking only the globally
+   strongest detections. It applies independently to both cameras.
+2. Keep bilateral strict 0.75 Lowe ratios and mutual matching, and also reject
+   descriptor distances above 25% of the descriptor's stored bits. Both directions
+   must have a second neighbor. Neither this cutoff nor the response floor is
+   relaxed to fill a region or reach the requested count.
+
+These thresholds live in `configs/baseline.yaml` under `stitching.match_quality`.
+The three neural matchers have separate minimum match-score settings there, all
+initially `0.2`, retaining their existing strict greater-than cutoff. Their ONNX
+keypoint extraction and detector budgets are unchanged, so the two modes currently
+produce the same neural selections at shipped thresholds. Legacy preserves the
+old AKAZE detector ranking and ratio-only acceptance, and the old neural cutoff.
+
+Both modes retain the same final 16×9 distribution below. Coverage is a preference
+among eligible features, not a guarantee of a match in every region. Featureless
+ice can remain empty. Quality gates reduce weak matches but do not prove geometric
+correctness; the independent geometric filters still apply when enabled. These
+initial AKAZE thresholds need comparison on representative recordings using Both.
+
 ### Geometric filtering
 
 The matcher menu selects detection and descriptor matching. **Alignment →
@@ -170,9 +204,9 @@ game and CLI overrides use normal configuration precedence.
 **Max control points** (`stitching.max_control_points`) limits retained matched
 correspondences per synchronized frame pair, not raw detections. SuperPoint still extracts at most
 2048 keypoints per image; valid LightGlue matches must score strictly above 0.2.
-The default AKAZE path instead retains at most 2000 detector keypoints per
-image and applies no score threshold: its score is `1 - hamming/bits`, used
-only to rank candidates during selection.
+AKAZE retains at most 2000 detector keypoints per image. Its score is
+`1 - hamming/bits`; the new mode requires a score of at least 0.75 before
+distribution, while legacy uses it only for ranking.
 The UI accepts limits from 10 to 5000. General calibration and saved-point replay
 require at least 10 usable matches. AKAZE drops to a specialized six-match floor
 only when it is paired with an OpenCV mapping backend; with the shipped `nona`

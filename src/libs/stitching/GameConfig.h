@@ -217,6 +217,10 @@ void write_control_point_filtering(YAML::Node& config, ControlPointFiltering fil
 bool restore_generated_control_point_filtering(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_filtering(YAML::Node& config, const YAML::Node& effective);
 
+absl::StatusOr<ControlPointSelection> read_control_point_selection(const YAML::Node& config);
+bool restore_generated_control_point_selection(YAML::Node& config);
+absl::StatusOr<bool> materialize_control_point_selection(YAML::Node& config, const YAML::Node& effective);
+
 absl::StatusOr<ControlPointResolution> read_control_point_resolution(const YAML::Node& config);
 bool restore_generated_control_point_resolution(YAML::Node& config);
 absl::StatusOr<bool> materialize_control_point_resolution(YAML::Node& config, const YAML::Node& effective);
@@ -238,6 +242,7 @@ struct StitchingBackendChoices {
   std::string calibration_frame_selection_fingerprint;
   std::string manual_control_point_fingerprint;
   ControlPointFiltering control_point_filtering;
+  ControlPointSelection control_point_selection{ControlPointSelection::kLegacy};
 };
 
 // Generated exact-pair plans are optional. Loading existing maps only validates

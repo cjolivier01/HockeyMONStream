@@ -266,6 +266,7 @@ void overlay_feature_settings(YAML::Node& effective, const YAML::Node& layer) {
   for (const char* key :
        {"control_point_matcher",
         "control_point_resolution",
+        "control_point_selection",
         "control_point_filtering",
         "camera_configs",
         "camera_config",
@@ -598,6 +599,7 @@ struct StitchingExperimentDialog::Impl {
   QLineEdit* control_points{nullptr};
   QLineEdit* frame_counts{nullptr};
   QLineEdit* start_frames{nullptr};
+  QComboBox* control_point_selection{nullptr};
   QComboBox* control_point_resolution{nullptr};
   QCheckBox* epipolar_ransac{nullptr};
   QCheckBox* homography_consistency{nullptr};
@@ -1123,6 +1125,7 @@ struct StitchingExperimentDialog::Impl {
     for (auto* editor : camera_start_editors)
       editor->setEnabled(editing_batch && feature_settings_error.isEmpty());
     control_point_resolution->setEnabled(editing_batch && feature_settings_error.isEmpty() && feature_size_selectable);
+    control_point_selection->setEnabled(editing_batch && feature_settings_error.isEmpty());
     epipolar_ransac->setEnabled(editing_batch && feature_settings_error.isEmpty());
     homography_consistency->setEnabled(editing_batch && feature_settings_error.isEmpty());
     for (QWidget* input : std::array<QWidget*, 3>{control_points, frame_counts, start_frames})
@@ -1538,6 +1541,9 @@ struct StitchingExperimentDialog::Impl {
       candidate.sequence =
           restored_sequences[record.workspace.game_directory.lexically_relative(store->directory).generic_string()];
       candidate.queued = record.state == "queued";
+      // Resuming a queue written before the switch must keep its original algorithm.
+      if (candidate.queued && !candidate.settings.control_point_selection)
+        candidate.settings.control_point_selection = "legacy";
       candidate.stored = record;
       candidate.saved_selection_fingerprint = record.saved_selection_fingerprint;
       candidate.source_config_revision = QByteArray::fromHex(QByteArray::fromStdString(record.source_config_revision));
@@ -2395,6 +2401,7 @@ struct StitchingExperimentDialog::Impl {
         hm::stitch_frame_time_to_nanoseconds(left.stitch_frame_time) ==
         hm::stitch_frame_time_to_nanoseconds(right.stitch_frame_time) &&
         left.rink_rotation_degrees == right.rink_rotation_degrees &&
+        left.control_point_selection == right.control_point_selection &&
         left.control_point_resolution == right.control_point_resolution &&
         left.control_point_filtering == right.control_point_filtering &&
         left.control_point_matcher == right.control_point_matcher &&
@@ -2507,6 +2514,9 @@ struct StitchingExperimentDialog::Impl {
             ? (settings.camera->input_cameras.empty() ? QString::fromStdString(settings.camera->input_lens.projection)
                                                       : QString("Per-camera"))
             : QString("Saved setting"),
+        settings.manual_control_points                                                  ? "Manual"
+            : settings.control_point_selection.value_or("legacy") == "quality-coverage" ? "Quality + coverage"
+                                                                                        : "Legacy",
     };
     for (int column = 0; column < columns.size(); ++column) {
       auto* item = new QTableWidgetItem(columns[column]);
@@ -2581,6 +2591,8 @@ struct StitchingExperimentDialog::Impl {
       show_status(QString::fromStdString(catalog.status().ToString()), true);
       return;
     }
+    const QString mode = control_point_selection->currentData().toString();
+    const QStringList selections = mode == "both" ? QStringList{"quality-coverage", "legacy"} : QStringList{mode};
     const size_t rotation_count = shared_rotation->isChecked() ? 1 : rink_rotations->size();
     std::vector<Candidate> additions;
     const auto append_addition = [&](Candidate candidate) {
@@ -2601,139 +2613,144 @@ struct StitchingExperimentDialog::Impl {
       for (int frame_count : *frames) {
         for (const QString& start : *starts) {
           for (size_t rotation_index = 0; rotation_index < rotation_count; ++rotation_index) {
-            StitchingExperimentSettings settings{
-                .control_points = point_count,
-                .frame_count = frame_count,
-                .stitch_frame_time = start.toStdString(),
-                .rink_rotation_degrees = shared_rotation->isChecked()
-                    ? std::nullopt
-                    : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
-                .control_point_resolution = control_point_resolution->currentData().toString().toStdString(),
-                .control_point_matcher = control_point_matcher->currentData().toString().toStdString(),
-                .camera = camera_settings,
-                .control_point_filtering =
-                    hm::stitching::ControlPointFiltering{
-                        epipolar_ransac->isChecked(), homography_consistency->isChecked()},
-            };
-            settings.player_scan_playback_start = initial_settings.player_scan_playback_start;
-            if (hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time) == 0)
-              settings.stitch_frame_time = *settings.player_scan_playback_start;
-            settings.camera->input_lens = input_lens->lens();
-            const auto exact_fov = camera_horizontal_fov->property("exactLensFov");
-            settings.camera->horizontal_fov =
-                exact_fov.isValid() ? exact_fov.toDouble() : camera_horizontal_fov->value();
-            const auto exact_vertical = camera_vertical_fov->property("exactLensFov");
-            settings.camera->vertical_fov =
-                exact_vertical.isValid() ? exact_vertical.toDouble() : camera_vertical_fov->value();
-            settings.camera->auto_fov = camera_auto_fov->isChecked();
-            settings.camera->auto_lens = input_lens->automatic();
-            auto saved = ReusableStitchingExperimentSelectionFingerprint(game_directory.toStdString(), settings);
-            if (!saved.ok()) {
-              show_status(QString::fromStdString(saved.status().ToString()), true);
-              return;
-            }
-            const auto cached = catalog->selected_by_count.find(frame_count);
-            const auto retained = catalog->retained_by_count.find(frame_count);
-            const std::string owner_key = cached != catalog->selected_by_count.end() ? cached->second
-                : retained != catalog->retained_by_count.end()                       ? retained->second
-                                                                                     : std::string();
-            const Candidate* owner = find([&](const Candidate& item) {
-              if (item.main_calibration || item.settings.frame_count != frame_count)
-                return false;
-              if (!owner_key.empty())
-                return item.workspace &&
-                    item.workspace->game_directory.lexically_relative(store->directory).generic_string() == owner_key;
-              return item.selection_owner_sequence == item.sequence && item.saved_selection_fingerprint.empty() &&
-                  !item.has_selected_frames && (item.queued || item.selection_reuse_blocked);
-            });
-            if (saved->empty() && !owner_key.empty() && !owner) {
-              show_status("Another dialog saved this frame count. Reopen experiments to reuse its frames.", true);
-              return;
-            }
-            if (saved->empty() && owner && owner->selection_reuse_blocked) {
-              show_status("This frame count is unavailable: " + owner->failure, true);
-              return;
-            }
-            if (saved->empty() && owner && !owner->has_selected_frames &&
-                (owner->source_config_revision.isEmpty() || owner->source_config_revision != config_revision)) {
-              show_status(
-                  "The queued player selection has different or unverified source settings. "
-                  "Run or remove its saved batch before adding candidates.",
-                  true);
-              return;
-            }
-            const Candidate* same_count = owner ? owner : find([&](const Candidate& item) {
-              return item.settings.frame_count == frame_count && !item.main_calibration && item.queued;
-            });
-            if (saved->empty() && same_count &&
-                hm::stitch_frame_time_to_nanoseconds(same_count->settings.stitch_frame_time) !=
-                    hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time)) {
-              show_status(
-                  "Candidates with the same frame count share one frame set and reference time. "
-                  "Restore that reference or choose a different frame count.",
-                  true);
-              return;
-            }
-            const bool selected = !saved->empty() || owner || (prefer_player_frames->isChecked() && frame_count > 1);
-            const Candidate* duplicate = find([&](const Candidate& item) {
-              const bool item_selected = item.has_selected_frames || item.selection_owner_sequence != 0 ||
-                  !item.saved_selection_fingerprint.empty();
-              return !item.main_calibration && (item.queued || item.complete || item.has_selected_frames) &&
-                  item.requested_config_revision == config_revision && same_settings(item.settings, settings) &&
-                  item_selected == selected;
-            });
-            if (duplicate)
-              continue;
-            if (!saved->empty()) {
-              append_addition(
-                  Candidate{.settings = settings, .sequence = ++sequence, .saved_selection_fingerprint = *saved});
-            } else if (owner) {
-              const int baseline_sequence = owner->baseline_sequence;
-              const int owner_sequence = owner->sequence;
-              const int duration = owner->scan_duration_seconds;
-              if (owner->queued && !owner->has_selected_frames)
-                required_baselines.insert(baseline_sequence);
-              append_addition(
-                  Candidate{
-                      .settings = settings,
-                      .sequence = ++sequence,
-                      .baseline_sequence = baseline_sequence,
-                      .selection_owner_sequence = owner_sequence,
-                      .scan_duration_seconds = duration});
-            } else if (selected) {
-              const Candidate* baseline = find([&](const Candidate& item) {
-                return !item.main_calibration && (item.queued || (item.complete && item.requires_ice_mask)) &&
-                    item.settings.frame_count == frame_count && item.selection_owner_sequence == 0 &&
-                    item.saved_selection_fingerprint.empty() && !item.source_config_revision.isEmpty() &&
-                    item.source_config_revision == config_revision && item.settings.camera == settings.camera &&
-                    hm::stitch_frame_time_to_nanoseconds(item.settings.stitch_frame_time) ==
-                    hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
+            for (const QString& match_selection : selections) {
+              StitchingExperimentSettings settings{
+                  .control_points = point_count,
+                  .frame_count = frame_count,
+                  .stitch_frame_time = start.toStdString(),
+                  .rink_rotation_degrees = shared_rotation->isChecked()
+                      ? std::nullopt
+                      : std::optional<std::array<double, 3>>(rink_rotations->at(rotation_index)),
+                  .control_point_resolution = control_point_resolution->currentData().toString().toStdString(),
+                  .control_point_matcher = control_point_matcher->currentData().toString().toStdString(),
+                  .camera = camera_settings,
+                  .control_point_filtering =
+                      hm::stitching::ControlPointFiltering{
+                          epipolar_ransac->isChecked(), homography_consistency->isChecked()},
+              };
+              settings.control_point_selection = match_selection.toStdString();
+              settings.player_scan_playback_start = initial_settings.player_scan_playback_start;
+              if (hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time) == 0)
+                settings.stitch_frame_time = *settings.player_scan_playback_start;
+              settings.camera->input_lens = input_lens->lens();
+              const auto exact_fov = camera_horizontal_fov->property("exactLensFov");
+              settings.camera->horizontal_fov =
+                  exact_fov.isValid() ? exact_fov.toDouble() : camera_horizontal_fov->value();
+              const auto exact_vertical = camera_vertical_fov->property("exactLensFov");
+              settings.camera->vertical_fov =
+                  exact_vertical.isValid() ? exact_vertical.toDouble() : camera_vertical_fov->value();
+              settings.camera->auto_fov = camera_auto_fov->isChecked();
+              settings.camera->auto_lens = input_lens->automatic();
+              auto saved = ReusableStitchingExperimentSelectionFingerprint(game_directory.toStdString(), settings);
+              if (!saved.ok()) {
+                show_status(QString::fromStdString(saved.status().ToString()), true);
+                return;
+              }
+              const auto cached = catalog->selected_by_count.find(frame_count);
+              const auto retained = catalog->retained_by_count.find(frame_count);
+              const std::string owner_key = cached != catalog->selected_by_count.end() ? cached->second
+                  : retained != catalog->retained_by_count.end()                       ? retained->second
+                                                                                       : std::string();
+              const Candidate* owner = find([&](const Candidate& item) {
+                if (item.main_calibration || item.settings.frame_count != frame_count)
+                  return false;
+                if (!owner_key.empty())
+                  return item.workspace &&
+                      item.workspace->game_directory.lexically_relative(store->directory).generic_string() == owner_key;
+                return item.selection_owner_sequence == item.sequence && item.saved_selection_fingerprint.empty() &&
+                    !item.has_selected_frames && (item.queued || item.selection_reuse_blocked);
               });
-              const int baseline_sequence = baseline ? baseline->sequence : ++sequence;
-              if (!baseline)
-                append_addition(Candidate{.settings = settings, .sequence = baseline_sequence});
-              required_baselines.insert(baseline_sequence);
-              const int owner_sequence = ++sequence;
-              append_addition(
-                  Candidate{
-                      .settings = settings,
-                      .sequence = owner_sequence,
-                      .baseline_sequence = baseline_sequence,
-                      .selection_owner_sequence = owner_sequence,
-                      .scan_duration_seconds = scan_duration->value()});
-            } else {
-              append_addition(Candidate{.settings = settings, .sequence = ++sequence});
+              if (saved->empty() && !owner_key.empty() && !owner) {
+                show_status("Another dialog saved this frame count. Reopen experiments to reuse its frames.", true);
+                return;
+              }
+              if (saved->empty() && owner && owner->selection_reuse_blocked) {
+                show_status("This frame count is unavailable: " + owner->failure, true);
+                return;
+              }
+              if (saved->empty() && owner && !owner->has_selected_frames &&
+                  (owner->source_config_revision.isEmpty() || owner->source_config_revision != config_revision)) {
+                show_status(
+                    "The queued player selection has different or unverified source settings. "
+                    "Run or remove its saved batch before adding candidates.",
+                    true);
+                return;
+              }
+              const Candidate* same_count = owner ? owner : find([&](const Candidate& item) {
+                return item.settings.frame_count == frame_count && !item.main_calibration && item.queued;
+              });
+              if (saved->empty() && same_count &&
+                  hm::stitch_frame_time_to_nanoseconds(same_count->settings.stitch_frame_time) !=
+                      hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time)) {
+                show_status(
+                    "Candidates with the same frame count share one frame set and reference time. "
+                    "Restore that reference or choose a different frame count.",
+                    true);
+                return;
+              }
+              const bool selected = !saved->empty() || owner || (prefer_player_frames->isChecked() && frame_count > 1);
+              const Candidate* duplicate = find([&](const Candidate& item) {
+                const bool item_selected = item.has_selected_frames || item.selection_owner_sequence != 0 ||
+                    !item.saved_selection_fingerprint.empty();
+                return !item.main_calibration && (item.queued || item.complete || item.has_selected_frames) &&
+                    item.requested_config_revision == config_revision && same_settings(item.settings, settings) &&
+                    item_selected == selected;
+              });
+              if (duplicate)
+                continue;
+              if (!saved->empty()) {
+                append_addition(
+                    Candidate{.settings = settings, .sequence = ++sequence, .saved_selection_fingerprint = *saved});
+              } else if (owner) {
+                const int baseline_sequence = owner->baseline_sequence;
+                const int owner_sequence = owner->sequence;
+                const int duration = owner->scan_duration_seconds;
+                if (owner->queued && !owner->has_selected_frames)
+                  required_baselines.insert(baseline_sequence);
+                append_addition(
+                    Candidate{
+                        .settings = settings,
+                        .sequence = ++sequence,
+                        .baseline_sequence = baseline_sequence,
+                        .selection_owner_sequence = owner_sequence,
+                        .scan_duration_seconds = duration});
+              } else if (selected) {
+                const Candidate* baseline = find([&](const Candidate& item) {
+                  return !item.main_calibration && (item.queued || (item.complete && item.requires_ice_mask)) &&
+                      item.settings.frame_count == frame_count && item.selection_owner_sequence == 0 &&
+                      item.saved_selection_fingerprint.empty() && !item.source_config_revision.isEmpty() &&
+                      item.source_config_revision == config_revision && item.settings.camera == settings.camera &&
+                      hm::stitch_frame_time_to_nanoseconds(item.settings.stitch_frame_time) ==
+                      hm::stitch_frame_time_to_nanoseconds(settings.stitch_frame_time);
+                });
+                const int baseline_sequence = baseline ? baseline->sequence : ++sequence;
+                if (!baseline)
+                  append_addition(Candidate{.settings = settings, .sequence = baseline_sequence});
+                required_baselines.insert(baseline_sequence);
+                const int owner_sequence = ++sequence;
+                append_addition(
+                    Candidate{
+                        .settings = settings,
+                        .sequence = owner_sequence,
+                        .baseline_sequence = baseline_sequence,
+                        .selection_owner_sequence = owner_sequence,
+                        .scan_duration_seconds = scan_duration->value()});
+              } else {
+                append_addition(Candidate{.settings = settings, .sequence = ++sequence});
+              }
+              if (std::count_if(
+                      candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; }) +
+                      additions.size() >
+                  64) {
+                show_status(
+                    "Adding these options, including their baselines, would exceed the 64-candidate batch limit.",
+                    true);
+                return;
+              }
             }
-            if (std::count_if(candidates.begin(), candidates.end(), [](const Candidate& item) { return item.queued; }) +
-                    additions.size() >
-                64) {
-              show_status(
-                  "Adding these options, including their baselines, would exceed the 64-candidate batch limit.", true);
-              return;
-            }
-          }
         }
       }
+    }
     }
     if (additions.empty()) {
       show_status("Every combination from these options is already in the batch.");
@@ -4015,6 +4032,14 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   connect(s.camera_horizontal_fov, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [&s]() {
     s.camera_horizontal_fov->setProperty("exactLensFov", QVariant());
   });
+  s.control_point_selection = new QComboBox();
+  s.control_point_selection->setObjectName("stitchExperimentControlPointSelection");
+  s.control_point_selection->addItem("Quality + coverage", "quality-coverage");
+  s.control_point_selection->addItem("Legacy", "legacy");
+  s.control_point_selection->addItem("Both (compare in one batch)", "both");
+  s.control_point_selection->setToolTip(
+      "Compare the previous selection with spatial AKAZE detection and fixed match quality gates. "
+      "Both adds a candidate for each method using the same frame selection.");
   s.control_point_resolution = new QComboBox();
   s.control_point_resolution->setObjectName("stitchExperimentControlPointResolution");
   s.epipolar_ransac = new QCheckBox("Epipolar RANSAC");
@@ -4045,6 +4070,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     if (saved->has_value()) {
       YAML::Node game = YAML::Clone(**saved);
       hm::stitching::restore_generated_stitching_backend_choices(game);
+      hm::stitching::restore_generated_control_point_selection(game);
       hm::stitching::restore_generated_control_point_resolution(game);
       hm::stitching::restore_generated_control_point_filtering(game);
       overlay_feature_settings(effective, game);
@@ -4088,6 +4114,12 @@ StitchingExperimentDialog::StitchingExperimentDialog(
     s.input_lens->setLens(camera->input_lens);
     s.camera_horizontal_fov->setValue(camera->horizontal_fov);
     s.camera_horizontal_fov->setProperty("exactLensFov", camera->horizontal_fov);
+    const auto selection = hm::stitching::read_control_point_selection(effective);
+    if (!selection.ok())
+      throw std::runtime_error(selection.status().ToString());
+    s.initial_settings.control_point_selection = hm::stitching::ControlPointSelectionName(*selection);
+    s.control_point_selection->setCurrentIndex(
+        s.control_point_selection->findData(QString::fromStdString(*s.initial_settings.control_point_selection)));
     const auto resolution = hm::stitching::read_control_point_resolution(effective);
     if (!resolution.ok())
       throw std::runtime_error(resolution.status().ToString());
@@ -4126,6 +4158,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   connect(s.shared_rotation, &QCheckBox::toggled, this, [&s](bool checked) { s.rotations->setEnabled(!checked); });
   matrix_layout->addRow("CP limits per frame pair", s.control_points);
   matrix_layout->addRow("Control-point matcher", s.control_point_matcher);
+  matrix_layout->addRow("Match selection", s.control_point_selection);
   matrix_layout->addRow("Feature image size", s.control_point_resolution);
   auto* filtering_toggle = new QToolButton();
   filtering_toggle->setObjectName("stitchExperimentGeometricFilteringToggle");
@@ -4403,7 +4436,7 @@ StitchingExperimentDialog::StitchingExperimentDialog(
   workflow_layout->setContentsMargins(0, 0, 0, 0);
   s.workflow = new StitchingWorkflow(game_directory, working_directory, environment, workflow_settings, workflow_panel);
   workflow_layout->addWidget(s.workflow);
-  s.table = new QTableWidget(0, 10);
+  s.table = new QTableWidget(0, 11);
   s.table->setAlternatingRowColors(true);
   s.table->setStyleSheet("QTableWidget { background: white; alternate-background-color: #f0f0f0; color: #161616; }");
   s.table->setObjectName("stitchExperimentCandidates");
@@ -4417,7 +4450,8 @@ StitchingExperimentDialog::StitchingExperimentDialog(
        "Frame selection",
        "Image size",
        "Matcher",
-       "Input lens"});
+       "Input lens",
+       "Match selection"});
   s.table->horizontalHeaderItem(1)->setToolTip("Maximum control points per synchronized frame pair.");
   s.table->setSelectionBehavior(QAbstractItemView::SelectRows);
   s.table->setSelectionMode(QAbstractItemView::SingleSelection);

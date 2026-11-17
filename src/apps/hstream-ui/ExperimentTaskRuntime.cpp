@@ -168,6 +168,8 @@ StitchingExperimentSettings settings(const QJsonObject& object, const YAML::Node
   }
   if (object.contains("control_point_matcher"))
     result.control_point_matcher = RequiredString(object, "control_point_matcher", 64).toStdString();
+  if (object.contains("control_point_selection"))
+    result.control_point_selection = RequiredString(object, "control_point_selection", 32).toStdString();
   if (object.contains("control_point_resolution"))
     result.control_point_resolution = RequiredString(object, "control_point_resolution", 64).toStdString();
   if (object.contains("rink_rotation_degrees")) {
@@ -197,6 +199,8 @@ QJsonObject settings_json(const StitchingExperimentSettings& value) {
     result.insert("control_point_filtering", filtering_json(*value.control_point_filtering));
   if (value.control_point_matcher)
     result.insert("control_point_matcher", text(*value.control_point_matcher));
+  if (value.control_point_selection)
+    result.insert("control_point_selection", text(*value.control_point_selection));
   if (value.control_point_resolution)
     result.insert("control_point_resolution", text(*value.control_point_resolution));
   if (value.manual_control_points)

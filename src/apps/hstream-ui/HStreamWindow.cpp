@@ -5188,14 +5188,19 @@ void HStreamWindow::loadBaselineDefaults() {
   if (default_blend.ok())
     default_blend_mode_ = QString::fromStdString(hm::stitching::BlendModeName(*default_blend));
   default_blend_feather_fraction_ = blend->feather_fraction;
+  const auto selection = hm::stitching::read_control_point_selection(baseline_config_);
+  if (!selection.ok())
+    throw std::invalid_argument(selection.status().ToString());
   const auto resolution = hm::stitching::read_control_point_resolution(baseline_config_);
   if (!resolution.ok())
     throw std::invalid_argument(resolution.status().ToString());
+  default_control_point_selection_ = hm::stitching::ControlPointSelectionName(*selection);
   default_control_point_resolution_ = hm::stitching::ControlPointResolutionName(*resolution);
   const auto filtering = hm::stitching::read_control_point_filtering(baseline_config_);
   if (!filtering.ok())
     throw std::invalid_argument(filtering.status().ToString());
   default_control_point_filtering_ = *filtering;
+  control_point_selection_ = default_control_point_selection_;
   control_point_resolution_ = default_control_point_resolution_;
   setControlPointFiltering(default_control_point_filtering_);
   const auto matcher = hm::stitching::resolve_control_point_matcher(baseline_config_);
@@ -5892,6 +5897,20 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
       control_point_resolution_ = control_point_resolution_combo_->currentData().toString();
       updatePresetDirtyState();
     }
+  });
+
+  control_point_selection_combo_ = new QComboBox();
+  control_point_selection_combo_->setObjectName("controlPointSelectionCombo");
+  control_point_selection_combo_->setAccessibleName("Match selection");
+  control_point_selection_combo_->addItem("Quality + coverage", "quality-coverage");
+  control_point_selection_combo_->addItem("Legacy", "legacy");
+  control_point_selection_combo_->setToolTip(
+      "Quality + coverage distributes AKAZE detector features before matching and applies fixed quality gates. "
+      "Legacy preserves the previous selection. Changing this requires finding control points again.");
+  set_combo_to_data(control_point_selection_combo_, control_point_selection_);
+  connect(control_point_selection_combo_, &QComboBox::currentIndexChanged, this, [this]() {
+    control_point_selection_ = control_point_selection_combo_->currentData().toString();
+    updatePresetDirtyState();
   });
 
   epipolar_ransac_check_ = new QCheckBox("Epipolar RANSAC");
@@ -8210,9 +8229,13 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     alignment_layout->addWidget(stitch_frame_time_edit_, 3, 1);
     alignment_layout->addWidget(matcher_label, 4, 0);
     alignment_layout->addWidget(control_point_matcher_combo_, 4, 1);
-    alignment_layout->addWidget(mapping_label, 5, 0);
-    alignment_layout->addWidget(mapping_backend_combo_, 5, 1);
-    alignment_layout->addWidget(run_autooptimizer_check_, 6, 0, 1, 2);
+    auto* selection_label = new QLabel("Match selection");
+    selection_label->setBuddy(control_point_selection_combo_);
+    alignment_layout->addWidget(selection_label, 5, 0);
+    alignment_layout->addWidget(control_point_selection_combo_, 5, 1);
+    alignment_layout->addWidget(mapping_label, 6, 0);
+    alignment_layout->addWidget(mapping_backend_combo_, 6, 1);
+    alignment_layout->addWidget(run_autooptimizer_check_, 7, 0, 1, 2);
     auto* filtering_toggle = new QToolButton();
     filtering_toggle->setObjectName("geometricFilteringToggle");
     filtering_toggle->setText("Advanced geometric filtering");
@@ -8230,10 +8253,10 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
           filtering_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
           filtering_controls->setVisible(open);
         });
-    alignment_layout->addWidget(filtering_toggle, 7, 0, 1, 2);
-    alignment_layout->addWidget(filtering_controls, 8, 0, 1, 2);
-    alignment_layout->addWidget(clean_stitching_button_, 9, 0, 1, 2);
-    alignment_layout->setRowStretch(10, 1);
+    alignment_layout->addWidget(filtering_toggle, 8, 0, 1, 2);
+    alignment_layout->addWidget(filtering_controls, 9, 0, 1, 2);
+    alignment_layout->addWidget(clean_stitching_button_, 10, 0, 1, 2);
+    alignment_layout->setRowStretch(11, 1);
 
     auto* projection_layout = add_stitching_tab("stitchingProjection", "Projection");
     auto* camera_group = new QGroupBox("Camera defaults");
@@ -8915,11 +8938,25 @@ void HStreamWindow::updateControlPointResolution() {
     control_point_resolution_combo_->addItem(size);
     control_point_resolution_combo_->setToolTip("This matcher uses a fixed processing size: " + size + ".");
   }
+  if (control_point_selection_combo_) {
+    const QSignalBlocker selection_blocker(control_point_selection_combo_);
+    set_combo_to_data(control_point_selection_combo_, control_point_selection_);
+    control_point_selection_combo_->setEnabled(control_point_matcher_combo_->isEnabled());
+  }
   control_point_resolution_combo_->setEnabled(selectable && control_point_matcher_combo_->isEnabled());
   if (epipolar_ransac_check_)
     epipolar_ransac_check_->setEnabled(control_point_matcher_combo_->isEnabled());
   if (homography_consistency_check_)
     homography_consistency_check_->setEnabled(control_point_matcher_combo_->isEnabled());
+}
+
+QString HStreamWindow::controlPointSelectionFromGameConfig(const YAML::Node& config) const {
+  YAML::Node private_values = YAML::Clone(config);
+  hm::stitching::restore_generated_control_point_selection(private_values);
+  const auto selection = hm::stitching::read_control_point_selection(merge_yaml_maps(baseline_config_, private_values));
+  if (!selection.ok())
+    throw std::invalid_argument(selection.status().ToString());
+  return hm::stitching::ControlPointSelectionName(*selection);
 }
 
 QString HStreamWindow::controlPointResolutionFromGameConfig(const YAML::Node& config) const {
@@ -9490,7 +9527,8 @@ bool HStreamWindow::writeRinkLevelingSelection(YAML::Node& config) {
 }
 
 bool HStreamWindow::rinkLevelingInputsUnchanged() const {
-  return saved_control_point_resolution_ == control_point_resolution_ &&
+  return saved_control_point_selection_ == control_point_selection_ &&
+      saved_control_point_resolution_ == control_point_resolution_ &&
       saved_control_point_filtering_ == control_point_filtering_ &&
       saved_camera_selection_ == stitchCameraSelection() && saved_control_point_matcher_ == controlPointMatcher() &&
       saved_mapping_backend_ == mappingBackend() && saved_run_autooptimizer_ == runAutooptimizer() &&
@@ -10077,6 +10115,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
         : -1;
     const int current_frame_count =
         calibration["frame_count"] && calibration["frame_count"].IsScalar() ? calibration["frame_count"].as<int>() : -1;
+    const QString current_selection = controlPointSelectionFromGameConfig(config);
     const QString current_resolution = controlPointResolutionFromGameConfig(config);
     const auto current_filtering = controlPointFilteringFromGameConfig(config);
     const QString current_control_point_matcher = canonical_or_normalized_matcher_choice(
@@ -10148,6 +10187,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
         current_invalidation_id == expected_invalidation_id && current_stitch_frame_time_valid &&
         current_stitch_frame_time == active_stitch_frame_time_ && current_control_points == control_points &&
         current_frame_count == active_calibration_frame_count_ &&
+        current_selection == active_control_point_selection_ &&
         current_resolution == active_control_point_resolution_ &&
         current_filtering == active_control_point_filtering_ &&
         current_control_point_matcher == active_control_point_matcher_ &&
@@ -10176,6 +10216,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
     const bool expected_invalidated = status != "pending";
     if (!current_stitch_frame_time_valid || current_stitch_frame_time != active_stitch_frame_time_ ||
         current_control_points != control_points || current_frame_count != active_calibration_frame_count_ ||
+        current_selection != active_control_point_selection_ ||
         current_resolution != active_control_point_resolution_ ||
         current_filtering != active_control_point_filtering_ ||
         current_control_point_matcher != active_control_point_matcher_ ||
@@ -10199,9 +10240,11 @@ bool HStreamWindow::saveStitchingCalibrationState(
   remove_yaml_path(config, {"hstream_ui", "generated_stitching_backend_choices"});
   remove_yaml_path(config, {"stitching", "calibration_frame_count"});
   config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
+  config["stitching"]["control_point_selection"] = active_control_point_selection_.toStdString();
   config["stitching"]["control_point_resolution"] = active_control_point_resolution_.toStdString();
   hm::stitching::write_control_point_filtering(config, active_control_point_filtering_);
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_filtering"});
+  remove_yaml_path(config, {"hstream_ui", "generated_control_point_selection"});
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
   config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
   hm::stitching::write_stitch_camera_selection(config, active_camera_selection_);
@@ -10336,6 +10379,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
   bool saved_stitch_frame_time_valid = true;
   QString saved_sync_method = default_iteration_settings_.sync_method;
   int saved_max_output_width = default_stitch_max_output_width_;
+  QString saved_selection = default_control_point_selection_;
   QString saved_resolution = default_control_point_resolution_;
   auto saved_filtering = default_control_point_filtering_;
   QString saved_control_point_matcher = default_control_point_matcher_;
@@ -10407,6 +10451,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       saved_stitch_frame_time_valid =
           read_stitch_frame_time(config, &saved_stitch_frame_time, nullptr, default_stitch_frame_time_);
       saved_sync_method = read_stitching_iteration_settings(config, default_iteration_settings_).sync_method;
+      saved_selection = controlPointSelectionFromGameConfig(config);
       saved_resolution = controlPointResolutionFromGameConfig(config);
       saved_filtering = controlPointFilteringFromGameConfig(config);
       YAML::Node control_point_matcher;
@@ -10494,7 +10539,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
                                                     /*requires_regeneration=*/std::nullopt))
         : hm::ui_internal::StitchingCanvasConstraintDecision{};
     const bool control_point_matcher_changed = saved_control_point_matcher != active_control_point_matcher_ ||
-        (saved_resolution != active_control_point_resolution_ || saved_filtering != active_control_point_filtering_);
+        (saved_selection != active_control_point_selection_ || saved_resolution != active_control_point_resolution_ ||
+         saved_filtering != active_control_point_filtering_);
     const bool mapping_backend_changed = saved_mapping_backend != active_mapping_backend_;
     const bool camera_changed = saved_camera_selection != active_camera_selection_;
     const bool run_autooptimizer_changed = (saved_mapping_backend == "nona" ? saved_run_autooptimizer : false) !=
@@ -10533,9 +10579,11 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     }
     write_stitching_iteration_settings(config, active_iteration_settings_);
     config["stitching"]["control_point_matcher"] = active_control_point_matcher_.toStdString();
+    config["stitching"]["control_point_selection"] = active_control_point_selection_.toStdString();
     config["stitching"]["control_point_resolution"] = active_control_point_resolution_.toStdString();
     hm::stitching::write_control_point_filtering(config, active_control_point_filtering_);
     remove_yaml_path(config, {"hstream_ui", "generated_control_point_filtering"});
+    remove_yaml_path(config, {"hstream_ui", "generated_control_point_selection"});
     remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
     config["stitching"]["mapping_backend"] = active_mapping_backend_.toStdString();
     hm::stitching::write_stitch_camera_selection(config, active_camera_selection_);
@@ -10585,6 +10633,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       previous.frame_time = saved_stitch_frame_time.toStdString();
       previous.sync_method = saved_sync_method.toStdString();
       previous.matcher = saved_control_point_matcher.toStdString();
+      previous.selection = saved_selection.toStdString();
       previous.resolution = saved_resolution.toStdString();
       previous.filtering = saved_filtering;
       previous.backend = saved_mapping_backend.toStdString();
@@ -10600,6 +10649,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       desired.frame_time = active_stitch_frame_time_.toStdString();
       desired.sync_method = active_iteration_settings_.sync_method.toStdString();
       desired.matcher = active_control_point_matcher_.toStdString();
+      desired.selection = active_control_point_selection_.toStdString();
       desired.resolution = active_control_point_resolution_.toStdString();
       desired.filtering = active_control_point_filtering_;
       desired.backend = active_mapping_backend_.toStdString();
@@ -10685,6 +10735,8 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
       reasons << QString("matcher %1 -> %2").arg(saved_control_point_matcher, active_control_point_matcher_);
     if (saved_filtering != active_control_point_filtering_)
       reasons << "geometric filtering";
+    if (saved_selection != active_control_point_selection_)
+      reasons << QString("match selection %1 -> %2").arg(saved_selection, active_control_point_selection_);
     if (saved_resolution != active_control_point_resolution_)
       reasons << QString("resolution %1 -> %2").arg(saved_resolution, active_control_point_resolution_);
     if (mapping_backend_changed)
@@ -12082,6 +12134,7 @@ void HStreamWindow::startPipeline() {
       player_analytics_controls_ ? player_analytics_controls_->arguments() : QStringList();
   active_rink_framing_arguments_ = rink_framing_controls_ ? rink_framing_controls_->arguments() : QStringList();
   active_control_point_matcher_ = controlPointMatcher();
+  active_control_point_selection_ = control_point_selection_;
   active_control_point_resolution_ = control_point_resolution_;
   active_control_point_filtering_ = control_point_filtering_;
   active_mapping_backend_ = mappingBackend();
@@ -12328,6 +12381,7 @@ void HStreamWindow::startPipeline() {
   saved_stitch_max_output_width_ = active_stitch_max_output_width_;
   saved_run_autooptimizer_ = active_run_autooptimizer_;
   saved_control_point_matcher_ = active_control_point_matcher_;
+  saved_control_point_selection_ = active_control_point_selection_;
   saved_control_point_resolution_ = active_control_point_resolution_;
   saved_control_point_filtering_ = active_control_point_filtering_;
   saved_mapping_backend_ = active_mapping_backend_;
@@ -19100,6 +19154,7 @@ void HStreamWindow::updateStitchingStillPreview() {
       saved_stitching_control_points_ == stitchingCalibrationControlPoints() &&
       saved_stitching_calibration_frame_count_ == stitchingCalibrationFrameCount() &&
       saved_stitch_max_output_width_ == stitchingMaxOutputWidth() && saved_run_autooptimizer_ == runAutooptimizer() &&
+      saved_control_point_selection_ == control_point_selection_ &&
       saved_control_point_resolution_ == control_point_resolution_ &&
       saved_control_point_filtering_ == control_point_filtering_ &&
       saved_control_point_matcher_ == controlPointMatcher() && saved_mapping_backend_ == mappingBackend() &&
@@ -19114,6 +19169,7 @@ void HStreamWindow::updateStitchingStillPreview() {
   }
   YAML::Node expected;
   expected["stitching"]["control_point_matcher"] = controlPointMatcher().toStdString();
+  expected["stitching"]["control_point_selection"] = control_point_selection_.toStdString();
   expected["stitching"]["control_point_resolution"] = control_point_resolution_.toStdString();
   hm::stitching::write_control_point_filtering(expected, control_point_filtering_);
   remove_yaml_path(expected, {"hstream_ui", "generated_control_point_filtering"});
@@ -19706,7 +19762,8 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
       saved_stitching_calibration_frame_count_ != stitchingCalibrationFrameCount() ||
       saved_iteration_settings_.sync_method != stitchingIterationSettings().sync_method ||
       saved_run_autooptimizer_ != runAutooptimizer() ||
-      (saved_control_point_resolution_ != control_point_resolution_ ||
+      (saved_control_point_selection_ != control_point_selection_ ||
+       saved_control_point_resolution_ != control_point_resolution_ ||
        saved_control_point_filtering_ != control_point_filtering_) ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
       !saved_camera_selection_.same_automation(stitchCameraSelection(), true) ||
@@ -19988,6 +20045,7 @@ bool HStreamWindow::savePreset(bool require_rink_framing_ready, QString* validat
 void HStreamWindow::resetCameraControls() {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   if (!pipeline_running) {
+    control_point_selection_ = default_control_point_selection_;
     control_point_resolution_ = default_control_point_resolution_;
     setControlPointFiltering(default_control_point_filtering_);
   }
@@ -20302,6 +20360,7 @@ void HStreamWindow::captureSavedControlState() {
   saved_stitch_max_output_width_ = stitchingMaxOutputWidth();
   saved_run_autooptimizer_ = runAutooptimizer();
   saved_control_point_matcher_ = controlPointMatcher();
+  saved_control_point_selection_ = control_point_selection_;
   saved_control_point_resolution_ = control_point_resolution_;
   saved_control_point_filtering_ = control_point_filtering_;
   saved_blend_mode_ = blendMode();
@@ -20367,7 +20426,8 @@ void HStreamWindow::updatePresetDirtyState() {
       saved_stitching_control_points_ != stitchingCalibrationControlPoints() ||
       saved_stitching_calibration_frame_count_ != stitchingCalibrationFrameCount() ||
       saved_stitch_max_output_width_ != stitchingMaxOutputWidth() || saved_run_autooptimizer_ != runAutooptimizer() ||
-      (saved_control_point_resolution_ != control_point_resolution_ ||
+      (saved_control_point_selection_ != control_point_selection_ ||
+       saved_control_point_resolution_ != control_point_resolution_ ||
        saved_control_point_filtering_ != control_point_filtering_) ||
       saved_blend_mode_ != blendMode() || saved_blend_feather_fraction_ != blendFeatherFraction() ||
       saved_control_point_matcher_ != controlPointMatcher() || saved_mapping_backend_ != mappingBackend() ||
@@ -20557,6 +20617,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
   if (stitching_still_preview_)
     stitching_still_preview_->setSource({});
   saved_control_config_load_error_ = "Game settings are still loading";
+  control_point_selection_ = default_control_point_selection_;
   control_point_resolution_ = default_control_point_resolution_;
   setControlPointFiltering(default_control_point_filtering_);
   loadDetectorPrecision(YAML::Node(YAML::NodeType::Map));
@@ -20759,6 +20820,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     hm::stitching::restore_generated_stitch_rink_context(config);
     hm::stitching::restore_generated_rink_mask_frame_time(config);
     std::map<QString, double> staged_controls;
+    const QString staged_selection = controlPointSelectionFromGameConfig(config);
     const QString staged_resolution = controlPointResolutionFromGameConfig(config);
     const auto effective_preferences = merge_yaml_maps(baseline_config_, config);
     const bool staged_realtime = hm::get_node(effective_preferences, "playback.realtime")->as<bool>();
@@ -21281,6 +21343,7 @@ void HStreamWindow::loadSavedControlConfig(bool baseline_only) {
     if (control_point_matcher_combo_) {
       const bool blocked = control_point_matcher_combo_->blockSignals(true);
       set_combo_to_data(control_point_matcher_combo_, staged_control_point_matcher);
+      control_point_selection_ = staged_selection;
       control_point_resolution_ = staged_resolution;
       setControlPointFiltering(staged_filtering);
       updateControlPointResolution();
@@ -21793,7 +21856,8 @@ bool HStreamWindow::applySavedControlConfig(
       saved_mapping_backend_.isEmpty() ? default_mapping_backend_ : saved_mapping_backend_;
   const QString previous_projection = saved_projection_.isEmpty() ? default_projection_ : saved_projection_;
   const bool control_point_matcher_changed = previous_control_point_matcher != selected_control_point_matcher ||
-      (saved_control_point_resolution_ != control_point_resolution_ ||
+      (saved_control_point_selection_ != control_point_selection_ ||
+       saved_control_point_resolution_ != control_point_resolution_ ||
        saved_control_point_filtering_ != control_point_filtering_);
   const bool mapping_backend_changed = previous_mapping_backend != selected_mapping_backend;
   const bool camera_changed = saved_camera_selection_ != selected_camera;
@@ -21826,6 +21890,7 @@ bool HStreamWindow::applySavedControlConfig(
   // today's defaults; later defaults edits must not create conflicting counts.
   config["stitching"]["calibration_frame_count"] = selected_frame_count;
   config["stitching"]["control_point_matcher"] = selected_control_point_matcher.toStdString();
+  config["stitching"]["control_point_selection"] = control_point_selection_.toStdString();
   config["stitching"]["control_point_resolution"] = control_point_resolution_.toStdString();
   hm::stitching::write_control_point_filtering(config, control_point_filtering_);
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_filtering"});
@@ -21839,6 +21904,7 @@ bool HStreamWindow::applySavedControlConfig(
       return false;
     }
   }
+  remove_yaml_path(config, {"hstream_ui", "generated_control_point_selection"});
   remove_yaml_path(config, {"hstream_ui", "generated_control_point_resolution"});
   config["stitching"]["mapping_backend"] = selected_mapping_backend.toStdString();
   hm::stitching::write_stitch_camera_selection(config, selected_camera);
@@ -21909,6 +21975,8 @@ bool HStreamWindow::applySavedControlConfig(
       reasons << QString("matcher %1 -> %2").arg(previous_control_point_matcher, selected_control_point_matcher);
     if (saved_control_point_filtering_ != control_point_filtering_)
       reasons << "geometric filtering";
+    if (saved_control_point_selection_ != control_point_selection_)
+      reasons << QString("match selection %1 -> %2").arg(saved_control_point_selection_, control_point_selection_);
     if (saved_control_point_resolution_ != control_point_resolution_)
       reasons << QString("resolution %1 -> %2").arg(saved_control_point_resolution_, control_point_resolution_);
     if (mapping_backend_changed)

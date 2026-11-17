@@ -22606,6 +22606,7 @@ bool test_stitching_still() {
   choices.mapping_backend = "nona";
   choices.projection = "cylindrical";
   choices.run_autooptimizer = true;
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = choices.control_point_matcher;
   config["stitching"]["mapping_backend"] = choices.mapping_backend;
   config["stitching"]["projection"] = choices.projection;

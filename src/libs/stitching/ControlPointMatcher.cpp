@@ -8,6 +8,18 @@
 
 namespace hm::stitching {
 
+const char* ControlPointSelectionName(ControlPointSelection selection) {
+  return selection == ControlPointSelection::kLegacy ? "legacy" : "quality-coverage";
+}
+
+absl::StatusOr<ControlPointSelection> ParseControlPointSelection(const std::string& value) {
+  if (value == "legacy")
+    return ControlPointSelection::kLegacy;
+  if (value == "quality-coverage")
+    return ControlPointSelection::kQualityCoverage;
+  return absl::InvalidArgumentError("stitching.control_point_selection must be legacy or quality-coverage: " + value);
+}
+
 ControlPointResolution DefaultControlPointResolution() {
   return ControlPointResolution::k2K;
 }

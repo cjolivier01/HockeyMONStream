@@ -14,6 +14,7 @@
 #include "absl/status/statusor.h"
 #include "hstream/src/libs/onnx/OnnxSession.h"
 #include "hstream/src/libs/stitching/ControlPointMatcher.h"
+#include "hstream/src/libs/stitching/FeatureMatchQuality.h"
 
 namespace hm::stitching {
 
@@ -85,7 +86,8 @@ class FeatureMatcher {
       hm::onnx::ExecutionProvider provider = hm::onnx::ExecutionProvider::kCuda,
       const std::string& profile_prefix = {},
       const hm::onnx::CpuFallbackOptions& cpu_fallback = {},
-      ControlPointFiltering filtering = {});
+      ControlPointFiltering filtering = {},
+      ControlPointSelection selection = ControlPointSelection::kLegacy);
   // The release qualification oracle predates the selectable production
   // backends and uses a frozen RGB RaCo-ALIKED k2048 graph. Keep its contract
   // explicit so it cannot be mistaken for the production SuperPoint graph.
@@ -104,7 +106,8 @@ class FeatureMatcher {
       size_t match_value_count,
       const float* scores,
       size_t score_count,
-      size_t max_control_points);
+      size_t max_control_points,
+      float minimum_score = kMinimumScore);
   static absl::StatusOr<FeatureMatchResult> PostprocessDeDoDe(
       const FeaturePairInput& input,
       const float* keypoints,
@@ -113,7 +116,8 @@ class FeatureMatcher {
       size_t match_count,
       const float* scores,
       size_t score_count,
-      size_t max_control_points);
+      size_t max_control_points,
+      float minimum_score = kMinimumScore);
   static absl::StatusOr<FeatureMatchResult> PostprocessLoFTR(
       const FeaturePairInput& input,
       const float* left_keypoints,
@@ -122,7 +126,8 @@ class FeatureMatcher {
       size_t right_keypoint_count,
       const float* scores,
       size_t score_count,
-      size_t max_control_points);
+      size_t max_control_points,
+      float minimum_score = kMinimumScore);
   static absl::StatusOr<std::vector<FeatureMatch>> SelectControlPoints(
       const std::vector<FeatureMatch>& accepted,
       cv::Size left_source_size,
@@ -170,7 +175,8 @@ class FeatureMatcher {
       const float* scores,
       size_t score_count,
       size_t max_control_points,
-      size_t keypoints_per_image);
+      size_t keypoints_per_image,
+      float minimum_score);
   absl::StatusOr<FeatureMatchResult> InferAkaze(
       const cv::Mat& left_bgr,
       const cv::Mat& right_bgr,
@@ -179,6 +185,7 @@ class FeatureMatcher {
       const std::function<bool()>& is_cancelled) const;
 
   ControlPointFiltering filtering_;
+  std::optional<FeatureMatchQuality> quality_;
   ControlPointResolution resolution_{DefaultControlPointResolution()};
   // Always assigned by the constructor; not a default matcher.
   ControlPointMatcher matcher_{ControlPointMatcher::kSuperPointLightGlue};

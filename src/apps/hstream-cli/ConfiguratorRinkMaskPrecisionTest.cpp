@@ -84,6 +84,7 @@ void fixture(
     source["type"] = static_cast<int>(NV_DS_SOURCE_URI_MULTIPLE);
     source["source-id"] = camera;
   }
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["control_point_resolution"] = "native";
   write_control_point_filtering(config, {false, false});

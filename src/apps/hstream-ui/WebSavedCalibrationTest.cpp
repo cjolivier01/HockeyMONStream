@@ -42,6 +42,7 @@ StitchingBackendChoices choices(const YAML::Node& config) {
   result.projection_framing = value(read_stitch_projection_framing(config));
   result.camera = value(read_stitch_camera_selection(config));
   result.control_point_resolution = value(read_control_point_resolution(config));
+  result.control_point_selection = value(read_control_point_selection(config));
   result.control_point_filtering = value(read_control_point_filtering(config));
   result.control_point_execution_provider = value(read_control_point_execution_provider(config));
   result.calibration_frame_selection_fingerprint = value(player_frame_selection_fingerprint(config));
@@ -55,6 +56,7 @@ YAML::Node fixture(const fs::path& root) {
   config["stitching"]["calibration_frame_count"] = 2;
   // Pin the matcher so this fixture keeps exercising a resolution-bearing
   // neural backend rather than following the shipped baseline default.
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["control_point_resolution"] = "native";
   write_control_point_filtering(config, {false, false});

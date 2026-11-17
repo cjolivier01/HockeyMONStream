@@ -454,6 +454,10 @@ absl::Status configure_candidate(
     hm::stitching::write_control_point_filtering(config, *settings.control_point_filtering);
     config["hstream_ui"].remove("generated_control_point_filtering");
   }
+  if (settings.control_point_selection) {
+    config["stitching"]["control_point_selection"] = *settings.control_point_selection;
+    config["hstream_ui"].remove("generated_control_point_selection");
+  }
   if (settings.control_point_resolution) {
     config["stitching"]["control_point_resolution"] = *settings.control_point_resolution;
     config["hstream_ui"].remove("generated_control_point_resolution");
@@ -931,6 +935,7 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
     HM_ASSIGN_OR_RETURN(manual, hm::stitching::manual_control_point_fingerprint(config));
     settings.manual_control_points = manual.empty() ? std::nullopt : std::make_optional(manual);
     // This row describes the saved solve, not the current experiment controls.
+    settings.control_point_selection = "legacy";
     settings.control_point_resolution.reset();
     settings.control_point_filtering.reset();
     settings.control_point_matcher.reset();
@@ -945,6 +950,20 @@ absl::StatusOr<std::optional<StitchingExperimentWorkspace>> MainStitchingExperim
     if (saved_filter_config["stitching"]["control_point_filtering"])
       HM_ASSIGN_OR_RETURN(
           settings.control_point_filtering, hm::stitching::read_control_point_filtering(saved_filter_config));
+    YAML::Node saved_mode(YAML::NodeType::Undefined);
+    if (stitching && stitching.IsMap() && stitching["control_point_selection"])
+      saved_mode.reset(stitching["control_point_selection"]);
+    if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
+        claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>("")) {
+      // A claim predating this switch always describes the legacy algorithm.
+      saved_mode =
+          claim["control_point_selection"] ? YAML::Clone(claim["control_point_selection"]) : YAML::Node("legacy");
+    }
+    if (saved_mode && !saved_mode.IsNull()) {
+      hm::stitching::ControlPointSelection mode;
+      HM_ASSIGN_OR_RETURN(mode, hm::stitching::ParseControlPointSelection(saved_mode.as<std::string>()));
+      settings.control_point_selection = hm::stitching::ControlPointSelectionName(mode);
+    }
     YAML::Node saved_resolution =
         stitching && stitching.IsMap() ? stitching["control_point_resolution"] : YAML::Node(YAML::NodeType::Undefined);
     if (calibration["status"].as<std::string>("") == "complete" && claim && claim.IsMap() &&
@@ -1032,6 +1051,13 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
   }
   if (settings.control_points <= 0 || settings.frame_count <= 0 || sequence <= 0)
     return absl::InvalidArgumentError("Stitching experiment counts and sequence must be positive");
+  if (settings.control_point_selection) {
+    if (settings.control_point_selection->empty())
+      return absl::InvalidArgumentError("An explicit experiment control-point selection must not be empty");
+    const auto selection = hm::stitching::ParseControlPointSelection(*settings.control_point_selection);
+    if (!selection.ok())
+      return selection.status();
+  }
   if (settings.control_point_resolution) {
     if (settings.control_point_resolution->empty())
       return absl::InvalidArgumentError("An explicit experiment control-point resolution must not be empty");
@@ -1122,6 +1148,14 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
                                                 : source_resolution.as<std::string>()));
       frozen_settings.control_point_resolution = hm::stitching::ControlPointResolutionName(resolution);
     }
+    hm::stitching::ControlPointSelection match_selection;
+    if (settings.control_point_selection) {
+      HM_ASSIGN_OR_RETURN(
+          match_selection, hm::stitching::ParseControlPointSelection(*settings.control_point_selection));
+    } else {
+      HM_ASSIGN_OR_RETURN(match_selection, hm::stitching::read_control_point_selection(config));
+    }
+    frozen_settings.control_point_selection = hm::stitching::ControlPointSelectionName(match_selection);
     std::set<fs::path> linked;
     HM_RETURN_IF_ERROR(
         link_configured_videos(config, source_game_directory, workspace_path, &linked, allow_linked_inputs));
@@ -1483,6 +1517,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
           "control_point_execution_provider",
           "control_point_matcher",
           "control_point_resolution",
+          "control_point_selection",
           "control_point_filtering",
           "manual_control_points",
           "mapping_backend",
@@ -1505,6 +1540,7 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_stitching_backend_choices");
+    copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_selection");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_resolution");
     copy_node(current["hstream_ui"], selected["hstream_ui"], "generated_control_point_filtering");
     // Experiment previews do not offer crop selection. Leave the promoted

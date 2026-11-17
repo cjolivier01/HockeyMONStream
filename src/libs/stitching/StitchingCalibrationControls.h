@@ -12,7 +12,7 @@ namespace hm::stitching {
 // probes recordings; the GUI and authenticated worker own those snapshots.
 struct StitchingCalibrationControls {
   int control_points{0}, frame_count{0}, max_output_width{0};
-  std::string frame_time, sync_method, matcher, resolution, execution_provider, backend, projection;
+  std::string frame_time, sync_method, matcher, resolution, selection, execution_provider, backend, projection;
   ControlPointFiltering filtering;
   StitchCameraSelection camera;
   bool autooptimizer{false};

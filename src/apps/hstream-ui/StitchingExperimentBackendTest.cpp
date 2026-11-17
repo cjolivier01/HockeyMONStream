@@ -1050,6 +1050,8 @@ bool edited_match_workspace(const fs::path& root) {
     return false;
   const auto candidate =
       CreateStitchingExperimentWorkspace(original_game, root / "source-session", {100, 1, "00:00:00", std::nullopt}, 1);
+  if (!candidate.ok())
+    std::cerr << candidate.status() << '\n';
   if (!expect(candidate.ok(), "editable fixture starts with a real linked-media workspace"))
     return false;
   const fs::path game = candidate->game_directory;

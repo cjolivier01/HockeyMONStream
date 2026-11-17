@@ -489,11 +489,22 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     ":control_point_matcher",
+    ":feature_match_quality",
     "//src/libs/onnx:session",
     "@opencv_linux//:opencv",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
   ],
+)
+
+cc_library(
+  name = "feature_match_quality",
+  srcs = ["FeatureMatchQuality.cpp"],
+  hdrs = ["FeatureMatchQuality.h"],
+  include_prefix = INCLUDE_PREFIX,
+  visibility = ["//visibility:public"],
+  deps = [":control_point_matcher", "//src/libs/common:baseline_config", "@opencv_linux//:opencv",
+          "@yaml-cpp", "@com_google_absl//absl/status:statusor"],
 )
 
 cc_library(

@@ -540,6 +540,51 @@ void exercise_reference_defaults(const QString& game, const QString& root) {
   }
 }
 
+void exercise_match_selection_queue(const QString& game, const QString& root) {
+  {
+    StitchingExperimentDialog dialog(
+        game,
+        "/bin/false",
+        root,
+        root + "/_hockeymon/config.yaml",
+        QProcessEnvironment::systemEnvironment(),
+        10,
+        1,
+        "00:00:00");
+    auto* selection = widget<QComboBox>(dialog, "stitchExperimentControlPointSelection");
+    require(selection->currentData() == "quality-coverage", "New experiment defaults must select Quality + coverage");
+    selection->setCurrentIndex(selection->findData("both"));
+    add_options(dialog);
+    add_options(dialog);
+    auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+    require(table->rowCount() == 2, "Both must queue two distinct candidates and deduplicate repeated additions");
+    require(
+        table->horizontalHeaderItem(10)->text() == "Match selection" &&
+            table->item(0, 10)->text() == "Quality + coverage" && table->item(1, 10)->text() == "Legacy",
+        "Each experiment row must show its exact selection mode");
+    if (const QString path = qEnvironmentVariable("HSTREAM_MATCH_SELECTION_SCREENSHOT"); !path.isEmpty()) {
+      dialog.resize(1800, 900);
+      dialog.show();
+      dialog.findChild<QSplitter*>()->setSizes({1100, 700});
+      QCoreApplication::processEvents();
+      require(dialog.grab().save(path), "Cannot save match-selection comparison screenshot");
+    }
+  }
+  const auto opened = OpenStitchingExperimentStore(game.toStdString());
+  require(opened.ok(), "Cannot open match-selection store");
+  const auto saved = LoadStitchingExperimentStore(*opened);
+  require(saved.ok() && saved->experiments.size() == 2, "Both match-selection candidates must survive reopening");
+  for (size_t i = 0; i < 2; ++i) {
+    const auto& workspace = saved->experiments[i].workspace;
+    const std::string expected = i == 0 ? "quality-coverage" : "legacy";
+    const auto config = YAML::LoadFile((workspace.game_directory / "_hockeymon/config.yaml").string());
+    require(
+        workspace.settings.control_point_selection == expected &&
+            config["stitching"]["control_point_selection"].as<std::string>() == expected,
+        "Stored rows and immutable worker configs must freeze the same mode");
+  }
+}
+
 void exercise_filtering_queue(const QString& game, const QString& root) {
   {
     StitchingExperimentDialog dialog(
@@ -4218,6 +4263,9 @@ int main(int argc, char** argv) {
         std::cout << "Stitching experiment source-change checks passed\n";
         return 0;
       }
+      exercise_match_selection_queue(make_game("match-selection"), fixture.path());
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_MATCH_SELECTION_ONLY") != 0)
+        return 0;
       exercise_frame_navigation(fixture.path());
       exercise_resolution_queue(make_game("resolutions"), fixture.path());
       exercise_reference_defaults(make_game("reference-defaults"), fixture.path());
