@@ -168,7 +168,9 @@ struct WorkflowSetupDialog::Impl {
       enabled = !currentBuild() || tests_passed || (!tests_known ? resume->isEnabled() : test->isEnabled());
       instruction = test_running ? "Testing is in progress. You can leave this open or stop the test."
           : tests_passed         ? "Every computer passed. Click Continue."
-                         : "Choose a recording with players on the ice. One click tests all selected computers.";
+          : !problem->text().isEmpty()
+          ? "Read the test problem above before trying again. Passed checks are kept."
+          : "Choose a recording with players on the ice. One click tests all selected computers.";
     } else {
       label = !accepted_registry.isEmpty() ? "Use these computers"
           : applied                        ? "Finish setup"
@@ -359,8 +361,7 @@ struct WorkflowSetupDialog::Impl {
             flow = Flow::None;
             showProblem(
                 row.value("node").toString() + " did not pass while setup was away. " +
-                row.value("next").toString(
-                    "Check Test details below, then click Test my computers to try again."));
+                row.value("next").toString("Check Test details below, then click Test my computers to try again."));
             return;
           }
         }

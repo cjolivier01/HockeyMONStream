@@ -812,6 +812,9 @@ print(json.dumps({**value,'progress':p}))
         problem->text().contains("Look for players in the video failed: The GPU ran out of available memory.") &&
             problem->text().contains("Wait for other GPU work"),
         "Failed or recovered test hid the stage, cause or recovery action");
+    require(
+        widget<QLabel>(dialog, "workflowSetupNext")->text().contains("Read the test problem above"),
+        "Failed test instruction incorrectly returned to choosing a recording");
     for (int i = 0; i < 20; ++i) {
       QCoreApplication::processEvents();
       QThread::msleep(20);
