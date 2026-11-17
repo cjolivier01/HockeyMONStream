@@ -22,6 +22,71 @@ bool expect(bool condition, const char* message) {
   return condition;
 }
 
+bool test_quality_coverage() {
+  using namespace hm::stitching;
+  std::vector<cv::KeyPoint> points;
+  for (int index = 0; index < 200; ++index)
+    points.emplace_back(cv::Point2f(20 + index % 20, 20 + index / 20), 3, -1, 0.9f);
+  for (int index = 0; index < 8; ++index)
+    points.emplace_back(cv::Point2f(100 + index * 100, 600), 3, -1, 0.5f);
+  points.emplace_back(cv::Point2f(950, 850), 3, -1, 0.01f);
+  auto selected = SelectDistributedKeypoints(points, {1000, 900}, 16, 0.1f);
+  bool ok = expect(selected.ok() && selected->size() == 16, "Distributed detection must respect the keypoint budget");
+  if (selected.ok()) {
+    ok &= expect(
+        std::count_if(selected->begin(), selected->end(), [](const auto& point) { return point.pt.y == 600; }) == 8,
+        "Spatial suppression must preserve isolated good features despite a stronger dense wall");
+    ok &= expect(
+        std::none_of(selected->begin(), selected->end(), [](const auto& point) { return point.response < 0.1f; }),
+        "An empty region must never admit a below-floor detector response");
+  }
+  std::reverse(points.begin(), points.end());
+  auto reversed = SelectDistributedKeypoints(points, {1000, 900}, 16, 0.1f);
+  ok &= expect(
+      selected.ok() && reversed.ok() &&
+          std::equal(
+              selected->begin(),
+              selected->end(),
+              reversed->begin(),
+              [](const auto& a, const auto& b) { return a.pt == b.pt && a.response == b.response; }),
+      "Tied detector responses and input permutations must give the same spatial selection");
+  auto uncapped = SelectDistributedKeypoints(points, {1000, 900}, 500, 0.1f);
+  ok &= expect(uncapped.ok() && uncapped->size() == 208, "A generous budget must not lower the detector quality floor");
+  cv::Mat left = (cv::Mat_<unsigned char>(2, 2) << 0, 0, 255, 255);
+  cv::Mat right = (cv::Mat_<unsigned char>(2, 2) << 7, 7, 255, 255);
+  // The 6/16-bit pair passes both 0.75 ratio tests and mutual matching, but is
+  // absolutely poor. Its location/coverage is deliberately irrelevant here.
+  auto binary = MatchQualityBinaryDescriptors(left, right, 0.75f, 0.25f);
+  ok &= expect(
+      binary.ok() && binary->size() == 1 && binary->front().queryIdx == 1,
+      "Mutually unique but absolutely distant binary descriptors must be rejected");
+  right.at<unsigned char>(0, 0) = right.at<unsigned char>(0, 1) = 3;
+  binary = MatchQualityBinaryDescriptors(left, right, 0.75f, 0.25f);
+  ok &= expect(binary.ok() && binary->size() == 2, "The absolute Hamming bound is inclusive");
+  binary = MatchQualityBinaryDescriptors(left.row(0), right, 0.75f, 0.25f);
+  ok &= expect(binary.ok() && binary->empty(), "A missing second neighbor is not uniqueness evidence");
+  const auto quality = LoadFeatureMatchQuality();
+  ok &= expect(quality.ok(), "Production quality policy must load from baseline");
+  ok &= expect(
+      !ReadFeatureMatchQuality(YAML::Load("{}")).ok(), "Missing quality policy must fail rather than invent defaults");
+  FeaturePairInput input;
+  input.source_sizes[0] = input.source_sizes[1] = input.resized_sizes[0] = input.resized_sizes[1] = {1000, 900};
+  input.tensor_size = {1000, 900};
+  const float coordinates[] = {10, 10, 15, 15, 900, 800};
+  const float scores[] = {0.9f, 0.95f, 0.21f};
+  for (size_t cap : {size_t(1), size_t(500)}) {
+    const auto matches = FeatureMatcher::PostprocessLoFTR(input, coordinates, 6, coordinates, 6, scores, 3, cap, 0.3f);
+    ok &= expect(
+        matches.ok() && matches->accepted.size() == 2 &&
+            std::none_of(
+                matches->selected.begin(),
+                matches->selected.end(),
+                [](const auto& match) { return match.score <= 0.3f; }),
+        "Spatial capping must never promote an isolated neural match below the fixed score floor");
+  }
+  return ok;
+}
+
 bool test_spatial_selection() {
   using hm::stitching::FeatureMatch;
   using hm::stitching::FeatureMatcher;
@@ -171,7 +236,8 @@ bool test_akaze_geometric_outliers() {
 } // namespace
 
 int main() {
-  bool ok = test_spatial_selection();
+  bool ok = test_quality_coverage();
+  ok &= test_spatial_selection();
   ok &= test_akaze_geometric_outliers();
   ok &= expect(
       hm::stitching::ParseControlPointMatcher("superpoint-lightglue").ok(),
@@ -584,6 +650,28 @@ int main() {
     }
   }
 
+  auto distributed_akaze = hm::stitching::FeatureMatcher::Create(
+      "",
+      hm::stitching::ControlPointMatcher::kAkazeHamming,
+      {},
+      hm::stitching::DefaultControlPointResolution(),
+      hm::onnx::ExecutionProvider::kCpu,
+      "",
+      {},
+      {},
+      hm::stitching::ControlPointSelection::kQualityCoverage);
+  ok &= expect(distributed_akaze.ok(), "Quality + coverage AKAZE must initialize without a model");
+  if (distributed_akaze.ok()) {
+    const auto matches = (*distributed_akaze)->Infer(akaze_left, akaze_right, 64);
+    ok &= expect(matches.ok() && matches->accepted.size() >= 6, "Quality + coverage must retain the synthetic overlap");
+    if (matches.ok())
+      ok &= expect(
+          std::all_of(
+              matches->accepted.begin(),
+              matches->accepted.end(),
+              [](const auto& match) { return match.score >= 0.75f; }),
+          "All new-mode AKAZE matches must pass the baseline absolute distance ceiling");
+  }
   hm::stitching::FisheyeLensCalibration lens;
   lens.resolution = akaze_left.size();
   lens.fx = 500.0;

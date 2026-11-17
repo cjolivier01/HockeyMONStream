@@ -500,6 +500,7 @@ def stitching_control_policies(root):
         },
         "matcher_labels": choices("control_point_matcher_combo_"),
         "backend_labels": choices("mapping_backend_combo_"),
+        "selection_labels": choices("control_point_selection_combo_"),
         "resolution_labels": choices("control_point_resolution_combo_"),
         "fixed_resolutions": dict(
             zip(
@@ -773,6 +774,7 @@ def generate(root, *, native_revision=None, include_revision=True):
             "dedode-lightglue",
             "loftr",
         ],
+        "control_point_selection": ["quality-coverage", "legacy"],
         "control_point_resolution": ["auto", "native", "1k", "2k"],
         "mapping_backend": ["nona", "opencv-magsac", "opencv-affine-ransac"],
         "projection": re.findall(

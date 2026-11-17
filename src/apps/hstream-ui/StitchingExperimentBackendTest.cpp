@@ -153,6 +153,25 @@ bool private_input_inventory(const fs::path& root) {
         "workflow private input aliases must reference the original file directly");
   snapshot = SnapshotStitchingExperimentWorkspace(*snapshot, experiments / "next-attempt");
   ok &= expect(snapshot.ok(), "private input aliases must survive successive workflow stages");
+  auto historical = *workspace;
+  historical.settings.control_point_selection.reset();
+  const auto old_path = historical.game_directory / "_hockeymon/config.yaml";
+  auto old_config = YAML::LoadFile(old_path.string());
+  old_config["stitching"].remove("control_point_selection");
+  const auto old_bytes = YAML::Dump(old_config);
+  write(old_path, old_bytes);
+  const auto old_snapshot = SnapshotStitchingExperimentWorkspace(historical, experiments / "legacy-attempt");
+  ok &= expect(
+      old_snapshot.ok() && old_snapshot->settings.control_point_selection == "legacy",
+      "Historical workflow workspaces must freeze Legacy on resume");
+  if (old_snapshot.ok()) {
+    const auto frozen = YAML::LoadFile((old_snapshot->game_directory / "_hockeymon/config.yaml").string());
+    std::ifstream original(old_path);
+    const std::string unchanged((std::istreambuf_iterator<char>(original)), std::istreambuf_iterator<char>());
+    ok &= expect(
+        frozen["stitching"]["control_point_selection"].as<std::string>() == "legacy" && unchanged == old_bytes,
+        "Only the successor pins Legacy; the sealed historical source stays unchanged");
+  }
   fs::create_symlink(game / "recordings/left.mp4", workspace->game_directory / "_hockeymon/unowned.mp4");
   ok &= expect(
       !SnapshotStitchingExperimentWorkspace(*workspace, experiments / "unowned-attempt").ok(),
@@ -1050,6 +1069,8 @@ bool edited_match_workspace(const fs::path& root) {
     return false;
   const auto candidate =
       CreateStitchingExperimentWorkspace(original_game, root / "source-session", {100, 1, "00:00:00", std::nullopt}, 1);
+  if (!candidate.ok())
+    std::cerr << candidate.status() << '\n';
   if (!expect(candidate.ok(), "editable fixture starts with a real linked-media workspace"))
     return false;
   const fs::path game = candidate->game_directory;
@@ -1258,6 +1279,11 @@ bool selected_seam_blend(const fs::path& root) {
   if (!expect(with_alpha.ok(), "Applying an alpha blend must succeed"))
     return false;
   const YAML::Node alpha_config = YAML::Load(*with_alpha);
+  if (!expect(
+          alpha_config["stitching"]["control_point_selection"].as<std::string>() == "legacy" &&
+              !alpha_config["hstream_ui"]["generated_control_point_selection"],
+          "Promoting a pre-switch candidate must explicitly retain Legacy"))
+    return false;
   if (!expect(
           alpha_config["stitching"]["blend_mode"].as<std::string>() == "alpha" &&
               alpha_config["stitching"]["blend_feather_fraction"].as<double>() == 0.2,

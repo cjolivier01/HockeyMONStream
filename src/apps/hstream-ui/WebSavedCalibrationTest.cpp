@@ -42,6 +42,7 @@ StitchingBackendChoices choices(const YAML::Node& config) {
   result.projection_framing = value(read_stitch_projection_framing(config));
   result.camera = value(read_stitch_camera_selection(config));
   result.control_point_resolution = value(read_control_point_resolution(config));
+  result.control_point_selection = value(read_control_point_selection(config));
   result.control_point_filtering = value(read_control_point_filtering(config));
   result.control_point_execution_provider = value(read_control_point_execution_provider(config));
   result.calibration_frame_selection_fingerprint = value(player_frame_selection_fingerprint(config));
@@ -55,6 +56,7 @@ YAML::Node fixture(const fs::path& root) {
   config["stitching"]["calibration_frame_count"] = 2;
   // Pin the matcher so this fixture keeps exercising a resolution-bearing
   // neural backend rather than following the shipped baseline default.
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["control_point_resolution"] = "native";
   write_control_point_filtering(config, {false, false});
@@ -230,6 +232,21 @@ void restart_controls_staging(const QString& binary, const fs::path& source) {
   expect(
       hm::web::Capabilities().value("features").toArray().contains("calibration-controls-restart-v1"),
       "Explicit Restart must advertise its deployment capability");
+  for (const bool force : {false, true}) {
+    QTemporaryDir temporary;
+    const fs::path root(temporary.path().toStdString()), game = root / "game";
+    fs::copy(source, game, fs::copy_options::recursive);
+    auto old = YAML::LoadFile((game / "_hockeymon/config.yaml").string());
+    old["stitching"].remove("control_point_selection");
+    old["hstream_ui"]["stitching_calibration"]["backend_generation"].remove("control_point_selection");
+    write(game / "_hockeymon/config.yaml", YAML::Dump(old));
+    auto payload = controls_payload(game, {}, {});
+    payload["force_reconfigure"] = force;
+    const auto result = invoke(binary, root, "calibration-controls-stage", payload);
+    expect(
+        result.value("pending").toBool() && result.value("start_stage").toString() == (force ? "input" : "features"),
+        "Old claims authenticate before Play or Restart adopts the new default");
+  }
   for (const std::string evidence : {"none", "manual", "selected-manual"}) {
     for (const std::string action : {"play", "false", "restart", "null", "number", "string", "array", "object"}) {
       if (evidence != "none" && action != "play" && action != "false" && action != "restart")

@@ -503,6 +503,7 @@ class HStreamWindow : public QMainWindow {
   QString stitchFrameTime() const;
   QString controlPointMatcher() const;
   void updateControlPointResolution();
+  QString controlPointSelectionFromGameConfig(const YAML::Node& config) const;
   QString controlPointResolutionFromGameConfig(const YAML::Node& config) const;
   hm::stitching::ControlPointFiltering controlPointFilteringFromGameConfig(const YAML::Node& config) const;
   void setControlPointFiltering(hm::stitching::ControlPointFiltering filtering);
@@ -667,7 +668,9 @@ class HStreamWindow : public QMainWindow {
   QCheckBox* epipolar_ransac_check_{nullptr};
   QCheckBox* homography_consistency_check_{nullptr};
   hm::stitching::ControlPointFiltering control_point_filtering_;
+  QComboBox* control_point_selection_combo_{nullptr};
   QComboBox* control_point_resolution_combo_{nullptr};
+  QString control_point_selection_{};
   QString control_point_resolution_{"native"};
   QSpinBox* control_points_spin_{nullptr};
   QSpinBox* calibration_frame_count_spin_{nullptr};
@@ -1011,6 +1014,7 @@ class HStreamWindow : public QMainWindow {
   bool active_run_autooptimizer_{false};
   QString active_stitch_frame_time_;
   hm::stitching::ControlPointFiltering active_control_point_filtering_;
+  QString active_control_point_selection_{};
   QString active_control_point_resolution_{"native"};
   QString active_control_point_matcher_;
   QString active_mapping_backend_;
@@ -1099,6 +1103,7 @@ class HStreamWindow : public QMainWindow {
   int default_stitch_max_output_width_{0};
   bool default_run_autooptimizer_{true};
   hm::stitching::ControlPointFiltering default_control_point_filtering_;
+  QString default_control_point_selection_{};
   QString default_control_point_resolution_{"native"};
   // Seeded from the resolved baseline; configs/baseline.yaml owns the default.
   QString default_control_point_matcher_;
@@ -1136,6 +1141,7 @@ class HStreamWindow : public QMainWindow {
   QString development_bazel_bin_;
   QString saved_stitch_frame_time_;
   hm::stitching::ControlPointFiltering saved_control_point_filtering_;
+  QString saved_control_point_selection_{};
   QString saved_control_point_resolution_{"native"};
   QString saved_blend_mode_{"laplacian"};
   double saved_blend_feather_fraction_{0.05};

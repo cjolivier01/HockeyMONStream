@@ -144,6 +144,7 @@ bool same_settings(const StitchingExperimentSettings& left, const StitchingExper
   return left.player_scan_playback_start == right.player_scan_playback_start &&
       left.control_points == right.control_points && left.frame_count == right.frame_count &&
       left.stitch_frame_time == right.stitch_frame_time && left.rink_rotation_degrees == right.rink_rotation_degrees &&
+      left.control_point_selection.value_or("legacy") == right.control_point_selection.value_or("legacy") &&
       left.control_point_resolution == right.control_point_resolution &&
       left.control_point_filtering == right.control_point_filtering &&
       left.control_point_matcher == right.control_point_matcher &&
@@ -193,6 +194,13 @@ YAML::Node settings_yaml(const StitchingExperimentSettings& settings) {
     hm::stitching::write_control_point_filtering(saved, *settings.control_point_filtering);
     node["control_point_filtering"] = saved["stitching"]["control_point_filtering"];
   }
+  if (settings.control_point_selection) {
+    require(
+        !settings.control_point_selection->empty() &&
+            hm::stitching::ParseControlPointSelection(*settings.control_point_selection).ok(),
+        "Experiment control-point selection is invalid");
+    node["control_point_selection"] = *settings.control_point_selection;
+  }
   if (settings.control_point_resolution) {
     require(
         !settings.control_point_resolution->empty() &&
@@ -217,6 +225,7 @@ StitchingExperimentSettings parse_settings(const YAML::Node& node) {
        "reference",
        "player_scan_playback_start",
        "rotation",
+       "control_point_selection",
        "control_point_resolution",
        "control_point_filtering",
        "manual_control_points",
@@ -248,6 +257,8 @@ StitchingExperimentSettings parse_settings(const YAML::Node& node) {
     require(filtering.ok(), "Invalid stored experiment geometric filtering");
     settings.control_point_filtering = *filtering;
   }
+  if (node["control_point_selection"])
+    settings.control_point_selection = string_value(node["control_point_selection"], 32);
   if (node["control_point_resolution"])
     settings.control_point_resolution = string_value(node["control_point_resolution"], 16);
   if (node["rotation"]) {
@@ -579,6 +590,13 @@ absl::StatusOr<YAML::Node> validate_workspace_config(
     require(
         actual.ok() && *actual == *workspace.settings.control_point_filtering,
         "Saved experiment geometric filtering no longer matches its workspace");
+  }
+  if (workspace.settings.control_point_selection) {
+    const auto actual = hm::stitching::read_control_point_selection(config);
+    const auto expected = hm::stitching::ParseControlPointSelection(*workspace.settings.control_point_selection);
+    require(
+        config["stitching"]["control_point_selection"] && actual.ok() && expected.ok() && *actual == *expected,
+        "Saved experiment control-point selection no longer matches its workspace");
   }
   if (workspace.settings.control_point_resolution) {
     const auto actual = hm::stitching::read_control_point_resolution(config);

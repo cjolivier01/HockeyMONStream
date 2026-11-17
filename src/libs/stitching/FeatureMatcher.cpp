@@ -268,7 +268,8 @@ absl::Status validate_lens_calibration(const FisheyeLensCalibration& calibration
 absl::StatusOr<AkazeFeatures> detect_akaze(
     const cv::Mat& source,
     bool left_camera,
-    const std::optional<FisheyeLensCalibration>& calibration) {
+    const std::optional<FisheyeLensCalibration>& calibration,
+    const std::optional<FeatureMatchQuality>& quality) {
   AkazeFeatures result;
   result.source_size = source.size();
   cv::Mat gray = grayscale_u8(source);
@@ -322,10 +323,27 @@ absl::StatusOr<AkazeFeatures> detect_akaze(
   const int y_begin = static_cast<int>(std::floor(kDetectionYMinimum * result.detector_size.height));
   const int y_end = static_cast<int>(std::ceil(kDetectionYMaximum * result.detector_size.height));
   detection_mask(cv::Rect(x_begin, y_begin, x_end - x_begin, y_end - y_begin)).setTo(cv::Scalar::all(255));
-  auto detector =
-      cv::AKAZE::create(cv::AKAZE::DESCRIPTOR_MLDB, 0, 3, FeatureMatcher::kAkazeThreshold, 4, 4, cv::KAZE::DIFF_PM_G2);
+  auto detector = cv::AKAZE::create(
+      cv::AKAZE::DESCRIPTOR_MLDB,
+      0,
+      3,
+      quality ? quality->akaze_response_floor : FeatureMatcher::kAkazeThreshold,
+      4,
+      4,
+      cv::KAZE::DIFF_PM_G2);
   detector->detect(gray, result.keypoints, detection_mask);
-  retain_strongest_keypoints(&result.keypoints, FeatureMatcher::kAkazeMaximumKeypoints);
+  if (quality) {
+    auto selected = SelectDistributedKeypoints(
+        std::move(result.keypoints),
+        result.detector_size,
+        FeatureMatcher::kAkazeMaximumKeypoints,
+        quality->akaze_response_floor);
+    if (!selected.ok())
+      return selected.status();
+    result.keypoints = std::move(*selected);
+  } else {
+    retain_strongest_keypoints(&result.keypoints, FeatureMatcher::kAkazeMaximumKeypoints);
+  }
   if (!result.keypoints.empty())
     detector->compute(gray, result.keypoints, result.descriptors);
   return result;
@@ -362,7 +380,16 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     hm::onnx::ExecutionProvider provider,
     const std::string& profile_prefix,
     const hm::onnx::CpuFallbackOptions& cpu_fallback,
-    ControlPointFiltering filtering) {
+    ControlPointFiltering filtering,
+    ControlPointSelection selection) {
+  std::optional<FeatureMatchQuality> quality;
+  if (selection == ControlPointSelection::kQualityCoverage) {
+    auto loaded = LoadFeatureMatchQuality();
+    if (!loaded.ok())
+      return loaded.status();
+    quality = *loaded;
+  }
+  std::clog << "Match selection=" << ControlPointSelectionName(selection) << '\n';
   if (matcher == ControlPointMatcher::kAkazeHamming) {
     if (akaze_calibration.left.has_value() != akaze_calibration.right.has_value()) {
       return absl::InvalidArgumentError("AKAZE lens calibration must contain both cameras or neither camera");
@@ -378,6 +405,7 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
     auto result = std::unique_ptr<FeatureMatcher>(
         new FeatureMatcher(matcher, {}, 0, kKeypointsPerImage, false, std::move(akaze_calibration)));
     result->filtering_ = filtering;
+    result->quality_ = quality;
     return result;
   }
   if (model_path.empty()) {
@@ -449,6 +477,7 @@ absl::StatusOr<std::unique_ptr<FeatureMatcher>> FeatureMatcher::Create(
       matcher == ControlPointMatcher::kSuperPointLightGlue ? kSuperPointKeypointsPerImage : kKeypointsPerImage;
   auto result = std::unique_ptr<FeatureMatcher>(
       new FeatureMatcher(matcher, std::move(*session), input_channels, keypoints_per_image));
+  result->quality_ = quality;
   result->resolution_ = resolution;
   result->filtering_ = filtering;
   std::clog << "Control-point matcher " << ControlPointMatcherName(matcher)
@@ -554,7 +583,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
     size_t match_value_count,
     const float* scores,
     size_t score_count,
-    size_t max_control_points) {
+    size_t max_control_points,
+    float minimum_score) {
   return PostprocessSparse(
       input,
       keypoints,
@@ -564,7 +594,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Postprocess(
       scores,
       score_count,
       max_control_points,
-      kSuperPointKeypointsPerImage);
+      kSuperPointKeypointsPerImage,
+      minimum_score);
 }
 
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessSparse(
@@ -576,7 +607,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessSparse(
     const float* scores,
     size_t score_count,
     size_t max_control_points,
-    size_t keypoints_per_image) {
+    size_t keypoints_per_image,
+    float minimum_score) {
   if (keypoints_per_image == 0 || keypoints_per_image > static_cast<size_t>(std::numeric_limits<int>::max()))
     return absl::InvalidArgumentError("Feature matcher keypoint capacity is invalid");
   const size_t expected_keypoints = static_cast<size_t>(2) * keypoints_per_image * 2;
@@ -607,7 +639,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessSparse(
     const float score = scores[match_index];
     if (!std::isfinite(score))
       return absl::InvalidArgumentError("LightGlue returned a non-finite score");
-    if (!(score > kMinimumScore))
+    if (!(score > minimum_score))
       continue;
     const float* left = keypoints + static_cast<size_t>(left_index) * 2;
     const float* right = keypoints + (keypoints_per_image + right_index) * 2;
@@ -649,7 +681,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessDeDoDe(
     size_t match_count,
     const float* scores,
     size_t score_count,
-    size_t max_control_points) {
+    size_t max_control_points,
+    float minimum_score) {
   constexpr size_t expected_keypoints = static_cast<size_t>(2) * kKeypointsPerImage * 2;
   if (keypoints == nullptr || keypoint_count != expected_keypoints || matches == nullptr ||
       match_count != kKeypointsPerImage || scores == nullptr || score_count != kKeypointsPerImage) {
@@ -670,7 +703,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessDeDoDe(
       return absl::OutOfRangeError("DeDoDe + LightGlue returned an invalid keypoint index");
     if (!std::isfinite(score))
       return absl::InvalidArgumentError("DeDoDe + LightGlue returned a non-finite score");
-    if (right_index < 0 || !(score > kMinimumScore))
+    if (right_index < 0 || !(score > minimum_score))
       continue;
     const float* left = keypoints + static_cast<size_t>(left_index) * 2;
     const float* right = keypoints + (static_cast<size_t>(kKeypointsPerImage) + right_index) * 2;
@@ -702,7 +735,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessLoFTR(
     size_t right_keypoint_count,
     const float* scores,
     size_t score_count,
-    size_t max_control_points) {
+    size_t max_control_points,
+    float minimum_score) {
   if (left_keypoint_count != score_count * 2 || right_keypoint_count != score_count * 2 ||
       (score_count > 0 && (left_keypoints == nullptr || right_keypoints == nullptr || scores == nullptr))) {
     return absl::InvalidArgumentError("LoFTR keypoints and scores have inconsistent shapes");
@@ -723,7 +757,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::PostprocessLoFTR(
         !std::isfinite(score)) {
       return absl::InvalidArgumentError("LoFTR returned a non-finite match");
     }
-    if (!(score > kMinimumScore) || left[0] < 0.0f || left[1] < 0.0f || right[0] < 0.0f || right[1] < 0.0f ||
+    if (!(score > minimum_score) || left[0] < 0.0f || left[1] < 0.0f || right[0] < 0.0f || right[1] < 0.0f ||
         left[0] >= input.resized_sizes[0].width || left[1] >= input.resized_sizes[0].height ||
         right[0] >= input.resized_sizes[1].width || right[1] >= input.resized_sizes[1].height) {
       continue;
@@ -909,6 +943,7 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
   if (!scores.ok())
     return scores.status();
 
+  const float minimum_score = quality_ ? quality_->MinimumScore(matcher_) : kMinimumScore;
   const auto filter = [&](absl::StatusOr<FeatureMatchResult> matches) -> absl::StatusOr<FeatureMatchResult> {
     if (!matches.ok())
       return matches.status();
@@ -929,7 +964,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
         *second_count,
         *scores,
         *score_count,
-        max_control_points));
+        max_control_points,
+        minimum_score));
   }
 
   auto matches = outputs->at(1).int64_data();
@@ -940,7 +976,15 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
     if (!keypoints.ok())
       return keypoints.status();
     return filter(PostprocessDeDoDe(
-        *input, *keypoints, *first_count, *matches, *second_count, *scores, *score_count, max_control_points));
+        *input,
+        *keypoints,
+        *first_count,
+        *matches,
+        *second_count,
+        *scores,
+        *score_count,
+        max_control_points,
+        minimum_score));
   }
 
   if (sparse_keypoints_are_float_) {
@@ -956,7 +1000,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
         *scores,
         *score_count,
         max_control_points,
-        sparse_keypoints_per_image_));
+        sparse_keypoints_per_image_,
+        minimum_score));
   }
   auto keypoints = outputs->at(0).int64_data();
   if (!keypoints.ok())
@@ -973,7 +1018,8 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::Infer(
       *scores,
       *score_count,
       max_control_points,
-      sparse_keypoints_per_image_));
+      sparse_keypoints_per_image_,
+      minimum_score));
 }
 
 absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
@@ -990,12 +1036,12 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
   status = validate_source_image(right_bgr, "Right");
   if (!status.ok())
     return status;
-  auto left = detect_akaze(left_bgr, true, akaze_calibration_.left);
+  auto left = detect_akaze(left_bgr, true, akaze_calibration_.left, quality_);
   if (!left.ok())
     return left.status();
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("AKAZE feature matching cancelled after left-image detection");
-  auto right = detect_akaze(right_bgr, false, akaze_calibration_.right);
+  auto right = detect_akaze(right_bgr, false, akaze_calibration_.right, quality_);
   if (!right.ok())
     return right.status();
   if (is_cancelled && is_cancelled())
@@ -1003,12 +1049,24 @@ absl::StatusOr<FeatureMatchResult> FeatureMatcher::InferAkaze(
   if (left->descriptors.empty() || right->descriptors.empty())
     return absl::NotFoundError("AKAZE produced no usable M-LDB descriptors");
 
-  const auto forward = ratio_matches(left->descriptors, right->descriptors, kAkazeLoweRatio);
-  const auto backward = ratio_matches(right->descriptors, left->descriptors, kAkazeLoweRatio);
+  std::vector<OneWayBinaryMatch> forward;
   std::vector<int> right_to_left(right->keypoints.size(), -1);
-  for (const auto& match : backward) {
-    if (match.query >= 0 && static_cast<size_t>(match.query) < right_to_left.size())
-      right_to_left[match.query] = match.train;
+  if (quality_) {
+    auto matches = MatchQualityBinaryDescriptors(
+        left->descriptors, right->descriptors, kAkazeLoweRatio, quality_->akaze_max_hamming_fraction);
+    if (!matches.ok())
+      return matches.status();
+    for (const auto& match : *matches) {
+      forward.push_back({match.queryIdx, match.trainIdx, static_cast<int>(match.distance)});
+      right_to_left[match.trainIdx] = match.queryIdx;
+    }
+  } else {
+    forward = ratio_matches(left->descriptors, right->descriptors, kAkazeLoweRatio);
+    const auto backward = ratio_matches(right->descriptors, left->descriptors, kAkazeLoweRatio);
+    for (const auto& match : backward) {
+      if (match.query >= 0 && static_cast<size_t>(match.query) < right_to_left.size())
+        right_to_left[match.query] = match.train;
+    }
   }
   const float descriptor_bits = static_cast<float>(left->descriptors.cols * 8);
   struct CandidateMatch {

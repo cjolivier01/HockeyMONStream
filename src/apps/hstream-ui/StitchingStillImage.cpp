@@ -100,6 +100,12 @@ bool settings_match(const YAML::Node& config, const QByteArray& expected_setting
   }
   merge(effective, config);
   hm::stitching::PreserveLegacyInputLensSelection(effective, config);
+  if (expected_settings.isEmpty()) {
+    const auto saved_selection = hm::stitching::read_saved_control_point_selection(config);
+    if (!saved_selection.ok())
+      return false;
+    effective["stitching"]["control_point_selection"] = hm::stitching::ControlPointSelectionName(*saved_selection);
+  }
   if (!expected_settings.isEmpty()) {
     const YAML::Node selected = YAML::Load(expected_settings.toStdString());
     for (const auto& entry : selected["stitching"])
@@ -127,6 +133,10 @@ bool settings_match(const YAML::Node& config, const QByteArray& expected_setting
   choices.projection_parameters = *parameters;
   choices.projection_framing = *framing;
   choices.camera = *camera;
+  const auto match_selection = hm::stitching::read_control_point_selection(effective);
+  if (!match_selection.ok())
+    return false;
+  choices.control_point_selection = *match_selection;
   choices.control_point_resolution = *resolution;
   const auto filtering = hm::stitching::read_control_point_filtering(effective);
   if (!filtering.ok())

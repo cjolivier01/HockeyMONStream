@@ -613,12 +613,13 @@ bool remove_yaml_key_path(YAML::Node& root, const std::initializer_list<std::str
 
 bool restore_generated_worker_choices(YAML::Node& config) {
   const bool provider = stitching::restore_generated_control_point_execution_provider(config);
+  const bool selection = stitching::restore_generated_control_point_selection(config);
   const bool resolution = stitching::restore_generated_control_point_resolution(config);
   const bool filtering = stitching::restore_generated_control_point_filtering(config);
   const bool rink = stitching::restore_generated_stitch_rink_context(config);
   const bool mask_time = stitching::restore_generated_rink_mask_frame_time(config);
-  return stitching::restore_generated_stitching_backend_choices(config) || provider || resolution || filtering ||
-      rink || mask_time;
+  return stitching::restore_generated_stitching_backend_choices(config) || selection || provider || resolution ||
+      filtering || rink || mask_time;
 }
 
 bool is_cam_video_key(const std::string& key) {
@@ -8608,6 +8609,8 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
   stitching::write_stitch_projection_framing(config_, projection_framing);
   stitching::write_stitch_camera_selection(config_, camera);
 
+  stitching::ControlPointSelection selection;
+  HM_ASSIGN_OR_RETURN(selection, stitching::read_control_point_selection(config_));
   stitching::ControlPointResolution resolution;
   HM_ASSIGN_OR_RETURN(resolution, stitching::read_control_point_resolution(config_));
   stitching::ControlPointFiltering filtering;
@@ -8630,13 +8633,16 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
       provider,
       calibration_frame_selection_fingerprint,
       manual_points,
-      filtering};
+      filtering,
+      selection};
 
   bool provider_changed = false;
   HM_ASSIGN_OR_RETURN(
       provider_changed, stitching::materialize_control_point_execution_provider(private_config_, config_));
   bool filtering_changed = false;
   HM_ASSIGN_OR_RETURN(filtering_changed, stitching::materialize_control_point_filtering(private_config_, config_));
+  bool selection_changed = false;
+  HM_ASSIGN_OR_RETURN(selection_changed, stitching::materialize_control_point_selection(private_config_, config_));
   bool resolution_changed = false;
   HM_ASSIGN_OR_RETURN(resolution_changed, stitching::materialize_control_point_resolution(private_config_, config_));
   bool rink_context_changed = false;
@@ -8711,8 +8717,9 @@ absl::Status Configurator::persist_effective_stitching_backend_choices(const std
     // partial framing map or discard retained backend restoration metadata.
     if (freeze_changed)
       private_config_["stitching"]["auto_input_lens_frozen"] = YAML::Clone(*frozen);
-    if (freeze_changed || provider_changed || filtering_changed || resolution_changed || rink_context_changed ||
-        mask_time_changed || loaded_generated_stitching_backend_choices_ || !expected_invalidation_id.empty()) {
+    if (freeze_changed || provider_changed || filtering_changed || selection_changed || resolution_changed ||
+        rink_context_changed || mask_time_changed || loaded_generated_stitching_backend_choices_ ||
+        !expected_invalidation_id.empty()) {
       HM_RETURN_IF_ERROR(
           save_private_config_with_backend_claim(private_config_, expected_invalidation_id, backend_choices));
       loaded_generated_stitching_backend_choices_ = false;
@@ -9533,6 +9540,7 @@ absl::Status Configurator::complete_configuration(
               "max_output_width",
               "control_point_matcher",
               "control_point_resolution",
+              "control_point_selection",
               "control_point_filtering",
               "control_point_execution_provider",
               "mapping_backend",
@@ -9653,6 +9661,8 @@ absl::Status Configurator::complete_configuration(
               stitching::ValidateStitchProjectionFraming(
                   expected_projection, expected_projection_parameters, expected_projection_framing));
         }
+        stitching::ControlPointSelection expected_match_selection;
+        HM_ASSIGN_OR_RETURN(expected_match_selection, stitching::read_control_point_selection(config_));
         stitching::ControlPointResolution expected_resolution;
         HM_ASSIGN_OR_RETURN(expected_resolution, stitching::read_control_point_resolution(config_));
         stitching::ControlPointFiltering expected_filtering;
@@ -9675,7 +9685,8 @@ absl::Status Configurator::complete_configuration(
             expected_provider,
             expected_selection_fingerprint,
             expected_manual_points,
-            expected_filtering};
+            expected_filtering,
+            expected_match_selection};
         HM_RETURN_IF_ERROR(
             stitching::validate_stitching_backend_generation(
                 current, effective_invalidation_id, expected_backend_choices));

@@ -63,6 +63,7 @@ class HuginProject {
     std::optional<ControlPointMatcher> control_point_matcher;
     std::optional<ControlPointResolution> control_point_resolution;
     std::optional<ControlPointFiltering> control_point_filtering;
+    std::optional<ControlPointSelection> control_point_selection;
     std::optional<std::string> akaze_calibration_fingerprint;
     std::optional<StitchCameraSelection> camera;
     std::string calibration_frame_selection_fingerprint;
@@ -92,6 +93,7 @@ class HuginProject {
     ControlPointMatcher control_point_matcher{ControlPointMatcher::kSuperPointLightGlue};
     ControlPointResolution control_point_resolution{ControlPointResolution::kNative};
     ControlPointFiltering control_point_filtering;
+    ControlPointSelection control_point_selection{ControlPointSelection::kLegacy};
     std::string calibration_frame_selection_fingerprint;
     std::string calibration_frame_diagnostics;
     std::string manual_control_point_fingerprint;

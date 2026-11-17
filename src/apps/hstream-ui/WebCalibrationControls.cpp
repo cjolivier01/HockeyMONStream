@@ -72,6 +72,7 @@ const std::set<QString>& control_roots() {
       "stitching.sync_method",
       "stitching.control_point_matcher",
       "stitching.control_point_resolution",
+      "stitching.control_point_selection",
       "stitching.control_point_filtering",
       "stitching.control_point_execution_provider",
       "stitching.mapping_backend",
@@ -554,6 +555,9 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
     // over that lower layer, including hidden crop and leveling controls.
     auto before_effective = YAML::Clone(before_defaults);
     merge(before_effective, original);
+    if (!cleaned_source && !fresh_source && !pending_reset)
+      before_effective["stitching"]["control_point_selection"] =
+          st::ControlPointSelectionName(take(st::read_saved_control_point_selection(original)));
     before_effective["stitching"]["max_output_width"] =
         take(st::ResolveStitchingCalibrationMaxWidth(original, before_defaults));
     st::PreserveLegacyInputLensSelection(before_effective, original);
@@ -587,6 +591,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
       choices.projection_parameters = controls.projection_parameters;
       choices.projection_framing = controls.framing;
       choices.camera = controls.camera;
+      choices.control_point_selection = take(st::read_control_point_selection(before_effective));
       choices.control_point_resolution = take(st::read_control_point_resolution(before_effective));
       choices.control_point_execution_provider = take(st::read_control_point_execution_provider(before_effective));
       choices.control_point_filtering = controls.filtering;
@@ -626,6 +631,7 @@ QJsonObject RunCalibrationControlsStage(const Request& request, const std::funct
          {"generated_stitching_backend_choices",
           "generated_control_point_filtering",
           "generated_control_point_resolution",
+          "generated_control_point_selection",
           "generated_control_point_execution_provider",
           "generated_stitching_rink_context"})
       prepared["hstream_ui"].remove(key);

@@ -445,9 +445,12 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
   if (!expect(
-          lines.size() == 33 && lines[0] == "version=14" && lines.back() == "control-point-filtering=1,1",
-          "new Hugin output must record both default geometric filters"))
+          lines.size() == 34 && lines[0] == "version=18" && lines[32] == "control-point-filtering=1,1" &&
+              lines.back() == "control-point-selection=legacy",
+          "new Hugin output must record geometric filters and match selection"))
     return false;
+  lines.pop_back();
+  lines[0] = "version=14";
   // Keep this parser fixture compatible with the generated mapping dimensions
   // independently of the machine's optional live canvas cap.
   lines[1] = "max-output-width=0";
@@ -499,6 +502,36 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
         "both readers must accept supported provenance and preserve the exact plan identity/diagnostics");
   };
   bool ok = check(lines, true, true);
+  for (int version = 18; version <= 21; ++version) {
+    for (const std::string mode : {"legacy", "quality-coverage", "both"}) {
+      auto fields = lines;
+      fields[0] = "version=" + std::to_string(version);
+      if (version % 2)
+        fields.insert(fields.end() - 1, "manual-control-points=" + std::string(64, 'b'));
+      if (version >= 20)
+        fields.insert(
+            fields.end() - 1,
+            "input-cameras=" +
+                hm::stitching::SerializeStitchInputCameras(
+                    {{"left.mp4", {109, 64, {}}}, {"right.mp4", {109, 64, {}}}}));
+      fields.push_back("control-point-selection=" + mode);
+      {
+        std::ofstream output(saved_state(directory) / "stitching_canvas_provenance");
+        for (const auto& field : fields)
+          output << field << '\n';
+      }
+      const auto parsed = hm::stitching::HuginProject::ReadCanvasProvenanceLocked(directory);
+      const auto constraints = hm::stitching::check_canvas_constraint_locked(directory, 0);
+      const bool valid = mode != "both";
+      ok &= expect(
+          parsed.ok() == valid && constraints.ok() && constraints->artifacts_compatible == valid,
+          "both readers validate every match-selection provenance layout");
+      if (valid && parsed.ok() && parsed->has_value())
+        ok &= expect(
+            hm::stitching::ControlPointSelectionName(*(*parsed)->control_point_selection) == mode,
+            "match-selection provenance retains the exact mode");
+    }
+  }
   for (const std::string value : {"0,0", "0,1", "1,0", "1,1", "true,false", "2,1", "1,1extra"}) {
     auto filtering_fields = lines;
     filtering_fields.back() = "control-point-filtering=" + value;
@@ -700,6 +733,7 @@ bool test_owned_solve_publication(
       "    reframe: null\n"
       "    control_point_count: 2000\n"
       "    calibration_frame_count: 16\n");
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = choices.control_point_matcher;
   config["stitching"]["control_point_resolution"] = ControlPointResolutionName(choices.control_point_resolution);
   config["stitching"]["mapping_backend"] = choices.mapping_backend;
@@ -812,7 +846,7 @@ bool test_reframe_publication(const std::filesystem::path& root) {
     provenance.replace(start, provenance.find('\n', start) - start, key + (index == 0 ? "10" : "0"));
   }
   hm::stitching::StitchInputCameras source_optics{{"left.mp4", {125.12, 70.36, {}}}, {"right.mp4", {97.07, 54.59, {}}}};
-  provenance.replace(0, std::string("version=14").size(), "version=16");
+  provenance.replace(0, std::string("version=18").size(), "version=20");
   provenance.insert(
       provenance.find("control-point-filtering="),
       "input-cameras=" + SerializeStitchInputCameras(source_optics) + "\n");
@@ -2659,6 +2693,7 @@ int main(int argc, char** argv) {
       true,
       {},
       hm::stitching::StitchProjectionFraming{true, 180.0, true, true}};
+  backend_claim["stitching"]["control_point_selection"] = "legacy";
   backend_claim["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   backend_claim["stitching"]["mapping_backend"] = "nona";
   backend_claim["stitching"]["projection"] = "equirectangular";

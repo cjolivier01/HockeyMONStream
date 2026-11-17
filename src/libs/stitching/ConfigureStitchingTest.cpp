@@ -553,6 +553,7 @@ bool expect_manual_match_provenance(const fs::path& tmpdir) {
       // when every algorithm setting comes from an inherited layer.
       config["stitching"]["manual_control_points"] = std::string(64, 'a');
     } else {
+      config["stitching"]["control_point_selection"] = "legacy";
       config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
       config["stitching"]["control_point_resolution"] = "native";
       config["stitching"]["mapping_backend"] = "nona";
@@ -746,6 +747,7 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   config["stitching"]["control_point_resolution"] = "native";
   // Pin the matcher these synthetic provenance fixtures record, so this case
   // keeps exercising mapping changes rather than the shipped baseline default.
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n"))
     return false;
@@ -784,11 +786,17 @@ bool expect_mapping_algorithm_changes_require_regeneration(const fs::path& tmpdi
   if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
       !expect_configured(dir, true, "native selection must retain compatible legacy calibration"))
     return false;
+  config["stitching"]["control_point_selection"] = "quality-coverage";
+  if (!write_text_file(saved_state(dir) / "config.yaml", YAML::Dump(config) + "\n") ||
+      !expect_configured(dir, false, "new match selection must invalidate legacy automatic matches"))
+    return false;
+  config["stitching"]["control_point_selection"] = "legacy";
 
   YAML::Node fov_only_config;
   // Pin both algorithm settings the recorded provenance carries. Either one
   // left to inherit short-circuits compatibility on its own check before the
   // camera FOV comparison this case exists to prove is ever reached.
+  fov_only_config["stitching"]["control_point_selection"] = "legacy";
   fov_only_config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   fov_only_config["stitching"]["control_point_resolution"] = "native";
   fov_only_config["stitching"]["camera_fov"]["horizontal_fov"] = 109.0;
@@ -883,6 +891,7 @@ bool expect_akaze_profile_changes_require_regeneration(const fs::path& tmpdir) {
     "right_uniforms":{"width":7680,"height":4320,"fx":4975.75,"fy":4983.25,"cx":3824.5,"cy":2173.5,"d":[0.217,0.103,0.205,0.112]}
   })";
   YAML::Node config;
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = "akaze-hamming";
   config["stitching"]["mapping_backend"] = "opencv-magsac";
   config["stitching"]["projection"] = "rectilinear";
@@ -949,6 +958,7 @@ bool expect_akaze_profile_changes_require_regeneration(const fs::path& tmpdir) {
 
 bool expect_backend_choice_reader_preserves_document() {
   YAML::Node config(YAML::NodeType::Map);
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["mapping_backend"] = "nona";
   config["stitching"]["projection"] = "general-panini";
@@ -2500,6 +2510,7 @@ bool expect_unreliable_load_preserves_player_plan_validation(const fs::path& tmp
   config["stitching"]["control_point_resolution"] = "native";
   // Match the matcher these synthetic provenance fixtures record, so the case
   // keeps exercising player-plan validation rather than the baseline default.
+  config["stitching"]["control_point_selection"] = "legacy";
   config["stitching"]["control_point_matcher"] = "superpoint-lightglue";
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(plan);
   const std::string selected_config = YAML::Dump(config) + "\n";

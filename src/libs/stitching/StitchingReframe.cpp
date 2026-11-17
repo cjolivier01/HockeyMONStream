@@ -308,6 +308,7 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   HM_ASSIGN_OR_RETURN(choices.projection_parameters, read_stitch_projection_parameters(config, projection));
   HM_ASSIGN_OR_RETURN(choices.projection_framing, read_stitch_projection_framing(config));
   HM_ASSIGN_OR_RETURN(choices.camera, read_stitch_camera_selection(config));
+  HM_ASSIGN_OR_RETURN(choices.control_point_selection, read_control_point_selection(config));
   HM_ASSIGN_OR_RETURN(choices.control_point_resolution, read_control_point_resolution(config));
   HM_ASSIGN_OR_RETURN(choices.control_point_filtering, read_control_point_filtering(config));
   HM_ASSIGN_OR_RETURN(choices.control_point_execution_provider, read_control_point_execution_provider(config));
@@ -335,6 +336,7 @@ absl::StatusOr<Snapshot> snapshot(const YAML::Node& config, bool require_complet
   solver["control_point_matcher"] = choices.control_point_matcher;
   solver["mapping_backend"] = choices.mapping_backend;
   solver["run_autooptimizer"] = choices.run_autooptimizer;
+  solver["control_point_selection"] = ControlPointSelectionName(choices.control_point_selection);
   solver["control_point_resolution"] = ControlPointResolutionName(choices.control_point_resolution);
   solver["control_point_filtering"]["epipolar_ransac"] = choices.control_point_filtering.epipolar_ransac;
   solver["control_point_filtering"]["homography_consistency"] = choices.control_point_filtering.homography_consistency;
@@ -446,6 +448,8 @@ absl::Status validate_provenance(const HuginProject::CanvasProvenance& source, c
       *source.projection_framing != choices.projection_framing || !source.camera || *source.camera != camera_optics ||
       !source.control_point_matcher ||
       ControlPointMatcherName(*source.control_point_matcher) != choices.control_point_matcher ||
+      (choices.manual_control_point_fingerprint.empty() &&
+       source.control_point_selection.value_or(ControlPointSelection::kLegacy) != choices.control_point_selection) ||
       !source.control_point_resolution || *source.control_point_resolution != choices.control_point_resolution ||
       (choices.manual_control_point_fingerprint.empty() &&
        source.control_point_filtering.value_or(LegacyControlPointFiltering(*source.control_point_matcher)) !=
@@ -501,9 +505,11 @@ absl::StatusOr<HuginProject::CanvasProvenance> source_provenance(const fs::path&
   if (contents.rfind("version=10\n", 0) != 0 && contents.rfind("version=11\n", 0) != 0 &&
       contents.rfind("version=12\n", 0) != 0 && contents.rfind("version=13\n", 0) != 0 &&
       contents.rfind("version=14\n", 0) != 0 && contents.rfind("version=15\n", 0) != 0 &&
-      contents.rfind("version=16\n", 0) != 0 && contents.rfind("version=17\n", 0) != 0)
+      contents.rfind("version=16\n", 0) != 0 && contents.rfind("version=17\n", 0) != 0 &&
+      contents.rfind("version=18\n", 0) != 0 && contents.rfind("version=19\n", 0) != 0 &&
+      contents.rfind("version=20\n", 0) != 0 && contents.rfind("version=21\n", 0) != 0)
     return absl::FailedPreconditionError(
-        "Reframing requires complete version-10 through version-17 alignment provenance");
+        "Reframing requires complete version-10 through version-21 alignment provenance");
   const auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
   if (!provenance.ok())
     return provenance.status();

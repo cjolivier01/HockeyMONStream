@@ -29,6 +29,10 @@ enum class ControlPointMatcher {
   kAkazeHamming,
 };
 
+enum class ControlPointSelection { kLegacy, kQualityCoverage };
+const char* ControlPointSelectionName(ControlPointSelection selection);
+absl::StatusOr<ControlPointSelection> ParseControlPointSelection(const std::string& value);
+
 // Provenance predating configurable filters had epipolar filtering only for AKAZE.
 inline ControlPointFiltering LegacyControlPointFiltering(ControlPointMatcher matcher) {
   return {matcher == ControlPointMatcher::kAkazeHamming, false};

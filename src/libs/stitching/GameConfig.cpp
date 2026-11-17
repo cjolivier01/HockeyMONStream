@@ -1778,6 +1778,85 @@ bool restore_generated_stitching_backend_choices(YAML::Node& config) {
   return true;
 }
 
+absl::StatusOr<ControlPointSelection> read_control_point_selection(const YAML::Node& config) {
+  try {
+    const YAML::Node stitching = config && config.IsMap() ? config["stitching"] : YAML::Node();
+    const YAML::Node value = stitching && stitching.IsMap() ? stitching["control_point_selection"] : YAML::Node();
+    if (!value || value.IsNull()) {
+      auto baseline = hm::baseline_config::load();
+      if (!baseline.ok())
+        return baseline.status();
+      const YAML::Node selected = baseline->values["stitching"]["control_point_selection"];
+      if (!selected || !selected.IsScalar())
+        return absl::InvalidArgumentError("stitching.control_point_selection is required in the baseline");
+      return ParseControlPointSelection(selected.as<std::string>());
+    }
+    if (!value || !value.IsScalar())
+      return absl::InvalidArgumentError("stitching.control_point_selection is required in the baseline");
+    return ParseControlPointSelection(value.as<std::string>());
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid control-point selection: ") + error.what());
+  }
+}
+
+absl::StatusOr<ControlPointSelection> read_saved_control_point_selection(const YAML::Node& config) {
+  try {
+    const auto stitching = config["stitching"];
+    if (stitching && stitching.IsMap() && stitching["control_point_selection"] &&
+        !stitching["control_point_selection"].IsNull())
+      return read_control_point_selection(config);
+    const auto ui = config["hstream_ui"];
+    const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
+    const auto claim = calibration && calibration.IsMap() ? calibration["backend_generation"] : YAML::Node();
+    if (claim && claim.IsMap() && claim["control_point_selection"] &&
+        claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>(""))
+      return ParseControlPointSelection(claim["control_point_selection"].as<std::string>());
+    return ControlPointSelection::kLegacy;
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid saved control-point selection: ") + error.what());
+  }
+}
+
+bool restore_generated_control_point_selection(YAML::Node& config) {
+  const YAML::Node values = config;
+  const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();
+  const YAML::Node marker = ui && ui.IsMap() ? ui["generated_control_point_selection"] : YAML::Node();
+  if (!marker || !marker.IsMap() || !marker["generated"] || !marker["generated"].IsScalar())
+    return false;
+  const YAML::Node stitching = values["stitching"];
+  const YAML::Node current = stitching && stitching.IsMap() ? stitching["control_point_selection"] : YAML::Node();
+  if (current && YAML::Dump(current) == YAML::Dump(marker["generated"])) {
+    if (marker["previous"])
+      config["stitching"]["control_point_selection"] = YAML::Clone(marker["previous"]);
+    else
+      config["stitching"].remove("control_point_selection");
+  }
+  config["hstream_ui"].remove("generated_control_point_selection");
+  return true;
+}
+
+absl::StatusOr<bool> materialize_control_point_selection(YAML::Node& config, const YAML::Node& effective) {
+  ControlPointSelection selection;
+  HM_ASSIGN_OR_RETURN(selection, read_control_point_selection(effective));
+  const std::string before = YAML::Dump(config);
+  restore_generated_control_point_selection(config);
+  ControlPointSelection previous;
+  HM_ASSIGN_OR_RETURN(previous, read_control_point_selection(config));
+  if (previous != selection) {
+    YAML::Node marker(YAML::NodeType::Map);
+    const YAML::Node values = config;
+    const YAML::Node stitching = values && values.IsMap() ? values["stitching"] : YAML::Node();
+    const YAML::Node value =
+        stitching && stitching.IsMap() ? stitching["control_point_selection"] : YAML::Node(YAML::NodeType::Undefined);
+    if (value)
+      marker["previous"] = YAML::Clone(value);
+    marker["generated"] = ControlPointSelectionName(selection);
+    config["hstream_ui"]["generated_control_point_selection"] = marker;
+    config["stitching"]["control_point_selection"] = ControlPointSelectionName(selection);
+  }
+  return YAML::Dump(config) != before;
+}
+
 bool restore_generated_control_point_resolution(YAML::Node& config) {
   const YAML::Node values = config;
   const YAML::Node ui = values && values.IsMap() ? values["hstream_ui"] : YAML::Node();
@@ -2765,6 +2844,9 @@ absl::Status validate_backend_generation_claim(
     YAML::Node claim_config;
     claim_config["stitching"] = claim;
     HM_ASSIGN_OR_RETURN(claim_provider, read_control_point_execution_provider(claim_config));
+    ControlPointSelection claim_selection = ControlPointSelection::kLegacy;
+    if (claim["control_point_selection"])
+      HM_ASSIGN_OR_RETURN(claim_selection, read_control_point_selection(claim_config));
     ControlPointFiltering claim_filtering;
     HM_ASSIGN_OR_RETURN(claim_filtering, read_control_point_filtering(claim_config));
     const std::string claimed_selection = claim["calibration_frame_selection_fingerprint"]
@@ -2772,7 +2854,8 @@ absl::Status validate_backend_generation_claim(
         : std::string();
     std::string claimed_manual;
     HM_ASSIGN_OR_RETURN(claimed_manual, manual_control_point_fingerprint(claim_config));
-    const bool claim_matches = claim_filtering == expected_choices.control_point_filtering &&
+    const bool claim_matches = claim_selection == expected_choices.control_point_selection &&
+        claim_filtering == expected_choices.control_point_filtering &&
         claimed_manual == expected_choices.manual_control_point_fingerprint &&
         claim_provider == expected_choices.control_point_execution_provider &&
         claimed_selection == expected_choices.calibration_frame_selection_fingerprint &&
@@ -2859,6 +2942,8 @@ absl::Status validate_backend_generation_claim(
       return worker_camera.status();
     ControlPointResolution worker_resolution;
     HM_ASSIGN_OR_RETURN(worker_resolution, read_control_point_resolution(config));
+    ControlPointSelection worker_match_selection;
+    HM_ASSIGN_OR_RETURN(worker_match_selection, read_saved_control_point_selection(config));
     ControlPointFiltering worker_filtering;
     HM_ASSIGN_OR_RETURN(worker_filtering, read_control_point_filtering(config));
     hm::onnx::ExecutionProvider worker_provider;
@@ -2867,7 +2952,8 @@ absl::Status validate_backend_generation_claim(
     HM_ASSIGN_OR_RETURN(worker_selection, player_frame_selection_fingerprint(config));
     std::string worker_manual;
     HM_ASSIGN_OR_RETURN(worker_manual, manual_control_point_fingerprint(config));
-    const bool worker_tuple_matches = worker_filtering == expected_choices.control_point_filtering &&
+    const bool worker_tuple_matches = worker_match_selection == expected_choices.control_point_selection &&
+        worker_filtering == expected_choices.control_point_filtering &&
         worker_provider == expected_choices.control_point_execution_provider &&
         worker_selection == expected_choices.calibration_frame_selection_fingerprint &&
         worker_manual == expected_choices.manual_control_point_fingerprint &&
@@ -2929,6 +3015,7 @@ absl::Status reserve_stitching_backend_generation_in_config(
     if (!claim_has_current_generation) {
       claim["invalidation_id"] = expected_invalidation_id;
       claim["control_point_matcher"] = expected_choices.control_point_matcher;
+      claim["control_point_selection"] = ControlPointSelectionName(expected_choices.control_point_selection);
       claim["control_point_resolution"] = ControlPointResolutionName(expected_choices.control_point_resolution);
       claim["control_point_filtering"]["epipolar_ransac"] = expected_choices.control_point_filtering.epipolar_ransac;
       claim["control_point_filtering"]["homography_consistency"] =

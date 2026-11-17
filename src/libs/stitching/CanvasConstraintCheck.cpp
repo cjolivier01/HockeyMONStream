@@ -780,6 +780,17 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
+  for (int version = 18; version <= 21; ++version) {
+    if (lines.empty() || lines.front() != "version=" + std::to_string(version))
+      continue;
+    if (lines.size() < 2 ||
+        (lines.back() != "control-point-selection=legacy" &&
+         lines.back() != "control-point-selection=quality-coverage"))
+      return absl::FailedPreconditionError("Invalid canvas provenance match selection");
+    lines.pop_back();
+    lines.front() = "version=" + std::to_string(version - 4);
+    break;
+  }
   const bool legacy = lines.size() == 9 && lines[0] == "version=2";
   const bool algorithm_aware = lines.size() == 11 && lines[0] == "version=3";
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";

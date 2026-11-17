@@ -374,6 +374,27 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
+  // Versions 18-21 append the match-selection mode to the corresponding
+  // 14-17 layout. Older artifacts retain their exact legacy interpretation.
+  for (int version = 18; version <= 21; ++version) {
+    if (lines.empty() || lines.front() != "version=" + std::to_string(version))
+      continue;
+    if (lines.size() < 2)
+      return absl::FailedPreconditionError("Incomplete match-selection provenance");
+    std::string mode;
+    HM_ASSIGN_OR_RETURN(mode, parse_canvas_provenance_string(lines.back(), "control-point-selection"));
+    ControlPointSelection selection;
+    HM_ASSIGN_OR_RETURN(selection, ParseControlPointSelection(mode));
+    std::ostringstream previous;
+    previous << "version=" << version - 4 << '\n';
+    for (size_t index = 1; index + 1 < lines.size(); ++index)
+      previous << lines[index] << '\n';
+    auto parsed = parse_canvas_provenance(previous.str());
+    if (!parsed.ok())
+      return parsed.status();
+    parsed->control_point_selection = selection;
+    return parsed;
+  }
   const bool legacy = lines.size() == 9 && lines[0] == "version=2";
   const bool algorithm_aware = lines.size() == 11 && lines[0] == "version=3";
   const bool parameter_aware = lines.size() == 12 && lines[0] == "version=4";
@@ -3212,8 +3233,8 @@ absl::Status render_staged_project(
   provenance.imbue(std::locale::classic());
   provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
              << (options.input_cameras.empty()
-                     ? (options.manual_control_point_fingerprint.empty() ? "version=14\n" : "version=15\n")
-                     : (options.manual_control_point_fingerprint.empty() ? "version=16\n" : "version=17\n"))
+                     ? (options.manual_control_point_fingerprint.empty() ? "version=18\n" : "version=19\n")
+                     : (options.manual_control_point_fingerprint.empty() ? "version=20\n" : "version=21\n"))
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -3268,6 +3289,7 @@ absl::Status render_staged_project(
     provenance << "input-cameras=" << SerializeStitchInputCameras(options.input_cameras) << '\n';
   provenance << "control-point-filtering=" << (options.control_point_filtering.epipolar_ransac ? 1 : 0) << ','
              << (options.control_point_filtering.homography_consistency ? 1 : 0) << '\n';
+  provenance << "control-point-selection=" << ControlPointSelectionName(options.control_point_selection) << '\n';
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;
@@ -3360,6 +3382,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
   options.input_lens = provenance->camera->input_lens;
   options.input_cameras = provenance->camera->input_cameras;
   options.control_point_matcher = *provenance->control_point_matcher;
+  options.control_point_selection = provenance->control_point_selection.value_or(ControlPointSelection::kLegacy);
   options.control_point_resolution = *provenance->control_point_resolution;
   options.control_point_filtering =
       provenance->control_point_filtering.value_or(LegacyControlPointFiltering(*provenance->control_point_matcher));
