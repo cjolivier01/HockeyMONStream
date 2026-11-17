@@ -403,6 +403,23 @@ print('{"ready":true}')
                 "GPU ran out of available memory",
                 failure_detail(stage, json.dumps({"error": error}), finished=True),
             )
+        for code in (200, 209):
+            detail = failure_detail(
+                stage,
+                f"ERROR from hmstitcher0: CUDA kernel failed\nCuda failure: status={code}\n",
+                finished=True,
+            )
+            self.assertIn("CUDA kernel failed", detail)
+            self.assertNotIn("ran out of available memory", detail)
+            self.assertNotIn("other GPU work", detail)
+        detail = failure_detail(
+            stage,
+            "ERROR from hmstitcher0: Could not acquire an output buffer (GPU): not-negotiated (-4)\n",
+            finished=True,
+        )
+        self.assertIn("not-negotiated", detail)
+        self.assertIn("could not provide a video buffer", detail)
+        self.assertNotIn("more available GPU memory", detail)
 
     def test_transport_errors_explain_legacy_profiles_without_nested_json(self):
         legacy = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles"

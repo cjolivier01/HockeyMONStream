@@ -74,20 +74,18 @@ def failure_detail(stage, log, *, finished):
         "Open Test details for the full log, correct this problem, then test again."
     )
     allocation = "could not acquire an output buffer" in context
-    oom = "cuda failure: status=2" in context or (
+    oom = re.search(r"\bcuda failure: status=2\b", context) is not None or (
         any(marker in context for marker in ("cuda", "gpu", "hip"))
         and any(marker in context for marker in ("out of memory", "outofmemory"))
     )
-    if allocation or oom:
-        cause = (
-            "The GPU ran out of available memory."
-            if oom
-            else "The GPU could not allocate a video buffer."
-        )
+    if oom:
+        cause = "The GPU ran out of available memory."
         action = (
             "Wait for other GPU work on this computer to finish or choose a computer "
             "with more available GPU memory, then test again."
         )
+    elif allocation:
+        cause = "The GPU could not provide a video buffer. " + cause
     if not finished:
         action = "HStream has not confirmed that this test stopped. Wait for cleanup before testing again."
     # Keep arbitrary native diagnostics readable and bounded in the main banner.
