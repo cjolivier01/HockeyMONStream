@@ -229,3 +229,7 @@ class BusyCheckTest(unittest.TestCase):
             changed["runtime"]["files"][str(task)] = "f" * 64
             with self.assertRaisesRegex(WorkflowError, "deployment changed"):
                 profiles.preflight_runtime(changed, verified)
+
+
+if __name__ == "__main__":
+    unittest.main()
