@@ -63,6 +63,7 @@ class SetupTest(unittest.TestCase):
             "observer_timeout_seconds": 86400,
         }
         self.cpu = {"cpus": 1, "memory_mb": 4096, "time_seconds": 600}
+        self.verified = {"features": runtime_setup.REQUIRED_FEATURES}
 
     def inspect(self, root, *, cpu):
         task, worker = (
@@ -84,6 +85,66 @@ class SetupTest(unittest.TestCase):
         return execution.compile_configuration(
             self.draft, self.defaults, self.cpu, self.inspect
         )
+
+    def test_runtime_compatibility_is_checked_before_build_or_admission(self):
+        prepared = {
+            "task": "/installed/bin/hstream-experiment-task",
+            "runtime": {"root": "/installed", "files": {}},
+        }
+        for features in (None, [], "experiment-control-point-selection-v1", {}):
+            with patch.object(
+                runtime_setup,
+                "run_readonly",
+                return_value=json.dumps({"features": features}),
+            ):
+                with self.assertRaisesRegex(
+                    WorkflowError, "make deploy NODES=ripper,mini"
+                ):
+                    runtime_setup.require_current_task(prepared, 30, ["ripper", "mini"])
+        with patch.object(
+            runtime_setup,
+            "run_readonly",
+            return_value=json.dumps({"features": runtime_setup.REQUIRED_FEATURES}),
+        ):
+            self.assertEqual(
+                runtime_setup.require_current_task(prepared, 30, ["ripper", "mini"])[
+                    "features"
+                ],
+                runtime_setup.REQUIRED_FEATURES,
+            )
+        self.save()
+        with patch.object(
+            execution,
+            "generation",
+            return_value=(self.registry, {"setup_features": []}),
+        ), patch.object(execution, "check_scheduler") as scheduler, patch.object(
+            execution, "start_test"
+        ) as start:
+            with self.assertRaisesRegex(WorkflowError, "Go back to Prepare computers"):
+                execution.execute_locked(
+                    self.registry, {"action": "start-test", "draft": self.draft}
+                )
+            scheduler.assert_not_called()
+            start.assert_not_called()
+        self.assertFalse((self.registry / "registry.json").exists())
+
+    def test_old_prepared_setup_returns_to_prepare_without_changing_history(self):
+        saved = self.save()
+        request = {
+            "revision": saved["revision"],
+            "defaults": self.defaults,
+            "metadata_resources": self.cpu,
+        }
+        with patch.object(
+            execution, "compile_configuration", return_value=self.compile()
+        ):
+            execution.build(self.registry, request)
+            old_directory, old = execution.generation(self.registry)
+            self.assertFalse(setup.progress(self.registry)["build_current"])
+            execution.build(self.registry, request, prepared=self.verified)
+        self.assertTrue(setup.progress(self.registry)["build_current"])
+        self.assertNotEqual(execution.generation(self.registry)[0], old_directory)
+        self.assertEqual(read_json(old_directory / "build.json"), old)
 
     def test_new_registry_draft_can_be_saved_reopened_and_conflicts_preserve_last_save(
         self,
@@ -826,16 +887,26 @@ int main(int argc, char** argv) {
 
         def installed(root, cpu):
             task, runtime = self.inspect(root, cpu=cpu)
-            return {"source": "/opt/hstream", "task": task, "runtime": runtime}
+            return {
+                "source": "/opt/hstream",
+                "task": task,
+                "runtime": runtime,
+                "features": runtime_setup.REQUIRED_FEATURES,
+            }
 
-        def node(registry, name, preferred, timeout):
+        def node(registry, name, preferred, timeout, deployment_nodes):
+            self.assertEqual(deployment_nodes, ["meshy", "mini", "monster", "ripper"])
             return installed(
                 "/shared/old-os" if name == "monster" else "/shared/new-os", False
             )
 
         with patch.object(
             runtime_setup, "snapshot", return_value=installed("/shared/cpu", True)
-        ), patch.object(runtime_setup, "from_node", side_effect=node):
+        ), patch.object(runtime_setup, "from_node", side_effect=node), patch.object(
+            runtime_setup,
+            "require_current_task",
+            side_effect=lambda value, timeout, deployment_nodes: value,
+        ):
             draft, prepared, messages = runtime_setup.prepare(
                 self.registry, self.draft, 30, 3
             )
@@ -891,7 +962,7 @@ int main(int argc, char** argv) {
             execution, "compile_configuration", return_value=self.compile()
         ):
             result = execution.build(
-                self.registry, request, prepared={}, repaired_draft=repaired
+                self.registry, request, prepared=self.verified, repaired_draft=repaired
             )
         self.assertEqual(result["draft"], repaired)
         self.assertEqual(result["revision"], digest(repaired))
@@ -1002,6 +1073,7 @@ int main(int argc, char** argv) {
                     "defaults": self.defaults,
                     "metadata_resources": self.cpu,
                 },
+                prepared=self.verified,
             )
         self.assertFalse((self.registry / "config.json").exists())
         status = execution.qualification_status(self.registry, tick=False)
@@ -1304,6 +1376,7 @@ int main(int argc, char** argv) {
                         "defaults": self.defaults,
                         "metadata_resources": self.cpu,
                     },
+                    prepared=self.verified,
                 )
 
         with patch.object(
@@ -1456,7 +1529,14 @@ int main(int argc, char** argv) {
             execution,
             "run_readonly",
             side_effect=[configuration, WorkflowError("Connection failed")],
-        ) as command, patch.object(execution, "start_test") as start:
+        ) as command, patch.object(execution, "start_test") as start, patch.object(
+            execution,
+            "generation",
+            return_value=(
+                self.registry,
+                {"setup_features": runtime_setup.REQUIRED_FEATURES},
+            ),
+        ):
             with self.assertRaisesRegex(ValueError, "main submission server"):
                 execution.execute(
                     {

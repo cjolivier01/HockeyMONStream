@@ -502,7 +502,10 @@ int main(int argc, char** argv) {
           {"receipt_schema", 1},
           {"features",
            QJsonArray{
-               "experiment-materialization-v1", "workflow-portable-artifacts-v2", "game-operation-admission-v1"}},
+               "experiment-materialization-v1",
+               "workflow-portable-artifacts-v2",
+               "game-operation-admission-v1",
+               "experiment-control-point-selection-v1"}},
           {"operations",
            QJsonArray{
                "experiment-create",

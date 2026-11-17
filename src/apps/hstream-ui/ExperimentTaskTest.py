@@ -22,6 +22,7 @@ binary = pathlib.Path(sys.argv[1]).resolve()
 capabilities = json.loads(
     subprocess.check_output([str(binary), "--capabilities"], text=True)
 )
+assert "experiment-control-point-selection-v1" in capabilities["features"]
 expected_backend = sys.argv[2]
 assert capabilities["gpu_backend"] == expected_backend
 assert capabilities["gpu_operations_supported"] == (expected_backend == "nvidia")

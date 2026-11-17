@@ -445,11 +445,13 @@ def build(root, request, prepared=None, repaired_draft=None):
         )
     installed_launcher(configuration)
     configuration_revision = current_revision(root)
+    setup_features = prepared.get("features", []) if prepared else []
     generation = digest(
         {
             "draft": store,
             "configuration": configuration,
             "configuration_revision": configuration_revision,
+            "setup_features": setup_features,
         }
     )
     directory = private_directory(root / "setup-builds" / generation, create=True)
@@ -476,6 +478,7 @@ def build(root, request, prepared=None, repaired_draft=None):
                     "schema": 1,
                     "revision": store["revision"],
                     "configuration": configuration,
+                    "setup_features": setup_features,
                     "configuration_revision": configuration_revision,
                     "tests": {},
                     "host": socket.gethostname(),
@@ -999,6 +1002,14 @@ def execute_locked(root, request):
             ]
         )
     elif action == "start-test":
+        from .setup_runtime import has_current_features
+
+        _, saved = generation(root)
+        require(
+            has_current_features(saved.get("setup_features")),
+            "These prepared computers have not been checked for current stitching settings. "
+            "Go back to Prepare computers before testing. If HStream is outdated, update the main server and all selected computers.",
+        )
         check_scheduler(request["timeout_seconds"])
         result = start_test(root, request)
     elif action == "test-status":
