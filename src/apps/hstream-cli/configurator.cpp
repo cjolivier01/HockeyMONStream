@@ -9168,6 +9168,14 @@ absl::StatusOr<YAML::Node> Configurator::load_config() {
         YAML::Clone(private_config_),
         /*warn_if_key_not_in_dest=*/!config);
     stitching::PreserveLegacyInputLensSelection(config, private_config_);
+    // A pending view is already bound to its saved solver. Resolve that mode
+    // from the private request before inherited defaults erase its absence.
+    // Explicit CLI/settings overlays still apply after loading this layer.
+    if (stitching::HasStitchingReframeIntent(private_config_)) {
+      stitching::ControlPointSelection selection;
+      HM_ASSIGN_OR_RETURN(selection, stitching::read_saved_control_point_selection(private_config_));
+      config["stitching"]["control_point_selection"] = stitching::ControlPointSelectionName(selection);
+    }
     hm::config::RestoreGameCalibrationFrameCount(config, private_config_, explicit_value_ranks_, 2);
   } else {
     private_config_ = YAML::Node(YAML::NodeType::Map);
@@ -9487,6 +9495,9 @@ absl::Status Configurator::complete_configuration(
       const std::string previous = YAML::Dump(latest);
       const bool had_intent = stitching::HasStitchingReframeIntent(latest);
       YAML::Node before = merge_nodes(YAML::Clone(lower_layer_config_), YAML::Clone(latest), false);
+      stitching::ControlPointSelection saved_selection;
+      HM_ASSIGN_OR_RETURN(saved_selection, stitching::read_saved_control_point_selection(latest));
+      before["stitching"]["control_point_selection"] = stitching::ControlPointSelectionName(saved_selection);
       // Resolve the saved native aliases with the same layer precedence as
       // launch, excluding this launch's CLI overrides. Comparing an unresolved
       // canonical default to a saved native width would invent a view change.

@@ -88,14 +88,16 @@ absl::StatusOr<YAML::Node> effective_config(const YAML::Node& config) {
     }
   }
   overlay(effective, config);
-  // A retained request predates the selection switch when neither its private
-  // config nor source tuple records a mode. Resume that request with Legacy;
-  // an explicit new choice must still invalidate the saved solver tuple.
+  // Resume a retained request with its saved solver policy before inherited
+  // defaults erase the private key's absence. Explicit edits still invalidate
+  // the saved solver tuple.
   const auto intent = node_at(calibration(config), {"reframe"});
   const auto selection = node_at(config, {"stitching", "control_point_selection"});
-  if (intent.IsMap() && (!selection || selection.IsNull()) &&
-      !node_at(intent, {"source_solver", "control_point_selection"}))
-    effective["stitching"]["control_point_selection"] = "legacy";
+  if (intent.IsMap() && (!selection || selection.IsNull())) {
+    ControlPointSelection recorded_selection;
+    HM_ASSIGN_OR_RETURN(recorded_selection, read_saved_control_point_selection(config));
+    effective["stitching"]["control_point_selection"] = ControlPointSelectionName(recorded_selection);
+  }
   return effective;
 }
 

@@ -1811,6 +1811,10 @@ absl::StatusOr<ControlPointSelection> read_saved_control_point_selection(const Y
     if (claim && claim.IsMap() && claim["control_point_selection"] &&
         claim["invalidation_id"].as<std::string>("") == calibration["invalidation_id"].as<std::string>(""))
       return ParseControlPointSelection(claim["control_point_selection"].as<std::string>());
+    const auto reframe = calibration && calibration.IsMap() ? calibration["reframe"] : YAML::Node();
+    const auto solver = reframe && reframe.IsMap() ? reframe["source_solver"] : YAML::Node();
+    if (solver && solver.IsMap() && solver["control_point_selection"])
+      return ParseControlPointSelection(solver["control_point_selection"].as<std::string>());
     return ControlPointSelection::kLegacy;
   } catch (const YAML::Exception& error) {
     return absl::InvalidArgumentError(std::string("Invalid saved control-point selection: ") + error.what());

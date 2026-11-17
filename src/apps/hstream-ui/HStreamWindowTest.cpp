@@ -11777,7 +11777,7 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
       const auto changed = YAML::LoadFile(config_path.string());
       const auto intent = changed["hstream_ui"]["stitching_calibration"]["reframe"];
       if (!expect(
-              accepted && intent.IsMap() == (std::string(mode) == "legacy"),
+              accepted && (intent && intent.IsMap()) == (std::string(mode) == "legacy"),
               "Old completed view edits must reframe Legacy or regenerate the new selection on Save and Play")) {
         std::cerr << window->logText().toStdString() << '\n';
         return false;
@@ -11787,6 +11787,8 @@ bool test_projection_parameter_persistence(HStreamWindow* window) {
   fs::remove_all(crop_state);
   fs::copy(selection_state, crop_state, fs::copy_options::recursive);
   HStreamWindowTestAccess::reloadSavedControls(window);
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_MATCH_SELECTION_VIEW_ONLY"))
+    return true;
   HStreamWindowTestAccess::setTestLevelingRotation(window, -36);
   if (!expect(save->isEnabled(), "Changing the completed view must enable Save before capturing a reframe"))
     return false;
@@ -23959,7 +23961,8 @@ int main(int argc, char** argv) {
     return test_stitching_still() ? 0 : 1;
   if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_LATE_RENDER_RINK_MAP_ONLY"))
     return test_rink_map_with_late_render() ? 0 : 1;
-  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY")) {
+  if (qEnvironmentVariableIsSet("HSTREAM_UI_TEST_OPTICS_ONLY") ||
+      qEnvironmentVariableIsSet("HSTREAM_UI_TEST_MATCH_SELECTION_VIEW_ONLY")) {
     HStreamWindow window;
     window.show();
     return test_game_setup(&window, source_root.path()) && test_projection_parameter_persistence(&window) ? 0 : 1;

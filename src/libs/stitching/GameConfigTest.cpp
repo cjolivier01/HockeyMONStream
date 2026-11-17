@@ -229,6 +229,12 @@ int main() {
   ok &= expect(
       historic_selection.ok() && *historic_selection == hm::stitching::ControlPointSelection::kLegacy,
       "Only historical missing selections resolve to Legacy");
+  const auto retained_selection = hm::stitching::read_saved_control_point_selection(
+      YAML::Load(
+          "hstream_ui: {stitching_calibration: {reframe: {source_solver: {control_point_selection: quality-coverage}}}}"));
+  ok &= expect(
+      retained_selection.ok() && *retained_selection == ControlPointSelection::kQualityCoverage,
+      "A retained view must recover its mode from the frozen solver when the private key is absent");
   const auto selection_default = hm::stitching::read_control_point_selection(YAML::Node());
   ok &= expect(
       selection_default.ok() && *selection_default == ControlPointSelection::kQualityCoverage,
