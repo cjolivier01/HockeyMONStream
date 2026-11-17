@@ -116,6 +116,79 @@ class SetupTest(unittest.TestCase):
         self.assertFalse(setup.inspect_registry(self.registry, 30)["ready"])
         self.assertEqual(before, (self.registry / "config.json").read_bytes())
 
+    def test_transport_forwards_fragmented_progress_before_helper_finishes(self):
+        from hstream_workflow import setup_progress
+
+        acknowledgement = self.root / "progress-seen"
+        script = """
+import json, pathlib, sys, time
+line = ('HSTREAM_SETUP_PROGRESS ' + json.dumps({'message': 'stubby: checking…'}, ensure_ascii=False) + '\\n').encode()
+sys.stderr.buffer.write(line[:-3]); sys.stderr.flush()
+time.sleep(.15)
+sys.stderr.buffer.write(line[-3:]); sys.stderr.flush()
+deadline = time.monotonic() + 3
+while not pathlib.Path(sys.argv[1]).exists() and time.monotonic() < deadline: time.sleep(.01)
+assert pathlib.Path(sys.argv[1]).exists(), 'progress was buffered until exit'
+print('{"ready":true}')
+"""
+
+        def received(message):
+            self.assertEqual(message, "stubby: checking…")
+            acknowledgement.touch()
+
+        with patch.object(setup_progress, "emit", side_effect=received):
+            self.assertEqual(
+                json.loads(
+                    setup.run_readonly(
+                        [sys.executable, "-c", script, str(acknowledgement)], 5
+                    )
+                ),
+                {"ready": True},
+            )
+
+    def test_progress_counts_checks_separately_and_explains_scheduler_wait(self):
+        from hstream_workflow.setup_progress import summary
+
+        rows = [
+            {
+                "node": "mini",
+                "profile": "gpu",
+                "state": "succeeded",
+                "passed": True,
+                "finished": True,
+            },
+            {
+                "node": "monster",
+                "profile": "gpu",
+                "state": "running",
+                "passed": False,
+                "finished": False,
+                "status": {
+                    "nodes": [
+                        {"id": "prepare", "state": "succeeded"},
+                        {
+                            "id": "prepare-target",
+                            "state": "queued",
+                            "reason": "(Resources)",
+                        },
+                    ]
+                },
+            },
+            {"node": "mini", "profile": "rtx", "state": "not-tested", "passed": False},
+        ]
+        result = summary(rows)
+        self.assertIn(
+            "0 of 2 computers ready · 1 of 3 checks passed · 2 remaining",
+            result["summary"],
+        )
+        self.assertIn("Check 2 of 3 · computer 2 of 2 · monster", result["current"])
+        self.assertIn("Waiting for Slurm to make monster available", result["current"])
+        self.assertIn("1 of 2 stages complete", result["current"])
+        self.assertIn("Resources", result["current"])
+        self.assertEqual(
+            result["next"], "Check 2 of 3 · computer 2 of 2 · monster · gpu"
+        )
+
     def test_transport_errors_explain_legacy_profiles_without_nested_json(self):
         legacy = "Slurm profiles need a pinned runtime.worker; requalify legacy interpreter profiles"
         wrapped = json.dumps({"error": json.dumps({"error": legacy})})

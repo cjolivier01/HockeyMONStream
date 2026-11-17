@@ -29,6 +29,7 @@ from .files import (
 from .profiles import DEFAULT_FIELDS, controller_files, load_config
 from .schema import WorkflowError, digest, positive, require, validate_plan
 from .setup import SetupStore, absolute, run_readonly, validate_draft
+from .setup_progress import summary as test_summary
 
 CPU = ["experiment-create", "experiment-reuse-selection", "experiment-complete"]
 GPU = [
@@ -721,15 +722,15 @@ def qualification_status(root, *, tick):
                     finished=status["owner_released"],
                     status=status,
                 )
-                # Show the failed native stage's actual diagnostic, not an opaque
-                # red badge. The normal controller owns bounded task log reads.
+                # The controller owns bounded live and failed-stage log reads.
                 if status["state"] in {"failed", "recovery"}:
                     row["next"] = (
                         "Inspect the test stage and its log. Correct the installation or sample recording, then test again."
                     )
+                if status["state"] in {"failed", "recovery", "running"}:
                     for stage in status["nodes"]:
                         if (
-                            stage["state"] in {"failed", "recovery"}
+                            stage["state"] in {"failed", "recovery", "running"}
                             and stage["attempts"]
                         ):
                             try:
@@ -741,6 +742,7 @@ def qualification_status(root, *, tick):
             rows.append(row)
     return {
         "tests": rows,
+        "test_progress": test_summary(rows),
         "tested": bool(rows) and all(row["passed"] for row in rows),
         "current": saved["revision"] == SetupStore(root).read()["revision"],
         "message": "Tests use private experiment copies. Keep this window open to schedule their next stages; reopen to resume.",

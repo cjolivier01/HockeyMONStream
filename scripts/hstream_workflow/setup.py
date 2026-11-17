@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .files import locked, private_directory, read_json, write_json
 from .profiles import load_config
+from .setup_progress import forward
 from .schema import WorkflowError, digest, identifier, positive, require, text
 
 
@@ -240,27 +241,47 @@ def readable_error(value):
 def run_readonly(argv, timeout):
     """Time-limited inspection with bounded returned output and no prompts."""
     positive(timeout, "Connection timeout", 300)
-    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+    with tempfile.TemporaryFile() as out, tempfile.NamedTemporaryFile() as err:
         process = subprocess.Popen(
             argv, stdin=subprocess.DEVNULL, stdout=out, stderr=err
         )
+        deadline = time.monotonic() + timeout
+        pending = b""
+        diagnostics = []
         try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
+            with open(err.name, "rb") as reader:
+                while True:
+                    finished = process.poll() is not None
+                    require(
+                        os.fstat(out.fileno()).st_size <= 1024 * 1024
+                        and os.fstat(err.fileno()).st_size <= 1024 * 1024,
+                        "Connection response is too large",
+                    )
+                    pending += reader.read()
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        if not forward(line.decode(errors="replace")):
+                            diagnostics.append(line)
+                    if finished:
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise WorkflowError(
+                            "The server did not respond in time. Check its name and network connection."
+                        )
+                    try:
+                        process.wait(timeout=min(0.1, remaining))
+                    except subprocess.TimeoutExpired:
+                        pass
+        finally:
+            if process.poll() is None:
+                process.kill()
             process.wait()
-            raise WorkflowError(
-                "The server did not respond in time. Check its name and network connection."
-            )
-        require(
-            out.tell() <= 1024 * 1024 and err.tell() <= 1024 * 1024,
-            "Connection response is too large",
-        )
+        diagnostics.append(pending)
         out.seek(0)
-        err.seek(0)
-        stdout, stderr = out.read().decode(errors="replace"), err.read().decode(
-            errors="replace"
-        )
+        stdout, stderr = out.read().decode(errors="replace"), b"\n".join(
+            diagnostics
+        ).decode(errors="replace")
     if process.returncode:
         raise WorkflowError(
             readable_error(

@@ -15,10 +15,17 @@ already open in the experiment dialog. Advanced settings stay collapsed.
    **Prepare computers**. Setup discovers installed programs, verifies shared
    settings storage, repairs obsolete installation paths and prepares immutable
    copies for each platform. It does not install missing HStream packages.
-   The recording test checks access to the actual videos.
+   Activity appears as shared storage is checked and each computer verifies or
+   copies its installed files. The recording test checks access to the actual videos.
 4. **Test.** Choose one recording with players on the ice, then **Test my
    computers**. Every selected computer runs in turn. Successful computers are
-   retained; a failure stops the sequence and is shown on this screen. The test
+   retained. The screen shows the current computer, GPU choice, check number,
+   completed stages and remaining checks. Several GPU choices on the same computer
+   require separate checks. A queued stage says it is waiting for Slurm and shows
+   the scheduler reason; it does not claim to be running. Test details include the
+   current native stage log. Resume stays disabled while automatic checking runs,
+   and Stop remains available across polls. Stopping and continuing skips passed
+   checks for the current prepared setup; a failure stops the sequence and is shown on this screen. The test
    uses private copies and does not promote results to the recording. Stop testing
    cancels the current test and prevents later computers from starting, including
    when a status response is still pending. Unknown submission results must be

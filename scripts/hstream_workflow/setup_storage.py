@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .files import locked, private_directory, read_json, write_json
+from .setup_progress import emit
 from .schema import WorkflowError, positive, require
 from .setup import SetupStore, absolute, run_readonly
 
@@ -48,6 +49,7 @@ def check(root, computers, timeout, parallel):
     write_json(marker, {"token": token}, exclusive=True)
 
     def probe(node):
+        emit(node + ": checking access to shared settings…")
         try:
             remaining = int(deadline - time.monotonic())
             require(remaining > 0, "Shared storage checks exceeded the setup timeout")
@@ -70,6 +72,14 @@ def check(root, computers, timeout, parallel):
                 shared = replies[node].exists() and read_json(replies[node]) == {
                     "token": token
                 }
+            emit(
+                node
+                + (
+                    ": shared settings are accessible."
+                    if shared
+                    else ": this settings folder is not shared; looking for shared storage."
+                )
+            )
             return None if shared else node
         except (OSError, ValueError) as error:
             raise WorkflowError(

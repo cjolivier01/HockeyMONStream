@@ -490,7 +490,7 @@ else: reply({'message':'Fixture step complete'})
   resume->click();
   require(wait([&] { return test->isEnabled(); }), "Checking saved tests did not restore the next action");
   test->click();
-  require(wait([&] { return stop_test->isEnabled() && resume->isEnabled(); }), "An active test did not offer Stop");
+  require(wait([&] { return stop_test->isEnabled() && !resume->isEnabled(); }), "An active test did not offer Stop");
   require(
       !test->isEnabled() && !apply->isEnabled() && !build->isEnabled(), "An active test offered conflicting actions");
   write(root + "/setup-test-phase", "passed");
@@ -545,6 +545,10 @@ if action=='discover':
 elif action=='save':
  s['draft']=r['draft']; value={'draft':s['draft'],'revision':p['revision']}
 elif action=='build':
+ if mode=='progress-resume':
+  sys.stderr.write('HSTREAM_SETUP_PRO'); sys.stderr.flush(); time.sleep(.05)
+  sys.stderr.write('GRESS '+json.dumps({'message':'stubby: checking installed programs…'})+'\n'); sys.stderr.flush()
+  while not (root/'preparation-seen').exists(): time.sleep(.01)
  p.update(has_build=True,build_current=True)
  value={'draft':s['draft'],'revision':p['revision']}
 elif action in ('load','import'):
@@ -559,6 +563,7 @@ elif action in ('test-status','start-test','cancel-test'):
   for node,phase in list(phases.items()):
    if phase=='running' and mode=='recovered-failure' and not s.get('recovered_seen'):
     s['recovered_seen']=True; continue
+   if phase=='running' and mode=='progress-resume' and node=='stubby' and not (root/'resume-test').exists(): continue
    if phase=='running' and mode not in ('cancel','recovered-cancel') and not error: phases[node]='failed' if mode in ('failure','recovered-failure') and node=='mini' else 'passed'
  if action=='start-test':
   phases[r['node']]='running'
@@ -574,6 +579,8 @@ elif action in ('test-status','start-test','cancel-test'):
    if phase!='not-tested': row.update(status={'state':phase},finished=phase!='running')
    rows.append(row)
  value={'tests':rows,'tested':all(row['passed'] for row in rows),'current':True}
+ if mode=='progress-resume':
+  value['test_progress']={'summary':'mini: Passed\nCheck 2 of 2 · computer 2 of 2 · stubby · GPU\n1 of 2 checks passed · 1 remaining', 'current':'Check 2 of 2 · computer 2 of 2 · stubby · GPU\nWaiting for Slurm to make stubby available · (Resources)', 'next':'Check 2 of 2 · stubby · GPU'}
 elif action=='activate':
  assert set(phases.values())=={'passed'}
  p.update(applied=True,installed=True); value={'applied':True}
@@ -619,6 +626,19 @@ print(json.dumps({**value,'progress':p}))
   require(wait([&] { return pages->currentIndex() == 2; }), "Wizard did not show preparation");
   capture("3-prepare");
   next->click();
+  if (outcome == "progress-resume") {
+    require(
+        wait([&] {
+          return widget<QPlainTextEdit>(dialog, "workflowSetupPreparationLog")
+              ->toPlainText()
+              .contains("stubby: checking installed programs…");
+        }),
+        "Preparation activity was buffered until completion");
+    require(pages->currentIndex() == 2 && !next->isEnabled(), "Preparation advanced before helper completion");
+    if (!qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT").isEmpty())
+      dialog.grab().save("/tmp/wizard-qt-preparation-progress.png");
+    write(directory + "/preparation-seen", "seen");
+  }
   require(wait([&] { return pages->currentIndex() == 3 && next->isEnabled(); }), "Wizard did not finish preparation");
   capture("4-test");
   auto calls = [&] { return read(directory + "/state.json").value("calls").toArray(); };
@@ -735,6 +755,33 @@ print(json.dumps({**value,'progress':p}))
         wait([&] { return next->isEnabled() && problem->text().contains("may still be running"); }),
         "Lost admission did not offer recovery");
     next->click();
+  }
+  if (outcome == "progress-resume") {
+    auto* stop = widget<QPushButton>(dialog, "workflowSetupStopTest");
+    auto* resume = widget<QPushButton>(dialog, "workflowSetupResume");
+    require(
+        wait([&] {
+          return starts().size() == 2 &&
+              widget<QLabel>(dialog, "workflowSetupTestSummary")->text().contains("mini: Passed");
+        }),
+        "Second check never appeared");
+    for (int i = 0; i < 30; ++i) {
+      QCoreApplication::processEvents();
+      require(stop->isEnabled() && !resume->isEnabled(), "Polling flickered the Stop or Resume state");
+      QThread::msleep(20);
+    }
+    require(
+        widget<QLabel>(dialog, "workflowSetupNext")->text().contains("Waiting for Slurm"), "Scheduler wait was hidden");
+    if (!qEnvironmentVariable("HSTREAM_WORKFLOW_SETUP_SCREENSHOT").isEmpty())
+      dialog.grab().save("/tmp/wizard-qt-test-progress.png");
+    stop->click();
+    require(wait([&] { return next->isEnabled(); }), "Stop did not finish cleanup");
+    write(directory + "/resume-test", "resume");
+    next->click();
+    require(wait([&] { return pages->currentIndex() == 4 && next->isEnabled(); }), "Stopped checks did not resume");
+    require(starts() == QStringList({"mini", "stubby", "stubby"}), "Continue repeated the passed computer");
+    dialog.close();
+    return;
   }
   if (outcome == "cancel") {
     auto* stop = widget<QPushButton>(dialog, "workflowSetupCancelChecks");
@@ -2969,7 +3016,8 @@ int main(int argc, char** argv) {
             "snapshot-error",
             "recovered-cancel",
             "recovered-failure",
-            "recovered-terminal"})
+            "recovered-terminal",
+            "progress-resume"})
         setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
       std::cout << "Cluster setup wizard checks passed\n";
       return 0;
@@ -2990,7 +3038,8 @@ int main(int argc, char** argv) {
           "snapshot-error",
           "recovered-cancel",
           "recovered-failure",
-          "recovered-terminal"})
+          "recovered-terminal",
+          "progress-resume"})
       setupWizardSequence(temporary.path(), YAML::Clone(baseline->values), outcome);
     ui(temporary.path(), store, YAML::Clone(baseline->values));
     retryFailedStages(temporary.path(), YAML::Clone(baseline->values));

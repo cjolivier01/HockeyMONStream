@@ -13,6 +13,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .files import file_digest, locked, private_directory, sync_directory, write_json
+from .setup_progress import emit
 from .schema import WorkflowError, digest, identifier, require
 from .setup import absolute, run_readonly, validate_draft
 
@@ -74,8 +75,11 @@ def payload_paths(root):
 def snapshot(registry, preferred, *, cpu):
     from .setup_execution import inventory
 
+    host = socket.gethostname()
+    emit(host + ": finding installed HStream programs…")
     source = installed_root(preferred, cpu=cpu)
     paths = payload_paths(source)
+    emit(host + ": checking installed program files…")
     task, runtime = inventory(str(source), cpu=cpu, paths=paths)
     files = {
         str(Path(path).relative_to(source)): value
@@ -131,6 +135,7 @@ def snapshot(registry, preferred, *, cpu):
                 continue
             try:
                 private_directory(candidate)
+                emit(host + ": verifying an existing shared copy…")
                 verify(candidate)
             except (OSError, ValueError):
                 continue
@@ -146,7 +151,10 @@ def snapshot(registry, preferred, *, cpu):
             ) as temporary:
                 staging = Path(temporary) / "runtime"
                 staging.mkdir(mode=0o700)
-                for name in files:
+                emit(host + ": copying installed programs to shared storage…")
+                for index, name in enumerate(files, 1):
+                    if index == 1 or index % 100 == 0 or index == len(files):
+                        emit(f"{host}: copying file {index} of {len(files)}")
                     target = staging / name
                     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                     with (source / name).open("rb") as incoming, target.open(
@@ -160,6 +168,7 @@ def snapshot(registry, preferred, *, cpu):
                     alias = staging / name
                     alias.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                     alias.symlink_to(os.path.relpath(staging / target, alias.parent))
+                emit(host + ": verifying the new shared copy…")
                 verify(staging)
                 # Do not combine files from an installation that changed mid-copy.
                 _, after = inventory(str(source), cpu=cpu, paths=payload_paths(source))
@@ -171,6 +180,8 @@ def snapshot(registry, preferred, *, cpu):
                 )
                 os.rename(staging, destination)
                 sync_directory(store)
+
+    emit(host + ": HStream programs ready.")
 
     def remap(path):
         return str(destination / Path(path).relative_to(source))
@@ -275,7 +286,10 @@ def prepare(registry, draft, timeout, parallel):
             "Preparing HStream took longer than the connection timeout. Build again to reuse the completed copies.",
         )
         node, source = item
-        return item, from_node(registry, node, source, remaining)
+        emit(node + ": connecting to prepare HStream…")
+        result = from_node(registry, node, source, remaining)
+        emit(node + ": preparation complete.")
+        return item, result
 
     with ThreadPoolExecutor(max_workers=parallel) as workers:
         results = dict(workers.map(collect, requested))
