@@ -568,7 +568,6 @@ def run_state(
           "HSTREAM_CALIBRATION_START_STAGE": "input",
           "HSTREAM_CALIBRATION_INVALIDATION_ID": invalidation_id,
           "HSTREAM_RENDER_AUDIO_MUTED": "1",
-          "USE_NEW_NVSTREAMMUX": "yes",
       }
   )
   command = [

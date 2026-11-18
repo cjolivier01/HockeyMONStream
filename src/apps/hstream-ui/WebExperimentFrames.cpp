@@ -83,7 +83,6 @@ StitchingExperimentPlayerSelection ScanExperimentFrames(
   environment.insert("HM_MAX_CONTROL_POINTS", QString::number(baseline.settings.control_points));
   environment.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(baseline.settings.frame_count));
   environment.insert("HSTREAM_RENDER_AUDIO_MUTED", "1");
-  environment.insert("USE_NEW_NVSTREAMMUX", "yes");
   const auto script = path_string(work / "scan.sh");
   run(exporter,
       {"--interactive",

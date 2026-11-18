@@ -4459,7 +4459,13 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
 
   g_object_set(bin->bin, "message-forward", TRUE, NULL);
 
-  if (uri_playlist_source_count == 2 && g_strcmp0(g_getenv("USE_NEW_NVSTREAMMUX"), "yes") == 0) {
+  // Two recorded cameras must never have an incomplete pair flushed on a
+  // wall-clock deadline, which is what the lossless mux is for. It stays tied
+  // to that pairing: with one source its batch never becomes ready and the
+  // pipeline stalls, which uri_multiple_pipeline_test catches. The choice no
+  // longer depends on USE_NEW_NVSTREAMMUX, since this element is ours and is
+  // registered here rather than resolved through DeepStream's plugin.
+  if (uri_playlist_source_count == 2) {
     if (!register_hstream_lossless_nvstreammux()) {
       NVGSTDS_ERR_MSG_V("Failed to register the lossless URI-playlist stream mux");
       goto done;

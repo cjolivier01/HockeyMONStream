@@ -553,7 +553,6 @@ RinkMaskPreparation RinkMaskPreparer(
     QProcessEnvironment environment) {
   const auto game = QFileInfo(game_directory);
   environment.insert("HM_GAME_DIR", game.absolutePath());
-  environment.insert("USE_NEW_NVSTREAMMUX", "yes");
   for (const auto& key : environment.keys())
     if (key.startsWith("HSTREAM_UI_PREVIEW_") || key.startsWith("HSTREAM_CALIBRATION_") ||
         key == "HSTREAM_RINK_LEVELING_FLOW" || key == "HSTREAM_PROJECTION_CROP_FLOW" || key == "HSTREAM_JOB_MANIFEST" ||

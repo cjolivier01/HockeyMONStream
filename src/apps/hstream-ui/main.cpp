@@ -39,6 +39,15 @@ int main(int argc, char** argv) {
   hm::ui_internal::configure_application_identity();
 #ifndef HSTREAM_USE_HIP
   hm::gpu_preview::initialize_process();
+  // DeepStream picks the legacy or replacement nvstreammux/nvstreamdemux once,
+  // when the plugin is first loaded, for the whole process. Camera Experiments,
+  // Highlights and the web preview each call gst_init() and scan the DeepStream
+  // plugin directory themselves, so whichever of them a session happens to open
+  // first decides it. Set it here, before anything can load the plugin, instead
+  // of in whichever dialog remembered to. An explicit caller override still wins.
+  if (qEnvironmentVariableIsEmpty("USE_NEW_NVSTREAMMUX")) {
+    qputenv("USE_NEW_NVSTREAMMUX", "yes");
+  }
 #endif
 #if defined(Q_OS_LINUX)
   // DeepStream's EGL render sink consumes an X11 Window handle. On a Wayland

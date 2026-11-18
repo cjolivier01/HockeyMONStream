@@ -690,10 +690,8 @@ set -euo pipefail
 
 INSTALL_DIR=/opt/hstream
 
-# DeepStream 9.1's legacy nvstreammux rejects native 8K input buffers. The
-# replacement mux handles the source resolution used for stitching. Preserve
-# an explicit caller override for diagnostics and older DeepStream releases.
-export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
+# hstream-cli selects DeepStream's replacement nvstreammux itself, before it
+# re-execs, so there is nothing to export here.
 
 prepend_path() {
   local var_name="$1"
@@ -1091,7 +1089,8 @@ set -euo pipefail
 
 INSTALL_DIR=/opt/hstream
 
-export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
+# hstream-ui selects DeepStream's replacement nvstreammux in main(), before
+# anything can load the plugin, so there is nothing to export here.
 
 prepend_path() {
   local var_name="$1"
