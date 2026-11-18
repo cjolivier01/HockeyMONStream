@@ -5,10 +5,11 @@
 #   scripts/make_deb_docker.sh --target-ubuntu=24.04 [--deepstream-deb=FILE]
 #   scripts/make_deb_docker.sh --target-ubuntu=26.04 [--deepstream-deb=FILE]
 #
-# Without --deepstream-deb, deepstream-9.1_*_amd64.deb is looked up the same
-# way deploy.sh looks it up: ../DeepStream/artifacts, the output root,
-# ~/Downloads and ~, highest matching version wins.  HSTREAM_DEEPSTREAM_CACHE
-# prepends a directory.
+# Without --deepstream-deb, deepstream-*_amd64.deb is looked up the same way
+# deploy.sh looks it up: ../DeepStream/artifacts, the output root, ~/Downloads
+# and ~, newest usable release wins.  HSTREAM_DEEPSTREAM_CACHE prepends a
+# directory.  The package is built against, and depends on, whichever release
+# that turns out to be.
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,32 +40,15 @@ case "${TARGET_UBUNTU}" in
   *) echo "ERROR: --target-ubuntu must be 24.04 or 26.04." >&2; exit 1 ;;
 esac
 
-if [[ -z "${DEEPSTREAM_DEB}" ]]; then
-  deepstream_artifact_resolve make_deb_docker "" \
-    "make deb TARGET_UBUNTU=${TARGET_UBUNTU} DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.0-1_amd64.deb" \
-    "${OUTPUT_DIR:-${TOPDIR}/dist}" || exit 1
-  DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
-fi
-DEEPSTREAM_DEB="$(readlink -f "${DEEPSTREAM_DEB}")"
-if [[ ! -f "${DEEPSTREAM_DEB}" ]]; then
-  echo "ERROR: DeepStream package not found: ${DEEPSTREAM_DEB}" >&2
-  exit 1
-fi
-USER_DEEPSTREAM_DEB="${DEEPSTREAM_DEB}"
-if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
-  echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
-  exit 1
-fi
-deepstream_version="$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)"
-if ! deepstream_version_supported "${deepstream_version}"; then
-  echo "ERROR: DeepStream >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
-  echo "Found version: ${deepstream_version}" >&2
-  exit 1
-fi
-if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Architecture)" != "amd64" ]]; then
-  echo "ERROR: the target-OS package builder currently supports amd64 DeepStream artifacts only." >&2
-  exit 1
-fi
+# One resolver call validates either way: given a path it judges that file,
+# given nothing it searches.  Both answer with the release and version the
+# package will be built against and depend on.
+deepstream_artifact_resolve make_deb_docker "${DEEPSTREAM_DEB}" \
+  "make deb TARGET_UBUNTU=${TARGET_UBUNTU} DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.1-1_amd64.deb" \
+  "${OUTPUT_DIR:-${TOPDIR}/dist}" || exit 1
+USER_DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
+DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
+DEEPSTREAM_PACKAGE="${DEEPSTREAM_ARTIFACT_PACKAGE}"
 
 if ! git -C "${TOPDIR}" diff --quiet HEAD --; then
   echo "ERROR: refusing to label a package with Git HEAD while tracked source changes are present." >&2
@@ -118,7 +102,7 @@ printf '%s %s\n' "${SOURCE_REVISION}" "${source_epoch}" > "${SOURCE_SNAPSHOT}/.h
 DOCKER_DEEPSTREAM_DEB="${DEEPSTREAM_DEB}"
 if [[ "${TARGET_UBUNTU}" == "26.04" ]]; then
   RELAXED_DEEPSTREAM_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hstream-deepstream-deb.XXXXXX")"
-  relaxed_deepstream_deb="${RELAXED_DEEPSTREAM_DIR}/deepstream-9.1_ubuntu26-relaxed.deb"
+  relaxed_deepstream_deb="${RELAXED_DEEPSTREAM_DIR}/${DEEPSTREAM_PACKAGE}_ubuntu26-relaxed.deb"
   echo "[make_deb_docker] Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
   "${TOPDIR}/scripts/remove_deb_dependencies.py" \
     --force \

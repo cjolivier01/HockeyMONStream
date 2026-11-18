@@ -25,6 +25,7 @@ declare -A NODE_PREVIOUS=()
 declare -A NODE_PREVIOUS_PACKAGE=()
 declare -A NODE_INSTALLED=()
 declare -A NODE_RESULT=()
+declare -A NODE_DEEPSTREAM=()
 declare -A NODE_DETAIL=()
 declare -A TARGET_BUILD_HOST=()
 declare -A TARGET_DEB=()
@@ -33,6 +34,7 @@ declare -A TARGET_BUILD_ERROR=()
 
 PACKAGE_VERSION_NORMALIZED=""
 DESKTOP_DEEPSTREAM_DEB=""
+DESKTOP_DEEPSTREAM_PACKAGE=""
 
 usage() {
   cat <<'USAGE'
@@ -63,16 +65,18 @@ It leaves DeepStream and shared dependency packages installed.
 
 Optional make variables:
   PACKAGE_VERSION=VERSION   Override the source-derived package version.
-  DEEPSTREAM_DEB=FILE      Use this DeepStream 9.1 amd64 artifact for desktops.
+  DEEPSTREAM_DEB=FILE      Use this DeepStream amd64 artifact for desktops.
   DEPLOY_DEEPSTREAM=0      Never install DeepStream on a node (make deploy-light).
   DEPLOY_OUTPUT_DIR=DIR    Override the package output root (default: dist).
   JETSON_QT=1              Include Qt applications in Jetson packages (default: 0).
 
-When DEEPSTREAM_DEB is unset, deepstream-9.1_*_amd64.deb is looked up in
-../DeepStream/artifacts, the output root, ~/Downloads and ~, and the highest
-matching version wins. HSTREAM_DEEPSTREAM_CACHE=DIR prepends a directory.
-NVIDIA gates that .deb behind a Developer Program login, so it cannot be
-fetched automatically.
+When DEEPSTREAM_DEB is unset, deepstream-*_amd64.deb is looked up in
+../DeepStream/artifacts, the output root, ~/Downloads and ~, and the newest
+usable release wins: the desktop package is compiled against it and depends on
+it. A package that names a release but ships no /opt/nvidia/deepstream is not
+usable and is passed over with a note. HSTREAM_DEEPSTREAM_CACHE=DIR prepends a
+directory. NVIDIA gates that .deb behind a Developer Program login, so it
+cannot be fetched automatically.
 USAGE
 }
 
@@ -179,25 +183,45 @@ target_description() {
 }
 
 # Explain why a node's installed DeepStream cannot satisfy the HStream package,
-# or print nothing when it can.  The argument is the detected inventory:
-# space-separated "package/version" entries for every installed deepstream-N.
+# or print nothing when it can.
+#   $1  the detected inventory: space-separated "package/version" entries for
+#       every installed deepstream-RELEASE on the node
+#   $2  the package name the HStream package will depend on, or "" for a node
+#       whose package is built against its own DeepStream, where any supported
+#       release will do
 # Only used when this run installs no DeepStream, so the node's own copy is the
 # only one the package will ever see.
 deepstream_requirement_problem() {
   local installed="$1"
-  local entry package version others=""
+  local required_package="$2"
+  local entry package version others="" required_min="" required_max=""
+
+  if [[ -n "${required_package}" ]]; then
+    read -r _ required_min required_max < <(deepstream_dependency_bounds "${required_package}")
+  fi
 
   for entry in ${installed}; do
     package="${entry%%/*}"
     version="${entry#*/}"
-    if [[ "${package}" == "deepstream-9.1" ]] && deepstream_version_supported "${version}"; then
+    if [[ -n "${required_package}" ]]; then
+      if [[ "${package}" == "${required_package}" ]] &&
+         dpkg --compare-versions "${version}" ge "${required_min}" &&
+         dpkg --compare-versions "${version}" lt "${required_max}"; then
+        return 0
+      fi
+    elif deepstream_package_release "${package}" >/dev/null &&
+         deepstream_version_supported "${version}"; then
       return 0
     fi
     others+="${others:+, }${package} ${version}"
   done
 
-  printf 'deepstream-9.1 (>= %s, << %s) is not installed' \
-    "${DEEPSTREAM_MIN_VERSION}" "${DEEPSTREAM_MAX_VERSION}"
+  if [[ -n "${required_package}" ]]; then
+    printf '%s (>= %s, << %s) is not installed' \
+      "${required_package}" "${required_min}" "${required_max}"
+  else
+    printf 'no DeepStream >= %s is installed' "${DEEPSTREAM_MIN_VERSION}"
+  fi
   if [[ -n "${others}" ]]; then
     printf ' (found %s)' "${others}"
   fi
@@ -272,7 +296,6 @@ detect_node() {
   local node="$1"
   local output identity marker os_id os_version id_like ubuntu_codename architecture platform
   local previous_package previous deepstream_installed extra target_key base_os_id base_os_version
-  local deepstream_problem
 
   printf '\n[%s] Detecting %s...\n' "${OPERATION}" "${node}"
   if ! output="$(ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s <<'REMOTE_DETECT'
@@ -365,23 +388,7 @@ REMOTE_DETECT
 
   NODE_TARGET["${node}"]="${target_key}"
   NODE_PLATFORM["${node}"]="$(target_description "${target_key}")"
-
-  # Judge the node before the package build rather than after, and leave its
-  # DeepStream alone either way.  Jetsons are included even though a
-  # deployment never uploads DeepStream to one: their plain apt-get install
-  # would happily pull a missing deepstream from the node's own repositories,
-  # which is exactly what a light deployment promises not to do.  A node that
-  # fails here also never becomes a build host for its target.
-  if [[ "${OPERATION}" == deploy && "${DEPLOY_DEEPSTREAM}" -eq 0 ]]; then
-    deepstream_problem="$(deepstream_requirement_problem "${deepstream_installed:-}")"
-    if [[ -n "${deepstream_problem}" ]]; then
-      NODE_RESULT["${node}"]="FAILED"
-      NODE_DETAIL["${node}"]="${deepstream_problem}"
-      printf '[deploy] ERROR: %s: %s.\n' "${node}" "${deepstream_problem}" >&2
-      printf '[deploy] Run "make deploy NODES=%s" to install DeepStream there.\n' "${node}" >&2
-      return 1
-    fi
-  fi
+  NODE_DEEPSTREAM["${node}"]="${deepstream_installed:-}"
 
   if [[ -z "${SEEN_TARGETS[${target_key}]+set}" ]]; then
     SEEN_TARGETS["${target_key}"]=1
@@ -395,9 +402,45 @@ REMOTE_DETECT
 
 resolve_desktop_deepstream_deb() {
   deepstream_artifact_resolve deploy "${REQUESTED_DEEPSTREAM_DEB}" \
-    "make deploy NODES=... DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.0-1_amd64.deb" \
+    "make deploy NODES=... DEEPSTREAM_DEB=/path/to/deepstream-9.1_9.1.1-1_amd64.deb" \
     "${DEPLOY_OUTPUT_DIR}" || return 1
   DESKTOP_DEEPSTREAM_DEB="${DEEPSTREAM_ARTIFACT}"
+  # The release the desktop package will be compiled against, and therefore
+  # the one its nodes have to be able to satisfy.
+  DESKTOP_DEEPSTREAM_PACKAGE="${DEEPSTREAM_ARTIFACT_PACKAGE}"
+}
+
+# Mark a node that cannot satisfy the DeepStream its package will ask for.
+judge_node_deepstream() {
+  local node="$1"
+  local required_package="$2"
+  local problem
+  problem="$(deepstream_requirement_problem "${NODE_DEEPSTREAM[${node}]:-}" "${required_package}")"
+  [[ -z "${problem}" ]] && return 0
+  NODE_RESULT["${node}"]="FAILED"
+  NODE_DETAIL["${node}"]="${problem}"
+  printf '[deploy] ERROR: %s: %s.\n' "${node}" "${problem}" >&2
+  printf '[deploy] Run "make deploy NODES=%s" to install DeepStream there.\n' "${node}" >&2
+  return 1
+}
+
+# Keep the target set to the nodes still in play, so a target whose only nodes
+# were rejected is not built and a rejected node is not a build host.
+rebuild_target_set() {
+  local node target_key
+  TARGET_KEYS=()
+  SEEN_TARGETS=()
+  TARGET_BUILD_HOST=()
+  for node in "${NODES_LIST[@]}"; do
+    [[ -n "${NODE_RESULT[${node}]:-}" ]] && continue
+    target_key="${NODE_TARGET[${node}]:-}"
+    [[ -n "${target_key}" && "${target_key}" != unsupported ]] || continue
+    if [[ -z "${SEEN_TARGETS[${target_key}]+set}" ]]; then
+      SEEN_TARGETS["${target_key}"]=1
+      TARGET_KEYS+=("${target_key}")
+      TARGET_BUILD_HOST["${target_key}"]="${node}"
+    fi
+  done
 }
 
 verify_built_package() {
@@ -873,6 +916,23 @@ main() {
       fi
     done
     overall_status=1
+  fi
+
+  # Judge each node before anything is built, now that the release a desktop
+  # package will ask for is known: it is the one the artifact above carries.  A
+  # Jetson package is built on the node against its own SDK, so it will ask for
+  # whatever that node already has and any supported release satisfies it.
+  if [[ "${DEPLOY_DEEPSTREAM}" -eq 0 ]]; then
+    for node in "${NODES_LIST[@]}"; do
+      if [[ -n "${NODE_RESULT[${node}]:-}" ]]; then continue; fi
+      if [[ "${NODE_TARGET[${node}]}" == desktop-* ]]; then
+        if [[ -z "${DESKTOP_DEEPSTREAM_PACKAGE}" ]]; then continue; fi
+        judge_node_deepstream "${node}" "${DESKTOP_DEEPSTREAM_PACKAGE}" || overall_status=1
+      else
+        judge_node_deepstream "${node}" "" || overall_status=1
+      fi
+    done
+    rebuild_target_set
   fi
 
   for target_key in "${TARGET_KEYS[@]}"; do

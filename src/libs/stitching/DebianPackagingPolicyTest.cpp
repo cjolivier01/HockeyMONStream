@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
       contains(installer, "X-HStream-Target-Ubuntu") && !contains(installer, "libc6 (>= 2.43)") &&
           !contains(installer, "Pin-Priority") && contains(installer, "old_deepstream_packages") &&
           contains(installer, "^deepstream-[0-9]+([.][0-9]+)*$") &&
-          contains(installer, "deepstream-9.1-transition.deb") && contains(installer, "Conflicts") &&
+          contains(installer, "${DEEPSTREAM_PACKAGE}-transition.deb") && contains(installer, "Conflicts") &&
           contains(installer, "Replaces") && contains(installer, "\"${removed_package}\" == hmstream") &&
           !contains(installer, "apt-get remove -y --no-install-recommends") &&
           !contains(installer, "nccl") && !contains(installer, "NCCL"),
