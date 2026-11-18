@@ -372,7 +372,7 @@ cat >"${desktop_argv_dir}/bin/apt-get" <<APT_STUB
 for argument in "\$@"; do
   if [[ "\${argument}" == --simulate ]]; then
     printf '%s\n' "\${HSTREAM_TEST_APT_PLAN:-}"
-    exit 0
+    exit "\${HSTREAM_TEST_APT_SIMULATE_STATUS:-0}"
   fi
 done
 printf '%s\n' "\$*" >>"${desktop_argv_dir}/apt-ran"
@@ -442,6 +442,7 @@ run_jetson_deployment() {
   # are its arguments rather than this function's.
   local stub_mode="$1"
   local stub_apt_plan="$2"
+  local stub_apt_status="${3:-0}"
   rm -f "${desktop_argv_dir}/apt-ran"
   (
     create_remote_directory() { printf '/tmp/hstream-deploy.testdir'; }
@@ -450,7 +451,9 @@ run_jetson_deployment() {
     ssh() {
       while [[ "$1" == -o ]]; do shift 2; done
       shift
-      HSTREAM_TEST_APT_PLAN="${stub_apt_plan}" PATH="${desktop_argv_dir}/bin:${PATH}" \
+      HSTREAM_TEST_APT_PLAN="${stub_apt_plan}" \
+        HSTREAM_TEST_APT_SIMULATE_STATUS="${stub_apt_status}" \
+        PATH="${desktop_argv_dir}/bin:${PATH}" \
         bash -c "$*"
     }
     DEPLOY_DEEPSTREAM="${stub_mode}" deploy_jetson stubby /dist/hstream_1.2.3_arm64.deb
@@ -483,14 +486,23 @@ run_jetson_deployment 1 "${jetson_deepstream_plan}" \
 if ! grep -q 'hstream_1.2.3_arm64.deb' "${desktop_argv_dir}/apt-ran"; then
   fail "an ordinary Jetson deployment did not install the package"
 fi
+
+# An unreadable plan is not an empty plan.  The remote script reads the
+# simulation through a pipe, so without pipefail apt's failure would be hidden
+# by the exit status of the filter and the installation would go ahead anyway.
+if run_jetson_deployment 0 "${jetson_clean_plan}" 100; then
+  fail "a light Jetson deployment installed after apt could not produce a plan"
+fi
+if [[ -f "${desktop_argv_dir}/apt-ran" ]]; then
+  fail "a light Jetson deployment ran apt after its simulation failed"
+fi
 rm -rf "${desktop_argv_dir}"
 trap - EXIT
 
 # The installer is copied to each node on its own and carries no copy of this
-# file, so pin the option deploy.sh passes it to the one it parses.
-if ! grep -q -- '--no-deepstream)' "${SCRIPT_DIR}/install_deb.sh"; then
-  fail "install_deb.sh does not accept the --no-deepstream option deploy.sh passes it"
-fi
+# file.  Running it is what pins the option deploy.sh passes to the one it
+# parses: an installer that dropped --no-deepstream would reject it as unknown
+# rather than answer with the message below.
 installer_rejection="$(bash "${SCRIPT_DIR}/install_deb.sh" --no-deepstream \
   --deepstream-deb=/dev/null --hstream-deb=/dev/null 2>&1 | head -n 1 || true)"
 expect_equal "${installer_rejection}" \

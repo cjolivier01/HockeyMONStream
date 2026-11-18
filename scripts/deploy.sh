@@ -53,8 +53,10 @@ The invoking HStream repository must have no tracked or source-file changes.
 make deploy-light (DEPLOY_DEEPSTREAM=0) installs HStream alone and leaves each
 node's DeepStream untouched: nothing is uploaded or replaced there, and a node
 whose installed DeepStream cannot satisfy the package is reported and skipped
-instead of being changed.  The package is still compiled against DeepStream, so
-the amd64 artifact is still needed here to build it.
+instead of being changed.  A desktop package is still compiled against
+DeepStream in the build container, so that amd64 artifact is still needed here
+whenever a desktop node is deployed to.  Jetson packages build on the node's
+own SDK and need no artifact either way.
 
 Undeploy removes and purges the hstream package and its legacy hmstream name.
 It leaves DeepStream and shared dependency packages installed.

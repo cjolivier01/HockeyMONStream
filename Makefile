@@ -327,7 +327,8 @@ print_targets:
 		'               Add JETSON_QT=1 to deb-jetson or deploy to include the Qt UI on Jetson.' \
 		'deploy         Detect, build, and force-install on comma-separated NODES (default: current hostname).' \
 		'deploy-light   Same, but install HStream only and leave each node DeepStream untouched' \
-		'               (= make deploy DEPLOY_DEEPSTREAM=0; the build still needs the DeepStream .deb).' \
+		'               (= make deploy DEPLOY_DEEPSTREAM=0; a desktop package is still built' \
+		'               against the DeepStream .deb, so that artifact is still needed here).' \
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \
 		'windows-installer Build the small native Windows/WSL setup .exe on Ubuntu (requires NSIS).' \

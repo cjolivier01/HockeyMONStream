@@ -484,8 +484,13 @@ planned_deepstream_changes() {
 
 # Exact state of those packages, for the comparison that proves an install
 # really left them alone, including through transactions not simulated above.
+# A package waiting on triggers is installed and on its way to saying so, and
+# the host runs its own transactions: snapshotting one mid-trigger must not
+# report a successful deployment as having changed DeepStream.  Every other
+# status stays distinct, so an actual removal or a broken unpack is still seen.
 deepstream_package_state() {
   dpkg-query -W -f='${Package} ${Version} ${db:Status-Status} ${Architecture}\n' 'deepstream*' 2>/dev/null \
+    | awk '{ if ($3 == "triggers-pending" || $3 == "triggers-awaited") $3 = "installed"; print }' \
     | sort || true
 }
 
