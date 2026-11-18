@@ -499,9 +499,9 @@ fi
 rm -rf "${desktop_argv_dir}"
 trap - EXIT
 
-# Three scripts read APT's plan for DeepStream changes, and two of them run on
+# Four scripts read APT's plan for DeepStream changes, and two of them run on
 # a remote node from a quoted here-document, so they cannot share one
-# definition.  Require the filter to be the same text in all three instead.
+# definition.  Require the filter to be the same text in all four instead.
 # Requiring one occurrence per file is part of the pin, not tidiness: the
 # extraction below takes the longest match on a line, so a second copy left in
 # a comment could stand in for a filter that had actually been changed.
@@ -515,10 +515,29 @@ plan_filter_text() {
 }
 installer_plan_filter="$(plan_filter_text "${SCRIPT_DIR}/install_deb.sh")"
 [[ -n "${installer_plan_filter}" ]] || fail "no DeepStream plan filter found in install_deb.sh"
-for peer in deploy.sh make_deb_jetson.sh; do
+for peer in deploy.sh make_deb_jetson.sh make_deb.sh; do
   expect_equal "$(plan_filter_text "${SCRIPT_DIR}/${peer}")" "${installer_plan_filter}" \
     "${peer} reads an APT plan for DeepStream changes the same way install_deb.sh does"
 done
+
+# A Jetson package builds on the node, and make_deb.sh installs the packaging
+# tools that host is missing, so the choice has to reach it as well.
+if ! grep -q 'DEPLOY_DEEPSTREAM="${deploy_deepstream}"' "${SCRIPT_DIR}/make_deb_jetson.sh"; then
+  fail "make_deb_jetson.sh does not pass the DeepStream choice to make_deb.sh"
+fi
+if ! grep -q 'DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM:-1}"' "${SCRIPT_DIR}/make_deb.sh"; then
+  fail "make_deb.sh does not accept the DeepStream choice make_deb_jetson.sh passes it"
+fi
+if grep -nE '^\s*sudo apt-get install -y [a-z]' "${SCRIPT_DIR}/make_deb.sh" \
+  | grep -qv 'install_packaging_tool'; then
+  fail "make_deb.sh installs a packaging tool outside the guarded helper: $(
+    grep -nE '^\s*sudo apt-get install -y [a-z]' "${SCRIPT_DIR}/make_deb.sh")"
+fi
+if output="$(DEPLOY_DEEPSTREAM=2 bash "${SCRIPT_DIR}/make_deb.sh" --version 1.2.3 2>&1)"; then
+  fail "make_deb.sh accepted an invalid DEPLOY_DEEPSTREAM option"
+fi
+expect_equal "${output}" 'ERROR: DEPLOY_DEEPSTREAM must be 0 or 1.' \
+  "make_deb.sh rejects an invalid DeepStream option before packaging"
 
 # The Jetson build installs its own missing dependencies on the node, so the
 # light-deployment choice has to reach the builder, not only the installation

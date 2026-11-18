@@ -347,6 +347,7 @@ HSTREAM_IMMUTABLE_SOURCE=1 \
 HSTREAM_TARGET_UBUNTU=24.04 \
 HSTREAM_TARGET_PLATFORM=jetson \
 JETSON_QT="${jetson_qt}" \
+DEPLOY_DEEPSTREAM="${deploy_deepstream}" \
 HSTREAM_BAZEL_OUTPUT_BASE="${output_base}" \
 HSTREAM_CONTAINER_PACKAGE_STAGING=1 \
 scripts/make_deb.sh --version "${package_version}" --output-dir "${remote_root}/output"
