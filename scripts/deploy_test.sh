@@ -499,6 +499,34 @@ fi
 rm -rf "${desktop_argv_dir}"
 trap - EXIT
 
+# Three scripts read APT's plan for DeepStream changes, and two of them run on
+# a remote node from a quoted here-document, so they cannot share one
+# definition.  Require the filter to be the same text in all three instead.
+plan_filter_text() {
+  sed -n 's/.*awk .\(($1 == "Inst".*print \$1 " " \$2 }\).*/\1/p' "$1"
+}
+installer_plan_filter="$(plan_filter_text "${SCRIPT_DIR}/install_deb.sh")"
+[[ -n "${installer_plan_filter}" ]] || fail "no DeepStream plan filter found in install_deb.sh"
+for peer in deploy.sh make_deb_jetson.sh; do
+  expect_equal "$(plan_filter_text "${SCRIPT_DIR}/${peer}")" "${installer_plan_filter}" \
+    "${peer} reads an APT plan for DeepStream changes the same way install_deb.sh does"
+done
+
+# The Jetson build installs its own missing dependencies on the node, so the
+# light-deployment choice has to reach the builder, not only the installation
+# after it.
+if ! grep -q 'DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM}"' "${SCRIPT_DIR}/deploy.sh"; then
+  fail "deploy.sh does not pass the DeepStream choice to the Jetson package builder"
+fi
+if ! grep -q 'DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM:-1}"' "${SCRIPT_DIR}/make_deb_jetson.sh"; then
+  fail "make_deb_jetson.sh does not accept the DeepStream choice deploy.sh passes it"
+fi
+if output="$(DEPLOY_DEEPSTREAM=2 bash "${SCRIPT_DIR}/make_deb_jetson.sh" --host=stubby 2>&1)"; then
+  fail "make_deb_jetson.sh accepted an invalid DEPLOY_DEEPSTREAM option"
+fi
+expect_equal "${output}" 'ERROR: DEPLOY_DEEPSTREAM must be 0 or 1.' \
+  "make_deb_jetson.sh rejects an invalid DeepStream option before building"
+
 # The installer is copied to each node on its own and carries no copy of this
 # file.  Running it is what pins the option deploy.sh passes to the one it
 # parses: an installer that dropped --no-deepstream would reject it as unknown

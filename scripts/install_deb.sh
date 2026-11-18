@@ -478,8 +478,21 @@ run_apt_update() {
 # name begins with deepstream: the split binaries and sample-data packages are
 # as much "this host's DeepStream" as the versioned one.
 planned_deepstream_changes() {
-  awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") &&
-       $2 ~ /^deepstream/ { print $1 " " $2 }' <<<"$1"
+  awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") && $2 ~ /^deepstream/ { print $1 " " $2 }' <<<"$1"
+}
+
+# Stop before a transaction that would break the promise, naming what it was
+# going to do.  Every APT transaction this installer runs goes through here
+# first when --no-deepstream is in effect.
+refuse_deepstream_changes() {
+  local simulation="$1"
+  local description="$2"
+  local planned
+  planned="$(planned_deepstream_changes "${simulation}")"
+  [[ -z "${planned}" ]] && return 0
+  echo "ERROR: --no-deepstream, but ${description} would change DeepStream:" >&2
+  printf '%s\n' "${planned}" | sed 's/^/  /' >&2
+  exit 1
 }
 
 # Exact state of those packages, for the comparison that proves an install
@@ -731,14 +744,9 @@ run_apt_update
 DEEPSTREAM_STATE_BEFORE=""
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
   DEEPSTREAM_STATE_BEFORE="$(deepstream_package_state)"
-  bootstrap_plan="$(apt-get install --simulate -y --no-install-recommends \
-    binutils ca-certificates curl zstd)"
-  bootstrap_deepstream="$(planned_deepstream_changes "${bootstrap_plan}")"
-  if [[ -n "${bootstrap_deepstream}" ]]; then
-    echo "ERROR: --no-deepstream, but installing the bootstrap packages would change DeepStream:" >&2
-    printf '%s\n' "${bootstrap_deepstream}" | sed 's/^/  /' >&2
-    exit 1
-  fi
+  refuse_deepstream_changes \
+    "$(apt-get install --simulate -y --no-install-recommends binutils ca-certificates curl zstd)" \
+    "installing the bootstrap packages"
 fi
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
@@ -1053,17 +1061,19 @@ while read -r removed_package; do
 done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
 
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
-  planned_deepstream="$(planned_deepstream_changes "${simulation}")"
-  if [[ -n "${planned_deepstream}" ]]; then
-    echo "ERROR: --no-deepstream, but installing HStream would change DeepStream:" >&2
-    printf '%s\n' "${planned_deepstream}" | sed 's/^/  /' >&2
-    exit 1
-  fi
+  refuse_deepstream_changes "${simulation}" "installing HStream"
 fi
 
 if [[ "${SIMULATE}" -eq 0 ]]; then
   apt-get install "${apt_args[@]}" "${install_debs[@]}"
   if [[ "${FORCE_HSTREAM}" -eq 1 && "${installed_hstream_version}" == "${requested_hstream_version}" ]]; then
+    # A second transaction, and --reinstall was not part of the plan judged
+    # above, so judge this one too rather than discovering it afterwards.
+    if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
+      refuse_deepstream_changes \
+        "$(apt-get install --simulate -y --no-install-recommends --reinstall "${HSTREAM_DEB}")" \
+        "reinstalling the same HStream version"
+    fi
     apt-get install -y --no-install-recommends --reinstall "${HSTREAM_DEB}"
   fi
 fi

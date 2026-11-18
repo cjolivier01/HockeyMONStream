@@ -6,6 +6,10 @@ set -euo pipefail
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JETSON_HOST="${JETSON_HOST:-stubby}"
 JETSON_QT="${JETSON_QT:-0}"
+# Set to 0 by a light deployment, which promised this host's DeepStream would
+# not change.  The build installs its own missing dependencies, so that promise
+# has to reach the builder and not only the installation that follows it.
+DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM:-1}"
 OUTPUT_DIR=""
 PACKAGE_VERSION=""
 
@@ -37,6 +41,10 @@ done
 
 if [[ "${JETSON_QT}" != 0 && "${JETSON_QT}" != 1 ]]; then
   echo "ERROR: JETSON_QT must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "${DEPLOY_DEEPSTREAM}" != 0 && "${DEPLOY_DEEPSTREAM}" != 1 ]]; then
+  echo "ERROR: DEPLOY_DEEPSTREAM must be 0 or 1." >&2
   exit 1
 fi
 
@@ -133,11 +141,13 @@ rsync -a "${local_snapshot}/" "${JETSON_HOST}:${remote_root}/source/"
 rsync -a "${model_cache}/" "${JETSON_HOST}:${remote_root}/home/.cache/hstream/models/"
 
 echo "[make_deb_jetson] Building ${PACKAGE_VERSION} on ${JETSON_HOST}..."
-ssh -o BatchMode=yes "${JETSON_HOST}" bash -s -- "${remote_root}" "${PACKAGE_VERSION}" "${JETSON_QT}" <<'REMOTE_BUILD'
+ssh -o BatchMode=yes "${JETSON_HOST}" bash -s -- "${remote_root}" "${PACKAGE_VERSION}" "${JETSON_QT}" \
+  "${DEPLOY_DEEPSTREAM}" <<'REMOTE_BUILD'
 set -euo pipefail
 remote_root="$1"
 package_version="$2"
 jetson_qt="$3"
+deploy_deepstream="$4"
 source_dir="${remote_root}/source"
 package_home="${remote_root}/home"
 persistent_cache_root="${HOME}/.cache/hstream/jetson-release-build"
@@ -195,6 +205,20 @@ for package_name in "${build_packages[@]}"; do
   fi
 done
 if [[ "${#missing_build_packages[@]}" -gt 0 ]]; then
+  # A light deployment leaves this host's DeepStream alone, and that has to
+  # hold for the build's own dependencies: pulling one of these in can drag a
+  # DeepStream along or configure a component this host left pending, before
+  # the installation that is guarded downstream ever starts.
+  if [[ "${deploy_deepstream}" == 0 ]]; then
+    planned="$(sudo -n apt-get install --simulate -y --no-install-recommends \
+      "${missing_build_packages[@]}" \
+      | awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") && $2 ~ /^deepstream/ { print $1 " " $2 }')"
+    if [[ -n "${planned}" ]]; then
+      echo "ERROR: installing the build dependencies here would change DeepStream:" >&2
+      printf '%s\n' "${planned}" | sed 's/^/  /' >&2
+      exit 1
+    fi
+  fi
   sudo -n apt-get install -y --no-install-recommends "${missing_build_packages[@]}"
 fi
 # Native Jetson uses its installed SDK as the sysroot.

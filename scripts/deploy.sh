@@ -483,7 +483,8 @@ build_target() {
       build_host="${TARGET_BUILD_HOST[${target_key}]}"
       printf '\n[deploy] Building HStream %s for Jetson on %s...\n' \
         "${PACKAGE_VERSION_NORMALIZED}" "${build_host}"
-      if ! JETSON_QT="${JETSON_QT}" "${TOPDIR}/scripts/make_deb_jetson.sh" \
+      if ! JETSON_QT="${JETSON_QT}" DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM}" \
+        "${TOPDIR}/scripts/make_deb_jetson.sh" \
         --host="${build_host}" \
         --output-dir="${output_dir}" \
         --version="${PACKAGE_VERSION_NORMALIZED}"; then
@@ -621,8 +622,7 @@ package="${remote_dir}/${deb_name}"
 if [ "${deploy_deepstream}" = 0 ]; then
   planned="$(sudo -n apt-get install --simulate --no-install-recommends --reinstall \
     --allow-downgrades "${package}" \
-    | awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") &&
-           $2 ~ /^deepstream/ { print $1 " " $2 }')"
+    | awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") && $2 ~ /^deepstream/ { print $1 " " $2 }')"
   if [ -n "${planned}" ]; then
     echo "ERROR: installing HStream here would change DeepStream:" >&2
     printf '%s\n' "${planned}" | sed 's/^/  /' >&2
