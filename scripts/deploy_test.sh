@@ -528,10 +528,11 @@ fi
 if ! grep -q 'DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM:-1}"' "${SCRIPT_DIR}/make_deb.sh"; then
   fail "make_deb.sh does not accept the DeepStream choice make_deb_jetson.sh passes it"
 fi
-if grep -nE '^\s*sudo apt-get install -y [a-z]' "${SCRIPT_DIR}/make_deb.sh" \
-  | grep -qv 'install_packaging_tool'; then
-  fail "make_deb.sh installs a packaging tool outside the guarded helper: $(
-    grep -nE '^\s*sudo apt-get install -y [a-z]' "${SCRIPT_DIR}/make_deb.sh")"
+# The helper installs "${package}", so a literal package name on one of these
+# lines is a tool being installed somewhere else.
+unguarded_tool_installs="$(grep -nE '^[[:space:]]*sudo apt-get install -y [a-z]' "${SCRIPT_DIR}/make_deb.sh" || true)"
+if [[ -n "${unguarded_tool_installs}" ]]; then
+  fail "make_deb.sh installs a packaging tool outside the guarded helper: ${unguarded_tool_installs}"
 fi
 if output="$(DEPLOY_DEEPSTREAM=2 bash "${SCRIPT_DIR}/make_deb.sh" --version 1.2.3 2>&1)"; then
   fail "make_deb.sh accepted an invalid DEPLOY_DEEPSTREAM option"

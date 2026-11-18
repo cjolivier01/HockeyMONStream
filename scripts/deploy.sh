@@ -556,8 +556,8 @@ deploy_desktop() {
   # Send the installer the option itself rather than a name that would be empty
   # in a light deployment: ssh joins its arguments into one command string for
   # the remote shell, which drops an empty one and shifts every later argument.
-  # Nothing about DeepStream is uploaded here; the artifact is by far the
-  # slowest part of a deployment.
+  # A light deployment adds nothing to the upload below, which is what makes it
+  # quick; the artifact is by far the slowest part of an ordinary one.
   if [[ "${DEPLOY_DEEPSTREAM}" -eq 1 ]]; then
     uploads+=("${DESKTOP_DEEPSTREAM_DEB}")
     deepstream_option="--deepstream-deb=${remote_dir}/$(basename "${DESKTOP_DEEPSTREAM_DEB}")"
