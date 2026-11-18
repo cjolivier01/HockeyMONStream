@@ -1010,6 +1010,18 @@ while read -r removed_package; do
   fi
 done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
 
+# Leaving the artifact out of the transaction does not stop APT from pulling or
+# upgrading DeepStream to satisfy the package: a host whose repositories carry
+# it would be changed anyway, and the closing message would claim it was not.
+# Judge APT's actual plan, not the arguments it was given.
+if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
+  while read -r changed_package; do
+    [[ -z "${changed_package}" ]] && continue
+    echo "ERROR: --no-deepstream, but this installation would change ${changed_package}; refusing." >&2
+    exit 1
+  done < <(awk '$1 == "Inst" && $2 ~ /^deepstream-/ {print $2}' <<<"${simulation}")
+fi
+
 if [[ "${SIMULATE}" -eq 0 ]]; then
   apt-get install "${apt_args[@]}" "${install_debs[@]}"
   if [[ "${FORCE_HSTREAM}" -eq 1 && "${installed_hstream_version}" == "${requested_hstream_version}" ]]; then

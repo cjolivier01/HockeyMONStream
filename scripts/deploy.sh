@@ -359,10 +359,13 @@ REMOTE_DETECT
   NODE_TARGET["${node}"]="${target_key}"
   NODE_PLATFORM["${node}"]="$(target_description "${target_key}")"
 
-  # Desktops are the only nodes a deployment installs DeepStream on, so they
-  # are the only ones a light deployment changes.  Judge the node before the
-  # package build rather than after, and leave its DeepStream alone either way.
-  if [[ "${OPERATION}" == deploy && "${DEPLOY_DEEPSTREAM}" -eq 0 && "${target_key}" == desktop-* ]]; then
+  # Judge the node before the package build rather than after, and leave its
+  # DeepStream alone either way.  Jetsons are included even though a
+  # deployment never uploads DeepStream to one: their plain apt-get install
+  # would happily pull a missing deepstream from the node's own repositories,
+  # which is exactly what a light deployment promises not to do.  A node that
+  # fails here also never becomes a build host for its target.
+  if [[ "${OPERATION}" == deploy && "${DEPLOY_DEEPSTREAM}" -eq 0 ]]; then
     deepstream_problem="$(deepstream_requirement_problem "${deepstream_installed:-}")"
     if [[ -n "${deepstream_problem}" ]]; then
       NODE_RESULT["${node}"]="FAILED"

@@ -253,6 +253,40 @@ expect_equal "$(deepstream_requirement_problem 'deepstream-9.1/9.0.9-1')" \
   "deepstream-9.1 (>= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION}) is not installed (found deepstream-9.1 9.0.9-1)" \
   "an out-of-range DeepStream does not satisfy a light deployment"
 
+# That check has to accept exactly what the package declares it needs.
+# make_deb.sh builds the Depends field from its own copy of the name and the
+# bounds, so run those literals through the check instead of trusting the two
+# copies to stay equal.
+builder_declares() {
+  sed -nE "s/^ *$1=\"\\\$\{$1:-([^}]*)\}\"\$/\1/p" "${SCRIPT_DIR}/make_deb.sh" | sort -u
+}
+builder_package="$(builder_declares DEEPSTREAM_PACKAGE)"
+builder_min="$(builder_declares DEEPSTREAM_MIN_VERSION)"
+builder_max="$(builder_declares DEEPSTREAM_MAX_VERSION)"
+for builder_value in "${builder_package}" "${builder_min}" "${builder_max}"; do
+  if [[ -z "${builder_value}" || "$(printf '%s\n' "${builder_value}" | wc -l)" -ne 1 ]]; then
+    fail "make_deb.sh does not declare one DeepStream dependency for the node check to match"
+  fi
+done
+expect_equal "$(deepstream_requirement_problem "${builder_package}/${builder_min}")" "" \
+  "the node check accepts the oldest DeepStream the package depends on"
+if [[ -z "$(deepstream_requirement_problem "${builder_package}/${builder_max}")" ]]; then
+  fail "the node check accepts a DeepStream version the package excludes"
+fi
+# Accepting the declared bounds is not enough on its own: a builder that raised
+# its minimum would still be accepted here while the node's apt refused the
+# package.  The two bounds have to be the same text, in all three copies.
+expect_equal "${builder_min}" "${DEEPSTREAM_MIN_VERSION}" \
+  "make_deb.sh and the deployment require the same minimum DeepStream"
+expect_equal "${builder_max}" "${DEEPSTREAM_MAX_VERSION}" \
+  "make_deb.sh and the deployment exclude the same DeepStream versions"
+for bound in MIN MAX; do
+  expect_equal \
+    "$(sed -nE "s/^DEEPSTREAM_${bound}_VERSION=\"([^\"]*)\"\$/\1/p" "${SCRIPT_DIR}/install_deb.sh")" \
+    "$(eval "printf '%s' \"\${DEEPSTREAM_${bound}_VERSION}\"")" \
+    "install_deb.sh and the deployment agree on the ${bound} DeepStream version"
+done
+
 # Detection against a stubbed node: the response carries the DeepStream
 # inventory, and a light deployment judges it before anything is built.
 detect_with() {
@@ -289,9 +323,20 @@ expect_equal "${#TARGET_KEYS[@]}" 0 "a rejected node does not schedule a package
 detect_with monster desktop deepstream-9.1/9.1.1-1 \
   || fail "a light deployment rejected a desktop with a usable DeepStream"
 expect_equal "${NODE_TARGET[monster]}" desktop-ubuntu24.04-amd64 "accepted light desktop target"
-detect_with stubby jetson '' \
-  || fail "a light deployment checked DeepStream on a Jetson, which it never installs"
+
+# A Jetson never receives a DeepStream artifact, but its plain apt-get install
+# would pull a missing one from the node's own repositories, so it is judged
+# too.  A rejected node must not become the build host for its target either.
+if detect_with stubby jetson ''; then
+  fail "a light deployment accepted a Jetson whose apt would install DeepStream"
+fi
+expect_equal "${#TARGET_KEYS[@]}" 0 "a rejected Jetson does not become a build host"
+detect_with stubby jetson deepstream-9.1/9.1.1-1 \
+  || fail "a light deployment rejected a Jetson with a usable DeepStream"
+
 DEPLOY_DEEPSTREAM=1
+detect_with stubby jetson '' \
+  || fail "an ordinary deployment stopped deploying to a Jetson without DeepStream"
 detect_with ripper desktop deepstream-9.2/9.2.0-1 \
   || fail "an ordinary deployment stopped installing DeepStream over an unsupported version"
 
@@ -312,16 +357,43 @@ expect_equal "${output}" 'ERROR: DEPLOY_DEEPSTREAM must be 0 or 1.' \
 # artifact not being uploaded is the whole point of a light deployment.
 desktop_argv_dir="$(mktemp -d)"
 trap 'rm -rf "${desktop_argv_dir}"' EXIT
+mkdir -p "${desktop_argv_dir}/bin"
+cat >"${desktop_argv_dir}/bin/sudo" <<SUDO_STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$@" >"${desktop_argv_dir}/installer"
+SUDO_STUB
+printf '#!/usr/bin/env bash\nexit 0\n' >"${desktop_argv_dir}/bin/chmod"
+printf '#!/usr/bin/env bash\nprintf node\\n\n' >"${desktop_argv_dir}/bin/hostname"
+chmod +x "${desktop_argv_dir}/bin/sudo" "${desktop_argv_dir}/bin/chmod" \
+  "${desktop_argv_dir}/bin/hostname"
+
 record_desktop_deployment() {
   (
     create_remote_directory() { printf '/tmp/hstream-deploy.testdir'; }
     cleanup_remote_directory() { :; }
     scp() { printf '%s\n' "$@" >"${desktop_argv_dir}/scp"; }
-    ssh() { printf '%s\n' "$@" >"${desktop_argv_dir}/ssh"; cat >/dev/null; }
+    # ssh does not deliver an argument vector: it joins its arguments into one
+    # string that the remote shell parses again.  Reproduce that instead of
+    # recording the local list, so the test sees what the installer is really
+    # handed -- an empty argument disappearing is invisible otherwise.
+    ssh() {
+      printf '%s\n' "$@" >"${desktop_argv_dir}/ssh"
+      while [[ "$1" == -o ]]; do shift 2; done
+      shift
+      PATH="${desktop_argv_dir}/bin:${PATH}" bash -c "$*"
+    }
     DEPLOY_DEEPSTREAM="$1" \
       DESKTOP_DEEPSTREAM_DEB=/artifacts/deepstream-9.1_9.1.1-1_amd64.deb \
       deploy_desktop monster /dist/hstream_1.2.3_amd64.deb /repo/scripts/install_deb.sh >/dev/null
   ) || fail "deploy_desktop failed with DEPLOY_DEEPSTREAM=$1"
+}
+
+expect_installer_argv() {
+  local label="$1"
+  shift
+  local expected
+  expected="$(printf '%s\n' "$@")"
+  expect_equal "$(cat "${desktop_argv_dir}/installer")" "${expected}" "${label}"
 }
 
 record_desktop_deployment 0
@@ -330,24 +402,21 @@ if grep -q deepstream "${desktop_argv_dir}/scp"; then
 fi
 expect_equal "$(grep -c '^/' "${desktop_argv_dir}/scp")" 2 \
   "a light deployment uploads only the package and the installer"
-if ! grep -qx -- '--no-deepstream' "${desktop_argv_dir}/ssh"; then
-  fail "a light deployment did not tell the installer to keep the node's DeepStream"
-fi
-# ssh joins its arguments into one remote command string, which drops an empty
-# one and shifts every later argument, so the installer would be handed the
-# package as its DeepStream option.
-if grep -qx '' "${desktop_argv_dir}/ssh"; then
-  fail "a light deployment passed an empty argument through ssh"
-fi
+expect_installer_argv "a light deployment runs the installer with --no-deepstream" \
+  -n /tmp/hstream-deploy.testdir/install_deb.sh \
+  --force-hstream \
+  --no-deepstream \
+  --hstream-deb=/tmp/hstream-deploy.testdir/hstream_1.2.3_amd64.deb
 
 record_desktop_deployment 1
 if ! grep -qx /artifacts/deepstream-9.1_9.1.1-1_amd64.deb "${desktop_argv_dir}/scp"; then
   fail "an ordinary deployment stopped uploading the DeepStream artifact"
 fi
-if ! grep -qx -- '--deepstream-deb=/tmp/hstream-deploy.testdir/deepstream-9.1_9.1.1-1_amd64.deb' \
-  "${desktop_argv_dir}/ssh"; then
-  fail "an ordinary deployment stopped installing the uploaded DeepStream artifact"
-fi
+expect_installer_argv "an ordinary deployment installs the uploaded DeepStream artifact" \
+  -n /tmp/hstream-deploy.testdir/install_deb.sh \
+  --force-hstream \
+  --deepstream-deb=/tmp/hstream-deploy.testdir/deepstream-9.1_9.1.1-1_amd64.deb \
+  --hstream-deb=/tmp/hstream-deploy.testdir/hstream_1.2.3_amd64.deb
 rm -rf "${desktop_argv_dir}"
 trap - EXIT
 
