@@ -414,8 +414,6 @@ bool CameraExperimentPreview::Open(
       hm::playtracker_replay::ValidatePanoramaGeometry(media.width, media.height, canvas_width, canvas_height);
   if (!geometry.ok())
     return fail(error, geometry.ToString());
-  if (media.stitching)
-    g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(nullptr, nullptr);
   gst_registry_scan_path(gst_registry_get(), "/opt/nvidia/deepstream/deepstream/lib/gst-plugins");
   if (!LoadCameraExperimentPlugin(error))

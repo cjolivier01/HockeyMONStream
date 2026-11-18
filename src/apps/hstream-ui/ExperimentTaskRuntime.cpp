@@ -318,7 +318,6 @@ void run_experiment(
   environment.insert("HSTREAM_CALIBRATION_INVALIDATION_ID", text(saved.invalidation_id));
   environment.insert("HSTREAM_STITCH_CALIBRATION_INSPECTION", "1");
   environment.insert("HSTREAM_RENDER_AUDIO_MUTED", "1");
-  environment.insert("USE_NEW_NVSTREAMMUX", "yes");
   const auto script = qs(request.root / "experiment.sh");
   run_process(
       exporter,

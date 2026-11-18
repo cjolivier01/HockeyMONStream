@@ -638,7 +638,7 @@ void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
 }
 } // namespace
 
-gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
+gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin, gboolean lossless_nvstreammux) {
   gboolean ret = FALSE;
   gboolean high_bit_depth = FALSE;
   gboolean high_bit_depth_output = FALSE;
@@ -731,8 +731,13 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
   }
 
   g_object_get(G_OBJECT(bin->elem_hmstitcher), "high-bit-depth", &high_bit_depth, NULL);
-  if (high_bit_depth && g_strcmp0(g_getenv("USE_NEW_NVSTREAMMUX"), "yes") != 0) {
-    NVGSTDS_ERR_MSG_V("High-bit-depth stitching requires the replacement nvstreammux");
+  // P010 reaches the stitcher only through hstreamlosslessmux, which is where
+  // nvstreammux_p010_caps.patch adds the format, so the caller tells us which
+  // mux its source bin built. USE_NEW_NVSTREAMMUX used to stand in for that
+  // and no longer does: it does not select our mux, and DeepStream's own new
+  // mux is unpatched, so the variable answered this wrongly in both directions.
+  if (high_bit_depth && !lossless_nvstreammux) {
+    NVGSTDS_ERR_MSG_V("High-bit-depth stitching requires the lossless stream mux");
     goto done;
   }
   // Jetson's NVIDIA converter omits RGB10A2 from its caps, even though the

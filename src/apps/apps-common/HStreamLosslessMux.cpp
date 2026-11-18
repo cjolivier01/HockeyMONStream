@@ -11,3 +11,14 @@ bool register_hstream_lossless_nvstreammux() {
   }
   return registration_result == 1;
 }
+
+bool is_hstream_lossless_nvstreammux(GstElement* element) {
+  if (!element) {
+    return false;
+  }
+  GstElementFactory* factory = gst_element_get_factory(element);
+  if (!factory) {
+    return false;
+  }
+  return g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), "hstreamlosslessmux") == 0;
+}

@@ -8,10 +8,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# DeepStream 9.1's legacy nvstreammux rejects native 8K input buffers. The
-# replacement mux handles the source resolution used for stitching. Preserve
-# an explicit caller override for diagnostics and older DeepStream releases.
-export USE_NEW_NVSTREAMMUX="${USE_NEW_NVSTREAMMUX:-yes}"
+# hstream-cli selects DeepStream's replacement nvstreammux itself, before it
+# re-execs, so there is nothing to export here.
 
 show_help() {
   cat <<'EOF'

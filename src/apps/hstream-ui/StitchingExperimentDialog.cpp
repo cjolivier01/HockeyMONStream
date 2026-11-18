@@ -966,7 +966,6 @@ struct StitchingExperimentDialog::Impl {
     result.insert("HM_MAX_CONTROL_POINTS", QString::number(candidate.settings.control_points));
     result.insert("HM_STITCH_CALIBRATION_FRAME_COUNT", QString::number(candidate.settings.frame_count));
     result.insert("HSTREAM_RENDER_AUDIO_MUTED", "1");
-    result.insert("USE_NEW_NVSTREAMMUX", "yes");
     return result;
   }
 

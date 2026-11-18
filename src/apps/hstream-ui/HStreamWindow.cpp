@@ -1307,9 +1307,11 @@ QString configure_pipeline_runtime_environment(
   // to create an unpredictable last-resort temporary directory.
   env.insert("HSTREAM_RUNTIME_CACHE_DIR", cache_root);
 #ifndef HSTREAM_USE_HIP
-  // DeepStream 9.1's legacy nvstreammux rejects the native 8K source caps used
-  // by stitching. Match run.sh while preserving an explicit diagnostic
-  // override from the caller.
+  // DeepStream's legacy nvstreammux rejects the native 8K source caps used by
+  // stitching. hstream-cli also selects the replacement itself, so this is the
+  // UI stating the contract for whatever backend it launches rather than the
+  // only thing standing between us and the legacy mux. An explicit diagnostic
+  // override from the caller still wins.
   if (env.value("USE_NEW_NVSTREAMMUX").isEmpty()) {
     env.insert("USE_NEW_NVSTREAMMUX", "yes");
   }

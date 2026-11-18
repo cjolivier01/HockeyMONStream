@@ -13,13 +13,17 @@
 #include "deepstream_streammux.h"
 #include <string.h>
 #include "deepstream_common.h"
+#include "hstream/src/apps/apps-common/HStreamLosslessMux.h"
 
 // Create bin, add queue and the element, link all elements and ghost pads,
 // Set the element properties from the parsed config
 gboolean set_streammux_properties(NvDsStreammuxConfig* config, GstElement* element) {
   gboolean ret = FALSE;
   const gchar* new_mux_str = g_getenv("USE_NEW_NVSTREAMMUX");
-  gboolean use_new_mux = !g_strcmp0(new_mux_str, "yes");
+  // The properties below exist only on the legacy mux. hstreamlosslessmux is
+  // built from the replacement regardless of the variable, so ask the element
+  // rather than the environment before writing them to it.
+  gboolean use_new_mux = is_hstream_lossless_nvstreammux(element) || !g_strcmp0(new_mux_str, "yes");
 
   if (!use_new_mux) {
     g_object_set(G_OBJECT(element), "gpu-id", config->gpu_id, NULL);
