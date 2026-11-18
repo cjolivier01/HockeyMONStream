@@ -11,3 +11,18 @@ bool register_hstream_lossless_nvstreammux() {
   }
   return registration_result == 1;
 }
+
+namespace {
+// Written once per pipeline construction by create_multi_source_bin(), on the
+// thread that builds the graph, and read later on the same thread while that
+// graph is assembled.
+bool g_lossless_nvstreammux_selected = false;
+} // namespace
+
+bool hstream_lossless_nvstreammux_selected() {
+  return g_lossless_nvstreammux_selected;
+}
+
+void set_hstream_lossless_nvstreammux_selected(bool selected) {
+  g_lossless_nvstreammux_selected = selected;
+}

@@ -4465,12 +4465,14 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   // pipeline stalls, which uri_multiple_pipeline_test catches. The choice no
   // longer depends on USE_NEW_NVSTREAMMUX, since this element is ours and is
   // registered here rather than resolved through DeepStream's plugin.
+  set_hstream_lossless_nvstreammux_selected(false);
   if (uri_playlist_source_count == 2) {
     if (!register_hstream_lossless_nvstreammux()) {
       NVGSTDS_ERR_MSG_V("Failed to register the lossless URI-playlist stream mux");
       goto done;
     }
     streammux_factory = "hstreamlosslessmux";
+    set_hstream_lossless_nvstreammux_selected(true);
   }
   bin->streammux = gst_element_factory_make(streammux_factory, "src_bin_muxer");
   if (!bin->streammux) {
