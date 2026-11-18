@@ -12,17 +12,13 @@ bool register_hstream_lossless_nvstreammux() {
   return registration_result == 1;
 }
 
-namespace {
-// Written once per pipeline construction by create_multi_source_bin(), on the
-// thread that builds the graph, and read later on the same thread while that
-// graph is assembled.
-bool g_lossless_nvstreammux_selected = false;
-} // namespace
-
-bool hstream_lossless_nvstreammux_selected() {
-  return g_lossless_nvstreammux_selected;
-}
-
-void set_hstream_lossless_nvstreammux_selected(bool selected) {
-  g_lossless_nvstreammux_selected = selected;
+bool is_hstream_lossless_nvstreammux(GstElement* element) {
+  if (!element) {
+    return false;
+  }
+  GstElementFactory* factory = gst_element_get_factory(element);
+  if (!factory) {
+    return false;
+  }
+  return g_strcmp0(gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(factory)), "hstreamlosslessmux") == 0;
 }

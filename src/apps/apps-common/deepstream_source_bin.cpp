@@ -1065,7 +1065,10 @@ static gboolean configure_lossless_uri_playlist_mux(NvDsSrcParentBin* parent) {
   if (!parent || !parent->streammux || uri_playlist_sources(parent).size() != 2) {
     return TRUE;
   }
-  if (g_strcmp0(g_getenv("USE_NEW_NVSTREAMMUX"), "yes") != 0) {
+  // -1 is the legacy mux's spelling of an infinite wait; the replacement takes
+  // a positive microsecond value and rejects this one.
+  if (!is_hstream_lossless_nvstreammux(parent->streammux) &&
+      g_strcmp0(g_getenv("USE_NEW_NVSTREAMMUX"), "yes") != 0) {
     g_object_set(G_OBJECT(parent->streammux), "batched-push-timeout", -1, NULL);
   }
   return TRUE;
@@ -4465,14 +4468,14 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   // pipeline stalls, which uri_multiple_pipeline_test catches. The choice no
   // longer depends on USE_NEW_NVSTREAMMUX, since this element is ours and is
   // registered here rather than resolved through DeepStream's plugin.
-  set_hstream_lossless_nvstreammux_selected(false);
+  bin->lossless_nvstreammux = FALSE;
   if (uri_playlist_source_count == 2) {
     if (!register_hstream_lossless_nvstreammux()) {
       NVGSTDS_ERR_MSG_V("Failed to register the lossless URI-playlist stream mux");
       goto done;
     }
     streammux_factory = "hstreamlosslessmux";
-    set_hstream_lossless_nvstreammux_selected(true);
+    bin->lossless_nvstreammux = TRUE;
   }
   bin->streammux = gst_element_factory_make(streammux_factory, "src_bin_muxer");
   if (!bin->streammux) {

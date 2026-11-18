@@ -235,7 +235,11 @@ struct HmStitcherBin {
   GstElement* preview_sink{nullptr};
 };
 
-gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin);
+/**
+ * @param lossless_nvstreammux whether the source bin built hstreamlosslessmux, which
+ *        is the only mux that passes 10-bit buffers to this stitcher.
+ */
+gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin, gboolean lossless_nvstreammux);
 
 /* clang-format off */
 /**

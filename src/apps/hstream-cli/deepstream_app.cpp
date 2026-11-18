@@ -1890,7 +1890,8 @@ static gboolean create_common_elements(
 
   if (config->hmsticher_config.enable) {
     // Create dsexample element bin and set properties
-    if (!create_hmstitcher_bin(&config->hmsticher_config, &pipeline->hmstitcher_bin)) {
+    if (!create_hmstitcher_bin(
+            &config->hmsticher_config, &pipeline->hmstitcher_bin, pipeline->multi_src_bin.lossless_nvstreammux)) {
       goto done;
     }
     // Add hmstitcher bin to instance bin
@@ -2133,6 +2134,9 @@ gboolean create_pipeline(
    * Add muxer and < N > source components to the pipeline based
    * on the settings in configuration file.
    */
+  // Only create_multi_source_bin() can raise this. Clear it for every path so
+  // an nvmultiurisrcbin pipeline cannot inherit an earlier pipeline's mux.
+  pipeline->multi_src_bin.lossless_nvstreammux = FALSE;
   if (config->use_nvmultiurisrcbin) {
     if (config->num_source_sub_bins > 0) {
       if (!create_nvmultiurisrcbin_bin(

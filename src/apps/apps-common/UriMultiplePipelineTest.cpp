@@ -1,4 +1,3 @@
-#include "hstream/src/apps/apps-common/HStreamLosslessMux.h"
 #include "hstream/src/apps/apps-common/WebRtcEndpoint.h"
 #include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
 #include "hstream/src/apps/apps-common/deepstream_sinks.h"
@@ -1378,7 +1377,7 @@ int run_single_uri_multiple_source(const std::string& uri) {
     std::cerr << "Single stitched-output playback incorrectly enabled the two-camera lossless barrier\n";
     return 3;
   }
-  if (hstream_lossless_nvstreammux_selected()) {
+  if (src_parent.lossless_nvstreammux) {
     std::cerr << "Single stitched-output playback recorded a lossless mux selection it did not make\n";
     return 3;
   }
@@ -1490,7 +1489,7 @@ int run_lossless_two_camera_mux(
   }
   // High-bit-depth stitching gates on this rather than on USE_NEW_NVSTREAMMUX,
   // so it has to agree with the element that was actually built.
-  if (!hstream_lossless_nvstreammux_selected()) {
+  if (!src_parent.lossless_nvstreammux) {
     std::cerr << "Two-camera URI-MULTIPLE built hstreamlosslessmux without recording the selection\n";
     return 2;
   }

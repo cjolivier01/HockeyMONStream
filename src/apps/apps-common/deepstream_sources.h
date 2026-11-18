@@ -245,6 +245,12 @@ struct NvDsSrcParentBin {
   guint64 uri_playlist_next_frame_sequence;
   guint64 uri_playlist_paired_video_end;
   gboolean uri_playlist_exact_pairing_enabled;
+  /**
+   * Whether this source bin built hstreamlosslessmux rather than DeepStream's
+   * nvstreammux. Only our copy carries nvstreammux_p010_caps.patch, so this is
+   * also the answer to whether the mux can pass 10-bit buffers downstream.
+   */
+  gboolean lossless_nvstreammux;
   gboolean uri_playlist_terminal;
   gboolean uri_playlist_barrier_failed;
   /** Cancels waits for committed frames to reach nvstreammux during failure/application teardown. */

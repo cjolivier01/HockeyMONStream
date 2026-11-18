@@ -1,6 +1,5 @@
 #include "hstream/src/apps/apps-common/deepstream_dsfieldmask.h"
 #include "deepstream_sinks.h"
-#include "hstream/src/apps/apps-common/HStreamLosslessMux.h"
 #include "hstream/src/apps/apps-common/HmGpuPreview.h"
 #include "hstream/src/apps/apps-common/deepstream_common.h"
 #include "hstream/src/apps/apps-common/deepstream_config.h"
@@ -639,7 +638,7 @@ void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
 }
 } // namespace
 
-gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
+gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin, gboolean lossless_nvstreammux) {
   gboolean ret = FALSE;
   gboolean high_bit_depth = FALSE;
   gboolean high_bit_depth_output = FALSE;
@@ -733,12 +732,11 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin) {
 
   g_object_get(G_OBJECT(bin->elem_hmstitcher), "high-bit-depth", &high_bit_depth, NULL);
   // P010 reaches the stitcher only through hstreamlosslessmux, which is where
-  // nvstreammux_p010_caps.patch adds the format. Ask which mux the source bin
-  // actually built. USE_NEW_NVSTREAMMUX used to stand in for that and no
-  // longer does: it does not select our mux, and DeepStream's own new mux is
-  // unpatched, so the variable answered this question wrongly in both
-  // directions.
-  if (high_bit_depth && !hstream_lossless_nvstreammux_selected()) {
+  // nvstreammux_p010_caps.patch adds the format, so the caller tells us which
+  // mux its source bin built. USE_NEW_NVSTREAMMUX used to stand in for that
+  // and no longer does: it does not select our mux, and DeepStream's own new
+  // mux is unpatched, so the variable answered this wrongly in both directions.
+  if (high_bit_depth && !lossless_nvstreammux) {
     NVGSTDS_ERR_MSG_V("High-bit-depth stitching requires the lossless stream mux");
     goto done;
   }
