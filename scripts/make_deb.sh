@@ -43,6 +43,41 @@ if [[ "${TARGET_PLATFORM}" == desktop || "${JETSON_QT}" == 1 ]]; then
   PACKAGE_QT=1
 fi
 
+# Set to 0 by a light deployment, which promised the node's DeepStream would
+# not change.  A Jetson package builds on the node itself, so the packaging
+# tools below are installed there and have to keep that promise; a desktop
+# package builds in a container, where this stays 1 and nothing changes.
+DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM:-1}"
+if [[ "${DEPLOY_DEEPSTREAM}" != 0 && "${DEPLOY_DEEPSTREAM}" != 1 ]]; then
+  echo "ERROR: DEPLOY_DEEPSTREAM must be 0 or 1." >&2
+  exit 1
+fi
+
+# Install a packaging tool this host is missing.  Under a light deployment the
+# plan is read first: an unreadable one stops the build rather than passing as
+# a plan that changes nothing, which is what a command substitution in an
+# argument position would have made of it.
+install_packaging_tool() {
+  local tool="$1"
+  local package="$2"
+  local planned
+  command -v "${tool}" >/dev/null 2>&1 && return 0
+  echo "[make_deb] ${tool} not found; installing via apt..."
+  if [[ "${DEPLOY_DEEPSTREAM}" == 0 ]]; then
+    if ! planned="$(sudo apt-get install --simulate -y "${package}" \
+      | awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") && $2 ~ /^deepstream/ { print $1 " " $2 }')"; then
+      echo "ERROR: APT could not say what installing ${package} would do." >&2
+      exit 1
+    fi
+    if [[ -n "${planned}" ]]; then
+      echo "ERROR: installing ${package} here would change DeepStream:" >&2
+      printf '%s\n' "${planned}" | sed 's/^/  /' >&2
+      exit 1
+    fi
+  fi
+  sudo apt-get install -y "${package}"
+}
+
 # ---------- arg parsing ----------
 PKG_VERSION=""
 OUTPUT_DIR="${TOPDIR}/dist"
@@ -102,10 +137,7 @@ PKG_VERSION="$(printf '%s' "${PKG_VERSION}" | sed -E 's/[^A-Za-z0-9.+:~-]+/./g; 
 if [[ ! "${PKG_VERSION}" =~ ^[0-9] ]]; then
   PKG_VERSION="0.0+git.${PKG_VERSION}"
 fi
-if ! command -v dpkg &>/dev/null; then
-  echo "[make_deb] dpkg not found; installing via apt..."
-  sudo apt-get install -y dpkg
-fi
+install_packaging_tool dpkg dpkg
 if [[ -z "${PKG_ARCH}" ]]; then
   PKG_ARCH="$(dpkg --print-architecture)"
 fi
@@ -228,10 +260,7 @@ for plugin in "${HSTREAM_GST_PLUGINS[@]}"; do
     exit 1
   fi
 done
-if ! command -v file &>/dev/null; then
-  echo "[make_deb] file not found; installing via apt..."
-  sudo apt-get install -y file
-fi
+install_packaging_tool file file
 validate_elf_arch() {
   local elf="$1"
   local description
@@ -262,22 +291,10 @@ if [[ "${PACKAGE_QT}" == 1 ]]; then
 fi
 
 # ---------- ensure tools ----------
-if ! command -v patchelf &>/dev/null; then
-  echo "[make_deb] patchelf not found; installing via apt..."
-  sudo apt-get install -y patchelf
-fi
-if ! command -v dpkg-deb &>/dev/null; then
-  echo "[make_deb] dpkg-deb not found; installing via apt..."
-  sudo apt-get install -y dpkg
-fi
-if ! command -v dpkg-shlibdeps &>/dev/null; then
-  echo "[make_deb] dpkg-shlibdeps not found; installing via apt..."
-  sudo apt-get install -y dpkg-dev
-fi
-if ! command -v rsync &>/dev/null; then
-  echo "[make_deb] rsync not found; installing via apt..."
-  sudo apt-get install -y rsync
-fi
+install_packaging_tool patchelf patchelf
+install_packaging_tool dpkg-deb dpkg
+install_packaging_tool dpkg-shlibdeps dpkg-dev
+install_packaging_tool rsync rsync
 
 # ---------- staging tree ----------
 STAGING="${TOPDIR}/dist-staging/${PKG_NAME}_${PKG_VERSION}_${PKG_ARCH}"

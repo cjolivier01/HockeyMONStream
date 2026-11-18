@@ -106,7 +106,10 @@ older helper stops preparation with a deployment command naming the main server
 and all selected computers. Building a desktop from source does not update those
 installed helpers. To update the whole cluster, pass its nodes explicitly, for
 example `make deploy NODES=ripper,monster,mini,meshy,stubby`; plain `make deploy`
-targets the local computer. Older prepared generations without this compatibility
+targets the local computer. `make deploy-light` takes the same nodes and installs
+only HStream, leaving each computer's DeepStream alone, which is usually what a
+repeat deployment wants; a computer whose DeepStream cannot satisfy the package
+is named and skipped instead of changed. Older prepared generations without this compatibility
 check return to Prepare. They cannot begin a new test, acquire its recording or
 enable their profiles, even if their earlier tests passed.
 Their saved test history and immutable runtimes remain intact.

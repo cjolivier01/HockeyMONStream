@@ -78,7 +78,7 @@ test-amd-driver-interop:
 .PHONY: all print_targets perf perf-rocm debug test clean distclean expunge x86_64 arm64 jetson jetson-qt gstdebug private-amd-gstreamer \
 	hstream-job hstream-process-guard hstream-runtime-worker hstream-finalize hstream-calibration-export hstream-model-prepare hstream-prepared-model-validate hstream-model-infer hstream-cli run-hstream-cli hstream-ui hstream-web-job hstream-experiment-task hstream-workflow run-hstream-ui \
 	hstream-assets video-player run-video-player yolo-custom-lib hstream-gst-plugins qualify-native-onnx \
-	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
+	deb deb-ubuntu24 deb-ubuntu26 deb-jetson deploy deploy-light undeploy wsl-deb windows-installer publish publish-dry-run delete-release \
 	deepstream-deb deepstream-deb-ubuntu24 deepstream-deb-ubuntu26
 
 perf:
@@ -221,8 +221,15 @@ deploy:
 	NODES="$(NODES)" \
 	PACKAGE_VERSION="$(PACKAGE_VERSION)" \
 	DEEPSTREAM_DEB="$(DEEPSTREAM_DEB)" \
+	DEPLOY_DEEPSTREAM="$(if $(DEPLOY_DEEPSTREAM),$(DEPLOY_DEEPSTREAM),1)" \
 	DEPLOY_OUTPUT_DIR="$(if $(DEPLOY_OUTPUT_DIR),$(DEPLOY_OUTPUT_DIR),$(TOPDIR)/dist)" \
 	scripts/deploy.sh
+
+# Same deployment without touching any node's DeepStream.  Equivalent to
+# make deploy DEPLOY_DEEPSTREAM=0, which an operator can also pass directly.
+deploy-light: NODES ?= $(shell hostname)
+deploy-light:
+	$(MAKE) deploy NODES="$(NODES)" DEPLOY_DEEPSTREAM=0
 
 undeploy:
 	@if [ -z "$(strip $(NODES))" ]; then \
@@ -319,6 +326,9 @@ print_targets:
 		'deb-jetson     Build the Ubuntu 24.04 arm64 package on $(JETSON_DEB_HOST) (output under dist/jetson).' \
 		'               Add JETSON_QT=1 to deb-jetson or deploy to include the Qt UI on Jetson.' \
 		'deploy         Detect, build, and force-install on comma-separated NODES (default: current hostname).' \
+		'deploy-light   Same, but install HStream only and leave each node DeepStream untouched' \
+		'               (= make deploy DEPLOY_DEEPSTREAM=0; a desktop package is still built' \
+		'               against the DeepStream .deb, so that artifact is still needed here).' \
 		'undeploy       Remove HStream from comma-separated NODES without removing DeepStream.' \
 		'wsl-deb        Alias for the Ubuntu .deb used by the Windows WSL bootstrapper.' \
 		'windows-installer Build the small native Windows/WSL setup .exe on Ubuntu (requires NSIS).' \
