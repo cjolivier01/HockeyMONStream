@@ -502,7 +502,15 @@ trap - EXIT
 # Three scripts read APT's plan for DeepStream changes, and two of them run on
 # a remote node from a quoted here-document, so they cannot share one
 # definition.  Require the filter to be the same text in all three instead.
+# Requiring one occurrence per file is part of the pin, not tidiness: the
+# extraction below takes the longest match on a line, so a second copy left in
+# a comment could stand in for a filter that had actually been changed.
 plan_filter_text() {
+  local occurrences
+  occurrences="$(grep -o 'print \$1 " " \$2 }' "$1" | wc -l)"
+  if [[ "${occurrences}" -ne 1 ]]; then
+    fail "$(basename "$1") has ${occurrences} DeepStream plan filters; one is pinned, so one is allowed"
+  fi
   sed -n 's/.*awk .\(($1 == "Inst".*print \$1 " " \$2 }\).*/\1/p' "$1"
 }
 installer_plan_filter="$(plan_filter_text "${SCRIPT_DIR}/install_deb.sh")"

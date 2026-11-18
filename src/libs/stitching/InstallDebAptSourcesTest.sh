@@ -363,4 +363,33 @@ Remv deepstream-8.0 (8.0.0-1 local [amd64])' 'Inst deepstream-9.1
 Remv deepstream-8.0' "every DeepStream change in a plan is reported"
 expect_planned '' '' "an empty plan changes nothing"
 
+# An unreadable plan is not an empty plan.  A command substitution in an
+# argument discards the command's exit status, so the simulation runs inside
+# the guard: a failed one has to stop the installation rather than arrive as a
+# plan that changes nothing.
+simulate_ok() { printf 'Inst hstream (1.2.3 local [amd64])\n'; }
+simulate_deepstream() { printf 'Inst deepstream-9.1 [9.1.0-1] (9.1.1-1 NVIDIA:noble [amd64])\n'; }
+simulate_broken() { printf 'E: Could not get lock\n'; return 100; }
+
+guard_status() {
+  local output
+  output="$(refuse_deepstream_simulation "the transaction" "$1" 2>&1)"
+  local status=$?
+  printf '%s\n' "${output}" >"${test_root}/guard-output"
+  return "${status}"
+}
+
+guard_status simulate_ok || fail "the guard refused a plan that leaves DeepStream alone"
+if guard_status simulate_deepstream; then
+  fail "the guard accepted a plan that changes DeepStream"
+fi
+grep -qF 'Inst deepstream-9.1' "${test_root}/guard-output" || \
+  fail "the refused plan was not reported"
+if guard_status simulate_broken; then
+  fail "the guard accepted a simulation that failed"
+fi
+grep -qF 'could not say' "${test_root}/guard-output" || \
+  fail "a failed simulation was not reported as one"
+unset -f simulate_ok simulate_deepstream simulate_broken
+
 echo "APT CUDA source reconciliation tests passed"

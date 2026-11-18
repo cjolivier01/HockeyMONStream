@@ -482,17 +482,34 @@ planned_deepstream_changes() {
 }
 
 # Stop before a transaction that would break the promise, naming what it was
-# going to do.  Every APT transaction this installer runs goes through here
-# first when --no-deepstream is in effect.
-refuse_deepstream_changes() {
-  local simulation="$1"
-  local description="$2"
+# going to do.  Takes a plan from a command whose exit status has already been
+# checked; use refuse_deepstream_simulation otherwise.
+refuse_deepstream_plan() {
+  local description="$1"
+  local simulation="$2"
   local planned
   planned="$(planned_deepstream_changes "${simulation}")"
   [[ -z "${planned}" ]] && return 0
   echo "ERROR: --no-deepstream, but ${description} would change DeepStream:" >&2
   printf '%s\n' "${planned}" | sed 's/^/  /' >&2
   exit 1
+}
+
+# Run a simulation and refuse the transaction if DeepStream is in its plan.
+# The command runs here rather than in the caller's argument list because a
+# command substitution in an argument throws its exit status away: a
+# simulation that failed would arrive as a plan that changes nothing, and the
+# transaction would go ahead unexamined.  An unreadable plan is not an empty
+# one, so it stops the installation.
+refuse_deepstream_simulation() {
+  local description="$1"
+  shift
+  local simulation
+  if ! simulation="$("$@")"; then
+    echo "ERROR: --no-deepstream, but APT could not say what ${description} would do." >&2
+    exit 1
+  fi
+  refuse_deepstream_plan "${description}" "${simulation}"
 }
 
 # Exact state of those packages, for the comparison that proves an install
@@ -744,9 +761,8 @@ run_apt_update
 DEEPSTREAM_STATE_BEFORE=""
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
   DEEPSTREAM_STATE_BEFORE="$(deepstream_package_state)"
-  refuse_deepstream_changes \
-    "$(apt-get install --simulate -y --no-install-recommends binutils ca-certificates curl zstd)" \
-    "installing the bootstrap packages"
+  refuse_deepstream_simulation "installing the bootstrap packages" \
+    apt-get install --simulate -y --no-install-recommends binutils ca-certificates curl zstd
 fi
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
@@ -1061,7 +1077,9 @@ while read -r removed_package; do
 done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
 
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
-  refuse_deepstream_changes "${simulation}" "installing HStream"
+  # The assignment above already failed the installation if APT could not
+  # produce this plan, so the plan itself is all that is left to judge.
+  refuse_deepstream_plan "installing HStream" "${simulation}"
 fi
 
 if [[ "${SIMULATE}" -eq 0 ]]; then
@@ -1070,9 +1088,8 @@ if [[ "${SIMULATE}" -eq 0 ]]; then
     # A second transaction, and --reinstall was not part of the plan judged
     # above, so judge this one too rather than discovering it afterwards.
     if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
-      refuse_deepstream_changes \
-        "$(apt-get install --simulate -y --no-install-recommends --reinstall "${HSTREAM_DEB}")" \
-        "reinstalling the same HStream version"
+      refuse_deepstream_simulation "reinstalling the same HStream version" \
+        apt-get install --simulate -y --no-install-recommends --reinstall "${HSTREAM_DEB}"
     fi
     apt-get install -y --no-install-recommends --reinstall "${HSTREAM_DEB}"
   fi
