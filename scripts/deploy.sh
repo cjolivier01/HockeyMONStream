@@ -11,6 +11,7 @@ NODES_CSV="${NODES:-}"
 REQUESTED_PACKAGE_VERSION="${PACKAGE_VERSION:-}"
 REQUESTED_DEEPSTREAM_DEB="${DEEPSTREAM_DEB:-}"
 JETSON_QT="${JETSON_QT:-0}"
+DEPLOY_DEEPSTREAM="${DEPLOY_DEEPSTREAM:-1}"
 OPERATION="deploy"
 
 declare -a NODES_LIST=()
@@ -37,6 +38,7 @@ usage() {
   cat <<'USAGE'
 Usage:
   make deploy [NODES=node1,node2[,node3]]
+  make deploy-light [NODES=node1,node2[,node3]]
   make undeploy NODES=node1,node2[,node3]
 
 The deployment runner detects each node over SSH, builds one package for each
@@ -48,12 +50,19 @@ make deploy defaults to the current hostname when NODES is undefined.
 Nodes must allow non-interactive SSH access and passwordless sudo.
 The invoking HStream repository must have no tracked or source-file changes.
 
+make deploy-light (DEPLOY_DEEPSTREAM=0) installs HStream alone and leaves each
+node's DeepStream untouched: nothing is uploaded or replaced there, and a node
+whose installed DeepStream cannot satisfy the package is reported and skipped
+instead of being changed.  The package is still compiled against DeepStream, so
+the amd64 artifact is still needed here to build it.
+
 Undeploy removes and purges the hstream package and its legacy hmstream name.
 It leaves DeepStream and shared dependency packages installed.
 
 Optional make variables:
   PACKAGE_VERSION=VERSION   Override the source-derived package version.
   DEEPSTREAM_DEB=FILE      Use this DeepStream 9.1 amd64 artifact for desktops.
+  DEPLOY_DEEPSTREAM=0      Never install DeepStream on a node (make deploy-light).
   DEPLOY_OUTPUT_DIR=DIR    Override the package output root (default: dist).
   JETSON_QT=1              Include Qt applications in Jetson packages (default: 0).
 
@@ -167,6 +176,32 @@ target_description() {
   esac
 }
 
+# Explain why a node's installed DeepStream cannot satisfy the HStream package,
+# or print nothing when it can.  The argument is the detected inventory:
+# space-separated "package/version" entries for every installed deepstream-N.
+# Only used when this run installs no DeepStream, so the node's own copy is the
+# only one the package will ever see.
+deepstream_requirement_problem() {
+  local installed="$1"
+  local entry package version others=""
+
+  for entry in ${installed}; do
+    package="${entry%%/*}"
+    version="${entry#*/}"
+    if [[ "${package}" == "deepstream-9.1" ]] && deepstream_version_supported "${version}"; then
+      return 0
+    fi
+    others+="${others:+, }${package} ${version}"
+  done
+
+  printf 'deepstream-9.1 (>= %s, << %s) is not installed' \
+    "${DEEPSTREAM_MIN_VERSION}" "${DEEPSTREAM_MAX_VERSION}"
+  if [[ -n "${others}" ]]; then
+    printf ' (found %s)' "${others}"
+  fi
+  printf '\n'
+}
+
 deployment_action() {
   local previous="$1"
   local installed="$2"
@@ -189,6 +224,10 @@ deployment_action() {
 require_local_commands() {
   if [[ "${JETSON_QT}" != 0 && "${JETSON_QT}" != 1 ]]; then
     printf 'ERROR: JETSON_QT must be 0 or 1.\n' >&2
+    return 1
+  fi
+  if [[ "${DEPLOY_DEEPSTREAM}" != 0 && "${DEPLOY_DEEPSTREAM}" != 1 ]]; then
+    printf 'ERROR: DEPLOY_DEEPSTREAM must be 0 or 1.\n' >&2
     return 1
   fi
   local command_name
@@ -230,7 +269,8 @@ require_clean_repository() {
 detect_node() {
   local node="$1"
   local output identity marker os_id os_version id_like ubuntu_codename architecture platform
-  local previous_package previous extra target_key base_os_id base_os_version
+  local previous_package previous deepstream_installed extra target_key base_os_id base_os_version
+  local deepstream_problem
 
   printf '\n[%s] Detecting %s...\n' "${OPERATION}" "${node}"
   if ! output="$(ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s <<'REMOTE_DETECT'
@@ -256,9 +296,14 @@ for candidate in hstream hmstream; do
     break
   fi
 done
-printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+# Every installed versioned DeepStream, so a deployment that installs none can
+# say what this node actually has instead of only what it is missing.
+deepstream_installed="$(dpkg-query -W -f='${Package} ${Version} ${db:Status-Status}\n' 'deepstream-*' 2>/dev/null \
+  | awk '$3 == "installed" && $1 ~ /^deepstream-[0-9]/ { printf "%s%s/%s", separator, $1, $2; separator = " " }' \
+  || true)"
+printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
   "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}" "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" \
-  "$(uname -m)" "${platform}" "${installed_package}" "${installed_version}"
+  "$(uname -m)" "${platform}" "${installed_package}" "${installed_version}" "${deepstream_installed}"
 REMOTE_DETECT
   )"; then
     NODE_OS["${node}"]="unknown"
@@ -277,7 +322,7 @@ REMOTE_DETECT
     return 1
   fi
   IFS='|' read -r marker os_id os_version id_like ubuntu_codename architecture platform \
-    previous_package previous extra <<< "${identity}"
+    previous_package previous deepstream_installed extra <<< "${identity}"
   if [[ "${marker}" != "__HSTREAM_DEPLOY__" || -n "${extra:-}" ]]; then
     NODE_OS["${node}"]="unknown"
     NODE_PLATFORM["${node}"]="unknown"
@@ -313,6 +358,21 @@ REMOTE_DETECT
 
   NODE_TARGET["${node}"]="${target_key}"
   NODE_PLATFORM["${node}"]="$(target_description "${target_key}")"
+
+  # Desktops are the only nodes a deployment installs DeepStream on, so they
+  # are the only ones a light deployment changes.  Judge the node before the
+  # package build rather than after, and leave its DeepStream alone either way.
+  if [[ "${OPERATION}" == deploy && "${DEPLOY_DEEPSTREAM}" -eq 0 && "${target_key}" == desktop-* ]]; then
+    deepstream_problem="$(deepstream_requirement_problem "${deepstream_installed:-}")"
+    if [[ -n "${deepstream_problem}" ]]; then
+      NODE_RESULT["${node}"]="FAILED"
+      NODE_DETAIL["${node}"]="${deepstream_problem}"
+      printf '[deploy] ERROR: %s: %s.\n' "${node}" "${deepstream_problem}" >&2
+      printf '[deploy] Run "make deploy NODES=%s" to install DeepStream there.\n' "${node}" >&2
+      return 1
+    fi
+  fi
+
   if [[ -z "${SEEN_TARGETS[${target_key}]+set}" ]]; then
     SEEN_TARGETS["${target_key}"]=1
     TARGET_KEYS+=("${target_key}")
@@ -471,7 +531,8 @@ deploy_desktop() {
   local node="$1"
   local deb="$2"
   local installer="$3"
-  local remote_dir deb_name installer_name deepstream_name status=0
+  local remote_dir deb_name installer_name deepstream_option status=0
+  local -a uploads=()
 
   printf '[deploy] %s: preparing upload directory...\n' "${node}"
   if ! remote_dir="$(create_remote_directory "${node}")"; then
@@ -479,24 +540,37 @@ deploy_desktop() {
   fi
   deb_name="$(basename "${deb}")"
   installer_name="$(basename "${installer}")"
-  deepstream_name="$(basename "${DESKTOP_DEEPSTREAM_DEB}")"
+  uploads=("${deb}" "${installer}")
 
-  printf '[deploy] %s: uploading HStream, installer, and DeepStream (this can take several minutes)...\n' "${node}"
+  # Send the installer the option itself rather than a name that would be empty
+  # in a light deployment: ssh joins its arguments into one command string for
+  # the remote shell, which drops an empty one and shifts every later argument.
+  # Nothing about DeepStream is uploaded here; the artifact is by far the
+  # slowest part of a deployment.
+  if [[ "${DEPLOY_DEEPSTREAM}" -eq 1 ]]; then
+    uploads+=("${DESKTOP_DEEPSTREAM_DEB}")
+    deepstream_option="--deepstream-deb=${remote_dir}/$(basename "${DESKTOP_DEEPSTREAM_DEB}")"
+    printf '[deploy] %s: uploading HStream, installer, and DeepStream (this can take several minutes)...\n' "${node}"
+  else
+    deepstream_option="--no-deepstream"
+    printf '[deploy] %s: uploading HStream and installer (DeepStream unchanged)...\n' "${node}"
+  fi
+
   if ! scp -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" \
-    "${deb}" "${installer}" "${DESKTOP_DEEPSTREAM_DEB}" "${node}:${remote_dir}/"; then
+    "${uploads[@]}" "${node}:${remote_dir}/"; then
     status=1
   elif ! ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s -- \
-    "${remote_dir}" "${installer_name}" "${deepstream_name}" "${deb_name}" <<'REMOTE_INSTALL_DESKTOP'
+    "${remote_dir}" "${installer_name}" "${deepstream_option}" "${deb_name}" <<'REMOTE_INSTALL_DESKTOP'
 set -euo pipefail
 remote_dir="$1"
 installer_name="$2"
-deepstream_name="$3"
+deepstream_option="$3"
 deb_name="$4"
 printf '[deploy] Upload complete; starting desktop installation on %s...\n' "$(hostname)"
 chmod 0755 "${remote_dir}/${installer_name}"
 sudo -n "${remote_dir}/${installer_name}" \
   --force-hstream \
-  --deepstream-deb="${remote_dir}/${deepstream_name}" \
+  "${deepstream_option}" \
   --hstream-deb="${remote_dir}/${deb_name}"
 REMOTE_INSTALL_DESKTOP
   then
@@ -665,6 +739,8 @@ print_summary() {
 
   if [[ "${OPERATION}" == undeploy ]]; then
     printf '\nUndeployment summary\n'
+  elif [[ "${DEPLOY_DEEPSTREAM}" -eq 0 ]]; then
+    printf '\nDeployment summary (DeepStream unchanged)\n'
   else
     printf '\nDeployment summary\n'
   fi
@@ -707,6 +783,7 @@ main() {
         ;;
       --nodes=*) NODES_CSV="${1#*=}" ;;
       --undeploy) OPERATION="undeploy" ;;
+      --no-deepstream) DEPLOY_DEEPSTREAM=0 ;;
       -h|--help) usage; return 0 ;;
       *) printf 'ERROR: unknown option: %s\n' "$1" >&2; usage >&2; return 2 ;;
     esac
@@ -716,6 +793,10 @@ main() {
   parse_nodes "${NODES_CSV}" || return $?
   require_local_commands || return 1
   require_clean_repository || return 1
+
+  if [[ "${OPERATION}" == deploy && "${DEPLOY_DEEPSTREAM}" -eq 0 ]]; then
+    printf '[deploy] Light deployment: every node keeps the DeepStream it has.\n'
+  fi
 
   for node in "${NODES_LIST[@]}"; do
     if ! detect_node "${node}"; then
@@ -755,6 +836,10 @@ main() {
     fi
   done
 
+  if [[ "${needs_desktop}" -eq 1 && "${DEPLOY_DEEPSTREAM}" -eq 0 ]]; then
+    printf '[deploy] HStream is compiled against DeepStream, so the builder still needs the artifact.\n'
+    printf '[deploy] It is a build input only; no node will receive or install it.\n'
+  fi
   if [[ "${needs_desktop}" -eq 1 ]] && ! resolve_desktop_deepstream_deb; then
     for target_key in "${TARGET_KEYS[@]}"; do
       if [[ "${target_key}" == desktop-* ]]; then

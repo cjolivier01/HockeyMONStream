@@ -1,7 +1,9 @@
 #!/bin/bash
 # Install the local DeepStream and HStream Debian artifacts on a clean Ubuntu
 # host, including the NVIDIA repositories that provide their CUDA/TensorRT
-# dependencies.
+# dependencies.  With --no-deepstream only HStream is installed, against the
+# DeepStream the host already has; the repository work still runs, because
+# HStream's own CUDA/TensorRT dependencies come from there.
 set -euo pipefail
 
 CUDA_COMPAT_REPOSITORY='https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/'
@@ -477,6 +479,7 @@ fi
 
 HSTREAM_DEB=""
 DEEPSTREAM_DEB=""
+NO_DEEPSTREAM=0
 DEEPSTREAM_MIN_VERSION="9.1.0-1"
 DEEPSTREAM_MAX_VERSION="9.2~"
 SIMULATE=0
@@ -489,9 +492,17 @@ Usage:
     --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1_amd64.deb \
     --hstream-deb=/path/to/hstream_*_amd64.deb
 
+  sudo ./install-hstream-deb --no-deepstream \
+    --hstream-deb=/path/to/hstream_*_amd64.deb
+
 Options:
   --deepstream-deb FILE  Local deepstream-9.1 release artifact.
   --hstream-deb FILE    Local HStream artifact for this Ubuntu release.
+  --no-deepstream        Install HStream alone against the DeepStream already
+                         on this host, which is left exactly as it is.  The
+                         NVIDIA repositories are still configured, because
+                         HStream's own CUDA and TensorRT dependencies come
+                         from them.
   --force-hstream       Replace HStream even when this version is installed;
                         also permit an explicit downgrade to the local version.
   --simulate             Configure repositories and only simulate apt install.
@@ -503,6 +514,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --deepstream-deb) DEEPSTREAM_DEB="$2"; shift ;;
     --deepstream-deb=*) DEEPSTREAM_DEB="${1#*=}" ;;
+    --no-deepstream) NO_DEEPSTREAM=1 ;;
     --hstream-deb) HSTREAM_DEB="$2"; shift ;;
     --hstream-deb=*) HSTREAM_DEB="${1#*=}" ;;
     --force-hstream) FORCE_HSTREAM=1 ;;
@@ -513,38 +525,66 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Judge the request before the privilege check: a caller who asked for the
+# wrong thing should be told that, not told to come back as root first.
+if [[ "${NO_DEEPSTREAM}" -eq 1 && -n "${DEEPSTREAM_DEB}" ]]; then
+  echo "ERROR: --no-deepstream and --deepstream-deb request opposite things." >&2
+  usage >&2
+  exit 1
+fi
+if [[ -z "${HSTREAM_DEB}" ]] || [[ -z "${DEEPSTREAM_DEB}" && "${NO_DEEPSTREAM}" -eq 0 ]]; then
+  echo "ERROR: --hstream-deb and --deepstream-deb are required." >&2
+  echo "Pass --no-deepstream instead to keep the DeepStream already installed here." >&2
+  usage >&2
+  exit 1
+fi
 if [[ "${EUID}" -ne 0 ]]; then
   echo "ERROR: run this installer as root (for example, with sudo)." >&2
   exit 1
 fi
-if [[ -z "${HSTREAM_DEB}" || -z "${DEEPSTREAM_DEB}" ]]; then
-  echo "ERROR: --hstream-deb and --deepstream-deb are required." >&2
-  usage >&2
-  exit 1
-fi
 
-for deb in "${HSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
+LOCAL_DEBS=("${HSTREAM_DEB}")
+if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then LOCAL_DEBS+=("${DEEPSTREAM_DEB}"); fi
+for deb in "${LOCAL_DEBS[@]}"; do
   if [[ ! -f "${deb}" ]]; then
     echo "ERROR: Debian artifact not found: ${deb}" >&2
     exit 1
   fi
 done
 HSTREAM_DEB="$(readlink -f "${HSTREAM_DEB}")"
-DEEPSTREAM_DEB="$(readlink -f "${DEEPSTREAM_DEB}")"
 if [[ "$(dpkg-deb -f "${HSTREAM_DEB}" Package)" != "hstream" ]]; then
   echo "ERROR: not an hstream package: ${HSTREAM_DEB}" >&2
   exit 1
 fi
-if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
-  echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
-  exit 1
-fi
-deepstream_version="$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)"
-if ! dpkg --compare-versions "${deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
-   ! dpkg --compare-versions "${deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
-  echo "ERROR: DeepStream >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
-  echo "Found version: ${deepstream_version}" >&2
-  exit 1
+if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
+  # Nothing here will install DeepStream, so say so now rather than letting APT
+  # explain it as an unmet dependency after the repository work below.
+  installed_deepstream="$(dpkg-query -W -f='${db:Status-Status} ${Version}' deepstream-9.1 2>/dev/null || true)"
+  installed_deepstream_version=""
+  if [[ "${installed_deepstream%% *}" == "installed" ]]; then
+    installed_deepstream_version="${installed_deepstream#* }"
+  fi
+  if [[ -z "${installed_deepstream_version}" ]] ||
+     ! dpkg --compare-versions "${installed_deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
+     ! dpkg --compare-versions "${installed_deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
+    echo "ERROR: --no-deepstream needs deepstream-9.1 >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} installed here." >&2
+    echo "Installed version: ${installed_deepstream_version:-not installed}" >&2
+    echo "Rerun with --deepstream-deb=FILE to install it." >&2
+    exit 1
+  fi
+else
+  DEEPSTREAM_DEB="$(readlink -f "${DEEPSTREAM_DEB}")"
+  if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
+    echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
+    exit 1
+  fi
+  deepstream_version="$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)"
+  if ! dpkg --compare-versions "${deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
+     ! dpkg --compare-versions "${deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
+    echo "ERROR: DeepStream >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
+    echo "Found version: ${deepstream_version}" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -r /etc/os-release ]]; then
@@ -601,7 +641,9 @@ if [[ "${HSTREAM_TARGET_UBUNTU}" != "${UBUNTU_RELEASE}" ]]; then
 fi
 
 HOST_ARCH="$(dpkg --print-architecture)"
-for deb in "${HSTREAM_DEB}" "${DEEPSTREAM_DEB}"; do
+LOCAL_DEBS=("${HSTREAM_DEB}")
+if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then LOCAL_DEBS+=("${DEEPSTREAM_DEB}"); fi
+for deb in "${LOCAL_DEBS[@]}"; do
   deb_arch="$(dpkg-deb -f "${deb}" Architecture)"
   if [[ "${deb_arch}" != "${HOST_ARCH}" ]]; then
     echo "ERROR: ${deb} targets ${deb_arch}, but this host is ${HOST_ARCH}." >&2
@@ -795,7 +837,7 @@ relax_deepstream_dependency_pins() {
   dpkg-deb --build --root-owner-group "${package_root}" "${output_deb}" >/dev/null
 }
 
-if [[ "${UBUNTU_RELEASE}" == "26.04" ]]; then
+if [[ "${UBUNTU_RELEASE}" == "26.04" && "${NO_DEEPSTREAM}" -eq 0 ]]; then
   relaxed_deepstream_dir="$(mktemp -d /tmp/hstream-deepstream-relaxed.XXXXXX)"
   relaxed_deepstream_deb="${relaxed_deepstream_dir}/deepstream-9.1-ubuntu26-relaxed.deb"
   echo "Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
@@ -880,14 +922,16 @@ requested_hstream_version="$(dpkg-deb -f "${HSTREAM_DEB}" Version)"
 # Keep unrelated split packages out of this list; the 9.1 artifact declares its
 # own conflicts with the legacy binaries/sample-data packages.
 old_deepstream_packages=()
-while IFS=$'\t' read -r package status; do
-  package_name="${package%%:*}"
-  if [[ "${status:0:1}" == "i" && "${status:1:1}" != "n" &&
-        "${package_name}" =~ ^deepstream-[0-9]+([.][0-9]+)*$ &&
-        "${package_name}" != "deepstream-9.1" ]]; then
-    old_deepstream_packages+=("${package}")
-  fi
-done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null || true)
+if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then
+  while IFS=$'\t' read -r package status; do
+    package_name="${package%%:*}"
+    if [[ "${status:0:1}" == "i" && "${status:1:1}" != "n" &&
+          "${package_name}" =~ ^deepstream-[0-9]+([.][0-9]+)*$ &&
+          "${package_name}" != "deepstream-9.1" ]]; then
+      old_deepstream_packages+=("${package}")
+    fi
+  done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null || true)
+fi
 install_deepstream_deb="${DEEPSTREAM_DEB}"
 if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
   echo "Replacing older DeepStream package(s): ${old_deepstream_packages[*]}"
@@ -947,7 +991,11 @@ if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
   done
 fi
 
-simulation="$(apt-get install --simulate --no-install-recommends "${install_deepstream_deb}" "${HSTREAM_DEB}")"
+install_debs=()
+if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then install_debs+=("${install_deepstream_deb}"); fi
+install_debs+=("${HSTREAM_DEB}")
+
+simulation="$(apt-get install --simulate --no-install-recommends "${install_debs[@]}")"
 printf '%s\n' "${simulation}"
 while read -r removed_package; do
   [[ -z "${removed_package}" ]] && continue
@@ -957,13 +1005,13 @@ while read -r removed_package; do
     if [[ "${removed_package}" == "${package%%:*}" ]]; then allowed=1; break; fi
   done
   if [[ "${allowed}" -eq 0 ]]; then
-    echo "ERROR: DeepStream replacement would remove dependent package ${removed_package}; refusing." >&2
+    echo "ERROR: this installation would remove dependent package ${removed_package}; refusing." >&2
     exit 1
   fi
 done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
 
 if [[ "${SIMULATE}" -eq 0 ]]; then
-  apt-get install "${apt_args[@]}" "${install_deepstream_deb}" "${HSTREAM_DEB}"
+  apt-get install "${apt_args[@]}" "${install_debs[@]}"
   if [[ "${FORCE_HSTREAM}" -eq 1 && "${installed_hstream_version}" == "${requested_hstream_version}" ]]; then
     apt-get install -y --no-install-recommends --reinstall "${HSTREAM_DEB}"
   fi
@@ -973,5 +1021,9 @@ if [[ "${SIMULATE}" -eq 1 ]]; then
   echo "Dependency resolution succeeded for Ubuntu ${UBUNTU_RELEASE}."
 else
   apt-get check
-  echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HStream $(dpkg-query -W -f='${Version}' hstream)."
+  if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
+    echo "Installed HStream $(dpkg-query -W -f='${Version}' hstream) against this host's DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1), which was not modified."
+  else
+    echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HStream $(dpkg-query -W -f='${Version}' hstream)."
+  fi
 fi

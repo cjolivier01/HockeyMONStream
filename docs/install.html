@@ -75,6 +75,9 @@ sudo ./install-hstream-deb.sh \
   --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1_amd64.deb \
   --hstream-deb=./hstream_vX.Y.Z_ubuntu24.04_amd64.deb</code></pre>
       <p>Use the actual release version and switch <code>ubuntu24.04</code> to <code>ubuntu26.04</code> on an Ubuntu 26.04 host. The helper validates package metadata, configures the NVIDIA repositories, and applies the required Ubuntu 26.04 compatibility handling. Do not install a package built for the other Ubuntu release.</p>
+      <p>To move to a newer HockeyMONStream release on a machine that already runs DeepStream 9.1, pass <code>--no-deepstream</code> instead of <code>--deepstream-deb</code>. The helper then installs the new package against the DeepStream already there and leaves it exactly as it is, so there is nothing to download from NVIDIA again:</p>
+      <pre><code>sudo ./install-hstream-deb.sh --no-deepstream \
+  --hstream-deb=./hstream_vX.Y.Z_ubuntu24.04_amd64.deb</code></pre>
 
       <h2>NVIDIA Jetson</h2>
       <p>For Jetson Linux 39 systems with DeepStream 9.1, download and verify the release asset ending in <code>_jetson-ubuntu24.04_arm64.deb</code>, then install it through APT:</p>
