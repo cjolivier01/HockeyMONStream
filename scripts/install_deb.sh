@@ -524,6 +524,51 @@ deepstream_package_state() {
     | sort || true
 }
 
+# Read the DeepStream release and version range an HStream package declares,
+# into DEEPSTREAM_PACKAGE, DEEPSTREAM_MIN_VERSION and DEEPSTREAM_MAX_VERSION.
+# Depends is a comma-separated list of relations, so split it and judge each
+# one whole: matching a pattern against the field as a whole would find
+# "deepstream-9.1 (>= ...)" inside "libdeepstream-9.1 (>= ...)" and would take
+# the last match in the field rather than the right one.  Both relations are
+# required and they have to name the same release; a package asking for
+# DeepStream any other way is not one this installer knows how to satisfy.
+read_deepstream_requirement() {
+  local depends="$1"
+  local relation name version
+  DEEPSTREAM_PACKAGE=""
+  DEEPSTREAM_MIN_VERSION=""
+  DEEPSTREAM_MAX_VERSION=""
+
+  # In a variable: bash tokenizes << and >= inside [[ ]] before it ever gets
+  # to the match.
+  local relation_pattern='^(deepstream-[0-9]+(\.[0-9]+)*)[[:space:]]*\((>=|<<)[[:space:]]*([^)[:space:]]+)[[:space:]]*\)$'
+  local saved_ifs="${IFS}"
+  IFS=','
+  # Deliberately unquoted: this is the split.
+  # shellcheck disable=SC2086
+  set -- ${depends}
+  IFS="${saved_ifs}"
+  for relation in "$@"; do
+    relation="${relation#"${relation%%[![:space:]]*}"}"
+    relation="${relation%"${relation##*[![:space:]]}"}"
+    [[ "${relation}" =~ ${relation_pattern} ]] || continue
+    name="${BASH_REMATCH[1]}"
+    version="${BASH_REMATCH[4]}"
+    if [[ -n "${DEEPSTREAM_PACKAGE}" && "${name}" != "${DEEPSTREAM_PACKAGE}" ]]; then
+      DEEPSTREAM_PACKAGE=""
+      return 1
+    fi
+    DEEPSTREAM_PACKAGE="${name}"
+    if [[ "${BASH_REMATCH[3]}" == ">=" ]]; then
+      DEEPSTREAM_MIN_VERSION="${version}"
+    else
+      DEEPSTREAM_MAX_VERSION="${version}"
+    fi
+  done
+
+  [[ -n "${DEEPSTREAM_PACKAGE}" && -n "${DEEPSTREAM_MIN_VERSION}" && -n "${DEEPSTREAM_MAX_VERSION}" ]]
+}
+
 # Allow the behavior test to source the production implementation without
 # entering the privileged installer workflow.
 if [[ "${HSTREAM_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
@@ -534,8 +579,11 @@ fi
 HSTREAM_DEB=""
 DEEPSTREAM_DEB=""
 NO_DEEPSTREAM=0
-DEEPSTREAM_MIN_VERSION="9.1.0-1"
-DEEPSTREAM_MAX_VERSION="9.2~"
+# Which DeepStream release, and which versions of it, are read out of the
+# HStream package's own Depends field below.  Nothing here names a release.
+DEEPSTREAM_PACKAGE=""
+DEEPSTREAM_MIN_VERSION=""
+DEEPSTREAM_MAX_VERSION=""
 SIMULATE=0
 FORCE_HSTREAM=0
 
@@ -543,14 +591,15 @@ usage() {
   cat <<'USAGE'
 Usage:
   sudo ./install-hstream-deb \
-    --deepstream-deb=/path/to/deepstream-9.1_9.1.0-1_amd64.deb \
+    --deepstream-deb=/path/to/deepstream-9.1_9.1.1-1_amd64.deb \
     --hstream-deb=/path/to/hstream_*_amd64.deb
 
   sudo ./install-hstream-deb --no-deepstream \
     --hstream-deb=/path/to/hstream_*_amd64.deb
 
 Options:
-  --deepstream-deb FILE  Local deepstream-9.1 release artifact.
+  --deepstream-deb FILE  The DeepStream release artifact this HStream package
+                         was built against, named in its Depends field.
   --hstream-deb FILE    Local HStream artifact for this Ubuntu release.
   --no-deepstream        Install HStream alone against the DeepStream already
                          on this host, which is left exactly as it is.  The
@@ -610,6 +659,17 @@ if [[ "$(dpkg-deb -f "${HSTREAM_DEB}" Package)" != "hstream" ]]; then
   echo "ERROR: not an hstream package: ${HSTREAM_DEB}" >&2
   exit 1
 fi
+# The package states which DeepStream it was built against, so read it from
+# there rather than carrying a release this installer would have to be edited
+# to follow.
+HSTREAM_DEPENDS="$(dpkg-deb -f "${HSTREAM_DEB}" Depends 2>/dev/null || true)"
+read_deepstream_requirement "${HSTREAM_DEPENDS}"
+if [[ -z "${DEEPSTREAM_PACKAGE}" || -z "${DEEPSTREAM_MIN_VERSION}" || -z "${DEEPSTREAM_MAX_VERSION}" ]]; then
+  echo "ERROR: ${HSTREAM_DEB} does not declare which DeepStream release it needs." >&2
+  echo "Depends: ${HSTREAM_DEPENDS:-(none)}" >&2
+  exit 1
+fi
+
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
   # Nothing here will install DeepStream, so say so now rather than letting APT
   # explain it as an unmet dependency after the repository work below.  A
@@ -617,27 +677,27 @@ if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
   # in config-files, say -- so select the record that can actually satisfy the
   # package instead of reading whatever dpkg-query prints first.
   installed_deepstream_version="$(dpkg-query -W \
-    -f='${db:Status-Status} ${Architecture} ${Version}\n' deepstream-9.1 2>/dev/null \
+    -f='${db:Status-Status} ${Architecture} ${Version}\n' "${DEEPSTREAM_PACKAGE}" 2>/dev/null \
     | awk -v arch="$(dpkg --print-architecture)" \
       '$1 == "installed" && ($2 == arch || $2 == "all") { print $3; exit }' || true)"
   if [[ -z "${installed_deepstream_version}" ]] ||
      ! dpkg --compare-versions "${installed_deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
      ! dpkg --compare-versions "${installed_deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
-    echo "ERROR: --no-deepstream needs deepstream-9.1 >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} installed here." >&2
+    echo "ERROR: --no-deepstream needs ${DEEPSTREAM_PACKAGE} >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} installed here." >&2
     echo "Installed version: ${installed_deepstream_version:-not installed}" >&2
     echo "Rerun with --deepstream-deb=FILE to install it." >&2
     exit 1
   fi
 else
   DEEPSTREAM_DEB="$(readlink -f "${DEEPSTREAM_DEB}")"
-  if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "deepstream-9.1" ]]; then
-    echo "ERROR: not a deepstream-9.1 package: ${DEEPSTREAM_DEB}" >&2
+  if [[ "$(dpkg-deb -f "${DEEPSTREAM_DEB}" Package)" != "${DEEPSTREAM_PACKAGE}" ]]; then
+    echo "ERROR: ${HSTREAM_DEB} needs ${DEEPSTREAM_PACKAGE}, but this is $(dpkg-deb -f "${DEEPSTREAM_DEB}" Package): ${DEEPSTREAM_DEB}" >&2
     exit 1
   fi
   deepstream_version="$(dpkg-deb -f "${DEEPSTREAM_DEB}" Version)"
   if ! dpkg --compare-versions "${deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
      ! dpkg --compare-versions "${deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
-    echo "ERROR: DeepStream >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
+    echo "ERROR: ${DEEPSTREAM_PACKAGE} >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required: ${DEEPSTREAM_DEB}" >&2
     echo "Found version: ${deepstream_version}" >&2
     exit 1
   fi
@@ -905,7 +965,7 @@ relax_deepstream_dependency_pins() {
 
 if [[ "${UBUNTU_RELEASE}" == "26.04" && "${NO_DEEPSTREAM}" -eq 0 ]]; then
   relaxed_deepstream_dir="$(mktemp -d /tmp/hstream-deepstream-relaxed.XXXXXX)"
-  relaxed_deepstream_deb="${relaxed_deepstream_dir}/deepstream-9.1-ubuntu26-relaxed.deb"
+  relaxed_deepstream_deb="${relaxed_deepstream_dir}/${DEEPSTREAM_PACKAGE}-ubuntu26-relaxed.deb"
   echo "Relaxing Ubuntu 24.04 and CUDA minor-toolkit DeepStream dependency pins for Ubuntu 26.04..."
   relax_deepstream_dependency_pins "${DEEPSTREAM_DEB}" "${relaxed_deepstream_deb}"
   DEEPSTREAM_DEB="${relaxed_deepstream_deb}"
@@ -993,7 +1053,7 @@ if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then
     package_name="${package%%:*}"
     if [[ "${status:0:1}" == "i" && "${status:1:1}" != "n" &&
           "${package_name}" =~ ^deepstream-[0-9]+([.][0-9]+)*$ &&
-          "${package_name}" != "deepstream-9.1" ]]; then
+          "${package_name}" != "${DEEPSTREAM_PACKAGE}" ]]; then
       old_deepstream_packages+=("${package}")
     fi
   done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null || true)
@@ -1026,7 +1086,7 @@ if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
     -e "s/^(Replaces:.*)$/\\1, ${relationship_list}/" \
     "${transition_dir}/control/control"
   tar "${control_compression[@]}" -cf "${transition_dir}/${control_member}" -C "${transition_dir}/control" .
-  install_deepstream_deb="${transition_dir}/deepstream-9.1-transition.deb"
+  install_deepstream_deb="${transition_dir}/${DEEPSTREAM_PACKAGE}-transition.deb"
   printf '!<arch>\n' >"${install_deepstream_deb}"
   append_ar_member() {
     local name="$1"
@@ -1113,6 +1173,6 @@ else
     fi
     echo "Installed HStream $(dpkg-query -W -f='${Version}' hstream) against this host's DeepStream ${installed_deepstream_version}, which was not modified."
   else
-    echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HStream $(dpkg-query -W -f='${Version}' hstream)."
+    echo "Installed ${DEEPSTREAM_PACKAGE} $(dpkg-query -W -f='${Version}' "${DEEPSTREAM_PACKAGE}") and HStream $(dpkg-query -W -f='${Version}' hstream)."
   fi
 fi

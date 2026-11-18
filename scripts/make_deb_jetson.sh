@@ -4,6 +4,8 @@
 set -euo pipefail
 
 TOPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/deepstream_artifact.sh
+source "${TOPDIR}/scripts/deepstream_artifact.sh"
 JETSON_HOST="${JETSON_HOST:-stubby}"
 JETSON_QT="${JETSON_QT:-0}"
 # Set to 0 by a light deployment, which promised this host's DeepStream would
@@ -118,12 +120,13 @@ trap cleanup EXIT
 git -C "${TOPDIR}" archive --format=tar "${source_revision}" | tar -xf - -C "${local_snapshot}"
 printf '%s %s\n' "${source_revision}" "${source_epoch}" > "${local_snapshot}/.hstream-package-source"
 
+# Any DeepStream release the host has will do: the package is compiled against
+# it and make_deb.sh writes that release into the Depends it produces.
 remote_identity="$(ssh -o BatchMode=yes "${JETSON_HOST}" \
-  'source /etc/os-release; printf "%s %s %s %s\n" "$(uname -m)" "${ID:-}" "${VERSION_ID:-}" "$(dpkg-query -W -f='"'"'${Version}'"'"' deepstream-9.1 2>/dev/null || true)"')"
+  'source /etc/os-release; printf "%s %s %s %s\n" "$(uname -m)" "${ID:-}" "${VERSION_ID:-}" "$(dpkg-query -W -f='"'"'${Package} ${Version} ${db:Status-Status}\n'"'"' '"'"'deepstream-*'"'"' 2>/dev/null | awk '"'"'$3 == "installed" && $1 ~ /^deepstream-[0-9]+([.][0-9]+)*$/ { print $2; exit }'"'"' || true)"')"
 read -r remote_arch remote_os remote_release remote_deepstream <<< "${remote_identity}"
 if [[ "${remote_arch} ${remote_os} ${remote_release}" != "aarch64 ubuntu 24.04" ]] ||
-   ! dpkg --compare-versions "${remote_deepstream:-0}" ge 9.1.0-1 ||
-   ! dpkg --compare-versions "${remote_deepstream:-0}" lt '9.2~'; then
+   ! dpkg --compare-versions "${remote_deepstream:-0}" ge "${DEEPSTREAM_MIN_VERSION}"; then
   echo "ERROR: ${JETSON_HOST} is not the required Jetson Linux 39 build host." >&2
   echo "Detected: ${remote_identity:-unknown}" >&2
   exit 1

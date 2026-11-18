@@ -35,12 +35,23 @@ apt-get install -y --no-install-recommends "${DEEPSTREAM_DEB}"
 # depend on a developer's SSH agent having a GitHub identity loaded.
 git config --global url.https://github.com/.insteadOf ssh://git@github.com/
 
-if ! dpkg-query -W -f='${db:Status-Status} ${Version}\n' deepstream-9.1 | grep -Eq '^installed 9[.]1[.]'; then
-  echo "ERROR: the input package did not install DeepStream 9.1." >&2
+# Which release the input package was is not this script's business -- it is
+# whatever the host resolved as newest -- but it has to have installed one, and
+# it has to have put DeepStream where the build looks for it.  A compatibility
+# metapackage would register the name and leave the tree absent.
+installed_deepstream="$(dpkg-query -W -f='${Package} ${db:Status-Status}\n' 'deepstream-*' 2>/dev/null \
+  | awk '$2 == "installed" && $1 ~ /^deepstream-[0-9]+(\.[0-9]+)*$/ { print $1; exit }')"
+if [[ -z "${installed_deepstream}" ]]; then
+  echo "ERROR: the input package did not install a DeepStream release." >&2
   exit 1
 fi
+if [[ ! -d /opt/nvidia/deepstream/deepstream ]]; then
+  echo "ERROR: ${installed_deepstream} installed no /opt/nvidia/deepstream/deepstream." >&2
+  exit 1
+fi
+echo "[build-hstream-deb] Building against ${installed_deepstream} $(dpkg-query -W -f='${Version}' "${installed_deepstream}")."
 if ! dpkg-query -W -f='${Version}\n' libnvinfer-dev | grep -Eq '^10[.]'; then
-  echo "ERROR: the builder must use TensorRT ABI 10 for DeepStream 9.1." >&2
+  echo "ERROR: the builder must use TensorRT ABI 10 for ${installed_deepstream}." >&2
   exit 1
 fi
 

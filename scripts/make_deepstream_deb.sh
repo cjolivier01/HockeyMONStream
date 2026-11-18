@@ -40,7 +40,7 @@ version="$(dpkg-deb -f "${DEEPSTREAM_ARTIFACT}" Version)"
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(readlink -f "${OUTPUT_DIR}")"
 # Keep target-specific outputs outside the resolver's original-download glob.
-output_deb="${OUTPUT_DIR}/deepstream-9.1_${version}_amd64.ubuntu${TARGET_UBUNTU}.deb"
+output_deb="${OUTPUT_DIR}/${DEEPSTREAM_ARTIFACT_PACKAGE}_${version}_amd64.ubuntu${TARGET_UBUNTU}.deb"
 if [[ "${output_deb}" -ef "${DEEPSTREAM_ARTIFACT}" ]]; then
   echo "ERROR: output would overwrite the input package: ${output_deb}" >&2
   exit 1

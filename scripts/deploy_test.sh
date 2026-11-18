@@ -91,12 +91,21 @@ if ! command -v dpkg-deb >/dev/null; then
 else
   fixture_root="$(mktemp -d)"
   trap 'rm -rf "${fixture_root}"' EXIT
+  # A fixture carries /opt/nvidia/deepstream unless asked not to: that tree is
+  # what separates a DeepStream release from a metapackage wearing its name.
   make_deepstream_fixture() {
-    local path="$1" version="$2" architecture="$3"
+    local path="$1" package="$2" version="$3" architecture="$4" content="${5:-runtime}"
     local root="${fixture_root}/build/$(basename "${path}")"
     mkdir -p "${root}/DEBIAN" "$(dirname "${path}")"
+    if [[ "${content}" == runtime ]]; then
+      mkdir -p "${root}/opt/nvidia/deepstream/deepstream/lib"
+      printf 'fixture\n' >"${root}/opt/nvidia/deepstream/deepstream/lib/libnvds.so"
+    else
+      mkdir -p "${root}/usr/share/doc/${package}"
+      printf 'fixture\n' >"${root}/usr/share/doc/${package}/README"
+    fi
     cat >"${root}/DEBIAN/control" <<CONTROL
-Package: deepstream-9.1
+Package: ${package}
 Version: ${version}
 Architecture: ${architecture}
 Maintainer: test <test@example.invalid>
@@ -109,10 +118,14 @@ CONTROL
   fixture_topdir="${fixture_root}/tree/repo"
   fixture_sibling="${fixture_root}/tree/DeepStream/artifacts"
   mkdir -p "${fixture_topdir}"
-  make_deepstream_fixture "${fixture_home}/Downloads/deepstream-9.1_9.1.0-1_amd64.deb" 9.1.0-1 amd64
-  make_deepstream_fixture "${fixture_sibling}/deepstream-9.1_9.1.1-1_amd64.deb" 9.1.1-1 amd64
-  make_deepstream_fixture "${fixture_home}/deepstream-9.1_9.1.9-1_amd64.deb" 9.1.9-1 arm64
-  make_deepstream_fixture "${fixture_home}/deepstream-9.1_9.2.0-1_amd64.deb" 9.2.0-1 amd64
+  make_deepstream_fixture "${fixture_home}/Downloads/deepstream-9.1_9.1.0-1_amd64.deb" \
+    deepstream-9.1 9.1.0-1 amd64
+  make_deepstream_fixture "${fixture_sibling}/deepstream-9.1_9.1.1-1_amd64.deb" \
+    deepstream-9.1 9.1.1-1 amd64
+  make_deepstream_fixture "${fixture_home}/deepstream-9.1_9.1.9-1_amd64.deb" \
+    deepstream-9.1 9.1.9-1 arm64
+  make_deepstream_fixture "${fixture_home}/deepstream-9.1_9.2.0-1_amd64.deb" \
+    deepstream-9.1 9.2.0-1 amd64
 
   # Not $(...): the resolver reports through a global, which a subshell loses.
   TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
@@ -121,7 +134,9 @@ CONTROL
   resolve_output="$(cat "${fixture_root}/resolve.log")"
   expect_equal "${DEEPSTREAM_ARTIFACT}" "${fixture_sibling}/deepstream-9.1_9.1.1-1_amd64.deb" \
     "newest supported amd64 artifact wins"
-  expect_equal "${resolve_output}" "[test] Using DeepStream 9.1.1-1 from ${DEEPSTREAM_ARTIFACT}" \
+  expect_equal "${DEEPSTREAM_ARTIFACT_PACKAGE}" deepstream-9.1 "resolver reports the release it picked"
+  expect_equal "${DEEPSTREAM_ARTIFACT_VERSION}" 9.1.1-1 "resolver reports the version it picked"
+  expect_equal "${resolve_output}" "[test] Using deepstream-9.1 9.1.1-1 from ${DEEPSTREAM_ARTIFACT}" \
     "resolver reports what it picked"
 
   if TOPDIR="${fixture_root}/bare/repo" HOME="${fixture_root}/bare/home" \
@@ -129,9 +144,37 @@ CONTROL
     "${fixture_root}/bare/repo/dist" >/dev/null 2>&1; then
     fail "resolver accepted a tree with no usable artifact"
   fi
+  # deepstream-9.1 carrying 9.2.0-1 cannot satisfy the dependency a package
+  # built against deepstream-9.1 declares, so it is not a usable artifact.
   if TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test \
     "${fixture_home}/deepstream-9.1_9.2.0-1_amd64.deb" hint >/dev/null 2>&1; then
-    fail "resolver accepted an out-of-range explicit artifact"
+    fail "resolver accepted a version outside the release its name claims"
+  fi
+
+  # A newer release outranks a newer version of an older one, and the release
+  # is read from the package name rather than the file name.
+  make_deepstream_fixture "${fixture_home}/Downloads/deepstream-9.2_9.2.0-1_amd64.deb" \
+    deepstream-9.2 9.2.0-1 amd64
+  TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
+    deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" >/dev/null \
+    || fail "resolver rejected a newer DeepStream release"
+  expect_equal "${DEEPSTREAM_ARTIFACT_PACKAGE}" deepstream-9.2 "a newer release outranks an older one"
+
+  # A compatibility metapackage declares the release and ships none of it.
+  # The newest usable artifact wins, which is not the newest artifact.
+  make_deepstream_fixture "${fixture_home}/Downloads/deepstream-9.3_9.3.0-1_amd64.deb" \
+    deepstream-9.3 9.3.0-1 amd64 metapackage
+  TOPDIR="${fixture_topdir}" HOME="${fixture_home}" HSTREAM_DEEPSTREAM_CACHE='' \
+    deepstream_artifact_resolve test '' hint "${fixture_topdir}/dist" \
+    >/dev/null 2>"${fixture_root}/resolve-passed-over.log" \
+    || fail "resolver gave up instead of passing over a metapackage"
+  expect_equal "${DEEPSTREAM_ARTIFACT_PACKAGE}" deepstream-9.2 \
+    "a release that ships no DeepStream is passed over for one that does"
+  grep -qF 'deepstream-9.3 9.3.0-1' "${fixture_root}/resolve-passed-over.log" \
+    || fail "the passed-over metapackage was not named"
+  if TOPDIR="${fixture_topdir}" deepstream_artifact_resolve test \
+    "${fixture_home}/Downloads/deepstream-9.3_9.3.0-1_amd64.deb" hint >/dev/null 2>&1; then
+    fail "resolver accepted a metapackage named explicitly"
   fi
 
   # The resolver globs, but nullglob belongs to whoever sourced the library.
@@ -238,57 +281,88 @@ BUILDER
 fi
 
 # A light deployment installs no DeepStream anywhere, so each node's own copy
-# has to satisfy the package's dependency by itself.
-expect_equal "$(deepstream_requirement_problem 'deepstream-9.1/9.1.0-1')" "" \
-  "the minimum supported DeepStream satisfies a light deployment"
-expect_equal "$(deepstream_requirement_problem 'deepstream-8.0/8.0.0-1 deepstream-9.1/9.1.1-1')" "" \
-  "a supported DeepStream alongside an older one satisfies a light deployment"
-expect_equal "$(deepstream_requirement_problem '')" \
-  "deepstream-9.1 (>= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION}) is not installed" \
+# has to satisfy the dependency its package will declare.  A desktop node is
+# judged against the release the resolved artifact carries; a Jetson builds
+# against its own SDK, so any supported release satisfies it.
+expect_equal "$(deepstream_requirement_problem 'deepstream-9.1/9.1.0-1' deepstream-9.1)" "" \
+  "the oldest version of the required release satisfies a light deployment"
+expect_equal "$(deepstream_requirement_problem 'deepstream-8.0/8.0.0-1 deepstream-9.1/9.1.1-1' deepstream-9.1)" "" \
+  "the required release alongside an older one satisfies a light deployment"
+expect_equal "$(deepstream_requirement_problem '' deepstream-9.1)" \
+  "deepstream-9.1 (>= 9.1.0-1, << 9.2~) is not installed" \
   "a node without DeepStream is reported"
-expect_equal "$(deepstream_requirement_problem 'deepstream-9.2/9.2.0-1')" \
-  "deepstream-9.1 (>= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION}) is not installed (found deepstream-9.2 9.2.0-1)" \
-  "a node carrying only a newer DeepStream names what it has"
-expect_equal "$(deepstream_requirement_problem 'deepstream-9.1/9.0.9-1')" \
-  "deepstream-9.1 (>= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION}) is not installed (found deepstream-9.1 9.0.9-1)" \
-  "an out-of-range DeepStream does not satisfy a light deployment"
+expect_equal "$(deepstream_requirement_problem 'deepstream-9.2/9.2.0-1' deepstream-9.1)" \
+  "deepstream-9.1 (>= 9.1.0-1, << 9.2~) is not installed (found deepstream-9.2 9.2.0-1)" \
+  "a node carrying a different release names what it has"
+expect_equal "$(deepstream_requirement_problem 'deepstream-9.1/9.0.9-1' deepstream-9.1)" \
+  "deepstream-9.1 (>= 9.1.0-1, << 9.2~) is not installed (found deepstream-9.1 9.0.9-1)" \
+  "a version below the required release does not satisfy a light deployment"
 
-# That check has to accept exactly what the package declares it needs.
-# make_deb.sh builds the Depends field from its own copy of the name and the
-# bounds, so run those literals through the check instead of trusting the two
-# copies to stay equal.
-builder_declares() {
-  sed -nE "s/^ *$1=\"\\\$\{$1:-([^}]*)\}\"\$/\1/p" "${SCRIPT_DIR}/make_deb.sh" | sort -u
+# Building against a newer release moves the requirement with it: the same
+# node that satisfied 9.1 does not satisfy a package built against 9.2.
+expect_equal "$(deepstream_requirement_problem 'deepstream-9.2/9.2.0-1' deepstream-9.2)" "" \
+  "a node running the newer release satisfies a package built against it"
+expect_equal "$(deepstream_requirement_problem 'deepstream-9.1/9.1.1-1' deepstream-9.2)" \
+  "deepstream-9.2 (>= 9.2.0-1, << 9.3~) is not installed (found deepstream-9.1 9.1.1-1)" \
+  "a package built against the newer release is not satisfied by the older one"
+
+# A Jetson package is built on the node against whatever it has, so the check
+# asks only that it has something supported.
+expect_equal "$(deepstream_requirement_problem 'deepstream-9.2/9.2.0-1' '')" "" \
+  "any supported release satisfies a node that builds its own package"
+expect_equal "$(deepstream_requirement_problem 'deepstream-8.0/8.0.0-1' '')" \
+  "no DeepStream >= ${DEEPSTREAM_MIN_VERSION} is installed (found deepstream-8.0 8.0.0-1)" \
+  "a release older than the floor satisfies nothing"
+expect_equal "$(deepstream_requirement_problem 'deepstream-sample-data/9.1.0' '')" \
+  "no DeepStream >= ${DEEPSTREAM_MIN_VERSION} is installed (found deepstream-sample-data 9.1.0)" \
+  "a deepstream package that is not a release does not count as one"
+
+# make_deb.sh writes the Depends from the release it built against, and
+# install_deb.sh reads the requirement back out of it.  Neither carries a
+# release of its own any more, so run the writer's output through the reader
+# instead of pinning two copies of a constant.  The reader is loaded in a
+# subshell: it is a production installer, and sourcing it here would put its
+# variables in this one.
+read_requirement_back() {
+  HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
+    # shellcheck disable=SC1090
+    source "$1"
+    read_deepstream_requirement "$2" || exit 1
+    printf "%s %s %s" "${DEEPSTREAM_PACKAGE}" "${DEEPSTREAM_MIN_VERSION}" "${DEEPSTREAM_MAX_VERSION}"
+  ' _ "${SCRIPT_DIR}/install_deb.sh" "$1"
 }
-builder_package="$(builder_declares DEEPSTREAM_PACKAGE)"
-builder_min="$(builder_declares DEEPSTREAM_MIN_VERSION)"
-builder_max="$(builder_declares DEEPSTREAM_MAX_VERSION)"
-for builder_value in "${builder_package}" "${builder_min}" "${builder_max}"; do
-  if [[ -z "${builder_value}" || "$(printf '%s\n' "${builder_value}" | wc -l)" -ne 1 ]]; then
-    fail "make_deb.sh does not declare one DeepStream dependency for the node check to match"
+
+for pinned_release in deepstream-9.1 deepstream-9.2 deepstream-10.3; do
+  read -r pinned_name pinned_min pinned_max < <(deepstream_dependency_bounds "${pinned_release}")
+  written="${pinned_name} (>= ${pinned_min}), ${pinned_name} (<< ${pinned_max})"
+  expect_equal "$(read_requirement_back "libc6 (>= 2.38), ${written}, hugin-tools")" \
+    "${pinned_name} ${pinned_min} ${pinned_max}" \
+    "install_deb.sh reads back the dependency make_deb.sh writes for ${pinned_release}"
+done
+
+# The reader has to refuse what it cannot act on rather than guess.
+for refusable in \
+  "libc6 (>= 2.38)" \
+  "deepstream-9.1 (>= 9.1.0-1)" \
+  "deepstream-9.1 (>= 9.1.0-1), deepstream-9.2 (<< 9.3~)" \
+  "deepstream-sample-data (>= 9.1.0), deepstream-sample-data (<< 9.2)"; do
+  if read_requirement_back "${refusable}" >/dev/null 2>&1; then
+    fail "install_deb.sh accepted a DeepStream dependency it cannot act on: ${refusable}"
   fi
 done
-expect_equal "$(deepstream_requirement_problem "${builder_package}/${builder_min}")" "" \
-  "the node check accepts the oldest DeepStream the package depends on"
-if [[ -z "$(deepstream_requirement_problem "${builder_package}/${builder_max}")" ]]; then
-  fail "the node check accepts a DeepStream version the package excludes"
-fi
-# Accepting the declared bounds is not enough on its own: a builder that raised
-# its minimum would still be accepted here while the node's apt refused the
-# package.  The two bounds have to be the same text, in all three copies.
-expect_equal "${builder_min}" "${DEEPSTREAM_MIN_VERSION}" \
-  "make_deb.sh and the deployment require the same minimum DeepStream"
-expect_equal "${builder_max}" "${DEEPSTREAM_MAX_VERSION}" \
-  "make_deb.sh and the deployment exclude the same DeepStream versions"
-for bound in MIN MAX; do
-  expect_equal \
-    "$(sed -nE "s/^DEEPSTREAM_${bound}_VERSION=\"([^\"]*)\"\$/\1/p" "${SCRIPT_DIR}/install_deb.sh")" \
-    "$(eval "printf '%s' \"\${DEEPSTREAM_${bound}_VERSION}\"")" \
-    "install_deb.sh and the deployment agree on the ${bound} DeepStream version"
-done
+# A package whose name merely contains one must not be read as the real
+# relation, and the real one beside it must still be found.
+expect_equal "$(read_requirement_back "libdeepstream-9.1 (>= 1), deepstream-9.2 (>= 9.2.0-1), deepstream-9.2 (<< 9.3~)")" \
+  "deepstream-9.2 9.2.0-1 9.3~" "a lookalike package name is not read as the DeepStream dependency"
 
-# Detection against a stubbed node: the response carries the DeepStream
-# inventory, and a light deployment judges it before anything is built.
+# The bounds this repository shipped when 9.1 was the only release it knew.
+# Deriving them has to keep producing them, or every already-installed node
+# stops matching a package rebuilt from this tree.
+expect_equal "$(deepstream_dependency_bounds deepstream-9.1)" "deepstream-9.1 9.1.0-1 9.2~" \
+  "the derived 9.1 dependency is the one this repository has always shipped"
+
+# Detection against a stubbed node: the response carries the node's DeepStream
+# inventory, which the light-deployment verdict reads afterwards.
 detect_with() {
   # Not "platform": detect_node declares a local of that name, and the stub
   # runs inside it, so the response would read back detect_node's own empty
@@ -301,44 +375,94 @@ detect_with() {
       "$([[ "${stub_platform}" == jetson ]] && printf aarch64 || printf x86_64)" \
       "${stub_platform}" "${stub_deepstream}"
   }
-  NODE_RESULT=()
-  NODE_DETAIL=()
-  NODE_TARGET=()
-  SEEN_TARGETS=()
-  TARGET_KEYS=()
   detect_node "${node}" >/dev/null 2>&1
   local status=$?
   unset -f ssh
   return "${status}"
 }
 
-DEPLOY_DEEPSTREAM=0
-if detect_with ripper desktop deepstream-9.2/9.2.0-1; then
-  fail "a light deployment accepted a desktop without a usable DeepStream"
+reset_node_state() {
+  NODES_LIST=()
+  NODE_RESULT=()
+  NODE_DETAIL=()
+  NODE_TARGET=()
+  NODE_DEEPSTREAM=()
+  SEEN_TARGETS=()
+  TARGET_KEYS=()
+  TARGET_BUILD_HOST=()
+}
+
+# Detection records the inventory and classifies the node; it no longer
+# decides anything about DeepStream, because the release a desktop package
+# will ask for is only known once the artifact has been resolved.
+reset_node_state
+NODES_LIST=(ripper)
+detect_with ripper desktop deepstream-9.2/9.2.0-1 || fail "detection rejected a reachable node"
+expect_equal "${NODE_DEEPSTREAM[ripper]}" "deepstream-9.2/9.2.0-1" "detection records the node inventory"
+expect_equal "${NODE_TARGET[ripper]}" desktop-ubuntu24.04-amd64 "detection classifies the node"
+expect_equal "${#TARGET_KEYS[@]}" 1 "detection schedules the node's target"
+
+# A desktop node is judged against the release the desktop artifact carries.
+if judge_node_deepstream ripper deepstream-9.1 >/dev/null 2>&1; then
+  fail "a light deployment accepted a desktop without the release its package needs"
 fi
 expect_equal "${NODE_DETAIL[ripper]}" \
-  "deepstream-9.1 (>= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION}) is not installed (found deepstream-9.2 9.2.0-1)" \
+  "deepstream-9.1 (>= 9.1.0-1, << 9.2~) is not installed (found deepstream-9.2 9.2.0-1)" \
   "the rejected node reports what its DeepStream is"
+rebuild_target_set
 expect_equal "${#TARGET_KEYS[@]}" 0 "a rejected node does not schedule a package build"
-detect_with monster desktop deepstream-9.1/9.1.1-1 \
-  || fail "a light deployment rejected a desktop with a usable DeepStream"
-expect_equal "${NODE_TARGET[monster]}" desktop-ubuntu24.04-amd64 "accepted light desktop target"
 
-# A Jetson never receives a DeepStream artifact, but its plain apt-get install
-# would pull a missing one from the node's own repositories, so it is judged
-# too.  A rejected node must not become the build host for its target either.
-if detect_with stubby jetson ''; then
+# The same node satisfies a package built against the release it does have.
+reset_node_state
+NODES_LIST=(ripper)
+detect_with ripper desktop deepstream-9.2/9.2.0-1 || fail "detection rejected a reachable node"
+judge_node_deepstream ripper deepstream-9.2 \
+  || fail "a light deployment rejected a desktop running the release its package needs"
+rebuild_target_set
+expect_equal "${#TARGET_KEYS[@]}" 1 "an accepted node keeps its target"
+expect_equal "${TARGET_BUILD_HOST[desktop-ubuntu24.04-amd64]}" ripper "an accepted node can build its target"
+
+# A Jetson never receives an artifact and builds against its own SDK, so it is
+# judged against the floor rather than a named release -- but it is judged,
+# because its plain apt-get install would otherwise pull a missing DeepStream
+# from the node's own repositories.
+reset_node_state
+NODES_LIST=(stubby)
+detect_with stubby jetson '' || fail "detection rejected a reachable Jetson"
+if judge_node_deepstream stubby "" >/dev/null 2>&1; then
   fail "a light deployment accepted a Jetson whose apt would install DeepStream"
 fi
+rebuild_target_set
 expect_equal "${#TARGET_KEYS[@]}" 0 "a rejected Jetson does not become a build host"
-detect_with stubby jetson deepstream-9.1/9.1.1-1 \
-  || fail "a light deployment rejected a Jetson with a usable DeepStream"
 
+reset_node_state
+NODES_LIST=(stubby)
+detect_with stubby jetson deepstream-9.2/9.2.0-1 || fail "detection rejected a reachable Jetson"
+judge_node_deepstream stubby "" \
+  || fail "a light deployment rejected a Jetson carrying a supported release"
+
+# Only the first node of a target builds it, and a rejected first node hands
+# that job to a surviving one rather than taking the target down with it.
+reset_node_state
+NODES_LIST=(ripper monster)
+detect_with ripper desktop deepstream-9.1/9.1.1-1 || fail "detection rejected a reachable node"
+detect_with monster desktop deepstream-9.2/9.2.0-1 || fail "detection rejected a reachable node"
+expect_equal "${TARGET_BUILD_HOST[desktop-ubuntu24.04-amd64]}" ripper "the first node builds its target"
+judge_node_deepstream ripper deepstream-9.2 >/dev/null 2>&1 \
+  && fail "a light deployment accepted a desktop without the release its package needs"
+judge_node_deepstream monster deepstream-9.2 || fail "the surviving node was rejected"
+rebuild_target_set
+expect_equal "${TARGET_BUILD_HOST[desktop-ubuntu24.04-amd64]}" monster \
+  "a rejected build host is replaced by a node still in play"
+
+reset_node_state
+NODES_LIST=(stubby)
 DEPLOY_DEEPSTREAM=1
 detect_with stubby jetson '' \
   || fail "an ordinary deployment stopped deploying to a Jetson without DeepStream"
 detect_with ripper desktop deepstream-9.2/9.2.0-1 \
-  || fail "an ordinary deployment stopped installing DeepStream over an unsupported version"
+  || fail "an ordinary deployment stopped installing DeepStream over another release"
+reset_node_state
 
 if JETSON_QT=invalid require_local_commands >/dev/null 2>&1; then
   fail "deployment accepted an invalid JETSON_QT option"

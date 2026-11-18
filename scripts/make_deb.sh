@@ -18,21 +18,19 @@ PKG_NAME="hstream"
 PKG_ARCH="${PKG_ARCH:-}"
 TARGET_PLATFORM="${HSTREAM_TARGET_PLATFORM:-desktop}"
 case "${TARGET_PLATFORM}" in
-  desktop)
-    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-9.1}"
-    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-9.1.0-1}"
-    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-9.2~}"
-    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
-    ;;
-  jetson)
-    DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE:-deepstream-9.1}"
-    DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_VERSION:-9.1.0-1}"
-    DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_VERSION:-9.2~}"
-    EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}"
-    ;;
+  desktop|jetson) EXPECTED_CUDA_SONAME="${EXPECTED_CUDA_SONAME:-13}" ;;
   *) echo "ERROR: HSTREAM_TARGET_PLATFORM must be desktop or jetson." >&2; exit 1 ;;
 esac
-DEEPSTREAM_DEPENDS="${DEEPSTREAM_PACKAGE} (>= ${DEEPSTREAM_MIN_VERSION}), ${DEEPSTREAM_PACKAGE} (<< ${DEEPSTREAM_MAX_VERSION})"
+# The DeepStream this package depends on is the one it is compiled against,
+# resolved below once dpkg is available.  Setting DEEPSTREAM_PACKAGE names a
+# release explicitly instead; DEEPSTREAM_MIN_VERSION and DEEPSTREAM_MAX_VERSION
+# override the bounds derived from it.  Read those first: the shared resolver
+# keeps its own floor in DEEPSTREAM_MIN_VERSION and would overwrite one here.
+DEEPSTREAM_PACKAGE_REQUESTED="${DEEPSTREAM_PACKAGE:-}"
+DEEPSTREAM_MIN_REQUESTED="${DEEPSTREAM_MIN_VERSION:-}"
+DEEPSTREAM_MAX_REQUESTED="${DEEPSTREAM_MAX_VERSION:-}"
+# shellcheck source=scripts/deepstream_artifact.sh
+source "${TOPDIR}/scripts/deepstream_artifact.sh"
 JETSON_QT="${JETSON_QT:-0}"
 if [[ "${JETSON_QT}" != 0 && "${JETSON_QT}" != 1 ]]; then
   echo "ERROR: JETSON_QT must be 0 or 1." >&2
@@ -167,11 +165,30 @@ if ! dpkg --validate-version "${PKG_VERSION}" >/dev/null 2>&1; then
   echo "ERROR: invalid Debian package version: ${PKG_VERSION}" >&2
   exit 1
 fi
-installed_deepstream_version="$(dpkg-query -W -f='${Version}' "${DEEPSTREAM_PACKAGE}" 2>/dev/null || true)"
-if [[ -z "${installed_deepstream_version}" ]] ||
+# Compile against whichever DeepStream this build environment has, and depend
+# on that one.  Nothing here names a release, so a newer DeepStream produces a
+# package that asks for the newer DeepStream without an edit to this file.
+if [[ -n "${DEEPSTREAM_PACKAGE_REQUESTED}" ]]; then
+  DEEPSTREAM_PACKAGE="${DEEPSTREAM_PACKAGE_REQUESTED}"
+  installed_deepstream_version="$(dpkg-query -W -f='${Version}' "${DEEPSTREAM_PACKAGE}" 2>/dev/null || true)"
+elif deepstream_installed="$(deepstream_installed_newest)"; then
+  DEEPSTREAM_PACKAGE="${deepstream_installed%% *}"
+  installed_deepstream_version="${deepstream_installed#* }"
+else
+  DEEPSTREAM_PACKAGE="deepstream"
+  installed_deepstream_version=""
+fi
+if ! read -r _ derived_min derived_max < <(deepstream_dependency_bounds "${DEEPSTREAM_PACKAGE}"); then
+  derived_min=""
+  derived_max=""
+fi
+DEEPSTREAM_MIN_VERSION="${DEEPSTREAM_MIN_REQUESTED:-${derived_min}}"
+DEEPSTREAM_MAX_VERSION="${DEEPSTREAM_MAX_REQUESTED:-${derived_max}}"
+DEEPSTREAM_DEPENDS="${DEEPSTREAM_PACKAGE} (>= ${DEEPSTREAM_MIN_VERSION}), ${DEEPSTREAM_PACKAGE} (<< ${DEEPSTREAM_MAX_VERSION})"
+if [[ -z "${installed_deepstream_version}" || -z "${DEEPSTREAM_MIN_VERSION}" || -z "${DEEPSTREAM_MAX_VERSION}" ]] ||
    ! dpkg --compare-versions "${installed_deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
    ! dpkg --compare-versions "${installed_deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
-  echo "ERROR: ${DEEPSTREAM_PACKAGE} >= ${DEEPSTREAM_MIN_VERSION}, << ${DEEPSTREAM_MAX_VERSION} is required to build this package." >&2
+  echo "ERROR: ${DEEPSTREAM_PACKAGE} >= ${DEEPSTREAM_MIN_VERSION:-?}, << ${DEEPSTREAM_MAX_VERSION:-?} is required to build this package." >&2
   echo "Installed version: ${installed_deepstream_version:-not installed}" >&2
   exit 1
 fi
@@ -1573,7 +1590,8 @@ else
   echo ""
   echo "Install with:"
   printf '  sudo %s \\\n' "${INSTALLER_PATH}"
-  printf '    --deepstream-deb=%s \\\n' '/path/to/deepstream-9.1_9.1.0-1_amd64.deb'
+  printf '    --deepstream-deb=/path/to/%s_%s_amd64.deb \\\n' \
+    "${DEEPSTREAM_PACKAGE}" "${installed_deepstream_version}"
   echo "    --hstream-deb=${DEB_PATH}"
   echo "  (the installer configures NVIDIA repositories; DeepStream itself remains a local release artifact)"
   echo ""
