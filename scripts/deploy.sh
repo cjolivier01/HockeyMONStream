@@ -297,9 +297,14 @@ for candidate in hstream hmstream; do
   fi
 done
 # Every installed versioned DeepStream, so a deployment that installs none can
-# say what this node actually has instead of only what it is missing.
-deepstream_installed="$(dpkg-query -W -f='${Package} ${Version} ${db:Status-Status}\n' 'deepstream-*' 2>/dev/null \
-  | awk '$3 == "installed" && $1 ~ /^deepstream-[0-9]/ { printf "%s%s/%s", separator, $1, $2; separator = " " }' \
+# say what this node actually has instead of only what it is missing.  Records
+# for another architecture are left out: they cannot satisfy the package, and a
+# foreign leftover must not make a node look ready.
+deepstream_installed="$(dpkg-query -W \
+  -f='${Package} ${Version} ${db:Status-Status} ${Architecture}\n' 'deepstream-*' 2>/dev/null \
+  | awk -v arch="$(dpkg --print-architecture)" \
+    '$3 == "installed" && ($4 == arch || $4 == "all") && $1 ~ /^deepstream-[0-9]/ {
+       printf "%s%s/%s", separator, $1, $2; separator = " " }' \
   || true)"
 printf '__HSTREAM_DEPLOY__|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
   "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}" "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" \
@@ -599,14 +604,30 @@ deploy_jetson() {
     "${deb}" "${node}:${remote_dir}/"; then
     status=1
   elif ! ssh -o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}" "${node}" bash -s -- \
-    "${remote_dir}" "${deb_name}" <<'REMOTE_INSTALL_JETSON'
+    "${remote_dir}" "${deb_name}" "${DEPLOY_DEEPSTREAM}" <<'REMOTE_INSTALL_JETSON'
 set -euo pipefail
 remote_dir="$1"
 deb_name="$2"
+deploy_deepstream="$3"
 printf '[deploy] Upload complete; starting Jetson installation on %s...\n' "$(hostname)"
 export DEBIAN_FRONTEND=noninteractive
-sudo -n apt-get install -y --no-install-recommends --reinstall --allow-downgrades \
-  "${remote_dir}/${deb_name}"
+package="${remote_dir}/${deb_name}"
+# A Jetson is never sent a DeepStream artifact, but APT will happily install or
+# upgrade one from this node's own repositories to satisfy the package, and a
+# light deployment promised it would not.  The node passed its check before the
+# build; this judges the transaction that is about to run.
+if [ "${deploy_deepstream}" = 0 ]; then
+  planned="$(sudo -n apt-get install --simulate --no-install-recommends --reinstall \
+    --allow-downgrades "${package}" \
+    | awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") &&
+           $2 ~ /^deepstream/ { print $1 " " $2 }')"
+  if [ -n "${planned}" ]; then
+    echo "ERROR: installing HStream here would change DeepStream:" >&2
+    printf '%s\n' "${planned}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+fi
+sudo -n apt-get install -y --no-install-recommends --reinstall --allow-downgrades "${package}"
 sudo -n apt-get check
 REMOTE_INSTALL_JETSON
   then

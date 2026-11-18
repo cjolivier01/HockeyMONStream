@@ -360,12 +360,27 @@ trap 'rm -rf "${desktop_argv_dir}"' EXIT
 mkdir -p "${desktop_argv_dir}/bin"
 cat >"${desktop_argv_dir}/bin/sudo" <<SUDO_STUB
 #!/usr/bin/env bash
+args=("\$@")
+if [[ "\${args[0]:-}" == -n ]]; then args=("\${args[@]:1}"); fi
+if [[ "\${args[0]:-}" == apt-get ]]; then exec "\${args[@]}"; fi
 printf '%s\n' "\$@" >"${desktop_argv_dir}/installer"
 SUDO_STUB
+# Answers a simulation with the plan the case under test wants APT to return,
+# and records the installations it would really have performed.
+cat >"${desktop_argv_dir}/bin/apt-get" <<APT_STUB
+#!/usr/bin/env bash
+for argument in "\$@"; do
+  if [[ "\${argument}" == --simulate ]]; then
+    printf '%s\n' "\${HSTREAM_TEST_APT_PLAN:-}"
+    exit 0
+  fi
+done
+printf '%s\n' "\$*" >>"${desktop_argv_dir}/apt-ran"
+APT_STUB
 printf '#!/usr/bin/env bash\nexit 0\n' >"${desktop_argv_dir}/bin/chmod"
 printf '#!/usr/bin/env bash\nprintf node\\n\n' >"${desktop_argv_dir}/bin/hostname"
-chmod +x "${desktop_argv_dir}/bin/sudo" "${desktop_argv_dir}/bin/chmod" \
-  "${desktop_argv_dir}/bin/hostname"
+chmod +x "${desktop_argv_dir}/bin/sudo" "${desktop_argv_dir}/bin/apt-get" \
+  "${desktop_argv_dir}/bin/chmod" "${desktop_argv_dir}/bin/hostname"
 
 record_desktop_deployment() {
   (
@@ -417,6 +432,57 @@ expect_installer_argv "an ordinary deployment installs the uploaded DeepStream a
   --force-hstream \
   --deepstream-deb=/tmp/hstream-deploy.testdir/deepstream-9.1_9.1.1-1_amd64.deb \
   --hstream-deb=/tmp/hstream-deploy.testdir/hstream_1.2.3_amd64.deb
+
+# A Jetson receives no DeepStream artifact and runs apt-get directly, so the
+# promise has to be enforced against the plan apt-get is about to carry out.
+# The node passed its inventory check before the build; this is the window
+# between that check and the installation.
+run_jetson_deployment() {
+  # Named, not positional: the stub runs inside deploy_jetson, where $1 and $2
+  # are its arguments rather than this function's.
+  local stub_mode="$1"
+  local stub_apt_plan="$2"
+  rm -f "${desktop_argv_dir}/apt-ran"
+  (
+    create_remote_directory() { printf '/tmp/hstream-deploy.testdir'; }
+    cleanup_remote_directory() { :; }
+    scp() { :; }
+    ssh() {
+      while [[ "$1" == -o ]]; do shift 2; done
+      shift
+      HSTREAM_TEST_APT_PLAN="${stub_apt_plan}" PATH="${desktop_argv_dir}/bin:${PATH}" \
+        bash -c "$*"
+    }
+    DEPLOY_DEEPSTREAM="${stub_mode}" deploy_jetson stubby /dist/hstream_1.2.3_arm64.deb
+  ) >"${desktop_argv_dir}/jetson" 2>&1
+}
+
+jetson_clean_plan='Inst hstream (1.2.3 local [arm64])
+Conf hstream (1.2.3 local [arm64])'
+jetson_deepstream_plan='Inst deepstream-9.1 [9.1.0-1] (9.1.1-1 NVIDIA:noble [arm64])
+Inst hstream (1.2.3 local [arm64])'
+
+if run_jetson_deployment 0 "${jetson_deepstream_plan}"; then
+  fail "a light Jetson deployment installed over a plan that changes DeepStream"
+fi
+if [[ -f "${desktop_argv_dir}/apt-ran" ]]; then
+  fail "a light Jetson deployment ran apt after refusing the plan"
+fi
+if ! grep -q 'Inst deepstream-9.1' "${desktop_argv_dir}/jetson"; then
+  fail "the refused Jetson deployment did not report the DeepStream change it found"
+fi
+
+run_jetson_deployment 0 "${jetson_clean_plan}" \
+  || fail "a light Jetson deployment refused a plan that leaves DeepStream alone"
+if ! grep -q 'hstream_1.2.3_arm64.deb' "${desktop_argv_dir}/apt-ran"; then
+  fail "a light Jetson deployment did not install the package"
+fi
+
+run_jetson_deployment 1 "${jetson_deepstream_plan}" \
+  || fail "an ordinary Jetson deployment started refusing DeepStream changes"
+if ! grep -q 'hstream_1.2.3_arm64.deb' "${desktop_argv_dir}/apt-ran"; then
+  fail "an ordinary Jetson deployment did not install the package"
+fi
 rm -rf "${desktop_argv_dir}"
 trap - EXIT
 

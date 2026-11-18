@@ -470,6 +470,25 @@ run_apt_update() {
   return 0
 }
 
+# The DeepStream packages a simulated APT transaction would change.  Leaving
+# the artifact out of an installation's arguments does not stop APT from
+# installing, upgrading, configuring or removing DeepStream to satisfy what it
+# was given, so --no-deepstream has to judge the plan rather than the
+# arguments.  Every action verb APT prints is matched, and every package whose
+# name begins with deepstream: the split binaries and sample-data packages are
+# as much "this host's DeepStream" as the versioned one.
+planned_deepstream_changes() {
+  awk '($1 == "Inst" || $1 == "Conf" || $1 == "Remv" || $1 == "Purg") &&
+       $2 ~ /^deepstream/ { print $1 " " $2 }' <<<"$1"
+}
+
+# Exact state of those packages, for the comparison that proves an install
+# really left them alone, including through transactions not simulated above.
+deepstream_package_state() {
+  dpkg-query -W -f='${Package} ${Version} ${db:Status-Status} ${Architecture}\n' 'deepstream*' 2>/dev/null \
+    | sort || true
+}
+
 # Allow the behavior test to source the production implementation without
 # entering the privileged installer workflow.
 if [[ "${HSTREAM_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
@@ -558,12 +577,14 @@ if [[ "$(dpkg-deb -f "${HSTREAM_DEB}" Package)" != "hstream" ]]; then
 fi
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
   # Nothing here will install DeepStream, so say so now rather than letting APT
-  # explain it as an unmet dependency after the repository work below.
-  installed_deepstream="$(dpkg-query -W -f='${db:Status-Status} ${Version}' deepstream-9.1 2>/dev/null || true)"
-  installed_deepstream_version=""
-  if [[ "${installed_deepstream%% *}" == "installed" ]]; then
-    installed_deepstream_version="${installed_deepstream#* }"
-  fi
+  # explain it as an unmet dependency after the repository work below.  A
+  # multiarch host can hold several records for this name -- a foreign one left
+  # in config-files, say -- so select the record that can actually satisfy the
+  # package instead of reading whatever dpkg-query prints first.
+  installed_deepstream_version="$(dpkg-query -W \
+    -f='${db:Status-Status} ${Architecture} ${Version}\n' deepstream-9.1 2>/dev/null \
+    | awk -v arch="$(dpkg --print-architecture)" \
+      '$1 == "installed" && ($2 == arch || $2 == "all") { print $3; exit }' || true)"
   if [[ -z "${installed_deepstream_version}" ]] ||
      ! dpkg --compare-versions "${installed_deepstream_version}" ge "${DEEPSTREAM_MIN_VERSION}" ||
      ! dpkg --compare-versions "${installed_deepstream_version}" lt "${DEEPSTREAM_MAX_VERSION}"; then
@@ -698,6 +719,22 @@ fi
 # it: the next line fails if those lists cannot supply the bootstrap packages,
 # and succeeds if they can.
 run_apt_update
+
+# Record the state --no-deepstream promises to preserve before the first APT
+# transaction, not just before the last one: any transaction can configure a
+# DeepStream component this host left half-installed.
+DEEPSTREAM_STATE_BEFORE=""
+if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
+  DEEPSTREAM_STATE_BEFORE="$(deepstream_package_state)"
+  bootstrap_plan="$(apt-get install --simulate -y --no-install-recommends \
+    binutils ca-certificates curl zstd)"
+  bootstrap_deepstream="$(planned_deepstream_changes "${bootstrap_plan}")"
+  if [[ -n "${bootstrap_deepstream}" ]]; then
+    echo "ERROR: --no-deepstream, but installing the bootstrap packages would change DeepStream:" >&2
+    printf '%s\n' "${bootstrap_deepstream}" | sed 's/^/  /' >&2
+    exit 1
+  fi
+fi
 apt-get install -y --no-install-recommends binutils ca-certificates curl zstd
 
 # Keep this in sync with scripts/remove_deb_dependencies.py, which relaxes the
@@ -1010,16 +1047,13 @@ while read -r removed_package; do
   fi
 done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
 
-# Leaving the artifact out of the transaction does not stop APT from pulling or
-# upgrading DeepStream to satisfy the package: a host whose repositories carry
-# it would be changed anyway, and the closing message would claim it was not.
-# Judge APT's actual plan, not the arguments it was given.
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
-  while read -r changed_package; do
-    [[ -z "${changed_package}" ]] && continue
-    echo "ERROR: --no-deepstream, but this installation would change ${changed_package}; refusing." >&2
+  planned_deepstream="$(planned_deepstream_changes "${simulation}")"
+  if [[ -n "${planned_deepstream}" ]]; then
+    echo "ERROR: --no-deepstream, but installing HStream would change DeepStream:" >&2
+    printf '%s\n' "${planned_deepstream}" | sed 's/^/  /' >&2
     exit 1
-  done < <(awk '$1 == "Inst" && $2 ~ /^deepstream-/ {print $2}' <<<"${simulation}")
+  fi
 fi
 
 if [[ "${SIMULATE}" -eq 0 ]]; then
@@ -1033,8 +1067,19 @@ if [[ "${SIMULATE}" -eq 1 ]]; then
   echo "Dependency resolution succeeded for Ubuntu ${UBUNTU_RELEASE}."
 else
   apt-get check
+  # Prove the promise instead of asserting it: every transaction above was
+  # judged before it ran, and this is what the host actually looks like now.
   if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
-    echo "Installed HStream $(dpkg-query -W -f='${Version}' hstream) against this host's DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1), which was not modified."
+    deepstream_state_after="$(deepstream_package_state)"
+    if [[ "${deepstream_state_after}" != "${DEEPSTREAM_STATE_BEFORE}" ]]; then
+      echo "ERROR: --no-deepstream, but this host's DeepStream packages changed during installation." >&2
+      echo "Before:" >&2
+      printf '%s\n' "${DEEPSTREAM_STATE_BEFORE:-  (none installed)}" | sed 's/^/  /' >&2
+      echo "After:" >&2
+      printf '%s\n' "${deepstream_state_after:-  (none installed)}" | sed 's/^/  /' >&2
+      exit 1
+    fi
+    echo "Installed HStream $(dpkg-query -W -f='${Version}' hstream) against this host's DeepStream ${installed_deepstream_version}, which was not modified."
   else
     echo "Installed DeepStream $(dpkg-query -W -f='${Version}' deepstream-9.1) and HStream $(dpkg-query -W -f='${Version}' hstream)."
   fi
