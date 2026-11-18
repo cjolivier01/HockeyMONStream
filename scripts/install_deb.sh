@@ -524,6 +524,51 @@ deepstream_package_state() {
     | sort || true
 }
 
+# Read the DeepStream release and version range an HStream package declares,
+# into DEEPSTREAM_PACKAGE, DEEPSTREAM_MIN_VERSION and DEEPSTREAM_MAX_VERSION.
+# Depends is a comma-separated list of relations, so split it and judge each
+# one whole: matching a pattern against the field as a whole would find
+# "deepstream-9.1 (>= ...)" inside "libdeepstream-9.1 (>= ...)" and would take
+# the last match in the field rather than the right one.  Both relations are
+# required and they have to name the same release; a package asking for
+# DeepStream any other way is not one this installer knows how to satisfy.
+read_deepstream_requirement() {
+  local depends="$1"
+  local relation name version
+  DEEPSTREAM_PACKAGE=""
+  DEEPSTREAM_MIN_VERSION=""
+  DEEPSTREAM_MAX_VERSION=""
+
+  # In a variable: bash tokenizes << and >= inside [[ ]] before it ever gets
+  # to the match.
+  local relation_pattern='^(deepstream-[0-9]+(\.[0-9]+)*)[[:space:]]*\((>=|<<)[[:space:]]*([^)[:space:]]+)[[:space:]]*\)$'
+  local saved_ifs="${IFS}"
+  IFS=','
+  # Deliberately unquoted: this is the split.
+  # shellcheck disable=SC2086
+  set -- ${depends}
+  IFS="${saved_ifs}"
+  for relation in "$@"; do
+    relation="${relation#"${relation%%[![:space:]]*}"}"
+    relation="${relation%"${relation##*[![:space:]]}"}"
+    [[ "${relation}" =~ ${relation_pattern} ]] || continue
+    name="${BASH_REMATCH[1]}"
+    version="${BASH_REMATCH[4]}"
+    if [[ -n "${DEEPSTREAM_PACKAGE}" && "${name}" != "${DEEPSTREAM_PACKAGE}" ]]; then
+      DEEPSTREAM_PACKAGE=""
+      return 1
+    fi
+    DEEPSTREAM_PACKAGE="${name}"
+    if [[ "${BASH_REMATCH[3]}" == ">=" ]]; then
+      DEEPSTREAM_MIN_VERSION="${version}"
+    else
+      DEEPSTREAM_MAX_VERSION="${version}"
+    fi
+  done
+
+  [[ -n "${DEEPSTREAM_PACKAGE}" && -n "${DEEPSTREAM_MIN_VERSION}" && -n "${DEEPSTREAM_MAX_VERSION}" ]]
+}
+
 # Allow the behavior test to source the production implementation without
 # entering the privileged installer workflow.
 if [[ "${HSTREAM_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
@@ -616,12 +661,9 @@ if [[ "$(dpkg-deb -f "${HSTREAM_DEB}" Package)" != "hstream" ]]; then
 fi
 # The package states which DeepStream it was built against, so read it from
 # there rather than carrying a release this installer would have to be edited
-# to follow.  Both relations are required: a package that asks for DeepStream
-# some other way is not one this installer knows how to satisfy.
+# to follow.
 HSTREAM_DEPENDS="$(dpkg-deb -f "${HSTREAM_DEB}" Depends 2>/dev/null || true)"
-DEEPSTREAM_PACKAGE="$(sed -nE 's/.*(^|, *)(deepstream-[0-9]+(\.[0-9]+)*) \(>=.*/\2/p' <<<"${HSTREAM_DEPENDS}")"
-DEEPSTREAM_MIN_VERSION="$(sed -nE 's/.*deepstream-[0-9]+(\.[0-9]+)* \(>= ([^)]*)\).*/\2/p' <<<"${HSTREAM_DEPENDS}")"
-DEEPSTREAM_MAX_VERSION="$(sed -nE 's/.*deepstream-[0-9]+(\.[0-9]+)* \(<< ([^)]*)\).*/\2/p' <<<"${HSTREAM_DEPENDS}")"
+read_deepstream_requirement "${HSTREAM_DEPENDS}"
 if [[ -z "${DEEPSTREAM_PACKAGE}" || -z "${DEEPSTREAM_MIN_VERSION}" || -z "${DEEPSTREAM_MAX_VERSION}" ]]; then
   echo "ERROR: ${HSTREAM_DEB} does not declare which DeepStream release it needs." >&2
   echo "Depends: ${HSTREAM_DEPENDS:-(none)}" >&2

@@ -319,29 +319,41 @@ expect_equal "$(deepstream_requirement_problem 'deepstream-sample-data/9.1.0' ''
 
 # make_deb.sh writes the Depends from the release it built against, and
 # install_deb.sh reads the requirement back out of it.  Neither carries a
-# release of its own any more, so pin the writer's format to the reader's
-# parser instead of pinning two copies of a constant.
+# release of its own any more, so run the writer's output through the reader
+# instead of pinning two copies of a constant.  The reader is loaded in a
+# subshell: it is a production installer, and sourcing it here would put its
+# variables in this one.
+read_requirement_back() {
+  HSTREAM_INSTALLER_SOURCE_ONLY=1 bash -c '
+    # shellcheck disable=SC1090
+    source "$1"
+    read_deepstream_requirement "$2" || exit 1
+    printf "%s %s %s" "${DEEPSTREAM_PACKAGE}" "${DEEPSTREAM_MIN_VERSION}" "${DEEPSTREAM_MAX_VERSION}"
+  ' _ "${SCRIPT_DIR}/install_deb.sh" "$1"
+}
+
 for pinned_release in deepstream-9.1 deepstream-9.2 deepstream-10.3; do
   read -r pinned_name pinned_min pinned_max < <(deepstream_dependency_bounds "${pinned_release}")
   written="${pinned_name} (>= ${pinned_min}), ${pinned_name} (<< ${pinned_max})"
-  depends="libc6 (>= 2.38), ${written}, hugin-tools"
-  expect_equal \
-    "$(sed -nE 's/.*(^|, *)(deepstream-[0-9]+(\.[0-9]+)*) \(>=.*/\2/p' <<<"${depends}")" \
-    "${pinned_name}" "install_deb.sh reads the release make_deb.sh wrote for ${pinned_release}"
-  expect_equal \
-    "$(sed -nE 's/.*deepstream-[0-9]+(\.[0-9]+)* \(>= ([^)]*)\).*/\2/p' <<<"${depends}")" \
-    "${pinned_min}" "install_deb.sh reads the minimum make_deb.sh wrote for ${pinned_release}"
-  expect_equal \
-    "$(sed -nE 's/.*deepstream-[0-9]+(\.[0-9]+)* \(<< ([^)]*)\).*/\2/p' <<<"${depends}")" \
-    "${pinned_max}" "install_deb.sh reads the ceiling make_deb.sh wrote for ${pinned_release}"
+  expect_equal "$(read_requirement_back "libc6 (>= 2.38), ${written}, hugin-tools")" \
+    "${pinned_name} ${pinned_min} ${pinned_max}" \
+    "install_deb.sh reads back the dependency make_deb.sh writes for ${pinned_release}"
 done
-for reader_pattern in \
-  's/.*(^|, *)(deepstream-[0-9]+(\.[0-9]+)*) \(>=.*/\2/p' \
-  's/.*deepstream-[0-9]+(\.[0-9]+)* \(>= ([^)]*)\).*/\2/p' \
-  's/.*deepstream-[0-9]+(\.[0-9]+)* \(<< ([^)]*)\).*/\2/p'; do
-  grep -qF -- "${reader_pattern}" "${SCRIPT_DIR}/install_deb.sh" || \
-    fail "install_deb.sh no longer reads the DeepStream dependency the way this test pinned"
+
+# The reader has to refuse what it cannot act on rather than guess.
+for refusable in \
+  "libc6 (>= 2.38)" \
+  "deepstream-9.1 (>= 9.1.0-1)" \
+  "deepstream-9.1 (>= 9.1.0-1), deepstream-9.2 (<< 9.3~)" \
+  "deepstream-sample-data (>= 9.1.0), deepstream-sample-data (<< 9.2)"; do
+  if read_requirement_back "${refusable}" >/dev/null 2>&1; then
+    fail "install_deb.sh accepted a DeepStream dependency it cannot act on: ${refusable}"
+  fi
 done
+# A package whose name merely contains one must not be read as the real
+# relation, and the real one beside it must still be found.
+expect_equal "$(read_requirement_back "libdeepstream-9.1 (>= 1), deepstream-9.2 (>= 9.2.0-1), deepstream-9.2 (<< 9.3~)")" \
+  "deepstream-9.2 9.2.0-1 9.3~" "a lookalike package name is not read as the DeepStream dependency"
 
 # The bounds this repository shipped when 9.1 was the only release it knew.
 # Deriving them has to keep producing them, or every already-installed node
