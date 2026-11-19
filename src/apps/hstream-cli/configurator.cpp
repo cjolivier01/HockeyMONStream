@@ -7693,7 +7693,12 @@ absl::Status Configurator::configure_encode_file_outputs(
     const int codec = get_node_value<int>(sink_node, "codec", 0);
     std::string output_file = get_node_value<std::string>(sink_node, "output-file", "");
     if (!is_valid_yaml_value_string(output_file) || output_file == kLegacyDefaultOutputName) {
-      output_file = kDefaultOutputVideoName;
+      // Each route falls back to its own name. Handing them all the Program
+      // master's would resolve two archives to one file.
+      output_file = sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE ? "program_4k_output.mkv"
+          : sink_type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE     ? "program_mobile_output.mkv"
+          : sink_type == NV_DS_SINK_ENCODE_STITCHED_FILE           ? "stitched_output.mkv"
+                                                                   : kDefaultOutputVideoName;
     }
 
     fs::path output_path(output_file);
@@ -7845,6 +7850,30 @@ absl::Status Configurator::configure_encode_file_outputs(
     // saved per-sink value defeat a CLI override of the canonical seconds.
     if (mobile_uses_canonical_seconds(archive_output) && mobile_iframeinterval.has_value())
       sink_node["iframeinterval"] = static_cast<int>(*mobile_iframeinterval);
+    if (archive_output.program_mobile) {
+      // This route's bitrate is a fixed target. Per-pixel scaling fields left
+      // in a saved config would reach the encoder's caps probe and replace it.
+      sink_node.remove("bitrate-per-pixel-numerator");
+      sink_node.remove("bitrate-per-pixel-denominator");
+      // A native override that won still has to be a usable value; these reach
+      // unsigned encoder properties, where -1 becomes 4294967295.
+      for (const char* key : {"bitrate", "iframeinterval"}) {
+        const auto node = sink_node[key];
+        if (!node.IsDefined() || node.IsNull())
+          continue;
+        int64_t value = 0;
+        try {
+          value = node.as<int64_t>();
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError(
+              TO_STRING("Invalid pipeline." << archive_output.section << "." << key << ": " << error.what()));
+        }
+        if (value <= 0 || value > G_MAXINT)
+          return absl::InvalidArgumentError(TO_STRING(
+              "pipeline." << archive_output.section << "." << key
+                          << " must be a positive native integer for the mobile Program archive"));
+      }
+    }
 
     const fs::path parent = output_path.parent_path();
     if (!parent.empty()) {

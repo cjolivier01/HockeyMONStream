@@ -58,8 +58,17 @@ def plex_rank(base: str) -> tuple[bool, bool, bool]:
     and not whichever path happens to sort last.
     """
     stripped = base.lower().removesuffix("-with-audio")
-    is_4k = stripped.endswith(NONOFFICIAL_4K_SUFFIXES)
-    return (stripped.endswith(PUBLISHABLE_SUFFIXES), is_4k, "-with-audio" in base.lower())
+    # The 4K export stays the preferred publication, then the master, and the
+    # phone copy last. Without an explicit place the phone copy tied with the
+    # master and lexical order picked, so the choice depended on how the
+    # master's name happened to be spelled.
+    if stripped.endswith(MOBILE_SUFFIXES):
+        preference = 0
+    elif stripped.endswith(NONOFFICIAL_4K_SUFFIXES):
+        preference = 2
+    else:
+        preference = 1
+    return (stripped.endswith(PUBLISHABLE_SUFFIXES), preference, "-with-audio" in base.lower())
 
 
 def generation_group(match: re.Match[str]) -> int | None:

@@ -209,6 +209,16 @@ int main(int argc, char** argv) {
     Check(
         result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.keyframe_interval == 15,
         "A winning native keyframe interval still demanded the source frame rate");
+    // The legacy out.mkv rewrite is NVIDIA-only; this resolver rejects any
+    // non-mp4 name instead. An explicit per-sink name must still stay its own.
+    Check(
+        !mobile({"pipeline.sink7.output-file=out.mkv"}).ok(),
+        "A non-mp4 mobile archive filename was accepted");
+    result = mobile({"pipeline.sink7.output-file=phone.mp4"});
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").path == directory / "phone.mp4" &&
+            result->at("ENCODE_FILE").path == directory / "program_8k_output.mp4",
+        "An explicit mobile filename did not stay its own");
     for (const auto* invalid :
          {"video_out.program_mobile.max_width=0",
           "video_out.program_mobile.max_height=-1",
