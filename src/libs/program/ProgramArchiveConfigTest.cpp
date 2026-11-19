@@ -194,6 +194,21 @@ int main(int argc, char** argv) {
     Check(
         result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.keyframe_interval == 60,
         "A lower-layer native keyframe interval defeated a higher-layer canonical one");
+    // A canonical value that lost must not be able to fail the run, and a
+    // winning native interval needs no source frame rate at all.
+    result = resolve_sinks(
+        mobile_sinks,
+        {"pipeline.sink7.iframeinterval=15"},
+        YAML::Load("video_out: {program_mobile: {keyframe_interval_seconds: 0}}"),
+        std::nullopt,
+        rate);
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.keyframe_interval == 15,
+        "An overridden canonical keyframe value still failed startup");
+    result = resolve_sinks(mobile_sinks, {"pipeline.sink7.iframeinterval=15"});
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.keyframe_interval == 15,
+        "A winning native keyframe interval still demanded the source frame rate");
     for (const auto* invalid :
          {"video_out.program_mobile.max_width=0",
           "video_out.program_mobile.max_height=-1",

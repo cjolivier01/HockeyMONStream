@@ -42,8 +42,11 @@ BASE_MASK_RE = re.compile(r"^rink_mask_0\.png$", re.IGNORECASE)
 # reads a sidecar whose video is gone, so it goes when the video does.
 ARCHIVE_SIDECAR_SUFFIX = ".hstream-archive.json"
 NONOFFICIAL_4K_SUFFIXES = ("program_4k_output", "program-4k_output")
+MOBILE_SUFFIXES = ("program_mobile_output", "program-mobile_output")
 # The exports Plex publishes, as opposed to a stitching intermediate.
-PUBLISHABLE_SUFFIXES = NONOFFICIAL_4K_SUFFIXES + ("tracking_output", "program_8k_output")
+PUBLISHABLE_SUFFIXES = (
+    NONOFFICIAL_4K_SUFFIXES + MOBILE_SUFFIXES + ("tracking_output", "program_8k_output")
+)
 
 
 def plex_rank(base: str) -> tuple[bool, bool, bool]:

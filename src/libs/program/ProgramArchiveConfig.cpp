@@ -148,25 +148,30 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
           bitrate.reset(YAML::Clone(config.values["video_out"]["program_mobile"]["bitrate"]));
         output.bitrate_kbps = (Positive(bitrate, path) + 999) / 1000;
         // Keyframes are configured in seconds and set on the encoder in frames.
-        const std::string seconds_path = "video_out.program_mobile.keyframe_interval_seconds";
-        if (!source_frame_rate || source_frame_rate->first <= 0 || source_frame_rate->second <= 0)
-          return absl::InvalidArgumentError(
-              "The mobile Program archive needs the source frame rate to resolve " + seconds_path);
-        const auto seconds = config.values["video_out"]["program_mobile"]["keyframe_interval_seconds"];
-        if (Null(seconds) || !seconds.IsScalar())
-          return absl::InvalidArgumentError("Effective baseline is missing supported key " + seconds_path);
-        const double value = seconds.as<double>();
-        if (!(value > 0.0) || !std::isfinite(value))
-          return absl::InvalidArgumentError(seconds_path + " must be a positive number of seconds");
-        auto frames = keyframe_interval_frames(value, source_frame_rate->first, source_frame_rate->second);
         // A sink-local interval is already in frames and wins at the same or a
-        // higher explicit layer, matching the NVIDIA branch.
-        if (!Null(sink["iframeinterval"]) && Rank(config, prefix + "iframeinterval") >= 1 &&
-            Rank(config, prefix + "iframeinterval") >= Rank(config, seconds_path))
-          frames = uint32_t(Positive(sink["iframeinterval"], prefix + "iframeinterval"));
-        if (!frames)
-          return absl::InvalidArgumentError(seconds_path + " is not a usable keyframe interval at the source rate");
-        output.keyframe_interval = *frames;
+        // higher explicit layer. Pick the winner before validating anything, as
+        // the NVIDIA branch does, so a losing canonical value cannot fail the
+        // run and the two backends accept the same configurations.
+        const std::string seconds_path = "video_out.program_mobile.keyframe_interval_seconds";
+        const int native_interval_rank = Rank(config, prefix + "iframeinterval");
+        if (!Null(sink["iframeinterval"]) && native_interval_rank >= 1 &&
+            native_interval_rank >= Rank(config, seconds_path)) {
+          output.keyframe_interval = unsigned(Positive(sink["iframeinterval"], prefix + "iframeinterval"));
+        } else {
+          if (!source_frame_rate || source_frame_rate->first <= 0 || source_frame_rate->second <= 0)
+            return absl::InvalidArgumentError(
+                "The mobile Program archive needs the source frame rate to resolve " + seconds_path);
+          const auto seconds = config.values["video_out"]["program_mobile"]["keyframe_interval_seconds"];
+          if (Null(seconds) || !seconds.IsScalar())
+            return absl::InvalidArgumentError("Effective baseline is missing supported key " + seconds_path);
+          const double value = seconds.as<double>();
+          if (!(value > 0.0) || !std::isfinite(value))
+            return absl::InvalidArgumentError(seconds_path + " must be a positive number of seconds");
+          const auto frames = keyframe_interval_frames(value, source_frame_rate->first, source_frame_rate->second);
+          if (!frames)
+            return absl::InvalidArgumentError(seconds_path + " is not a usable keyframe interval at the source rate");
+          output.keyframe_interval = *frames;
+        }
       } else {
         if (!four_k && Rank(config, "video_out.bit_rate") > bitrate_rank &&
             Rank(config, "video_out.bit_rate") > amd_bitrate_rank) {
