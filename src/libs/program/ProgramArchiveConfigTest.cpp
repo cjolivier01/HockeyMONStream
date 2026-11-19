@@ -17,14 +17,23 @@ int main(int argc, char** argv) {
     const auto empty = YAML::Node(YAML::NodeType::Map);
     const auto directory = std::filesystem::absolute("unused-archive-test-output");
     const std::set<std::string> sinks{"RENDER", "ENCODE_FILE", "ENCODE_PROGRAM_4K_FILE"};
-    const auto resolve = [&](const std::vector<std::string>& options = {},
-                             const YAML::Node& game = YAML::Node(YAML::NodeType::Map),
-                             const std::optional<hm::BitratePerPixel>& source = std::nullopt) {
+    // 59.94 fps, as the GoPro sources record.
+    const std::pair<int, int> rate{60000, 1001};
+    const auto resolve_sinks = [&](const std::set<std::string>& selected,
+                                   const std::vector<std::string>& options = {},
+                                   const YAML::Node& game = YAML::Node(YAML::NodeType::Map),
+                                   const std::optional<hm::BitratePerPixel>& source = std::nullopt,
+                                   const std::optional<std::pair<int, int>>& fps = std::nullopt) {
       const auto config = hm::config::ResolveProgramConfiguration(baseline, empty, game, app, options);
       Check(config.ok(), config.status().ToString());
       const auto output = hm::program::ResolveProgramOutputConfig(*config);
       Check(output.ok(), output.status().ToString());
-      return hm::program::ResolveProgramArchives(*config, sinks, *output, directory, source);
+      return hm::program::ResolveProgramArchives(*config, selected, *output, directory, source, fps);
+    };
+    const auto resolve = [&](const std::vector<std::string>& options = {},
+                             const YAML::Node& game = YAML::Node(YAML::NodeType::Map),
+                             const std::optional<hm::BitratePerPixel>& source = std::nullopt) {
+      return resolve_sinks(sinks, options, game, source);
     };
     auto result = resolve();
     Check(result.ok(), result.status().ToString());
@@ -109,6 +118,63 @@ int main(int argc, char** argv) {
           "pipeline.sink6.width=1920",
           "pipeline.sink2.output-file=same.mp4,pipeline.sink6.output-file=same.mp4"})
       Check(!resolve({invalid}).ok(), std::string("Unsupported archive setting accepted: ") + invalid);
+
+    // The mobile copy: a configured ceiling, its own bitrate, and a keyframe
+    // interval expressed in seconds against the source rate.
+    const std::set<std::string> mobile_sinks{"ENCODE_FILE", "ENCODE_PROGRAM_4K_FILE", "ENCODE_PROGRAM_MOBILE_FILE"};
+    const auto mobile = [&](const std::vector<std::string>& options = {},
+                            const std::optional<hm::BitratePerPixel>& source = std::nullopt) {
+      return resolve_sinks(mobile_sinks, options, YAML::Node(YAML::NodeType::Map), source, rate);
+    };
+    result = mobile();
+    Check(result.ok(), result.status().ToString());
+    {
+      const auto& phone = result->at("ENCODE_PROGRAM_MOBILE_FILE");
+      Check(
+          result->size() == 3 && phone.kind == "program-mobile" && phone.sink_id == 7 &&
+              phone.path == directory / "program_mobile_output.mp4" && phone.output.width == 1920 &&
+              phone.output.height == 1080 && phone.output.bitrate_kbps == 6000 &&
+              phone.output.keyframe_interval == 120,
+          "Baseline mobile archive geometry, bitrate or keyframe interval changed");
+    }
+    // The camera's bits-per-pixel is what this route exists to not inherit.
+    result = mobile({}, hm::make_bitrate_per_pixel(100000000, 5312, 2988));
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.bitrate_kbps == 6000,
+        "Source bitrate density leaked into the mobile archive");
+    result = mobile({"video_out.bit_rate=20000000"});
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.bitrate_kbps == 6000,
+        "Program-wide bitrate leaked into the independent mobile branch");
+    result = mobile({"video_out.program_mobile.bitrate=4000000,video_out.program_mobile.max_height=720"});
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.bitrate_kbps == 4000 &&
+            result->at("ENCODE_PROGRAM_MOBILE_FILE").output.width == 1280 &&
+            result->at("ENCODE_PROGRAM_MOBILE_FILE").output.height == 720,
+        "Configured mobile ceiling or bitrate ignored");
+    result = mobile({"video_out.program_mobile.keyframe_interval_seconds=0.5"});
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.keyframe_interval == 30,
+        "Mobile keyframe seconds did not resolve against the source rate");
+    // A ceiling above Program must not upscale it.
+    result = mobile({"video_out.program_mobile.max_width=99999,video_out.program_mobile.max_height=99999"});
+    Check(
+        result.ok() &&
+            result->at("ENCODE_PROGRAM_MOBILE_FILE").output.width == result->at("ENCODE_FILE").output.width,
+        "Mobile archive upscaled a smaller Program");
+    Check(
+        !resolve_sinks(mobile_sinks).ok(),
+        "The mobile archive resolved a seconds-based keyframe interval without a source frame rate");
+    for (const auto* invalid :
+         {"video_out.program_mobile.max_width=0",
+          "video_out.program_mobile.max_height=-1",
+          "video_out.program_mobile.bitrate=0",
+          "video_out.program_mobile.keyframe_interval_seconds=0",
+          "video_out.program_mobile.keyframe_interval_seconds=-2",
+          "pipeline.sink7.codec=1",
+          "pipeline.sink7.width=1920",
+          "pipeline.sink7.sink-id=6"})
+      Check(!mobile({invalid}).ok(), std::string("Unsupported mobile archive setting accepted: ") + invalid);
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

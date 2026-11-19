@@ -195,6 +195,20 @@ bool is_rtmp_server_sink(const NvDsSinkSubBinConfig* sink_config) {
   return output_file_path && !strncmp(output_file_path, "rtmp:/", 6);
 }
 
+// The muxed archive sinks: audio reaches them through a non-leaky queue and a
+// file muxer, unlike the network and preview sinks that may drop to keep up.
+bool is_archive_file_sink(NvDsSinkType type) {
+  switch (type) {
+    case NV_DS_SINK_ENCODE_FILE:
+    case NV_DS_SINK_ENCODE_STITCHED_FILE:
+    case NV_DS_SINK_ENCODE_PROGRAM_4K_FILE:
+    case NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE:
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool is_render_audio_sink(const NvDsSinkSubBinConfig* sink_config) {
 #ifndef IS_TEGRA
   return sink_config->type == NvDsSinkType::NV_DS_SINK_RENDER_EGL;
@@ -210,6 +224,7 @@ bool hmaudio_supports_sink(const NvDsSinkSubBinConfig* sink_config) {
   switch (sink_config->type) {
     case NV_DS_SINK_ENCODE_FILE:
     case NV_DS_SINK_ENCODE_PROGRAM_4K_FILE:
+    case NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE:
     case NV_DS_SINK_ENCODE_STITCHED_FILE:
     case NV_DS_SINK_UDPSINK:
     case NV_DS_SINK_WEBRTC:
@@ -320,8 +335,7 @@ bool create_audio_branch_queue(NvDsHmAudioBin* bin, const NvDsSinkSubBinConfig* 
   if (!make_audio_bin_element(bin, queue, NVDS_ELEM_QUEUE, branch_element_name("branch", sink_config, "queue"))) {
     return false;
   }
-  if (sink_config->type != NV_DS_SINK_ENCODE_FILE && sink_config->type != NV_DS_SINK_ENCODE_STITCHED_FILE &&
-      sink_config->type != NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) {
+  if (!is_archive_file_sink(sink_config->type)) {
     g_object_set(G_OBJECT(*queue), "leaky", 2, "max-size-buffers", 30, "max-size-time", 0, "max-size-bytes", 0, NULL);
   }
   return link_to_tee(bin->tee, *queue);
@@ -604,8 +618,7 @@ bool create_audio_branch_for_target(
     return false;
   }
 
-  if (target.config->type == NV_DS_SINK_ENCODE_FILE || target.config->type == NV_DS_SINK_ENCODE_STITCHED_FILE ||
-      target.config->type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) {
+  if (is_archive_file_sink(target.config->type)) {
     return create_file_audio_branch(bin, target, input_encoded_aac);
   }
   if (target.config->type == NV_DS_SINK_UDPSINK) {

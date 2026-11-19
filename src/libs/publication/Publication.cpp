@@ -311,7 +311,10 @@ std::string basename(const std::string& game, const std::string& kind, uint64_t 
   const std::string suffix = "-" + std::to_string(generation);
   if (kind == "telemetry")
     return hm::recording::TelemetryDatabaseStem(game) + suffix + ".db";
-  const std::string route = kind == "program" ? "program_8k" : kind == "program-4k" ? "program_4k" : "stitched";
+  const std::string route = kind == "program" ? "program_8k"
+      : kind == "program-4k"                  ? "program_4k"
+      : kind == "program-mobile"              ? "program_mobile"
+                                              : "stitched";
   return game + "-" + route + "_output-with-audio" + suffix + ".mp4";
 }
 uint64_t next_generation(const fs::path& game) {
@@ -928,7 +931,10 @@ std::vector<PublishedOutput> Finalize(const fs::path& manifest_or_receipt, const
         };
         const std::string video_kind = artifact["video_kind"].as<std::string>();
         const std::string data = "{\"schema\":1,\"game_id\":" + quote(run["game_id"].as<std::string>()) +
-            ",\"kind\":" + quote(video_kind == "program-4k" ? "program_4k" : video_kind) +
+            ",\"kind\":" +
+            quote(video_kind == "program-4k"          ? "program_4k"
+                      : video_kind == "program-mobile" ? "program_mobile"
+                                                       : video_kind) +
             ",\"start_time_ms\":" + std::to_string(run["start_time_ms"].as<int64_t>(0)) + "}\n";
         Fd fd(::open(prepared.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
         check(fd.value >= 0, "Cannot create archive sidecar");

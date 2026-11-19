@@ -36,6 +36,10 @@ gboolean parse_sink_yaml(
   config->encoder_config.iframeinterval = 30;
   config->encoder_config.width = 0;
   config->encoder_config.height = 0;
+  // Zero is "unresolved" rather than "unlimited": the only sink that reads
+  // these rejects it, so a missing canonical value cannot become no ceiling.
+  config->encoder_config.max_output_width = 0;
+  config->encoder_config.max_output_height = 0;
   config->render_config.qos = FALSE;
   config->link_to_demux = FALSE;
   config->msg_conv_broker_config.new_api = FALSE;
@@ -99,6 +103,10 @@ gboolean parse_sink_yaml(
       config->encoder_config.bitrate_per_pixel_numerator = itr->second.as<guint64>();
     } else if (paramKey == "bitrate-per-pixel-denominator") {
       config->encoder_config.bitrate_per_pixel_denominator = itr->second.as<guint64>();
+    } else if (paramKey == "max-output-width") {
+      config->encoder_config.max_output_width = itr->second.as<guint>();
+    } else if (paramKey == "max-output-height") {
+      config->encoder_config.max_output_height = itr->second.as<guint>();
     } else if (paramKey == "profile") {
       config->encoder_config.profile = itr->second.as<guint>();
     } else if (paramKey == "iframeinterval") {

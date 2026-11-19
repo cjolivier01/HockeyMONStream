@@ -1376,15 +1376,29 @@ QString archive_output_work_dir(const QProcessEnvironment& env, const QString& w
   return QDir::cleanPath(root);
 }
 
+// The 4K and mobile copies are derived from the same Program crop and ride
+// alongside the primary archive. They publish under their own route stem and
+// do not name the telemetry generation, which belongs to the 8K Program.
+bool is_derived_program_route(const QString& output_id) {
+  return output_id == "archive-program-4k" || output_id == "archive-program-mobile";
+}
+
+QString publication_route_stem(const QString& output_id) {
+  return output_id == "archive-program-4k" ? QStringLiteral("program_4k")
+      : output_id == "archive-program-mobile"
+      ? QStringLiteral("program_mobile")
+      : QStringLiteral("program_8k");
+}
+
+// The Program route's publication stem: "program_8k", "program_4k" or
+// "program_mobile". Stitching calibration writes the stitched canvas instead.
 QString archive_output_path(
     const QString& output_work_dir,
     const QString& game_id,
     bool stitching_calibration,
-    bool program_4k = false) {
-  return QDir(QDir(output_work_dir).filePath(game_id))
-      .filePath(
-          program_4k ? "program_4k_output-with-audio.mkv"
-                     : (stitching_calibration ? "stitched_output-with-audio.mkv" : "program_8k_output-with-audio.mkv"));
+    const QString& program_route = "program_8k") {
+  const QString stem = stitching_calibration ? QStringLiteral("stitched") : program_route;
+  return QDir(QDir(output_work_dir).filePath(game_id)).filePath(stem + "_output-with-audio.mkv");
 }
 
 QString final_archive_guard_path(const QString& game, const QString& archive) {
@@ -1397,11 +1411,11 @@ QString available_final_archive_path(
     bool stitched_archive,
     bool require_telemetry_paths = false,
     const QString& shared_run_suffix = {},
-    bool program_4k = false) {
+    const QString& program_route = "program_8k") {
   QString safe_game_id = game_id.trimmed();
   safe_game_id.replace(QRegularExpression(R"([\\/]+)"), "_");
-  const QString base = QString("%1-%2_output-with-audio")
-                           .arg(safe_game_id, program_4k ? "program_4k" : (stitched_archive ? "stitched" : "program_8k"));
+  const QString base =
+      QString("%1-%2_output-with-audio").arg(safe_game_id, stitched_archive ? QStringLiteral("stitched") : program_route);
   const qint64 first = shared_run_suffix.isNull() ? hm::ui_internal::next_archive_generation(game_dir)
                                                   : shared_run_suffix.mid(1).toLongLong();
   if (first < 1)
@@ -7468,6 +7482,8 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
       initial_routes.insert("archive-file");
     else if (name == "program_4k")
       initial_routes.insert("archive-program-4k");
+    else if (name == "program_mobile")
+      initial_routes.insert("archive-program-mobile");
     else if (name == "stitched")
       initial_routes.insert("archive-stitched");
     else
@@ -7485,6 +7501,7 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
       {"rtsp-local", "RTSP Local"},
       {"archive-file", "Encode 8K Program"},
       {"archive-program-4k", "Encode 4K Program"},
+      {"archive-program-mobile", "Encode Mobile Program"},
       {"archive-stitched", "Archive Stitched"},
       {"spare-rtmp", "Spare RTMP"},
   };
@@ -7515,6 +7532,13 @@ void HStreamWindow::buildOutputControls(QVBoxLayout* parent) {
       program_4k_output_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
       program_4k_output_path_label_->setStyleSheet("color: #98a2b3; font-size: 11px; padding-left: 20px;");
       layout->addWidget(program_4k_output_path_label_);
+    } else if (id == "archive-program-mobile") {
+      program_mobile_output_path_label_ = new QLabel("Mobile Program path will be shown when enabled", group);
+      program_mobile_output_path_label_->setObjectName("programMobileOutputPath");
+      program_mobile_output_path_label_->setWordWrap(true);
+      program_mobile_output_path_label_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      program_mobile_output_path_label_->setStyleSheet("color: #98a2b3; font-size: 11px; padding-left: 20px;");
+      layout->addWidget(program_mobile_output_path_label_);
     } else if (id == "archive-stitched") {
       stitched_archive_output_path_label_ = new QLabel("Stitched archive path will be shown when enabled", group);
       stitched_archive_output_path_label_->setObjectName("stitchedArchiveOutputPath");
@@ -8559,6 +8583,7 @@ bool HStreamWindow::handleBackendLaunch(const QString& line) {
       {"ENCODE_FILE", "archive-file"},
       {"ENCODE_STITCHED_FILE", "archive-stitched"},
       {"ENCODE_PROGRAM_4K_FILE", "archive-program-4k"},
+      {"ENCODE_PROGRAM_MOBILE_FILE", "archive-program-mobile"},
       {"RTMP", "youtube-primary"},
       {"RTSP", "rtsp-local"}};
   QStringList resolved_outputs;
@@ -8655,6 +8680,7 @@ bool HStreamWindow::handleBackendPublication(const QString& line) {
       {"program", "archive-file"},
       {"stitched", "archive-stitched"},
       {"program-4k", "archive-program-4k"},
+      {"program-mobile", "archive-program-mobile"},
       {"telemetry", ""}};
   std::map<QString, QString> published;
   for (const auto& value : receipt.value("artifacts").toArray()) {
@@ -8688,6 +8714,7 @@ bool HStreamWindow::handleBackendPublication(const QString& line) {
     QLabel* label = kind == "program" ? archive_output_path_label_
         : kind == "stitched"          ? stitched_archive_output_path_label_
         : kind == "program-4k"        ? program_4k_output_path_label_
+        : kind == "program-mobile"    ? program_mobile_output_path_label_
                                       : nullptr;
     if (label)
       label->setText(path);
@@ -8746,6 +8773,8 @@ QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
       sinks.push_back("ENCODE_STITCHED_FILE");
     } else if (id == "archive-program-4k" && (job_export || !isCalibrationRun())) {
       sinks.push_back("ENCODE_PROGRAM_4K_FILE");
+    } else if (id == "archive-program-mobile" && (job_export || !isCalibrationRun())) {
+      sinks.push_back("ENCODE_PROGRAM_MOBILE_FILE");
     } else if (id == "archive-file") {
       sinks.push_back("ENCODE_FILE");
     }
@@ -8764,6 +8793,8 @@ QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
           sinks.push_back("ENCODE_FILE");
         else if (name == "program_4k")
           sinks.push_back("ENCODE_PROGRAM_4K_FILE");
+        else if (name == "program_mobile")
+          sinks.push_back("ENCODE_PROGRAM_MOBILE_FILE");
         else if (name == "stitched")
           sinks.push_back("ENCODE_STITCHED_FILE");
         else
@@ -12027,7 +12058,8 @@ void HStreamWindow::startPipeline() {
   }
   const QStringList requested_sinks = enabledSinkNames();
   const bool archive_requested = requested_sinks.contains("ENCODE_FILE") ||
-      requested_sinks.contains("ENCODE_STITCHED_FILE") || requested_sinks.contains("ENCODE_PROGRAM_4K_FILE");
+      requested_sinks.contains("ENCODE_STITCHED_FILE") || requested_sinks.contains("ENCODE_PROGRAM_4K_FILE") ||
+      requested_sinks.contains("ENCODE_PROGRAM_MOBILE_FILE");
   if (archive_requested && !archive_finalize_blocked_source_path_.isEmpty()) {
     appendLog(QString("archive run blocked until the retained work file is moved to safety: %1")
                   .arg(archive_finalize_blocked_source_path_));
@@ -12105,7 +12137,7 @@ void HStreamWindow::startPipeline() {
   backend_launch_failed_ = false;
   active_backend_output_kinds_.clear();
   if (active_hockeymon_program_) {
-    for (const QString kind : {"archive-file", "archive-stitched", "archive-program-4k"}) {
+    for (const QString kind : {"archive-file", "archive-stitched", "archive-program-4k", "archive-program-mobile"}) {
       if (output_toggles_.at(kind)->isChecked())
         active_backend_output_kinds_.append(kind);
     }
@@ -12197,14 +12229,19 @@ void HStreamWindow::startPipeline() {
   active_archive_initial_mtime_ms_ = -1;
   active_archive_video_is_hevc_ = false;
   active_program_4k_output_path_.clear();
+  active_program_mobile_output_path_.clear();
   active_stitched_archive_output_path_.clear();
   active_program_4k_recovery_path_.clear();
+  active_program_mobile_recovery_path_.clear();
   active_stitched_archive_recovery_path_.clear();
   active_program_4k_initial_size_ = -1;
+  active_program_mobile_initial_size_ = -1;
   active_stitched_archive_initial_size_ = -1;
   active_program_4k_initial_mtime_ms_ = -1;
+  active_program_mobile_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
   active_program_4k_video_is_hevc_ = false;
+  active_program_mobile_video_is_hevc_ = false;
   active_stitched_archive_video_is_hevc_ = false;
   pending_archive_finalizations_.clear();
   archive_finalize_failure_summaries_.clear();
@@ -12217,7 +12254,10 @@ void HStreamWindow::startPipeline() {
   const bool stitched_archive_enabled = stitched_archive_toggle != output_toggles_.end() &&
       stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
   const bool program_4k_enabled = !active_run_is_calibration_ && output_toggles_.at("archive-program-4k")->isChecked();
-  const bool video_archive_enabled = archive_enabled || stitched_archive_enabled || program_4k_enabled;
+  const bool program_mobile_enabled =
+      !active_run_is_calibration_ && output_toggles_.at("archive-program-mobile")->isChecked();
+  const bool video_archive_enabled =
+      archive_enabled || stitched_archive_enabled || program_4k_enabled || program_mobile_enabled;
   const bool telemetry_only = active_run_telemetry_requested_ && !video_archive_enabled;
   if (!active_hockeymon_program_ && (video_archive_enabled || active_run_telemetry_requested_)) {
     const QString output_work_dir = archive_output_work_dir(env, working_dir);
@@ -12248,10 +12288,17 @@ void HStreamWindow::startPipeline() {
       active_stitched_archive_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, true);
     }
     if (program_4k_enabled) {
-      active_program_4k_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, false, true);
+      active_program_4k_output_path_ = archive_output_path(output_work_dir, active_run_game_id_, false, "program_4k");
+    }
+    if (program_mobile_enabled) {
+      active_program_mobile_output_path_ =
+          archive_output_path(output_work_dir, active_run_game_id_, false, "program_mobile");
     }
     for (QString* output :
-         {&active_archive_output_path_, &active_stitched_archive_output_path_, &active_program_4k_output_path_}) {
+         {&active_archive_output_path_,
+          &active_stitched_archive_output_path_,
+          &active_program_4k_output_path_,
+          &active_program_mobile_output_path_}) {
       if (output->isEmpty())
         continue;
       const fs::path path(output->toStdString());
@@ -12264,8 +12311,9 @@ void HStreamWindow::startPipeline() {
       *output = QString::fromStdString((*directory / path.filename()).string());
     }
     const QString primary_archive_path = !active_archive_output_path_.isEmpty() ? active_archive_output_path_
-        : !active_program_4k_output_path_.isEmpty()                             ? active_program_4k_output_path_
-                                                                                : active_stitched_archive_output_path_;
+        : !active_program_4k_output_path_.isEmpty()     ? active_program_4k_output_path_
+        : !active_program_mobile_output_path_.isEmpty() ? active_program_mobile_output_path_
+                                                        : active_stitched_archive_output_path_;
     // A telemetry-only run has no video path. Keep its UI log inside the
     // admitted workspace so managed finalization owns its publication cleanup.
     const QString job_log_base = primary_archive_path.isEmpty()
@@ -12279,9 +12327,12 @@ void HStreamWindow::startPipeline() {
         output_states_["archive-stitched"]->setText("ERROR");
       if (program_4k_enabled)
         output_states_["archive-program-4k"]->setText("ERROR");
+      if (program_mobile_enabled)
+        output_states_["archive-program-mobile"]->setText("ERROR");
       appendLog(QString("archive output directory could not be created: %1").arg(archive_dir));
       active_archive_output_path_.clear();
       active_program_4k_output_path_.clear();
+      active_program_mobile_output_path_.clear();
       active_stitched_archive_output_path_.clear();
       active_run_game_id_.clear();
       active_run_is_calibration_ = false;
@@ -12293,6 +12344,7 @@ void HStreamWindow::startPipeline() {
     }
     archive_job_log_output_kind_ = archive_enabled ? "program"
         : program_4k_enabled                       ? "program-4k"
+        : program_mobile_enabled                   ? "program-mobile"
         : stitched_archive_enabled                 ? "stitched"
                                                    : "telemetry";
     beginArchiveJobLog(job_log_base, archive_run_id);
@@ -12310,6 +12362,15 @@ void HStreamWindow::startPipeline() {
       }
       appendLog(QString("4K Program output: %1 (the playable file is finalized when playback stops)")
                     .arg(active_program_4k_output_path_));
+    }
+    if (program_mobile_enabled) {
+      output_states_["archive-program-mobile"]->setText("WRITING");
+      if (program_mobile_output_path_label_) {
+        program_mobile_output_path_label_->setText(
+            QString("Mobile Program: %1").arg(active_program_mobile_output_path_));
+      }
+      appendLog(QString("mobile Program output: %1 (the playable file is finalized when playback stops)")
+                    .arg(active_program_mobile_output_path_));
     }
     if (stitched_archive_enabled) {
       output_states_["archive-stitched"]->setText("WRITING");
@@ -12346,6 +12407,12 @@ void HStreamWindow::startPipeline() {
                     .arg(reason, active_program_4k_output_path_));
       active_program_4k_output_path_.clear();
     }
+    if (!active_program_mobile_output_path_.isEmpty()) {
+      output_states_["archive-program-mobile"]->setText("NO FILE");
+      appendLog(QString("mobile Program output was not started (%1); expected path: %2")
+                    .arg(reason, active_program_mobile_output_path_));
+      active_program_mobile_output_path_.clear();
+    }
     if (!active_stitched_archive_output_path_.isEmpty()) {
       output_states_["archive-stitched"]->setText("NO FILE");
       appendLog(QString("stitched archive output was not started (%1); expected path: %2")
@@ -12355,8 +12422,10 @@ void HStreamWindow::startPipeline() {
     active_archive_initial_size_ = -1;
     active_archive_initial_mtime_ms_ = -1;
     active_program_4k_initial_size_ = -1;
+    active_program_mobile_initial_size_ = -1;
     active_stitched_archive_initial_size_ = -1;
     active_program_4k_initial_mtime_ms_ = -1;
+    active_program_mobile_initial_mtime_ms_ = -1;
     active_stitched_archive_initial_mtime_ms_ = -1;
   };
   active_calibration_control_points_ = stitchingCalibrationControlPoints();
@@ -12722,7 +12791,8 @@ void HStreamWindow::confirmStopPipeline() {
     return;
   const auto generation = pipeline_run_generation_;
   const bool has_outputs = active_run_telemetry_requested_ || !active_archive_output_path_.isEmpty() ||
-      !active_program_4k_output_path_.isEmpty() || !active_stitched_archive_output_path_.isEmpty() ||
+      !active_program_4k_output_path_.isEmpty() || !active_program_mobile_output_path_.isEmpty() ||
+      !active_stitched_archive_output_path_.isEmpty() ||
       !active_backend_output_kinds_.isEmpty();
   bool publish_partial = false;
   if (has_outputs && !calibration_pending_) {
@@ -13042,6 +13112,13 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
       active_program_4k_video_is_hevc_,
       false,
       "archive-program-4k");
+  inspect_archive(
+      active_program_mobile_output_path_,
+      active_program_mobile_initial_size_,
+      active_program_mobile_initial_mtime_ms_,
+      active_program_mobile_video_is_hevc_,
+      false,
+      "archive-program-mobile");
   pipeline_paused_ = false;
   pipeline_cooperative_pause_ = false;
   pending_process_pause_generation_ = 0;
@@ -13146,10 +13223,13 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   active_archive_initial_size_ = -1;
   active_archive_initial_mtime_ms_ = -1;
   active_program_4k_output_path_.clear();
+  active_program_mobile_output_path_.clear();
   active_stitched_archive_output_path_.clear();
   active_program_4k_initial_size_ = -1;
+  active_program_mobile_initial_size_ = -1;
   active_stitched_archive_initial_size_ = -1;
   active_program_4k_initial_mtime_ms_ = -1;
+  active_program_mobile_initial_mtime_ms_ = -1;
   active_stitched_archive_initial_mtime_ms_ = -1;
   const auto complete = [this,
                          archive_completed,
@@ -13406,6 +13486,19 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
       active_program_4k_output_path_.clear();
       active_program_4k_initial_size_ = -1;
       active_program_4k_initial_mtime_ms_ = -1;
+    }
+  }
+  if (!active_program_mobile_output_path_.isEmpty()) {
+    if (error == QProcess::Crashed) {
+      output_states_["archive-program-mobile"]->setText("CHECKING");
+      appendLog(QString("pipeline crashed; checking mobile Program for partial output: %1")
+                    .arg(active_program_mobile_output_path_));
+    } else {
+      output_states_["archive-program-mobile"]->setText("FAILED");
+      appendLog(QString("mobile Program output was not created; expected: %1").arg(active_program_mobile_output_path_));
+      active_program_mobile_output_path_.clear();
+      active_program_mobile_initial_size_ = -1;
+      active_program_mobile_initial_mtime_ms_ = -1;
     }
   }
   active_run_game_id_.clear();
@@ -14247,9 +14340,53 @@ void HStreamWindow::updatePlaybackProgressPresentation() {
   playback_progress_->setAccessibleDescription(playback_progress_->format());
 }
 
+QLabel* HStreamWindow::archiveRouteLabel(const QString& output_id) const {
+  if (output_id == "archive-program-4k")
+    return program_4k_output_path_label_;
+  if (output_id == "archive-program-mobile")
+    return program_mobile_output_path_label_;
+  if (output_id == "archive-stitched")
+    return stitched_archive_output_path_label_;
+  return archive_output_path_label_;
+}
+
+HStreamWindow::ActiveArchiveRoute HStreamWindow::activeArchiveRoute(const QString& reported_kind, bool stitched) {
+  if (reported_kind == "program-4k")
+    return {
+        active_program_4k_output_path_,
+        active_program_4k_recovery_path_,
+        active_program_4k_initial_size_,
+        active_program_4k_initial_mtime_ms_,
+        active_program_4k_video_is_hevc_,
+        program_4k_output_path_label_};
+  if (reported_kind == "program-mobile")
+    return {
+        active_program_mobile_output_path_,
+        active_program_mobile_recovery_path_,
+        active_program_mobile_initial_size_,
+        active_program_mobile_initial_mtime_ms_,
+        active_program_mobile_video_is_hevc_,
+        program_mobile_output_path_label_};
+  if (stitched && !active_stitched_archive_output_path_.isEmpty())
+    return {
+        active_stitched_archive_output_path_,
+        active_stitched_archive_recovery_path_,
+        active_stitched_archive_initial_size_,
+        active_stitched_archive_initial_mtime_ms_,
+        active_stitched_archive_video_is_hevc_,
+        stitched_archive_output_path_label_};
+  return {
+      active_archive_output_path_,
+      active_archive_recovery_path_,
+      active_archive_initial_size_,
+      active_archive_initial_mtime_ms_,
+      active_archive_video_is_hevc_,
+      archive_output_path_label_};
+}
+
 void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
   static const QRegularExpression recovery_status(
-      R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+)(?: kind=(program|stitched|program-4k))? path=(.+)$)");
+      R"(^HSTREAM_OUTPUT_RECOVERY type=archive sink=(-?\d+)(?: kind=(program|stitched|program-4k|program-mobile))? path=(.+)$)");
   const QRegularExpressionMatch recovery_match = recovery_status.match(line);
   if (recovery_match.hasMatch()) {
     const QString reported_kind = recovery_match.captured(2);
@@ -14257,15 +14394,10 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
         (reported_kind.isEmpty() &&
          (active_run_is_calibration_ ||
           (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
-    QString& output_path = reported_kind == "program-4k"              ? active_program_4k_output_path_
-        : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_output_path_
-                                                                      : active_archive_output_path_;
-    QString& recovery_path = reported_kind == "program-4k"            ? active_program_4k_recovery_path_
-        : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_recovery_path_
-                                                                      : active_archive_recovery_path_;
-    QLabel* path_label = reported_kind == "program-4k"                ? program_4k_output_path_label_
-        : stitched && !active_stitched_archive_output_path_.isEmpty() ? stitched_archive_output_path_label_
-                                                                      : archive_output_path_label_;
+    auto route = activeArchiveRoute(reported_kind, stitched);
+    QString& output_path = route.output_path;
+    QString& recovery_path = route.recovery_path;
+    QLabel* path_label = route.path_label;
     if (output_path.isEmpty())
       return;
     recovery_path = QFileInfo(recovery_match.captured(3)).absoluteFilePath();
@@ -14277,7 +14409,7 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
     return;
   }
   static const QRegularExpression output_status(
-      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+)(?: kind=(program|stitched|program-4k))? existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
+      R"(^HSTREAM_OUTPUT type=archive sink=(-?\d+)(?: kind=(program|stitched|program-4k|program-mobile))? existed=([01]) size=(-?\d+) mtime-ms=(-?\d+)(?: codec=(h264|hevc|unknown))? path=(.+)$)");
   const QRegularExpressionMatch match = output_status.match(line);
   if (!match.hasMatch()) {
     return;
@@ -14287,24 +14419,13 @@ void HStreamWindow::handleArchiveOutputStatus(const QString& line) {
       (reported_kind.isEmpty() &&
        (active_run_is_calibration_ ||
         (active_archive_output_path_.isEmpty() && !active_stitched_archive_output_path_.isEmpty())));
-  QString& output_path = reported_kind == "program-4k"              ? active_program_4k_output_path_
-      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_output_path_
-                                                                    : active_archive_output_path_;
-  QString& recovery_path = reported_kind == "program-4k"            ? active_program_4k_recovery_path_
-      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_recovery_path_
-                                                                    : active_archive_recovery_path_;
-  qint64& initial_size = reported_kind == "program-4k"              ? active_program_4k_initial_size_
-      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_initial_size_
-                                                                    : active_archive_initial_size_;
-  qint64& initial_mtime = reported_kind == "program-4k"             ? active_program_4k_initial_mtime_ms_
-      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_initial_mtime_ms_
-                                                                    : active_archive_initial_mtime_ms_;
-  bool& video_is_hevc = reported_kind == "program-4k"               ? active_program_4k_video_is_hevc_
-      : stitched && !active_stitched_archive_output_path_.isEmpty() ? active_stitched_archive_video_is_hevc_
-                                                                    : active_archive_video_is_hevc_;
-  QLabel* path_label = reported_kind == "program-4k"                ? program_4k_output_path_label_
-      : stitched && !active_stitched_archive_output_path_.isEmpty() ? stitched_archive_output_path_label_
-                                                                    : archive_output_path_label_;
+  auto route = activeArchiveRoute(reported_kind, stitched);
+  QString& output_path = route.output_path;
+  QString& recovery_path = route.recovery_path;
+  qint64& initial_size = route.initial_size;
+  qint64& initial_mtime = route.initial_mtime_ms;
+  bool& video_is_hevc = route.video_is_hevc;
+  QLabel* path_label = route.path_label;
   if (output_path.isEmpty())
     return;
   const QString resolved_path = QFileInfo(match.captured(7)).absoluteFilePath();
@@ -15003,6 +15124,22 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
   } else if (stitched_archive_output_path_label_) {
     stitched_archive_output_path_label_->setText("Stitched archive path will be shown when enabled");
   }
+  if (program_mobile_output_path_label_) {
+    if (pipeline_running && !active_program_mobile_output_path_.isEmpty()) {
+      program_mobile_output_path_label_->setText(
+          QString("Current mobile Program: %1").arg(active_program_mobile_output_path_));
+    } else if (!isCalibrationRun() && output_toggles_.at("archive-program-mobile")->isChecked()) {
+      program_mobile_output_path_label_->setText(
+          QString("Mobile Program: %1")
+              .arg(archive_output_path(
+                  archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory()),
+                  game_id_edit_ ? game_id_edit_->text().trimmed() : QString(),
+                  false,
+                  "program_mobile")));
+    } else {
+      program_mobile_output_path_label_->setText("Mobile Program path will be shown when enabled");
+    }
+  }
   if (program_4k_output_path_label_) {
     if (pipeline_running && !active_program_4k_output_path_.isEmpty()) {
       program_4k_output_path_label_->setText(QString("Current 4K Program: %1").arg(active_program_4k_output_path_));
@@ -15013,7 +15150,7 @@ void HStreamWindow::updateArchiveOutputPathLabel() {
                   archive_output_work_dir(QProcessEnvironment::systemEnvironment(), pipelineWorkingDirectory()),
                   game_id_edit_ ? game_id_edit_->text().trimmed() : QString(),
                   false,
-                  true)));
+                  "program_4k")));
     } else {
       program_4k_output_path_label_->setText("4K Program path will be shown when enabled");
     }
@@ -15360,9 +15497,9 @@ void HStreamWindow::startArchiveFinalization(
       archive_game_directory,
       game_id,
       archive_finalize_is_stitched_,
-      active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+      active_run_telemetry_requested_ && !is_derived_program_route(archive_finalize_output_id_),
       active_run_completed_archive_suffix_,
-      archive_finalize_output_id_ == "archive-program-4k");
+      publication_route_stem(archive_finalize_output_id_));
   archive_finalize_stdout_buffer_.clear();
   archive_finalize_error_output_.clear();
   archive_finalize_pending_failure_detail_.clear();
@@ -15622,12 +15759,11 @@ void HStreamWindow::startManagedArchiveFinalization() {
         if (path.path.extension() != ".mp4")
           continue;
         const QString kind = path.kind == "program-4k" ? "archive-program-4k"
+            : path.kind == "program-mobile"            ? "archive-program-mobile"
             : path.kind == "stitched"                  ? "archive-stitched"
                                                        : "archive-file";
         output_states_[kind]->setText("SAVED");
-        QLabel* label = kind == "archive-program-4k" ? program_4k_output_path_label_
-            : kind == "archive-stitched"             ? stitched_archive_output_path_label_
-                                                     : archive_output_path_label_;
+        QLabel* label = archiveRouteLabel(kind);
         if (label)
           label->setText("Completed archive: " + file);
       }
@@ -15665,9 +15801,7 @@ void HStreamWindow::showManagedArchiveFinalizationFailure(
   QStringList sources;
   for (const auto& output : outputs) {
     output_states_.at(output.output_id)->setText("ERROR");
-    QLabel* label = output.output_id == "archive-program-4k" ? program_4k_output_path_label_
-        : output.output_id == "archive-stitched"             ? stitched_archive_output_path_label_
-                                                             : archive_output_path_label_;
+    QLabel* label = archiveRouteLabel(output.output_id);
     const QString retained = QFileInfo::exists(output.source_path) ? "Working archive retained: " + output.source_path
                                                                    : "Publication recovery: " + recovery_manifest;
     if (label)
@@ -16088,9 +16222,9 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
             gameDirectory(archive_finalize_game_id_),
             archive_finalize_game_id_,
             archive_finalize_is_stitched_,
-            active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+            active_run_telemetry_requested_ && !is_derived_program_route(archive_finalize_output_id_),
             active_run_completed_archive_suffix_,
-            archive_finalize_output_id_ == "archive-program-4k");
+            publication_route_stem(archive_finalize_output_id_));
         if (candidate.isEmpty()) {
           republish_error = "No safe filename remained for the pinned completed MP4.";
           break;
@@ -16189,9 +16323,9 @@ void HStreamWindow::finishArchiveFinalization(int exit_code, QProcess::ExitStatu
         gameDirectory(archive_finalize_game_id_),
         archive_finalize_game_id_,
         archive_finalize_is_stitched_,
-        active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+        active_run_telemetry_requested_ && !is_derived_program_route(archive_finalize_output_id_),
         active_run_completed_archive_suffix_,
-        archive_finalize_output_id_ == "archive-program-4k");
+        publication_route_stem(archive_finalize_output_id_));
     if (candidate.isEmpty()) {
       publication_error = "Could not find an available final filename in the game directory.";
       break;
@@ -16508,9 +16642,9 @@ void HStreamWindow::completeArchiveFinalization() {
             gameDirectory(archive_finalize_game_id_),
             archive_finalize_game_id_,
             archive_finalize_is_stitched_,
-            active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k",
+            active_run_telemetry_requested_ && !is_derived_program_route(archive_finalize_output_id_),
             active_run_completed_archive_suffix_,
-            archive_finalize_output_id_ == "archive-program-4k");
+            publication_route_stem(archive_finalize_output_id_));
         if (candidate.isEmpty())
           break;
         int rescue_errno = 0;
@@ -16544,10 +16678,10 @@ void HStreamWindow::completeArchiveFinalization() {
   }
   releaseArchiveFinalizerOwnership(true);
   authority.reset();
-  if (archive_finalize_output_id_ != "archive-program-4k")
+  if (!is_derived_program_route(archive_finalize_output_id_))
     active_run_completed_archive_suffix_ =
         hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
-  if (active_run_telemetry_requested_ && archive_finalize_output_id_ != "archive-program-4k") {
+  if (active_run_telemetry_requested_ && !is_derived_program_route(archive_finalize_output_id_)) {
     const QString manifest_path = active_telemetry_manifest_path_;
     const QString csv_suffix =
         hm::ui_internal::finalized_archive_csv_suffix(archive_finalize_target_path_, archive_finalize_game_id_);
@@ -16583,9 +16717,7 @@ void HStreamWindow::finishCompletedArchivePresentation(
   if (!authority)
     return;
   output_states_[archive_finalize_output_id_]->setText("SAVED");
-  QLabel* completed_path_label = archive_finalize_output_id_ == "archive-program-4k" ? program_4k_output_path_label_
-      : archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
-                                                          : archive_output_path_label_;
+  QLabel* completed_path_label = archiveRouteLabel(archive_finalize_output_id_);
   if (completed_path_label)
     completed_path_label->setText(QString("Completed archive: %1").arg(archive_finalize_target_path_));
   archive_finalize_progress_->setRange(0, 1000);
@@ -16678,6 +16810,7 @@ void HStreamWindow::writeCompletedArchiveSidecar() {
   entry.path = archive_finalize_target_path_;
   entry.game_id = archive_finalize_game_id_;
   entry.kind = archive_finalize_output_id_ == "archive-program-4k" ? "program_4k"
+      : archive_finalize_output_id_ == "archive-program-mobile"    ? "program_mobile"
       : archive_finalize_output_id_ == "archive-stitched"          ? "stitched"
                                                                    : "program";
   entry.start_time_ms = active_run_start_time_ms_;
@@ -16699,17 +16832,16 @@ void HStreamWindow::showArchiveFinalizationFailure(const QString& failure_detail
   archive_finalize_progress_->setValue(1000);
   archive_finalize_progress_->setFormat("ERROR");
   archive_finalize_headline_->setText("Video finalization failed");
-  const QString route_name = archive_finalize_output_id_ == "archive-program-4k"
-      ? "4K Program"
-      : (archive_finalize_is_stitched_ ? "Stitched" : "Program");
+  const QString route_name = archive_finalize_output_id_ == "archive-program-4k" ? "4K Program"
+      : archive_finalize_output_id_ == "archive-program-mobile"                   ? "Mobile Program"
+      : archive_finalize_is_stitched_                                             ? "Stitched"
+                                                                                  : "Program";
   const QString failure_summary = QString("%1 archive finalization failed: %2\nRecovery archive: %3")
                                       .arg(route_name, failure_detail, archive_finalize_source_path_);
   archive_finalize_failure_summaries_.append(failure_summary);
   archive_finalize_detail_->setText(
       (archive_finalize_failure_summaries_ + archive_finalize_cleanup_warnings_).join("\n\n"));
-  QLabel* recovery_path_label = archive_finalize_output_id_ == "archive-program-4k" ? program_4k_output_path_label_
-      : archive_finalize_output_id_ == "archive-stitched" ? stitched_archive_output_path_label_
-                                                          : archive_output_path_label_;
+  QLabel* recovery_path_label = archiveRouteLabel(archive_finalize_output_id_);
   if (recovery_path_label)
     recovery_path_label->setText(QString("Recovery archive: %1").arg(archive_finalize_source_path_));
   archive_finalize_icon_->setPixmap(style()->standardIcon(QStyle::SP_MessageBoxCritical).pixmap(32, 32));
@@ -19277,7 +19409,9 @@ void HStreamWindow::updateRunControls() {
       stitched_archive_toggle->second && stitched_archive_toggle->second->isChecked();
   const bool archive_recovery_blocked =
       (archive_enabled || stitched_archive_enabled ||
-       (!isCalibrationRun() && output_toggles_.at("archive-program-4k")->isChecked())) &&
+       (!isCalibrationRun() &&
+        (output_toggles_.at("archive-program-4k")->isChecked() ||
+         output_toggles_.at("archive-program-mobile")->isChecked()))) &&
       !archive_finalize_blocked_source_path_.isEmpty();
   if (!pipeline_state_) {
     return;
@@ -19342,6 +19476,18 @@ void HStreamWindow::updateRunControls() {
         copy->second,
         "Save an HEVC Program MP4 with audio for YouTube upload, scaled to fit 3840x2160 while "
         "preserving aspect ratio. Select independently of Encode 8K Program. "
+        "Telemetry refers to the full-size Program video. "
+        "Available in Program mode.");
+  }
+  if (const auto mobile = output_toggles_.find("archive-program-mobile");
+      mobile != output_toggles_.end() && mobile->second) {
+    mobile->second->setEnabled(!running && !finalizing && !isCalibrationRun());
+    set_control_help(
+        mobile->second,
+        "Save a phone-sized HEVC Program MP4 with audio, scaled to fit the size in "
+        "video_out.program_mobile while preserving aspect ratio, at its own bitrate and with a "
+        "2-second keyframe interval. Plays on iOS, Android and Safari without conversion. "
+        "Select independently of Encode 8K Program and Encode 4K Program. "
         "Telemetry refers to the full-size Program video. "
         "Available in Program mode.");
   }
@@ -23745,7 +23891,8 @@ void HStreamWindow::toggleOutput(const QString& id, bool enabled) {
   const bool pipeline_running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
   output_states_[id]->setText(pipeline_running ? "NEXT RUN" : (enabled ? "ENABLED" : "STOPPED"));
   appendLog(QString("output route %1 %2").arg(id, enabled ? "enabled" : "disabled"));
-  if (id == "archive-file" || id == "archive-stitched" || id == "archive-program-4k") {
+  if (id == "archive-file" || id == "archive-stitched" || id == "archive-program-4k" ||
+      id == "archive-program-mobile") {
     updateArchiveOutputPathLabel();
   }
   if (pipeline_running) {

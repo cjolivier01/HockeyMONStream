@@ -4,17 +4,32 @@
 #include <nvbufsurftransform.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <iostream>
+#include <utility>
 
 GST_DEBUG_CATEGORY(NVDS_APP);
 
 // Exercise the real sink factory: a full-resolution Program archive and its
-// optional upload copy must negotiate different sizes without CPU readback.
+// optional upload and phone copies must negotiate different sizes without CPU
+// readback. The mobile copy's ceiling is configured rather than a format
+// contract, so a missing one must fail the factory instead of meaning
+// "unlimited".
+namespace {
+constexpr int kMobileMaxWidth = 1920;
+constexpr int kMobileMaxHeight = 1080;
+std::pair<int, int> fitted(std::pair<int, int> size, int max_width, int max_height) {
+  const double scale = std::min({1.0, double(max_width) / size.first, double(max_height) / size.second});
+  return {int(size.first * scale) & ~1, int(size.second * scale) & ~1};
+}
+} // namespace
 int main(int argc, char** argv) {
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
   bool ok = hm::sink_type_from_string("ENCODE_PROGRAM_4K_FILE") == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE &&
       hm::to_string(NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) == "ENCODE_PROGRAM_4K_FILE" &&
+      hm::sink_type_from_string("ENCODE_PROGRAM_MOBILE_FILE") == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE &&
+      hm::to_string(NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE) == "ENCODE_PROGRAM_MOBILE_FILE" &&
       hm::interpolation_method_from_string("default") == NvBufSurfTransformInter_Default &&
       hm::interpolation_method_from_string("nearest") == NvBufSurfTransformInter_Nearest &&
       hm::interpolation_method_from_string("bilinear") == NvBufSurfTransformInter_Bilinear &&
@@ -30,27 +45,42 @@ int main(int argc, char** argv) {
       !hm::interpolation_method_from_string("bogus").has_value();
   for (const auto& size : {std::make_pair(4096, 2304), std::make_pair(4096, 2048), std::make_pair(1920, 1080)}) {
     const bool override_with_cubic = size == std::make_pair(4096, 2304);
-    gchar* paths[2]{};
-    NvDsSinkSubBinConfig configs[2]{};
-    for (int i = 0; i < 2; ++i) {
+    gchar* paths[3]{};
+    NvDsSinkSubBinConfig configs[3]{};
+    for (int i = 0; i < 3; ++i) {
       const int fd = g_file_open_tmp("hstream-program-4k-XXXXXX.mkv", &paths[i], nullptr);
       if (fd < 0)
         return 1;
       close(fd);
       configs[i].enable = TRUE;
       configs[i].sink_id = i;
-      configs[i].type = i == 0 ? NV_DS_SINK_ENCODE_FILE : NV_DS_SINK_ENCODE_PROGRAM_4K_FILE;
+      configs[i].type = i == 0 ? NV_DS_SINK_ENCODE_FILE
+          : i == 1             ? NV_DS_SINK_ENCODE_PROGRAM_4K_FILE
+                               : NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE;
       configs[i].encoder_config.codec = NV_DS_ENCODER_H265;
       configs[i].encoder_config.container = NV_DS_CONTAINER_MKV;
-      configs[i].encoder_config.bitrate = 45000000;
+      configs[i].encoder_config.bitrate = i == 2 ? 6000000 : 45000000;
       configs[i].encoder_config.output_file_path = paths[i];
+      if (i == 2) {
+        configs[i].encoder_config.max_output_width = kMobileMaxWidth;
+        configs[i].encoder_config.max_output_height = kMobileMaxHeight;
+      }
       if (i == 1 && override_with_cubic) {
         configs[i].encoder_config.interpolation_method = NvBufSurfTransformInter_Algo1;
         configs[i].encoder_config.interpolation_method_set = TRUE;
       }
     }
+    {
+      // An unresolved ceiling is an error, not "no limit".
+      NvDsSinkSubBinConfig unresolved = configs[2];
+      unresolved.sink_id = 9;
+      unresolved.encoder_config.max_output_width = 0;
+      unresolved.encoder_config.max_output_height = 0;
+      NvDsSinkBin rejected{};
+      ok &= !create_sink_bin(1, &unresolved, &rejected, 0);
+    }
     NvDsSinkBin sinks{};
-    if (!create_sink_bin(2, configs, &sinks, 0))
+    if (!create_sink_bin(3, configs, &sinks, 0))
       return 1;
     gint full_resolution_interpolation = NvBufSurfTransformInter_Nearest;
     gint upload_interpolation = NvBufSurfTransformInter_Default;
@@ -99,17 +129,18 @@ int main(int argc, char** argv) {
       g_clear_error(&error);
       g_free(debug);
     }
-    const auto copy_size = size.first > 3840 ? std::make_pair(3840, size.second * 3840 / size.first) : size;
-    for (int i = 0; i < 2; ++i) {
+    const auto copy_size = fitted(size, 3840, 2160);
+    const auto mobile_size = fitted(size, kMobileMaxWidth, kMobileMaxHeight);
+    for (int i = 0; i < 3; ++i) {
       GstPad* pad = gst_element_get_static_pad(sinks.sub_bins[i].encoder, "sink");
       GstCaps* caps = gst_pad_get_current_caps(pad);
       gint width = 0;
       gint height = 0;
-      const auto expected = i == 0 ? size : copy_size;
+      const auto expected = i == 0 ? size : i == 1 ? copy_size : mobile_size;
       ok &= caps && gst_structure_get_int(gst_caps_get_structure(caps, 0), "width", &width) &&
           gst_structure_get_int(gst_caps_get_structure(caps, 0), "height", &height) && width == expected.first &&
           height == expected.second && gst_caps_features_contains(gst_caps_get_features(caps, 0), "memory:NVMM");
-      std::cout << (i == 0 ? "Program: " : "4K copy: ") << width << 'x' << height << '\n';
+      std::cout << (i == 0 ? "Program: " : i == 1 ? "4K copy: " : "Mobile copy: ") << width << 'x' << height << '\n';
       if (caps)
         gst_caps_unref(caps);
       gst_object_unref(pad);

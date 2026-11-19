@@ -40,6 +40,7 @@ typedef enum {
   NV_DS_SINK_WEBRTC,
   NV_DS_SINK_ENCODE_STITCHED_FILE,
   NV_DS_SINK_ENCODE_PROGRAM_4K_FILE,
+  NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE,
 } NvDsSinkType;
 
 typedef enum { NV_DS_CONTAINER_MP4 = 1, NV_DS_CONTAINER_MKV } NvDsContainerType;
@@ -72,6 +73,11 @@ typedef struct {
   guint gpu_id;
   guint width;
   guint height;
+  /** Output ceiling for the mobile Program copy, which fits inside it preserving the
+   * Program aspect. Unlike the 4K copy, whose UHD bound is a format contract, this
+   * one is configured, so zero is an error rather than "no limit". */
+  guint max_output_width;
+  guint max_output_height;
   guint rtsp_port;
   guint udp_port;
   guint webrtc_port;

@@ -385,6 +385,24 @@ std::optional<SourceBitrateReference> select_program_source_bitrate_reference(
   return selected;
 }
 
+// Nothing in the graph retimes video, so the Program copies run at the source
+// rate. Chapters of one recording share it; across cameras the output cannot
+// outrun the fastest input, so take the maximum.
+std::optional<double> select_source_frame_rate(const std::vector<std::string>& source_video_paths) {
+  std::optional<double> selected;
+  std::unordered_set<std::string> visited;
+  for (const std::string& path : source_video_paths) {
+    const std::string normalized_path = fs::path(path).lexically_normal().string();
+    if (normalized_path.empty() || !visited.insert(normalized_path).second)
+      continue;
+    const Videoinfo info = getVideoInfo(normalized_path);
+    if (!(info.fps > 0.0) || !std::isfinite(info.fps))
+      continue;
+    selected = selected.has_value() ? std::max(*selected, info.fps) : info.fps;
+  }
+  return selected;
+}
+
 std::optional<std::string> local_video_path_from_uri(const std::string& uri) {
   if (uri.empty()) {
     return std::nullopt;
@@ -5950,8 +5968,12 @@ absl::Status Configurator::map_common_config_keys() {
       continue;
     }
     const std::string sink_path = "pipeline." + section_name + ".";
-    if (sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) {
-      constexpr const char* kCanonicalPath = "video_out.program_4k_interpolation";
+    // Both derived Program copies resize inside their own branch, so both
+    // select a scaling filter the same way; only the canonical key differs.
+    if (sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE || sink_type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE) {
+      const char* const kCanonicalPath = sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE
+          ? "video_out.program_4k_interpolation"
+          : "video_out.program_mobile.interpolation";
       constexpr const char* kNativeKey = "interpolation-method";
       const std::string destination_path = sink_path + kNativeKey;
       std::optional<YAML::Node> interpolation;
@@ -5971,6 +5993,39 @@ absl::Status Configurator::map_common_config_keys() {
       sink[kNativeKey] = *parsed;
       if (interpolation.has_value()) {
         const int source_rank = explicit_value_rank(kCanonicalPath);
+        if (source_rank >= 1)
+          explicit_value_ranks_[destination_path] = source_rank;
+      }
+    }
+    if (sink_type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE) {
+      // Size and bitrate are the whole point of this route, so unlike the
+      // other archives it takes none of them from the camera or from a
+      // structural fallback. Each one resolves from the baseline and fails
+      // closed; keyframe-interval needs the source frame rate and is resolved
+      // later, in configure_encode_file_outputs.
+      const std::pair<const char*, const char*> mapped[] = {
+          {"video_out.program_mobile.max_width", "max-output-width"},
+          {"video_out.program_mobile.max_height", "max-output-height"},
+          {"video_out.program_mobile.bitrate", "bitrate"},
+      };
+      for (const auto& [canonical, native] : mapped) {
+        const std::string destination_path = sink_path + native;
+        std::optional<YAML::Node> source;
+        HM_ASSIGN_OR_RETURN(source, canonical_source(canonical, destination_path, sink[native], true));
+        if (!source.has_value())
+          continue;
+        if (!source->IsScalar())
+          return absl::InvalidArgumentError(std::string(canonical) + " must be a positive integer");
+        try {
+          const int64_t value = source->as<int64_t>();
+          if (value <= 0 || value > G_MAXINT)
+            return absl::InvalidArgumentError(
+                std::string(canonical) + " must fit a positive native integer: " + source->Scalar());
+          sink[native] = value;
+        } catch (const YAML::Exception& error) {
+          return absl::InvalidArgumentError("Invalid " + std::string(canonical) + ": " + error.what());
+        }
+        const int source_rank = explicit_value_rank(canonical);
         if (source_rank >= 1)
           explicit_value_ranks_[destination_path] = source_rank;
       }
@@ -7427,7 +7482,7 @@ absl::Status Configurator::configure_encode_job(YAML::Node& pipeline, bool stitc
     auto sink = entry.second;
     const int type = get_node_value<int>(sink, "type", 0);
     const bool encoder = type == NV_DS_SINK_ENCODE_FILE || type == NV_DS_SINK_ENCODE_STITCHED_FILE ||
-        type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE;
+        type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE || type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE;
     if (!encoder)
       sink["enable"] = 0;
     else {
@@ -7595,12 +7650,14 @@ absl::Status Configurator::configure_encode_file_outputs(
 
   struct ArchiveOutput {
     YAML::Node sink_node;
+    std::string section;
     int sink_id;
     int codec;
     fs::path configured_path;
     bool bitrate_is_explicit;
     bool stitched;
     bool program_4k;
+    bool program_mobile;
   };
 
   std::optional<fs::path> output_work_dir;
@@ -7618,7 +7675,7 @@ absl::Status Configurator::configure_encode_file_outputs(
     }
     const NvDsSinkType sink_type = static_cast<NvDsSinkType>(get_node_value<int>(sink_node, "type", 0));
     if (sink_type != NV_DS_SINK_ENCODE_FILE && sink_type != NV_DS_SINK_ENCODE_STITCHED_FILE &&
-        sink_type != NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) {
+        sink_type != NV_DS_SINK_ENCODE_PROGRAM_4K_FILE && sink_type != NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE) {
       continue;
     }
 
@@ -7664,14 +7721,20 @@ absl::Status Configurator::configure_encode_file_outputs(
         canonical_bitrate.has_value() && !canonical_bitrate->IsNull() && canonical_bitrate_rank >= 1;
     const bool native_bitrate_is_fixed =
         sink_node["bitrate"].IsDefined() && !sink_node["bitrate"].IsNull() && native_bitrate_rank >= 1;
+    // The mobile copy always carries its own resolved bitrate. Letting it fall
+    // through to source-bits-per-pixel would hand a phone the camera's
+    // acquisition rate, which is the thing this route exists to not do.
+    const bool mobile = sink_type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE;
     archive_outputs.push_back(
         {sink_node,
+         key,
          sink_id,
          codec,
          std::move(output_path),
-         (sink_type == NV_DS_SINK_ENCODE_FILE && canonical_bitrate_is_fixed) || native_bitrate_is_fixed,
+         mobile || (sink_type == NV_DS_SINK_ENCODE_FILE && canonical_bitrate_is_fixed) || native_bitrate_is_fixed,
          sink_type == NV_DS_SINK_ENCODE_STITCHED_FILE,
-         sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE});
+         sink_type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE,
+         mobile});
   }
 
   const bool has_auto_program_bitrate =
@@ -7710,6 +7773,44 @@ absl::Status Configurator::configure_encode_file_outputs(
   log_bitrate_reference("program", program_bitrate_reference);
   log_bitrate_reference("stitched", stitched_bitrate_reference);
 
+  // The mobile copy's keyframe interval is configured in seconds but set on the
+  // encoder in frames, so it needs the source rate. Refuse rather than fall
+  // back: the DeepStream default is 30 frames, which on 59.94 fps hockey is a
+  // keyframe twice a second and is most of what this route is avoiding.
+  std::optional<guint> mobile_iframeinterval;
+  if (std::any_of(archive_outputs.begin(), archive_outputs.end(), [](const ArchiveOutput& output) {
+        return output.program_mobile;
+      })) {
+    constexpr const char* kSecondsPath = "video_out.program_mobile.keyframe_interval_seconds";
+    const auto seconds_node = get_node(config_, kSecondsPath);
+    if (!seconds_node.has_value() || !seconds_node->IsScalar())
+      return absl::InvalidArgumentError(std::string("Effective baseline is missing supported key ") + kSecondsPath);
+    double seconds = 0.0;
+    try {
+      seconds = seconds_node->as<double>();
+    } catch (const YAML::Exception& error) {
+      return absl::InvalidArgumentError("Invalid " + std::string(kSecondsPath) + ": " + error.what());
+    }
+    if (!(seconds > 0.0) || !std::isfinite(seconds))
+      return absl::InvalidArgumentError(std::string(kSecondsPath) + " must be a positive number of seconds");
+    const std::optional<double> frame_rate = select_source_frame_rate(source_video_paths);
+    if (!frame_rate.has_value())
+      return absl::InvalidArgumentError(
+          "The mobile Program archive needs the source frame rate to resolve " + std::string(kSecondsPath) +
+          ", and no selected source reported one");
+    const double frames = std::round(seconds * *frame_rate);
+    if (!(frames >= 1.0) || frames > double(G_MAXINT))
+      return absl::InvalidArgumentError(
+          TO_STRING(kSecondsPath << "=" << seconds << " at " << *frame_rate << " fps is not a usable keyframe interval"));
+    mobile_iframeinterval = static_cast<guint>(frames);
+    g_print(
+        "HSTREAM_ARCHIVE_KEYFRAME_INTERVAL route=program-mobile seconds=%g fps=%g frames=%u\n",
+        seconds,
+        *frame_rate,
+        *mobile_iframeinterval);
+    std::fflush(stdout);
+  }
+
   // Do not reserve, recover, or mutate any output until the complete sink set
   // has passed the duplicate-writer preflight above.
   for (ArchiveOutput& archive_output : archive_outputs) {
@@ -7717,6 +7818,10 @@ absl::Status Configurator::configure_encode_file_outputs(
     const int sink_id = archive_output.sink_id;
     const int codec = archive_output.codec;
     fs::path output_path = archive_output.configured_path;
+    const char* const route_kind = archive_output.program_4k ? "program-4k"
+        : archive_output.program_mobile                      ? "program-mobile"
+        : archive_output.stitched                            ? "stitched"
+                                                             : "program";
 
     const std::optional<SourceBitrateReference>& bitrate_reference =
         archive_output.stitched ? stitched_bitrate_reference : program_bitrate_reference;
@@ -7725,6 +7830,10 @@ absl::Status Configurator::configure_encode_file_outputs(
           std::to_string(std::min<uint64_t>(bitrate_reference->bitrate, static_cast<uint64_t>(G_MAXINT)));
       sink_node["bitrate-per-pixel-numerator"] = std::to_string(bitrate_reference->bitrate_per_pixel.numerator);
       sink_node["bitrate-per-pixel-denominator"] = std::to_string(bitrate_reference->bitrate_per_pixel.denominator);
+    }
+    if (archive_output.program_mobile && mobile_iframeinterval.has_value() &&
+        explicit_value_rank("pipeline." + archive_output.section + ".iframeinterval") < 1) {
+      sink_node["iframeinterval"] = static_cast<int>(*mobile_iframeinterval);
     }
 
     const fs::path parent = output_path.parent_path();
@@ -7752,7 +7861,7 @@ absl::Status Configurator::configure_encode_file_outputs(
       g_print(
           "HSTREAM_OUTPUT_RECOVERY type=archive sink=%d kind=%s path=%s\n",
           sink_id,
-          archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
+          route_kind,
           recovery_path.string().c_str());
     }
     if (!stale_recoveries->empty())
@@ -7765,7 +7874,7 @@ absl::Status Configurator::configure_encode_file_outputs(
       g_print(
           "HSTREAM_OUTPUT_RECOVERY type=archive sink=%d kind=%s path=%s\n",
           sink_id,
-          archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
+          route_kind,
           recovered_output->value().string().c_str());
       std::fflush(stdout);
     }
@@ -7827,7 +7936,7 @@ absl::Status Configurator::configure_encode_file_outputs(
         "HSTREAM_OUTPUT type=archive sink=%d kind=%s existed=%d size=%" G_GINT64_FORMAT " mtime-ms=%" G_GINT64_FORMAT
         " codec=%s path=%s\n",
         sink_id,
-        archive_output.program_4k ? "program-4k" : (archive_output.stitched ? "stitched" : "program"),
+        route_kind,
         output_existed,
         previous_size,
         previous_mtime_ms,

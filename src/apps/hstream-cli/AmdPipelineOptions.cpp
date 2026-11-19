@@ -56,7 +56,7 @@ absl::StatusOr<AmdPipelineOptions> ParseAmdPipelineOptions(std::vector<std::stri
          G_OPTION_ARG_STRING,
          &raw.sinks,
          "Program outputs",
-         "FAKE,RENDER,ENCODE_FILE,ENCODE_PROGRAM_4K_FILE"},
+         "FAKE,RENDER,ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_PROGRAM_MOBILE_FILE"},
         {"options", 'o', 0, G_OPTION_ARG_STRING_ARRAY, &raw.options, "Configuration overrides", "KEY=VALUE,..."},
         {"start-time", 's', 0, G_OPTION_ARG_STRING, &raw.start, "Synchronized start time", "SECONDS|HH:MM:SS"},
         {"time-limit", 't', 0, G_OPTION_ARG_STRING, &raw.limit, "Completed video duration", "SECONDS|HH:MM:SS"},
@@ -122,7 +122,8 @@ absl::StatusOr<AmdPipelineOptions> ParseAmdPipelineOptions(std::vector<std::stri
     Require(std::string(raw.sinks).back() != ',', "Empty Program sink");
     for (std::string name; std::getline(names, name, ',');) {
       Require(
-          name == "FAKE" || name == "RENDER" || name == "ENCODE_FILE" || name == "ENCODE_PROGRAM_4K_FILE",
+          name == "FAKE" || name == "RENDER" || name == "ENCODE_FILE" || name == "ENCODE_PROGRAM_4K_FILE" ||
+              name == "ENCODE_PROGRAM_MOBILE_FILE",
           "Unsupported AMD Program sink: " + name);
       Require(result.sinks.insert(name).second, "Duplicate Program sink: " + name);
     }

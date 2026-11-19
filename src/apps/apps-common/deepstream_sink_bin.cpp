@@ -544,6 +544,8 @@ std::string to_string(const NvDsSinkType& type) {
       return "ENCODE_STITCHED_FILE";
     case NV_DS_SINK_ENCODE_PROGRAM_4K_FILE:
       return "ENCODE_PROGRAM_4K_FILE";
+    case NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE:
+      return "ENCODE_PROGRAM_MOBILE_FILE";
     default:
       return "INVALID";
   }
@@ -575,6 +577,8 @@ std::optional<NvDsSinkType> sink_type_from_string(const std::string& str) {
     return NV_DS_SINK_ENCODE_STITCHED_FILE;
   if (s == "ENCODE_PROGRAM_4K_FILE")
     return NV_DS_SINK_ENCODE_PROGRAM_4K_FILE;
+  if (s == "ENCODE_PROGRAM_MOBILE_FILE")
+    return NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE;
 
   // Return an empty optional if no match was found.
   return std::nullopt;
@@ -1140,7 +1144,8 @@ static gboolean create_encode_file_bin(
     NvDsSinkBinSubBin* bin,
     gboolean stitched_output = FALSE,
     gboolean main10_output = FALSE,
-    gboolean program_4k_output = FALSE) {
+    gboolean program_4k_output = FALSE,
+    gboolean program_mobile_output = FALSE) {
   GstCaps* caps = NULL;
   gboolean ret = FALSE;
   gchar elem_name[50];
@@ -1225,9 +1230,15 @@ static gboolean create_encode_file_bin(
     goto done;
   }
 
-  if ((main10_output || program_4k_output) &&
+  if ((main10_output || program_4k_output || program_mobile_output) &&
       (config->codec != NV_DS_ENCODER_H265 || config->enc_type != NV_DS_ENCODER_TYPE_HW)) {
-    NVGSTDS_ERR_MSG_V("Main10 stitched and 4K Program archives require the hardware HEVC encoder");
+    NVGSTDS_ERR_MSG_V("Main10 stitched, 4K Program and mobile Program archives require the hardware HEVC encoder");
+    goto done;
+  }
+  if (program_mobile_output && (!config->max_output_width || !config->max_output_height)) {
+    // The mobile copy's size is configured, not a format contract, so there is
+    // nothing sensible to fall back to.
+    NVGSTDS_ERR_MSG_V("The mobile Program archive requires a resolved output ceiling");
     goto done;
   }
   if (main10_output)
@@ -1301,12 +1312,16 @@ static gboolean create_encode_file_bin(
   }
   install_file_encoder_bitrate_scaling(config, bin->encoder);
 
-  if ((stitched_output || program_4k_output) && config->enc_type == NV_DS_ENCODER_TYPE_HW) {
+  if ((stitched_output || program_4k_output || program_mobile_output) && config->enc_type == NV_DS_ENCODER_TYPE_HW) {
     auto limits = hm::query_encoder_dimensions(bin->encoder, config->codec == NV_DS_ENCODER_H265, config->gpu_id);
     if (limits && program_4k_output) {
       // Scale only this GPU branch, preserving Program/telemetry geometry and aspect ratio.
       limits->max_width = std::min(limits->max_width, 3840U);
       limits->max_height = std::min(limits->max_height, 2160U);
+    }
+    if (limits && program_mobile_output) {
+      limits->max_width = std::min(limits->max_width, config->max_output_width);
+      limits->max_height = std::min(limits->max_height, config->max_output_height);
     }
     if (!limits || !hm::install_encoder_dimension_limit(bin->transform, bin->cap_filter, *limits, main10_output)) {
       NVGSTDS_ERR_MSG_V("Could not determine the archive encoder's supported dimensions");
@@ -2125,13 +2140,15 @@ gboolean create_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_array,
         break;
       case NV_DS_SINK_ENCODE_FILE:
       case NV_DS_SINK_ENCODE_PROGRAM_4K_FILE:
+      case NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE:
         config_array[i].encoder_config.sync = config_array[i].sync;
         if (!create_encode_file_bin(
                 &config_array[i].encoder_config,
                 &bin->sub_bins[i],
                 FALSE,
                 FALSE,
-                config_array[i].type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE))
+                config_array[i].type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE,
+                config_array[i].type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE))
           goto done;
         break;
       case NV_DS_SINK_ENCODE_STITCHED_FILE:
@@ -2276,13 +2293,15 @@ gboolean create_demux_sink_bin(guint num_sub_bins, NvDsSinkSubBinConfig* config_
         break;
       case NV_DS_SINK_ENCODE_FILE:
       case NV_DS_SINK_ENCODE_PROGRAM_4K_FILE:
+      case NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE:
         config_array[i].encoder_config.sync = config_array[i].sync;
         if (!create_encode_file_bin(
                 &config_array[i].encoder_config,
                 &bin->sub_bins[i],
                 FALSE,
                 FALSE,
-                config_array[i].type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE))
+                config_array[i].type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE,
+                config_array[i].type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE))
           goto done;
         break;
       case NV_DS_SINK_UDPSINK:

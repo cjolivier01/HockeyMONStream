@@ -285,6 +285,20 @@ class HStreamWindow : public QMainWindow {
   int playbackProgressResetTimeoutMs() const;
   void handleTelemetryOutputStatus(const QString& line);
   void handleArchiveOutputStatus(const QString& line);
+  // The per-route archive state the runner's HSTREAM_OUTPUT lines update. Bound
+  // once per reported kind so the recovery and output branches cannot drift,
+  // and so a route is one case rather than another column of ternaries.
+  struct ActiveArchiveRoute {
+    QString& output_path;
+    QString& recovery_path;
+    qint64& initial_size;
+    qint64& initial_mtime_ms;
+    bool& video_is_hevc;
+    QLabel* path_label;
+  };
+  ActiveArchiveRoute activeArchiveRoute(const QString& reported_kind, bool stitched);
+  // The Output Routing path label for an "archive-*" id.
+  QLabel* archiveRouteLabel(const QString& output_id) const;
   void updateArchiveOutputPathLabel();
   void beginArchiveJobLog(const QString& configured_output_path, const QString& run_id);
   void resolveArchiveJobLogPath(const QString& resolved_output_path);
@@ -654,6 +668,7 @@ class HStreamWindow : public QMainWindow {
   QLabel* archive_output_path_label_{nullptr};
   QLabel* stitched_archive_output_path_label_{nullptr};
   QLabel* program_4k_output_path_label_{nullptr};
+  QLabel* program_mobile_output_path_label_{nullptr};
   QWidget* game_controls_{nullptr};
   QWidget* video_controls_{nullptr};
   QComboBox* game_selector_{nullptr};
@@ -941,6 +956,11 @@ class HStreamWindow : public QMainWindow {
   qint64 active_program_4k_initial_size_{-1};
   qint64 active_program_4k_initial_mtime_ms_{-1};
   bool active_program_4k_video_is_hevc_{false};
+  QString active_program_mobile_output_path_;
+  QString active_program_mobile_recovery_path_;
+  qint64 active_program_mobile_initial_size_{-1};
+  qint64 active_program_mobile_initial_mtime_ms_{-1};
+  bool active_program_mobile_video_is_hevc_{false};
   QString active_stitched_archive_output_path_;
   QString active_stitched_archive_recovery_path_;
   QFile archive_job_log_;
