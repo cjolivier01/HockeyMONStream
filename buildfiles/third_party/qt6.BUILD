@@ -24,12 +24,12 @@ qt_lib_dirs = select({
 })
 
 # The same two directories as literals, because a glob cannot take a select.
-# Do not widen these to "include/**/qt6/<module>/**": this repository's root is
-# /usr, so a leading "include/**" makes Bazel walk every directory under
-# /usr/include, and one bad symlink anywhere in there fails the whole build
-# with an error that names Qt. A second `ln -sf /usr/include/eigen3/Eigen
-# /usr/include/Eigen` leaves exactly that behind, since ln follows the existing
-# link and writes eigen3/Eigen/Eigen -> eigen3/Eigen over eigen's own header.
+# Keep the leading segments. This repository's root is /usr, or a sysroot, so
+# "include/**" makes Bazel walk every directory under /usr/include, and a
+# single symlink loop anywhere in that tree then fails the build with an error
+# that names Qt and points at a path with no Qt in it. Any repository rooted
+# at /usr or /usr/include needs the same care; @misc is rooted there and has
+# no globs today.
 qt_hdr_roots = [
     "include/x86_64-linux-gnu/qt6",
     "include/aarch64-linux-gnu/qt6",
