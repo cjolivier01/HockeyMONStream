@@ -7779,9 +7779,17 @@ absl::Status Configurator::configure_encode_file_outputs(
   // back: the DeepStream default is 30 frames, which on 59.94 fps hockey is a
   // keyframe twice a second and is most of what this route is avoiding.
   std::optional<guint> mobile_iframeinterval;
-  if (std::any_of(archive_outputs.begin(), archive_outputs.end(), [](const ArchiveOutput& output) {
-        return output.program_mobile;
-      })) {
+  // Only resolve the canonical seconds when they are going to be used. A
+  // sink-local interval at an equal or higher layer wins outright, and a value
+  // that lost must not be able to fail the run.
+  const auto mobile_uses_canonical_seconds = [&](const ArchiveOutput& output) {
+    if (!output.program_mobile)
+      return false;
+    const int native_rank = explicit_value_rank("pipeline." + output.section + ".iframeinterval");
+    return native_rank < 1 ||
+        native_rank < explicit_value_rank("video_out.program_mobile.keyframe_interval_seconds");
+  };
+  if (std::any_of(archive_outputs.begin(), archive_outputs.end(), mobile_uses_canonical_seconds)) {
     constexpr const char* kSecondsPath = "video_out.program_mobile.keyframe_interval_seconds";
     const auto seconds_node = get_node(config_, kSecondsPath);
     if (!seconds_node.has_value() || !seconds_node->IsScalar())
@@ -7832,16 +7840,11 @@ absl::Status Configurator::configure_encode_file_outputs(
       sink_node["bitrate-per-pixel-numerator"] = std::to_string(bitrate_reference->bitrate_per_pixel.numerator);
       sink_node["bitrate-per-pixel-denominator"] = std::to_string(bitrate_reference->bitrate_per_pixel.denominator);
     }
-    if (archive_output.program_mobile && mobile_iframeinterval.has_value()) {
-      // A direct native property wins only at the same or a higher explicit
-      // layer, as everywhere else. Testing merely whether one exists would let
-      // a saved per-sink value defeat a CLI override of the canonical seconds.
-      const std::string native_path = "pipeline." + archive_output.section + ".iframeinterval";
-      const int native_rank = explicit_value_rank(native_path);
-      const int canonical_rank = explicit_value_rank("video_out.program_mobile.keyframe_interval_seconds");
-      if (native_rank < 1 || native_rank < canonical_rank)
-        sink_node["iframeinterval"] = static_cast<int>(*mobile_iframeinterval);
-    }
+    // A direct native property wins only at the same or a higher explicit
+    // layer, as everywhere else. Testing merely whether one exists would let a
+    // saved per-sink value defeat a CLI override of the canonical seconds.
+    if (mobile_uses_canonical_seconds(archive_output) && mobile_iframeinterval.has_value())
+      sink_node["iframeinterval"] = static_cast<int>(*mobile_iframeinterval);
 
     const fs::path parent = output_path.parent_path();
     if (!parent.empty()) {

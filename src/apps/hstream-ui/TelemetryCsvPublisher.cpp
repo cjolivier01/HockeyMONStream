@@ -1092,7 +1092,7 @@ qint64 next_archive_generation(const QString& game_directory) {
     return -1;
   const std::array<QRegularExpression, 4> patterns = {{
       QRegularExpression(
-          R"(^(?:.*-)?(?:tracking|stitched|program_4k|program_8k)_output(?:-with-audio)?(?:-(\d+))?\.(?:mp4|mkv|mov|m4v|avi)(?:\.hstream-pin)?$)",
+          R"(^(?:.*-)?(?:tracking|stitched|program_4k|program_mobile|program_8k)_output(?:-with-audio)?(?:-(\d+))?\.(?:mp4|mkv|mov|m4v|avi)(?:\.hstream-pin)?$)",
           QRegularExpression::CaseInsensitiveOption),
       QRegularExpression(
           R"(^(?:tracking|detections|camera|camera_fast|hstream_frame_index|hstream_config_events)(?:-(\d+))?\.csv$)"),

@@ -154,6 +154,8 @@ GST_DEBUG_CATEGORY(APP_CFG_PARSER_CAT);
 #define CONFIG_GROUP_SINK_BITRATE "bitrate"
 #define CONFIG_GROUP_SINK_PROFILE "profile"
 #define CONFIG_GROUP_SINK_IFRAMEINTERVAL "iframeinterval"
+#define CONFIG_GROUP_SINK_MAX_OUTPUT_WIDTH "max-output-width"
+#define CONFIG_GROUP_SINK_MAX_OUTPUT_HEIGHT "max-output-height"
 #define CONFIG_GROUP_SINK_COPY_META "copy-meta"
 #define CONFIG_GROUP_SINK_OUTPUT_IO_MODE "output-io-mode"
 #define CONFIG_GROUP_SINK_SW_PRESET "sw-preset"
@@ -1436,6 +1438,11 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
   config->encoder_config.compute_hw = 0;
   config->encoder_config.interpolation_method_set = FALSE;
   config->encoder_config.iframeinterval = 30;
+  config->encoder_config.iframeinterval_set = FALSE;
+  // Zero is "unresolved", not "unlimited": the only sink that reads these
+  // rejects it rather than encoding at the full Program size.
+  config->encoder_config.max_output_width = 0;
+  config->encoder_config.max_output_height = 0;
   config->encoder_config.width = 0;
   config->encoder_config.height = 0;
   config->render_config.qos = FALSE;
@@ -1511,6 +1518,15 @@ gboolean parse_sink(NvDsSinkSubBinConfig* config, GKeyFile* key_file, gchar* gro
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_IFRAMEINTERVAL)) {
       config->encoder_config.iframeinterval =
           g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_IFRAMEINTERVAL, &error);
+      config->encoder_config.iframeinterval_set = TRUE;
+      CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_MAX_OUTPUT_WIDTH)) {
+      config->encoder_config.max_output_width =
+          g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_MAX_OUTPUT_WIDTH, &error);
+      CHECK_ERROR(error);
+    } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_MAX_OUTPUT_HEIGHT)) {
+      config->encoder_config.max_output_height =
+          g_key_file_get_integer(key_file, group, CONFIG_GROUP_SINK_MAX_OUTPUT_HEIGHT, &error);
       CHECK_ERROR(error);
     } else if (!g_strcmp0(*key, CONFIG_GROUP_SINK_OUTPUT_FILE)) {
       config->encoder_config.output_file_path =

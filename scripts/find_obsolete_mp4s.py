@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 VIDEO_RE = re.compile(
-    r"^(?P<base>.*(?:tracking|stitched|program_4k|program-4k|program_8k)_output(?:-with-audio)?)"
+    r"^(?P<base>.*(?:tracking|stitched|program_4k|program-4k|program_mobile|program-mobile|program_8k)_output(?:-with-audio)?)"
     r"(?:-(?P<version>\d+))?\.(?P<ext>mp4|mkv)$",
     re.IGNORECASE,
 )
