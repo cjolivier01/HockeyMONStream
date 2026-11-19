@@ -1248,6 +1248,19 @@ static gboolean create_encode_file_bin(
     NVGSTDS_ERR_MSG_V("The mobile Program archive requires a resolved keyframe interval");
     goto done;
   }
+  // Read config->bitrate, not the gulong copy above: a negative widens into a
+  // very large unsigned there and would pass every positivity check.
+  if (program_mobile_output &&
+      (config->iframeinterval < 1 || config->iframeinterval > G_MAXINT || config->bitrate < 1)) {
+    // Checked here rather than in a parser so every path reaches it: the YAML
+    // and INI readers and any caller building the config directly. These land
+    // in unsigned encoder properties, where a negative arrives enormous.
+    NVGSTDS_ERR_MSG_V(
+        "The mobile Program archive requires a positive bitrate and keyframe interval, not %d and %u",
+        config->bitrate,
+        config->iframeinterval);
+    goto done;
+  }
   if (main10_output)
     caps = gst_caps_from_string("video/x-raw(memory:NVMM), format=P010_10LE, colorimetry=bt709");
   else if (config->codec == NV_DS_ENCODER_MPEG4 || config->enc_type == NV_DS_ENCODER_TYPE_SW)

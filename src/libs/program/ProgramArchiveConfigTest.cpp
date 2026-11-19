@@ -219,6 +219,23 @@ int main(int argc, char** argv) {
         result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").path == directory / "phone.mp4" &&
             result->at("ENCODE_FILE").path == directory / "program_8k_output.mp4",
         "An explicit mobile filename did not stay its own");
+    // A defined sink-local bitrate wins over the canonical default at the same
+    // or a lower layer, and loses to a canonical value from a higher one, the
+    // way every other native-versus-canonical pair in this resolver behaves.
+    result = resolve_sinks(
+        mobile_sinks, {}, YAML::Load("pipeline: {sink7: {bitrate: 12000000}}"), std::nullopt, rate);
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.bitrate_kbps == 12000,
+        "A game-layer native mobile bitrate lost to the canonical default");
+    result = resolve_sinks(
+        mobile_sinks,
+        {"video_out.program_mobile.bitrate=9000000"},
+        YAML::Load("pipeline: {sink7: {bitrate: 12000000}}"),
+        std::nullopt,
+        rate);
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.bitrate_kbps == 9000,
+        "A higher-layer canonical mobile bitrate lost to a lower-layer native one");
     for (const auto* invalid :
          {"video_out.program_mobile.max_width=0",
           "video_out.program_mobile.max_height=-1",

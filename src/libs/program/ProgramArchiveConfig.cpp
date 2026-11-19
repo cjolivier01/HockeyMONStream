@@ -143,8 +143,13 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
         // This route exists so a phone does not receive the camera's
         // acquisition rate, so it never reaches the source-bits-per-pixel
         // branch below. Only a higher-ranked explicit per-sink bitrate wins.
+        // A direct native property wins over its canonical mapping at the same
+        // layer, structural app YAML included, so a defined sink-local bitrate
+        // is only displaced by a canonical value from a higher one. Requiring
+        // an explicit rank here would discard a structural override NVIDIA
+        // honours and quietly resolve a different bitrate per backend.
         const std::string path = "video_out.program_mobile.bitrate";
-        if (Null(bitrate) || bitrate_rank < 1 || bitrate_rank < Rank(config, path))
+        if (Null(bitrate) || bitrate_rank < Rank(config, path))
           bitrate.reset(YAML::Clone(config.values["video_out"]["program_mobile"]["bitrate"]));
         output.bitrate_kbps = (Positive(bitrate, path) + 999) / 1000;
         // Keyframes are configured in seconds and set on the encoder in frames.

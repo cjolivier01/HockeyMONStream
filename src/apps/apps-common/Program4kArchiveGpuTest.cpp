@@ -77,14 +77,31 @@ int main(int argc, char** argv) {
       // keyframe interval is an error rather than the parser's 30 frames —
       // a launch that never reached the seconds-to-frames resolution must not
       // quietly produce a half-second GOP.
-      for (int unresolved_field = 0; unresolved_field < 2; ++unresolved_field) {
+      // Every construction path reaches the factory, so it rejects what no
+      // single config parser can be trusted to catch: an unresolved ceiling or
+      // interval, and values that arrive enormous in an unsigned property.
+      for (int rejected_case = 0; rejected_case < 6; ++rejected_case) {
         NvDsSinkSubBinConfig unresolved = configs[2];
         unresolved.sink_id = 9;
-        if (unresolved_field == 0) {
-          unresolved.encoder_config.max_output_width = 0;
-          unresolved.encoder_config.max_output_height = 0;
-        } else {
-          unresolved.encoder_config.iframeinterval_set = FALSE;
+        switch (rejected_case) {
+          case 0:
+            unresolved.encoder_config.max_output_width = 0;
+            break;
+          case 1:
+            unresolved.encoder_config.max_output_height = 0;
+            break;
+          case 2:
+            unresolved.encoder_config.iframeinterval_set = FALSE;
+            break;
+          case 3:
+            unresolved.encoder_config.iframeinterval = 0;
+            break;
+          case 4:
+            unresolved.encoder_config.iframeinterval = (guint)-1;
+            break;
+          default:
+            unresolved.encoder_config.bitrate = -1;
+            break;
         }
         NvDsSinkBin rejected{};
         ok &= !create_sink_bin(1, &unresolved, &rejected, 0);
