@@ -358,6 +358,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/libs/common:person_roles",
+        # The header includes <nvdsmeta.h>, and deepstream_lib carries only
+        # linker inputs. Without this, consumers only compile when some other
+        # dependency happens to supply the include path.
+        "@deepstream//:deepstream_includes",
         "@deepstream//:deepstream_lib",
         "@glib",
     ],
