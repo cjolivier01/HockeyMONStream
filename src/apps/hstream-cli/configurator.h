@@ -137,17 +137,13 @@ class Configurator {
   static std::filesystem::path get_game_dir(const std::string& game_id);
   static std::filesystem::path get_private_config_file_name(const std::string& game_id);
 
-  // Fills `unmatched`, when given, with the requested values that no section
-  // declares. A caller that asked for an output has to know it got nothing
-  // rather than run and produce no file.
   template <typename T_ENUM>
   std::vector<size_t> enable_sections(
       const std::string& section_prefix,
       const std::string& enum_field_name,
       const std::set<T_ENUM>& enable_field_values,
       bool disable_others,
-      const std::string& return_id_label,
-      std::set<T_ENUM>* unmatched = nullptr);
+      const std::string& return_id_label);
 
   // return vector of source id's
   std::vector<size_t> enable_source_types(const std::set<NvDsSourceType>& source_enums, bool disable_others);
@@ -351,10 +347,7 @@ inline std::vector<size_t> Configurator::enable_sections(
     const std::string& enum_field_name,
     const std::set<T_ENUM>& enable_field_values,
     bool disable_others,
-    const std::string& return_id_label,
-    std::set<T_ENUM>* unmatched) {
-  if (unmatched)
-    *unmatched = enable_field_values;
+    const std::string& return_id_label) {
   if (enable_field_values.empty()) {
     return {};
   }
@@ -375,8 +368,6 @@ inline std::vector<size_t> Configurator::enable_sections(
       }
       if (enable_field_values.count(type)) {
         section_node["enable"] = "1";
-        if (unmatched)
-          unmatched->erase(type);
         if (!has_node(section_node, return_id_label, /*non_null=*/true)) {
           std::cerr << "No " << return_id_label << " in enabled " << section_prefix << " section: " << key << std::endl;
           enabled_ids.emplace_back(std::numeric_limits<size_t>::max());
