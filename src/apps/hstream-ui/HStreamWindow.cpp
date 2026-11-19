@@ -8796,8 +8796,12 @@ QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
           sinks.push_back("ENCODE_FILE");
         else if (name == "program_4k")
           sinks.push_back("ENCODE_PROGRAM_4K_FILE");
-        else if (name == "program_mobile")
-          sinks.push_back("ENCODE_PROGRAM_MOBILE_FILE");
+        else if (name == "program_mobile") {
+          // The toggle is disabled for HockeyMON, so this fallback must not
+          // hand it the sink either; its exporter would substitute the 4K copy.
+          if (!backend_.isHockeyMon())
+            sinks.push_back("ENCODE_PROGRAM_MOBILE_FILE");
+        }
         else if (name == "stitched")
           sinks.push_back("ENCODE_STITCHED_FILE");
         else
