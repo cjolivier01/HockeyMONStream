@@ -24,12 +24,19 @@ qt_lib_dirs = select({
 })
 
 # The same two directories as literals, because a glob cannot take a select.
-# Keep the leading segments. This repository's root is /usr, or a sysroot, so
-# "include/**" makes Bazel walk every directory under /usr/include, and a
-# single symlink loop anywhere in that tree then fails the build with an error
-# that names Qt and points at a path with no Qt in it. Any repository rooted
-# at /usr or /usr/include needs the same care; @misc is rooted there and has
-# no globs today.
+#
+# Keep the leading segments. The rule for every repository whose root can be
+# /usr, /usr/include or a sysroot: anchor the first wildcard below a literal
+# subdirectory, and never let "**" sit directly under the root. Otherwise
+# Bazel walks the whole system include tree, and one symlink loop anywhere in
+# it fails the build with an error naming this repository and a path with no
+# Qt in it.
+#
+# allow_empty is needed because one of the two roots is always empty on any
+# single architecture, and --incompatible_disallow_empty_glob checks per
+# pattern. That flag is off on the pinned Bazel 6.5, so this changes nothing
+# today, but it does mean a missing Qt install surfaces as a compile error
+# rather than a load-time one; "includes" below names the same two paths.
 qt_hdr_roots = [
     "include/x86_64-linux-gnu/qt6",
     "include/aarch64-linux-gnu/qt6",
