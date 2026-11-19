@@ -23,11 +23,24 @@ qt_lib_dirs = select({
     "//conditions:default": [],
 })
 
+# The same two directories as literals, because a glob cannot take a select.
+# Do not widen these to "include/**/qt6/<module>/**": this repository's root is
+# /usr, so a leading "include/**" makes Bazel walk every directory under
+# /usr/include, and one bad symlink anywhere in there fails the whole build
+# with an error that names Qt. A second `ln -sf /usr/include/eigen3/Eigen
+# /usr/include/Eigen` leaves exactly that behind, since ln follows the existing
+# link and writes eigen3/Eigen/Eigen -> eigen3/Eigen over eigen's own header.
+qt_hdr_roots = [
+    "include/x86_64-linux-gnu/qt6",
+    "include/aarch64-linux-gnu/qt6",
+]
+
 cc_library(
     name = "qt_core",
-    hdrs = glob([
-        "include/**/qt6/QtCore/**",
-    ]),
+    hdrs = glob(
+        [root + "/QtCore/**" for root in qt_hdr_roots],
+        allow_empty = True,
+    ),
     includes = qt_includes,
     linkopts = qt_lib_dirs + ["-lQt6Core"],
     visibility = ["//visibility:public"],
@@ -35,7 +48,10 @@ cc_library(
 
 cc_library(
     name = "qt_gui",
-    hdrs = glob(["include/**/qt6/QtGui/**"]),
+    hdrs = glob(
+        [root + "/QtGui/**" for root in qt_hdr_roots],
+        allow_empty = True,
+    ),
     includes = qt_includes,
     linkopts = qt_lib_dirs + ["-lQt6Gui"],
     visibility = ["//visibility:public"],
@@ -44,7 +60,10 @@ cc_library(
 
 cc_library(
     name = "qt_widgets",
-    hdrs = glob(["include/**/qt6/QtWidgets/**"]),
+    hdrs = glob(
+        [root + "/QtWidgets/**" for root in qt_hdr_roots],
+        allow_empty = True,
+    ),
     includes = qt_includes,
     linkopts = qt_lib_dirs + ["-lQt6Widgets"],
     visibility = ["//visibility:public"],
@@ -56,7 +75,10 @@ cc_library(
 
 cc_library(
     name = "qt_network",
-    hdrs = glob(["include/**/qt6/QtNetwork/**"]),
+    hdrs = glob(
+        [root + "/QtNetwork/**" for root in qt_hdr_roots],
+        allow_empty = True,
+    ),
     includes = qt_includes,
     linkopts = qt_lib_dirs + ["-lQt6Network"],
     visibility = ["//visibility:public"],
@@ -65,7 +87,10 @@ cc_library(
 
 cc_library(
     name = "qt_test",
-    hdrs = glob(["include/**/qt6/QtTest/**"]),
+    hdrs = glob(
+        [root + "/QtTest/**" for root in qt_hdr_roots],
+        allow_empty = True,
+    ),
     includes = qt_includes,
     linkopts = qt_lib_dirs + ["-lQt6Test"],
     visibility = ["//visibility:public"],
