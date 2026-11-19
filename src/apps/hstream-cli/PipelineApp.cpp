@@ -1487,52 +1487,6 @@ absl::Status PipelineApplication::configureInstances(
       // clean-only eligible context reapplies them here so CLI source/sink
       // values still win over loaded subconfigs.
       HM_RETURN_IF_ERROR(apply_pipeline_options());
-      // Only now is the sink set final: subconfigs have expanded and CLI
-      // overrides have landed, either of which can add or retype a section.
-      // A requested archive that no enabled sink provides would otherwise run
-      // the outputs it does have and never write the file that was asked for,
-      // reporting success. Display and discard sinks have a fallback, and a
-      // configuration stage legitimately declares none of this, so only
-      // archives from stage 0 on are required.
-      if (current_stage_ >= 0 && !enabled_sink_types_.empty() &&
-          (enabled_sink_types_.size() == 1 || stage_index < enabled_sink_types_.size())) {
-        const auto& requested =
-            enabled_sink_types_.size() == 1 ? enabled_sink_types_.at(0) : enabled_sink_types_.at(stage_index);
-        // Matches the configurator's own enable semantics: true/false or any
-        // nonzero integer, in either YAML spelling.
-        const auto section_enabled = [](const YAML::Node& section) {
-          const YAML::Node flag = section["enable"];
-          if (!flag.IsDefined() || flag.IsNull())
-            return false;
-          const std::string text = flag.as<std::string>("");
-          if (text == "true")
-            return true;
-          if (text == "false")
-            return false;
-          return flag.as<int>(0) != 0;
-        };
-        std::set<NvDsSinkType> present;
-        const YAML::Node pipeline = app_ctx->configurator().config()["pipeline"];
-        if (pipeline.IsMap()) {
-          for (const auto& entry : pipeline) {
-            const auto key = entry.first.as<std::string>();
-            const auto section = entry.second;
-            if (!absl::StartsWith(key, "sink") || !section.IsMap() || !section_enabled(section))
-              continue;
-            present.insert(static_cast<NvDsSinkType>(hm::get_node_value<int>(section, "type", 0)));
-          }
-        }
-        std::string names;
-        for (const auto type : requested) {
-          const bool archive = type == NV_DS_SINK_ENCODE_FILE || type == NV_DS_SINK_ENCODE_STITCHED_FILE ||
-              type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE || type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE;
-          if (archive && !present.count(type))
-            names += (names.empty() ? "" : ", ") + std::string(hm::to_string(type));
-        }
-        if (!names.empty())
-          return absl::InvalidArgumentError(
-              TO_STRING("No enabled sink provides the requested archive: " << names));
-      }
       if (!playback_defaults_resolved_ && current_stage_ >= 0) {
         const auto playback = app_ctx->configurator().config()["playback"];
         try {
