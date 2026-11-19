@@ -8773,7 +8773,10 @@ QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
       sinks.push_back("ENCODE_STITCHED_FILE");
     } else if (id == "archive-program-4k" && (job_export || !isCalibrationRun())) {
       sinks.push_back("ENCODE_PROGRAM_4K_FILE");
-    } else if (id == "archive-program-mobile" && (job_export || !isCalibrationRun())) {
+    } else if (
+        id == "archive-program-mobile" && (job_export || !isCalibrationRun()) && !backend_.isHockeyMon()) {
+      // The HockeyMON runner has its own archive routes and rejects this one,
+      // and its job export would quietly substitute the 4K copy instead.
       sinks.push_back("ENCODE_PROGRAM_MOBILE_FILE");
     } else if (id == "archive-file") {
       sinks.push_back("ENCODE_FILE");
@@ -12137,7 +12140,7 @@ void HStreamWindow::startPipeline() {
   backend_launch_failed_ = false;
   active_backend_output_kinds_.clear();
   if (active_hockeymon_program_) {
-    for (const QString kind : {"archive-file", "archive-stitched", "archive-program-4k", "archive-program-mobile"}) {
+    for (const QString kind : {"archive-file", "archive-stitched", "archive-program-4k"}) {
       if (output_toggles_.at(kind)->isChecked())
         active_backend_output_kinds_.append(kind);
     }
@@ -19481,15 +19484,18 @@ void HStreamWindow::updateRunControls() {
   }
   if (const auto mobile = output_toggles_.find("archive-program-mobile");
       mobile != output_toggles_.end() && mobile->second) {
-    mobile->second->setEnabled(!running && !finalizing && !isCalibrationRun());
+    mobile->second->setEnabled(!backend_.isHockeyMon() && !running && !finalizing && !isCalibrationRun());
     set_control_help(
         mobile->second,
-        "Save a phone-sized HEVC Program MP4 with audio, scaled to fit the size in "
-        "video_out.program_mobile while preserving aspect ratio, at its own bitrate and with a "
-        "2-second keyframe interval. Plays on iOS, Android and Safari without conversion. "
-        "Select independently of Encode 8K Program and Encode 4K Program. "
-        "Telemetry refers to the full-size Program video. "
-        "Available in Program mode.");
+        backend_.isHockeyMon()
+            ? QStringLiteral("The HockeyMON backend has its own archive routes and does not write this copy.")
+            : QStringLiteral(
+                  "Save a phone-sized HEVC Program MP4 with audio, scaled to fit the size in "
+                  "video_out.program_mobile while preserving aspect ratio, at its own bitrate and with a "
+                  "2-second keyframe interval. Plays on iOS, Android and Safari without conversion. "
+                  "Select independently of Encode 8K Program and Encode 4K Program. "
+                  "Telemetry refers to the full-size Program video. "
+                  "Available in Program mode."));
   }
   if (const auto stitched_archive = output_toggles_.find("archive-stitched");
       stitched_archive != output_toggles_.end() && stitched_archive->second) {

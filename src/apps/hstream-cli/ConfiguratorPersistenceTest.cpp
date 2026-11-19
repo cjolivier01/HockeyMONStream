@@ -449,7 +449,8 @@ int main() {
       ok &= expect(
           job.config()["pipeline"][stage]["enable"].as<int>() == 0,
           "Stitched-only jobs must keep Program processing disabled");
-    for (const auto type : {NV_DS_SINK_ENCODE_FILE, NV_DS_SINK_ENCODE_PROGRAM_4K_FILE}) {
+    for (const auto type :
+         {NV_DS_SINK_ENCODE_FILE, NV_DS_SINK_ENCODE_PROGRAM_4K_FILE, NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE}) {
       stitched_fixture["pipeline"]["sink2"]["enable"] = 1;
       stitched_fixture["pipeline"]["sink2"]["type"] = static_cast<int>(type);
       hm::ConfiguratorTestAccess::set_config(&job, stitched_fixture);
@@ -957,6 +958,8 @@ int main() {
   mapping_structure["sink6"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_PROGRAM_4K_FILE);
   mapping_structure["sink6"]["output-file"] = "program_4k_output.mkv";
   mapping_structure["sink6"]["bitrate"] = 45000000;
+  mapping_structure["sink7"]["type"] = static_cast<int>(NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE);
+  mapping_structure["sink7"]["output-file"] = "program_mobile_output.mkv";
   std::ofstream(mapping_structure_path) << YAML::Dump(mapping_structure) << '\n';
 
   fs::create_directories(games / "mapping-defaults");
@@ -998,6 +1001,12 @@ int main() {
           !mapped_defaults["sink0"]["bitrate"].IsDefined() && !mapped_defaults["sink0"]["output-file"].IsDefined() &&
           !mapped_defaults["sink0"]["width"].IsDefined() && !mapped_defaults["sink0"]["height"].IsDefined() &&
           mapped_defaults["sink6"]["interpolation-method"].as<int>() == 3 &&
+          // The mobile copy takes its whole shape from video_out.program_mobile,
+          // and nothing about it is a compiled-in literal.
+          mapped_defaults["sink7"]["max-output-width"].as<int>() == 1920 &&
+          mapped_defaults["sink7"]["max-output-height"].as<int>() == 1080 &&
+          mapped_defaults["sink7"]["bitrate"].as<int>() == 6000000 &&
+          mapped_defaults["sink7"]["interpolation-method"].as<int>() == 3 &&
           mapped_defaults["hmplaycropper"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%10" &&

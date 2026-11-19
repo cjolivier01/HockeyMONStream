@@ -10302,6 +10302,8 @@ bool test_output_controls(HStreamWindow* window) {
   auto* stitched_archive = require_child<QCheckBox>(window, "outputToggle_archive-stitched");
   auto* program_4k = require_child<QCheckBox>(window, "outputToggle_archive-program-4k");
   auto* program_4k_path = require_child<QLabel>(window, "program4kOutputPath");
+  auto* program_mobile = require_child<QCheckBox>(window, "outputToggle_archive-program-mobile");
+  auto* program_mobile_path = require_child<QLabel>(window, "programMobileOutputPath");
   auto* drivegpt_csv = require_child<QCheckBox>(window, "drivegptCsvCheck");
   auto* archive_path = require_child<QLabel>(window, "archiveOutputPath");
   auto* stitched_archive_path = require_child<QLabel>(window, "stitchedArchiveOutputPath");
@@ -10313,14 +10315,44 @@ bool test_output_controls(HStreamWindow* window) {
   auto* mode = require_child<QComboBox>(window, "runModeCombo");
   auto* seek_slider = require_child<QSlider>(window, "playbackSeekSlider");
   auto* seek_forward = require_child<QPushButton>(window, "playbackSeekForward10Button");
-  if (!program_4k || !program_4k_path || !spare || !archive || !stitched_archive || !drivegpt_csv || !archive_path ||
-      !stitched_archive_path || !game_id_edit || !youtube_redirect || !add_rtsp || !start || !stop || !mode ||
-      !seek_slider || !seek_forward) {
+  if (!program_4k || !program_4k_path || !program_mobile || !program_mobile_path || !spare || !archive ||
+      !stitched_archive || !drivegpt_csv || !archive_path || !stitched_archive_path || !game_id_edit ||
+      !youtube_redirect || !add_rtsp || !start || !stop || !mode || !seek_slider || !seek_forward) {
     return false;
   }
 
   if (!expect(!program_4k->isChecked(), "4K Program copy must be opt-in"))
     return false;
+  if (!expect(!program_mobile->isChecked(), "Mobile Program copy must be opt-in"))
+    return false;
+  // The phone copy is a third independent route: selecting it must not
+  // disturb the other two, and all three must be able to run together.
+  program_mobile->setChecked(true);
+  if (!expect(
+          HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_PROGRAM_MOBILE_FILE") &&
+              program_mobile_path->text().contains("program_mobile_output"),
+          "Mobile checkbox must enable its output with a distinct planned path"))
+    return false;
+  program_4k->setChecked(true);
+  {
+    const QString arguments = HStreamWindowTestAccess::pipelineArguments(window).join(' ');
+    if (!expect(
+            arguments.contains("ENCODE_FILE") && arguments.contains("ENCODE_PROGRAM_4K_FILE") &&
+                arguments.contains("ENCODE_PROGRAM_MOBILE_FILE") &&
+                program_mobile_path->text() != program_4k_path->text() &&
+                program_mobile_path->text() != archive_path->text(),
+            "All three Program archives must select together with distinct paths"))
+      return false;
+  }
+  mode->setCurrentIndex(mode->findData("stitch-calibration"));
+  if (!expect(
+          !program_mobile->isEnabled() &&
+              !HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_PROGRAM_MOBILE_FILE"),
+          "Calibration must not encode the mobile Program copy"))
+    return false;
+  mode->setCurrentIndex(mode->findData("program"));
+  program_mobile->setChecked(false);
+  program_4k->setChecked(false);
   archive->setChecked(false);
   program_4k->setChecked(true);
   if (!expect(
