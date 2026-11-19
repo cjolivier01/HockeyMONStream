@@ -1475,13 +1475,24 @@ absl::Status PipelineApplication::configureInstances(
             &missing_sinks);
         // An application YAML that defines no section of a requested type, or
         // reuses its slot for something else, would otherwise run the sinks it
-        // does have and quietly never write the requested output.
-        if (!missing_sinks.empty()) {
+        // does have and quietly never write the requested file.
+        //
+        // Only the archive sinks, and only from stage 0 on. A configuration
+        // stage legitimately declares nothing but FAKE while the same
+        // --enable-sinks names the archive that stage 0 writes, and display or
+        // discard sinks have a fallback when a stage does not declare them, so
+        // requiring those everywhere would reject the two-stage flow and any
+        // sink whose type only appears after its subconfig loads.
+        if (current_stage_ >= 0) {
           std::string names;
-          for (const auto type : missing_sinks)
-            names += (names.empty() ? "" : ", ") + std::string(hm::to_string(type));
-          return absl::InvalidArgumentError(
-              TO_STRING("The configuration defines no sink for the requested output: " << names));
+          for (const auto type : missing_sinks) {
+            if (type == NV_DS_SINK_ENCODE_FILE || type == NV_DS_SINK_ENCODE_STITCHED_FILE ||
+                type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE || type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE)
+              names += (names.empty() ? "" : ", ") + std::string(hm::to_string(type));
+          }
+          if (!names.empty())
+            return absl::InvalidArgumentError(
+                TO_STRING("The configuration defines no sink for the requested archive: " << names));
         }
       }
 

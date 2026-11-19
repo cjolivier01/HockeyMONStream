@@ -1316,6 +1316,13 @@ static gboolean create_encode_file_bin(
     }
     g_object_set(G_OBJECT(bin->encoder), "profile", profile, NULL);
     g_object_set(G_OBJECT(bin->encoder), "iframeinterval", config->iframeinterval, NULL);
+    if (program_mobile_output && g_object_class_find_property(G_OBJECT_GET_CLASS(bin->encoder), "idrinterval")) {
+      // iframeinterval alone leaves IDRs at the plugin's 256-frame default,
+      // which at 59.94 fps lands an extra one every 4.27 seconds on top of the
+      // configured cadence. This route promises an IDR every configured
+      // interval, so both have to carry it.
+      g_object_set(G_OBJECT(bin->encoder), "idrinterval", config->iframeinterval, NULL);
+    }
     g_object_set(G_OBJECT(bin->encoder), "bitrate", bitrate, NULL);
     g_object_set(G_OBJECT(bin->encoder), "gpu-id", config->gpu_id, NULL);
     if (main10_output && g_object_class_find_property(G_OBJECT_GET_CLASS(bin->encoder), "insert-vui")) {
