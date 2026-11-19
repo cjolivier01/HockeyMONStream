@@ -70,7 +70,12 @@ cc_library(
     srcs = ["ProgramArchiveConfig.cpp"],
     hdrs = ["ProgramArchiveConfig.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = [":output_config", "//src/libs/common:config_path", "//src/libs/common:video_bitrate"],
+    deps = [
+        ":output_config",
+        "//src/libs/common:config_path",
+        "//src/libs/common:keyframe_interval",
+        "//src/libs/common:video_bitrate",
+    ],
 )
 
 cc_library(

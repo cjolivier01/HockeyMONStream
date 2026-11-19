@@ -17,7 +17,7 @@ from pathlib import Path
 
 
 VIDEO_RE = re.compile(
-    r"^(?P<base>.*(?:tracking|stitched|program_4k|program-4k|program_8k)_output(?:-with-audio)?)"
+    r"^(?P<base>.*(?:tracking|stitched|program_4k|program-4k|program_mobile|program-mobile|program_8k)_output(?:-with-audio)?)"
     r"(?:-(?P<version>\d+))?\.(?P<ext>mp4|mkv)$",
     re.IGNORECASE,
 )
@@ -42,8 +42,11 @@ BASE_MASK_RE = re.compile(r"^rink_mask_0\.png$", re.IGNORECASE)
 # reads a sidecar whose video is gone, so it goes when the video does.
 ARCHIVE_SIDECAR_SUFFIX = ".hstream-archive.json"
 NONOFFICIAL_4K_SUFFIXES = ("program_4k_output", "program-4k_output")
+MOBILE_SUFFIXES = ("program_mobile_output", "program-mobile_output")
 # The exports Plex publishes, as opposed to a stitching intermediate.
-PUBLISHABLE_SUFFIXES = NONOFFICIAL_4K_SUFFIXES + ("tracking_output", "program_8k_output")
+PUBLISHABLE_SUFFIXES = (
+    NONOFFICIAL_4K_SUFFIXES + MOBILE_SUFFIXES + ("tracking_output", "program_8k_output")
+)
 
 
 def plex_rank(base: str) -> tuple[bool, bool, bool]:
@@ -55,8 +58,17 @@ def plex_rank(base: str) -> tuple[bool, bool, bool]:
     and not whichever path happens to sort last.
     """
     stripped = base.lower().removesuffix("-with-audio")
-    is_4k = stripped.endswith(NONOFFICIAL_4K_SUFFIXES)
-    return (stripped.endswith(PUBLISHABLE_SUFFIXES), is_4k, "-with-audio" in base.lower())
+    # The 4K export stays the preferred publication, then the master, and the
+    # phone copy last. Without an explicit place the phone copy tied with the
+    # master and lexical order picked, so the choice depended on how the
+    # master's name happened to be spelled.
+    if stripped.endswith(MOBILE_SUFFIXES):
+        preference = 0
+    elif stripped.endswith(NONOFFICIAL_4K_SUFFIXES):
+        preference = 2
+    else:
+        preference = 1
+    return (stripped.endswith(PUBLISHABLE_SUFFIXES), preference, "-with-audio" in base.lower())
 
 
 def generation_group(match: re.Match[str]) -> int | None:

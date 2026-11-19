@@ -130,7 +130,8 @@ hm::gpu::VaVideoReaderConfig Reader(
 }
 void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& owned_game, std::string& owned_token) {
   hm::publication::ValidatePipelineStart(false);
-  const bool encoding = args.sinks.count("ENCODE_FILE") || args.sinks.count("ENCODE_PROGRAM_4K_FILE");
+  const bool encoding = args.sinks.count("ENCODE_FILE") || args.sinks.count("ENCODE_PROGRAM_4K_FILE") ||
+      args.sinks.count("ENCODE_PROGRAM_MOBILE_FILE");
   Require(hm::publication::EnvironmentManifest().empty() || encoding, "Managed Program runs require an archive sink");
   const auto root = Take(hm::baseline_config::resolve_root());
   const auto launch = Take(
@@ -191,6 +192,9 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const auto start = args.start.value_or(output_config.start_ns);
   const auto limit = args.limit;
   std::optional<hm::BitratePerPixel> source_bitrate;
+  // Nothing retimes video, so the mobile copy's seconds-based keyframe interval
+  // resolves against the exact source rate. Cameras of one recording share it.
+  std::optional<std::pair<int, int>> source_frame_rate;
   std::filesystem::path archive_directory;
   const auto managed_work = hm::publication::EnvironmentWorkingDirectory();
   if (encoding) {
@@ -204,6 +208,11 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
         if (!visited.insert(chapter).second)
           continue;
         const auto metadata = Take(hm::media::ReadMp4VideoTrack(chapter, launch.amd.operation_timeout_ns, {}));
+        if (metadata.fps_n > 0 && metadata.fps_d > 0 &&
+            (!source_frame_rate ||
+             int64_t(metadata.fps_n) * source_frame_rate->second >
+                 int64_t(source_frame_rate->first) * metadata.fps_d))
+          source_frame_rate = std::make_pair(metadata.fps_n, metadata.fps_d);
         if (!metadata.bitrate)
           continue;
         const auto pixels = uint64_t(metadata.width) * metadata.height;
@@ -218,7 +227,7 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
       g_printerr("Program source video bitrate metadata is unavailable; retaining configured archive bitrate\n");
   }
   auto archives = Take(hm::program::ResolveProgramArchives(
-      launch.configuration, args.sinks, output_config, archive_directory, source_bitrate));
+      launch.configuration, args.sinks, output_config, archive_directory, source_bitrate, source_frame_rate));
   if (!managed_work.empty()) {
     std::set<std::filesystem::path> paths;
     for (auto& [name, archive] : archives) {

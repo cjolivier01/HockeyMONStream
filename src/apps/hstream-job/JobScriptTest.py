@@ -1020,6 +1020,12 @@ class JobScriptTest(unittest.TestCase):
             ("ENCODE_FILE,ENCODE_PROGRAM_4K_FILE", "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE"),
             ("ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE",
              "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_STITCHED_FILE"),
+            # The phone copy exports on its own and beside the other Program
+            # archives, rather than replacing either of them.
+            ("RENDER,ENCODE_PROGRAM_MOBILE_FILE", "ENCODE_PROGRAM_MOBILE_FILE"),
+            ("ENCODE_FILE,ENCODE_PROGRAM_MOBILE_FILE", "ENCODE_FILE,ENCODE_PROGRAM_MOBILE_FILE"),
+            ("ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_PROGRAM_MOBILE_FILE",
+             "ENCODE_FILE,ENCODE_PROGRAM_4K_FILE,ENCODE_PROGRAM_MOBILE_FILE"),
         ):
             with self.subTest(sinks=sinks):
                 (self.game / "_hockeymon/config.yaml").write_text(json.dumps({

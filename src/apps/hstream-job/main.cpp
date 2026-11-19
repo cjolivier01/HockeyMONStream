@@ -29,7 +29,8 @@ std::vector<std::string> encode_job_arguments(const YAML::Node& saved_args, cons
     std::istringstream stream(list);
     std::string sink;
     while (std::getline(stream, sink, ',')) {
-      if (sink == "ENCODE_FILE" || sink == "ENCODE_STITCHED_FILE" || sink == "ENCODE_PROGRAM_4K_FILE") {
+      if (sink == "ENCODE_FILE" || sink == "ENCODE_STITCHED_FILE" || sink == "ENCODE_PROGRAM_4K_FILE" ||
+          sink == "ENCODE_PROGRAM_MOBILE_FILE") {
         if (std::find(encoders.begin(), encoders.end(), sink) == encoders.end())
           encoders.push_back(sink);
       }
@@ -73,6 +74,8 @@ std::vector<std::string> encode_job_arguments(const YAML::Node& saved_args, cons
         select("ENCODE_FILE");
       else if (name == "program_4k")
         select("ENCODE_PROGRAM_4K_FILE");
+      else if (name == "program_mobile")
+        select("ENCODE_PROGRAM_MOBILE_FILE");
       else if (name == "stitched")
         select("ENCODE_STITCHED_FILE");
       else
@@ -113,7 +116,8 @@ bool validate_interactive_publication(const std::vector<std::string>& args, bool
     std::istringstream stream(sinks);
     std::string sink;
     while (std::getline(stream, sink, ',')) {
-      const bool program_sink = sink == "ENCODE_FILE" || sink == "ENCODE_PROGRAM_4K_FILE";
+      const bool program_sink =
+          sink == "ENCODE_FILE" || sink == "ENCODE_PROGRAM_4K_FILE" || sink == "ENCODE_PROGRAM_MOBILE_FILE";
       archive = archive || program_sink || sink == "ENCODE_STITCHED_FILE";
       program = program || program_sink;
     }
@@ -229,7 +233,8 @@ int main(int argc, char** argv) {
                      "  [--sbatch '--partition=gpu'] [--sbatch '--time=02:00:00']\n"
                      "  [--runner COMMAND] [--finalizer COMMAND] [--config FILE] [--working-directory DIR]\n"
                      "  [--run-id ID] (explicit resume identity; ordinary scripts start a new run each time)\n"
-                     "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE]\n"
+                     "  [--enable-sinks ENCODE_FILE,ENCODE_STITCHED_FILE,ENCODE_PROGRAM_4K_FILE,\n"
+                     "                  ENCODE_PROGRAM_MOBILE_FILE]\n"
                      "Save an executable job (default: DIR/hstream-job.sh). Never launches the job.\n"
                      "Commands default to hstream-cli and hstream-finalize on the execution host PATH.\n"
                      "Ordinary scripts locate the game relative to the script, or under execution-time HM_GAME_DIR.\n"

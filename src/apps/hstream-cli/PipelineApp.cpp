@@ -1792,16 +1792,18 @@ absl::Status PipelineApplication::configureInstances(
         const auto& sink = app_ctx->config.sink_bin_sub_bin_config[index];
         if (!sink.enable ||
             (sink.type != NV_DS_SINK_ENCODE_FILE && sink.type != NV_DS_SINK_ENCODE_STITCHED_FILE &&
-             sink.type != NV_DS_SINK_ENCODE_PROGRAM_4K_FILE) ||
+             sink.type != NV_DS_SINK_ENCODE_PROGRAM_4K_FILE &&
+             sink.type != NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE) ||
             hm::publication::EnvironmentManifest().empty())
           continue;
         if (!sink.encoder_config.output_file_path || !*sink.encoder_config.output_file_path)
           return absl::InvalidArgumentError("Managed encoder has no output path");
         hm::publication::RegisterOutput(
             sink.encoder_config.output_file_path,
-            sink.type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE     ? "program-4k"
-                : sink.type == NV_DS_SINK_ENCODE_STITCHED_FILE ? "stitched"
-                                                               : "program",
+            sink.type == NV_DS_SINK_ENCODE_PROGRAM_4K_FILE          ? "program-4k"
+                : sink.type == NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE ? "program-mobile"
+                : sink.type == NV_DS_SINK_ENCODE_STITCHED_FILE       ? "stitched"
+                                                                     : "program",
             sink.encoder_config.codec == NV_DS_ENCODER_H265);
       }
     } catch (const std::exception& error) {
@@ -3997,6 +3999,7 @@ absl::Status PipelineApplication::run(int argc, char* argv[]) {
        G_OPTION_ARG_FILENAME_ARRAY,
        &enable_sinks_,
        "Enable sinks: FAKE=discard, RENDER=display, ENCODE_FILE=write Program video, ENCODE_PROGRAM_4K_FILE=write 4K upload copy, "
+       "ENCODE_PROGRAM_MOBILE_FILE=write a phone-sized copy sized by video_out.program_mobile, "
        "ENCODE_STITCHED_FILE=write the pre-Program stitched canvas, RTSP/UDPSINK/RTMP=server sink "
        "(RTSP unless output-file starts with rtmp://; aliases enable the same sink type), WEBRTC=browser preview, "
        "RENDER_DRM=DRM display, MSG_CONV_BROKER=message broker",

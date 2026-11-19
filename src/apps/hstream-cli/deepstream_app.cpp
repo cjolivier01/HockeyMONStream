@@ -292,6 +292,7 @@ static gboolean pipeline_requires_eos_finalization(const AppCtx* appCtx) {
       case NV_DS_SINK_ENCODE_FILE:
       case NV_DS_SINK_ENCODE_STITCHED_FILE:
       case NV_DS_SINK_ENCODE_PROGRAM_4K_FILE:
+      case NV_DS_SINK_ENCODE_PROGRAM_MOBILE_FILE:
         return TRUE;
       default:
         break;
