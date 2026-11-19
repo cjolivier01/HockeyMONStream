@@ -1241,6 +1241,13 @@ static gboolean create_encode_file_bin(
     NVGSTDS_ERR_MSG_V("The mobile Program archive requires a resolved output ceiling");
     goto done;
   }
+  if (program_mobile_output && !config->iframeinterval_set) {
+    // Its interval is configured in seconds and resolved against the source
+    // frame rate, which a launch without a game never reaches. Keeping the
+    // parser's 30 frames would silently give a half-second GOP at 60 fps.
+    NVGSTDS_ERR_MSG_V("The mobile Program archive requires a resolved keyframe interval");
+    goto done;
+  }
   if (main10_output)
     caps = gst_caps_from_string("video/x-raw(memory:NVMM), format=P010_10LE, colorimetry=bt709");
   else if (config->codec == NV_DS_ENCODER_MPEG4 || config->enc_type == NV_DS_ENCODER_TYPE_SW)

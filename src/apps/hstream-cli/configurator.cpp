@@ -66,6 +66,7 @@
 #include "hstream/src/libs/common/Status.h"
 #include "hstream/src/libs/common/TensorRtGpuIdentity.h"
 #include "hstream/src/libs/common/UserConfig.h"
+#include "hstream/src/libs/common/KeyframeInterval.h"
 #include "hstream/src/libs/common/VideoBitrate.h"
 #include "hstream/src/libs/common/filesystem.h"
 #include "hstream/src/libs/common/pipeline_utils.h"
@@ -7798,11 +7799,11 @@ absl::Status Configurator::configure_encode_file_outputs(
       return absl::InvalidArgumentError(
           "The mobile Program archive needs the source frame rate to resolve " + std::string(kSecondsPath) +
           ", and no selected source reported one");
-    const double frames = std::round(seconds * *frame_rate);
-    if (!(frames >= 1.0) || frames > double(G_MAXINT))
+    const auto frames = hm::keyframe_interval_frames(seconds, *frame_rate);
+    if (!frames)
       return absl::InvalidArgumentError(
           TO_STRING(kSecondsPath << "=" << seconds << " at " << *frame_rate << " fps is not a usable keyframe interval"));
-    mobile_iframeinterval = static_cast<guint>(frames);
+    mobile_iframeinterval = static_cast<guint>(*frames);
     g_print(
         "HSTREAM_ARCHIVE_KEYFRAME_INTERVAL route=program-mobile seconds=%g fps=%g frames=%u\n",
         seconds,
@@ -7831,9 +7832,15 @@ absl::Status Configurator::configure_encode_file_outputs(
       sink_node["bitrate-per-pixel-numerator"] = std::to_string(bitrate_reference->bitrate_per_pixel.numerator);
       sink_node["bitrate-per-pixel-denominator"] = std::to_string(bitrate_reference->bitrate_per_pixel.denominator);
     }
-    if (archive_output.program_mobile && mobile_iframeinterval.has_value() &&
-        explicit_value_rank("pipeline." + archive_output.section + ".iframeinterval") < 1) {
-      sink_node["iframeinterval"] = static_cast<int>(*mobile_iframeinterval);
+    if (archive_output.program_mobile && mobile_iframeinterval.has_value()) {
+      // A direct native property wins only at the same or a higher explicit
+      // layer, as everywhere else. Testing merely whether one exists would let
+      // a saved per-sink value defeat a CLI override of the canonical seconds.
+      const std::string native_path = "pipeline." + archive_output.section + ".iframeinterval";
+      const int native_rank = explicit_value_rank(native_path);
+      const int canonical_rank = explicit_value_rank("video_out.program_mobile.keyframe_interval_seconds");
+      if (native_rank < 1 || native_rank < canonical_rank)
+        sink_node["iframeinterval"] = static_cast<int>(*mobile_iframeinterval);
     }
 
     const fs::path parent = output_path.parent_path();

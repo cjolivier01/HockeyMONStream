@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "hstream/src/libs/common/ConfigPath.h"
+#include "hstream/src/libs/common/KeyframeInterval.h"
 
 namespace hm::program {
 namespace {
@@ -80,8 +81,21 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
           const auto settings = config.values["video_out"]["program_mobile"];
           if (!settings.IsMap())
             return absl::InvalidArgumentError("Effective baseline is missing supported key video_out.program_mobile");
-          max_width = double(Positive(settings["max_width"], "video_out.program_mobile.max_width"));
-          max_height = double(Positive(settings["max_height"], "video_out.program_mobile.max_height"));
+          // Honour the same sink-local overrides NVIDIA accepts, with the same
+          // precedence, or the two backends resolve different ceilings from one
+          // configuration.
+          const std::pair<const char*, const char*> bounds[] = {
+              {"max_width", "max-output-width"},
+              {"max_height", "max-output-height"},
+          };
+          for (const auto& [canonical_leaf, native] : bounds) {
+            const std::string canonical_path = std::string("video_out.program_mobile.") + canonical_leaf;
+            YAML::Node value = settings[canonical_leaf];
+            if (!Null(sink[native]) && Rank(config, prefix + native) >= Rank(config, canonical_path))
+              value.reset(YAML::Clone(sink[native]));
+            const auto resolved = double(Positive(value, canonical_path));
+            (std::string(canonical_leaf) == "max_width" ? max_width : max_height) = resolved;
+          }
           canonical = "video_out.program_mobile.interpolation";
         }
         const double scale = std::min({1.0, max_width / output.width, max_height / output.height});
@@ -144,11 +158,15 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
         const double value = seconds.as<double>();
         if (!(value > 0.0) || !std::isfinite(value))
           return absl::InvalidArgumentError(seconds_path + " must be a positive number of seconds");
-        const double frames =
-            std::round(value * double(source_frame_rate->first) / double(source_frame_rate->second));
-        if (!(frames >= 1.0) || frames > double(INT_MAX))
+        auto frames = keyframe_interval_frames(value, source_frame_rate->first, source_frame_rate->second);
+        // A sink-local interval is already in frames and wins at the same or a
+        // higher explicit layer, matching the NVIDIA branch.
+        if (!Null(sink["iframeinterval"]) && Rank(config, prefix + "iframeinterval") >= 1 &&
+            Rank(config, prefix + "iframeinterval") >= Rank(config, seconds_path))
+          frames = uint32_t(Positive(sink["iframeinterval"], prefix + "iframeinterval"));
+        if (!frames)
           return absl::InvalidArgumentError(seconds_path + " is not a usable keyframe interval at the source rate");
-        output.keyframe_interval = unsigned(frames);
+        output.keyframe_interval = *frames;
       } else {
         if (!four_k && Rank(config, "video_out.bit_rate") > bitrate_rank &&
             Rank(config, "video_out.bit_rate") > amd_bitrate_rank) {
@@ -182,7 +200,10 @@ absl::StatusOr<std::map<std::string, ProgramArchiveConfig>> ResolveProgramArchiv
         file.reset(value ? YAML::Clone(*value) : YAML::Node());
         explicit_file = canonical_file = false;
       };
-      if (!four_k && Rank(config, "video_out.output_video_path") > Rank(config, prefix + "output-file")) {
+      // video_out.output_video_path names the Program video, not the copies
+      // derived from it. Applying it to a derived route would resolve two
+      // archives to one filename and fail the duplicate-path preflight.
+      if (!derived && Rank(config, "video_out.output_video_path") > Rank(config, prefix + "output-file")) {
         const auto canonical = config.values["video_out"]["output_video_path"];
         if (!Null(canonical)) {
           file.reset(YAML::Clone(canonical));

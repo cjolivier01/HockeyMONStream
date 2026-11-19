@@ -165,6 +165,35 @@ int main(int argc, char** argv) {
     Check(
         !resolve_sinks(mobile_sinks).ok(),
         "The mobile archive resolved a seconds-based keyframe interval without a source frame rate");
+    // video_out.output_video_path names the Program video. Applying it to a
+    // derived copy resolves two archives to one filename.
+    result = mobile({"video_out.output_video_path=named.mp4"});
+    Check(
+        result.ok() && result->at("ENCODE_FILE").path == std::filesystem::absolute("named.mp4") &&
+            result->at("ENCODE_PROGRAM_MOBILE_FILE").path == directory / "program_mobile_output.mp4" &&
+            result->at("ENCODE_PROGRAM_4K_FILE").path == directory / "program_4k_output.mp4",
+        "The Program filename leaked into a derived archive copy");
+    // Sink-local overrides must resolve the same effective values as NVIDIA.
+    result = mobile({"pipeline.sink7.max-output-width=1280,pipeline.sink7.max-output-height=720"});
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.width == 1280 &&
+            result->at("ENCODE_PROGRAM_MOBILE_FILE").output.height == 720,
+        "Native mobile ceiling overrides were ignored");
+    result = mobile({"pipeline.sink7.iframeinterval=15"});
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.keyframe_interval == 15,
+        "Native mobile keyframe override was ignored");
+    // Canonical seconds at a higher layer beat a lower-layer native interval;
+    // the game layer below cannot defeat the CLI override above it.
+    result = resolve_sinks(
+        mobile_sinks,
+        {"video_out.program_mobile.keyframe_interval_seconds=1"},
+        YAML::Load("pipeline: {sink7: {iframeinterval: 15}}"),
+        std::nullopt,
+        rate);
+    Check(
+        result.ok() && result->at("ENCODE_PROGRAM_MOBILE_FILE").output.keyframe_interval == 60,
+        "A lower-layer native keyframe interval defeated a higher-layer canonical one");
     for (const auto* invalid :
          {"video_out.program_mobile.max_width=0",
           "video_out.program_mobile.max_height=-1",

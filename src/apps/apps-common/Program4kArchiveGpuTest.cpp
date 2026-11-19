@@ -64,6 +64,8 @@ int main(int argc, char** argv) {
       if (i == 2) {
         configs[i].encoder_config.max_output_width = kMobileMaxWidth;
         configs[i].encoder_config.max_output_height = kMobileMaxHeight;
+        configs[i].encoder_config.iframeinterval = 120;
+        configs[i].encoder_config.iframeinterval_set = TRUE;
       }
       if (i == 1 && override_with_cubic) {
         configs[i].encoder_config.interpolation_method = NvBufSurfTransformInter_Algo1;
@@ -71,13 +73,22 @@ int main(int argc, char** argv) {
       }
     }
     {
-      // An unresolved ceiling is an error, not "no limit".
-      NvDsSinkSubBinConfig unresolved = configs[2];
-      unresolved.sink_id = 9;
-      unresolved.encoder_config.max_output_width = 0;
-      unresolved.encoder_config.max_output_height = 0;
-      NvDsSinkBin rejected{};
-      ok &= !create_sink_bin(1, &unresolved, &rejected, 0);
+      // An unresolved ceiling is an error, not "no limit", and an unresolved
+      // keyframe interval is an error rather than the parser's 30 frames —
+      // a launch that never reached the seconds-to-frames resolution must not
+      // quietly produce a half-second GOP.
+      for (int unresolved_field = 0; unresolved_field < 2; ++unresolved_field) {
+        NvDsSinkSubBinConfig unresolved = configs[2];
+        unresolved.sink_id = 9;
+        if (unresolved_field == 0) {
+          unresolved.encoder_config.max_output_width = 0;
+          unresolved.encoder_config.max_output_height = 0;
+        } else {
+          unresolved.encoder_config.iframeinterval_set = FALSE;
+        }
+        NvDsSinkBin rejected{};
+        ok &= !create_sink_bin(1, &unresolved, &rejected, 0);
+      }
     }
     NvDsSinkBin sinks{};
     if (!create_sink_bin(3, configs, &sinks, 0))

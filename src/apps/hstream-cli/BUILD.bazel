@@ -80,6 +80,7 @@ HSTREAM_CLI_DEPS = [
     "//src/libs/common:utils",
     "//src/libs/common:fs",
     "//src/libs/common:baseline_config",
+    "//src/libs/common:keyframe_interval",
     "//src/libs/common:detection_snapshot_meta",
     "//src/libs/common:stitching_frame_pair_meta",
     "//src/libs/stitching:player_frame_selection",

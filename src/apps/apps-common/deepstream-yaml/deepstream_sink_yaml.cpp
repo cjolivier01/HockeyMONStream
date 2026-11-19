@@ -34,6 +34,7 @@ gboolean parse_sink_yaml(
   config->encoder_config.compute_hw = 0;
   config->encoder_config.interpolation_method_set = FALSE;
   config->encoder_config.iframeinterval = 30;
+  config->encoder_config.iframeinterval_set = FALSE;
   config->encoder_config.width = 0;
   config->encoder_config.height = 0;
   // Zero is "unresolved" rather than "unlimited": the only sink that reads
@@ -111,6 +112,7 @@ gboolean parse_sink_yaml(
       config->encoder_config.profile = itr->second.as<guint>();
     } else if (paramKey == "iframeinterval") {
       config->encoder_config.iframeinterval = itr->second.as<guint>();
+      config->encoder_config.iframeinterval_set = TRUE;
     } else if (paramKey == "output-file") {
       std::string temp = itr->second.as<std::string>();
       config->encoder_config.output_file_path = (char*)malloc(sizeof(char) * 1024);

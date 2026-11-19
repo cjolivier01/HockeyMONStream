@@ -88,6 +88,10 @@ typedef struct {
   GstElement* preview_endpoint{nullptr};
   guint64 udp_buffer_size;
   guint iframeinterval;
+  /** Whether iframeinterval was resolved rather than left at the parser default.
+   * The mobile Program copy configures its interval in seconds and cannot tell a
+   * resolved 30 from the default 30, so it requires this instead. */
+  gboolean iframeinterval_set;
   guint copy_meta;
   NvDsEncOutputIOMode output_io_mode;
   gint sw_preset;

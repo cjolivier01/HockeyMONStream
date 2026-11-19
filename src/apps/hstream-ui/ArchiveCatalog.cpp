@@ -131,7 +131,8 @@ QVector<ArchiveEntry> DiscoverArchives(const QString& game_dir, const QString& g
   if (safe.isEmpty() || game_dir.isEmpty())
     return entries;
   const QRegularExpression pattern(
-      QString(R"(^%1-(tracking|stitched|program_4k|program_8k)_output(?:-with-audio)?(?:-(\d+))?(?i:\.mp4)$)")
+      QString(
+          R"(^%1-(tracking|stitched|program_4k|program_mobile|program_8k)_output(?:-with-audio)?(?:-(\d+))?(?i:\.mp4)$)")
           .arg(QRegularExpression::escape(safe)));
   QDir directory(game_dir);
   // No name filter: a game id is free text and QDir globs would read any
