@@ -2892,28 +2892,108 @@ absl::Status validate_backend_generation_claim(
                << ", crop=" << format_parameters(framing.crop) << '}';
         return output.str();
       };
+      auto format_camera = [&](const StitchCameraSelection& camera) {
+        std::ostringstream output;
+        output << "{config=" << camera.configuration << ", hfov=" << camera.horizontal_fov
+               << ", vfov=" << camera.vertical_fov << ", sources=[";
+        bool first = true;
+        for (const auto& [source, selection] : camera.input_cameras) {
+          output << (first ? "" : ",") << source << '=' << selection.configuration;
+          first = false;
+        }
+        output << "], starts=[";
+        first = true;
+        for (const auto& [source, start] : camera.input_start_times) {
+          output << (first ? "" : ",") << source << '=' << start;
+          first = false;
+        }
+        return output.str() + "]}";
+      };
+      auto format_filtering = [](const ControlPointFiltering& filtering) {
+        return std::string("{epipolar-ransac=") + (filtering.epipolar_ransac ? "true" : "false") +
+            ", homography-consistency=" + (filtering.homography_consistency ? "true" : "false") + "}";
+      };
+      // Report every field the comparison above actually uses. Printing only
+      // some of them renders a real mismatch as two identical-looking structs,
+      // which is exactly the case an operator cannot diagnose. Listing only the
+      // fields that differ keeps the message about the thing that went wrong.
+      struct ComparedField {
+        const char* name;
+        bool differs;
+        std::string expected;
+        std::string reserved;
+      };
+      const ComparedField compared[] = {
+          {"id",
+           claim["invalidation_id"].as<std::string>() != expected_invalidation_id,
+           expected_invalidation_id,
+           claim["invalidation_id"].as<std::string>()},
+          {"matcher",
+           claim["control_point_matcher"].as<std::string>() != expected_choices.control_point_matcher,
+           expected_choices.control_point_matcher,
+           claim["control_point_matcher"].as<std::string>()},
+          {"backend",
+           claim["mapping_backend"].as<std::string>() != expected_choices.mapping_backend,
+           expected_choices.mapping_backend,
+           claim["mapping_backend"].as<std::string>()},
+          {"projection",
+           claim["projection"].as<std::string>() != expected_choices.projection,
+           expected_choices.projection,
+           claim["projection"].as<std::string>()},
+          {"autooptimizer",
+           claim["run_autooptimizer"].as<bool>() != expected_choices.run_autooptimizer,
+           expected_choices.run_autooptimizer ? "true" : "false",
+           claim["run_autooptimizer"].as<bool>() ? "true" : "false"},
+          {"provider",
+           claim_provider != expected_choices.control_point_execution_provider,
+           hm::onnx::ExecutionProviderName(expected_choices.control_point_execution_provider),
+           hm::onnx::ExecutionProviderName(claim_provider)},
+          {"resolution",
+           claim_resolution != expected_choices.control_point_resolution,
+           ControlPointResolutionName(expected_choices.control_point_resolution),
+           ControlPointResolutionName(claim_resolution)},
+          {"selection",
+           claim_selection != expected_choices.control_point_selection,
+           ControlPointSelectionName(expected_choices.control_point_selection),
+           ControlPointSelectionName(claim_selection)},
+          {"filtering",
+           claim_filtering != expected_choices.control_point_filtering,
+           format_filtering(expected_choices.control_point_filtering),
+           format_filtering(claim_filtering)},
+          {"manual-points",
+           claimed_manual != expected_choices.manual_control_point_fingerprint,
+           expected_choices.manual_control_point_fingerprint,
+           claimed_manual},
+          {"frame-selection",
+           claimed_selection != expected_choices.calibration_frame_selection_fingerprint,
+           expected_choices.calibration_frame_selection_fingerprint,
+           claimed_selection},
+          {"parameters",
+           claim_parameters != expected_choices.projection_parameters,
+           format_parameters(expected_choices.projection_parameters),
+           format_parameters(claim_parameters)},
+          {"framing",
+           !claim_framing_matches,
+           format_framing(expected_choices.projection_framing),
+           format_framing(*parsed_claim_framing)},
+          {"camera",
+           *parsed_claim_camera != expected_choices.camera,
+           format_camera(expected_choices.camera),
+           format_camera(*parsed_claim_camera)},
+      };
       std::ostringstream detail;
-      detail << "Stitching backend choices were superseded for this calibration generation: expected {id="
-             << expected_invalidation_id
-             << ", provider=" << hm::onnx::ExecutionProviderName(expected_choices.control_point_execution_provider)
-             << ", resolution=" << ControlPointResolutionName(expected_choices.control_point_resolution)
-             << ", matcher=" << expected_choices.control_point_matcher
-             << ", backend=" << expected_choices.mapping_backend << ", projection=" << expected_choices.projection
-             << ", autooptimizer=" << (expected_choices.run_autooptimizer ? "true" : "false")
-             << ", parameters=" << format_parameters(expected_choices.projection_parameters)
-             << ", framing=" << format_framing(expected_choices.projection_framing)
-             << "}, reserved {id=" << claim["invalidation_id"].as<std::string>()
-             << ", provider=" << hm::onnx::ExecutionProviderName(claim_provider)
-             << ", resolution=" << ControlPointResolutionName(claim_resolution)
-             << ", matcher=" << claim["control_point_matcher"].as<std::string>()
-             << ", backend=" << claim["mapping_backend"].as<std::string>()
-             << ", projection=" << claim["projection"].as<std::string>()
-             << ", autooptimizer=" << (claim["run_autooptimizer"].as<bool>() ? "true" : "false")
-             << ", parameters=" << format_parameters(claim_parameters)
-             << ", framing=" << format_framing(*parsed_claim_framing) << '}';
-      detail << ", camera={config=" << parsed_claim_camera->configuration
-             << ", hfov=" << parsed_claim_camera->horizontal_fov << ", vfov=" << parsed_claim_camera->vertical_fov
-             << "}";
+      detail << "Stitching backend choices were superseded for this calibration generation:";
+      for (const auto& field : compared) {
+        if (!field.differs)
+          continue;
+        detail << ' ' << field.name << " expected " << (field.expected.empty() ? "<none>" : field.expected)
+               << ", reserved " << (field.reserved.empty() ? "<none>" : field.reserved) << ';';
+        // A field can compare unequal while rendering the same text, for
+        // example a camera whose per-source lens differs. Say so rather than
+        // leaving the operator to compare two identical strings.
+        if (field.expected == field.reserved)
+          detail << " (the two differ in a part this summary does not render)";
+      }
       return absl::AbortedError(detail.str());
     }
     if (!validate_worker_tuple)
@@ -3066,14 +3146,16 @@ absl::Status reserve_stitching_backend_generation_in_config(
         claim["projection"] = expected_choices.projection;
         claim["projection_parameters"] = projection_parameters;
       }
-      const bool framing_missing = !claim["projection_framing"] || !claim["projection_framing"].IsDefined() ||
-          claim["projection_framing"].IsNull();
-      if (framing_missing) {
+      // Each choice added after claims started being written needs a backfill
+      // here, or a reservation made between the two releases can never match
+      // again and its game stops calibrating for good. They all extend the
+      // same already-reserved generation, so they share one guard.
+      const auto current_tuple_matches = [&] {
         auto parsed_projection = ParseStitchProjection(expected_choices.projection);
         auto parsed_parameters = parsed_projection.ok()
             ? parse_projection_parameter_sequence(claim["projection_parameters"], *parsed_projection)
             : absl::StatusOr<std::vector<double>>(parsed_projection.status());
-        const bool current_tuple_matches = parsed_parameters.ok() && claim["control_point_matcher"] &&
+        return parsed_parameters.ok() && claim["control_point_matcher"] &&
             claim["control_point_matcher"].IsScalar() && claim["mapping_backend"] &&
             claim["mapping_backend"].IsScalar() && claim["projection"] && claim["projection"].IsScalar() &&
             claim["run_autooptimizer"] && claim["run_autooptimizer"].IsScalar() &&
@@ -3082,7 +3164,11 @@ absl::Status reserve_stitching_backend_generation_in_config(
             claim["projection"].as<std::string>() == expected_choices.projection &&
             claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer &&
             *parsed_parameters == expected_choices.projection_parameters;
-        if (!current_tuple_matches)
+      };
+      const bool framing_missing = !claim["projection_framing"] || !claim["projection_framing"].IsDefined() ||
+          claim["projection_framing"].IsNull();
+      if (framing_missing) {
+        if (!current_tuple_matches())
           return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
         write_projection_framing_node(claim["projection_framing"], expected_choices.projection_framing);
       }
@@ -3090,22 +3176,19 @@ absl::Status reserve_stitching_backend_generation_in_config(
           claim["camera_config"].IsNull() || !claim["camera_fov"] || !claim["camera_fov"].IsDefined() ||
           claim["camera_fov"].IsNull();
       if (camera_missing) {
-        auto parsed_projection = ParseStitchProjection(expected_choices.projection);
-        auto parsed_parameters = parsed_projection.ok()
-            ? parse_projection_parameter_sequence(claim["projection_parameters"], *parsed_projection)
-            : absl::StatusOr<std::vector<double>>(parsed_projection.status());
-        const bool current_tuple_matches = parsed_parameters.ok() && claim["control_point_matcher"] &&
-            claim["control_point_matcher"].IsScalar() && claim["mapping_backend"] &&
-            claim["mapping_backend"].IsScalar() && claim["projection"] && claim["projection"].IsScalar() &&
-            claim["run_autooptimizer"] && claim["run_autooptimizer"].IsScalar() &&
-            claim["control_point_matcher"].as<std::string>() == expected_choices.control_point_matcher &&
-            claim["mapping_backend"].as<std::string>() == expected_choices.mapping_backend &&
-            claim["projection"].as<std::string>() == expected_choices.projection &&
-            claim["run_autooptimizer"].as<bool>() == expected_choices.run_autooptimizer &&
-            *parsed_parameters == expected_choices.projection_parameters;
-        if (!current_tuple_matches)
+        if (!current_tuple_matches())
           return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
         write_camera_selection_node(claim, expected_choices.camera);
+      }
+      // An unrecorded selection reads back as legacy, so a claim reserved
+      // before this choice existed never matches a baseline that now ships
+      // quality-coverage.
+      const bool selection_missing = !claim["control_point_selection"] ||
+          !claim["control_point_selection"].IsDefined() || claim["control_point_selection"].IsNull();
+      if (selection_missing) {
+        if (!current_tuple_matches())
+          return absl::AbortedError("Stitching backend choices were superseded for this calibration generation");
+        claim["control_point_selection"] = ControlPointSelectionName(expected_choices.control_point_selection);
       }
     }
   } catch (const YAML::Exception& exception) {
