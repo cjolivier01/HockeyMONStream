@@ -1465,12 +1465,24 @@ absl::Status PipelineApplication::configureInstances(
           }
         }
 
+        std::set<NvDsSinkType> missing_sinks;
         app_ctx->configurator().enable_sections(
             "sink",
             "type",
             enabled_sink_types_.size() == 1 ? enabled_sink_types_.at(0) : enabled_sink_types_.at(stage_index),
             /*disable_others=*/true,
-            "sink-id");
+            "sink-id",
+            &missing_sinks);
+        // An application YAML that defines no section of a requested type, or
+        // reuses its slot for something else, would otherwise run the sinks it
+        // does have and quietly never write the requested output.
+        if (!missing_sinks.empty()) {
+          std::string names;
+          for (const auto type : missing_sinks)
+            names += (names.empty() ? "" : ", ") + std::string(hm::to_string(type));
+          return absl::InvalidArgumentError(
+              TO_STRING("The configuration defines no sink for the requested output: " << names));
+        }
       }
 
       HM_RETURN_IF_ERROR(app_ctx->configurator().load_sub_configs(

@@ -390,7 +390,7 @@ std::optional<SourceBitrateReference> select_program_source_bitrate_reference(
 // rate. Chapters of one recording share it; across cameras the output cannot
 // outrun the fastest input, so take the maximum.
 std::optional<double> select_source_frame_rate(const std::vector<std::string>& source_video_paths) {
-  std::optional<double> selected;
+  std::optional<double> selected, lowest;
   std::unordered_set<std::string> visited;
   for (const std::string& path : source_video_paths) {
     const std::string normalized_path = fs::path(path).lexically_normal().string();
@@ -400,6 +400,19 @@ std::optional<double> select_source_frame_rate(const std::vector<std::string>& s
     if (!(info.fps > 0.0) || !std::isfinite(info.fps))
       continue;
     selected = selected.has_value() ? std::max(*selected, info.fps) : info.fps;
+    lowest = lowest.has_value() ? std::min(*lowest, info.fps) : info.fps;
+  }
+  // An interval configured in seconds becomes a frame count, so it only holds
+  // at one rate. Chapters recorded at different rates, or a variable-rate
+  // source whose container reports an average, get an interval that is right
+  // on average and wrong in the parts that run faster or slower. Say so rather
+  // than let the configured seconds look exact.
+  if (selected && lowest && *selected != *lowest) {
+    g_printerr(
+        "Warning: selected sources report %g to %g fps; a keyframe interval configured in seconds "
+        "resolves to one frame count and will not hold exactly across them\n",
+        *lowest,
+        *selected);
   }
   return selected;
 }
