@@ -11,27 +11,36 @@ def _basename(p):
     i = s.rfind("/")
     return s[i + 1:] if i != -1 else s
 
-def _has_shared_lib(ctx, dirs, lib_stem):
-    # Accept unversioned (.so) and versioned (.so.*) names.
-    prefix = "lib" + lib_stem + ".so"
-    for d in dirs:
-        if not _path_exists(ctx, d):
-            continue
-        for entry in ctx.path(d).readdir():
-            name = _basename(entry)
-            if name == prefix or name.startswith(prefix + "."):
-                return True
-    return False
+def _has_required_shared_libs(ctx, lib_dir, soname_suffix):
+    for lib_stem in [
+        "opencv_core",
+        "opencv_calib3d",
+        "opencv_features2d",
+        "opencv_imgcodecs",
+        "opencv_imgproc",
+        "opencv_video",
+        "opencv_videoio",
+    ]:
+        filename = "lib" + lib_stem + ".so"
+        if soname_suffix:
+            filename += "." + soname_suffix
+        if not _path_exists(ctx, lib_dir + "/" + filename):
+            return False
+    return True
 
-def _pick_opencv_lib_dir(ctx, root):
+def _pick_opencv_lib_dir(ctx, root, opencv_version):
     # NVIDIA's JetPack OpenCV package installs its matching libraries directly
     # in /usr/lib while Ubuntu's older multiarch OpenCV can remain installed in
     # /usr/lib/aarch64-linux-gnu. Prefer the prefix's direct lib directory so
     # headers and libraries come from the same package; normal distro installs
     # fall through to their multiarch directory.
+    expected_major = opencv_version[len("opencv"):]
     for rel in ["lib", "lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu"]:
         lib_dir = root + "/" + rel
-        if _has_shared_lib(ctx, [lib_dir], "opencv_core"):
+        soname_suffix = _detect_opencv_soname_suffix(ctx, lib_dir)
+        if soname_suffix and not soname_suffix.startswith(expected_major):
+            continue
+        if _has_required_shared_libs(ctx, lib_dir, soname_suffix):
             return rel
     return None
 
@@ -63,7 +72,7 @@ def _detect_opencv(ctx, root):
         include_dir = root + "/include/" + version
         core_hpp = include_dir + "/opencv2/core.hpp"
         if _path_exists(ctx, core_hpp):
-            lib_dir_rel = _pick_opencv_lib_dir(ctx, root)
+            lib_dir_rel = _pick_opencv_lib_dir(ctx, root, version)
             if lib_dir_rel == None:
                 return None
             return {

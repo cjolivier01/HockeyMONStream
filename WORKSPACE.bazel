@@ -6,7 +6,11 @@ load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_r
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 load("//bazel:conditional_local_repository.bzl", "conditional_local_repository")
 load("//bazel:libsoup_repository.bzl", "libsoup_repository")
-load("//bazel:onnxruntime_gpu_repository.bzl", "onnxruntime_gpu_arm64_repository")
+load(
+    "//bazel:onnxruntime_gpu_repository.bzl",
+    "onnxruntime_gpu_arm64_repository",
+    "onnxruntime_gpu_x86_64_repository",
+)
 load("//bazel:player_tensorrt_sdk_repository.bzl", "player_tensorrt_sdk_repository")
 load("//bazel:rocm_repository.bzl", "rocm_repository")
 
@@ -122,12 +126,12 @@ http_archive(
 
 # Native CUDA runtimes remain private to HStream. Desktop, SBSA and Jetson
 # Linux 39 use CUDA 13 and cuDNN 9. CPU execution remains explicitly selectable.
-http_archive(
+onnxruntime_gpu_x86_64_repository(
     name = "onnxruntime_linux_x86_64",
     build_file = "@//buildfiles/third_party:onnxruntime.BUILD",
-    sha256 = "382d79133112388cf94ce5855789b7c9bef12bef76a08b6b277e5a317213adcd",
-    strip_prefix = "onnxruntime-linux-x64-gpu_cuda13-1.30.0",
-    url = "https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz",
+    version = "1.30.0",
+    package_url = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.gpu.linux/1.30.0/microsoft.ml.onnxruntime.gpu.linux.1.30.0.nupkg",
+    package_integrity = "sha512-vJG6Rgh/iOo4naKNzn+nXZoZIBasFzPyuRD51Sk7guqOS/h/awcg0YhLYNqVQ9228GReHZZiPz/rtYcF5JxuOA==",
 )
 
 onnxruntime_gpu_arm64_repository(
