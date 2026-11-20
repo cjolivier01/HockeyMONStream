@@ -1,17 +1,17 @@
 def _path_exists(ctx, p):
     return ctx.path(p).exists
 
-def _looks_like_soname_suffix(s):
-    # Starlark strings aren't iterable in Bazel, so keep this simple.
-    # We want to prefer the ABI symlink (e.g. `.so.500`) over the full version file (e.g. `.so.5.0.0`).
-    return bool(s) and s.find(".") == -1
+def _opencv_header_version_prefix(ctx, include_dir):
+    major = None
+    minor = None
+    for line in ctx.read(include_dir + "/opencv2/core/version.hpp").split("\n"):
+        if line.startswith("#define CV_VERSION_MAJOR"):
+            major = line[len("#define CV_VERSION_MAJOR"):].strip()
+        elif line.startswith("#define CV_VERSION_MINOR"):
+            minor = line[len("#define CV_VERSION_MINOR"):].strip()
+    return major + "." + minor + "." if major and minor else None
 
-def _basename(p):
-    s = str(p)
-    i = s.rfind("/")
-    return s[i + 1:] if i != -1 else s
-
-def _has_required_shared_libs(ctx, lib_dir, soname_suffix):
+def _has_required_shared_libs(ctx, lib_dir, version_prefix):
     for lib_stem in [
         "opencv_core",
         "opencv_calib3d",
@@ -22,49 +22,22 @@ def _has_required_shared_libs(ctx, lib_dir, soname_suffix):
         "opencv_videoio",
     ]:
         filename = "lib" + lib_stem + ".so"
-        if soname_suffix:
-            filename += "." + soname_suffix
-        if not _path_exists(ctx, lib_dir + "/" + filename):
+        library = ctx.path(lib_dir + "/" + filename)
+        if not library.exists or not library.realpath.basename.startswith(filename + "." + version_prefix):
             return False
     return True
 
-def _pick_opencv_lib_dir(ctx, root, opencv_version):
+def _pick_opencv_lib_dir(ctx, root, version_prefix):
     # NVIDIA's JetPack OpenCV package installs its matching libraries directly
     # in /usr/lib while Ubuntu's older multiarch OpenCV can remain installed in
     # /usr/lib/aarch64-linux-gnu. Prefer the prefix's direct lib directory so
     # headers and libraries come from the same package; normal distro installs
     # fall through to their multiarch directory.
-    expected_major = opencv_version[len("opencv"):]
     for rel in ["lib", "lib/aarch64-linux-gnu", "lib/x86_64-linux-gnu"]:
         lib_dir = root + "/" + rel
-        soname_suffix = _detect_opencv_soname_suffix(ctx, lib_dir)
-        if soname_suffix and not soname_suffix.startswith(expected_major):
-            continue
-        if _has_required_shared_libs(ctx, lib_dir, soname_suffix):
+        if _has_required_shared_libs(ctx, lib_dir, version_prefix):
             return rel
     return None
-
-def _detect_opencv_soname_suffix(ctx, lib_dir):
-    if not _path_exists(ctx, lib_dir):
-        return None
-
-    # Conda packages typically provide:
-    # - libopencv_core.so      -> libopencv_core.so.<ABI>
-    # - libopencv_core.so.<ABI> -> libopencv_core.so.<MAJOR>.<MINOR>.<PATCH>
-    #
-    # We want the `<ABI>` file name because the binary's DT_NEEDED entry uses it.
-    prefix = "libopencv_core.so."
-    best = None
-    for entry in ctx.path(lib_dir).readdir():
-        name = _basename(entry)
-        if name.startswith(prefix):
-            suffix = name[len(prefix):]
-            if _looks_like_soname_suffix(suffix):
-                if best == None:
-                    best = suffix
-                elif len(suffix) > len(best) or (len(suffix) == len(best) and suffix > best):
-                    best = suffix
-    return best
 
 def _detect_opencv(ctx, root):
     # Prefer newer OpenCV first, if present.
@@ -72,9 +45,10 @@ def _detect_opencv(ctx, root):
         include_dir = root + "/include/" + version
         core_hpp = include_dir + "/opencv2/core.hpp"
         if _path_exists(ctx, core_hpp):
-            lib_dir_rel = _pick_opencv_lib_dir(ctx, root, version)
+            version_prefix = _opencv_header_version_prefix(ctx, include_dir)
+            lib_dir_rel = _pick_opencv_lib_dir(ctx, root, version_prefix) if version_prefix else None
             if lib_dir_rel == None:
-                return None
+                continue
             return {
                 "root": root,
                 "version": version,
@@ -84,10 +58,7 @@ def _detect_opencv(ctx, root):
     return None
 
 def _build_file_content(
-        opencv_version,
-        use_conda,
-        lib_dir = "lib",
-        soname_suffix = None):
+        opencv_version):
     # Deliberately no libopencv_highgui: it pulls in GTK/Qt5, and Qt5 loaded
     # alongside our own Qt6 makes Qt's weak inline symbols collide at dynamic
     # link time. Nothing here needs a desktop window from OpenCV.
@@ -115,16 +86,13 @@ def _build_file_content(
         if rule_name.endswith(".so"):
             rule_name = rule_name[:-len(".so")]
 
-        lib_file = lib
-        if soname_suffix:
-            lib_file = lib + "." + soname_suffix
         imports.append("""\
 cc_import(
     name = "{name}",
-    shared_library = "lib/{lib_file}",
+    shared_library = "lib/{lib}",
     visibility = ["//visibility:private"],
 )
-""".format(name = rule_name, lib_file = lib_file))
+""".format(name = rule_name, lib = lib))
         deps.append(":" + rule_name)
 
     return """\
@@ -150,30 +118,27 @@ def _opencv_configure_impl(ctx):
     # Probe candidates in priority order.
     candidates = []
     if opencv_root:
-        candidates.append(("override", opencv_root))
+        candidates.append(opencv_root)
     if conda_prefix:
-        candidates.append(("conda", conda_prefix))
+        candidates.append(conda_prefix)
     # JetPack hosts commonly install their CUDA-enabled OpenCV build under
     # /usr/local while retaining Ubuntu's older runtime libraries under /usr.
     # Keep headers and shared libraries from one prefix instead of mixing the
     # two installations.
-    candidates.append(("system-local", "/usr/local"))
-    candidates.append(("system", "/usr"))
+    candidates.append("/usr/local")
+    candidates.append("/usr")
 
     chosen = None
-    chosen_kind = None
-    for (kind, root) in candidates:
+    for root in candidates:
         det = _detect_opencv(ctx, root)
         if det:
             chosen = det
-            chosen_kind = kind
             break
 
     if not chosen:
         fail("OpenCV headers not found under OPENCV_ROOT, CONDA_PREFIX, or /usr (expected include/opencv4|opencv5/opencv2/core.hpp)")
 
     opencv_version = chosen["version"]
-    use_conda = (chosen_kind == "conda")
 
     # Keep the repository small: only expose the OpenCV include tree and lib dir.
     ctx.symlink(chosen["root"] + "/include/" + opencv_version, opencv_version)
@@ -185,14 +150,7 @@ def _opencv_configure_impl(ctx):
     ctx.file("WORKSPACE", "workspace(name = \"{name}\")\n".format(name = ctx.name))
     ctx.file(
         "BUILD.bazel",
-        _build_file_content(
-            opencv_version,
-            use_conda,
-            lib_dir = "lib",
-            # System installs can carry multiple OpenCV ABIs side-by-side.
-            # Prefer the unversioned linker symlinks there so headers and libs stay aligned.
-            soname_suffix = _detect_opencv_soname_suffix(ctx, chosen["root"] + "/" + chosen["lib_dir_rel"]) if use_conda and chosen["lib_dir_rel"] else None,
-        ),
+        _build_file_content(opencv_version),
     )
 
 opencv_configure = repository_rule(
