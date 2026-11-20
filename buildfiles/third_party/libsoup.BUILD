@@ -2,8 +2,11 @@ load(":version.bzl", "SOUP_SONAME")
 
 cc_library(
     name = "libsoup",
+    # Anchor both wildcards below a literal directory. "include" is whatever
+    # HSTREAM_LIBSOUP_INCLUDE_DIR or the detected libsoup-N.N resolves to, so a
+    # leading "**" would walk whatever that turns out to be.
     hdrs = glob([
-        "include/**/*.h*",
+        "include/libsoup/**/*.h*",
         "nlohmann/**/*.h*",
     ]),
     includes = [

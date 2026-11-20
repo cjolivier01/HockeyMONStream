@@ -12,7 +12,11 @@ cc_import(name = "infer", shared_library = "lib/libnvinfer.so")
 cc_import(name = "onnx_parser", shared_library = "lib/libnvonnxparser.so")
 cc_library(
     name = "runtime",
-    hdrs = glob(["include/**/*.h"]),
+    # Only TensorRT's own headers. select_sdk() can resolve include/ to a
+    # system directory, where "include/**/*.h" both re-exports all of
+    # /usr/include under hstream_player_tensorrt/ and makes Bazel walk a tree
+    # it has no business in. tensorrt_sdk_repository.bzl pins the same set.
+    hdrs = glob(["include/Nv*.h"]),
     strip_include_prefix = "include",
     include_prefix = "hstream_player_tensorrt",
     deps = [":infer"],
