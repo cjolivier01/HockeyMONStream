@@ -54,9 +54,11 @@ def _x86_64_impl(ctx):
     ctx.symlink("package/buildTransitive/native/include", "include")
     native = "package/runtimes/linux-x64/native/"
     runtime = "libonnxruntime.so." + ctx.attr.version
-    ctx.symlink(native + "libonnxruntime.so", "lib/" + runtime)
     for library in ["libonnxruntime_providers_cuda.so", "libonnxruntime_providers_shared.so"]:
         ctx.symlink(native + library, "lib/" + library)
+    copy = ctx.execute(["cp", native + "libonnxruntime.so", "lib/" + runtime])
+    if copy.return_code:
+        fail("Failed to materialize the versioned ONNX Runtime library: " + copy.stderr)
     ctx.symlink("lib/" + runtime, "lib/libonnxruntime.so.1")
     ctx.symlink("lib/" + runtime, "lib/libonnxruntime.so")
     for notice in ["LICENSE", "ThirdPartyNotices.txt"]:
