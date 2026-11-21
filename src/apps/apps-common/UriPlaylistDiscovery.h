@@ -14,6 +14,6 @@ inline bool discovery_has_usable_duration(GstDiscovererResult result, GstClockTi
 GstClockTime discover_uri_playlist_duration(
     const gchar* uri,
     GstClockTime* video_origin = nullptr,
-    GstClockTime* stream_origin = nullptr);
+    bool* matroska_timestamps = nullptr);
 
 } // namespace hm::uri_playlist_internal

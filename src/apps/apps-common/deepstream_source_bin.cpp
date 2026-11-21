@@ -57,15 +57,16 @@ GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(
     const gchar* uri,
     GstClockTime* video_origin,
-    GstClockTime* stream_origin) {
-  if (stream_origin)
-    *stream_origin = GST_CLOCK_TIME_NONE;
+    bool* matroska_timestamps) {
+  if (matroska_timestamps)
+    *matroska_timestamps = false;
   if (video_origin)
     *video_origin = GST_CLOCK_TIME_NONE;
   struct CachedDuration {
     struct stat identity;
     GstClockTime duration;
-    GstClockTime video_origin, stream_origin;
+    GstClockTime video_origin;
+    bool matroska_timestamps;
   };
   static std::mutex cache_mutex;
   static std::map<std::string, CachedDuration> cache;
@@ -84,12 +85,13 @@ GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(
       g_free(filename);
       if (video_origin)
         *video_origin = found->second.video_origin;
-      if (stream_origin)
-        *stream_origin = found->second.stream_origin;
+      if (matroska_timestamps)
+        *matroska_timestamps = found->second.matroska_timestamps;
       return found->second.duration;
     }
   }
-  GstClockTime duration = GST_CLOCK_TIME_NONE, origin = GST_CLOCK_TIME_NONE, stream_start = GST_CLOCK_TIME_NONE;
+  GstClockTime duration = GST_CLOCK_TIME_NONE, origin = GST_CLOCK_TIME_NONE;
+  bool matroska = false;
   // Use the same video-track chapter clock as synchronization and AMD. Audio
   // tails must not change which chapter or camera frame a source start selects.
   bool discover_container = !cacheable;
@@ -100,9 +102,7 @@ GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(
       const double first = video->chapters.front().timestamp_origin_seconds;
       if (first >= 0 && first < double(G_MAXINT64) / GST_SECOND)
         origin = std::llround(first * GST_SECOND);
-      const double relative = first - video->chapters.front().container_clock_origin_seconds;
-      if (relative >= 0 && relative < double(G_MAXINT64) / GST_SECOND)
-        stream_start = std::llround(relative * GST_SECOND);
+      matroska = video->chapters.front().matroska_timestamps;
     } else
       discover_container = absl::IsNotFound(video.status()); // Audio-only source.
   }
@@ -128,13 +128,13 @@ GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(
     std::lock_guard<std::mutex> lock(cache_mutex);
     if (cache.size() >= 512)
       cache.clear();
-    cache[uri] = {after, duration, origin, stream_start};
+    cache[uri] = {after, duration, origin, matroska};
   }
   g_free(filename);
   if (video_origin)
     *video_origin = origin;
-  if (stream_origin)
-    *stream_origin = stream_start;
+  if (matroska_timestamps)
+    *matroska_timestamps = matroska;
   return duration;
 }
 
@@ -149,7 +149,8 @@ struct UriListPadProbeData {
   gboolean is_video;
   GstClockTime initial_offset;
   GstSegment physical_segment;
-  GstClockTime video_origin, stream_origin;
+  GstClockTime video_origin;
+  bool matroska_timestamps;
   GstClockTime native_interval;
   GstClockTime first_native_pts;
   guint64 native_frames;
@@ -2110,9 +2111,13 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       auto* buffer = GST_BUFFER(info->data);
       if (probe_data->physical_segment.format != GST_FORMAT_TIME || !GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer)))
         return fail_uri_playlist_initial_positioning(bin, "mixed-rate buffer has no physical chapter clock");
-      guint64 pts = 0;
-      const int sign =
-          gst_segment_to_stream_time_full(&probe_data->physical_segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer), &pts);
+      // Matroska buffers already carry track PTS. Its segment may start
+      // at an earlier AAC packet or at the video keyframe after a seek.
+      guint64 pts = GST_BUFFER_PTS(buffer);
+      const int sign = probe_data->matroska_timestamps
+          ? 1
+          : gst_segment_to_stream_time_full(
+                &probe_data->physical_segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer), &pts);
       if (sign < 0)
         return GST_PAD_PROBE_DROP;
       if (!sign)
@@ -2125,7 +2130,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // An edit list may place the first video frame after movie time zero.
       // Keep physical movie PTS for frame receipts. Trims, audio and chapter
       // accumulation use time relative to this chapter's first video frame.
-      const auto origin = probe_data->stream_origin;
+      const auto origin = probe_data->video_origin;
       if (!GST_CLOCK_TIME_IS_VALID(origin))
         return fail_uri_playlist_initial_positioning(bin, "missing or unsupported mixed-rate video track origin");
       if (pts < origin && !probe_data->is_video) {
@@ -2166,8 +2171,19 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       if ((GST_CLOCK_TIME_IS_VALID(duration) &&
            (duration > interval ? duration - interval : interval - duration) > tolerance) ||
           !GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(expected) ||
-          (pts > expected ? pts - expected : expected - pts) > tolerance)
+          (pts > expected ? pts - expected : expected - pts) > tolerance) {
+        GST_WARNING_OBJECT(
+            bin->src_elem,
+            "Chapter %u frame %" G_GUINT64_FORMAT " has pts %" G_GUINT64_FORMAT " expected %" G_GUINT64_FORMAT
+            " duration %" G_GUINT64_FORMAT " interval %" G_GUINT64_FORMAT,
+            probe_data->uri_index,
+            probe_data->native_frames,
+            pts,
+            expected,
+            duration,
+            interval);
         return fail_uri_playlist_initial_positioning(bin, "mixed-rate camera deviates from its native frame clock");
+      }
       ++probe_data->native_frames;
     }
     if (!probe_data->is_video) {
@@ -2791,7 +2807,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       g_mutex_unlock(mutex);
       if (bin->config && bin->config->frame_decimation > 0)
         hm::uri_playlist_internal::discover_uri_playlist_duration(
-            bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->stream_origin);
+            bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->matroska_timestamps);
       probe_data->is_video = TRUE;
       event_probe_id = gst_pad_add_probe(
           pad,
@@ -2894,7 +2910,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
         g_mutex_unlock(mutex);
         if (bin->config && bin->config->frame_decimation > 0)
           hm::uri_playlist_internal::discover_uri_playlist_duration(
-              bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->stream_origin);
+              bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->matroska_timestamps);
         probe_data->is_video = FALSE;
         event_probe_id = gst_pad_add_probe(
             pad,
@@ -4847,8 +4863,13 @@ gboolean configure_uri_playlist_initial_offsets(
     }
     plans[source_id].target = target;
     while (plans[source_id].index < source->num_uri_list) {
+      bool matroska = false;
       const GstClockTime duration = hm::uri_playlist_internal::discover_uri_playlist_duration(
-          source->uri_list[plans[source_id].index], nullptr, mixed_rates ? &plans[source_id].origin : nullptr);
+          source->uri_list[plans[source_id].index], mixed_rates ? &plans[source_id].origin : nullptr, &matroska);
+      // Seek at or before the target keyframe. The decoded trim uses the
+      // actual track PTS even if an early audio track changes segment zero.
+      if (matroska)
+        plans[source_id].origin = 0;
       if (!GST_CLOCK_TIME_IS_VALID(duration) || duration > G_MAXUINT64 - plans[source_id].skipped_base) {
         break;
       }

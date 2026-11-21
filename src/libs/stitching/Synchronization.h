@@ -18,9 +18,8 @@ struct CameraChapterSlice {
   double start_seconds, duration_seconds;
   // Physical video PTS origin. Slice bounds above are relative to this origin.
   double timestamp_origin_seconds{0};
-  // Matroska stream time is relative to the container start, while MP4
-  // edit lists express it on the movie timeline.
-  double container_clock_origin_seconds{0};
+  // Matroska demuxed PTS are already expressed on the track timeline.
+  bool matroska_timestamps{false};
 };
 struct CameraRecordingWindow {
   std::vector<CameraChapterSlice> chapters;

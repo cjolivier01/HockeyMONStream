@@ -1974,7 +1974,7 @@ int main(int argc, char** argv) {
       return result;
     const auto offset_mkv = tmpdir / "offset.mkv";
     if (!run_shell(
-            "ffmpeg -v error -y -i " + shell_quote(fast) + " -map 0:v:0 -c:v copy -output_ts_offset 2 " +
+            "ffmpeg -v error -y -i " + shell_quote(fast) + " -map 0:v:0 -map 0:a:0 -c copy -output_ts_offset 2 " +
             shell_quote(offset_mkv)))
       return 1;
     if (const auto result = run_decode_compose_encode(
