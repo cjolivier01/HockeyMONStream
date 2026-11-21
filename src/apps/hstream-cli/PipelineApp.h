@@ -276,7 +276,8 @@ class PipelineApplication {
   absl::Status configure_preview_overlay_producers(const std::vector<std::shared_ptr<HmApp>>& app_contexts);
   absl::Status configure_source_preview_sinks(
       const std::vector<std::shared_ptr<HmApp>>& app_contexts,
-      bool sources_only = false);
+      bool sources_only = false,
+      bool restarting_after_calibration = false);
 
  private:
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;

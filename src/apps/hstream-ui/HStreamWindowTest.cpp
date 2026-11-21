@@ -19302,11 +19302,11 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       if (completed_at < 0)
         completed_at = timer.elapsed();
       if (timer.elapsed() - completed_at > 10000) {
-        if (stitching_only && log.contains("--ui-preview-active=stitched") && log.contains("Recreate pipeline") &&
+        if (stitching_only && log.contains("--ui-preview-active=stitched") &&
             !expect(
                 log.indexOf("GPU preview ready channel=stitched") > log.indexOf("Recreate pipeline") &&
                     !log.contains("HSTREAM_PREVIEW_FATAL"),
-                "The first stitched GPU frame must come from the playback graph and continue after restart"))
+                "Stitched playback must present on the continuing graph or after the calibration graph is replaced"))
           return false;
         const YAML::Node config =
             YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());

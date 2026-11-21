@@ -2124,7 +2124,7 @@ absl::Status PipelineApplication::createPipelines(
     for (const auto& context : app_contexts)
       HM_RETURN_IF_ERROR(configure_paced_local_playback(*context));
     HM_RETURN_IF_ERROR(configure_preview_overlay_producers(app_contexts));
-    HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
+    HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts, /*sources_only=*/false, !restart_candidates.empty()));
   }
   if (web_preview_)
     HM_RETURN_IF_ERROR(
@@ -2405,7 +2405,8 @@ absl::Status PipelineApplication::configure_preview_overlay_producers(
 
 absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    bool sources_only) {
+    bool sources_only,
+    bool restarting_after_calibration) {
   if (!ui_preview_window_ids_.empty()) {
     if (!sources_only) {
       preview_routes_.forget_routes();
@@ -2622,11 +2623,9 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
       if (!probe_pad)
         return false;
-      // Calibration uses reference-time samples and immediately rebuilds the
-      // graph. The playback graph owns the stitched display from its first frame.
-      auto* context = app_contexts.front().get();
-      const bool calibration_sample = channel == "stitched" &&
-          context->configurator().stitching_calibration_required() && !stitch_frame_rewound_contexts_.count(context);
+      // The retiring graph's reference sample must not claim the playback
+      // window. A zero-time unrestricted solve can continue on the same graph.
+      const bool calibration_sample = channel == "stitched" && restarting_after_calibration;
       auto* probe_state =
           new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink)), realtime != FALSE, calibration_sample};
       gst_pad_add_probe(
