@@ -499,6 +499,13 @@ void ProjectionCropDialog::loadPreview() {
       if (config_contents.isEmpty())
         throw std::invalid_argument("Unreadable game settings");
       const auto config = YAML::Load(config_contents.toStdString());
+      const auto geometry =
+          hm::stitching::HuginProject::CheckSavedRecordingGeometry(game_directory_.toStdString(), config);
+      if (!geometry.ok()) {
+        previewFailed(
+            QString::fromStdString(std::string(geometry.message())) + ". Recalibrate before adjusting the crop.");
+        return;
+      }
       const auto ui = config["hstream_ui"];
       if (ui && !ui.IsNull() && !ui.IsMap())
         throw std::invalid_argument("Invalid UI settings");
