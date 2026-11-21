@@ -268,7 +268,7 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
         continue;
       }
       const auto& surface = batch->surfaceList[frame->batch_id];
-      if (surface.width != (frame->source_id ? 192u : 256u) || surface.height != (frame->source_id ? 96u : 144u) ||
+      if (surface.width != (frame->source_id ? 384u : 512u) || surface.height != (frame->source_id ? 216u : 288u) ||
           surface.colorFormat != NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709 &&
               surface.colorFormat != NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020)
         ++stats->invalid_metadata_batches;
@@ -1500,11 +1500,9 @@ int run_mixed_packed_inputs(const fs::path& root) {
   NvDsSourceConfig configs[2]{};
   for (guint i = 0; i < 2; ++i) {
     const auto file = root / ("packed-" + std::to_string(i) + ".mp4");
-    if (!make_synthetic_mp4(file, 1, 0, 440, true, 0, i ? "192x96" : "256x144"))
-      return 1;
     configure_uri_multiple_source(configs[i], {to_file_uri(file)}, i);
-    configs[i].stitch_input_width = i ? 192 : 256;
-    configs[i].stitch_input_height = i ? 96 : 144;
+    configs[i].stitch_input_width = i ? 384 : 512;
+    configs[i].stitch_input_height = i ? 216 : 288;
     configs[i].video_format = g_strdup("RGB10A2_LE");
     configs[i].stitch_converter_buffers = 3;
   }
@@ -1517,7 +1515,19 @@ int run_mixed_packed_inputs(const fs::path& root) {
     if (buffers != 3)
       return 2;
   }
-  g_object_set(sources.streammux, "batch-size", 2, "sync-inputs", FALSE, nullptr);
+  g_object_set(
+      sources.streammux,
+      "batch-size",
+      2,
+      "batched-push-timeout",
+      1000000,
+      "sync-inputs",
+      FALSE,
+      "frame-num-reset-on-stream-reset",
+      FALSE,
+      "frame-num-reset-on-eos",
+      FALSE,
+      nullptr);
   auto* pipeline = gst_pipeline_new("native-packed-stitch-inputs");
   auto* sink = gst_element_factory_make("fakesink", nullptr);
   g_object_set(sink, "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, nullptr);
@@ -1874,6 +1884,8 @@ int main(int argc, char** argv) {
   g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+  if (argc == 3 && std::string(argv[1]) == "--packed-inputs-only")
+    return run_mixed_packed_inputs(fs::absolute(argv[2]));
   if (argc == 2 && std::string(argv[1]) == "--webrtc-audio-pressure-only")
     return run_webrtc_audio_queue(true, false, true, true);
   if (argc == 2 && std::string(argv[1]) == "--webrtc-audio-queue-only") {
@@ -1902,6 +1914,10 @@ int main(int argc, char** argv) {
 
   const fs::path a0 = tmpdir / "left_0.mp4";
   if (mixed_only || (!decoder_matrix_only && !startup_seek_only)) {
+    for (guint i = 0; i < 2; ++i)
+      if (!make_synthetic_mp4(
+              tmpdir / ("packed-" + std::to_string(i) + ".mp4"), 1, 0, 440, true, 0, i ? "384x216" : "512x288"))
+        return 1;
     if (const auto result = run_mixed_packed_inputs(tmpdir))
       return result;
     const auto fast = tmpdir / "fast.mp4";
