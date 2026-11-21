@@ -6919,6 +6919,7 @@ void Configurator::apply_frame_offsets_and_sizes(
     set_stream_offsets_ |= rfo != 0.0;
     pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
     if (right_info.width * right_info.height > (long)area) {
+      area = right_info.width * right_info.height;
       ww = right_info.width;
       hh = right_info.height;
     }

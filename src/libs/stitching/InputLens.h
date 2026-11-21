@@ -4,12 +4,19 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "yaml-cpp/yaml.h"
 
 namespace hm::stitching {
+
+using StitchSourceSizes = std::array<std::array<int, 2>, 2>;
+// Consume the source-size suffix of versions 22-25, restoring the earlier
+// provenance layout for both the full and lightweight canvas readers.
+absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(std::vector<std::string>& lines);
+absl::Status CheckStitchSourceSizes(const std::optional<StitchSourceSizes>& expected, const StitchSourceSizes& actual);
 
 // Source-image optics, independent of the panorama's output projection.
 // Offsets use fractions of the full source width/height, so a lens calibration

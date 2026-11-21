@@ -780,6 +780,9 @@ absl::StatusOr<CanvasProvenance> read_canvas_provenance(const fs::path& game_dir
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
+  auto sizes = ReadStitchSourceSizeSuffix(lines);
+  if (!sizes.ok())
+    return sizes.status();
   for (int version = 18; version <= 21; ++version) {
     if (lines.empty() || lines.front() != "version=" + std::to_string(version))
       continue;

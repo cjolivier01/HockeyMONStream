@@ -751,6 +751,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
         control_masks.canvas_height() != artifacts->canvas_size.height) {
       return absl::FailedPreconditionError("Control-mask loading changed the validated stitched canvas dimensions");
     }
+    source_sizes_ = artifacts->source_sizes;
     hugin_generation_id_ = std::move(artifacts->generation_id);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     artifacts->artifact_lock.reset();
@@ -965,20 +966,15 @@ absl::Status StitcherPriv::prepare_high_bit_inputs(
             static_cast<int>(incoming_surface_left->colorFormat),
             static_cast<int>(incoming_surface_right->colorFormat)));
   }
-  if (incoming_surface_left.width() != incoming_surface_right.width() ||
-      incoming_surface_left.height() != incoming_surface_right.height()) {
-    return absl::FailedPreconditionError("High-bit-depth stitching requires equal left/right input dimensions");
-  }
-
-  const int width = static_cast<int>(incoming_surface_left.width());
-  const int height = static_cast<int>(incoming_surface_left.height());
-  auto ensure_input = [width, height](std::unique_ptr<hm::CudaMat<half4>>& input) {
+  auto ensure_input = [](std::unique_ptr<hm::CudaMat<half4>>& input, hm::surface::Surface surface) {
+    const int width = static_cast<int>(surface.width());
+    const int height = static_cast<int>(surface.height());
     if (!input || input->width() != width || input->height() != height) {
       input = std::make_unique<hm::CudaMat<half4>>(/*batch_size=*/1, width, height, /*pixel_channels=*/1);
     }
     return input && input->is_valid();
   };
-  if (!ensure_input(high_bit_left_) || !ensure_input(high_bit_right_)) {
+  if (!ensure_input(high_bit_left_, incoming_surface_left) || !ensure_input(high_bit_right_, incoming_surface_right)) {
     return absl::ResourceExhaustedError("Could not allocate FP16 RGB stitch inputs");
   }
 
@@ -2453,6 +2449,12 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
 
+    {
+      absl::MutexLock lk(&stitcher_mu_);
+      HM_RETURN_IF_ERROR(stitching::CheckStitchSourceSizes(source_sizes_, {{{
+          static_cast<int>(incoming_surface_left.width()), static_cast<int>(incoming_surface_left.height())}, {
+          static_cast<int>(incoming_surface_right.width()), static_cast<int>(incoming_surface_right.height())}}}));
+    }
     if (canvas_width_hint_ && canvas_height_hint_) {
       if (canvas_width_hint_ > outgoing_surface.width() || canvas_height_hint_ > outgoing_surface.height()) {
         return absl::FailedPreconditionError("Output surface is smaller than expected stitched canvas");
@@ -2520,10 +2522,8 @@ absl::Status StitcherPriv::GenerateOutput(
       // and minimized blending still return owned output, which is cached below.
       if (fused_rgb10_remap_) {
         if (!isRgb10A2ColorFormat(incoming_surface_left->colorFormat) ||
-            !isRgb10A2ColorFormat(incoming_surface_right->colorFormat) ||
-            incoming_surface_left.width() != incoming_surface_right.width() ||
-            incoming_surface_left.height() != incoming_surface_right.height())
-          return absl::FailedPreconditionError("Fused high-bit stitching requires equal-sized RGB10A2 inputs");
+            !isRgb10A2ColorFormat(incoming_surface_right->colorFormat))
+          return absl::FailedPreconditionError("Fused high-bit stitching requires RGB10A2 inputs");
         // Non-owning pitched views: input GstBuffers remain retained until this stream completes.
         auto packed_view = [](hm::surface::Surface surface) {
           return hm::CudaMat<Rgb10A2>(

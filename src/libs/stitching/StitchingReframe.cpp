@@ -520,9 +520,11 @@ absl::StatusOr<HuginProject::CanvasProvenance> source_provenance(const fs::path&
       contents.rfind("version=14\n", 0) != 0 && contents.rfind("version=15\n", 0) != 0 &&
       contents.rfind("version=16\n", 0) != 0 && contents.rfind("version=17\n", 0) != 0 &&
       contents.rfind("version=18\n", 0) != 0 && contents.rfind("version=19\n", 0) != 0 &&
-      contents.rfind("version=20\n", 0) != 0 && contents.rfind("version=21\n", 0) != 0)
+      contents.rfind("version=20\n", 0) != 0 && contents.rfind("version=21\n", 0) != 0 &&
+      contents.rfind("version=22\n", 0) != 0 && contents.rfind("version=23\n", 0) != 0 &&
+      contents.rfind("version=24\n", 0) != 0 && contents.rfind("version=25\n", 0) != 0)
     return absl::FailedPreconditionError(
-        "Reframing requires complete version-10 through version-21 alignment provenance");
+        "Reframing requires complete version-10 through version-25 alignment provenance");
   const auto provenance = HuginProject::ReadCanvasProvenanceLocked(directory);
   if (!provenance.ok())
     return provenance.status();

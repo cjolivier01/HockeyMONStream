@@ -234,6 +234,7 @@ class StitcherPriv : public STITCH_PRIV_BASE {
   std::unique_ptr<STITCHER_FP32> stitcher_fp32_ ABSL_GUARDED_BY(stitcher_mu_);
   std::unique_ptr<STITCHER_FP16> stitcher_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
   std::unique_ptr<STITCHER_RGB10_FP16> stitcher_rgb10_fp16_ ABSL_GUARDED_BY(stitcher_mu_);
+  std::optional<stitching::StitchSourceSizes> source_sizes_ ABSL_GUARDED_BY(stitcher_mu_);
   std::string hugin_generation_id_ ABSL_GUARDED_BY(stitcher_mu_);
   bool validated_artifact_load_failed_{false} ABSL_GUARDED_BY(stitcher_mu_);
   std::string config_file_;

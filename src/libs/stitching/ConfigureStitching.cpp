@@ -2179,7 +2179,8 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     size_t max_output_width,
     SeamValidationMode seam_validation,
     const HuginProject::ArtifactLock& artifact_lock,
-    CanvasSize* validated_canvas = nullptr) {
+    CanvasSize* validated_canvas = nullptr,
+    std::optional<StitchSourceSizes>* source_sizes = nullptr) {
   bool up_to_date = test_dependency_tree(artifact_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
@@ -2230,6 +2231,8 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     }
     return provenance.status();
   }
+  if (source_sizes)
+    *source_sizes = *provenance ? (*provenance)->source_sizes : std::nullopt;
   const auto compatibility = check_canvas_provenance_compatibility(
       *provenance, canvas_size, max_output_width, live_stitch_max_canvas_dimension());
   if (!compatibility.compatible) {
@@ -2459,6 +2462,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
             algorithm_compatibility, check_stitch_algorithm_provenance_compatibility(game_dir, *provenance));
         if (algorithm_compatibility.compatible) {
           return LockedStitchingArtifacts{
+              .source_sizes = *provenance ? (*provenance)->source_sizes : std::nullopt,
               .artifact_lock = std::move(*artifact_lock),
               .canvas_size = previously_validated->canvas_size,
               .generation_id = previously_validated->generation_id,
@@ -2472,6 +2476,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
       return artifact_revision.status();
   }
   CanvasSize canvas_size;
+  std::optional<StitchSourceSizes> source_sizes;
   std::string validated_bindings;
   for (int attempt = 0; attempt < 2; ++attempt) {
     auto bindings_before_validation = stitch_artifact_binding_revision_locked(game_dir);
@@ -2489,7 +2494,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
             max_output_width,
             validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
             **artifact_lock,
-            &canvas_size));
+            &canvas_size, &source_sizes));
     if (!configured)
       return LockedStitchingArtifacts{};
     std::string bindings_after_validation;
@@ -2539,7 +2544,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
               max_output_width,
               validate_generation_content ? SeamValidationMode::kContent : SeamValidationMode::kLayoutOnly,
               **artifact_lock,
-              &snapshot_canvas));
+              &snapshot_canvas, &source_sizes));
       if (!snapshot_configured)
         return LockedStitchingArtifacts{};
       auto snapshot_identity = stitch_artifact_content_identity_locked(snapshot->directory());
@@ -2579,6 +2584,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     }
   }
   return LockedStitchingArtifacts{
+      .source_sizes = source_sizes,
       .artifact_lock = std::move(*artifact_lock),
       .load_snapshot = std::move(load_snapshot),
       .canvas_size = {.width = canvas_size.width, .height = canvas_size.height},

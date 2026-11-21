@@ -940,6 +940,12 @@ for line in sys.stdin:
   static hm::stitching::StitchCameraSelection currentCameraSelection(HStreamWindow* window) {
     return window->stitchCameraSelection();
   }
+  static void setCameraSizes(HStreamWindow* window) {
+    auto result = window->camera_optics_result_;
+    result.camera.input_cameras.at("left.mp4").source_size = std::array<int, 2>{7680, 4320};
+    result.camera.input_cameras.at("right.mp4").source_size = std::array<int, 2>{3840, 2160};
+    window->updateInputCameraTabs(result);
+  }
   static void discoverCameraRoles(HStreamWindow* window, bool reverse) {
     auto result = window->camera_optics_result_;
     result.source_metadata["left.mp4"].role = reverse ? "right" : "left";
@@ -23751,6 +23757,11 @@ int main(int argc, char** argv) {
             tabs->tabText(2) == "Left camera" && tabs->tabText(3) == "Right camera" && tabs->isTabVisible(3) &&
                 left->property("cameraSource") == "left.mp4" && right->property("cameraSource") == "right.mp4",
             "Adding the left camera must order tabs by position and retain source identities"))
+      return 1;
+    HStreamWindowTestAccess::setCameraSizes(&window);
+    if (!expect(require_child<QTabWidget>(&window, "camera1ControlTabs")->tabText(0) == "Optics (7680×4320)" &&
+                    require_child<QTabWidget>(&window, "camera2ControlTabs")->tabText(0) == "Optics (3840×2160)",
+                "Optics labels must follow the resolution of each camera"))
       return 1;
     auto* left_start = require_child<QWidget>(&window, "camera1StartControls");
     auto* right_start = require_child<QWidget>(&window, "camera2StartControls");

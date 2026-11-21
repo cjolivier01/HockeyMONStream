@@ -9131,7 +9131,7 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
       continue;
     const auto& source = camera_optics_sources_[index];
     const auto found = result.source_metadata.find(source);
-    const hm::stitching::InputCameraMetadata metadata =
+    hm::stitching::InputCameraMetadata metadata =
         found == result.source_metadata.end() ? hm::stitching::InputCameraMetadata{} : found->second;
     const auto label = metadata.role == "left" ? QString("Left camera")
         : metadata.role == "right"             ? QString("Right camera")
@@ -9142,6 +9142,18 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
     camera_start_widgets_[index]->setStart(hm::stitching::CameraSourceStart(camera_source_starts_, {}, source));
     camera_start_widgets_[index]->setEnabled(!running);
     camera_start_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
+    const auto& optics = result.camera.input_cameras.at(source);
+    auto* controls = findChild<QTabWidget*>(QString("camera%1ControlTabs").arg(index + 1));
+    controls->setTabText(0, optics.source_size
+        ? QString("Optics (%1×%2)").arg((*optics.source_size)[0]).arg((*optics.source_size)[1])
+        : QString("Optics"));
+    if (camera_optics_sources_.size() == 2) {
+      const auto& other = result.camera.input_cameras.at(camera_optics_sources_[1 - index]);
+      if (optics.source_size && other.source_size && optics.source_size != other.source_size &&
+          optics.horizontal_fov == other.horizontal_fov && optics.vertical_fov == other.vertical_fov &&
+          optics.input_lens == other.input_lens)
+        metadata.recording_message += "\nCamera resolutions differ. Verify the field of view for each recording mode.";
+    }
     camera_optics_widgets_[index]->setCamera(result.camera.for_source(source), metadata);
     camera_optics_widgets_[index]->setEnabled(!running);
     camera_optics_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));

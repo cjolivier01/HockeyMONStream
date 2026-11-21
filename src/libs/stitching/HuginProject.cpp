@@ -374,6 +374,9 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
+  auto sizes = ReadStitchSourceSizeSuffix(lines);
+  if (!sizes.ok())
+    return sizes.status();
   // Versions 18-21 append the match-selection mode to the corresponding
   // 14-17 layout. Older artifacts retain their exact legacy interpretation.
   for (int version = 18; version <= 21; ++version) {
@@ -392,6 +395,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
     auto parsed = parse_canvas_provenance(previous.str());
     if (!parsed.ok())
       return parsed.status();
+    parsed->source_sizes = *sizes;
     parsed->control_point_selection = selection;
     return parsed;
   }
@@ -3233,8 +3237,8 @@ absl::Status render_staged_project(
   provenance.imbue(std::locale::classic());
   provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
              << (options.input_cameras.empty()
-                     ? (options.manual_control_point_fingerprint.empty() ? "version=18\n" : "version=19\n")
-                     : (options.manual_control_point_fingerprint.empty() ? "version=20\n" : "version=21\n"))
+                     ? (options.manual_control_point_fingerprint.empty() ? "version=22\n" : "version=23\n")
+                     : (options.manual_control_point_fingerprint.empty() ? "version=24\n" : "version=25\n"))
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -3290,6 +3294,13 @@ absl::Status render_staged_project(
   provenance << "control-point-filtering=" << (options.control_point_filtering.epipolar_ransac ? 1 : 0) << ','
              << (options.control_point_filtering.homography_consistency ? 1 : 0) << '\n';
   provenance << "control-point-selection=" << ControlPointSelectionName(options.control_point_selection) << '\n';
+  for (int camera = 0; camera < 2; ++camera) {
+    const auto size = read_png_dimensions(staging / (camera ? "right.png" : "left.png"));
+    if (!size.ok())
+      return size.status();
+    provenance << "source-" << camera << "-width=" << size->first << '\n'
+               << "source-" << camera << "-height=" << size->second << '\n';
+  }
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;

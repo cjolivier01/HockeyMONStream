@@ -48,6 +48,7 @@ class HuginProject {
   };
 
   struct CanvasProvenance {
+    std::optional<StitchSourceSizes> source_sizes;
     size_t max_output_width{0};
     size_t max_canvas_dimension{0};
     size_t source_canvas_width{0};

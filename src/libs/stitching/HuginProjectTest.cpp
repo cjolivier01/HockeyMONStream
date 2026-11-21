@@ -445,11 +445,12 @@ bool test_player_selection_provenance(const std::filesystem::path& source, const
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
   if (!expect(
-          lines.size() == 34 && lines[0] == "version=18" && lines[32] == "control-point-filtering=1,1" &&
-              lines.back() == "control-point-selection=legacy",
+          lines.size() == 38 && lines[0] == "version=22" && lines[32] == "control-point-filtering=1,1" &&
+              lines[33] == "control-point-selection=legacy" && lines[34] == "source-0-width=64" &&
+              lines[37] == "source-1-height=48",
           "new Hugin output must record geometric filters and match selection"))
     return false;
-  lines.pop_back();
+  lines.resize(33);
   lines[0] = "version=14";
   // Keep this parser fixture compatible with the generated mapping dimensions
   // independently of the machine's optional live canvas cap.
@@ -846,7 +847,7 @@ bool test_reframe_publication(const std::filesystem::path& root) {
     provenance.replace(start, provenance.find('\n', start) - start, key + (index == 0 ? "10" : "0"));
   }
   hm::stitching::StitchInputCameras source_optics{{"left.mp4", {125.12, 70.36, {}}}, {"right.mp4", {97.07, 54.59, {}}}};
-  provenance.replace(0, std::string("version=18").size(), "version=20");
+  provenance.replace(0, std::string("version=22").size(), "version=24");
   provenance.insert(
       provenance.find("control-point-filtering="),
       "input-cameras=" + SerializeStitchInputCameras(source_optics) + "\n");
