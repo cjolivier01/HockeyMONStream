@@ -179,6 +179,12 @@ void remove_completed_experiments(StitchingExperimentDialog& dialog, bool confir
   require(prompted && safe_default && correct_count, "Completed deletion must confirm its scope with Cancel default");
 }
 
+// A shell fixture truncates before it writes, so a poll can see an empty file.
+QByteArray read_if_present(const QString& path) {
+  QFile file(path);
+  return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
 QByteArray read(const QString& path) {
   QFile file(path);
   require(file.open(QIODevice::ReadOnly), "Cannot read fixture");
@@ -3732,6 +3738,259 @@ void exercise_stale_completed_removal(const QString& game, const QString& root) 
   dialog.reject();
 }
 
+void write_browse_inspection(const QString& directory, const QString& invalidation_id, const QString& game) {
+  require(QDir().mkpath(directory), "Cannot create browse inspection directory");
+  for (const char* name : {"left_0.jpg", "right_0.jpg"})
+    require(
+        cv::imwrite((directory + "/" + name).toStdString(), cv::Mat(24, 32, CV_8UC3, cv::Scalar(40, 90, 140))),
+        "Cannot write browse thumbnail fixture");
+  write(
+      directory + "/frames.yaml",
+      QString("version: 1\ninvalidation_id: %1\nexpected_pair_count: 1\npairs:\n  - index: 0\n"
+              "    left: {path: %2/left.mp4, source_seconds: 0.5}\n"
+              "    right: {path: %2/right.mp4, source_seconds: 0.5}\n")
+          .arg(invalidation_id)
+          .arg(game)
+          .toUtf8());
+}
+
+// A running batch owns the GPU and the store, not the operator's attention.
+// Finished candidates stay selectable, inspectable and readable throughout.
+void exercise_inspection_during_batch(const QString& game, const QString& root) {
+  const QString fixtures = root + "/browse-artifacts";
+  require(QDir().mkpath(fixtures), "Cannot create browse artifacts");
+  for (const char* name :
+       {"mapping_0000.tif",
+        "mapping_0000_x.tif",
+        "mapping_0000_y.tif",
+        "mapping_0001.tif",
+        "mapping_0001_x.tif",
+        "mapping_0001_y.tif"})
+    require(
+        cv::imwrite((fixtures + "/" + name).toStdString(), cv::Mat(8, 8, CV_16UC1, cv::Scalar(1))),
+        "Cannot write browse TIFF fixture");
+  require(
+      cv::imwrite((fixtures + "/seam_file.png").toStdString(), cv::Mat(8, 8, CV_8UC1, cv::Scalar(255))),
+      "Cannot write browse seam fixture");
+  write(fixtures + "/hm_project.pto", "browse fixture geometry");
+  write(fixtures + "/autooptimiser_out.pto", "browse fixture geometry");
+  const QString runner = root + "/browse-runner.sh";
+  const QString holding = root + "/browse-holding";
+  const QString release = root + "/browse-release";
+  const QString preview_started = root + "/browse-preview-started";
+  const QString preview_release = root + "/browse-preview-release";
+  // The middle candidate holds the batch open; the others complete at once.
+  // A preview likewise holds until released, so its fences can be observed.
+  write(
+      runner,
+      "#!/bin/sh\ncase \" $* \" in\n*' --enable-sinks=RENDER '*)\n"
+      "printf '%s' \"$HM_MAX_CONTROL_POINTS\" > \"$HSTREAM_TEST_PREVIEW_STARTED\"\n"
+      "while [ ! -f \"$HSTREAM_TEST_PREVIEW_RELEASE\" ]; do sleep 0.05; done\nexit 0;;\nesac\n"
+      "echo \"solving with $HM_MAX_CONTROL_POINTS control points\"\n"
+      "if [ \"$HM_MAX_CONTROL_POINTS\" = \"150\" ]; then\n"
+      "  touch \"$HSTREAM_TEST_HOLDING\"\n"
+      "  while [ ! -f \"$HSTREAM_TEST_RELEASE\" ]; do sleep 0.05; done\n"
+      "fi\n"
+      "cp \"$HSTREAM_TEST_ARTIFACTS\"/* \"$HM_GAME_DIR/$2/_hockeymon/\"\n");
+  require(
+      QFile::setPermissions(runner, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner),
+      "Cannot make browse runner executable");
+  auto environment = QProcessEnvironment::systemEnvironment();
+  environment.insert("HM_OUTPUT_WORK_DIR", root + "/browse-output");
+  environment.insert("HSTREAM_TEST_ARTIFACTS", fixtures);
+  environment.insert("HSTREAM_TEST_HOLDING", holding);
+  environment.insert("HSTREAM_TEST_RELEASE", release);
+  environment.insert("HSTREAM_TEST_PREVIEW_STARTED", preview_started);
+  environment.insert("HSTREAM_TEST_PREVIEW_RELEASE", preview_release);
+  // A completed main calibration gives the matrix a row that is complete and
+  // has both inspection data and a still, yet must stay fenced for the whole
+  // batch: its workspace is the selected game itself.
+  const QString main_inspection = game + "/_hockeymon/calibration-frame-inspection/fixture-main";
+  write_browse_inspection(main_inspection, "fixture-main", game);
+  QImage main_still(320, 180, QImage::Format_RGB32);
+  main_still.fill(Qt::cyan);
+  require(main_still.save(game + "/_hockeymon/s.png"), "Cannot write browse main still fixture");
+  {
+    auto config = YAML::Load(read(game + "/_hockeymon/config.yaml").toStdString());
+    auto calibration = config["hstream_ui"]["stitching_calibration"];
+    calibration["status"] = "complete";
+    calibration["invalidation_id"] = "fixture-main";
+    calibration["control_points"] = 100;
+    calibration["frame_count"] = 1;
+    write(game + "/_hockeymon/config.yaml", QByteArray::fromStdString(YAML::Dump(config)));
+  }
+  StitchingExperimentDialog dialog(
+      game, runner, root, root + "/_hockeymon/config.yaml", environment, 100, 1, "00:00:00");
+  dialog.show();
+  widget<QLineEdit>(dialog, "stitchExperimentControlPoints")->setText("100,150,200");
+  add_options(dialog);
+  auto* table = widget<QTableWidget>(dialog, "stitchExperimentCandidates");
+  auto* status = widget<QLabel>(dialog, "stitchExperimentStatus");
+  auto* inspect = widget<QPushButton>(dialog, "inspectStitchExperimentFramesButton");
+  auto* view_log = widget<QPushButton>(dialog, "viewStitchExperimentRunnerLogButton");
+  auto* still = widget<QWidget>(dialog, "stitchExperimentStillPreview");
+  require(
+      table->rowCount() == 4 && table->item(0, 0)->text() == "Main calibration",
+      "Browse fixture must offer the main calibration and three candidates");
+  widget<QPushButton>(dialog, "startStitchExperimentBatchButton")->click();
+  require(
+      wait_until([&] { return QFile::exists(holding) && table->item(1, 5)->text() == "Ready"; }, 30000),
+      "The first candidate did not finish before the second held the batch");
+
+  const auto store = OpenStitchingExperimentStore(game.toStdString());
+  require(store.ok(), "Cannot open the running batch's history");
+  const auto catalog = LoadStitchingExperimentStore(*store);
+  require(catalog.ok(), "Cannot read the running batch's history");
+  require(catalog->experiments.size() == 3, "The running batch must have three catalog rows");
+  // Every row gets inspection data and a still, so a disabled Inspect button or
+  // a hidden still can only mean the fence caught it, never missing data.
+  QImage saved_still(320, 180, QImage::Format_RGB32);
+  saved_still.fill(Qt::magenta);
+  bool wrote_finished = false;
+  for (const auto& row : catalog->experiments) {
+    const QString directory = QString::fromStdString(row.workspace.game_directory.string());
+    write_browse_inspection(
+        directory + "/_hockeymon/calibration-frame-inspection/" + QString::fromStdString(row.workspace.invalidation_id),
+        QString::fromStdString(row.workspace.invalidation_id),
+        game);
+    require(saved_still.save(directory + "/_hockeymon/s.png"), "Cannot write browse still fixture");
+    wrote_finished |= row.workspace.settings.control_points == 100;
+  }
+  require(wrote_finished, "The finished candidate is missing from the catalog");
+
+  const auto shows_still = [&]() {
+    if (!still->isVisible())
+      return false;
+    const auto image = still->grab().toImage();
+    return !image.isNull() && image.pixelColor(image.width() / 2, image.height() / 2) == QColor(Qt::magenta);
+  };
+  table->selectRow(1);
+  QCoreApplication::processEvents();
+  const QString screenshot_dir = qEnvironmentVariable("HSTREAM_TEST_SCREENSHOT_DIR");
+  if (!screenshot_dir.isEmpty()) {
+    dialog.resize(1800, 1000);
+    widget<QSplitter>(dialog, "stitchExperimentSplitter")->setSizes({1000, 760});
+    (void)wait_until(shows_still, 5000);
+    require(dialog.grab().save(screenshot_dir + "/qt-batch-browse.png"), "Cannot capture batch browsing");
+  }
+  require(table->isEnabled(), "A running batch must leave the candidate table selectable");
+  require(
+      table->currentRow() == 1 && table->item(2, 5)->text() == "Calibrating…",
+      "Selecting a finished candidate must hold while another one calibrates");
+  require(inspect->isEnabled(), "A finished candidate's frames must stay inspectable during a batch");
+  require(view_log->isEnabled(), "A finished candidate's retained runner log must stay readable during a batch");
+  require(
+      inspect->toolTip().startsWith("Show the exact camera pairs"),
+      "An inspectable row must not claim its workspace is in use");
+  for (const char* name :
+       {"addStitchExperimentsToBatchButton",
+        "startStitchExperimentBatchButton",
+        "removeStitchExperimentFromBatchButton",
+        "clearStitchExperimentBatchButton",
+        "previewStitchExperimentButton",
+        "applyStitchExperimentButton"})
+    require(!widget<QPushButton>(dialog, name)->isEnabled(), "Browsing during a batch must not unlock its actions");
+
+  bool inspected = false;
+  QTimer::singleShot(0, &dialog, [&]() {
+    if (auto* viewer = dialog.findChild<QDialog*>("stitchExperimentFrameInspector")) {
+      auto* frames = viewer->findChild<QTableWidget*>("stitchExperimentSelectedFrames");
+      auto* edit = viewer->findChild<QPushButton*>("stitchExperimentEditMatches");
+      inspected = frames && frames->rowCount() == 1 && edit && !edit->isEnabled();
+      viewer->accept();
+    }
+  });
+  inspect->click();
+  require(inspected, "The inspector must open during a batch with matching editing still disabled");
+
+  // Row 2 is calibrating and row 3 is queued; row 0 is the main calibration,
+  // which is complete and has its own frames and still, so only its own branch
+  // of the fence can be hiding them.
+  for (const int busy_row : {2, 3, 0}) {
+    table->selectRow(busy_row);
+    QCoreApplication::processEvents();
+    require(
+        !inspect->isEnabled() && inspect->toolTip().startsWith("This candidate's workspace is in use"),
+        "A calibrating, queued or main row must not be inspectable during a batch, and must say why");
+  }
+  // Only the main row carries the still half of this: rows 2 and 3 are not
+  // complete, so their stills stay hidden whatever the fence decides.
+  table->selectRow(0);
+  require(
+      !wait_until([&] { return still->isVisible(); }, 1500),
+      "The main calibration must not show its saved still during a batch");
+  table->selectRow(1);
+  require(wait_until(shows_still, 10000), "A finished candidate's saved still must appear during a batch");
+
+  const QPoint center = table->visualItemRect(table->item(1, 0)).center();
+  require(table->indexAt(center).row() == 1, "The ready row must be hit-testable for the double-click check");
+  const auto double_click_ready_row = [&]() {
+    for (const auto type :
+         {QEvent::MouseButtonPress,
+          QEvent::MouseButtonRelease,
+          QEvent::MouseButtonDblClick,
+          QEvent::MouseButtonRelease}) {
+      QMouseEvent click(
+          type,
+          center,
+          table->viewport()->mapToGlobal(center),
+          Qt::LeftButton,
+          type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+          Qt::NoModifier);
+      QApplication::sendEvent(table->viewport(), &click);
+    }
+    QCoreApplication::processEvents();
+  };
+  const QString batch_status = status->text();
+  double_click_ready_row();
+  // The status is the discriminator, not the missing process:
+  // claim_local_operation() would refuse mid-batch anyway, but only after
+  // start_preview had reported that it was validating artifacts.
+  require(
+      !wait_until([&] { return QFile::exists(preview_started); }, 1000) && shows_still() &&
+          status->text() == batch_status,
+      "Double-clicking a finished row during a batch must not start playback or disturb the dialog");
+
+  write(release, "go");
+  require(wait_until([&] { return status->text().startsWith("Batch complete."); }, 30000), "Held batch did not finish");
+  // This is the assertion that carries the removed selectRow(): candidate 3
+  // launched while row 1 was selected, and must have left it alone.
+  require(
+      table->currentRow() == 1 && table->item(3, 5)->text() == "Ready",
+      "Later candidates must run without taking the operator's selection");
+
+  // A live preview fences inspection and the still for every row, not just the
+  // one playing: the inspector offers match editing, which claims this
+  // dialog's operation and would then save nothing.
+  auto* play = widget<QPushButton>(dialog, "previewStitchExperimentButton");
+  auto* stop = widget<QPushButton>(dialog, "stopStitchExperimentPreviewButton");
+  require(wait_until([&] { return play->isEnabled(); }, 10000), "Play did not return after the batch");
+  play->click();
+  // Artifact validation runs on a worker and the table is live, so the
+  // selection can move before it finishes. Moving it in this same main-thread
+  // turn lands strictly before the worker's completion slot.
+  table->selectRow(3);
+  QCoreApplication::processEvents();
+  // The fixture truncates before it writes, so read the value inside the wait.
+  require(
+      wait_until([&] { return read_if_present(preview_started) == "100" && stop->isEnabled(); }, 20000),
+      "Playback must replay the candidate whose artifacts were validated, not the row selected meanwhile");
+  // A finished row that is not the one playing: only a whole-dialog fence
+  // disables it, and it has to be disabled, because the inspector offers
+  // match editing and saving that would start a batch over the live preview.
+  table->selectRow(3);
+  QCoreApplication::processEvents();
+  require(
+      !inspect->isEnabled() && !still->isVisible(),
+      "A live preview must fence inspection and the saved still on every row");
+  write(preview_release, "go");
+  require(wait_until([&] { return play->isEnabled(); }, 20000), "Preview did not release the dialog");
+  require(wait_until([&] { return inspect->isEnabled(); }, 10000), "Inspection did not return after playback");
+
+  answer_close_guard(dialog, "stitchExperimentCloseDiscard", true);
+  require(wait_until([&] { return !dialog.isVisible(); }, 10000), "Browse dialog did not close");
+}
+
 void exercise_player_cancellation(const QString& game, const QString& root) {
   // A shell fixture remains running without interpreting the runner arguments.
   const QString runner = root + "/waiting-runner.sh";
@@ -4257,6 +4516,11 @@ int main(int argc, char** argv) {
         std::cout << "Stitching batch restart and retained frame checks passed\n";
         return 0;
       }
+      if (qEnvironmentVariableIntValue("HSTREAM_TEST_BATCH_BROWSE_ONLY") != 0) {
+        exercise_inspection_during_batch(make_game("batch-browse"), fixture.path());
+        std::cout << "Stitching batch browsing checks passed\n";
+        return 0;
+      }
       if (qEnvironmentVariableIntValue("HSTREAM_TEST_SOURCE_CHANGE_ONLY") != 0) {
         exercise_queued_source_change(make_game("queued-source-change"), fixture.path(), false);
         exercise_queued_source_change(make_game("queued-source-copy-race"), fixture.path(), true);
@@ -4303,6 +4567,7 @@ int main(int argc, char** argv) {
       exercise_blend_preview(make_game("blend-preview"), fixture.path());
       exercise_completed_dependency_removal(make_game("completed-dependencies"), fixture.path());
       exercise_stale_completed_removal(make_game("stale-completed"), fixture.path());
+      exercise_inspection_during_batch(make_game("batch-browse"), fixture.path());
       exercise_player_cancellation(make_game("cancel"), fixture.path());
       exercise(make_game("ordinary"), "/bin/false", fixture.path(), false, {});
     }
