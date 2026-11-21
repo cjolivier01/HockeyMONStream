@@ -940,10 +940,9 @@ for line in sys.stdin:
   static hm::stitching::StitchCameraSelection currentCameraSelection(HStreamWindow* window) {
     return window->stitchCameraSelection();
   }
-  static void setCameraSizes(HStreamWindow* window) {
-    auto result = window->camera_optics_result_;
-    result.camera.input_cameras.at("left.mp4").source_size = std::array<int, 2>{7680, 4320};
-    result.camera.input_cameras.at("right.mp4").source_size = std::array<int, 2>{3840, 2160};
+  static void loadCameraSizes(HStreamWindow* window, const std::filesystem::path& root) {
+    const auto result = hm::stitching::ResolveAutoInputLensForCameras(
+        {root / "left.mp4"}, {root / "right.mp4"}, window->camera_optics_result_.camera, {}, true, root);
     window->updateInputCameraTabs(result);
   }
   static void discoverCameraRoles(HStreamWindow* window, bool reverse) {
@@ -23758,10 +23757,27 @@ int main(int argc, char** argv) {
                 left->property("cameraSource") == "left.mp4" && right->property("cameraSource") == "right.mp4",
             "Adding the left camera must order tabs by position and retain source identities"))
       return 1;
-    HStreamWindowTestAccess::setCameraSizes(&window);
+    QTemporaryDir media;
+    for (const auto& input : {std::pair{"left.mp4", "320x180"}, std::pair{"right.mp4", "160x90"}})
+      if (QProcess::execute(
+              "ffmpeg",
+              {"-nostdin",
+               "-loglevel",
+               "error",
+               "-f",
+               "lavfi",
+               "-i",
+               QString("color=size=%1").arg(input.second),
+               "-frames:v",
+               "1",
+               "-c:v",
+               "libx264",
+               media.filePath(input.first)}) != 0)
+        return 1;
+    HStreamWindowTestAccess::loadCameraSizes(&window, media.path().toStdString());
     if (!expect(
-            require_child<QTabWidget>(&window, "camera1ControlTabs")->tabText(0) == "Optics (7680×4320)" &&
-                require_child<QTabWidget>(&window, "camera2ControlTabs")->tabText(0) == "Optics (3840×2160)",
+            require_child<QTabWidget>(&window, "camera1ControlTabs")->tabText(0) == "Optics (320×180)" &&
+                require_child<QTabWidget>(&window, "camera2ControlTabs")->tabText(0) == "Optics (160×90)",
             "Optics labels must follow the resolution of each camera"))
       return 1;
     auto* left_start = require_child<QWidget>(&window, "camera1StartControls");

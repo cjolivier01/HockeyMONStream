@@ -569,14 +569,16 @@ class Mp4 {
   uint64_t size;
   size_t bytes_read{0}, boxes{0};
 };
-VideoLensMetadata read_file(const std::filesystem::path& path) {
-  const auto insta = frame_exif::ReadInsta360Record(path, 1, kMaxMetadata);
-  if (!insta.ok())
-    throw std::runtime_error(insta.status().ToString());
+VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_only) {
   std::optional<VideoLensMetadata> vendor;
-  if (insta->has_value()) {
-    require(insta->value().full_size <= kMaxMetadata, "Insta360 metadata too large");
-    vendor = parse_insta(insta->value().data);
+  if (!dimensions_only) {
+    const auto insta = frame_exif::ReadInsta360Record(path, 1, kMaxMetadata);
+    if (!insta.ok())
+      throw std::runtime_error(insta.status().ToString());
+    if (insta->has_value()) {
+      require(insta->value().full_size <= kMaxMetadata, "Insta360 metadata too large");
+      vendor = parse_insta(insta->value().data);
+    }
   }
   Mp4 mp4(path);
   size_t width = 0, height = 0;
@@ -587,7 +589,7 @@ VideoLensMetadata read_file(const std::filesystem::path& path) {
     if (top.type != "moov")
       continue;
     for (const auto& a : mp4.atoms(top.pos, top.size)) {
-      if (a.type == "udta") {
+      if (!dimensions_only && a.type == "udta") {
         for (const auto& g : mp4.atoms(a.pos, a.size))
           if (g.type == "GPMF") {
             require(!vendor.has_value(), "Multiple camera lens metadata blocks");
@@ -614,6 +616,13 @@ VideoLensMetadata read_file(const std::filesystem::path& path) {
         height = integer(b.data() + 42, 2);
       }
     }
+  }
+  if (dimensions_only) {
+    require(width && height && width <= 32768 && height <= 32768, "Recording has no usable video dimensions");
+    VideoLensMetadata result;
+    result.width = width;
+    result.height = height;
+    return result;
   }
   if (vendor) {
     require(
@@ -659,13 +668,14 @@ absl::StatusOr<VideoLensMetadata> ParseInsta360LensMetadata(const Bytes& data) {
 absl::StatusOr<VideoLensMetadata> ParseDjiLensMetadata(const Bytes& data, size_t width, size_t height) {
   return checked([&] { return parse_dji(data, width, height); });
 }
-absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::path& video) {
+namespace {
+absl::StatusOr<VideoLensMetadata> read_cached_metadata(const std::filesystem::path& video, bool dimensions_only) {
   struct stat info;
   if (stat(video.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
     return absl::NotFoundError("Source video is unavailable");
-  const std::string key = std::to_string(info.st_dev) + ":" + std::to_string(info.st_ino) + ":" +
-      std::to_string(info.st_size) + ":" + std::to_string(info.st_mtim.tv_sec) + ":" +
-      std::to_string(info.st_mtim.tv_nsec) + ":" + std::to_string(info.st_ctim.tv_sec) + ":" +
+  const std::string key = std::string(dimensions_only ? "size:" : "optics:") + std::to_string(info.st_dev) + ":" +
+      std::to_string(info.st_ino) + ":" + std::to_string(info.st_size) + ":" + std::to_string(info.st_mtim.tv_sec) +
+      ":" + std::to_string(info.st_mtim.tv_nsec) + ":" + std::to_string(info.st_ctim.tv_sec) + ":" +
       std::to_string(info.st_ctim.tv_nsec);
   static std::mutex mutex;
   static std::map<std::string, absl::StatusOr<VideoLensMetadata>> cache;
@@ -675,7 +685,7 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
     if (it != cache.end())
       return it->second;
   }
-  auto result = checked([&] { return read_file(video); });
+  auto result = checked([&] { return read_file(video, dimensions_only); });
   struct stat after;
   if (stat(video.c_str(), &after) != 0 || after.st_dev != info.st_dev || after.st_ino != info.st_ino ||
       after.st_size != info.st_size || after.st_mtim.tv_sec != info.st_mtim.tv_sec ||
@@ -689,6 +699,11 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
     cache.insert_or_assign(key, result);
   }
   return result;
+}
+
+} // namespace
+absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::path& video) {
+  return read_cached_metadata(video, false);
 }
 
 namespace {
@@ -1063,8 +1078,8 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     optics.auto_lens = selected.automatic_lens();
     if (const auto old = fallback.input_cameras.find(key); old != fallback.input_cameras.end())
       optics.source_size = old->second.source_size;
-    if (!source_frozen && (selected.automatic_fov() || selected.automatic_lens())) {
-      const auto metadata = ReadVideoLensMetadata(paths->front());
+    if (!source_frozen) {
+      const auto metadata = read_cached_metadata(paths->front(), true);
       if (metadata.ok() && metadata->width > 0 && metadata->height > 0 && metadata->width <= 32768 &&
           metadata->height <= 32768)
         optics.source_size = std::array<int, 2>{static_cast<int>(metadata->width), static_cast<int>(metadata->height)};

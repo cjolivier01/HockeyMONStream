@@ -39,6 +39,7 @@ typedef struct {
   gint camera_height;
   gint stitch_input_width;
   gint stitch_input_height;
+  guint stitch_converter_buffers;
   gint camera_fps_n;
   gint camera_fps_d;
   gint camera_csi_sensor_id;

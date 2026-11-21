@@ -13,6 +13,7 @@
 #include <gst/video/video.h>
 
 #include "gstnvdsmeta.h"
+#include "hstream/src/libs/common/DecodedFrameSequenceMeta.h"
 #include "nvdsmeta.h"
 
 namespace {
@@ -22,6 +23,7 @@ bool link_many(GstElement* first, GstElement* second, GstElement* third, GstElem
 }
 
 void attach_metadata(GstBuffer* buffer) {
+  g_assert_true(hm::add_decoded_frame_sequence_meta(buffer, 1, 7, g_quark_from_string("file:///right.mp4"), 12345));
   NvDsBatchMeta* batch = nvds_create_batch_meta(1);
   g_assert_nonnull(batch);
   NvDsMeta* meta =
@@ -237,6 +239,10 @@ int main(int argc, char** argv) {
     gst_element_set_state(pipeline, GST_STATE_NULL);
     gst_object_unref(pipeline);
     return 2;
+  }
+  if (g_str_equal(argv[1], "dsxvideoconvert")) {
+    const auto sequence = hm::decoded_frame_sequence(gst_sample_get_buffer(sample));
+    g_assert_true(sequence && sequence->source_id == 1 && sequence->sequence == 7 && sequence->source_pts == 12345);
   }
   print_metadata(gst_sample_get_buffer(sample));
   gst_sample_unref(sample);

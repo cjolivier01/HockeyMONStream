@@ -48,6 +48,7 @@ cc_binary(
     name = "metadata_probe",
     srcs = ["tests/test_metadata.cpp"],
     deps = [
+        "//src/libs/common:decoded_frame_sequence_meta",
         "@deepstream//:deepstream_lib",
         "@gstreamer",
     ],

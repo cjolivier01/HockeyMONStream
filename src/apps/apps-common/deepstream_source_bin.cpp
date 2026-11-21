@@ -4288,6 +4288,8 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
   g_object_set(G_OBJECT(bin->nvvidconv), "copy-hw", 2, NULL);
 #endif
 
+  if (config->stitch_converter_buffers)
+    g_object_set(G_OBJECT(bin->nvvidconv), "output-buffers", config->stitch_converter_buffers, NULL);
   if (packed10) {
     g_object_set(G_OBJECT(bin->nvvidconv), "compute-hw", 1, NULL);
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)

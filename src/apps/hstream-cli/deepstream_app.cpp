@@ -2184,6 +2184,9 @@ gboolean create_pipeline(
     g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "low-latency-mode", config->low_latency_mode, NULL);
     g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "sei-uuid", config->sei_uuid, NULL);
   } else {
+    for (guint i = 0; i < config->num_source_sub_bins; ++i)
+      if (config->multi_source_config[i].stitch_input_width)
+        config->multi_source_config[i].stitch_converter_buffers = config->hmsticher_config.pre_converter_output_buffers;
     if (!create_multi_source_bin(config->num_source_sub_bins, config->multi_source_config, &pipeline->multi_src_bin))
       goto done;
   }
