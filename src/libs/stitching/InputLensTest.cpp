@@ -68,21 +68,24 @@ int main() {
       "center offsets must scale with source resolution");
   const std::string mixed = "i w1920 h1080 f0 v110\ni w7680 h4320 f0 v=0 d=0 e=0\n";
   const auto unlinked = ApplyStitchInputLens(mixed, lens);
-  ok &= expect(unlinked.ok() && unlinked->find("v110 d-76.799") != std::string::npos &&
-                   unlinked->find("e540") != std::string::npos && unlinked->find("e135") != std::string::npos &&
-                   unlinked->find("=0") == std::string::npos,
-               "mixed source dimensions require independent FOV and per-image pixel shifts");
+  ok &= expect(
+      unlinked.ok() && unlinked->find("v110 d-76.799") != std::string::npos &&
+          unlinked->find("e540") != std::string::npos && unlinked->find("e135") != std::string::npos &&
+          unlinked->find("=0") == std::string::npos,
+      "mixed source dimensions require independent FOV and per-image pixel shifts");
   const auto automatic = ApplyStitchInputLens(mixed, {});
-  ok &= expect(automatic.ok() && automatic->find("v=0") == std::string::npos &&
-                   automatic->find("v1 b1 d1 e1") != std::string::npos,
-               "automatic mixed-size optics must refine both cameras independently");
-  std::vector<std::string> fields{"version=25", "source-0-width=7680", "source-0-height=4320",
-                                  "source-1-width=3840", "source-1-height=2160"};
+  ok &= expect(
+      automatic.ok() && automatic->find("v=0") == std::string::npos &&
+          automatic->find("v1 b1 d1 e1") != std::string::npos,
+      "automatic mixed-size optics must refine both cameras independently");
+  std::vector<std::string> fields{
+      "version=25", "source-0-width=7680", "source-0-height=4320", "source-1-width=3840", "source-1-height=2160"};
   auto sizes = ReadStitchSourceSizeSuffix(fields);
-  ok &= expect(sizes.ok() && fields == std::vector<std::string>{"version=21"} &&
-                   CheckStitchSourceSizes(*sizes, {{{7680, 4320}, {3840, 2160}}}).ok() &&
-                   !CheckStitchSourceSizes(*sizes, {{{3840, 2160}, {7680, 4320}}}).ok(),
-               "provenance must bind both decoded sizes in calibration order");
+  ok &= expect(
+      sizes.ok() && fields == std::vector<std::string>{"version=21"} &&
+          CheckStitchSourceSizes(*sizes, {{{7680, 4320}, {3840, 2160}}}).ok() &&
+          !CheckStitchSourceSizes(*sizes, {{{3840, 2160}, {7680, 4320}}}).ok(),
+      "provenance must bind both decoded sizes in calibration order");
   fields = {"version=24"};
   ok &= expect(!ReadStitchSourceSizeSuffix(fields).ok(), "new provenance requires both source sizes");
   YAML::Node config;

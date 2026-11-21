@@ -1892,7 +1892,11 @@ static gboolean create_common_elements(
   if (config->hmsticher_config.enable) {
     // Create dsexample element bin and set properties
     if (!create_hmstitcher_bin(
-            &config->hmsticher_config, &pipeline->hmstitcher_bin, pipeline->multi_src_bin.lossless_nvstreammux)) {
+            &config->hmsticher_config,
+            &pipeline->hmstitcher_bin,
+            pipeline->multi_src_bin.lossless_nvstreammux,
+            config->num_source_sub_bins == 2 && config->multi_source_config[0].stitch_input_width &&
+                config->multi_source_config[1].stitch_input_width)) {
       goto done;
     }
     // Add hmstitcher bin to instance bin

@@ -2208,6 +2208,15 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
   }
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
     GstEvent* event = GST_EVENT(info->data);
+    if (probe_data->is_video && bin->config->stitch_input_width && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+      GstCaps* caps = nullptr;
+      gst_event_parse_caps(event, &caps);
+      gint width = 0, height = 0;
+      const auto* format = gst_caps_get_structure(caps, 0);
+      if (!gst_structure_get_int(format, "width", &width) || !gst_structure_get_int(format, "height", &height) ||
+          width != bin->config->stitch_input_width || height != bin->config->stitch_input_height)
+        return fail_uri_playlist_initial_positioning(bin, "decoded camera dimensions differ from the recording header");
+    }
     if (uri_playlist_initial_positioning_enabled(bin) && probe_data->uri_index == bin->uri_playlist_initial_uri_index &&
         GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       const GstSegment* segment = nullptr;
@@ -4214,6 +4223,12 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
   GstCaps* caps = NULL;
   GstCapsFeatures* feature = NULL;
   bin->config = config;
+  const bool packed10 = config->stitch_input_width && g_strcmp0(config->video_format, "RGB10A2_LE") == 0;
+  const char* converter = NVDS_ELEM_VIDEO_CONV;
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+  if (packed10)
+    converter = hm::deepstream::kDsxVideoConvertElement;
+#endif
 
   bin->src_elem = gst_element_factory_make(NVDS_ELEM_SRC_URI, "src_elem");
   if (!bin->src_elem) {
@@ -4257,7 +4272,7 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
     goto done;
   }
 
-  bin->nvvidconv = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "nvvidconv_elem");
+  bin->nvvidconv = gst_element_factory_make(converter, "nvvidconv_elem");
   if (!bin->nvvidconv) {
     NVGSTDS_ERR_MSG_V("Could not create element 'nvvidconv_elem'");
     goto done;
@@ -4272,11 +4287,20 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
   g_object_set(G_OBJECT(bin->nvvidconv), "copy-hw", 2, NULL);
 #endif
 
+  if (packed10) {
+    g_object_set(G_OBJECT(bin->nvvidconv), "compute-hw", 1, NULL);
+#if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
+    g_object_set(G_OBJECT(bin->nvvidconv), "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, NULL);
+#endif
+  }
   if (config->video_format) {
     caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, config->video_format, NULL);
   } else {
     caps = gst_caps_new_empty_simple("video/x-raw");
   }
+  if (config->stitch_input_width)
+    gst_caps_set_simple(
+        caps, "width", G_TYPE_INT, config->stitch_input_width, "height", G_TYPE_INT, config->stitch_input_height, NULL);
   feature = gst_caps_features_new("memory:NVMM", NULL);
   gst_caps_set_features(caps, 0, feature);
 

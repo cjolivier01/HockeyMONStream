@@ -763,7 +763,7 @@ int main(int argc, char** argv) {
     selected_provenance +=
         "control-point-resolution=native\ncalibration-frame-selection-policy=players\n"
         "calibration-frame-selection-fingerprint=saved-frames\n";
-    for (const int version : {10, 11, 12, 13, 14, 15, 16, 17}) {
+    for (const int version : {10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25}) {
       QByteArray current_provenance = selected_provenance;
       current_provenance.replace("version=10", "version=" + QByteArray::number(version));
       auto selected_camera = changed_camera;
@@ -773,9 +773,10 @@ int main(int argc, char** argv) {
         current_provenance += "input-lens=" +
             QByteArray::fromStdString(hm::stitching::SerializeStitchInputLens(selected_camera.input_lens)) + '\n';
       }
-      if (version == 11 || version == 13 || version == 15 || version == 17)
+      if (version % 2)
         current_provenance += "manual-control-points=" + QByteArray(64, 'a') + '\n';
-      if (version >= 16) {
+      const bool per_camera = version >= 16 && (version - 16) % 4 < 2;
+      if (per_camera) {
         for (const auto& name : {"left.png", "right.png"}) {
           auto& camera = selected_camera.input_cameras[name];
           camera.horizontal_fov = name == std::string("left.png") ? 90 : 100;
@@ -787,6 +788,10 @@ int main(int argc, char** argv) {
       }
       if (version >= 14)
         current_provenance += "control-point-filtering=1,1\n";
+      if (version >= 18)
+        current_provenance += "control-point-selection=quality-coverage\n";
+      if (version >= 22)
+        current_provenance += "source-0-width=100\nsource-0-height=100\nsource-1-width=100\nsource-1-height=100\n";
       write(game.filePath("_hockeymon/stitching_canvas_provenance"), current_provenance);
       RinkLevelingDialog selected(game.path(), {0, -33, 2}, nullptr, selected_camera);
       auto* left = static_cast<ScoreboardSelectionCanvas*>(selected.findChild<QWidget*>("rinkLevelingCamera0"));
@@ -801,7 +806,7 @@ int main(int argc, char** argv) {
           "automatic and manual calibrations can preview new leveling");
       accept->click();
       ok &= expect(selected.result() == QDialog::Accepted, "re-leveling promoted matches returns the revised angles");
-      if (version >= 16) {
+      if (per_camera) {
         selected_camera.input_cameras.at("right.png").horizontal_fov += 1;
         RinkLevelingDialog mismatched(game.path(), {0, -33, 2}, nullptr, selected_camera);
         ok &= expect(!mismatched.loadError().isEmpty(), "Changing either camera's optics must require recalibration");
@@ -814,7 +819,7 @@ int main(int argc, char** argv) {
       }
     }
     QByteArray future_provenance = selected_provenance;
-    future_provenance.replace("version=10", "version=18");
+    future_provenance.replace("version=10", "version=26");
     write(game.filePath("_hockeymon/stitching_canvas_provenance"), future_provenance);
     RinkLevelingDialog unsupported(game.path(), {0, -33, 2}, nullptr, changed_camera);
     ok &= expect(!unsupported.loadError().isEmpty(), "unknown future metadata must still be rejected");

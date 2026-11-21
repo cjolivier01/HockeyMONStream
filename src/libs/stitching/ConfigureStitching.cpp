@@ -2494,7 +2494,8 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
             max_output_width,
             validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
             **artifact_lock,
-            &canvas_size, &source_sizes));
+            &canvas_size,
+            &source_sizes));
     if (!configured)
       return LockedStitchingArtifacts{};
     std::string bindings_after_validation;
@@ -2544,7 +2545,8 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
               max_output_width,
               validate_generation_content ? SeamValidationMode::kContent : SeamValidationMode::kLayoutOnly,
               **artifact_lock,
-              &snapshot_canvas, &source_sizes));
+              &snapshot_canvas,
+              &source_sizes));
       if (!snapshot_configured)
         return LockedStitchingArtifacts{};
       auto snapshot_identity = stitch_artifact_content_identity_locked(snapshot->directory());

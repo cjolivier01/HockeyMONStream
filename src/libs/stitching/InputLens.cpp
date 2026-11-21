@@ -43,9 +43,10 @@ absl::Status CheckStitchSourceSizes(const std::optional<StitchSourceSizes>& expe
     for (size_t i = 0; i < actual.size(); ++i) {
       const auto& calibrated = (*expected)[i];
       if (actual[i] != calibrated)
-        return absl::FailedPreconditionError("Camera " + std::to_string(i) + " decoded at " +
-            std::to_string(actual[i][0]) + "x" + std::to_string(actual[i][1]) + ", calibrated at " +
-            std::to_string(calibrated[0]) + "x" + std::to_string(calibrated[1]));
+        return absl::FailedPreconditionError(
+            "Camera " + std::to_string(i) + " decoded at " + std::to_string(actual[i][0]) + "x" +
+            std::to_string(actual[i][1]) + ", calibrated at " + std::to_string(calibrated[0]) + "x" +
+            std::to_string(calibrated[1]));
     }
   }
   return absl::OkStatus();

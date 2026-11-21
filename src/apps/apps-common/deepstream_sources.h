@@ -37,6 +37,8 @@ typedef struct {
   guint smart_record;
   gint camera_width;
   gint camera_height;
+  gint stitch_input_width;
+  gint stitch_input_height;
   gint camera_fps_n;
   gint camera_fps_d;
   gint camera_csi_sensor_id;

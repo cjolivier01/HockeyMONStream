@@ -6918,6 +6918,12 @@ void Configurator::apply_frame_offsets_and_sizes(
     double rfo = get_node_value<double>(offsets, "right", 0.0); // decimal frames
     set_stream_offsets_ |= rfo != 0.0;
     pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
+    if (area && (ww != static_cast<size_t>(right_info.width) || hh != static_cast<size_t>(right_info.height))) {
+      pipeline["source0"]["stitch-input-width"] = ww;
+      pipeline["source0"]["stitch-input-height"] = hh;
+      pipeline["source1"]["stitch-input-width"] = right_info.width;
+      pipeline["source1"]["stitch-input-height"] = right_info.height;
+    }
     if (right_info.width * right_info.height > (long)area) {
       area = right_info.width * right_info.height;
       ww = right_info.width;
@@ -7365,6 +7371,11 @@ absl::Status Configurator::configure_source_bit_depth(
     high_bit_depth = automatic_decision.enabled;
   }
   stitcher_properties["high-bit-depth"] = high_bit_depth ? 1 : 0;
+  for (const char* name : {"source0", "source1"}) {
+    auto source = static_cast<const YAML::Node&>(pipeline)[name];
+    if (source.IsMap() && get_node_value<int>(source, "stitch-input-width", 0) > 0)
+      source["video-format"] = high_bit_depth ? "RGB10A2_LE" : "RGBA";
+  }
   for (auto entry : pipeline) {
     if (!entry.first.IsScalar() || !entry.second.IsMap())
       continue;

@@ -23759,9 +23759,10 @@ int main(int argc, char** argv) {
             "Adding the left camera must order tabs by position and retain source identities"))
       return 1;
     HStreamWindowTestAccess::setCameraSizes(&window);
-    if (!expect(require_child<QTabWidget>(&window, "camera1ControlTabs")->tabText(0) == "Optics (7680×4320)" &&
-                    require_child<QTabWidget>(&window, "camera2ControlTabs")->tabText(0) == "Optics (3840×2160)",
-                "Optics labels must follow the resolution of each camera"))
+    if (!expect(
+            require_child<QTabWidget>(&window, "camera1ControlTabs")->tabText(0) == "Optics (7680×4320)" &&
+                require_child<QTabWidget>(&window, "camera2ControlTabs")->tabText(0) == "Optics (3840×2160)",
+            "Optics labels must follow the resolution of each camera"))
       return 1;
     auto* left_start = require_child<QWidget>(&window, "camera1StartControls");
     auto* right_start = require_child<QWidget>(&window, "camera2StartControls");

@@ -6,7 +6,7 @@
          GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("memory:NVMM",
 -            "{ " "NV12, RGBA, I420 }") "; "
 -        GST_VIDEO_CAPS_MAKE ("{ " "NV12, RGBA }") "; "
-+            "{ " "NV12, RGBA, I420, P010_10LE }") "; "
++            "{ " "NV12, RGBA, I420, P010_10LE, RGB10A2_LE }") "; "
 +        GST_VIDEO_CAPS_MAKE ("{ " "NV12, RGBA, P010_10LE }") "; "
              "audio/x-raw, "
              "format = { " "S16LE, F32LE }, "
@@ -16,7 +16,7 @@
      GST_STATIC_CAPS (
              GST_VIDEO_CAPS_MAKE_WITH_FEATURES ("memory:NVMM",
 -            "{ " "NV12, RGBA, I420 }") "; "
-+            "{ " "NV12, RGBA, I420, P010_10LE }") "; "
++            "{ " "NV12, RGBA, I420, P010_10LE, RGB10A2_LE }") "; "
              "audio/x-raw(memory:NVMM), "
              "format = { " "S16LE, F32LE }, "
              "layout = (string) interleaved, "

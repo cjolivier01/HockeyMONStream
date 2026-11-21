@@ -9144,9 +9144,10 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
     camera_start_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
     const auto& optics = result.camera.input_cameras.at(source);
     auto* controls = findChild<QTabWidget*>(QString("camera%1ControlTabs").arg(index + 1));
-    controls->setTabText(0, optics.source_size
-        ? QString("Optics (%1×%2)").arg((*optics.source_size)[0]).arg((*optics.source_size)[1])
-        : QString("Optics"));
+    controls->setTabText(
+        0,
+        optics.source_size ? QString("Optics (%1×%2)").arg((*optics.source_size)[0]).arg((*optics.source_size)[1])
+                           : QString("Optics"));
     if (camera_optics_sources_.size() == 2) {
       const auto& other = result.camera.input_cameras.at(camera_optics_sources_[1 - index]);
       if (optics.source_size && other.source_size && optics.source_size != other.source_size &&
