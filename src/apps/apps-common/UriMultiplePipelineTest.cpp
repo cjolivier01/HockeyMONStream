@@ -125,6 +125,7 @@ struct MuxBatchStats {
   // The mixed fixture repeats one-second chapters on a 15 fps delivered clock.
   std::optional<guint64> mixed_first_index;
   bool mixed_timeline_valid{true};
+  std::array<GstClockTime, 2> movie_origins{};
   std::map<guint, guint64> frames_by_source;
   std::map<guint, guint64> next_decoded_sequence_by_source;
   std::vector<std::vector<std::pair<guint, guint>>> batch_frames;
@@ -307,7 +308,8 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
     } else {
       if (stats->mixed_first_index) {
         const auto sequence = decoded_sequence->sequence;
-        const auto physical = gst_util_uint64_scale((*stats->mixed_first_index + sequence) % 15, GST_SECOND, 15);
+        const auto physical = stats->movie_origins.at(frame_meta->source_id) +
+            gst_util_uint64_scale((*stats->mixed_first_index + sequence) % 15, GST_SECOND, 15);
         const auto logical = gst_util_uint64_scale(sequence, GST_SECOND, 15);
         stats->mixed_timeline_valid &= std::abs(int64_t(decoded_sequence->source_pts) - int64_t(physical)) <= 1 &&
             std::abs(int64_t(frame_meta->buf_pts) - int64_t(logical)) <= 2;
@@ -1263,7 +1265,8 @@ int run_decode_compose_encode(
     GstClockTime start_time = 0,
     guint64 expected_frames = 45,
     int fast_camera = -1,
-    bool expect_bad_clock = false) {
+    bool expect_bad_clock = false,
+    GstClockTime fast_origin = 0) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1);
@@ -1370,6 +1373,7 @@ int run_decode_compose_encode(
 
   MuxBatchStats pairs{};
   if (fast_camera >= 0) {
+    pairs.movie_origins.at(fast_camera) = fast_origin;
     pairs.mixed_first_index = gst_util_uint64_scale_ceil(start_time, 15, GST_SECOND);
     auto* mux_src = gst_element_get_static_pad(src_parent.streammux, "src");
     gst_pad_add_probe(mux_src, GST_PAD_PROBE_TYPE_BUFFER, inspect_mux_batches_probe, &pairs, nullptr);
@@ -1947,6 +1951,22 @@ int main(int argc, char** argv) {
               fast_camera))
         return seek_result;
     }
+    // Shift video later than audio in the movie edit list, retaining all pictures.
+    const auto delayed = tmpdir / "delayed.mp4";
+    if (!run_shell(
+            "ffmpeg -v error -y -itsoffset 0.2 -i " + shell_quote(fast) + " -i " + shell_quote(fast) +
+            " -map 0:v:0 -map 1:a:0 -c:v copy -af apad=pad_dur=0.2 -c:a aac " + shell_quote(delayed)))
+      return 1;
+    if (const auto result = run_decode_compose_encode(
+            tmpdir,
+            std::vector<std::string>(2, to_file_uri(delayed)),
+            std::vector<std::string>(2, to_file_uri(a0)),
+            20 * GST_MSECOND,
+            29,
+            0,
+            false,
+            200 * GST_MSECOND))
+      return result;
     // Introduce a half-frame PTS excursion on an odd (decimated) fast picture.
     const auto variable = tmpdir / "irregular.mp4";
     if (!run_shell(
