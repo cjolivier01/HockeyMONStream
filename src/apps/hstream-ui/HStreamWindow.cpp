@@ -18634,7 +18634,7 @@ void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 
     if (selectedPipelinePreviewChannel() != channel) {
       return;
     }
-    if (previewCommandsBlockedByPause()) {
+    if (previewCommandsBlockedByPause() || (channel == "stitched" && calibration_pending_)) {
       schedulePreviewReadyTimeout(channel, generation, timeout_ms);
       return;
     }

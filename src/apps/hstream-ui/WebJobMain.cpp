@@ -1356,12 +1356,14 @@ QJsonObject source_camera_preview(const Request& request) {
   return {{"closed", true}};
 }
 
-QJsonObject saved_calibration_still(const Request& request, QJsonArray& artifacts) {
+QJsonObject run_saved_calibration(const Request& request, QJsonArray& artifacts) {
+  const bool still = request.operation == "calibration-still-read";
   std::vector<std::unique_ptr<PinnedArchive>> pins;
   if (request.runtime.contains("calibration_geometry")) {
     const auto entries = request.runtime.value("calibration_geometry").toArray();
     require(
-        entries.size() <= 2 && entries.size() == request.authorized_media.size(), "Invalid saved preview camera count");
+        entries.size() <= 2 && (!still || entries.size() == request.authorized_media.size()),
+        "Invalid saved preview camera count");
     std::set<QString> roles, paths;
     bool compatible = entries.size() == 2;
     for (const auto& value : entries) {
@@ -1383,10 +1385,14 @@ QJsonObject saved_calibration_still(const Request& request, QJsonArray& artifact
       pinned->Verify();
       pins.push_back(std::move(pinned));
     }
-    if (!compatible)
+    if (!compatible) {
+      require(still, "The saved calibration uses different camera dimensions");
       return {{"calibration_still_version", 1}, {"available", false}, {"retryable", false}};
+    }
   }
-  auto result = hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
+  const auto cancelled = [] { return interrupted != 0; };
+  auto result = still ? hm::web::ReadSavedCalibrationStill(request, artifacts, cancelled)
+                      : hm::web::RunSavedCalibration(request, artifacts, cancelled);
   for (const auto& pin : pins)
     pin->Verify();
   return result;
@@ -1410,13 +1416,13 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   }
   if (request.operation == "camera-optics-read")
     return read_camera_optics(request);
-  if (request.operation == "calibration-still-read")
-    return saved_calibration_still(request, artifacts);
+  if (request.operation == "calibration-still-read" || request.operation.rfind("calibration-view-", 0) == 0)
+    return run_saved_calibration(request, artifacts);
   if (request.operation == "calibration-controls-stage")
     return hm::web::RunCalibrationControlsStage(request, [] { return interrupted != 0; });
   if (request.operation == "camera-experiment")
     return hm::web::RunCameraExperiment(request, artifacts, preview_port, [] { return interrupted != 0; });
-  if (request.operation == "calibration-clean" || request.operation.rfind("calibration-view-", 0) == 0)
+  if (request.operation == "calibration-clean")
     return hm::web::RunSavedCalibration(request, artifacts, [] { return interrupted != 0; });
   if (request.operation.rfind("rink-map-", 0) == 0)
     return hm::web::RunRinkMap(request, artifacts, [] { return interrupted != 0; });
