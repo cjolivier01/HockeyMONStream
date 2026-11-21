@@ -80,6 +80,7 @@ class StitchingArtifactLoadSnapshot {
 };
 
 struct LockedStitchingArtifacts {
+  std::optional<StitchSourceSizes> source_sizes;
   std::unique_ptr<HuginProject::ArtifactLock> artifact_lock;
   std::unique_ptr<StitchingArtifactLoadSnapshot> load_snapshot;
   StitchingCanvasSize canvas_size;

@@ -711,6 +711,7 @@ bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
     for (size_t index = 0; index < count; ++index) {
       auto* frame = nvds_acquire_frame_meta_from_pool(batch);
       frame->frame_num = 0;
+      frame->batch_id = index;
       frame->source_id = index;
       frame->num_surfaces_per_frame = 1;
       frame->buf_pts = anchor.pair.timeline_pts_ns;
@@ -801,6 +802,7 @@ bool expect_exact_plan_replay_and_cached_inputs(const fs::path& parent_dir) {
     for (guint index = 0; index < 2; ++index) {
       auto* frame = nvds_acquire_frame_meta_from_pool(batch);
       frame->frame_num = 0;
+      frame->batch_id = index;
       frame->source_id = index;
       frame->num_surfaces_per_frame = 1;
       frame->buf_pts = GST_SECOND;
@@ -855,6 +857,7 @@ bool expect_prepare_runtime_invalid_envelopes_fail() {
     for (guint index = 0; index < num_filled; ++index) {
       NvDsFrameMeta* frame_meta = nvds_acquire_frame_meta_from_pool(batch_meta);
       frame_meta->frame_num = index / 2;
+      frame_meta->batch_id = index;
       frame_meta->source_id = index % 2;
       frame_meta->num_surfaces_per_frame = 1;
       nvds_add_frame_meta_to_batch(batch_meta, frame_meta);

@@ -246,6 +246,7 @@ cc_library(
     copts = COMMON_COPTS,
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [
+        "//src/libs/stitching:hugin_project",
         ":calibration_image",
         "//src/libs/common:baseline_config",
         "//src/libs/common:user_config",

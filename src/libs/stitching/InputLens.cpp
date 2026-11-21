@@ -9,6 +9,52 @@
 
 namespace hm::stitching {
 
+absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(std::vector<std::string>& lines) {
+  for (int version = 22; version <= 25; ++version) {
+    if (lines.empty() || lines.front() != "version=" + std::to_string(version))
+      continue;
+    if (lines.size() < 5)
+      return absl::FailedPreconditionError("Missing calibrated source sizes");
+    StitchSourceSizes sizes{};
+    size_t index = lines.size() - 4;
+    for (size_t camera = 0; camera < sizes.size(); ++camera) {
+      for (size_t axis = 0; axis < 2; ++axis) {
+        const auto key = "source-" + std::to_string(camera) + (axis ? "-height=" : "-width=");
+        const auto& line = lines[index++];
+        if (line.rfind(key, 0) != 0)
+          return absl::FailedPreconditionError("Missing calibrated dimension " + key);
+        const std::string value = line.substr(key.size());
+        if (value.empty() || value.size() > 5 || value.find_first_not_of("0123456789") != std::string::npos)
+          return absl::FailedPreconditionError("Invalid calibrated dimension " + key);
+        sizes[camera][axis] = std::stoi(value);
+        if (!sizes[camera][axis] || sizes[camera][axis] > 32768)
+          return absl::FailedPreconditionError("Invalid calibrated dimension " + key);
+      }
+    }
+    lines.resize(lines.size() - 4);
+    lines.front() = "version=" + std::to_string(version - 4);
+    return sizes;
+  }
+  return std::nullopt;
+}
+
+absl::Status CheckStitchSourceSizes(const std::optional<StitchSourceSizes>& expected, const StitchSourceSizes& actual) {
+  if (!expected && actual[0] != actual[1])
+    return absl::FailedPreconditionError(
+        "Mixed camera resolutions require verifiable source dimensions. Recalibrate stitching.");
+  if (expected) {
+    for (size_t i = 0; i < actual.size(); ++i) {
+      const auto& calibrated = (*expected)[i];
+      if (actual[i] != calibrated)
+        return absl::FailedPreconditionError(
+            "Camera " + std::to_string(i) + " decoded at " + std::to_string(actual[i][0]) + "x" +
+            std::to_string(actual[i][1]) + ", calibrated at " + std::to_string(calibrated[0]) + "x" +
+            std::to_string(calibrated[1]));
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status ValidateStitchInputLens(const StitchInputLens& lens) {
   if (lens.projection != "rectilinear" && lens.projection != "full-frame-fisheye")
     return absl::InvalidArgumentError("Input lens projection must be rectilinear or full-frame-fisheye");
@@ -223,16 +269,37 @@ absl::StatusOr<std::string> apply_input_lens(
     for (const auto& camera : *cameras)
       if (const auto status = ValidateStitchCameraOptics(camera); !status.ok())
         return status;
-  const bool explicit_variables = cameras || lens.optimization != "auto";
   if (const auto status = ValidateStitchInputLens(lens); !status.ok())
     return status;
-  if (!cameras && lens == StitchInputLens{})
-    return pto; // Preserve the legacy automatic alignment exactly.
+  static const std::regex width_pattern(R"((?:^|\s)w([0-9]{1,5})(?=\s|$))");
+  static const std::regex height_pattern(R"((?:^|\s)h([0-9]{1,5})(?=\s|$))");
+  std::array<std::array<int, 2>, 2> sizes{};
+  size_t count = 0;
+  std::istringstream scan(pto);
+  for (std::string line; std::getline(scan, line);) {
+    if (line.rfind("i ", 0) != 0)
+      continue;
+    line = line.substr(0, line.find(" n\""));
+    std::smatch w, h;
+    if (count == sizes.size() || !std::regex_search(line, w, width_pattern) ||
+        !std::regex_search(line, h, height_pattern))
+      return absl::InvalidArgumentError("Input lens requires two source images with dimensions");
+    auto& size = sizes[count++];
+    size = {std::stoi(w[1]), std::stoi(h[1])};
+    if (size[0] <= 0 || size[1] <= 0 || size[0] > 32768 || size[1] > 32768)
+      return absl::InvalidArgumentError("Invalid input lens source-image dimensions");
+  }
+  if (count != sizes.size())
+    return absl::InvalidArgumentError("Input lens calibration requires two source images");
+  const bool independent = cameras || sizes[0] != sizes[1];
+  if (!independent && lens == StitchInputLens{})
+    return pto;
+  const bool explicit_variables = independent || lens.optimization != "auto";
+  std::string first_fov;
   std::istringstream input(pto);
   std::ostringstream output;
   output.imbue(std::locale::classic());
   size_t images = 0;
-  double first_width = 0, first_height = 0;
   for (std::string line; std::getline(input, line);) {
     // pto_gen enables Hugin's position-only preset. On project load that
     // preset regenerates the variable list and discards our explicit v lines.
@@ -246,23 +313,18 @@ absl::StatusOr<std::string> apply_input_lens(
       if (images >= 2)
         return absl::InvalidArgumentError("Input optics require two source images");
       const auto& current_lens = cameras ? (*cameras)[images].input_lens : lens;
-      std::smatch width, height;
-      const std::regex width_pattern(R"(\bw([0-9]+)\b)"), height_pattern(R"(\bh([0-9]+)\b)");
-      if (!std::regex_search(line, width, width_pattern) || !std::regex_search(line, height, height_pattern))
-        return absl::InvalidArgumentError("Input lens requires source-image dimensions in the PTO");
-      double w = 0, h = 0;
-      try {
-        w = std::stod(width[1]);
-        h = std::stod(height[1]);
-      } catch (const std::exception&) {
-        return absl::InvalidArgumentError("Invalid input lens source-image dimensions");
+      const auto [w, h] = sizes[images];
+      if (independent && !cameras) {
+        static const std::regex fov_pattern(R"( v([-+0-9.eE]+)(?=\s|$))");
+        std::smatch match;
+        if (!images && std::regex_search(line, match, fov_pattern))
+          first_fov = match[1];
+        if (images && line.find(" v=0") != std::string::npos) {
+          if (first_fov.empty())
+            return absl::InvalidArgumentError("Linked FOV has no first-camera value");
+          line = std::regex_replace(line, std::regex(R"( v=0(?=\s|$))"), " v" + first_fov);
+        }
       }
-      if (w <= 0 || h <= 0 || w > 32768 || h > 32768)
-        return absl::InvalidArgumentError("Invalid input lens source-image dimensions");
-      if (!cameras && images && (w != first_width || h != first_height))
-        return absl::InvalidArgumentError("Shared input lens correction requires equal source-image dimensions");
-      first_width = w;
-      first_height = h;
       const auto set = [&](const char* key, double value, bool linked) {
         std::ostringstream token;
         token.imbue(std::locale::classic());
@@ -281,9 +343,9 @@ absl::StatusOr<std::string> apply_input_lens(
       if (cameras)
         set("v", (*cameras)[images].horizontal_fov, false);
       for (size_t i = 0; i < current_lens.distortion.size(); ++i)
-        set(std::string(1, 'a' + i).c_str(), current_lens.distortion[i], !cameras && images != 0);
-      set("d", current_lens.center_offset[0] * w, !cameras && images != 0);
-      set("e", current_lens.center_offset[1] * h, !cameras && images != 0);
+        set(std::string(1, 'a' + i).c_str(), current_lens.distortion[i], !independent && images != 0);
+      set("d", current_lens.center_offset[0] * w, !independent && images != 0);
+      set("e", current_lens.center_offset[1] * h, !independent && images != 0);
       ++images;
     }
     output << line << '\n';
@@ -293,9 +355,9 @@ absl::StatusOr<std::string> apply_input_lens(
   if (explicit_variables) {
     output << "#hugin_optimizerMasterSwitch 0\n";
     output << "v r0 p0 r1 p1 y1";
-    if (cameras) {
-      for (size_t i = 0; i < cameras->size(); ++i) {
-        const auto& policy = (*cameras)[i].input_lens.optimization;
+    if (independent) {
+      for (size_t i = 0; i < sizes.size(); ++i) {
+        const auto& policy = cameras ? (*cameras)[i].input_lens.optimization : lens.optimization;
         if (policy != "fixed") {
           output << " v" << i << " b" << i << " d" << i << " e" << i;
           if (policy == "auto")

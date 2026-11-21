@@ -17,6 +17,7 @@
 #include "hstream/src/libs/stitching/StitchingReframe.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
+#include "hstream/src/libs/stitching/VideoLensMetadata.h"
 
 #include <yaml-cpp/yaml.h>
 
@@ -2005,20 +2006,9 @@ struct ConfiguredStitchAlgorithms {
   std::string manual_control_point_fingerprint;
 };
 
-absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const std::string& game_dir) {
-  const fs::path config_path = hm::game_storage::StateDirectory(game_dir) / "config.yaml";
-  std::error_code config_error;
-  if (!fs::exists(config_path, config_error) && !config_error)
-    return std::nullopt;
-  if (config_error)
-    return absl::InternalError("Unable to inspect stitching configuration: " + config_error.message());
-  auto loaded = load_game_config_file(config_path);
-  if (!loaded.ok())
-    return loaded.status();
-  if (!loaded->has_value())
-    return std::nullopt;
+absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algorithms(const YAML::Node& config) {
   try {
-    const YAML::Node stitching = (**loaded)["stitching"];
+    const YAML::Node stitching = (config)["stitching"];
     if (!stitching || stitching.IsNull())
       return std::nullopt;
     if (!stitching.IsMap())
@@ -2054,7 +2044,7 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     if (!baseline.ok())
       return baseline.status();
     ControlPointMatcher matcher;
-    HM_ASSIGN_OR_RETURN(matcher, resolve_control_point_matcher(**loaded, baseline->values));
+    HM_ASSIGN_OR_RETURN(matcher, resolve_control_point_matcher(config, baseline->values));
     MappingBackend backend = MappingBackend::kNona;
     if (backend_present)
       HM_ASSIGN_OR_RETURN(backend, ParseMappingBackend(backend_node.as<std::string>()));
@@ -2064,9 +2054,9 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
       HM_ASSIGN_OR_RETURN(projection, ParseStitchProjection(projection_node.as<std::string>()));
     HM_RETURN_IF_ERROR(ValidateMappingBackendProjection(backend, projection));
     std::vector<double> projection_parameters;
-    HM_ASSIGN_OR_RETURN(projection_parameters, read_stitch_projection_parameters(**loaded, projection));
+    HM_ASSIGN_OR_RETURN(projection_parameters, read_stitch_projection_parameters(config, projection));
     StitchProjectionFraming projection_framing;
-    HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(**loaded));
+    HM_ASSIGN_OR_RETURN(projection_framing, read_stitch_projection_framing(config));
     StitchCameraSelection camera;
     YAML::Node effective_camera_config = YAML::Clone(baseline->values);
     for (const char* key : {"camera_configs", "camera_config", "camera_fov", "input_lens", "input_cameras"}) {
@@ -2078,15 +2068,15 @@ absl::StatusOr<std::optional<ConfiguredStitchAlgorithms>> configured_stitch_algo
     if (backend == MappingBackend::kNona)
       HM_RETURN_IF_ERROR(ValidateStitchProjectionFraming(projection, projection_parameters, projection_framing));
     ControlPointResolution resolution;
-    HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(**loaded));
+    HM_ASSIGN_OR_RETURN(resolution, read_control_point_resolution(config));
     ControlPointFiltering filtering;
-    HM_ASSIGN_OR_RETURN(filtering, read_control_point_filtering(**loaded));
+    HM_ASSIGN_OR_RETURN(filtering, read_control_point_filtering(config));
     std::string frame_selection;
-    HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(**loaded));
+    HM_ASSIGN_OR_RETURN(frame_selection, player_frame_selection_fingerprint(config));
     std::string manual_points;
-    HM_ASSIGN_OR_RETURN(manual_points, manual_control_point_fingerprint(**loaded));
+    HM_ASSIGN_OR_RETURN(manual_points, manual_control_point_fingerprint(config));
     ControlPointSelection match_selection;
-    HM_ASSIGN_OR_RETURN(match_selection, read_control_point_selection(**loaded));
+    HM_ASSIGN_OR_RETURN(match_selection, read_control_point_selection(config));
     return ConfiguredStitchAlgorithms{
         .control_point_selection = match_selection,
         .control_point_filtering = filtering,
@@ -2108,7 +2098,15 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
     const std::string& game_dir,
     const std::optional<HuginProject::CanvasProvenance>& provenance) {
   std::optional<ConfiguredStitchAlgorithms> configured;
-  HM_ASSIGN_OR_RETURN(configured, configured_stitch_algorithms(game_dir));
+  const auto local = load_game_config_file(hm::game_storage::StateDirectory(game_dir) / "config.yaml");
+  if (!local.ok())
+    return local.status();
+  if (*local) {
+    HM_ASSIGN_OR_RETURN(configured, configured_stitch_algorithms(**local));
+    const auto geometry = HuginProject::CheckSavedRecordingGeometry(game_dir, **local);
+    if (!geometry.ok())
+      return CanvasProvenanceCompatibility{false, std::string(geometry.message())};
+  }
   if (!configured.has_value()) {
     if (provenance && !provenance->manual_control_point_fingerprint.empty())
       return CanvasProvenanceCompatibility{false, "the manual control points were cleared"};
@@ -2179,7 +2177,8 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
     size_t max_output_width,
     SeamValidationMode seam_validation,
     const HuginProject::ArtifactLock& artifact_lock,
-    CanvasSize* validated_canvas = nullptr) {
+    CanvasSize* validated_canvas = nullptr,
+    std::optional<StitchSourceSizes>* source_sizes = nullptr) {
   bool up_to_date = test_dependency_tree(artifact_dir, /*add_rink_mask=*/false);
   if (!up_to_date) {
     return false;
@@ -2229,6 +2228,11 @@ static absl::StatusOr<bool> validate_stitching_artifacts_locked(
       return false;
     }
     return provenance.status();
+  }
+  if (source_sizes) {
+    *source_sizes = *provenance ? (*provenance)->source_sizes : std::nullopt;
+    if (!*source_sizes)
+      *source_sizes = HuginProject::ReadSourceImageSizes(artifact_dir);
   }
   const auto compatibility = check_canvas_provenance_compatibility(
       *provenance, canvas_size, max_output_width, live_stitch_max_canvas_dimension());
@@ -2458,7 +2462,11 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
         HM_ASSIGN_OR_RETURN(
             algorithm_compatibility, check_stitch_algorithm_provenance_compatibility(game_dir, *provenance));
         if (algorithm_compatibility.compatible) {
+          auto sizes = *provenance ? (*provenance)->source_sizes : std::nullopt;
+          if (!sizes)
+            sizes = HuginProject::ReadSourceImageSizes(hm::game_storage::StateDirectory(game_dir));
           return LockedStitchingArtifacts{
+              .source_sizes = sizes,
               .artifact_lock = std::move(*artifact_lock),
               .canvas_size = previously_validated->canvas_size,
               .generation_id = previously_validated->generation_id,
@@ -2472,6 +2480,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
       return artifact_revision.status();
   }
   CanvasSize canvas_size;
+  std::optional<StitchSourceSizes> source_sizes;
   std::string validated_bindings;
   for (int attempt = 0; attempt < 2; ++attempt) {
     auto bindings_before_validation = stitch_artifact_binding_revision_locked(game_dir);
@@ -2489,7 +2498,8 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
             max_output_width,
             validate_generation_content ? SeamValidationMode::kNormalize : SeamValidationMode::kLayoutOnly,
             **artifact_lock,
-            &canvas_size));
+            &canvas_size,
+            &source_sizes));
     if (!configured)
       return LockedStitchingArtifacts{};
     std::string bindings_after_validation;
@@ -2539,7 +2549,8 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
               max_output_width,
               validate_generation_content ? SeamValidationMode::kContent : SeamValidationMode::kLayoutOnly,
               **artifact_lock,
-              &snapshot_canvas));
+              &snapshot_canvas,
+              &source_sizes));
       if (!snapshot_configured)
         return LockedStitchingArtifacts{};
       auto snapshot_identity = stitch_artifact_content_identity_locked(snapshot->directory());
@@ -2579,6 +2590,7 @@ absl::StatusOr<LockedStitchingArtifacts> lock_stitching_artifacts_impl(
     }
   }
   return LockedStitchingArtifacts{
+      .source_sizes = source_sizes,
       .artifact_lock = std::move(*artifact_lock),
       .load_snapshot = std::move(load_snapshot),
       .canvas_size = {.width = canvas_size.width, .height = canvas_size.height},
@@ -3545,6 +3557,10 @@ absl::Status create_control_points(
           frame_pairs.size(),
           {left, right},
           {frame_pairs[index].source(0), frame_pairs[index].source(1)}));
+    }
+    if (using_cached_inputs) {
+      HM_RETURN_IF_ERROR(CheckCalibrationFrameSize(frame_pairs[index].source(0).video, {left.cols, left.rows}));
+      HM_RETURN_IF_ERROR(CheckCalibrationFrameSize(frame_pairs[index].source(1).video, {right.cols, right.rows}));
     }
     if (index == 0) {
       left_source_size = left.size();

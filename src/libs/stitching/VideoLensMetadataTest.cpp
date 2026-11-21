@@ -262,6 +262,19 @@ int main(int argc, char** argv) {
         "Digital warp must reject");
     expect(
         !ParseVideoLensMetadata(gopro(std::numeric_limits<float>::quiet_NaN())).ok(), "Nonfinite values must reject");
+    write(dir / "plain.mp4", movie({}, 3840, 2160));
+    auto roles_config = YAML::Load("{game: {videos: {right: [plain.mp4]}}}");
+    expect(
+        !CheckCalibrationRecordingSizes(dir, roles_config, {{{7680, 4320}, {7680, 4320}}}).ok() &&
+            CheckCalibrationRecordingSizes(dir, roles_config, {{{7680, 4320}, {3840, 2160}}}).ok(),
+        "Legacy calibration must compare the right input to its roles_config recording");
+    auto manual_plain = ResolveAutoInputLensForCameras({dir / "plain.mp4"}, {}, {"manual"});
+    expect(
+        !manual_plain.camera.input_cameras.at((dir / "plain.mp4").string()).source_size &&
+            manual_plain.source_metadata.at((dir / "plain.mp4").string()).recording_size ==
+                std::array<int, 2>{3840, 2160} &&
+            !manual_plain.recording_metadata_found,
+        "Standard video dimensions must be readable without automatic or vendor optics");
     const auto fixture = gopro();
     auto padded = fixture;
     padded.resize(fixture.size() + 23804, 0);

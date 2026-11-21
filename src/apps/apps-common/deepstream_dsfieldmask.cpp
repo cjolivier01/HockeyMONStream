@@ -651,7 +651,11 @@ void setup_rgb_nvvm_caps_filter(GstCaps* caps, GstElement* cap_filter) {
 }
 } // namespace
 
-gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin, gboolean lossless_nvstreammux) {
+gboolean create_hmstitcher_bin(
+    HmStitcherConfig* config,
+    HmStitcherBin* bin,
+    gboolean lossless_nvstreammux,
+    gboolean native_source_conversion) {
   gboolean ret = FALSE;
   gboolean high_bit_depth = FALSE;
   gboolean high_bit_depth_output = FALSE;
@@ -753,9 +757,14 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin, gbo
     NVGSTDS_ERR_MSG_V("High-bit-depth stitching requires the lossless stream mux");
     goto done;
   }
-  // Jetson's NVIDIA converter omits RGB10A2 from its caps, even though the
-  // GPU transform API supports it. Use the native adapter for that conversion
-  // and CUDA-device storage: packed 10-bit EGL images cannot be mapped by CUDA.
+  // A batched color converter negotiates one output extent for every camera.
+  // Mixed-size recordings arrive already converted on their individual source pads.
+  if (native_source_conversion) {
+    NVGSTDS_LINK_ELEMENT(bin->queue, bin->cap_filter);
+  } else {
+    // Jetson's NVIDIA converter omits RGB10A2 from its caps, even though the
+    // GPU transform API supports it. Use the native adapter for that conversion
+    // and CUDA-device storage: packed 10-bit EGL images cannot be mapped by CUDA.
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
   pre_converter = high_bit_depth ? hm::deepstream::kDsxVideoConvertElement : NVDS_ELEM_VIDEO_CONV;
 #else
@@ -771,9 +780,7 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin, gbo
 
   NVGSTDS_LINK_ELEMENT(bin->queue, bin->pre_conv);
   NVGSTDS_LINK_ELEMENT(bin->pre_conv, bin->cap_filter);
-  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_hmstitcher);
 
-  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
   g_object_set(G_OBJECT(bin->pre_conv), "gpu-id", config->gpu_id, NULL);
   g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", config->nvbuf_memory_type, NULL);
   if (config->pre_converter_output_buffers)
@@ -784,6 +791,9 @@ gboolean create_hmstitcher_bin(HmStitcherConfig* config, HmStitcherBin* bin, gbo
     g_object_set(G_OBJECT(bin->pre_conv), "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, NULL);
 #endif
   }
+  }
+  NVGSTDS_LINK_ELEMENT(bin->cap_filter, bin->elem_hmstitcher);
+  NVGSTDS_BIN_ADD_GHOST_PAD(bin->bin, bin->queue, "sink");
   high_bit_depth_output = high_bit_depth && config->archive_stitched;
   g_object_set(G_OBJECT(bin->elem_hmstitcher), "high-bit-depth-output", high_bit_depth_output, NULL);
   setup_rgb_nvvm_caps_filter(

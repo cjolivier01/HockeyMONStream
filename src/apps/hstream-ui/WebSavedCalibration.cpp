@@ -384,7 +384,16 @@ SavedStitchingStill read_still(
   const auto directory = text(request.game.string());
   const auto revision = StitchingStillRevision(directory);
   std::mutex metadata_mutex;
-  auto result = ReadSavedStitchingStill(directory, generation, settings, revision, metadata_mutex, cancelled);
+  auto result = ReadSavedStitchingStill(
+      directory,
+      generation,
+      settings,
+      revision,
+      metadata_mutex,
+      cancelled,
+      {},
+      {},
+      /*inspect_recording_paths=*/false);
   require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
   return result;
 }

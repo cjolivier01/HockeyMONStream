@@ -187,13 +187,11 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const hm::program::ProgramCalibrationRequest calibration{args.saved_stitch_time, args.expected_invalidation};
   Status(hm::program::ValidateProgramCalibrationSelection(launch.saved_game, calibration));
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
-  const auto audio_config = Take(hm::program::ResolveProgramAudioConfig(launch.configuration, launch.frame_offsets));
   auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
   const auto start = args.start.value_or(output_config.start_ns);
   const auto limit = args.limit;
   std::optional<hm::BitratePerPixel> source_bitrate;
-  // Nothing retimes video, so the mobile copy's seconds-based keyframe interval
-  // resolves against the exact source rate. Cameras of one recording share it.
+  // A stitched archive uses the slower camera clock.
   std::optional<std::pair<int, int>> source_frame_rate;
   std::filesystem::path archive_directory;
   const auto managed_work = hm::publication::EnvironmentWorkingDirectory();
@@ -210,8 +208,7 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
         const auto metadata = Take(hm::media::ReadMp4VideoTrack(chapter, launch.amd.operation_timeout_ns, {}));
         if (metadata.fps_n > 0 && metadata.fps_d > 0 &&
             (!source_frame_rate ||
-             int64_t(metadata.fps_n) * source_frame_rate->second >
-                 int64_t(source_frame_rate->first) * metadata.fps_d))
+             int64_t(metadata.fps_n) * source_frame_rate->second < int64_t(source_frame_rate->first) * metadata.fps_d))
           source_frame_rate = std::make_pair(metadata.fps_n, metadata.fps_d);
         if (!metadata.bitrate)
           continue;
@@ -260,6 +257,12 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const auto render_node = std::filesystem::path(std::string("/dev/dri/by-path/pci-") + pci + "-render");
   auto source = Take(hm::gpu::VaStereoVideo::Create(
       {{Reader(launch, 0, render_node), Reader(launch, 1, render_node)}, launch.chapters, launch.frame_offsets}, {}));
+  std::array<double, 2> trim_seconds{};
+  for (size_t camera = 0; camera < 2; ++camera) {
+    const auto& info = source->video_info(camera);
+    trim_seconds[camera] = launch.frame_offsets[camera] * info.fps_d / info.fps_n;
+  }
+  const auto audio_config = Take(hm::program::ResolveProgramAudioConfig(launch.configuration, trim_seconds));
   GstClockTime audio_source_offset = 0;
   if (audio_config) {
     const auto camera = audio_config->camera;

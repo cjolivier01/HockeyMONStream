@@ -21,5 +21,5 @@ struct ProgramAudioConfig {
 // source start (trim plus synchronization residual).
 absl::StatusOr<std::optional<ProgramAudioConfig>> ResolveProgramAudioConfig(
     const config::ProgramConfiguration& config,
-    const std::array<double, 2>& frame_offsets);
+    const std::array<double, 2>& trim_seconds);
 } // namespace hm::program

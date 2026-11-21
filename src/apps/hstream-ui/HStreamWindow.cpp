@@ -9131,7 +9131,7 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
       continue;
     const auto& source = camera_optics_sources_[index];
     const auto found = result.source_metadata.find(source);
-    const hm::stitching::InputCameraMetadata metadata =
+    hm::stitching::InputCameraMetadata metadata =
         found == result.source_metadata.end() ? hm::stitching::InputCameraMetadata{} : found->second;
     const auto label = metadata.role == "left" ? QString("Left camera")
         : metadata.role == "right"             ? QString("Right camera")
@@ -9142,6 +9142,21 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
     camera_start_widgets_[index]->setStart(hm::stitching::CameraSourceStart(camera_source_starts_, {}, source));
     camera_start_widgets_[index]->setEnabled(!running);
     camera_start_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
+    const auto& optics = result.camera.input_cameras.at(source);
+    const auto size = metadata.recording_size ? metadata.recording_size : optics.source_size;
+    auto* controls = findChild<QTabWidget*>(QString("camera%1ControlTabs").arg(index + 1));
+    controls->setTabText(0, size ? QString("Optics (%1×%2)").arg((*size)[0]).arg((*size)[1]) : QString("Optics"));
+    if (camera_optics_sources_.size() == 2) {
+      const auto& other_source = camera_optics_sources_[1 - index];
+      const auto& other = result.camera.input_cameras.at(other_source);
+      const auto other_meta = result.source_metadata.find(other_source);
+      const auto other_size = other_meta != result.source_metadata.end() && other_meta->second.recording_size
+          ? other_meta->second.recording_size
+          : other.source_size;
+      if (size && other_size && size != other_size && optics.horizontal_fov == other.horizontal_fov &&
+          optics.vertical_fov == other.vertical_fov && optics.input_lens == other.input_lens)
+        metadata.recording_message += "\nCamera resolutions differ. Verify the field of view for each recording mode.";
+    }
     camera_optics_widgets_[index]->setCamera(result.camera.for_source(source), metadata);
     camera_optics_widgets_[index]->setEnabled(!running);
     camera_optics_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
@@ -18619,7 +18634,7 @@ void HStreamWindow::schedulePreviewReadyTimeout(const QString& channel, quint64 
     if (selectedPipelinePreviewChannel() != channel) {
       return;
     }
-    if (previewCommandsBlockedByPause()) {
+    if (previewCommandsBlockedByPause() || (channel == "stitched" && calibration_pending_)) {
       schedulePreviewReadyTimeout(channel, generation, timeout_ms);
       return;
     }

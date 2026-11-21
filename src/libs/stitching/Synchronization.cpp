@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <string_view>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -204,6 +205,27 @@ absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window
 }
 } // namespace
 
+absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file) {
+  AudioInput input;
+  const auto status = input.Open(file);
+  if (!status.ok())
+    return status;
+  const int index = av_find_best_stream(input.format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  if (index < 0)
+    return absl::NotFoundError("Camera has no video: " + file);
+  const auto* stream = input.format->streams[index];
+  const auto fps = stream->avg_frame_rate;
+  if (fps.num <= 0 || fps.den <= 0 || stream->codecpar->width <= 0 || stream->codecpar->height <= 0)
+    return absl::FailedPreconditionError("Camera requires known geometry and frame rate: " + file);
+  return CameraTrackFormat{
+      stream->codecpar->width,
+      stream->codecpar->height,
+      fps.num,
+      fps.den,
+      av_cmp_q(fps, stream->r_frame_rate) == 0,
+      av_rescale_q_rnd(1, stream->time_base, {1, 1000000000}, AV_ROUND_UP)};
+}
+
 absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
     const std::vector<std::string>& files,
     double start_seconds,
@@ -241,7 +263,8 @@ absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
     const double local = std::max(0.0, start_seconds - skipped);
     const double take = std::min(duration - local, duration_seconds - result.duration_seconds);
     const double origin = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time * av_q2d(stream->time_base);
-    result.chapters.push_back({file, local, take, origin});
+    const bool matroska = std::string_view(input.format->iformat->name).find("matroska") != std::string_view::npos;
+    result.chapters.push_back({file, local, take, origin, matroska});
     result.duration_seconds += take;
     if (result.duration_seconds >= duration_seconds)
       break;

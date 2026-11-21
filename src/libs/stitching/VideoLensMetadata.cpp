@@ -15,6 +15,12 @@
 
 #include "hstream/src/libs/stitching/CalibrationFrameExif.h"
 
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/mem.h>
+}
+
 namespace hm::stitching {
 namespace {
 using Bytes = std::vector<unsigned char>;
@@ -569,16 +575,91 @@ class Mp4 {
   uint64_t size;
   size_t bytes_read{0}, boxes{0};
 };
-VideoLensMetadata read_file(const std::filesystem::path& path) {
-  const auto insta = frame_exif::ReadInsta360Record(path, 1, kMaxMetadata);
-  if (!insta.ok())
-    throw std::runtime_error(insta.status().ToString());
+// Matroska and AVI carry geometry in their track headers. Limit demuxer I/O
+// to the header prefix; do not scan packets, seek an index, or open a decoder.
+VideoLensMetadata read_container_dimensions(Mp4& source, const char* format) {
+  require(
+      (avformat_version() >> 16) == LIBAVFORMAT_VERSION_MAJOR &&
+          (avcodec_version() >> 16) == LIBAVCODEC_VERSION_MAJOR && (avutil_version() >> 16) == LIBAVUTIL_VERSION_MAJOR,
+      "Incompatible FFmpeg metadata library");
+  auto* demuxer = av_find_input_format(format);
+  require(demuxer, "Video header demuxer is unavailable");
+  struct Header {
+    AVFormatContext* context{nullptr};
+    AVIOContext* io{nullptr};
+    std::ifstream& file;
+    size_t remaining{kMaxMetadata};
+    ~Header() {
+      avformat_close_input(&context);
+      if (io) {
+        av_freep(&io->buffer);
+        avio_context_free(&io);
+      }
+    }
+  } header{nullptr, nullptr, source.file};
+  header.file.seekg(0);
+  header.context = avformat_alloc_context();
+  require(header.context, "Cannot allocate video header demuxer");
+  constexpr int buffer_size = 4096;
+  auto* storage = static_cast<unsigned char*>(av_malloc(buffer_size));
+  require(storage, "Cannot allocate video header buffer");
+  header.io = avio_alloc_context(
+      storage,
+      buffer_size,
+      0,
+      &header,
+      [](void* object, uint8_t* bytes, int capacity) -> int {
+        auto& input = *static_cast<Header*>(object);
+        const auto wanted = std::min(input.remaining, size_t(capacity));
+        if (!wanted)
+          return AVERROR_EOF;
+        input.file.read(reinterpret_cast<char*>(bytes), wanted);
+        const auto received = input.file.gcount();
+        input.remaining -= received;
+        return received ? static_cast<int>(received) : AVERROR_EOF;
+      },
+      nullptr,
+      nullptr);
+  if (!header.io)
+    av_free(storage);
+  require(header.io, "Cannot allocate video header input");
+  header.context->pb = header.io;
+  header.context->flags |= AVFMT_FLAG_CUSTOM_IO;
+  require(avformat_open_input(&header.context, nullptr, demuxer, nullptr) == 0, "Cannot read video track headers");
+  VideoLensMetadata result;
+  for (unsigned i = 0; i < header.context->nb_streams; ++i) {
+    const auto* stream = header.context->streams[i];
+    const auto* codec = stream->codecpar;
+    if (codec->codec_type != AVMEDIA_TYPE_VIDEO || (stream->disposition & AV_DISPOSITION_ATTACHED_PIC))
+      continue;
+    require(
+        !result.width && codec->width > 0 && codec->height > 0 && codec->width <= 32768 && codec->height <= 32768,
+        "Ambiguous or invalid video track geometry");
+    result.width = codec->width;
+    result.height = codec->height;
+  }
+  require(result.width, "Missing video track geometry");
+  return result;
+}
+VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_only) {
   std::optional<VideoLensMetadata> vendor;
-  if (insta->has_value()) {
-    require(insta->value().full_size <= kMaxMetadata, "Insta360 metadata too large");
-    vendor = parse_insta(insta->value().data);
+  if (!dimensions_only) {
+    const auto insta = frame_exif::ReadInsta360Record(path, 1, kMaxMetadata);
+    if (!insta.ok())
+      throw std::runtime_error(insta.status().ToString());
+    if (insta->has_value()) {
+      require(insta->value().full_size <= kMaxMetadata, "Insta360 metadata too large");
+      vendor = parse_insta(insta->value().data);
+    }
   }
   Mp4 mp4(path);
+  if (dimensions_only && mp4.size >= 12) {
+    const auto magic = mp4.read(0, 12);
+    if (integer(magic.data(), 4) == 0x1a45dfa3)
+      return read_container_dimensions(mp4, "matroska");
+    if (std::memcmp(magic.data(), "RIFF", 4) == 0 && std::memcmp(magic.data() + 8, "AVI ", 4) == 0)
+      return read_container_dimensions(mp4, "avi");
+  }
   size_t width = 0, height = 0;
   std::map<std::string, Mp4::Atom> dji_track;
   // Camera metadata and video sample descriptions are contained in moov.
@@ -587,7 +668,7 @@ VideoLensMetadata read_file(const std::filesystem::path& path) {
     if (top.type != "moov")
       continue;
     for (const auto& a : mp4.atoms(top.pos, top.size)) {
-      if (a.type == "udta") {
+      if (!dimensions_only && a.type == "udta") {
         for (const auto& g : mp4.atoms(a.pos, a.size))
           if (g.type == "GPMF") {
             require(!vendor.has_value(), "Multiple camera lens metadata blocks");
@@ -614,6 +695,13 @@ VideoLensMetadata read_file(const std::filesystem::path& path) {
         height = integer(b.data() + 42, 2);
       }
     }
+  }
+  if (dimensions_only) {
+    require(width && height && width <= 32768 && height <= 32768, "Recording has no usable video dimensions");
+    VideoLensMetadata result;
+    result.width = width;
+    result.height = height;
+    return result;
   }
   if (vendor) {
     require(
@@ -659,13 +747,14 @@ absl::StatusOr<VideoLensMetadata> ParseInsta360LensMetadata(const Bytes& data) {
 absl::StatusOr<VideoLensMetadata> ParseDjiLensMetadata(const Bytes& data, size_t width, size_t height) {
   return checked([&] { return parse_dji(data, width, height); });
 }
-absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::path& video) {
+namespace {
+absl::StatusOr<VideoLensMetadata> read_cached_metadata(const std::filesystem::path& video, bool dimensions_only) {
   struct stat info;
   if (stat(video.c_str(), &info) != 0 || !S_ISREG(info.st_mode))
     return absl::NotFoundError("Source video is unavailable");
-  const std::string key = std::to_string(info.st_dev) + ":" + std::to_string(info.st_ino) + ":" +
-      std::to_string(info.st_size) + ":" + std::to_string(info.st_mtim.tv_sec) + ":" +
-      std::to_string(info.st_mtim.tv_nsec) + ":" + std::to_string(info.st_ctim.tv_sec) + ":" +
+  const std::string key = std::string(dimensions_only ? "size:" : "optics:") + std::to_string(info.st_dev) + ":" +
+      std::to_string(info.st_ino) + ":" + std::to_string(info.st_size) + ":" + std::to_string(info.st_mtim.tv_sec) +
+      ":" + std::to_string(info.st_mtim.tv_nsec) + ":" + std::to_string(info.st_ctim.tv_sec) + ":" +
       std::to_string(info.st_ctim.tv_nsec);
   static std::mutex mutex;
   static std::map<std::string, absl::StatusOr<VideoLensMetadata>> cache;
@@ -675,7 +764,7 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
     if (it != cache.end())
       return it->second;
   }
-  auto result = checked([&] { return read_file(video); });
+  auto result = checked([&] { return read_file(video, dimensions_only); });
   struct stat after;
   if (stat(video.c_str(), &after) != 0 || after.st_dev != info.st_dev || after.st_ino != info.st_ino ||
       after.st_size != info.st_size || after.st_mtim.tv_sec != info.st_mtim.tv_sec ||
@@ -689,6 +778,52 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
     cache.insert_or_assign(key, result);
   }
   return result;
+}
+
+} // namespace
+absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::path& video) {
+  return read_cached_metadata(video, false);
+}
+
+absl::StatusOr<std::array<int, 2>> ReadRecordingSize(const std::filesystem::path& recording) {
+  const auto track = read_cached_metadata(recording, true);
+  if (!track.ok())
+    return track.status();
+  return std::array<int, 2>{static_cast<int>(track->width), static_cast<int>(track->height)};
+}
+
+absl::Status CheckCalibrationFrameSize(const std::filesystem::path& recording, const std::array<int, 2>& calibrated) {
+  const auto size = ReadRecordingSize(recording);
+  if (size.ok() && *size != calibrated)
+    return absl::FailedPreconditionError(
+        recording.filename().string() + " is " + std::to_string((*size)[0]) + "x" + std::to_string((*size)[1]) +
+        ", but its calibration uses " + std::to_string(calibrated[0]) + "x" + std::to_string(calibrated[1]));
+  return absl::OkStatus();
+}
+
+absl::Status CheckCalibrationRecordingSizes(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    const StitchSourceSizes& calibrated) {
+  const auto child = [](const YAML::Node& parent, const char* key) {
+    return parent && parent.IsMap() ? parent[key] : YAML::Node(YAML::NodeType::Undefined);
+  };
+  const auto roles = child(child(config, "hstream_ui"), "video_roles");
+  const auto videos = child(child(config, "game"), "videos");
+  for (size_t camera = 0; camera < calibrated.size(); ++camera) {
+    const char* role = camera ? "right" : "left";
+    const auto selected = child(roles, role);
+    const auto playlist = selected && selected.IsSequence() && selected.size() ? selected : child(videos, role);
+    if (!playlist)
+      continue;
+    const auto first = playlist.IsSequence() && playlist.size() ? playlist[0] : playlist;
+    if (first.IsScalar() && !first.Scalar().empty()) {
+      const auto status = CheckCalibrationFrameSize(game / first.Scalar(), calibrated[camera]);
+      if (!status.ok())
+        return status;
+    }
+  }
+  return absl::OkStatus();
 }
 
 namespace {
@@ -1069,6 +1204,14 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
           metadata->height <= 32768)
         optics.source_size = std::array<int, 2>{static_cast<int>(metadata->width), static_cast<int>(metadata->height)};
     }
+    // Track geometry is display metadata. Learning the dimensions of a
+    // manual or unrecognized camera must not change an existing calibration key.
+    auto recording_size = optics.source_size;
+    if (!source_frozen) {
+      const auto track = read_cached_metadata(paths->front(), true);
+      if (track.ok())
+        recording_size = std::array<int, 2>{static_cast<int>(track->width), static_cast<int>(track->height)};
+    }
     result.camera.input_cameras.emplace(key, optics);
     result.source_metadata[key] = {
         role,
@@ -1080,7 +1223,8 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
         resolved.recording_metadata_found,
         resolved.horizontal_fov_from_mp4,
         resolved.vertical_fov_from_mp4,
-        resolved.lens_from_mp4};
+        resolved.lens_from_mp4,
+        recording_size};
     result.mismatch |= resolved.mismatch;
     result.recording_metadata_found |= resolved.recording_metadata_found;
     result.horizontal_fov_from_mp4 &= resolved.horizontal_fov_from_mp4;

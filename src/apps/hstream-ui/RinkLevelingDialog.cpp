@@ -334,6 +334,12 @@ void RinkLevelingDialog::loadSnapshot() {
     try {
       const YAML::Node config =
           YAML::Load(readFile(QDir(temporary_.path() + "/_hockeymon").filePath("config.yaml")).toStdString());
+      const auto geometry =
+          hm::stitching::HuginProject::CheckSavedRecordingGeometry(game_directory_.toStdString(), config);
+      if (!geometry.ok()) {
+        load_error_ = QString::fromStdString(std::string(geometry.message())) + ". Recalibrate before leveling.";
+        return;
+      }
       const auto ui = config["hstream_ui"];
       const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
       const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
@@ -382,6 +388,7 @@ void RinkLevelingDialog::loadSnapshot() {
   project_ = *prepared;
   if (!in_progress_calibration_) {
     QMap<QString, QString> fields;
+    std::vector<std::string> lines;
     for (const QByteArray& line :
          readFile(QDir(temporary_.path() + "/_hockeymon").filePath("stitching_canvas_provenance")).split('\n')) {
       const int separator = line.indexOf('=');
@@ -393,8 +400,32 @@ void RinkLevelingDialog::loadSnapshot() {
         return;
       }
       fields[key] = QString::fromUtf8(line.mid(separator + 1));
+      lines.push_back(line.toStdString());
     }
-    const int version = fields.value("version").toInt();
+    const auto sizes = hm::stitching::ReadStitchSourceSizeSuffix(lines);
+    if (!sizes.ok() ||
+        (sizes->has_value() &&
+         (!std::equal((**sizes)[0].begin(), (**sizes)[0].end(), project_.image_sizes[0].begin()) ||
+          !std::equal((**sizes)[1].begin(), (**sizes)[1].end(), project_.image_sizes[1].begin())))) {
+      load_error_ = "Camera image dimensions differ from the saved calibration. Recalibrate before leveling.";
+      return;
+    }
+    int version = fields.value("version").toInt();
+    if (version >= 22 && version <= 25) {
+      if (!sizes->has_value()) {
+        load_error_ = "The saved calibration has no source dimensions. Recalibrate before leveling.";
+        return;
+      }
+      version -= 4;
+    }
+    if (version >= 18 && version <= 21) {
+      if (!hm::stitching::ParseControlPointSelection(fields.value("control-point-selection").toStdString()).ok()) {
+        load_error_ =
+            "The saved calibration has invalid control point selection metadata. Recalibrate before leveling.";
+        return;
+      }
+      version -= 4;
+    }
     // Versions 10 and 11 add selected-frame and manual-match provenance.
     // Versions 12 and 13 add input lens correction; 14 and 15 add match filtering;
     // 16 and 17 bind independent optics to each source camera.

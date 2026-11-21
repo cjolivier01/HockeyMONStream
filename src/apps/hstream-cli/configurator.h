@@ -262,7 +262,7 @@ class Configurator {
       std::vector<std::string>& left_files,
       std::vector<std::string>& right_files,
       YAML::Node& offsets);
-  void apply_frame_offsets_and_sizes(
+  absl::Status apply_frame_offsets_and_sizes(
       const std::vector<std::string>& left_files,
       const std::vector<std::string>& right_files,
       const YAML::Node& offsets,
@@ -287,7 +287,6 @@ class Configurator {
       YAML::Node& pipeline,
       const std::vector<std::string>& left_files,
       const std::vector<std::string>& right_files,
-      const YAML::Node& offsets,
       size_t& num_video_sources);
   absl::Status configure_encode_file_outputs(YAML::Node& pipeline, const std::vector<std::string>& source_video_paths)
       const;

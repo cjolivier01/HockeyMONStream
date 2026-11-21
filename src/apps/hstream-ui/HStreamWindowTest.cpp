@@ -940,6 +940,11 @@ for line in sys.stdin:
   static hm::stitching::StitchCameraSelection currentCameraSelection(HStreamWindow* window) {
     return window->stitchCameraSelection();
   }
+  static void loadCameraSizes(HStreamWindow* window, const std::filesystem::path& root) {
+    const auto result = hm::stitching::ResolveAutoInputLensForCameras(
+        {root / "left.mp4"}, {root / "right.mp4"}, window->camera_optics_result_.camera, {}, true, root);
+    window->updateInputCameraTabs(result);
+  }
   static void discoverCameraRoles(HStreamWindow* window, bool reverse) {
     auto result = window->camera_optics_result_;
     result.source_metadata["left.mp4"].role = reverse ? "right" : "left";
@@ -19297,6 +19302,12 @@ bool run_real_calibration_completion_e2e(HStreamWindow* window, const QString& g
       if (completed_at < 0)
         completed_at = timer.elapsed();
       if (timer.elapsed() - completed_at > 10000) {
+        if (stitching_only && log.contains("--ui-preview-active=stitched") &&
+            !expect(
+                log.indexOf("GPU preview ready channel=stitched") > log.indexOf("Recreate pipeline") &&
+                    !log.contains("HSTREAM_PREVIEW_FATAL"),
+                "Stitched playback must present on the continuing graph or after the calibration graph is replaced"))
+          return false;
         const YAML::Node config =
             YAML::LoadFile((fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml").string());
         const YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
@@ -23751,6 +23762,29 @@ int main(int argc, char** argv) {
             tabs->tabText(2) == "Left camera" && tabs->tabText(3) == "Right camera" && tabs->isTabVisible(3) &&
                 left->property("cameraSource") == "left.mp4" && right->property("cameraSource") == "right.mp4",
             "Adding the left camera must order tabs by position and retain source identities"))
+      return 1;
+    QTemporaryDir media;
+    for (const auto& input : {std::pair{"left.mp4", "320x180"}, std::pair{"right.mp4", "160x90"}})
+      if (QProcess::execute(
+              "ffmpeg",
+              {"-nostdin",
+               "-loglevel",
+               "error",
+               "-f",
+               "lavfi",
+               "-i",
+               QString("color=size=%1").arg(input.second),
+               "-frames:v",
+               "1",
+               "-c:v",
+               "libx264",
+               media.filePath(input.first)}) != 0)
+        return 1;
+    HStreamWindowTestAccess::loadCameraSizes(&window, media.path().toStdString());
+    if (!expect(
+            require_child<QTabWidget>(&window, "camera1ControlTabs")->tabText(0) == "Optics (320×180)" &&
+                require_child<QTabWidget>(&window, "camera2ControlTabs")->tabText(0) == "Optics (160×90)",
+            "Optics labels must follow the resolution of each camera"))
       return 1;
     auto* left_start = require_child<QWidget>(&window, "camera1StartControls");
     auto* right_start = require_child<QWidget>(&window, "camera2StartControls");

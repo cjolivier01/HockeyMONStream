@@ -751,6 +751,7 @@ absl::Status StitcherPriv::ensure_stitcher() {
         control_masks.canvas_height() != artifacts->canvas_size.height) {
       return absl::FailedPreconditionError("Control-mask loading changed the validated stitched canvas dimensions");
     }
+    source_sizes_ = artifacts->source_sizes;
     hugin_generation_id_ = std::move(artifacts->generation_id);
     update_canvas_hints(control_masks.canvas_width(), control_masks.canvas_height());
     artifacts->artifact_lock.reset();
@@ -965,20 +966,15 @@ absl::Status StitcherPriv::prepare_high_bit_inputs(
             static_cast<int>(incoming_surface_left->colorFormat),
             static_cast<int>(incoming_surface_right->colorFormat)));
   }
-  if (incoming_surface_left.width() != incoming_surface_right.width() ||
-      incoming_surface_left.height() != incoming_surface_right.height()) {
-    return absl::FailedPreconditionError("High-bit-depth stitching requires equal left/right input dimensions");
-  }
-
-  const int width = static_cast<int>(incoming_surface_left.width());
-  const int height = static_cast<int>(incoming_surface_left.height());
-  auto ensure_input = [width, height](std::unique_ptr<hm::CudaMat<half4>>& input) {
+  auto ensure_input = [](std::unique_ptr<hm::CudaMat<half4>>& input, hm::surface::Surface surface) {
+    const int width = static_cast<int>(surface.width());
+    const int height = static_cast<int>(surface.height());
     if (!input || input->width() != width || input->height() != height) {
       input = std::make_unique<hm::CudaMat<half4>>(/*batch_size=*/1, width, height, /*pixel_channels=*/1);
     }
     return input && input->is_valid();
   };
-  if (!ensure_input(high_bit_left_) || !ensure_input(high_bit_right_)) {
+  if (!ensure_input(high_bit_left_, incoming_surface_left) || !ensure_input(high_bit_right_, incoming_surface_right)) {
     return absl::ResourceExhaustedError("Could not allocate FP16 RGB stitch inputs");
   }
 
@@ -1494,7 +1490,7 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
   };
   std::vector<RuntimeFrameInfo> runtime_frames;
   std::vector<RuntimeFrameKey> runtime_frame_keys;
-  size_t surface_index = 0;
+  std::vector<bool> used_slots(in_surface->numFilled);
   size_t frame_meta_count = 0;
   size_t decoded_sequence_meta_count = 0;
   for (NvDsFrameMetaList* frame_meta_list = batch_meta->frame_meta_list; frame_meta_list != nullptr;
@@ -1507,9 +1503,10 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
     bool decoded_sequence_present = false;
     HM_RETURN_IF_ERROR(validate_decoder_mux_sequence(frame_meta, &decoded_sequence_present));
     decoded_sequence_meta_count += decoded_sequence_present ? 1 : 0;
-    if (surface_index >= in_surface->numFilled) {
-      continue;
-    }
+    const auto surface_index = frame_meta->batch_id;
+    if (surface_index >= used_slots.size() || used_slots[surface_index])
+      return absl::FailedPreconditionError("Invalid or repeated stitch input batch slot");
+    used_slots[surface_index] = true;
     auto* surface_params = &in_surface->surfaceList[surface_index];
     runtime_frames.push_back(
         RuntimeFrameInfo{
@@ -1519,10 +1516,9 @@ absl::StatusOr<videoprep::RuntimeOutputSize> StitcherPriv::PrepareRuntimeOutputS
             .frame_meta = frame_meta,
         });
     runtime_frame_keys.push_back(RuntimeFrameKey{frame_meta->frame_num, frame_meta->source_id});
-    ++surface_index;
   }
 
-  if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
+  if (frame_meta_count != in_surface->numFilled) {
     return absl::FailedPreconditionError("Input surface and frame metadata counts differ during runtime sizing");
   }
   if (decoded_sequence_meta_count != 0 && decoded_sequence_meta_count != frame_meta_count) {
@@ -2048,7 +2044,7 @@ absl::Status StitcherPriv::GenerateOutput(
 
   guint min_source_id = std::numeric_limits<guint>::max();
   guint max_source_id = 0;
-  size_t surface_index = 0;
+  std::vector<bool> used_slots(in_surface->numFilled);
   size_t frame_meta_count = 0;
   size_t duplicate_frame_sources = 0;
   size_t invalid_surfaces_per_frame = 0;
@@ -2067,11 +2063,11 @@ absl::Status StitcherPriv::GenerateOutput(
     bool decoded_sequence_present = false;
     HM_RETURN_IF_ERROR(validate_decoder_mux_sequence(frame_meta, &decoded_sequence_present));
     decoded_sequence_meta_count += decoded_sequence_present ? 1 : 0;
-    if (surface_index >= in_surface->numFilled) {
-      continue;
-    }
+    const auto surface_index = frame_meta->batch_id;
+    if (surface_index >= used_slots.size() || used_slots[surface_index])
+      return absl::FailedPreconditionError("Invalid or repeated stitch input batch slot");
+    used_slots[surface_index] = true;
     auto* surface_params = &in_surface->surfaceList[surface_index];
-    // assert(seen_surface_indexes.emplace(frame_meta->surface_index).second);
     // std::cout << "source_id=" << frame_meta->source_id << ", frame_num=" << frame_meta->frame_num << std::endl;
     auto& frame_sources = frame_source_surfaces[frame_meta->frame_num];
     min_source_id = std::min(min_source_id, frame_meta->source_id);
@@ -2089,7 +2085,6 @@ absl::Status StitcherPriv::GenerateOutput(
     if (!inserted) {
       ++duplicate_frame_sources;
     }
-    ++surface_index;
   }
   if (decoded_sequence_meta_count != 0 && decoded_sequence_meta_count != frame_meta_count) {
     return absl::FailedPreconditionError(
@@ -2143,10 +2138,9 @@ absl::Status StitcherPriv::GenerateOutput(
     }
   }
   const bool invalid_frame_sequence = (in_surface->batchSize % 2 != 0) || (in_surface->numFilled % 2 != 0) ||
-      surface_index != in_surface->numFilled || frame_meta_count != in_surface->numFilled ||
-      duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 || observed_source_ids.size() != 2 ||
-      frame_source_surfaces.size() != in_surface->numFilled / 2 || incomplete_frame_groups > 0 ||
-      inconsistent_source_groups > 0;
+      frame_meta_count != in_surface->numFilled || duplicate_frame_sources > 0 || invalid_surfaces_per_frame > 0 ||
+      observed_source_ids.size() != 2 || frame_source_surfaces.size() != in_surface->numFilled / 2 ||
+      incomplete_frame_groups > 0 || inconsistent_source_groups > 0;
   if (invalid_frame_sequence) {
     std::string reason = "invalid_frame_sequence";
     if (in_surface->numFilled % 2 != 0) {
@@ -2157,14 +2151,14 @@ absl::Status StitcherPriv::GenerateOutput(
       reason = "incomplete_frame_group";
     } else if (inconsistent_source_groups > 0 || observed_source_ids.size() != 2) {
       reason = "inconsistent_sources";
-    } else if (frame_meta_count != in_surface->numFilled || surface_index != in_surface->numFilled) {
+    } else if (frame_meta_count != in_surface->numFilled) {
       reason = "surface_metadata_mismatch";
     }
     const bool valid_surface_envelope =
         in_surface->batchSize > 0 && in_surface->batchSize % 2 == 0 && in_surface->numFilled <= in_surface->batchSize;
     const bool metadata_valid_unpairable_batch = valid_surface_envelope && in_surface->numFilled > 0 &&
-        frame_meta_count == in_surface->numFilled && surface_index == in_surface->numFilled &&
-        duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 && observed_source_ids.size() <= 2;
+        frame_meta_count == in_surface->numFilled && duplicate_frame_sources == 0 && invalid_surfaces_per_frame == 0 &&
+        observed_source_ids.size() <= 2;
     std::set<guint> observed_or_eos_source_ids = observed_source_ids;
     observed_or_eos_source_ids.insert(eos_snapshot.source_ids.begin(), eos_snapshot.source_ids.end());
     const bool source_eos_explains_unpairable_batch =
@@ -2453,6 +2447,13 @@ absl::Status StitcherPriv::GenerateOutput(
       }
     }
 
+    {
+      absl::MutexLock lk(&stitcher_mu_);
+      HM_RETURN_IF_ERROR(stitching::CheckStitchSourceSizes(
+          source_sizes_,
+          {{{static_cast<int>(incoming_surface_left.width()), static_cast<int>(incoming_surface_left.height())},
+            {static_cast<int>(incoming_surface_right.width()), static_cast<int>(incoming_surface_right.height())}}}));
+    }
     if (canvas_width_hint_ && canvas_height_hint_) {
       if (canvas_width_hint_ > outgoing_surface.width() || canvas_height_hint_ > outgoing_surface.height()) {
         return absl::FailedPreconditionError("Output surface is smaller than expected stitched canvas");
@@ -2520,10 +2521,8 @@ absl::Status StitcherPriv::GenerateOutput(
       // and minimized blending still return owned output, which is cached below.
       if (fused_rgb10_remap_) {
         if (!isRgb10A2ColorFormat(incoming_surface_left->colorFormat) ||
-            !isRgb10A2ColorFormat(incoming_surface_right->colorFormat) ||
-            incoming_surface_left.width() != incoming_surface_right.width() ||
-            incoming_surface_left.height() != incoming_surface_right.height())
-          return absl::FailedPreconditionError("Fused high-bit stitching requires equal-sized RGB10A2 inputs");
+            !isRgb10A2ColorFormat(incoming_surface_right->colorFormat))
+          return absl::FailedPreconditionError("Fused high-bit stitching requires RGB10A2 inputs");
         // Non-owning pitched views: input GstBuffers remain retained until this stream completes.
         auto packed_view = [](hm::surface::Surface surface) {
           return hm::CudaMat<Rgb10A2>(

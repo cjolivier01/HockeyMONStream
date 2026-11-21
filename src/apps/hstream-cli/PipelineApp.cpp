@@ -2124,7 +2124,7 @@ absl::Status PipelineApplication::createPipelines(
     for (const auto& context : app_contexts)
       HM_RETURN_IF_ERROR(configure_paced_local_playback(*context));
     HM_RETURN_IF_ERROR(configure_preview_overlay_producers(app_contexts));
-    HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts));
+    HM_RETURN_IF_ERROR(configure_source_preview_sinks(app_contexts, /*sources_only=*/false, !restart_candidates.empty()));
   }
   if (web_preview_)
     HM_RETURN_IF_ERROR(
@@ -2405,7 +2405,8 @@ absl::Status PipelineApplication::configure_preview_overlay_producers(
 
 absl::Status PipelineApplication::configure_source_preview_sinks(
     const std::vector<std::shared_ptr<HmApp>>& app_contexts,
-    bool sources_only) {
+    bool sources_only,
+    bool restarting_after_calibration) {
   if (!ui_preview_window_ids_.empty()) {
     if (!sources_only) {
       preview_routes_.forget_routes();
@@ -2463,6 +2464,7 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
     struct PreviewProbeState {
       GstElement* sink{nullptr};
       bool realtime{false};
+      bool calibration_sample{false};
       GstClockTime last_pts{GST_CLOCK_TIME_NONE};
       std::chrono::steady_clock::time_point last_emission;
       bool have_last_emission{false};
@@ -2486,6 +2488,8 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
             }
           }
         }
+        if (state->calibration_sample && (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0)
+          return GST_PAD_PROBE_DROP;
         if (!state->realtime && (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) != 0) {
           const auto now = std::chrono::steady_clock::now();
           constexpr auto kMinimumWallPeriod = std::chrono::nanoseconds(GST_SECOND / 30);
@@ -2619,7 +2623,11 @@ absl::Status PipelineApplication::configure_source_preview_sinks(
       GstPad* probe_pad = gst_element_get_static_pad(ingress_isolation, "src");
       if (!probe_pad)
         return false;
-      auto* probe_state = new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink)), realtime != FALSE};
+      // The retiring graph's reference sample must not claim the playback
+      // window. A zero-time unrestricted solve can continue on the same graph.
+      const bool calibration_sample = channel == "stitched" && restarting_after_calibration;
+      auto* probe_state =
+          new PreviewProbeState{GST_ELEMENT(gst_object_ref(sink)), realtime != FALSE, calibration_sample};
       gst_pad_add_probe(
           probe_pad,
           static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),

@@ -67,8 +67,12 @@ gboolean parse_source_yaml(NvDsSourceConfig* config, const YAML::Node& yaml_node
   SET_LOCATOR_ENUM(locator, *config, type, NvDsSourceType); // "type"
   SET_LOCATOR(locator, *config, enable); // "enable"
   SET_LOCATOR(locator, *config, uri_list_loop); // "uri-list-loop"
+  SET_LOCATOR(locator, *config, stitch_input_width);
+  SET_LOCATOR(locator, *config, stitch_input_height);
   SET_LOCATOR(locator, *config, camera_width); // "camera-width" (dash replaced to underscore)
   SET_LOCATOR(locator, *config, camera_height); // "camera-height"
+  SET_LOCATOR(locator, *config, frame_decimation);
+  SET_LOCATOR(locator, *config, frame_clock_tick_ns);
   SET_LOCATOR(locator, *config, camera_fps_n); // "camera-fps-n"
   SET_LOCATOR(locator, *config, camera_fps_d); // "camera-fps-d"
   SET_LOCATOR(locator, *config, camera_csi_sensor_id); // "camera-csi-sensor-id"

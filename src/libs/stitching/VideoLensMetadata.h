@@ -29,6 +29,14 @@ struct VideoLensMetadata {
 // Never decodes video or scans mdat.
 // Results are cached by file identity, size and modification/change timestamps.
 absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::path& video);
+// Compare the saved pixel grids with the selected recordings when their video
+// headers are available. Decoded surfaces are checked independently at playback.
+absl::Status CheckCalibrationRecordingSizes(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    const StitchSourceSizes& calibrated);
+absl::StatusOr<std::array<int, 2>> ReadRecordingSize(const std::filesystem::path& recording);
+absl::Status CheckCalibrationFrameSize(const std::filesystem::path& recording, const std::array<int, 2>& calibrated);
 // Exposed for bounded malformed-input and model-conversion tests.
 absl::StatusOr<VideoLensMetadata> ParseVideoLensMetadata(const std::vector<unsigned char>& gpmf);
 
@@ -49,6 +57,7 @@ struct InputCameraMetadata {
   bool horizontal_fov_from_mp4{false};
   bool vertical_fov_from_mp4{false};
   bool lens_from_mp4{false};
+  std::optional<std::array<int, 2>> recording_size;
 };
 
 struct AutoInputLensResult {

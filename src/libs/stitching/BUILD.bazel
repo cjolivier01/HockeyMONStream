@@ -269,6 +269,7 @@ cc_library(
     "//src/libs/common:runtime_control_config",
     "//src/libs/common:game_storage",
     ":orientation_internal",
+    ":video_lens_metadata",
   ],
   deps = [
     ":scoreboard_proposal",
@@ -553,6 +554,7 @@ cc_library(
     ":feature_matcher",
     ":game_config",
     ":homography_maps",
+    ":video_lens_metadata",
     ":rink_leveling",
     ":transaction_state",
     "//src/libs/common:status_macros",
@@ -970,7 +972,7 @@ cc_library(
   visibility = ["//visibility:public"],
   deps = [
     "//src/libs/common:game_storage",
-    ":game_config", ":stitching_reframe", ":player_frame_selection", ":rink_mask_frame_time", ":transaction_state",
+    ":game_config", ":hugin_project", ":stitching_reframe", ":player_frame_selection", ":rink_mask_frame_time", ":transaction_state",
     "//src/libs/common:status_macros", "@yaml-cpp", "@com_google_absl//absl/status:statusor",
   ],
 )
@@ -978,7 +980,7 @@ cc_library(
 cc_test(
   name = "stitching_calibration_controls_test",
   srcs = ["StitchingCalibrationControlsTest.cpp"],
-  deps = [":stitching_calibration_controls", ":stitching_core", ":game_config", ":player_frame_selection",
+  deps = [":stitching_calibration_controls", ":stitching_core", ":game_config", ":player_frame_selection", "@opencv_linux//:opencv",
     "//src/libs/common:baseline_config"],
 )
 
@@ -1030,6 +1032,7 @@ cc_test(
 
 cc_library(
     name = "video_lens_metadata",
+    linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec", "-lavutil"],
     srcs = ["VideoLensMetadata.cpp"],
     hdrs = ["VideoLensMetadata.h"],
     include_prefix = INCLUDE_PREFIX,

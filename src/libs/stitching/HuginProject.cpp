@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/stitching/VideoLensMetadata.h"
 
 #include <algorithm>
 #include <array>
@@ -374,6 +375,9 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
+  auto sizes = ReadStitchSourceSizeSuffix(lines);
+  if (!sizes.ok())
+    return sizes.status();
   // Versions 18-21 append the match-selection mode to the corresponding
   // 14-17 layout. Older artifacts retain their exact legacy interpretation.
   for (int version = 18; version <= 21; ++version) {
@@ -392,6 +396,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
     auto parsed = parse_canvas_provenance(previous.str());
     if (!parsed.ok())
       return parsed.status();
+    parsed->source_sizes = *sizes;
     parsed->control_point_selection = selection;
     return parsed;
   }
@@ -2053,6 +2058,41 @@ absl::StatusOr<std::string> HuginProject::ReadProject(const fs::path& path) {
   return read_bounded_hugin_file(path, kMaximumProjectBytes);
 }
 
+std::optional<StitchSourceSizes> HuginProject::ReadSourceImageSizes(const fs::path& directory) {
+  StitchSourceSizes sizes{};
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    const auto path = directory / (i ? "right.png" : "left.png");
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0)
+      return std::nullopt;
+    std::array<unsigned char, 33> header{};
+    struct stat info {};
+    const bool read = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
+        ::pread(fd, header.data(), header.size(), 0) == static_cast<ssize_t>(header.size());
+    ::close(fd);
+    constexpr unsigned char signature[] = {137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
+    const auto integer = [&](size_t pos) -> uint32_t {
+      return (uint32_t(header[pos]) << 24) | (uint32_t(header[pos + 1]) << 16) | (uint32_t(header[pos + 2]) << 8) |
+          header[pos + 3];
+    };
+    if (!read || !std::equal(std::begin(signature), std::end(signature), header.begin()) ||
+        integer(29) != png_crc32(header.data() + 12, header.data() + 16, 13))
+      return std::nullopt;
+    for (size_t axis = 0; axis < 2; ++axis) {
+      const auto size = integer(16 + 4 * axis);
+      if (!size || size > 32768)
+        return std::nullopt;
+      sizes[i][axis] = static_cast<int>(size);
+    }
+  }
+  return sizes;
+}
+
+absl::Status HuginProject::CheckSavedRecordingGeometry(const fs::path& game, const YAML::Node& config) {
+  const auto calibrated = ReadSourceImageSizes(hm::game_storage::StateDirectory(game));
+  return calibrated ? CheckCalibrationRecordingSizes(game, config, *calibrated) : absl::OkStatus();
+}
+
 HuginProject::ArtifactLock::~ArtifactLock() {
   if (descriptor_ >= 0) {
     ::flock(descriptor_, LOCK_UN);
@@ -3233,8 +3273,8 @@ absl::Status render_staged_project(
   provenance.imbue(std::locale::classic());
   provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
              << (options.input_cameras.empty()
-                     ? (options.manual_control_point_fingerprint.empty() ? "version=18\n" : "version=19\n")
-                     : (options.manual_control_point_fingerprint.empty() ? "version=20\n" : "version=21\n"))
+                     ? (options.manual_control_point_fingerprint.empty() ? "version=22\n" : "version=23\n")
+                     : (options.manual_control_point_fingerprint.empty() ? "version=24\n" : "version=25\n"))
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -3290,6 +3330,13 @@ absl::Status render_staged_project(
   provenance << "control-point-filtering=" << (options.control_point_filtering.epipolar_ransac ? 1 : 0) << ','
              << (options.control_point_filtering.homography_consistency ? 1 : 0) << '\n';
   provenance << "control-point-selection=" << ControlPointSelectionName(options.control_point_selection) << '\n';
+  for (int camera = 0; camera < 2; ++camera) {
+    const auto size = read_png_dimensions(staging / (camera ? "right.png" : "left.png"));
+    if (!size.ok())
+      return size.status();
+    provenance << "source-" << camera << "-width=" << size->first << '\n'
+               << "source-" << camera << "-height=" << size->second << '\n';
+  }
   status = write_file(staging / kStitchCanvasProvenanceArtifact, provenance.str());
   if (!status.ok())
     return status;

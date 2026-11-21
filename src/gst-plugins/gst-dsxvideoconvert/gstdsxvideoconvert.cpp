@@ -952,7 +952,8 @@ static gboolean gst_dsx_video_convert_transform_size(
 }
 
 static gboolean gst_dsx_video_convert_transform_meta(GstBaseTransform*, GstBuffer*, GstMeta* meta, GstBuffer*) {
-  return meta->info->api == NVDS_META_API_TYPE;
+  return meta->info->api == NVDS_META_API_TYPE ||
+      meta->info->api == g_type_from_name("GstHmDecodedFrameSequenceMetaAPI");
 }
 
 static gboolean gst_dsx_video_convert_decide_allocation(GstBaseTransform* transform, GstQuery* query) {

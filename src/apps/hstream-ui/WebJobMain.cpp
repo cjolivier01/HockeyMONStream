@@ -666,20 +666,22 @@ QJsonObject read_camera_optics(const Request& request) {
     input->Verify();
   require(!interrupted, "Optics metadata read cancelled");
   QJsonObject source_metadata;
-  for (const auto& [source, value] : resolved.source_metadata)
-    source_metadata.insert(
-        text(source),
-        QJsonObject{
-            {"role", text(value.role)},
-            {"message", text(value.message)},
-            {"fov_message", text(value.fov_message)},
-            {"lens_message", text(value.lens_message)},
-            {"recording_message", text(value.recording_message)},
-            {"mismatch", value.mismatch},
-            {"recording_metadata_found", value.recording_metadata_found},
-            {"horizontal_fov_from_mp4", value.horizontal_fov_from_mp4},
-            {"vertical_fov_from_mp4", value.vertical_fov_from_mp4},
-            {"lens_from_mp4", value.lens_from_mp4}});
+  for (const auto& [source, value] : resolved.source_metadata) {
+    QJsonObject details{
+        {"role", text(value.role)},
+        {"message", text(value.message)},
+        {"fov_message", text(value.fov_message)},
+        {"lens_message", text(value.lens_message)},
+        {"recording_message", text(value.recording_message)},
+        {"mismatch", value.mismatch},
+        {"recording_metadata_found", value.recording_metadata_found},
+        {"horizontal_fov_from_mp4", value.horizontal_fov_from_mp4},
+        {"vertical_fov_from_mp4", value.vertical_fov_from_mp4},
+        {"lens_from_mp4", value.lens_from_mp4}};
+    if (value.recording_size)
+      details.insert("recording_size", QJsonArray{(*value.recording_size)[0], (*value.recording_size)[1]});
+    source_metadata.insert(text(source), details);
+  }
   return {
       {"version", 1},
       {"source_metadata", source_metadata},
@@ -1354,6 +1356,48 @@ QJsonObject source_camera_preview(const Request& request) {
   return {{"closed", true}};
 }
 
+QJsonObject run_saved_calibration(const Request& request, QJsonArray& artifacts) {
+  const bool still = request.operation == "calibration-still-read";
+  std::vector<std::unique_ptr<PinnedArchive>> pins;
+  if (request.runtime.contains("calibration_geometry")) {
+    const auto entries = request.runtime.value("calibration_geometry").toArray();
+    require(
+        entries.size() <= 2 && (!still || entries.size() == request.authorized_media.size()),
+        "Invalid saved preview camera count");
+    std::set<QString> roles, paths;
+    bool compatible = entries.size() == 2;
+    for (const auto& value : entries) {
+      const auto entry = value.toObject();
+      const auto original = RequiredString(entry, "path", 4096);
+      const auto role = RequiredString(entry, "role", 8);
+      require(
+          (role == "left" || role == "right") && roles.insert(role).second && paths.insert(original).second &&
+              request.authorized_media.contains(original),
+          "Invalid saved preview camera binding");
+      Request source = request;
+      source.authorized_media = QJsonArray{original};
+      source.runtime = QJsonObject{{"camera", QJsonObject{{"path", original}, {"identity", entry.value("identity")}}}};
+      auto pinned = std::make_unique<PinnedArchive>(source, "camera");
+      const auto dimensions = hm::stitching::ReadRecordingSize(pinned->path());
+      const auto size = entry.value("size").toArray();
+      require(size.size() == 2 && size[0].toInt() > 0 && size[1].toInt() > 0, "Invalid saved camera dimensions");
+      compatible &= dimensions.ok() && *dimensions == std::array<int, 2>{size[0].toInt(), size[1].toInt()};
+      pinned->Verify();
+      pins.push_back(std::move(pinned));
+    }
+    if (!compatible) {
+      require(still, "The saved calibration uses different camera dimensions");
+      return {{"calibration_still_version", 1}, {"available", false}, {"retryable", false}};
+    }
+  }
+  const auto cancelled = [] { return interrupted != 0; };
+  auto result = still ? hm::web::ReadSavedCalibrationStill(request, artifacts, cancelled)
+                      : hm::web::RunSavedCalibration(request, artifacts, cancelled);
+  for (const auto& pin : pins)
+    pin->Verify();
+  return result;
+}
+
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   if (request.operation == "source-camera-preview")
     return source_camera_preview(request);
@@ -1372,13 +1416,13 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   }
   if (request.operation == "camera-optics-read")
     return read_camera_optics(request);
-  if (request.operation == "calibration-still-read")
-    return hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
+  if (request.operation == "calibration-still-read" || request.operation.rfind("calibration-view-", 0) == 0)
+    return run_saved_calibration(request, artifacts);
   if (request.operation == "calibration-controls-stage")
     return hm::web::RunCalibrationControlsStage(request, [] { return interrupted != 0; });
   if (request.operation == "camera-experiment")
     return hm::web::RunCameraExperiment(request, artifacts, preview_port, [] { return interrupted != 0; });
-  if (request.operation == "calibration-clean" || request.operation.rfind("calibration-view-", 0) == 0)
+  if (request.operation == "calibration-clean")
     return hm::web::RunSavedCalibration(request, artifacts, [] { return interrupted != 0; });
   if (request.operation.rfind("rink-map-", 0) == 0)
     return hm::web::RunRinkMap(request, artifacts, [] { return interrupted != 0; });

@@ -1,13 +1,15 @@
 #include "configurator.h"
-#include "hstream/src/libs/detection/TileInferenceConfig.h"
 #include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/GameStorage.h"
 #include "hstream/src/libs/common/PinnedFile.h"
+#include "hstream/src/libs/detection/TileInferenceConfig.h"
+#include "hstream/src/libs/media/StereoFramePlan.h"
 #include "hstream/src/libs/publication/Publication.h"
 #include "hstream/src/libs/recording/Database.h"
 #include "hstream/src/libs/scoreboard/ScoreboardPlacement.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/PlaybackRinkMap.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "hstream/src/libs/tracking/ProgramCameraMapping.h"
 
@@ -6896,7 +6898,7 @@ absl::Status Configurator::gather_stitching_videos(
   return absl::OkStatus();
 }
 
-void Configurator::apply_frame_offsets_and_sizes(
+absl::Status Configurator::apply_frame_offsets_and_sizes(
     const std::vector<std::string>& left_files,
     const std::vector<std::string>& right_files,
     const YAML::Node& offsets,
@@ -6904,25 +6906,62 @@ void Configurator::apply_frame_offsets_and_sizes(
     size_t& hh,
     size_t& area,
     YAML::Node& pipeline) {
-  if (!left_files.empty()) {
-    Videoinfo left_info = getVideoInfo(file_maybe_in_game_dir(left_files[0]));
-    double lfo = get_node_value<double>(offsets, "left", 0.0); // decimal frames
-    set_stream_offsets_ |= lfo != 0.0;
-    pipeline["hmstitcher"]["left-frame-offset-ns"] = std::to_string(size_t(lfo / left_info.fps * GST_SECOND));
-    area = left_info.width * left_info.height;
-    ww = left_info.width;
-    hh = left_info.height;
-  }
-  if (!right_files.empty()) {
-    Videoinfo right_info = getVideoInfo(file_maybe_in_game_dir(right_files[0]));
-    double rfo = get_node_value<double>(offsets, "right", 0.0); // decimal frames
-    set_stream_offsets_ |= rfo != 0.0;
-    pipeline["hmstitcher"]["right-frame-offset-ns"] = std::to_string(size_t(rfo / right_info.fps * GST_SECOND));
-    if (right_info.width * right_info.height > (long)area) {
-      ww = right_info.width;
-      hh = right_info.height;
+  std::array<stitching::CameraTrackFormat, 2> formats{};
+  const std::array<const std::vector<std::string>*, 2> playlists{&left_files, &right_files};
+  for (size_t camera = 0; camera < playlists.size(); ++camera) {
+    if (playlists[camera]->empty())
+      continue;
+    auto& format = formats[camera];
+    HM_ASSIGN_OR_RETURN(format, stitching::ReadCameraTrackFormat(file_maybe_in_game_dir(playlists[camera]->front())));
+    for (size_t chapter = 1; chapter < playlists[camera]->size(); ++chapter) {
+      const auto path = file_maybe_in_game_dir((*playlists[camera])[chapter]);
+      const auto next = stitching::ReadCameraTrackFormat(path);
+      if (!next.ok())
+        return next.status();
+      if (next->width != format.width || next->height != format.height ||
+          int64_t(next->fps_n) * format.fps_d != int64_t(format.fps_n) * next->fps_d)
+        return absl::InvalidArgumentError("Camera chapter changes dimensions or frame rate: " + path);
+      format.constant_rate &= next->constant_rate;
+      format.timebase_tick_ns = std::max(format.timebase_tick_ns, next->timebase_tick_ns);
+    }
+    const std::string side = camera ? "right" : "left";
+    const auto frames = get_node_value<double>(offsets, side, 0.0);
+    const long double ns = static_cast<long double>(frames) * format.fps_d * GST_SECOND / format.fps_n;
+    if (!std::isfinite(ns) || ns < 0 || ns >= GST_CLOCK_TIME_NONE)
+      return absl::InvalidArgumentError("Invalid " + side + " camera frame offset");
+    set_stream_offsets_ |= frames != 0;
+    pipeline["hmstitcher"][side + "-frame-offset-ns"] = std::to_string(static_cast<uint64_t>(ns));
+    const size_t pixels = size_t(format.width) * format.height;
+    if (pixels > area) {
+      area = pixels;
+      ww = format.width;
+      hh = format.height;
     }
   }
+  if (!left_files.empty() && !right_files.empty()) {
+    if (formats[0].width != formats[1].width || formats[0].height != formats[1].height) {
+      for (size_t camera = 0; camera < formats.size(); ++camera) {
+        auto source = pipeline["source" + std::to_string(camera)];
+        source["stitch-input-width"] = formats[camera].width;
+        source["stitch-input-height"] = formats[camera].height;
+      }
+    }
+    auto rates = media::ResolveStereoFrameRates(formats[0].fps_n, formats[0].fps_d, formats[1].fps_n, formats[1].fps_d);
+    if (!rates.ok())
+      return rates.status();
+    if (rates->step[0] != rates->step[1]) {
+      for (size_t camera = 0; camera < playlists.size(); ++camera) {
+        if (!formats[camera].constant_rate)
+          return absl::InvalidArgumentError("Mixed-rate stitching requires constant-rate cameras");
+        auto source = pipeline["source" + std::to_string(camera)];
+        source["frame-decimation"] = rates->step[camera];
+        source["frame-clock-tick-ns"] = formats[camera].timebase_tick_ns;
+        source["camera-fps-n"] = rates->fps_n;
+        source["camera-fps-d"] = rates->fps_d;
+      }
+    }
+  }
+  return absl::OkStatus();
 }
 
 std::tuple<long, long> Configurator::cap_playcropper_output(long width, long height) const {
@@ -7050,7 +7089,6 @@ void Configurator::configure_audio(
     YAML::Node& pipeline,
     const std::vector<std::string>& left_files,
     const std::vector<std::string>& right_files,
-    const YAML::Node& offsets,
     size_t& num_video_sources) {
   std::string possible_audio_uri;
   size_t audio_source_id = std::numeric_limits<size_t>::max();
@@ -7079,7 +7117,8 @@ void Configurator::configure_audio(
       // conversion and nvstreammux. Requiring it makes total metadata loss a hard error instead of silently trusting
       // a mux-local frame counter that cannot reveal an upstream drop.
       pipeline["hmstitcher"]["private-properties"]["require-decoded-frame-sequence-meta"] = "1";
-      if (get_node_value<double>(offsets, "left", 0.0) <= get_node_value<double>(offsets, "right", 0.0)) {
+      if (pipeline["hmstitcher"]["left-frame-offset-ns"].as<uint64_t>() <=
+          pipeline["hmstitcher"]["right-frame-offset-ns"].as<uint64_t>()) {
         possible_audio_uri = src0["uri"].as<std::string>();
         audio_source_id = src0["source-id"].as<int>();
       } else {
@@ -7364,6 +7403,11 @@ absl::Status Configurator::configure_source_bit_depth(
     high_bit_depth = automatic_decision.enabled;
   }
   stitcher_properties["high-bit-depth"] = high_bit_depth ? 1 : 0;
+  for (const char* name : {"source0", "source1"}) {
+    auto source = static_cast<const YAML::Node&>(pipeline)[name];
+    if (source.IsDefined() && source.IsMap() && get_node_value<int>(source, "stitch-input-width", 0) > 0)
+      source["video-format"] = high_bit_depth ? "RGB10A2_LE" : "RGBA";
+  }
   for (auto entry : pipeline) {
     if (!entry.first.IsScalar() || !entry.second.IsMap())
       continue;
@@ -7820,7 +7864,10 @@ absl::Status Configurator::configure_encode_file_outputs(
     }
     if (!(seconds > 0.0) || !std::isfinite(seconds))
       return absl::InvalidArgumentError(std::string(kSecondsPath) + " must be a positive number of seconds");
-    const std::optional<double> frame_rate = select_source_frame_rate(source_video_paths);
+    const auto frame_rate = get_node_value<int>(pipeline, "source0.frame-decimation", 0) > 0
+        ? std::optional<double>(
+              pipeline["source0"]["camera-fps-n"].as<double>() / pipeline["source0"]["camera-fps-d"].as<double>())
+        : select_source_frame_rate(source_video_paths);
     if (!frame_rate.has_value())
       return absl::InvalidArgumentError(
           "The mobile Program archive needs the source frame rate to resolve " + std::string(kSecondsPath) +
@@ -10080,7 +10127,7 @@ absl::Status Configurator::complete_configuration(
 
   if (!is_camera_source && pipeline_has_hmstitcher) {
     HM_RETURN_IF_ERROR(gather_stitching_videos(game_dir, force, left_files, right_files, offsets));
-    apply_frame_offsets_and_sizes(left_files, right_files, offsets, ww, hh, area, pipeline);
+    HM_RETURN_IF_ERROR(apply_frame_offsets_and_sizes(left_files, right_files, offsets, ww, hh, area, pipeline));
   }
   HM_RETURN_IF_ERROR(set_output_dimensions(
       pipeline,
@@ -10095,7 +10142,7 @@ absl::Status Configurator::complete_configuration(
       area,
       num_video_sources));
 
-  configure_audio(pipeline, left_files, right_files, offsets, num_video_sources);
+  configure_audio(pipeline, left_files, right_files, num_video_sources);
   HM_RETURN_IF_ERROR(apply_hmstitcher_calibration_sample_span(pipeline, config_));
   if (pipeline_has_hmstitcher && get_node_value<int>(pipeline, "hmstitcher.enable", false)) {
     // URI playlist construction selects HStream's full-batch-only new mux for two-camera file stitching. The legacy

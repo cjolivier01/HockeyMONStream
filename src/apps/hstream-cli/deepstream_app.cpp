@@ -1892,7 +1892,11 @@ static gboolean create_common_elements(
   if (config->hmsticher_config.enable) {
     // Create dsexample element bin and set properties
     if (!create_hmstitcher_bin(
-            &config->hmsticher_config, &pipeline->hmstitcher_bin, pipeline->multi_src_bin.lossless_nvstreammux)) {
+            &config->hmsticher_config,
+            &pipeline->hmstitcher_bin,
+            pipeline->multi_src_bin.lossless_nvstreammux,
+            config->num_source_sub_bins == 2 && config->multi_source_config[0].stitch_input_width &&
+                config->multi_source_config[1].stitch_input_width)) {
       goto done;
     }
     // Add hmstitcher bin to instance bin
@@ -2180,6 +2184,9 @@ gboolean create_pipeline(
     g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "low-latency-mode", config->low_latency_mode, NULL);
     g_object_set(pipeline->multi_src_bin.nvmultiurisrcbin, "sei-uuid", config->sei_uuid, NULL);
   } else {
+    for (guint i = 0; i < config->num_source_sub_bins; ++i)
+      if (config->multi_source_config[i].stitch_input_width)
+        config->multi_source_config[i].stitch_converter_buffers = config->hmsticher_config.pre_converter_output_buffers;
     if (!create_multi_source_bin(config->num_source_sub_bins, config->multi_source_config, &pipeline->multi_src_bin))
       goto done;
   }

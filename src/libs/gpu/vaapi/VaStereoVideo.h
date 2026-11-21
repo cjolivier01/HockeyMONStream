@@ -20,7 +20,7 @@ struct VaStereoFrame {
 };
 
 // Owns both camera playlists on one serialized playback thread. Both cameras
-// advance by one validated frame per output; neither a partial pair nor a stale
+// advance on the slower clock with an exact integer native stride; no partial pair or stale
 // half of a failed seek can escape. Ends at the shorter synchronized recording.
 // All limits, formats, devices and offsets are supplied by the application.
 // Only Cancel may run concurrently; cancellation/failure requires reconstruction.

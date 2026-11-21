@@ -106,6 +106,7 @@ struct AmdStitcher::Impl {
   int device, width{}, height{};
   size_t maximum_frames;
   std::string generation;
+  std::optional<stitching::StitchSourceSizes> source_sizes;
   cv::Mat rink_mask;
   hipStream_t stream{};
   std::unique_ptr<pano::cuda::CudaStitchPano<half4, half4>> stitcher;
@@ -164,6 +165,7 @@ absl::StatusOr<std::unique_ptr<AmdStitcher>> AmdStitcher::Create(
         config.game_directory, generation, loaded_generation, config.calibration.invalidation_id.value_or("")));
     DeviceScope device(config.detector.device);
     auto impl = std::make_unique<Impl>(config.detector.device, maximum_frames);
+    impl->source_sizes = artifacts.source_sizes;
     impl->generation = std::move(generation);
     impl->rink_mask = mask;
     Hip(hipStreamCreateWithFlags(&impl->stream, hipStreamNonBlocking));
@@ -202,6 +204,7 @@ absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(Gst
           gst_video_info_is_equal(&li, &impl.left_info) && gst_video_info_is_equal(&ri, &impl.right_info),
           absl::InvalidArgumentError("Program input caps changed; reconstruct its calibrated processor"));
     } else {
+      Status(stitching::CheckStitchSourceSizes(impl.source_sizes, {{{li.width, li.height}, {ri.width, ri.height}}}));
       impl.left = std::make_unique<CudaMat<half4>>(1, li.width, li.height);
       impl.right = std::make_unique<CudaMat<half4>>(1, ri.width, ri.height);
       Require(
