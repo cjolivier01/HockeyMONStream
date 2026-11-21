@@ -217,7 +217,12 @@ absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file)
   if (fps.num <= 0 || fps.den <= 0 || stream->codecpar->width <= 0 || stream->codecpar->height <= 0)
     return absl::FailedPreconditionError("Camera requires known geometry and frame rate: " + file);
   return CameraTrackFormat{
-      stream->codecpar->width, stream->codecpar->height, fps.num, fps.den, av_cmp_q(fps, stream->r_frame_rate) == 0};
+      stream->codecpar->width,
+      stream->codecpar->height,
+      fps.num,
+      fps.den,
+      av_cmp_q(fps, stream->r_frame_rate) == 0,
+      av_rescale_q_rnd(1, stream->time_base, {1, 1000000000}, AV_ROUND_UP)};
 }
 
 absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(

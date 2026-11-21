@@ -1809,6 +1809,14 @@ int main(int argc, char** argv) {
           tmpdir, fast_camera ? slow_files : fast_files, fast_camera ? fast_files : slow_files, 0, 30, fast_camera);
       if (result)
         return result;
+      if (const auto seek_result = run_decode_compose_encode(
+              tmpdir,
+              fast_camera ? slow_files : fast_files,
+              fast_camera ? fast_files : slow_files,
+              20 * GST_MSECOND,
+              29,
+              fast_camera))
+        return seek_result;
     }
     if (mixed_only) {
       fs::remove_all(tmpdir);

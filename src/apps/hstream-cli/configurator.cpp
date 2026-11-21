@@ -6913,6 +6913,17 @@ absl::Status Configurator::apply_frame_offsets_and_sizes(
       continue;
     auto& format = formats[camera];
     HM_ASSIGN_OR_RETURN(format, stitching::ReadCameraTrackFormat(file_maybe_in_game_dir(playlists[camera]->front())));
+    for (size_t chapter = 1; chapter < playlists[camera]->size(); ++chapter) {
+      const auto path = file_maybe_in_game_dir((*playlists[camera])[chapter]);
+      const auto next = stitching::ReadCameraTrackFormat(path);
+      if (!next.ok())
+        return next.status();
+      if (next->width != format.width || next->height != format.height ||
+          int64_t(next->fps_n) * format.fps_d != int64_t(format.fps_n) * next->fps_d)
+        return absl::InvalidArgumentError("Camera chapter changes dimensions or frame rate: " + path);
+      format.constant_rate &= next->constant_rate;
+      format.timebase_tick_ns = std::max(format.timebase_tick_ns, next->timebase_tick_ns);
+    }
     const std::string side = camera ? "right" : "left";
     const auto frames = get_node_value<double>(offsets, side, 0.0);
     const long double ns = static_cast<long double>(frames) * format.fps_d * GST_SECOND / format.fps_n;
@@ -6944,6 +6955,7 @@ absl::Status Configurator::apply_frame_offsets_and_sizes(
           return absl::InvalidArgumentError("Mixed-rate stitching requires constant-rate cameras");
         auto source = pipeline["source" + std::to_string(camera)];
         source["frame-decimation"] = rates->step[camera];
+        source["frame-clock-tick-ns"] = formats[camera].timebase_tick_ns;
         source["camera-fps-n"] = rates->fps_n;
         source["camera-fps-d"] = rates->fps_d;
       }

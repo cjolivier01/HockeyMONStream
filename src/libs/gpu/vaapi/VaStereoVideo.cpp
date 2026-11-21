@@ -113,15 +113,18 @@ absl::Status VaStereoVideo::Seek(GstClockTime time) {
     return absl::OkStatus();
   }
   const auto& video = impl.readers[0]->video_info();
-  const auto plan = impl.mixed()
-      ? media::PlanStereoFrames(double(time) / GST_SECOND, 0, 0, impl.rates.fps_n, impl.rates.fps_d)
-      : media::PlanStereoFrames(double(time) / GST_SECOND, impl.offsets[0], impl.offsets[1], video.fps_n, video.fps_d);
-  if (!plan.ok())
-    return plan.status();
-  std::array<uint64_t, 2> next{plan->left_frame, plan->right_frame};
-  if (impl.mixed())
-    for (size_t camera = 0; camera < 2; ++camera)
-      next[camera] = impl.begin[camera] + next[camera] * impl.rates.step[camera];
+  std::array<uint64_t, 2> next{};
+  if (impl.mixed()) {
+    const auto index = gst_util_uint64_scale_ceil(time, impl.rates.fps_n, uint64_t(impl.rates.fps_d) * GST_SECOND);
+    for (size_t camera = 0; camera < next.size(); ++camera)
+      next[camera] = impl.begin[camera] + index * impl.rates.step[camera];
+  } else {
+    const auto plan =
+        media::PlanStereoFrames(double(time) / GST_SECOND, impl.offsets[0], impl.offsets[1], video.fps_n, video.fps_d);
+    if (!plan.ok())
+      return plan.status();
+    next = {plan->left_frame, plan->right_frame};
+  }
   // A sub-frame tail has no next complete pair, so it selects clean EOS.
   if (next[0] >= impl.end[0] || next[1] >= impl.end[1]) {
     impl.positioned = impl.eos = true;

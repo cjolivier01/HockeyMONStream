@@ -40,6 +40,7 @@ typedef struct {
   gint stitch_input_width;
   gint stitch_input_height;
   guint stitch_converter_buffers;
+  guint64 frame_clock_tick_ns;
   gint frame_decimation; // Derived native frames per delivered frame of a mixed-rate playlist.
   gint camera_fps_n;
   gint camera_fps_d;

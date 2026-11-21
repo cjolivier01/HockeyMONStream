@@ -9,6 +9,7 @@ namespace hm::stitching {
 struct CameraTrackFormat {
   int width, height, fps_n, fps_d;
   bool constant_rate;
+  int64_t timebase_tick_ns;
 };
 absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file);
 

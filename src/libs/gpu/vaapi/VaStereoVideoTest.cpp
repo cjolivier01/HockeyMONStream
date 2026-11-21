@@ -162,6 +162,12 @@ int main(int argc, char** argv) {
             "Decimated camera lost phase, geometry, or delivered rate");
       }
       Check(!Take(decimated->Read()), "Unpaired mixed-rate tail escaped");
+      Status(decimated->Seek(19 * GST_MSECOND));
+      const auto fractional = Take(decimated->Read());
+      Check(
+          fractional && fractional->source_indices[fast_camera] == 3 &&
+              fractional->source_indices[1 - fast_camera] == 1,
+          "Sub-frame seek changed the fast camera phase");
       Status(decimated->Seek(200 * GST_MSECOND));
       Check(Take(decimated->Read())->source_indices[fast_camera] == 11, "Mixed-rate seek lost trim phase");
     }
