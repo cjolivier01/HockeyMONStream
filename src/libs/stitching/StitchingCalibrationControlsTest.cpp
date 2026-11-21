@@ -117,18 +117,19 @@ st::StitchingCalibrationPlan prepare(
           desired));
 }
 
-void legacy_camera_geometry(const fs::path& game) {
+void legacy_camera_geometry(const fs::path& game, const std::string& extension) {
   const auto state = saved_state(game);
+  const std::string recording = "right." + extension;
   const cv::Mat large(180, 320, CV_8UC3, cv::Scalar::all(0)), small(90, 160, CV_8UC3, cv::Scalar::all(0));
   require(
       cv::imwrite((state / "left.png").string(), large) && cv::imwrite((state / "right.png").string(), large),
       "Could not create representative calibration frames");
   require(cv::imwrite((game / "native.png").string(), small), "Could not create native camera frame");
   const std::string encode = "ffmpeg -nostdin -v error -i '" + (game / "native.png").string() +
-      "' -frames:v 1 -c:v libx264 -pix_fmt yuv420p '" + (game / "right.mp4").string() + "'";
+      "' -frames:v 1 -c:v libx264 -pix_fmt yuv420p '" + (game / recording).string() + "'";
   require(std::system(encode.c_str()) == 0, "Could not create right camera recording");
   auto before = baseline(true, true);
-  before["game"]["videos"]["right"] = YAML::Load("[right.mp4]");
+  before["game"]["videos"]["right"] = YAML::Load("[" + recording + "]");
   auto desired = YAML::Clone(before);
   const auto repair = prepare(game, before, desired);
   require(
@@ -138,7 +139,7 @@ void legacy_camera_geometry(const fs::path& game) {
       "Legacy resized capture must restart at native inputs and preserve the audio synchronization");
   require(cv::imwrite((state / "right.png").string(), small), "Could not restore native right frame dimensions");
   before = baseline();
-  before["game"]["videos"]["right"] = YAML::Load("[right.mp4]");
+  before["game"]["videos"]["right"] = YAML::Load("[" + recording + "]");
   desired = YAML::Clone(before);
   require(!prepare(game, before, desired).required, "Native-size legacy input must remain reusable");
 }
@@ -455,7 +456,8 @@ int main() {
   try {
     manual_clean();
     matrix(root);
-    legacy_camera_geometry(fs::path(root) / "legacy");
+    for (const std::string extension : {"mp4", "mkv", "avi"})
+      legacy_camera_geometry(fs::path(root) / extension, extension);
     cleanup(root);
     fs::remove_all(root);
     std::cout << "Shared calibration dependency, retention and guarded cleanup cases passed\n";

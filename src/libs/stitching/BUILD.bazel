@@ -1032,6 +1032,7 @@ cc_test(
 
 cc_library(
     name = "video_lens_metadata",
+    linkopts = ["-L/usr/local/lib", "-lavformat", "-lavcodec", "-lavutil"],
     srcs = ["VideoLensMetadata.cpp"],
     hdrs = ["VideoLensMetadata.h"],
     include_prefix = INCLUDE_PREFIX,
