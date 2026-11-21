@@ -49,6 +49,7 @@ struct InputCameraMetadata {
   bool horizontal_fov_from_mp4{false};
   bool vertical_fov_from_mp4{false};
   bool lens_from_mp4{false};
+  std::optional<std::array<int, 2>> recording_size;
 };
 
 struct AutoInputLensResult {

@@ -666,20 +666,22 @@ QJsonObject read_camera_optics(const Request& request) {
     input->Verify();
   require(!interrupted, "Optics metadata read cancelled");
   QJsonObject source_metadata;
-  for (const auto& [source, value] : resolved.source_metadata)
-    source_metadata.insert(
-        text(source),
-        QJsonObject{
-            {"role", text(value.role)},
-            {"message", text(value.message)},
-            {"fov_message", text(value.fov_message)},
-            {"lens_message", text(value.lens_message)},
-            {"recording_message", text(value.recording_message)},
-            {"mismatch", value.mismatch},
-            {"recording_metadata_found", value.recording_metadata_found},
-            {"horizontal_fov_from_mp4", value.horizontal_fov_from_mp4},
-            {"vertical_fov_from_mp4", value.vertical_fov_from_mp4},
-            {"lens_from_mp4", value.lens_from_mp4}});
+  for (const auto& [source, value] : resolved.source_metadata) {
+    QJsonObject details{
+        {"role", text(value.role)},
+        {"message", text(value.message)},
+        {"fov_message", text(value.fov_message)},
+        {"lens_message", text(value.lens_message)},
+        {"recording_message", text(value.recording_message)},
+        {"mismatch", value.mismatch},
+        {"recording_metadata_found", value.recording_metadata_found},
+        {"horizontal_fov_from_mp4", value.horizontal_fov_from_mp4},
+        {"vertical_fov_from_mp4", value.vertical_fov_from_mp4},
+        {"lens_from_mp4", value.lens_from_mp4}};
+    if (value.recording_size)
+      details.insert("recording_size", QJsonArray{(*value.recording_size)[0], (*value.recording_size)[1]});
+    source_metadata.insert(text(source), details);
+  }
   return {
       {"version", 1},
       {"source_metadata", source_metadata},

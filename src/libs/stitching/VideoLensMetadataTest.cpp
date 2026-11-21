@@ -265,7 +265,8 @@ int main(int argc, char** argv) {
     write(dir / "plain.mp4", movie({}, 3840, 2160));
     auto manual_plain = ResolveAutoInputLensForCameras({dir / "plain.mp4"}, {}, {"manual"});
     expect(
-        manual_plain.camera.input_cameras.at((dir / "plain.mp4").string()).source_size ==
+        !manual_plain.camera.input_cameras.at((dir / "plain.mp4").string()).source_size &&
+            manual_plain.source_metadata.at((dir / "plain.mp4").string()).recording_size ==
                 std::array<int, 2>{3840, 2160} &&
             !manual_plain.recording_metadata_found,
         "Standard video dimensions must be readable without automatic or vendor optics");

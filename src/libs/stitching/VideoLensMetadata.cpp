@@ -1078,11 +1078,19 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     optics.auto_lens = selected.automatic_lens();
     if (const auto old = fallback.input_cameras.find(key); old != fallback.input_cameras.end())
       optics.source_size = old->second.source_size;
-    if (!source_frozen) {
-      const auto metadata = read_cached_metadata(paths->front(), true);
+    if (!source_frozen && (selected.automatic_fov() || selected.automatic_lens())) {
+      const auto metadata = ReadVideoLensMetadata(paths->front());
       if (metadata.ok() && metadata->width > 0 && metadata->height > 0 && metadata->width <= 32768 &&
           metadata->height <= 32768)
         optics.source_size = std::array<int, 2>{static_cast<int>(metadata->width), static_cast<int>(metadata->height)};
+    }
+    // Track geometry is display metadata. Learning the dimensions of a
+    // manual or unrecognized camera must not change an existing calibration key.
+    auto recording_size = optics.source_size;
+    if (!source_frozen) {
+      const auto track = read_cached_metadata(paths->front(), true);
+      if (track.ok())
+        recording_size = std::array<int, 2>{static_cast<int>(track->width), static_cast<int>(track->height)};
     }
     result.camera.input_cameras.emplace(key, optics);
     result.source_metadata[key] = {
@@ -1095,7 +1103,8 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
         resolved.recording_metadata_found,
         resolved.horizontal_fov_from_mp4,
         resolved.vertical_fov_from_mp4,
-        resolved.lens_from_mp4};
+        resolved.lens_from_mp4,
+        recording_size};
     result.mismatch |= resolved.mismatch;
     result.recording_metadata_found |= resolved.recording_metadata_found;
     result.horizontal_fov_from_mp4 &= resolved.horizontal_fov_from_mp4;
