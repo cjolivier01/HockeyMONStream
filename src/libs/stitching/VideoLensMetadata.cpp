@@ -15,6 +15,12 @@
 
 #include "hstream/src/libs/stitching/CalibrationFrameExif.h"
 
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/mem.h>
+}
+
 namespace hm::stitching {
 namespace {
 using Bytes = std::vector<unsigned char>;
@@ -569,6 +575,72 @@ class Mp4 {
   uint64_t size;
   size_t bytes_read{0}, boxes{0};
 };
+// Matroska and AVI carry geometry in their track headers. Limit demuxer I/O
+// to the header prefix; do not scan packets, seek an index, or open a decoder.
+VideoLensMetadata read_container_dimensions(Mp4& source, const char* format) {
+  require(
+      (avformat_version() >> 16) == LIBAVFORMAT_VERSION_MAJOR &&
+          (avcodec_version() >> 16) == LIBAVCODEC_VERSION_MAJOR && (avutil_version() >> 16) == LIBAVUTIL_VERSION_MAJOR,
+      "Incompatible FFmpeg metadata library");
+  auto* demuxer = av_find_input_format(format);
+  require(demuxer, "Video header demuxer is unavailable");
+  struct Header {
+    AVFormatContext* context{nullptr};
+    AVIOContext* io{nullptr};
+    std::ifstream& file;
+    size_t remaining{kMaxMetadata};
+    ~Header() {
+      avformat_close_input(&context);
+      if (io) {
+        av_freep(&io->buffer);
+        avio_context_free(&io);
+      }
+    }
+  } header{nullptr, nullptr, source.file};
+  header.file.seekg(0);
+  header.context = avformat_alloc_context();
+  require(header.context, "Cannot allocate video header demuxer");
+  constexpr int buffer_size = 4096;
+  auto* storage = static_cast<unsigned char*>(av_malloc(buffer_size));
+  require(storage, "Cannot allocate video header buffer");
+  header.io = avio_alloc_context(
+      storage,
+      buffer_size,
+      0,
+      &header,
+      [](void* object, uint8_t* bytes, int capacity) -> int {
+        auto& input = *static_cast<Header*>(object);
+        const auto wanted = std::min(input.remaining, size_t(capacity));
+        if (!wanted)
+          return AVERROR_EOF;
+        input.file.read(reinterpret_cast<char*>(bytes), wanted);
+        const auto received = input.file.gcount();
+        input.remaining -= received;
+        return received ? static_cast<int>(received) : AVERROR_EOF;
+      },
+      nullptr,
+      nullptr);
+  if (!header.io)
+    av_free(storage);
+  require(header.io, "Cannot allocate video header input");
+  header.context->pb = header.io;
+  header.context->flags |= AVFMT_FLAG_CUSTOM_IO;
+  require(avformat_open_input(&header.context, nullptr, demuxer, nullptr) == 0, "Cannot read video track headers");
+  VideoLensMetadata result;
+  for (unsigned i = 0; i < header.context->nb_streams; ++i) {
+    const auto* stream = header.context->streams[i];
+    const auto* codec = stream->codecpar;
+    if (codec->codec_type != AVMEDIA_TYPE_VIDEO || (stream->disposition & AV_DISPOSITION_ATTACHED_PIC))
+      continue;
+    require(
+        !result.width && codec->width > 0 && codec->height > 0 && codec->width <= 32768 && codec->height <= 32768,
+        "Ambiguous or invalid video track geometry");
+    result.width = codec->width;
+    result.height = codec->height;
+  }
+  require(result.width, "Missing video track geometry");
+  return result;
+}
 VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_only) {
   std::optional<VideoLensMetadata> vendor;
   if (!dimensions_only) {
@@ -581,6 +653,13 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
     }
   }
   Mp4 mp4(path);
+  if (dimensions_only && mp4.size >= 12) {
+    const auto magic = mp4.read(0, 12);
+    if (integer(magic.data(), 4) == 0x1a45dfa3)
+      return read_container_dimensions(mp4, "matroska");
+    if (std::memcmp(magic.data(), "RIFF", 4) == 0 && std::memcmp(magic.data() + 8, "AVI ", 4) == 0)
+      return read_container_dimensions(mp4, "avi");
+  }
   size_t width = 0, height = 0;
   std::map<std::string, Mp4::Atom> dji_track;
   // Camera metadata and video sample descriptions are contained in moov.
@@ -706,12 +785,18 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
   return read_cached_metadata(video, false);
 }
 
-absl::Status CheckCalibrationFrameSize(const std::filesystem::path& recording, const std::array<int, 2>& calibrated) {
+absl::StatusOr<std::array<int, 2>> ReadRecordingSize(const std::filesystem::path& recording) {
   const auto track = read_cached_metadata(recording, true);
-  if (track.ok() &&
-      (track->width != static_cast<size_t>(calibrated[0]) || track->height != static_cast<size_t>(calibrated[1])))
+  if (!track.ok())
+    return track.status();
+  return std::array<int, 2>{static_cast<int>(track->width), static_cast<int>(track->height)};
+}
+
+absl::Status CheckCalibrationFrameSize(const std::filesystem::path& recording, const std::array<int, 2>& calibrated) {
+  const auto size = ReadRecordingSize(recording);
+  if (size.ok() && *size != calibrated)
     return absl::FailedPreconditionError(
-        recording.filename().string() + " is " + std::to_string(track->width) + "x" + std::to_string(track->height) +
+        recording.filename().string() + " is " + std::to_string((*size)[0]) + "x" + std::to_string((*size)[1]) +
         ", but its calibration uses " + std::to_string(calibrated[0]) + "x" + std::to_string(calibrated[1]));
   return absl::OkStatus();
 }

@@ -140,9 +140,17 @@ Snapshot configuration_snapshot_locked(const Request& request) {
 Snapshot snapshot_locked(const Request& request) {
   auto result = configuration_snapshot_locked(request);
   const auto projection_name = result.effective["stitching"]["projection"].as<std::string>();
-  const auto geometry = rink::HuginProject::CheckSavedRecordingGeometry(request.game, result.effective);
-  require(geometry.ok(), std::string(geometry.message()));
   const auto camera = take(rink::read_stitch_camera_selection(result.effective));
+  // The saved editor owns a private artifact snapshot. Only the recording
+  // metadata in that snapshot is available to this operation.
+  if (const auto sizes = rink::HuginProject::ReadSourceImageSizes(request.game / "_hockeymon");
+      sizes && !camera.input_cameras.empty()) {
+    const auto ordered = take(rink::resolve_stitch_input_camera_order(request.game, result.effective, camera));
+    for (size_t index = 0; index < ordered.size(); ++index)
+      require(
+          !ordered[index].source_size || *ordered[index].source_size == (*sizes)[index],
+          "The saved calibration uses different camera dimensions");
+  }
   const auto error = ProjectionCropDialog::savedCalibrationPreviewError(
       text(request.game.string()), result.framing, text(projection_name), result.parameters, camera);
   require(error.isEmpty(), error.toStdString());
@@ -386,7 +394,16 @@ SavedStitchingStill read_still(
   const auto directory = text(request.game.string());
   const auto revision = StitchingStillRevision(directory);
   std::mutex metadata_mutex;
-  auto result = ReadSavedStitchingStill(directory, generation, settings, revision, metadata_mutex, cancelled);
+  auto result = ReadSavedStitchingStill(
+      directory,
+      generation,
+      settings,
+      revision,
+      metadata_mutex,
+      cancelled,
+      {},
+      {},
+      /*inspect_recording_paths=*/false);
   require(!cancelled || !cancelled(), "Saved stitching preview cancelled");
   return result;
 }

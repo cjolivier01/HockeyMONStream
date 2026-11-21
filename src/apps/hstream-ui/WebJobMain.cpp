@@ -1356,6 +1356,42 @@ QJsonObject source_camera_preview(const Request& request) {
   return {{"closed", true}};
 }
 
+QJsonObject saved_calibration_still(const Request& request, QJsonArray& artifacts) {
+  std::vector<std::unique_ptr<PinnedArchive>> pins;
+  if (request.runtime.contains("calibration_geometry")) {
+    const auto entries = request.runtime.value("calibration_geometry").toArray();
+    require(
+        entries.size() <= 2 && entries.size() == request.authorized_media.size(), "Invalid saved preview camera count");
+    std::set<QString> roles, paths;
+    bool compatible = entries.size() == 2;
+    for (const auto& value : entries) {
+      const auto entry = value.toObject();
+      const auto original = RequiredString(entry, "path", 4096);
+      const auto role = RequiredString(entry, "role", 8);
+      require(
+          (role == "left" || role == "right") && roles.insert(role).second && paths.insert(original).second &&
+              request.authorized_media.contains(original),
+          "Invalid saved preview camera binding");
+      Request source = request;
+      source.authorized_media = QJsonArray{original};
+      source.runtime = QJsonObject{{"camera", QJsonObject{{"path", original}, {"identity", entry.value("identity")}}}};
+      auto pinned = std::make_unique<PinnedArchive>(source, "camera");
+      const auto dimensions = hm::stitching::ReadRecordingSize(pinned->path());
+      const auto size = entry.value("size").toArray();
+      require(size.size() == 2 && size[0].toInt() > 0 && size[1].toInt() > 0, "Invalid saved camera dimensions");
+      compatible &= dimensions.ok() && *dimensions == std::array<int, 2>{size[0].toInt(), size[1].toInt()};
+      pinned->Verify();
+      pins.push_back(std::move(pinned));
+    }
+    if (!compatible)
+      return {{"calibration_still_version", 1}, {"available", false}, {"retryable", false}};
+  }
+  auto result = hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
+  for (const auto& pin : pins)
+    pin->Verify();
+  return result;
+}
+
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   if (request.operation == "source-camera-preview")
     return source_camera_preview(request);
@@ -1375,7 +1411,7 @@ QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   if (request.operation == "camera-optics-read")
     return read_camera_optics(request);
   if (request.operation == "calibration-still-read")
-    return hm::web::ReadSavedCalibrationStill(request, artifacts, [] { return interrupted != 0; });
+    return saved_calibration_still(request, artifacts);
   if (request.operation == "calibration-controls-stage")
     return hm::web::RunCalibrationControlsStage(request, [] { return interrupted != 0; });
   if (request.operation == "camera-experiment")

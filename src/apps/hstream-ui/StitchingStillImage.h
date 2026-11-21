@@ -28,4 +28,5 @@ SavedStitchingStill ReadSavedStitchingStill(
     std::mutex& metadata_mutex,
     const std::function<bool()>& cancelled = {},
     const std::function<void()>& metadata_locked = {},
-    const std::function<void()>& decoding = {});
+    const std::function<void()>& decoding = {},
+    bool inspect_recording_paths = true);
