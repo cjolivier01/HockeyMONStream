@@ -122,7 +122,9 @@ struct MuxBatchStats {
   guint64 decode_mux_sequence_mismatches{0};
   bool exact_frame_pairs{true};
   bool check_packed_sizes{false};
-  std::map<guint, GstClockTime> first_source_pts;
+  // The mixed fixture repeats one-second chapters on a 15 fps delivered clock.
+  std::optional<guint64> mixed_first_index;
+  bool mixed_timeline_valid{true};
   std::map<guint, guint64> frames_by_source;
   std::map<guint, guint64> next_decoded_sequence_by_source;
   std::vector<std::vector<std::pair<guint, guint>>> batch_frames;
@@ -303,7 +305,13 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
         decoded_sequence->sequence != stats->next_decoded_sequence_by_source[frame_meta->source_id]) {
       ++stats->decode_mux_sequence_mismatches;
     } else {
-      stats->first_source_pts.emplace(frame_meta->source_id, decoded_sequence->source_pts);
+      if (stats->mixed_first_index) {
+        const auto sequence = decoded_sequence->sequence;
+        const auto physical = gst_util_uint64_scale((*stats->mixed_first_index + sequence) % 15, GST_SECOND, 15);
+        const auto logical = gst_util_uint64_scale(sequence, GST_SECOND, 15);
+        stats->mixed_timeline_valid &= std::abs(int64_t(decoded_sequence->source_pts) - int64_t(physical)) <= 1 &&
+            std::abs(int64_t(frame_meta->buf_pts) - int64_t(logical)) <= 2;
+      }
       ++stats->next_decoded_sequence_by_source[frame_meta->source_id];
     }
     source_ids.insert(frame_meta->source_id);
@@ -347,7 +355,8 @@ bool make_synthetic_mp4(
     bool hevc_main10 = false,
     double audio_tail = 0,
     const char* size = "256x144",
-    int fps = 15) {
+    int fps = 15,
+    bool b_frames = false) {
   std::stringstream cmd;
   cmd << "ffmpeg -hide_banner -loglevel error -y " << "-f lavfi -i " << "'testsrc2=size=" << size << ":rate=" << fps;
   if (audio_tail > 0)
@@ -367,6 +376,8 @@ bool make_synthetic_mp4(
         << "-x265-params 'pools=1:frame-threads=1:bframes=0:ref=1:log-level=error' ";
   } else {
     cmd << "-c:v libx264 -preset ultrafast -pix_fmt yuv420p ";
+    if (b_frames)
+      cmd << "-bf 2 ";
   }
   cmd << "-movflags +faststart " << shell_quote(path);
   return run_shell(cmd.str());
@@ -1359,6 +1370,7 @@ int run_decode_compose_encode(
 
   MuxBatchStats pairs{};
   if (fast_camera >= 0) {
+    pairs.mixed_first_index = gst_util_uint64_scale_ceil(start_time, 15, GST_SECOND);
     auto* mux_src = gst_element_get_static_pad(src_parent.streammux, "src");
     gst_pad_add_probe(mux_src, GST_PAD_PROBE_TYPE_BUFFER, inspect_mux_batches_probe, &pairs, nullptr);
     gst_object_unref(mux_src);
@@ -1368,13 +1380,9 @@ int run_decode_compose_encode(
   if (expect_bad_clock)
     return rc && error_detail.find("deviates from its native frame clock") != std::string::npos ? 0 : 7;
   if (rc == 0 && fast_camera >= 0) {
-    const auto index = gst_util_uint64_scale_ceil(start_time, 15, GST_SECOND);
-    const auto first = gst_util_uint64_scale(index, GST_SECOND, 15);
     for (guint camera = 0; camera < 2; ++camera) {
-      if (!pairs.first_source_pts.count(camera) ||
-          std::abs(int64_t(pairs.first_source_pts[camera]) - int64_t(first)) > 1 ||
-          pairs.frames_by_source[camera] != expected_frames || pairs.decode_mux_sequence_mismatches ||
-          pairs.missing_decoded_sequence_meta || !pairs.exact_frame_pairs) {
+      if (!pairs.mixed_timeline_valid || pairs.frames_by_source[camera] != expected_frames ||
+          pairs.decode_mux_sequence_mismatches || pairs.missing_decoded_sequence_meta || !pairs.exact_frame_pairs) {
         std::cerr << "Mixed camera lost its trim-relative frame phase or sequence\n";
         return 7;
       }
@@ -1921,7 +1929,8 @@ int main(int argc, char** argv) {
     if (const auto result = run_mixed_packed_inputs(tmpdir))
       return result;
     const auto fast = tmpdir / "fast.mp4";
-    if (!make_synthetic_mp4(a0, 1, 0, 440) || !make_synthetic_mp4(fast, 1, 90, 660, false, 0, "192x96", 30))
+    if (!make_synthetic_mp4(a0, 1, 0, 440, false, 0, "256x144", 15, true) ||
+        !make_synthetic_mp4(fast, 1, 90, 660, false, 0, "192x96", 30, true))
       return 1;
     for (int fast_camera = 0; fast_camera < 2; ++fast_camera) {
       const std::vector<std::string> fast_files(2, to_file_uri(fast)), slow_files(2, to_file_uri(a0));

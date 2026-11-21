@@ -126,6 +126,7 @@ struct UriListPadProbeData {
   GstClockTime base;
   gboolean is_video;
   GstClockTime initial_offset;
+  GstSegment physical_segment;
   GstClockTime native_interval;
   GstClockTime first_native_pts;
   guint64 native_frames;
@@ -2075,6 +2076,27 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         drain->Observe(GST_BUFFER(info->data));
       }
     }
+    if (bin->config && bin->config->frame_decimation > 0) {
+      // MP4 edit lists can shift decoded PTS by several frames, for example
+      // to accommodate B-frame decode order. Work in physical chapter stream
+      // time before trimming, recording provenance, or advancing the playlist.
+      auto* buffer = GST_BUFFER(info->data);
+      if (probe_data->physical_segment.format != GST_FORMAT_TIME || !GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer)))
+        return fail_uri_playlist_initial_positioning(bin, "mixed-rate buffer has no physical chapter clock");
+      guint64 pts = 0;
+      const int sign =
+          gst_segment_to_stream_time_full(&probe_data->physical_segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer), &pts);
+      if (sign < 0)
+        return GST_PAD_PROBE_DROP;
+      if (!sign)
+        return fail_uri_playlist_initial_positioning(bin, "could not resolve mixed-rate chapter timestamp");
+      buffer = gst_buffer_make_writable(buffer);
+      if (!buffer)
+        return fail_uri_playlist_initial_positioning(bin, "could not rebase mixed-rate chapter buffer");
+      GST_PAD_PROBE_INFO_DATA(info) = buffer;
+      GST_BUFFER_PTS(buffer) = pts;
+      GST_BUFFER_DTS(buffer) = probe_data->is_video ? GST_CLOCK_TIME_NONE : pts;
+    }
     const GstPadProbeReturn initial_trim_result = trim_initial_uri_playlist_buffer(pad, info, probe_data);
     if (initial_trim_result != GST_PAD_PROBE_OK) {
       return initial_trim_result;
@@ -2294,8 +2316,16 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       gst_event_unref(event);
       GST_PAD_PROBE_INFO_DATA(info) = event = updated;
     }
-    if (uri_playlist_initial_positioning_enabled(bin) && probe_data->uri_index == bin->uri_playlist_initial_uri_index &&
-        GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+    const bool mixed = bin->config && bin->config->frame_decimation > 0;
+    if (mixed && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+      const GstSegment* segment = nullptr;
+      gst_event_parse_segment(event, &segment);
+      if (!segment || segment->format != GST_FORMAT_TIME)
+        return fail_uri_playlist_initial_positioning(bin, "mixed-rate chapter segment is not time-based");
+      gst_segment_copy_into(segment, &probe_data->physical_segment);
+    }
+    if ((mixed || uri_playlist_initial_positioning_enabled(bin)) &&
+        probe_data->uri_index == bin->uri_playlist_initial_uri_index && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       const GstSegment* segment = nullptr;
       gst_event_parse_segment(event, &segment);
       if (!segment || segment->format != GST_FORMAT_TIME) {
@@ -2394,7 +2424,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // current camera pair on this event even when its timeout is effectively infinite.
       return GST_PAD_PROBE_DROP;
     }
-    if (!probe_data->is_video && uri_playlist_initial_positioning_enabled(bin) &&
+    if (!probe_data->is_video && (mixed || uri_playlist_initial_positioning_enabled(bin)) &&
         probe_data->uri_index > bin->uri_playlist_initial_uri_index && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       // Startup positioning already published an open, zero-based logical
       // segment. Audio buffers in every chapter are rebased to that same epoch.
