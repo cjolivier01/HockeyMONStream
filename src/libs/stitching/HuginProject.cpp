@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/stitching/VideoLensMetadata.h"
 
 #include <algorithm>
 #include <array>
@@ -2055,6 +2056,41 @@ absl::Status HuginProject::ValidateLensCenters(const std::string& pto) {
 
 absl::StatusOr<std::string> HuginProject::ReadProject(const fs::path& path) {
   return read_bounded_hugin_file(path, kMaximumProjectBytes);
+}
+
+std::optional<StitchSourceSizes> HuginProject::ReadSourceImageSizes(const fs::path& directory) {
+  StitchSourceSizes sizes{};
+  for (size_t i = 0; i < sizes.size(); ++i) {
+    const auto path = directory / (i ? "right.png" : "left.png");
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0)
+      return std::nullopt;
+    std::array<unsigned char, 33> header{};
+    struct stat info {};
+    const bool read = ::fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
+        ::pread(fd, header.data(), header.size(), 0) == static_cast<ssize_t>(header.size());
+    ::close(fd);
+    constexpr unsigned char signature[] = {137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 'I', 'H', 'D', 'R'};
+    const auto integer = [&](size_t pos) -> uint32_t {
+      return (uint32_t(header[pos]) << 24) | (uint32_t(header[pos + 1]) << 16) | (uint32_t(header[pos + 2]) << 8) |
+          header[pos + 3];
+    };
+    if (!read || !std::equal(std::begin(signature), std::end(signature), header.begin()) ||
+        integer(29) != png_crc32(header.data() + 12, header.data() + 16, 13))
+      return std::nullopt;
+    for (size_t axis = 0; axis < 2; ++axis) {
+      const auto size = integer(16 + 4 * axis);
+      if (!size || size > 32768)
+        return std::nullopt;
+      sizes[i][axis] = static_cast<int>(size);
+    }
+  }
+  return sizes;
+}
+
+absl::Status HuginProject::CheckSavedRecordingGeometry(const fs::path& game, const YAML::Node& config) {
+  const auto calibrated = ReadSourceImageSizes(hm::game_storage::StateDirectory(game));
+  return calibrated ? CheckCalibrationRecordingSizes(game, config, *calibrated) : absl::OkStatus();
 }
 
 HuginProject::ArtifactLock::~ArtifactLock() {

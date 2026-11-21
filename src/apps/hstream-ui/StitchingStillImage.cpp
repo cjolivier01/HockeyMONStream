@@ -5,6 +5,7 @@
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
 #include "src/apps/hstream-ui/CalibrationImage.h"
 
@@ -193,7 +194,8 @@ SavedStitchingStill ReadSavedStitchingStill(
       // Reframing can complete the maps while the downstream rink snapshot is
       // still invalidated. Its new panorama is usable; the old PNG is not.
       png_current = !calibration["artifacts_invalidated"].as<bool>(false);
-      if (!settings_match(config, expected_settings))
+      if (!hm::stitching::HuginProject::CheckSavedRecordingGeometry(path, config).ok() ||
+          !settings_match(config, expected_settings))
         return result;
     } catch (const YAML::Exception&) {
       return result;

@@ -706,6 +706,38 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
   return read_cached_metadata(video, false);
 }
 
+absl::Status CheckCalibrationFrameSize(const std::filesystem::path& recording, const std::array<int, 2>& calibrated) {
+  const auto track = read_cached_metadata(recording, true);
+  if (track.ok() &&
+      (track->width != static_cast<size_t>(calibrated[0]) || track->height != static_cast<size_t>(calibrated[1])))
+    return absl::FailedPreconditionError(
+        recording.filename().string() + " is " + std::to_string(track->width) + "x" + std::to_string(track->height) +
+        ", but its calibration uses " + std::to_string(calibrated[0]) + "x" + std::to_string(calibrated[1]));
+  return absl::OkStatus();
+}
+
+absl::Status CheckCalibrationRecordingSizes(
+    const std::filesystem::path& game,
+    const YAML::Node& config,
+    const StitchSourceSizes& calibrated) {
+  const auto roles = config["hstream_ui"] ? config["hstream_ui"]["video_roles"] : YAML::Node();
+  const auto videos = config["game"] ? config["game"]["videos"] : YAML::Node();
+  for (size_t camera = 0; camera < calibrated.size(); ++camera) {
+    const char* role = camera ? "right" : "left";
+    const auto selected = roles.IsMap() ? roles[role] : YAML::Node();
+    const auto playlist = selected.IsSequence() && selected.size() ? selected
+        : videos.IsMap()                                           ? videos[role]
+                                                                   : YAML::Node();
+    const auto first = playlist.IsSequence() && playlist.size() ? playlist[0] : playlist;
+    if (first.IsScalar() && !first.Scalar().empty()) {
+      const auto status = CheckCalibrationFrameSize(game / first.Scalar(), calibrated[camera]);
+      if (!status.ok())
+        return status;
+    }
+  }
+  return absl::OkStatus();
+}
+
 namespace {
 bool close(double a, double b) {
   return std::abs(a - b) <= 1e-6;

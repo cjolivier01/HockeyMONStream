@@ -334,6 +334,12 @@ void RinkLevelingDialog::loadSnapshot() {
     try {
       const YAML::Node config =
           YAML::Load(readFile(QDir(temporary_.path() + "/_hockeymon").filePath("config.yaml")).toStdString());
+      const auto geometry =
+          hm::stitching::HuginProject::CheckSavedRecordingGeometry(game_directory_.toStdString(), config);
+      if (!geometry.ok()) {
+        load_error_ = QString::fromStdString(std::string(geometry.message())) + ". Recalibrate before leveling.";
+        return;
+      }
       const auto ui = config["hstream_ui"];
       const auto calibration = ui && ui.IsMap() ? ui["stitching_calibration"] : YAML::Node();
       const auto status = calibration && calibration.IsMap() ? calibration["status"] : YAML::Node();
