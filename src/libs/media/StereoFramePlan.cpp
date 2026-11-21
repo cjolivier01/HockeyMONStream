@@ -2,8 +2,22 @@
 
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 namespace hm::media {
+absl::StatusOr<StereoFrameRates> ResolveStereoFrameRates(int left_n, int left_d, int right_n, int right_d) {
+  if (left_n <= 0 || left_d <= 0 || right_n <= 0 || right_d <= 0 || int64_t(left_d) * 1000000000 < left_n ||
+      int64_t(right_d) * 1000000000 < right_n)
+    return absl::InvalidArgumentError("Stereo cameras require positive frame rates on a nanosecond clock");
+  const int64_t left = int64_t(left_n) * right_d, right = int64_t(right_n) * left_d;
+  const auto fast = std::max(left, right), slow = std::min(left, right);
+  if (fast % slow || fast / slow > std::numeric_limits<int>::max())
+    return absl::InvalidArgumentError("Stereo camera frame rates require an exact integer ratio");
+  const int n = left <= right ? left_n : right_n, d = left <= right ? left_d : right_d;
+  const int divisor = std::gcd(n, d);
+  return StereoFrameRates{n / divisor, d / divisor, {int(left / slow), int(right / slow)}};
+}
+
 absl::StatusOr<StereoFramePlan> PlanStereoFrames(
     double start_seconds,
     double left_offset_frames,

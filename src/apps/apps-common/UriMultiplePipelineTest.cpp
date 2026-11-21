@@ -42,6 +42,7 @@ struct BusState {
   int exit_code{0};
   guint timeout_id{0};
   NvDsSrcParentBin* source_parent{nullptr};
+  std::string* error_detail{nullptr};
 };
 
 gboolean timeout_call(gpointer data) {
@@ -71,6 +72,8 @@ gboolean bus_call(GstBus* /*bus*/, GstMessage* msg, gpointer data) {
       GError* err = nullptr;
       gchar* debug = nullptr;
       gst_message_parse_error(msg, &err, &debug);
+      if (state->error_detail && debug)
+        *state->error_detail = debug;
       std::cerr << "GStreamer ERROR: " << (err ? err->message : "(unknown)") << "\n";
       if (debug) {
         std::cerr << "Debug: " << debug << "\n";
@@ -118,6 +121,12 @@ struct MuxBatchStats {
   guint64 missing_decoded_sequence_meta{0};
   guint64 decode_mux_sequence_mismatches{0};
   bool exact_frame_pairs{true};
+  bool check_packed_sizes{false};
+  // The mixed fixture repeats one-second chapters on a 15 fps delivered clock.
+  std::optional<guint64> mixed_first_index;
+  bool mixed_timeline_valid{true};
+  GstClockTime physical_tick{1};
+  std::array<GstClockTime, 2> movie_origins{};
   std::map<guint, guint64> frames_by_source;
   std::map<guint, guint64> next_decoded_sequence_by_source;
   std::vector<std::vector<std::pair<guint, guint>>> batch_frames;
@@ -248,6 +257,28 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
     return GST_PAD_PROBE_OK;
   }
 
+  if (stats->check_packed_sizes) {
+    // NVMM maps the NvBufSurface descriptor only. Pixels stay on device.
+    GstMapInfo descriptor = GST_MAP_INFO_INIT;
+    if (!gst_buffer_map(buffer, &descriptor, GST_MAP_READ)) {
+      ++stats->invalid_metadata_batches;
+      return GST_PAD_PROBE_OK;
+    }
+    const auto* batch = reinterpret_cast<const NvBufSurface*>(descriptor.data);
+    for (auto* item = batch_meta->frame_meta_list; item; item = item->next) {
+      const auto* frame = static_cast<const NvDsFrameMeta*>(item->data);
+      if (!frame || frame->batch_id >= batch->numFilled) {
+        ++stats->invalid_metadata_batches;
+        continue;
+      }
+      const auto& surface = batch->surfaceList[frame->batch_id];
+      if (surface.width != (frame->source_id ? 384u : 512u) || surface.height != (frame->source_id ? 216u : 288u) ||
+          surface.colorFormat != NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_709 &&
+              surface.colorFormat != NVBUF_COLOR_FORMAT_RGBA_10_10_10_2_2020)
+        ++stats->invalid_metadata_batches;
+    }
+    gst_buffer_unmap(buffer, &descriptor);
+  }
   ++stats->batches;
   if (batch_meta->num_frames_in_batch != 2) {
     ++stats->incomplete_batches;
@@ -276,6 +307,15 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
         decoded_sequence->sequence != stats->next_decoded_sequence_by_source[frame_meta->source_id]) {
       ++stats->decode_mux_sequence_mismatches;
     } else {
+      if (stats->mixed_first_index) {
+        const auto sequence = decoded_sequence->sequence;
+        const auto physical = stats->movie_origins.at(frame_meta->source_id) +
+            gst_util_uint64_scale((*stats->mixed_first_index + sequence) % 15, GST_SECOND, 15);
+        const auto logical = gst_util_uint64_scale(sequence, GST_SECOND, 15);
+        stats->mixed_timeline_valid &=
+            std::abs(int64_t(decoded_sequence->source_pts) - int64_t(physical)) <= int64_t(stats->physical_tick) &&
+            std::abs(int64_t(frame_meta->buf_pts) - int64_t(logical)) <= 2;
+      }
       ++stats->next_decoded_sequence_by_source[frame_meta->source_id];
     }
     source_ids.insert(frame_meta->source_id);
@@ -317,11 +357,12 @@ bool make_synthetic_mp4(
     int hue_degrees,
     int audio_frequency,
     bool hevc_main10 = false,
-    double audio_tail = 0) {
+    double audio_tail = 0,
+    const char* size = "256x144",
+    int fps = 15,
+    bool b_frames = false) {
   std::stringstream cmd;
-  cmd << "ffmpeg -hide_banner -loglevel error -y "
-      << "-f lavfi -i "
-      << "'testsrc2=size=256x144:rate=15";
+  cmd << "ffmpeg -hide_banner -loglevel error -y " << "-f lavfi -i " << "'testsrc2=size=" << size << ":rate=" << fps;
   if (audio_tail > 0)
     cmd << ":duration=" << seconds;
   cmd << ",format=yuv420p,hue=h=" << hue_degrees << "' ";
@@ -339,6 +380,8 @@ bool make_synthetic_mp4(
         << "-x265-params 'pools=1:frame-threads=1:bframes=0:ref=1:log-level=error' ";
   } else {
     cmd << "-c:v libx264 -preset ultrafast -pix_fmt yuv420p ";
+    if (b_frames)
+      cmd << "-bf 2 ";
   }
   cmd << "-movflags +faststart " << shell_quote(path);
   return run_shell(cmd.str());
@@ -393,9 +436,13 @@ bool add_encoder_chain(GstElement* pipeline, const fs::path& output_path, std::v
   return true;
 }
 
-int run_pipeline(GstElement* pipeline, int timeout_seconds, NvDsSrcParentBin* source_parent = nullptr) {
+int run_pipeline(
+    GstElement* pipeline,
+    int timeout_seconds,
+    NvDsSrcParentBin* source_parent = nullptr,
+    std::string* error_detail = nullptr) {
   GMainLoop* loop = g_main_loop_new(NULL, FALSE);
-  BusState bus_state{.loop = loop, .exit_code = 0, .source_parent = source_parent};
+  BusState bus_state{.loop = loop, .exit_code = 0, .source_parent = source_parent, .error_detail = error_detail};
 
   GstBus* bus = gst_pipeline_get_bus(GST_PIPELINE(pipeline));
   const guint bus_watch_id = gst_bus_add_watch(bus, bus_call, &bus_state);
@@ -1218,10 +1265,25 @@ int run_decode_compose_encode(
     const std::vector<std::string>& left_uris,
     const std::vector<std::string>& right_uris,
     GstClockTime start_time = 0,
-    guint64 expected_frames = 45) {
+    guint64 expected_frames = 45,
+    int fast_camera = -1,
+    bool expect_bad_clock = false,
+    GstClockTime fast_origin = 0,
+    GstClockTime fast_tick = 1) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1);
+  if (fast_camera >= 0) {
+    for (int i = 0; i < 2; ++i) {
+      configs[i].stitch_input_width = i == fast_camera ? 192 : 256;
+      configs[i].stitch_input_height = i == fast_camera ? 96 : 144;
+      configs[i].video_format = g_strdup("RGBA");
+      configs[i].frame_decimation = i == fast_camera ? 2 : 1;
+      configs[i].frame_clock_tick_ns = i == fast_camera ? fast_tick : 1;
+      configs[i].camera_fps_n = 15;
+      configs[i].camera_fps_d = 1;
+    }
+  }
 
   NvDsSrcParentBin src_parent{};
   if (!create_multi_source_bin(2, configs, &src_parent)) {
@@ -1313,7 +1375,28 @@ int run_decode_compose_encode(
   gst_pad_add_probe(tiler_src, GST_PAD_PROBE_TYPE_BUFFER, count_buffers_probe, &counter, NULL);
   gst_object_unref(tiler_src);
 
-  int rc = run_pipeline(pipeline, 30, &src_parent);
+  MuxBatchStats pairs{};
+  if (fast_camera >= 0) {
+    pairs.movie_origins.at(fast_camera) = fast_origin;
+    pairs.physical_tick = fast_tick;
+    pairs.mixed_first_index = gst_util_uint64_scale_ceil(start_time, 15, GST_SECOND);
+    auto* mux_src = gst_element_get_static_pad(src_parent.streammux, "src");
+    gst_pad_add_probe(mux_src, GST_PAD_PROBE_TYPE_BUFFER, inspect_mux_batches_probe, &pairs, nullptr);
+    gst_object_unref(mux_src);
+  }
+  std::string error_detail;
+  int rc = run_pipeline(pipeline, 30, &src_parent, &error_detail);
+  if (expect_bad_clock)
+    return rc && error_detail.find("deviates from its native frame clock") != std::string::npos ? 0 : 7;
+  if (rc == 0 && fast_camera >= 0) {
+    for (guint camera = 0; camera < 2; ++camera) {
+      if (!pairs.mixed_timeline_valid || pairs.frames_by_source[camera] != expected_frames ||
+          pairs.decode_mux_sequence_mismatches || pairs.missing_decoded_sequence_meta || !pairs.exact_frame_pairs) {
+        std::cerr << "Mixed camera lost its trim-relative frame phase or sequence\n";
+        return 7;
+      }
+    }
+  }
   if (rc != 0) {
     std::cerr << "Encode transition stalled: composed_frames=" << counter.buffers
               << " switches=" << src_parent.sub_bins[0].uri_switch_count << ','
@@ -1332,6 +1415,14 @@ int run_decode_compose_encode(
     return 7;
   }
   const double minimum_end = static_cast<double>(expected_frames) / 15.0 - 0.1;
+  if (fast_camera >= 0 &&
+      !run_shell(
+          "ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate "
+          "-of default=nw=1:nk=1 " +
+          shell_quote(out) + " | grep -qx 15/1")) {
+    std::cerr << "Mixed camera archive did not retain the 15 fps output rate\n";
+    return 8;
+  }
   rc = expect_encoded_file(out, /*expect_audio=*/true, minimum_end, minimum_end);
   if (rc != 0 || !start_time) {
     return rc;
@@ -1420,6 +1511,60 @@ int run_single_uri_multiple_source(const std::string& uri) {
     return 5;
   }
   return 0;
+}
+
+int run_mixed_packed_inputs(const fs::path& root) {
+  NvDsSourceConfig configs[2]{};
+  for (guint i = 0; i < 2; ++i) {
+    const auto file = root / ("packed-" + std::to_string(i) + ".mp4");
+    configure_uri_multiple_source(configs[i], {to_file_uri(file)}, i);
+    configs[i].stitch_input_width = i ? 384 : 512;
+    configs[i].stitch_input_height = i ? 216 : 288;
+    configs[i].video_format = g_strdup("RGB10A2_LE");
+    configs[i].stitch_converter_buffers = 3;
+  }
+  NvDsSrcParentBin sources{};
+  if (!create_multi_source_bin(2, configs, &sources))
+    return 2;
+  for (auto& sub : {&sources.sub_bins[0], &sources.sub_bins[1]}) {
+    guint buffers = 0;
+    g_object_get(sub->nvvidconv, "output-buffers", &buffers, nullptr);
+    if (buffers != 3)
+      return 2;
+  }
+  g_object_set(
+      sources.streammux,
+      "batch-size",
+      2,
+      "batched-push-timeout",
+      1000000,
+      "sync-inputs",
+      FALSE,
+      "frame-num-reset-on-stream-reset",
+      FALSE,
+      "frame-num-reset-on-eos",
+      FALSE,
+      nullptr);
+  auto* pipeline = gst_pipeline_new("native-packed-stitch-inputs");
+  auto* sink = gst_element_factory_make("fakesink", nullptr);
+  g_object_set(sink, "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, nullptr);
+  auto* audio = gst_element_factory_make("fakesink", nullptr);
+  g_object_set(audio, "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, nullptr);
+  gst_bin_add_many(GST_BIN(pipeline), sources.bin, sink, audio, nullptr);
+  if (!gst_element_link(sources.bin, sink) || !link_uri_source_audio_src(&sources.sub_bins[0], audio))
+    return 3;
+  MuxBatchStats stats{};
+  stats.check_packed_sizes = true;
+  auto* pad = gst_element_get_static_pad(sink, "sink");
+  gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, inspect_mux_batches_probe, &stats, nullptr);
+  gst_object_unref(pad);
+  const int status = run_pipeline(pipeline, 30, &sources);
+  if (status)
+    std::cerr << "Packed frames observed: " << stats.batches << "\n";
+  return status || stats.batches != 15 || stats.invalid_metadata_batches || stats.missing_decoded_sequence_meta ||
+          stats.decode_mux_sequence_mismatches || !stats.exact_frame_pairs
+      ? 4
+      : 0;
 }
 
 int run_lossless_two_camera_mux(
@@ -1756,6 +1901,8 @@ int main(int argc, char** argv) {
   g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+  if (argc == 3 && std::string(argv[1]) == "--packed-inputs-only")
+    return run_mixed_packed_inputs(fs::absolute(argv[2]));
   if (argc == 2 && std::string(argv[1]) == "--webrtc-audio-pressure-only")
     return run_webrtc_audio_queue(true, false, true, true);
   if (argc == 2 && std::string(argv[1]) == "--webrtc-audio-queue-only") {
@@ -1768,9 +1915,10 @@ int main(int argc, char** argv) {
   }
   if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
     return run_headless_render_video_sink();
+  const bool mixed_only = argc == 2 && std::string(argv[1]) == "--mixed-sources-only";
   const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
   const bool startup_seek_only = argc == 2 && std::string(argv[1]) == "--startup-seek-only";
-  if (!decoder_matrix_only && !startup_seek_only) {
+  if (!decoder_matrix_only && !startup_seek_only && !mixed_only) {
     if (const int rc = run_realtime_render_tests())
       return rc;
   }
@@ -1782,6 +1930,78 @@ int main(int argc, char** argv) {
   fs::create_directories(tmpdir);
 
   const fs::path a0 = tmpdir / "left_0.mp4";
+  if (mixed_only || (!decoder_matrix_only && !startup_seek_only)) {
+    for (guint i = 0; i < 2; ++i)
+      if (!make_synthetic_mp4(
+              tmpdir / ("packed-" + std::to_string(i) + ".mp4"), 1, 0, 440, true, 0, i ? "384x216" : "512x288"))
+        return 1;
+    if (const auto result = run_mixed_packed_inputs(tmpdir))
+      return result;
+    const auto fast = tmpdir / "fast.mp4";
+    if (!make_synthetic_mp4(a0, 1, 0, 440, false, 0, "256x144", 15, true) ||
+        !make_synthetic_mp4(fast, 1, 90, 660, false, 0, "192x96", 30, true))
+      return 1;
+    for (int fast_camera = 0; fast_camera < 2; ++fast_camera) {
+      const std::vector<std::string> fast_files(2, to_file_uri(fast)), slow_files(2, to_file_uri(a0));
+      const int result = run_decode_compose_encode(
+          tmpdir, fast_camera ? slow_files : fast_files, fast_camera ? fast_files : slow_files, 0, 30, fast_camera);
+      if (result)
+        return result;
+      if (const auto seek_result = run_decode_compose_encode(
+              tmpdir,
+              fast_camera ? slow_files : fast_files,
+              fast_camera ? fast_files : slow_files,
+              20 * GST_MSECOND,
+              29,
+              fast_camera))
+        return seek_result;
+    }
+    // Shift video later than audio in the movie edit list, retaining all pictures.
+    const auto delayed = tmpdir / "delayed.mp4";
+    if (!run_shell(
+            "ffmpeg -v error -y -itsoffset 0.2 -i " + shell_quote(fast) + " -i " + shell_quote(fast) +
+            " -map 0:v:0 -map 1:a:0 -c:v copy -af apad=pad_dur=0.2 -c:a aac " + shell_quote(delayed)))
+      return 1;
+    if (const auto result = run_decode_compose_encode(
+            tmpdir,
+            std::vector<std::string>(2, to_file_uri(delayed)),
+            std::vector<std::string>(2, to_file_uri(a0)),
+            20 * GST_MSECOND,
+            29,
+            0,
+            false,
+            200 * GST_MSECOND))
+      return result;
+    const auto offset_mkv = tmpdir / "offset.mkv";
+    if (!run_shell(
+            "ffmpeg -v error -y -i " + shell_quote(fast) + " -map 0:v:0 -map 0:a:0 -c copy -output_ts_offset 2 " +
+            shell_quote(offset_mkv)))
+      return 1;
+    if (const auto result = run_decode_compose_encode(
+            tmpdir,
+            std::vector<std::string>(2, to_file_uri(a0)),
+            std::vector<std::string>(2, to_file_uri(offset_mkv)),
+            20 * GST_MSECOND,
+            29,
+            1,
+            false,
+            2 * GST_SECOND,
+            GST_MSECOND))
+      return result;
+    // Introduce a half-frame PTS excursion on an odd (decimated) fast picture.
+    const auto variable = tmpdir / "irregular.mp4";
+    if (!run_shell(
+            "ffmpeg -v error -y -i " + shell_quote(fast) +
+            " -vf 'settb=1/30000,setpts=PTS+500*eq(N\\,7)' -enc_time_base 1:30000 -fps_mode passthrough "
+            "-c:v libx264 -bf 0 -c:a copy " +
+            shell_quote(variable)) ||
+        run_decode_compose_encode(tmpdir, {to_file_uri(variable)}, {to_file_uri(a0)}, 0, 15, 0, true))
+      return 1;
+    if (mixed_only) {
+      fs::remove_all(tmpdir);
+      return 0;
+    }
+  }
   const fs::path a1 = tmpdir / "left_1.mp4";
   const fs::path a2 = tmpdir / "left_2.mp4";
   const fs::path a_long = tmpdir / "left_two_seconds.mp4";
@@ -1971,7 +2191,7 @@ int main(int argc, char** argv) {
       left_uris,
       right_uris,
       /*include_right_uri_list=*/true,
-      /*audio_source_id=*/0,
+      /*audio_source_id=*/1,
       /*audio_sleep_time_us=*/0,
       /*expected_failure=*/ExpectedPipelineFailure::kNone,
       /*video_sleep_time_us=*/0,

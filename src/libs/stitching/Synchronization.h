@@ -6,11 +6,20 @@
 #include "absl/status/statusor.h"
 
 namespace hm::stitching {
+struct CameraTrackFormat {
+  int width, height, fps_n, fps_d;
+  bool constant_rate;
+  int64_t timebase_tick_ns;
+};
+absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file);
+
 struct CameraChapterSlice {
   std::string file;
   double start_seconds, duration_seconds;
   // Physical video PTS origin. Slice bounds above are relative to this origin.
   double timestamp_origin_seconds{0};
+  // Matroska demuxed PTS are already expressed on the track timeline.
+  bool matroska_timestamps{false};
 };
 struct CameraRecordingWindow {
   std::vector<CameraChapterSlice> chapters;

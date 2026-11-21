@@ -10,7 +10,6 @@
 #include "hstream/src/libs/gpu/vaapi/VaOutputPool.h"
 #include "hstream/src/libs/gpu/vaapi/VaStereoVideo.h"
 #include "hstream/src/libs/gpu/vaapi/VaVideoPlaylist.h"
-#include "hstream/src/libs/media/StereoFramePlan.h"
 #include "hstream/src/libs/program/AmdProgramProcessor.h"
 #include "hstream/src/libs/program/AmdProgramSettings.h"
 #include "hstream/src/libs/program/AmdVideoStages.h"
@@ -97,9 +96,7 @@ int main(int argc, char** argv) {
     std::string game, output_file;
     int frames, out_width, out_height;
     double left_start, right_start;
-    std::optional<hm::media::StereoFramePlan> pair_plan;
     std::array<double, 2> frame_offsets{};
-    GstClockTime configured_start{};
     std::vector<std::filesystem::path> left_files, right_files;
     YAML::Node camera;
     hm::detection::DetectorConfig config;
@@ -129,17 +126,8 @@ int main(int argc, char** argv) {
       output_file = argv[8];
       left_files = launch.chapters[0];
       right_files = launch.chapters[1];
-      const auto left_meta = Take(hm::media::ReadMp4VideoTrack(left_files.at(0), settings.operation_timeout_ns, {}));
-      const auto right_meta = Take(hm::media::ReadMp4VideoTrack(right_files.at(0), settings.operation_timeout_ns, {}));
-      Check(
-          int64_t(left_meta.fps_n) * right_meta.fps_d == int64_t(right_meta.fps_n) * left_meta.fps_d,
-          "Camera frame rates differ");
-      pair_plan = Take(hm::media::PlanStereoFrames(
-          std::stod(argv[4]), launch.frame_offsets[0], launch.frame_offsets[1], left_meta.fps_n, left_meta.fps_d));
-      configured_start = static_cast<GstClockTime>(std::stod(argv[4]) * GST_SECOND);
+      left_start = right_start = std::stod(argv[4]);
       frame_offsets = launch.frame_offsets;
-      left_start = double(pair_plan->left_time_ns) / GST_SECOND;
-      right_start = double(pair_plan->right_time_ns) / GST_SECOND;
       config = {
           detector.onnx,
           detector.input_name,
@@ -220,10 +208,8 @@ int main(int argc, char** argv) {
         std::isfinite(left_start) && left_start >= 0 && left_start < double(G_MAXINT64 / GST_SECOND) &&
             std::isfinite(right_start) && right_start >= 0 && right_start < double(G_MAXINT64 / GST_SECOND),
         "Invalid seek time");
-    const GstClockTime left_seek =
-        pair_plan ? pair_plan->left_time_ns : static_cast<GstClockTime>(left_start * GST_SECOND);
-    const GstClockTime right_seek =
-        pair_plan ? pair_plan->right_time_ns : static_cast<GstClockTime>(right_start * GST_SECOND);
+    const auto left_seek = static_cast<GstClockTime>(left_start * GST_SECOND);
+    const auto right_seek = static_cast<GstClockTime>(right_start * GST_SECOND);
     std::unique_ptr<hm::gpu::VaStereoVideo> stereo;
     std::unique_ptr<hm::gpu::VaVideoPlaylist> left, right;
     if (configured) {
@@ -232,7 +218,7 @@ int main(int argc, char** argv) {
            {left_files, right_files},
            frame_offsets},
           {}));
-      Status(stereo->Seek(configured_start));
+      Status(stereo->Seek(left_seek));
     } else {
       left = OpenPlaylist(settings, left_files, left_seek);
       right = OpenPlaylist(settings, right_files, right_seek);
@@ -340,7 +326,7 @@ int main(int argc, char** argv) {
           absl::IsFailedPrecondition(processor->Render(output_frame.get(), out_info, render)),
           "Reset retained a stale panorama");
       if (stereo) {
-        Status(stereo->Seek(configured_start));
+        Status(stereo->Seek(left_seek));
       } else {
         Status(left->Seek(left_seek));
         Status(right->Seek(right_seek));

@@ -54,10 +54,19 @@
 GST_DEBUG_CATEGORY_EXTERN(NVDS_APP);
 GST_DEBUG_CATEGORY_EXTERN(APP_CFG_PARSER_CAT);
 
-GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(const gchar* uri) {
+GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(
+    const gchar* uri,
+    GstClockTime* video_origin,
+    bool* matroska_timestamps) {
+  if (matroska_timestamps)
+    *matroska_timestamps = false;
+  if (video_origin)
+    *video_origin = GST_CLOCK_TIME_NONE;
   struct CachedDuration {
     struct stat identity;
     GstClockTime duration;
+    GstClockTime video_origin;
+    bool matroska_timestamps;
   };
   static std::mutex cache_mutex;
   static std::map<std::string, CachedDuration> cache;
@@ -74,18 +83,27 @@ GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(const gch
     const auto found = cache.find(uri);
     if (found != cache.end() && same_file(before, found->second.identity)) {
       g_free(filename);
+      if (video_origin)
+        *video_origin = found->second.video_origin;
+      if (matroska_timestamps)
+        *matroska_timestamps = found->second.matroska_timestamps;
       return found->second.duration;
     }
   }
-  GstClockTime duration = GST_CLOCK_TIME_NONE;
+  GstClockTime duration = GST_CLOCK_TIME_NONE, origin = GST_CLOCK_TIME_NONE;
+  bool matroska = false;
   // Use the same video-track chapter clock as synchronization and AMD. Audio
   // tails must not change which chapter or camera frame a source start selects.
   bool discover_container = !cacheable;
   if (cacheable) {
     auto video = hm::stitching::CameraRecordingWindowAt({filename}, 0, std::numeric_limits<double>::max());
-    if (video.ok() && video->duration_seconds < double(G_MAXINT64) / GST_SECOND)
+    if (video.ok() && video->duration_seconds < double(G_MAXINT64) / GST_SECOND) {
       duration = std::llround(video->duration_seconds * GST_SECOND);
-    else
+      const double first = video->chapters.front().timestamp_origin_seconds;
+      if (first >= 0 && first < double(G_MAXINT64) / GST_SECOND)
+        origin = std::llround(first * GST_SECOND);
+      matroska = video->chapters.front().matroska_timestamps;
+    } else
       discover_container = absl::IsNotFound(video.status()); // Audio-only source.
   }
   if (discover_container) {
@@ -110,9 +128,13 @@ GstClockTime hm::uri_playlist_internal::discover_uri_playlist_duration(const gch
     std::lock_guard<std::mutex> lock(cache_mutex);
     if (cache.size() >= 512)
       cache.clear();
-    cache[uri] = {after, duration};
+    cache[uri] = {after, duration, origin, matroska};
   }
   g_free(filename);
+  if (video_origin)
+    *video_origin = origin;
+  if (matroska_timestamps)
+    *matroska_timestamps = matroska;
   return duration;
 }
 
@@ -126,6 +148,12 @@ struct UriListPadProbeData {
   GstClockTime base;
   gboolean is_video;
   GstClockTime initial_offset;
+  GstSegment physical_segment;
+  GstClockTime video_origin;
+  bool matroska_timestamps;
+  GstClockTime native_interval;
+  GstClockTime first_native_pts;
+  guint64 native_frames;
 };
 
 struct UriPlaylistMainContextCallback {
@@ -330,8 +358,10 @@ static GstPadProbeReturn trim_initial_uri_playlist_buffer(
   if (probe_data->is_video && (!GST_CLOCK_TIME_IS_VALID(duration) || duration == 0) && probe_data->bin &&
       probe_data->bin->config && probe_data->bin->config->camera_fps_n > 0 &&
       probe_data->bin->config->camera_fps_d > 0) {
-    duration =
-        gst_util_uint64_scale(GST_SECOND, probe_data->bin->config->camera_fps_d, probe_data->bin->config->camera_fps_n);
+    duration = probe_data->native_interval
+        ? probe_data->native_interval
+        : gst_util_uint64_scale(
+              GST_SECOND, probe_data->bin->config->camera_fps_d, probe_data->bin->config->camera_fps_n);
   }
   if (!GST_CLOCK_TIME_IS_VALID(duration) || duration == 0) {
     return fail_uri_playlist_initial_positioning(probe_data->bin, "decoded buffer has no valid duration");
@@ -341,7 +371,15 @@ static GstPadProbeReturn trim_initial_uri_playlist_buffer(
     return fail_uri_playlist_initial_positioning(probe_data->bin, "decoded buffer timestamp overflowed");
   }
   const GstClockTime logical_end = logical_start + duration;
-  if (logical_end <= probe_data->initial_offset) {
+  bool before_target = logical_end <= probe_data->initial_offset;
+  if (probe_data->is_video && probe_data->native_interval) {
+    const auto* config = probe_data->bin->config;
+    const guint64 rate = guint64(config->camera_fps_n) * config->frame_decimation;
+    const guint64 unit = guint64(config->camera_fps_d) * GST_SECOND;
+    before_target = gst_util_uint64_scale_round(logical_start, rate, unit) <
+        gst_util_uint64_scale_round(probe_data->initial_offset, rate, unit);
+  }
+  if (before_target) {
     if (probe_data->is_video) {
       GMutex* mutex = uri_playlist_mutex(probe_data->bin);
       g_mutex_lock(mutex);
@@ -406,9 +444,14 @@ static gboolean uri_playlist_terminal_locked(const NvDsSrcBin* bin) {
 
 static void advance_uri_playlist_base_locked(NvDsSrcBin* bin) {
   GstClockTime stop = bin->uri_list_segment_stop;
-  if (stop == GST_CLOCK_TIME_NONE && GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
+  if ((stop == GST_CLOCK_TIME_NONE || (bin->config && bin->config->frame_decimation)) &&
+      GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
     stop = bin->uri_list_last_pts;
-    if (GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_duration)) {
+    if (bin->config && bin->config->frame_decimation) {
+      const auto rate = guint64(bin->config->camera_fps_n) * bin->config->frame_decimation;
+      const auto unit = guint64(bin->config->camera_fps_d) * GST_SECOND;
+      stop = gst_util_uint64_scale(gst_util_uint64_scale_round(stop, rate, unit) + 1, unit, rate);
+    } else if (GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_duration)) {
       stop += bin->uri_list_last_duration;
     }
   }
@@ -2061,9 +2104,87 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         drain->Observe(GST_BUFFER(info->data));
       }
     }
+    if (bin->config && bin->config->frame_decimation > 0) {
+      // MP4 edit lists can shift decoded PTS by several frames, for example
+      // to accommodate B-frame decode order. Work in physical chapter stream
+      // time before trimming, recording provenance, or advancing the playlist.
+      auto* buffer = GST_BUFFER(info->data);
+      if (probe_data->physical_segment.format != GST_FORMAT_TIME || !GST_CLOCK_TIME_IS_VALID(GST_BUFFER_PTS(buffer)))
+        return fail_uri_playlist_initial_positioning(bin, "mixed-rate buffer has no physical chapter clock");
+      // Matroska buffers already carry track PTS. Its segment may start
+      // at an earlier AAC packet or at the video keyframe after a seek.
+      guint64 pts = GST_BUFFER_PTS(buffer);
+      const int sign = probe_data->matroska_timestamps
+          ? 1
+          : gst_segment_to_stream_time_full(
+                &probe_data->physical_segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer), &pts);
+      if (sign < 0)
+        return GST_PAD_PROBE_DROP;
+      if (!sign)
+        return fail_uri_playlist_initial_positioning(bin, "could not resolve mixed-rate chapter timestamp");
+      buffer = gst_buffer_make_writable(buffer);
+      if (!buffer)
+        return fail_uri_playlist_initial_positioning(bin, "could not rebase mixed-rate chapter buffer");
+      GST_PAD_PROBE_INFO_DATA(info) = buffer;
+      GST_BUFFER_PTS(buffer) = pts;
+      // An edit list may place the first video frame after movie time zero.
+      // Keep physical movie PTS for frame receipts. Trims, audio and chapter
+      // accumulation use time relative to this chapter's first video frame.
+      const auto origin = probe_data->video_origin;
+      if (!GST_CLOCK_TIME_IS_VALID(origin))
+        return fail_uri_playlist_initial_positioning(bin, "missing or unsupported mixed-rate video track origin");
+      if (pts < origin && !probe_data->is_video) {
+        auto trim = *probe_data;
+        trim.base = 0;
+        trim.initial_offset = origin;
+        const auto result = trim_initial_uri_playlist_buffer(pad, info, &trim);
+        if (result != GST_PAD_PROBE_OK)
+          return result;
+        buffer = GST_BUFFER(info->data);
+        pts = GST_BUFFER_PTS(buffer);
+      }
+      if (pts < origin && origin - pts > 1)
+        return GST_PAD_PROBE_DROP;
+      GST_BUFFER_PTS(buffer) = pts > origin ? pts - origin : 0;
+      GST_BUFFER_DTS(buffer) = probe_data->is_video ? GST_CLOCK_TIME_NONE : GST_BUFFER_PTS(buffer);
+    }
     const GstPadProbeReturn initial_trim_result = trim_initial_uri_playlist_buffer(pad, info, probe_data);
     if (initial_trim_result != GST_PAD_PROBE_OK) {
       return initial_trim_result;
+    }
+    if (probe_data->is_video && probe_data->native_interval) {
+      // Container headers and decoder caps alone cannot prove constant cadence.
+      // Check every native picture, including pictures that decimation discards.
+      const auto* config = bin->config;
+      const guint64 rate = guint64(config->camera_fps_n) * config->frame_decimation;
+      const guint64 unit = guint64(config->camera_fps_d) * GST_SECOND;
+      const auto pts = GST_BUFFER_PTS(GST_BUFFER(info->data));
+      if (!probe_data->native_frames)
+        probe_data->first_native_pts = pts;
+      const auto expected = add_uri_playlist_timestamp(
+          probe_data->first_native_pts, gst_util_uint64_scale(probe_data->native_frames, unit, rate));
+      // Two timestamps expressed on a millisecond Matroska clock can differ
+      // by one tick from their rational separation. Bound that allowance for fast tracks.
+      const auto tolerance = std::min<GstClockTime>(config->frame_clock_tick_ns, probe_data->native_interval / 8) + 1;
+      const auto duration = GST_BUFFER_DURATION(GST_BUFFER(info->data));
+      const auto interval = probe_data->native_interval;
+      if ((GST_CLOCK_TIME_IS_VALID(duration) &&
+           (duration > interval ? duration - interval : interval - duration) > tolerance) ||
+          !GST_CLOCK_TIME_IS_VALID(pts) || !GST_CLOCK_TIME_IS_VALID(expected) ||
+          (pts > expected ? pts - expected : expected - pts) > tolerance) {
+        GST_WARNING_OBJECT(
+            bin->src_elem,
+            "Chapter %u frame %" G_GUINT64_FORMAT " has pts %" G_GUINT64_FORMAT " expected %" G_GUINT64_FORMAT
+            " duration %" G_GUINT64_FORMAT " interval %" G_GUINT64_FORMAT,
+            probe_data->uri_index,
+            probe_data->native_frames,
+            pts,
+            expected,
+            duration,
+            interval);
+        return fail_uri_playlist_initial_positioning(bin, "mixed-rate camera deviates from its native frame clock");
+      }
+      ++probe_data->native_frames;
     }
     if (!probe_data->is_video) {
       const GstPadProbeReturn audio_gate_result = gate_uri_playlist_audio_buffer(pad, info, probe_data);
@@ -2087,6 +2208,18 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
     const gboolean drain_terminal_audio = !probe_data->is_video && terminal && bin->uri_terminal_audio_drain_pending;
     const gboolean is_current_uri = probe_data->uri_index == bin->uri_list_index;
     const guint64 decoded_sequence = bin->uri_list_decoded_frame_count;
+    const int step = bin->config ? bin->config->frame_decimation : 0;
+    const auto native_duration = buf && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(buf)) && GST_BUFFER_DURATION(buf)
+        ? GST_BUFFER_DURATION(buf)
+        : probe_data->native_interval;
+    if (probe_data->is_video && is_current_uri && !terminal && step > 1 &&
+        (decoded_sequence + bin->uri_list_decimation_drops) % step != 0) {
+      ++bin->uri_list_decimation_drops;
+      bin->uri_list_last_pts = raw_buffer_pts;
+      bin->uri_list_last_duration = native_duration;
+      g_mutex_unlock(mutex);
+      return GST_PAD_PROBE_DROP;
+    }
     g_mutex_unlock(mutex);
     if (!probe_data->is_video && terminal && !drain_terminal_audio) {
       return GST_PAD_PROBE_DROP;
@@ -2133,13 +2266,17 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
           GST_BUFFER_DTS(buf) += probe_data->base;
         }
       }
+      if (step) {
+        const auto unit = guint64(bin->config->camera_fps_d) * GST_SECOND;
+        GST_BUFFER_PTS(buf) = gst_util_uint64_scale(decoded_sequence, unit, bin->config->camera_fps_n);
+      }
       if (!buf ||
           !hm::add_decoded_frame_sequence_meta(
               buf,
               bin->source_id,
               decoded_sequence,
               g_quark_from_string(bin->uri_list[probe_data->uri_index]),
-              raw_buffer_pts)) {
+              add_uri_playlist_timestamp(raw_buffer_pts, probe_data->video_origin))) {
         cancel_uri_playlist_source(bin, TRUE);
         GST_ELEMENT_ERROR(
             bin->src_elem,
@@ -2150,7 +2287,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         return GST_PAD_PROBE_DROP;
       }
       GstClockTime video_duration = GST_BUFFER_DURATION(buf);
-      if ((!GST_CLOCK_TIME_IS_VALID(video_duration) || video_duration == 0) && bin->config &&
+      if ((step > 1 || !GST_CLOCK_TIME_IS_VALID(video_duration) || video_duration == 0) && bin->config &&
           bin->config->camera_fps_n > 0 && bin->config->camera_fps_d > 0) {
         video_duration = gst_util_uint64_scale(GST_SECOND, bin->config->camera_fps_d, bin->config->camera_fps_n);
       }
@@ -2179,7 +2316,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         // Keep raw chapter-local timestamps for the next chapter's accumulated base. Output timestamps may have
         // already been rebased to the startup epoch above.
         bin->uri_list_last_pts = raw_buffer_pts;
-        bin->uri_list_last_duration = GST_BUFFER_DURATION(buf);
+        bin->uri_list_last_duration = step > 1 ? native_duration : GST_BUFFER_DURATION(buf);
       }
       ++bin->uri_list_decoded_frame_count;
       g_mutex_unlock(mutex);
@@ -2218,8 +2355,43 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
           width != bin->config->stitch_input_width || height != bin->config->stitch_input_height)
         return fail_uri_playlist_initial_positioning(bin, "decoded camera dimensions differ from the recording header");
     }
-    if (uri_playlist_initial_positioning_enabled(bin) && probe_data->uri_index == bin->uri_playlist_initial_uri_index &&
-        GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+    if (probe_data->is_video && bin->config && bin->config->frame_decimation > 0 &&
+        GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+      GstCaps* caps = nullptr;
+      gst_event_parse_caps(event, &caps);
+      gint n = 0, d = 0, delivered_n = 0, delivered_d = 0;
+      const auto& config = *bin->config;
+      if (!caps || !gst_structure_get_fraction(gst_caps_get_structure(caps, 0), "framerate", &n, &d) || n <= 0 ||
+          d <= 0 || !gst_util_fraction_multiply(n, d, 1, config.frame_decimation, &delivered_n, &delivered_d) ||
+          int64_t(delivered_n) * config.camera_fps_d != int64_t(config.camera_fps_n) * delivered_d) {
+        cancel_uri_playlist_source(bin, TRUE);
+        GST_ELEMENT_ERROR(
+            bin->src_elem,
+            STREAM,
+            FORMAT,
+            ("Decoded camera rate differs from the prepared stereo rate"),
+            ("source=%u native=%d/%d", bin->source_id, n, d));
+        return GST_PAD_PROBE_DROP;
+      }
+      probe_data->native_interval = gst_util_uint64_scale(GST_SECOND, d, n);
+      GstCaps* delivered = gst_caps_copy(caps);
+      gst_caps_set_simple(delivered, "framerate", GST_TYPE_FRACTION, delivered_n, delivered_d, nullptr);
+      GstEvent* updated = gst_event_new_caps(delivered);
+      gst_caps_unref(delivered);
+      gst_event_set_seqnum(updated, gst_event_get_seqnum(event));
+      gst_event_unref(event);
+      GST_PAD_PROBE_INFO_DATA(info) = event = updated;
+    }
+    const bool mixed = bin->config && bin->config->frame_decimation > 0;
+    if (mixed && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+      const GstSegment* segment = nullptr;
+      gst_event_parse_segment(event, &segment);
+      if (!segment || segment->format != GST_FORMAT_TIME)
+        return fail_uri_playlist_initial_positioning(bin, "mixed-rate chapter segment is not time-based");
+      gst_segment_copy_into(segment, &probe_data->physical_segment);
+    }
+    if ((mixed || uri_playlist_initial_positioning_enabled(bin)) &&
+        probe_data->uri_index == bin->uri_playlist_initial_uri_index && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       const GstSegment* segment = nullptr;
       gst_event_parse_segment(event, &segment);
       if (!segment || segment->format != GST_FORMAT_TIME) {
@@ -2318,7 +2490,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // current camera pair on this event even when its timeout is effectively infinite.
       return GST_PAD_PROBE_DROP;
     }
-    if (!probe_data->is_video && uri_playlist_initial_positioning_enabled(bin) &&
+    if (!probe_data->is_video && (mixed || uri_playlist_initial_positioning_enabled(bin)) &&
         probe_data->uri_index > bin->uri_playlist_initial_uri_index && GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
       // Startup positioning already published an open, zero-based logical
       // segment. Audio buffers in every chapter are rebased to that same epoch.
@@ -2633,6 +2805,9 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       probe_data->base = bin->prev_accumulated_base;
       probe_data->initial_offset = uri_playlist_initial_offset(bin, TRUE);
       g_mutex_unlock(mutex);
+      if (bin->config && bin->config->frame_decimation > 0)
+        hm::uri_playlist_internal::discover_uri_playlist_duration(
+            bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->matroska_timestamps);
       probe_data->is_video = TRUE;
       event_probe_id = gst_pad_add_probe(
           pad,
@@ -2691,7 +2866,8 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
       gst_structure_get_int(str, "width", &config->camera_width);
       gst_structure_get_int(str, "height", &config->camera_height);
-      gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
+      if (!config->frame_decimation)
+        gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
@@ -2732,6 +2908,9 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
         probe_data->base = bin->prev_accumulated_base;
         probe_data->initial_offset = uri_playlist_initial_offset(bin, FALSE);
         g_mutex_unlock(mutex);
+        if (bin->config && bin->config->frame_decimation > 0)
+          hm::uri_playlist_internal::discover_uri_playlist_duration(
+              bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->matroska_timestamps);
         probe_data->is_video = FALSE;
         event_probe_id = gst_pad_add_probe(
             pad,
@@ -2945,6 +3124,7 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_switch_pending = FALSE;
   bin->uri_list_reader_retired = FALSE;
   bin->uri_list_retire_started_us = 0;
+  bin->uri_list_decimation_drops = 0;
   bin->uri_list_decoded_frame_count = 0;
   bin->uri_list_released_video_end = GST_CLOCK_TIME_NONE;
   bin->uri_list_mux_delivered_sequence = G_MAXUINT64;
@@ -3463,7 +3643,8 @@ static void cb_newpad2(GstElement* decodebin, GstPad* pad, gpointer data) {
 
       gst_structure_get_int(str, "width", &config->camera_width);
       gst_structure_get_int(str, "height", &config->camera_height);
-      gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
+      if (!config->frame_decimation)
+        gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
@@ -4644,6 +4825,17 @@ gboolean configure_uri_playlist_initial_offsets(
     return FALSE;
   }
   const guint64 video_offsets[2] = {left_video_offset_ns, right_video_offset_ns};
+  const auto* clock = bin->sub_bins[0].config;
+  const bool mixed_rates =
+      clock && clock->frame_decimation > 0 && bin->sub_bins[1].config && bin->sub_bins[1].config->frame_decimation > 0;
+  guint64 pair_index = 0;
+  if (mixed_rates) {
+    if (clock->camera_fps_n <= 0 || clock->camera_fps_d <= 0)
+      return FALSE;
+    const guint64 unit = guint64(clock->camera_fps_d) * GST_SECOND;
+    pair_index = gst_util_uint64_scale_ceil(start_time_ns, clock->camera_fps_n, unit);
+    start_time_ns = gst_util_uint64_scale(pair_index, unit, clock->camera_fps_n);
+  }
   if (video_offsets[0] > G_MAXUINT64 - start_time_ns || video_offsets[1] > G_MAXUINT64 - start_time_ns) {
     return FALSE;
   }
@@ -4651,16 +4843,33 @@ gboolean configure_uri_playlist_initial_offsets(
     guint index{0};
     GstClockTime skipped_base{0};
     GstClockTime target{0};
+    GstClockTime origin{0};
   } plans[2];
   for (guint source_id = 0; source_id < 2; ++source_id) {
     NvDsSrcBin* source = &bin->sub_bins[source_id];
-    const GstClockTime video_target = video_offsets[source_id] + start_time_ns;
-    // Audio and video from the selected camera share its absolute source start.
-    const GstClockTime target = video_target;
+    GstClockTime target = video_offsets[source_id] + start_time_ns;
+    if (mixed_rates) {
+      const auto* config = source->config;
+      const guint64 rate = guint64(clock->camera_fps_n) * config->frame_decimation;
+      const guint64 unit = guint64(clock->camera_fps_d) * GST_SECOND;
+      // Native trims are stored as truncated nanoseconds. Recover the frame
+      // containing the trim, including an exact boundary truncated by <1 ns.
+      if (video_offsets[source_id] == G_MAXUINT64)
+        return FALSE;
+      const auto begin = gst_util_uint64_scale_ceil(video_offsets[source_id] + 1, rate, unit) - 1;
+      if (pair_index > (G_MAXUINT64 - begin) / config->frame_decimation)
+        return FALSE;
+      target = gst_util_uint64_scale(begin + pair_index * config->frame_decimation, unit, rate);
+    }
     plans[source_id].target = target;
     while (plans[source_id].index < source->num_uri_list) {
-      const GstClockTime duration =
-          hm::uri_playlist_internal::discover_uri_playlist_duration(source->uri_list[plans[source_id].index]);
+      bool matroska = false;
+      const GstClockTime duration = hm::uri_playlist_internal::discover_uri_playlist_duration(
+          source->uri_list[plans[source_id].index], mixed_rates ? &plans[source_id].origin : nullptr, &matroska);
+      // Seek at or before the target keyframe. The decoded trim uses the
+      // actual track PTS even if an early audio track changes segment zero.
+      if (matroska)
+        plans[source_id].origin = 0;
       if (!GST_CLOCK_TIME_IS_VALID(duration) || duration > G_MAXUINT64 - plans[source_id].skipped_base) {
         break;
       }
@@ -4687,6 +4896,10 @@ gboolean configure_uri_playlist_initial_offsets(
       ++plans[source_id].index;
     }
   }
+  for (const auto& plan : plans) {
+    if (!GST_CLOCK_TIME_IS_VALID(plan.origin) || plan.target - plan.skipped_base > G_MAXINT64 - plan.origin)
+      return FALSE;
+  }
   gboolean configured = FALSE;
   g_mutex_lock(&bin->uri_playlist_barrier_mutex);
   const gboolean pristine = !bin->uri_playlist_initial_offsets_configured && !bin->uri_playlist_terminal &&
@@ -4712,7 +4925,7 @@ gboolean configure_uri_playlist_initial_offsets(
     }
     for (guint source_id = 0; source_id < 2; ++source_id) {
       NvDsSrcBin* source = &bin->sub_bins[source_id];
-      source->uri_playlist_initial_video_offset_ns = video_offsets[source_id] + start_time_ns;
+      source->uri_playlist_initial_video_offset_ns = plans[source_id].target;
       source->uri_playlist_initial_audio_offset_ns =
           source_id == audio_source_id ? video_offsets[source_id] + start_time_ns : 0;
       source->uri_playlist_video_origin_ns = GST_CLOCK_TIME_NONE;
@@ -4721,7 +4934,8 @@ gboolean configure_uri_playlist_initial_offsets(
       source->uri_list_index = plans[source_id].index;
       source->uri_playlist_initial_uri_index = plans[source_id].index;
       source->uri_playlist_initial_skipped_base_ns = plans[source_id].skipped_base;
-      source->uri_playlist_initial_seek_ns = plans[source_id].target - plans[source_id].skipped_base;
+      source->uri_playlist_initial_seek_ns =
+          plans[source_id].target - plans[source_id].skipped_base + plans[source_id].origin;
       source->prev_accumulated_base = plans[source_id].skipped_base;
       source->accumulated_base = plans[source_id].skipped_base;
       g_free(source->config->uri);

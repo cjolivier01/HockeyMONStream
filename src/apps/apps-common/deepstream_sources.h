@@ -40,6 +40,8 @@ typedef struct {
   gint stitch_input_width;
   gint stitch_input_height;
   guint stitch_converter_buffers;
+  guint64 frame_clock_tick_ns;
+  gint frame_decimation; // Derived native frames per delivered frame of a mixed-rate playlist.
   gint camera_fps_n;
   gint camera_fps_d;
   gint camera_csi_sensor_id;
@@ -204,6 +206,7 @@ typedef struct {
   gint uri_switch_source_id;
   gint uri_terminal_audio_drain_source_id;
   /** Video frames admitted after initial positioning across every URI. Never resets at chapter boundaries. */
+  guint64 uri_list_decimation_drops;
   guint64 uri_list_decoded_frame_count;
   /** Logical end timestamp of the latest decoded video buffer released by the exact-pair barrier. */
   guint64 uri_list_released_video_end;

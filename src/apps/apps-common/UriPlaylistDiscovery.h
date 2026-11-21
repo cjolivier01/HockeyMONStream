@@ -11,6 +11,9 @@ inline bool discovery_has_usable_duration(GstDiscovererResult result, GstClockTi
 
 // Successful local-file probes are reused while file identity, size and times
 // remain unchanged. Remote URIs and failures are never cached.
-GstClockTime discover_uri_playlist_duration(const gchar* uri);
+GstClockTime discover_uri_playlist_duration(
+    const gchar* uri,
+    GstClockTime* video_origin = nullptr,
+    bool* matroska_timestamps = nullptr);
 
 } // namespace hm::uri_playlist_internal

@@ -10,7 +10,11 @@ namespace hm::gpu {
 struct VaStereoVideo::Impl {
   std::array<std::unique_ptr<VaVideoPlaylist>, 2> readers;
   std::array<double, 2> offsets;
-  std::array<uint64_t, 2> next{}, end{};
+  std::array<uint64_t, 2> begin{}, next{}, end{};
+  media::StereoFrameRates rates{};
+  bool mixed() const {
+    return rates.step[0] != rates.step[1];
+  }
   GstClockTime duration{};
   uint64_t sequence{};
   bool positioned{false}, eos{false}, retired{false};
@@ -30,6 +34,9 @@ struct VaStereoVideo::Impl {
   }
   absl::StatusOr<GstClockTime> Time(uint64_t left_frame) const {
     const auto& video = readers[0]->video_info();
+    if (mixed())
+      return gst_util_uint64_scale(
+          (left_frame - begin[0]) / rates.step[0], uint64_t(rates.fps_d) * GST_SECOND, rates.fps_n);
     long double frames = static_cast<long double>(left_frame) - offsets[0];
     // The frame planner snaps values within the original double's uncertainty
     // at integer boundaries. Preserve that same tolerance at synchronized zero.
@@ -59,19 +66,33 @@ absl::StatusOr<std::unique_ptr<VaStereoVideo>> VaStereoVideo::Create(
   }
   const auto& left = impl->readers[0]->video_info();
   const auto& right = impl->readers[1]->video_info();
-  if (int64_t(left.fps_n) * right.fps_d != int64_t(right.fps_n) * left.fps_d ||
-      int64_t(left.fps_d) * GST_SECOND < left.fps_n)
-    return absl::InvalidArgumentError("Stereo cameras require equal frame rates on a nanosecond clock");
-  const auto start = media::PlanStereoFrames(0, impl->offsets[0], impl->offsets[1], left.fps_n, left.fps_d);
-  if (!start.ok())
-    return start.status();
-  const std::array<uint64_t, 2> begin{start->left_frame, start->right_frame};
-  for (size_t camera = 0; camera < 2; ++camera)
-    if (begin[camera] >= impl->readers[camera]->frame_count())
+  auto rates = media::ResolveStereoFrameRates(left.fps_n, left.fps_d, right.fps_n, right.fps_d);
+  if (!rates.ok())
+    return rates.status();
+  impl->rates = *rates;
+  if (impl->mixed()) {
+    // The trim applies on each native clock before the first decimation group.
+    for (size_t camera = 0; camera < 2; ++camera) {
+      const double offset = impl->offsets[camera];
+      if (!std::isfinite(offset) || offset < 0 || offset >= impl->readers[camera]->frame_count())
+        return absl::InvalidArgumentError("Invalid native camera frame offset");
+      impl->begin[camera] = static_cast<uint64_t>(offset);
+    }
+  } else {
+    const auto start = media::PlanStereoFrames(0, impl->offsets[0], impl->offsets[1], left.fps_n, left.fps_d);
+    if (!start.ok())
+      return start.status();
+    impl->begin = {start->left_frame, start->right_frame};
+  }
+  uint64_t count = UINT64_MAX;
+  for (size_t camera = 0; camera < 2; ++camera) {
+    const auto native_count = impl->readers[camera]->frame_count();
+    if (impl->begin[camera] >= native_count)
       return absl::InvalidArgumentError("Camera synchronization leaves no paired frames");
-  const auto count = std::min(impl->readers[0]->frame_count() - begin[0], impl->readers[1]->frame_count() - begin[1]);
+    count = std::min(count, 1 + (native_count - impl->begin[camera] - 1) / impl->rates.step[camera]);
+  }
   for (size_t camera = 0; camera < 2; ++camera)
-    impl->end[camera] = begin[camera] + count;
+    impl->end[camera] = impl->begin[camera] + count * impl->rates.step[camera];
   const auto duration = impl->Time(impl->end[0]);
   if (!duration.ok())
     return duration.status();
@@ -92,11 +113,18 @@ absl::Status VaStereoVideo::Seek(GstClockTime time) {
     return absl::OkStatus();
   }
   const auto& video = impl.readers[0]->video_info();
-  const auto plan =
-      media::PlanStereoFrames(double(time) / GST_SECOND, impl.offsets[0], impl.offsets[1], video.fps_n, video.fps_d);
-  if (!plan.ok())
-    return plan.status();
-  const std::array<uint64_t, 2> next{plan->left_frame, plan->right_frame};
+  std::array<uint64_t, 2> next{};
+  if (impl.mixed()) {
+    const auto index = gst_util_uint64_scale_ceil(time, impl.rates.fps_n, uint64_t(impl.rates.fps_d) * GST_SECOND);
+    for (size_t camera = 0; camera < next.size(); ++camera)
+      next[camera] = impl.begin[camera] + index * impl.rates.step[camera];
+  } else {
+    const auto plan =
+        media::PlanStereoFrames(double(time) / GST_SECOND, impl.offsets[0], impl.offsets[1], video.fps_n, video.fps_d);
+    if (!plan.ok())
+      return plan.status();
+    next = {plan->left_frame, plan->right_frame};
+  }
   // A sub-frame tail has no next complete pair, so it selects clean EOS.
   if (next[0] >= impl.end[0] || next[1] >= impl.end[1]) {
     impl.positioned = impl.eos = true;
@@ -128,7 +156,7 @@ absl::StatusOr<std::optional<VaStereoFrame>> VaStereoVideo::Read() {
     // Verify actual EOS on whichever camera(s) set the paired end. The longer
     // camera may retain frames beyond that end, which are intentionally unused.
     for (size_t camera = 0; camera < 2; ++camera) {
-      if (impl.next[camera] != impl.readers[camera]->frame_count())
+      if (impl.next[camera] < impl.readers[camera]->frame_count())
         continue;
       const auto extra = impl.readers[camera]->Read();
       if (!extra.ok())
@@ -147,8 +175,27 @@ absl::StatusOr<std::optional<VaStereoFrame>> VaStereoVideo::Read() {
     if (!*frame)
       return impl.Retire(absl::DataLossError("Stereo camera ended before its prepared frame count"));
     pair.cameras[camera] = std::move(**frame);
+    for (uint64_t skip = 1;
+         skip < uint64_t(impl.rates.step[camera]) && skip < impl.readers[camera]->frame_count() - impl.next[camera];
+         ++skip) {
+      auto discarded = impl.readers[camera]->Read();
+      if (!discarded.ok())
+        return impl.Retire(discarded.status());
+      if (!*discarded)
+        return impl.Retire(absl::DataLossError("Stereo camera ended inside a decimation group"));
+    }
+    if (impl.rates.step[camera] > 1) {
+      auto& kept = pair.cameras[camera];
+      kept.sample.reset(gst_sample_make_writable(kept.sample.release()));
+      GstCaps* caps = gst_caps_copy(gst_sample_get_caps(kept.sample.get()));
+      gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, impl.rates.fps_n, impl.rates.fps_d, nullptr);
+      gst_sample_set_caps(kept.sample.get(), caps);
+      gst_caps_unref(caps);
+      kept.info.fps_n = impl.rates.fps_n;
+      kept.info.fps_d = impl.rates.fps_d;
+    }
   }
-  const auto time = impl.Time(impl.next[0]), next_time = impl.Time(impl.next[0] + 1);
+  const auto time = impl.Time(impl.next[0]), next_time = impl.Time(impl.next[0] + impl.rates.step[0]);
   if (!time.ok())
     return impl.Retire(time.status());
   if (!next_time.ok())
@@ -157,8 +204,8 @@ absl::StatusOr<std::optional<VaStereoFrame>> VaStereoVideo::Read() {
   pair.sequence = impl.sequence++;
   pair.time = *time;
   pair.duration = *next_time - *time;
-  for (auto& next : impl.next)
-    ++next;
+  for (size_t camera = 0; camera < 2; ++camera)
+    impl.next[camera] += impl.rates.step[camera];
   return std::optional<VaStereoFrame>(std::move(pair));
 }
 void VaStereoVideo::Cancel() noexcept {

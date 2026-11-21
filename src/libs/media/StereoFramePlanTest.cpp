@@ -34,6 +34,16 @@ int main() {
         }
       }
     }
+    for (const bool fast_left : {false, true}) {
+      const auto rates =
+          hm::media::ResolveStereoFrameRates(fast_left ? 60000 : 30000, 1001, fast_left ? 30000 : 60000, 1001);
+      Check(
+          rates.ok() && rates->step[fast_left ? 0 : 1] == 2 && rates->step[fast_left ? 1 : 0] == 1 &&
+              rates->fps_n == 30000 && rates->fps_d == 1001,
+          "NTSC camera clock or stride is wrong");
+    }
+    Check(!hm::media::ResolveStereoFrameRates(50, 1, 30, 1).ok(), "Fractional ratio would drift");
+    Check(!hm::media::ResolveStereoFrameRates(60, 1, 30000, 1001).ok(), "Near-integer ratio would drift");
     auto tie = hm::media::PlanStereoFrames(0, .5, 0, 30, 1);
     Check(tie.ok() && tie->left_frame == 1 && tie->right_frame == 0, "Positive half-frame tie changed");
     tie = hm::media::PlanStereoFrames(0, 0, .5, 30, 1);
