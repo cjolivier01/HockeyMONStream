@@ -29,6 +29,12 @@ class HuginProject {
   // Reads only a stable regular file, allocating its actual size within the cap.
   static absl::StatusOr<std::string> ReadProject(const std::filesystem::path& path);
 
+  // Legacy remaps address pixels of their representative PNGs. Inspect only
+  // the 33-byte PNG headers so this also works during saved-preview admission.
+  static std::optional<StitchSourceSizes> ReadSourceImageSizes(const std::filesystem::path& artifact_directory);
+
+  static absl::Status CheckSavedRecordingGeometry(const std::filesystem::path& game, const YAML::Node& config);
+
   class ArtifactLock {
    public:
     ~ArtifactLock();

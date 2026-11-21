@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "hstream/src/libs/common/StatusMacros.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/RinkMaskFrameTime.h"
 #include "hstream/src/libs/stitching/StitchingReframe.h"
@@ -402,15 +403,23 @@ absl::StatusOr<StitchingCalibrationPlan> PrepareStitchingCalibrationControlsLock
     c.canvas_required = canvas_required;
     c.canvas_cleanup = canvas_cleanup;
     c.force = force;
-    c.sources = sources_changed;
+    // Earlier releases resized the second calibration input to the first camera's
+    // dimensions. Retire those image-space inputs while preserving audio synchronization.
+    const bool resized_inputs = !HuginProject::CheckSavedRecordingGeometry(game, desired_effective).ok();
+    c.sources = sources_changed || resized_inputs;
     YAML::Node staged = YAML::Clone(desired_private);
     YAML::Node effective = YAML::Clone(desired_effective);
-    const bool release_selection = saved.frame_count != desired.frame_count || sources_changed;
+    const bool release_selection = saved.frame_count != desired.frame_count || c.sources;
     for (auto* config : {&staged, &effective}) {
       HM_ASSIGN_OR_RETURN(
           plan.retain_selected_frames,
           ApplyStitchingCalibrationInputEdits(before, desired, force, sources_changed, *config));
+      if (resized_inputs) {
+        release_inputs(*config, true, true, false);
+        plan.retain_selected_frames = false;
+      }
     }
+    sources_changed = c.sources;
     const auto review = at(staged, {"hstream_ui", "stitching_calibration", "review_pending"});
     const bool review_requested = desired.backend == "nona" && review.IsScalar() && review.as<bool>() &&
         (at(effective, {"hstream_ui", "show_leveling_dialog"}).as<bool>() ||

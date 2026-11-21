@@ -140,6 +140,8 @@ Snapshot configuration_snapshot_locked(const Request& request) {
 Snapshot snapshot_locked(const Request& request) {
   auto result = configuration_snapshot_locked(request);
   const auto projection_name = result.effective["stitching"]["projection"].as<std::string>();
+  const auto geometry = rink::HuginProject::CheckSavedRecordingGeometry(request.game, result.effective);
+  require(geometry.ok(), std::string(geometry.message()));
   const auto camera = take(rink::read_stitch_camera_selection(result.effective));
   const auto error = ProjectionCropDialog::savedCalibrationPreviewError(
       text(request.game.string()), result.framing, text(projection_name), result.parameters, camera);

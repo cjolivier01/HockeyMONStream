@@ -39,6 +39,9 @@ absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(std:
 }
 
 absl::Status CheckStitchSourceSizes(const std::optional<StitchSourceSizes>& expected, const StitchSourceSizes& actual) {
+  if (!expected && actual[0] != actual[1])
+    return absl::FailedPreconditionError(
+        "Mixed camera resolutions require verifiable source dimensions. Recalibrate stitching.");
   if (expected) {
     for (size_t i = 0; i < actual.size(); ++i) {
       const auto& calibrated = (*expected)[i];
