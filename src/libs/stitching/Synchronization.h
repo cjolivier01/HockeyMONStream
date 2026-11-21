@@ -6,6 +6,12 @@
 #include "absl/status/statusor.h"
 
 namespace hm::stitching {
+struct CameraTrackFormat {
+  int width, height, fps_n, fps_d;
+  bool constant_rate;
+};
+absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file);
+
 struct CameraChapterSlice {
   std::string file;
   double start_seconds, duration_seconds;

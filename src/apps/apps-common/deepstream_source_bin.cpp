@@ -126,6 +126,7 @@ struct UriListPadProbeData {
   GstClockTime base;
   gboolean is_video;
   GstClockTime initial_offset;
+  GstClockTime native_interval;
 };
 
 struct UriPlaylistMainContextCallback {
@@ -330,8 +331,10 @@ static GstPadProbeReturn trim_initial_uri_playlist_buffer(
   if (probe_data->is_video && (!GST_CLOCK_TIME_IS_VALID(duration) || duration == 0) && probe_data->bin &&
       probe_data->bin->config && probe_data->bin->config->camera_fps_n > 0 &&
       probe_data->bin->config->camera_fps_d > 0) {
-    duration =
-        gst_util_uint64_scale(GST_SECOND, probe_data->bin->config->camera_fps_d, probe_data->bin->config->camera_fps_n);
+    duration = probe_data->native_interval
+        ? probe_data->native_interval
+        : gst_util_uint64_scale(
+              GST_SECOND, probe_data->bin->config->camera_fps_d, probe_data->bin->config->camera_fps_n);
   }
   if (!GST_CLOCK_TIME_IS_VALID(duration) || duration == 0) {
     return fail_uri_playlist_initial_positioning(probe_data->bin, "decoded buffer has no valid duration");
@@ -406,7 +409,8 @@ static gboolean uri_playlist_terminal_locked(const NvDsSrcBin* bin) {
 
 static void advance_uri_playlist_base_locked(NvDsSrcBin* bin) {
   GstClockTime stop = bin->uri_list_segment_stop;
-  if (stop == GST_CLOCK_TIME_NONE && GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
+  if ((stop == GST_CLOCK_TIME_NONE || (bin->config && bin->config->frame_decimation)) &&
+      GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_pts)) {
     stop = bin->uri_list_last_pts;
     if (GST_CLOCK_TIME_IS_VALID(bin->uri_list_last_duration)) {
       stop += bin->uri_list_last_duration;
@@ -2087,6 +2091,18 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
     const gboolean drain_terminal_audio = !probe_data->is_video && terminal && bin->uri_terminal_audio_drain_pending;
     const gboolean is_current_uri = probe_data->uri_index == bin->uri_list_index;
     const guint64 decoded_sequence = bin->uri_list_decoded_frame_count;
+    const int step = bin->config ? bin->config->frame_decimation : 0;
+    const auto native_duration = buf && GST_CLOCK_TIME_IS_VALID(GST_BUFFER_DURATION(buf)) && GST_BUFFER_DURATION(buf)
+        ? GST_BUFFER_DURATION(buf)
+        : probe_data->native_interval;
+    if (probe_data->is_video && is_current_uri && !terminal && step > 1 &&
+        (decoded_sequence + bin->uri_list_decimation_drops) % step != 0) {
+      ++bin->uri_list_decimation_drops;
+      bin->uri_list_last_pts = raw_buffer_pts;
+      bin->uri_list_last_duration = native_duration;
+      g_mutex_unlock(mutex);
+      return GST_PAD_PROBE_DROP;
+    }
     g_mutex_unlock(mutex);
     if (!probe_data->is_video && terminal && !drain_terminal_audio) {
       return GST_PAD_PROBE_DROP;
@@ -2150,7 +2166,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         return GST_PAD_PROBE_DROP;
       }
       GstClockTime video_duration = GST_BUFFER_DURATION(buf);
-      if ((!GST_CLOCK_TIME_IS_VALID(video_duration) || video_duration == 0) && bin->config &&
+      if ((step > 1 || !GST_CLOCK_TIME_IS_VALID(video_duration) || video_duration == 0) && bin->config &&
           bin->config->camera_fps_n > 0 && bin->config->camera_fps_d > 0) {
         video_duration = gst_util_uint64_scale(GST_SECOND, bin->config->camera_fps_d, bin->config->camera_fps_n);
       }
@@ -2179,7 +2195,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         // Keep raw chapter-local timestamps for the next chapter's accumulated base. Output timestamps may have
         // already been rebased to the startup epoch above.
         bin->uri_list_last_pts = raw_buffer_pts;
-        bin->uri_list_last_duration = GST_BUFFER_DURATION(buf);
+        bin->uri_list_last_duration = step > 1 ? native_duration : GST_BUFFER_DURATION(buf);
       }
       ++bin->uri_list_decoded_frame_count;
       g_mutex_unlock(mutex);
@@ -2217,6 +2233,33 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       if (!gst_structure_get_int(format, "width", &width) || !gst_structure_get_int(format, "height", &height) ||
           width != bin->config->stitch_input_width || height != bin->config->stitch_input_height)
         return fail_uri_playlist_initial_positioning(bin, "decoded camera dimensions differ from the recording header");
+    }
+    if (probe_data->is_video && bin->config && bin->config->frame_decimation > 0 &&
+        GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+      GstCaps* caps = nullptr;
+      gst_event_parse_caps(event, &caps);
+      gint n = 0, d = 0, delivered_n = 0, delivered_d = 0;
+      const auto& config = *bin->config;
+      if (!caps || !gst_structure_get_fraction(gst_caps_get_structure(caps, 0), "framerate", &n, &d) || n <= 0 ||
+          d <= 0 || !gst_util_fraction_multiply(n, d, 1, config.frame_decimation, &delivered_n, &delivered_d) ||
+          int64_t(delivered_n) * config.camera_fps_d != int64_t(config.camera_fps_n) * delivered_d) {
+        cancel_uri_playlist_source(bin, TRUE);
+        GST_ELEMENT_ERROR(
+            bin->src_elem,
+            STREAM,
+            FORMAT,
+            ("Decoded camera rate differs from the prepared stereo rate"),
+            ("source=%u native=%d/%d", bin->source_id, n, d));
+        return GST_PAD_PROBE_DROP;
+      }
+      probe_data->native_interval = gst_util_uint64_scale(GST_SECOND, d, n);
+      GstCaps* delivered = gst_caps_copy(caps);
+      gst_caps_set_simple(delivered, "framerate", GST_TYPE_FRACTION, delivered_n, delivered_d, nullptr);
+      GstEvent* updated = gst_event_new_caps(delivered);
+      gst_caps_unref(delivered);
+      gst_event_set_seqnum(updated, gst_event_get_seqnum(event));
+      gst_event_unref(event);
+      GST_PAD_PROBE_INFO_DATA(info) = event = updated;
     }
     if (uri_playlist_initial_positioning_enabled(bin) && probe_data->uri_index == bin->uri_playlist_initial_uri_index &&
         GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
@@ -2691,7 +2734,8 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
 
       gst_structure_get_int(str, "width", &config->camera_width);
       gst_structure_get_int(str, "height", &config->camera_height);
-      gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
+      if (!config->frame_decimation)
+        gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }
@@ -2945,6 +2989,7 @@ static void init_uri_playlist(NvDsSrcBin* bin, NvDsSourceConfig* config) {
   bin->uri_switch_pending = FALSE;
   bin->uri_list_reader_retired = FALSE;
   bin->uri_list_retire_started_us = 0;
+  bin->uri_list_decimation_drops = 0;
   bin->uri_list_decoded_frame_count = 0;
   bin->uri_list_released_video_end = GST_CLOCK_TIME_NONE;
   bin->uri_list_mux_delivered_sequence = G_MAXUINT64;
@@ -3463,7 +3508,8 @@ static void cb_newpad2(GstElement* decodebin, GstPad* pad, gpointer data) {
 
       gst_structure_get_int(str, "width", &config->camera_width);
       gst_structure_get_int(str, "height", &config->camera_height);
-      gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
+      if (!config->frame_decimation)
+        gst_structure_get_fraction(str, "framerate", &config->camera_fps_n, &config->camera_fps_d);
 
       GST_CAT_DEBUG(NVDS_APP, "Decodebin linked to pipeline");
     }

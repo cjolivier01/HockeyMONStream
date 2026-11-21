@@ -317,11 +317,11 @@ bool make_synthetic_mp4(
     int hue_degrees,
     int audio_frequency,
     bool hevc_main10 = false,
-    double audio_tail = 0) {
+    double audio_tail = 0,
+    const char* size = "256x144",
+    int fps = 15) {
   std::stringstream cmd;
-  cmd << "ffmpeg -hide_banner -loglevel error -y "
-      << "-f lavfi -i "
-      << "'testsrc2=size=256x144:rate=15";
+  cmd << "ffmpeg -hide_banner -loglevel error -y " << "-f lavfi -i " << "'testsrc2=size=" << size << ":rate=" << fps;
   if (audio_tail > 0)
     cmd << ":duration=" << seconds;
   cmd << ",format=yuv420p,hue=h=" << hue_degrees << "' ";
@@ -1218,10 +1218,18 @@ int run_decode_compose_encode(
     const std::vector<std::string>& left_uris,
     const std::vector<std::string>& right_uris,
     GstClockTime start_time = 0,
-    guint64 expected_frames = 45) {
+    guint64 expected_frames = 45,
+    int fast_camera = -1) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1);
+  if (fast_camera >= 0) {
+    for (int i = 0; i < 2; ++i) {
+      configs[i].frame_decimation = i == fast_camera ? 2 : 1;
+      configs[i].camera_fps_n = 15;
+      configs[i].camera_fps_d = 1;
+    }
+  }
 
   NvDsSrcParentBin src_parent{};
   if (!create_multi_source_bin(2, configs, &src_parent)) {
@@ -1332,6 +1340,14 @@ int run_decode_compose_encode(
     return 7;
   }
   const double minimum_end = static_cast<double>(expected_frames) / 15.0 - 0.1;
+  if (fast_camera >= 0 &&
+      !run_shell(
+          "ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate "
+          "-of default=nw=1:nk=1 " +
+          shell_quote(out) + " | grep -qx 15/1")) {
+    std::cerr << "Mixed camera archive did not retain the 15 fps output rate\n";
+    return 8;
+  }
   rc = expect_encoded_file(out, /*expect_audio=*/true, minimum_end, minimum_end);
   if (rc != 0 || !start_time) {
     return rc;
@@ -1768,9 +1784,10 @@ int main(int argc, char** argv) {
   }
   if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
     return run_headless_render_video_sink();
+  const bool mixed_only = argc == 2 && std::string(argv[1]) == "--mixed-sources-only";
   const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
   const bool startup_seek_only = argc == 2 && std::string(argv[1]) == "--startup-seek-only";
-  if (!decoder_matrix_only && !startup_seek_only) {
+  if (!decoder_matrix_only && !startup_seek_only && !mixed_only) {
     if (const int rc = run_realtime_render_tests())
       return rc;
   }
@@ -1782,6 +1799,22 @@ int main(int argc, char** argv) {
   fs::create_directories(tmpdir);
 
   const fs::path a0 = tmpdir / "left_0.mp4";
+  if (mixed_only || (!decoder_matrix_only && !startup_seek_only)) {
+    const auto fast = tmpdir / "fast.mp4";
+    if (!make_synthetic_mp4(a0, 1, 0, 440) || !make_synthetic_mp4(fast, 1, 90, 660, false, 0, "192x96", 30))
+      return 1;
+    for (int fast_camera = 0; fast_camera < 2; ++fast_camera) {
+      const std::vector<std::string> fast_files(2, to_file_uri(fast)), slow_files(2, to_file_uri(a0));
+      const int result = run_decode_compose_encode(
+          tmpdir, fast_camera ? slow_files : fast_files, fast_camera ? fast_files : slow_files, 0, 30, fast_camera);
+      if (result)
+        return result;
+    }
+    if (mixed_only) {
+      fs::remove_all(tmpdir);
+      return 0;
+    }
+  }
   const fs::path a1 = tmpdir / "left_1.mp4";
   const fs::path a2 = tmpdir / "left_2.mp4";
   const fs::path a_long = tmpdir / "left_two_seconds.mp4";
@@ -1971,7 +2004,7 @@ int main(int argc, char** argv) {
       left_uris,
       right_uris,
       /*include_right_uri_list=*/true,
-      /*audio_source_id=*/0,
+      /*audio_source_id=*/1,
       /*audio_sleep_time_us=*/0,
       /*expected_failure=*/ExpectedPipelineFailure::kNone,
       /*video_sleep_time_us=*/0,

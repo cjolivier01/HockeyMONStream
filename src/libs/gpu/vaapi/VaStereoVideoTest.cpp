@@ -132,6 +132,39 @@ int main(int argc, char** argv) {
     }
     Check(!Take(rational->Read()), "Shorter right camera did not end the pair");
     Check(rational->duration() == 875 * GST_SECOND / 3000, "Right-limited duration used a chapter clock");
+    const auto fast = root.path / "fast.mp4";
+    hm::media::test::Ffmpeg(
+        {"-f",
+         "lavfi",
+         "-i",
+         "color=c=white:s=192x96:r=50",
+         "-frames:v",
+         "9",
+         "-c:v",
+         "libx264",
+         "-pix_fmt",
+         "yuv420p",
+         fast.string()});
+    for (size_t fast_camera = 0; fast_camera < 2; ++fast_camera) {
+      auto mixed = config;
+      mixed.chapters[fast_camera] = {fast, fast};
+      mixed.chapters[1 - fast_camera] = {black, black};
+      mixed.frame_offsets = {};
+      mixed.frame_offsets[fast_camera] = 1;
+      auto decimated = Take(hm::gpu::VaStereoVideo::Create(mixed, {}));
+      Status(decimated->Seek(0));
+      for (uint64_t i = 0; i < 9; ++i) {
+        const auto frame = Take(decimated->Read());
+        Check(
+            frame && frame->time == i * 40 * GST_MSECOND && frame->duration == 40 * GST_MSECOND &&
+                frame->source_indices[fast_camera] == 1 + 2 * i && frame->source_indices[1 - fast_camera] == i &&
+                frame->cameras[fast_camera].info.fps_n == 25 && frame->cameras[fast_camera].info.width == 192,
+            "Decimated camera lost phase, geometry, or delivered rate");
+      }
+      Check(!Take(decimated->Read()), "Unpaired mixed-rate tail escaped");
+      Status(decimated->Seek(200 * GST_MSECOND));
+      Check(Take(decimated->Read())->source_indices[fast_camera] == 11, "Mixed-rate seek lost trim phase");
+    }
     source = Take(hm::gpu::VaStereoVideo::Create(config, {}));
     Status(source->Seek(0));
     // Mutate only this test's second source chapter. A partial seek must retire
