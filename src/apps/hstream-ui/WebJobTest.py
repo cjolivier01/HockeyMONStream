@@ -862,6 +862,7 @@ def main():
     assert "calibration-complete" in capabilities["operations"]
     assert "calibration-still-read" in capabilities["operations"]
     assert "saved-calibration-still-v1" in capabilities["features"]
+    assert "saved-calibration-source-geometry-v1" in capabilities["features"]
     assert "experiment-optics-filtering-v1" in capabilities["features"]
     assert "experiment-promotion-review-v1" in capabilities["features"]
     assert "highlight-pinned-archive-v1" in capabilities["features"]

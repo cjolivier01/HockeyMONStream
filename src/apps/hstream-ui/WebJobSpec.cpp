@@ -163,6 +163,7 @@ QJsonObject Capabilities() {
            "camera-save-cancel-v1",
            "saved-calibration-view-v1",
            "saved-calibration-still-v1",
+           "saved-calibration-source-geometry-v1",
            "saved-calibration-reset-v1",
            "calibration-view-rotation-stage-v1",
            "calibration-controls-stage-v1",
