@@ -97,7 +97,6 @@ int main(int argc, char** argv) {
     int frames, out_width, out_height;
     double left_start, right_start;
     std::array<double, 2> frame_offsets{};
-    GstClockTime configured_start{};
     std::vector<std::filesystem::path> left_files, right_files;
     YAML::Node camera;
     hm::detection::DetectorConfig config;
@@ -128,7 +127,6 @@ int main(int argc, char** argv) {
       left_files = launch.chapters[0];
       right_files = launch.chapters[1];
       left_start = right_start = std::stod(argv[4]);
-      configured_start = static_cast<GstClockTime>(left_start * GST_SECOND);
       frame_offsets = launch.frame_offsets;
       config = {
           detector.onnx,
@@ -220,7 +218,7 @@ int main(int argc, char** argv) {
            {left_files, right_files},
            frame_offsets},
           {}));
-      Status(stereo->Seek(configured_start));
+      Status(stereo->Seek(left_seek));
     } else {
       left = OpenPlaylist(settings, left_files, left_seek);
       right = OpenPlaylist(settings, right_files, right_seek);
@@ -328,7 +326,7 @@ int main(int argc, char** argv) {
           absl::IsFailedPrecondition(processor->Render(output_frame.get(), out_info, render)),
           "Reset retained a stale panorama");
       if (stereo) {
-        Status(stereo->Seek(configured_start));
+        Status(stereo->Seek(left_seek));
       } else {
         Status(left->Seek(left_seek));
         Status(right->Seek(right_seek));
