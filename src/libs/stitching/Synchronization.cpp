@@ -6,6 +6,7 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <string_view>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -262,7 +263,11 @@ absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
     const double local = std::max(0.0, start_seconds - skipped);
     const double take = std::min(duration - local, duration_seconds - result.duration_seconds);
     const double origin = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time * av_q2d(stream->time_base);
-    result.chapters.push_back({file, local, take, origin});
+    const bool matroska = std::string_view(input.format->iformat->name).find("matroska") != std::string_view::npos;
+    const double container_origin = matroska && input.format->start_time != AV_NOPTS_VALUE
+        ? static_cast<double>(input.format->start_time) / AV_TIME_BASE
+        : 0;
+    result.chapters.push_back({file, local, take, origin, container_origin});
     result.duration_seconds += take;
     if (result.duration_seconds >= duration_seconds)
       break;

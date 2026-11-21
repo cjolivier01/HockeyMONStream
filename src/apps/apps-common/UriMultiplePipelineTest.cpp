@@ -125,6 +125,7 @@ struct MuxBatchStats {
   // The mixed fixture repeats one-second chapters on a 15 fps delivered clock.
   std::optional<guint64> mixed_first_index;
   bool mixed_timeline_valid{true};
+  GstClockTime physical_tick{1};
   std::array<GstClockTime, 2> movie_origins{};
   std::map<guint, guint64> frames_by_source;
   std::map<guint, guint64> next_decoded_sequence_by_source;
@@ -311,7 +312,8 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
         const auto physical = stats->movie_origins.at(frame_meta->source_id) +
             gst_util_uint64_scale((*stats->mixed_first_index + sequence) % 15, GST_SECOND, 15);
         const auto logical = gst_util_uint64_scale(sequence, GST_SECOND, 15);
-        stats->mixed_timeline_valid &= std::abs(int64_t(decoded_sequence->source_pts) - int64_t(physical)) <= 1 &&
+        stats->mixed_timeline_valid &=
+            std::abs(int64_t(decoded_sequence->source_pts) - int64_t(physical)) <= int64_t(stats->physical_tick) &&
             std::abs(int64_t(frame_meta->buf_pts) - int64_t(logical)) <= 2;
       }
       ++stats->next_decoded_sequence_by_source[frame_meta->source_id];
@@ -1266,7 +1268,8 @@ int run_decode_compose_encode(
     guint64 expected_frames = 45,
     int fast_camera = -1,
     bool expect_bad_clock = false,
-    GstClockTime fast_origin = 0) {
+    GstClockTime fast_origin = 0,
+    GstClockTime fast_tick = 1) {
   NvDsSourceConfig configs[2]{};
   configure_uri_multiple_source(configs[0], left_uris, /*source_id=*/0);
   configure_uri_multiple_source(configs[1], right_uris, /*source_id=*/1);
@@ -1276,6 +1279,7 @@ int run_decode_compose_encode(
       configs[i].stitch_input_height = i == fast_camera ? 96 : 144;
       configs[i].video_format = g_strdup("RGBA");
       configs[i].frame_decimation = i == fast_camera ? 2 : 1;
+      configs[i].frame_clock_tick_ns = i == fast_camera ? fast_tick : 1;
       configs[i].camera_fps_n = 15;
       configs[i].camera_fps_d = 1;
     }
@@ -1374,6 +1378,7 @@ int run_decode_compose_encode(
   MuxBatchStats pairs{};
   if (fast_camera >= 0) {
     pairs.movie_origins.at(fast_camera) = fast_origin;
+    pairs.physical_tick = fast_tick;
     pairs.mixed_first_index = gst_util_uint64_scale_ceil(start_time, 15, GST_SECOND);
     auto* mux_src = gst_element_get_static_pad(src_parent.streammux, "src");
     gst_pad_add_probe(mux_src, GST_PAD_PROBE_TYPE_BUFFER, inspect_mux_batches_probe, &pairs, nullptr);
@@ -1966,6 +1971,22 @@ int main(int argc, char** argv) {
             0,
             false,
             200 * GST_MSECOND))
+      return result;
+    const auto offset_mkv = tmpdir / "offset.mkv";
+    if (!run_shell(
+            "ffmpeg -v error -y -i " + shell_quote(fast) + " -map 0:v:0 -c:v copy -output_ts_offset 2 " +
+            shell_quote(offset_mkv)))
+      return 1;
+    if (const auto result = run_decode_compose_encode(
+            tmpdir,
+            std::vector<std::string>(2, to_file_uri(a0)),
+            std::vector<std::string>(2, to_file_uri(offset_mkv)),
+            20 * GST_MSECOND,
+            29,
+            1,
+            false,
+            2 * GST_SECOND,
+            GST_MSECOND))
       return result;
     // Introduce a half-frame PTS excursion on an odd (decimated) fast picture.
     const auto variable = tmpdir / "irregular.mp4";
