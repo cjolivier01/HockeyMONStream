@@ -26,6 +26,7 @@
 #include <vector>
 
 #include <cuda_runtime_api.h>
+#include <nvbufsurface.h>
 #include <gst/audio/audio.h>
 #include <gst/pbutils/pbutils.h>
 #include <gst/rtp/gstrtcpbuffer.h>
@@ -2208,7 +2209,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
   }
   if ((info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) != 0) {
     GstEvent* event = GST_EVENT(info->data);
-    if (probe_data->is_video && bin->config->stitch_input_width && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+    if (probe_data->is_video && bin->config && bin->config->stitch_input_width && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
       GstCaps* caps = nullptr;
       gst_event_parse_caps(event, &caps);
       gint width = 0, height = 0;

@@ -7373,7 +7373,7 @@ absl::Status Configurator::configure_source_bit_depth(
   stitcher_properties["high-bit-depth"] = high_bit_depth ? 1 : 0;
   for (const char* name : {"source0", "source1"}) {
     auto source = static_cast<const YAML::Node&>(pipeline)[name];
-    if (source.IsMap() && get_node_value<int>(source, "stitch-input-width", 0) > 0)
+    if (source.IsDefined() && source.IsMap() && get_node_value<int>(source, "stitch-input-width", 0) > 0)
       source["video-format"] = high_bit_depth ? "RGB10A2_LE" : "RGBA";
   }
   for (auto entry : pipeline) {
