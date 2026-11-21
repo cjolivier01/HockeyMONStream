@@ -220,6 +220,27 @@ materialize the missing PNG bundle; opening the inspector never does that work.
 most the last 1 MiB; the complete log stays with that candidate on disk. Both the live log and retained-output
 viewer render terminal colors through the shared `AnsiLogFormat` helper; saved logs keep their original escapes.
 
+A running batch does not lock the candidate list. You can keep moving through the rows, inspect the frames of
+candidates that already finished, read their runner logs and see their saved stills while another candidate
+calibrates, and the batch never moves your selection — the running row is the one reading `Calibrating…` or
+`Scanning players…`. Add options to batch, Start batch, Remove selected, Discard experiments, Play selected and
+Use selected in main Program stay disabled, and so does **Edit matches…** inside the desktop inspector.
+**View runner log** sits on the Workflow tab, which is also where a running batch opens; selecting a finished
+candidate switches to Stitched preview to show its still, so getting back to the log means clicking Workflow
+again.
+
+**Inspect calibration frames** reads the candidate's own game directory under that game's config transaction lock,
+and that lock waits. So inspection is unavailable for any workspace this dialog may still be writing: the running
+candidate, rows still queued, the baseline or selection owner that a queued or running candidate scans and copies
+frames in, anything covered by a preparation or publication worker, and every row while a candidate is playing,
+because the inspector can start match editing. The main calibration is fenced for the length of a batch too: its
+workspace is the selected game, which another `hstream` process can hold. The button says so when the selected row
+is one of them. Player-rich selection is on by default, and above one frame per calibration it builds a matrix as
+baseline, then selection owner, then variants that name both — so those first two rows stay fenced from the start
+of a batch until its last variant retires, while the variants open up as they finish. The saved still reads the same directory, but it takes
+only nonblocking locks, never waits on one, and decodes off the UI thread. It follows the same fence anyway, so a
+half-written candidate is not shown.
+
 If Hugin rejects an automatic calibration because its control-point RMS is too large, the error suggests enabling
 any disabled **Epipolar RANSAC** or **Homography consistency check** controls under **Advanced geometric filtering**.
 Add a new candidate with those settings and start the batch. The suggestion does not change settings or promise

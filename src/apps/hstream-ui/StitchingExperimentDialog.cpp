@@ -135,6 +135,9 @@ void add_image_navigation(QVBoxLayout* layout, CalibrationFrameView* view) {
   layout->addLayout(controls);
 }
 
+// Shared by the Inspect tooltip and its click-time refusal.
+constexpr char kWorkspaceInUseTip[] = "This candidate's workspace is in use; inspect it once that work finishes.";
+
 constexpr char kStitchedPreviewOptions[] =
     "pipeline.streammux.batch-size=2,pipeline.streammux.sync-inputs=0,"
     "pipeline.streammux.batched-push-timeout=2147483647,pipeline.streammux.frame-num-reset-on-stream-reset=0,"
@@ -1048,7 +1051,7 @@ struct StitchingExperimentDialog::Impl {
     const bool previewing = preview_process && preview_process->state() != QProcess::NotRunning;
     // QProcess can finish before the session fence and queued completion have
     // released its workspace. Keep admissions closed through that interval.
-    const bool preview_owned = preview_process || preview_completion_pending || preview_shutdown_ticket.has_value();
+    const bool preview_owned = preview_session_owned();
     const bool promoting = promotion_worker != nullptr || preparation_worker != nullptr;
     const bool stopping = close_after_workflow || pending_group_shutdowns > 0 || candidate_completion_pending ||
         preview_completion_pending;
@@ -1084,7 +1087,10 @@ struct StitchingExperimentDialog::Impl {
     close_button->setText(close_after_workflow ? "Waiting for cleanup…" : "Close");
     close_button->setEnabled(!closing && !close_after_workflow);
     view_tabs->setTabEnabled(0, !closing && !close_after_workflow);
-    table->setEnabled((!active_batch || remote) && !preview_owned && !promoting && !stopping && !closing);
+    // Choosing a row starts nothing but the saved still's bounded read, which
+    // the fence below keeps off a workspace in use. Browsing finished
+    // candidates stays available while the batch calibrates a different one.
+    table->setEnabled(!closing && !close_after_workflow);
     if (workflow) {
       QStringList keys;
       for (const auto& candidate : candidates)
@@ -1096,19 +1102,33 @@ struct StitchingExperimentDialog::Impl {
     const bool managed_view = workflow && !workflow->workflowId().isEmpty();
     log->setVisible(!managed_view || !log->document()->isEmpty());
     log->setMaximumHeight(managed_view ? 130 : QWIDGETSIZE_MAX);
-    preview->setEnabled(
-        selected && !cleanup_unconfirmed && !candidates[row].main_calibration && !active_batch && !preview_owned &&
-        !promoting && !stopping && !closing);
+    preview->setEnabled(can_preview_selected(cleanup_unconfirmed));
     stop_preview->setEnabled(previewing && !closing);
     apply->setEnabled(can_apply_selected() && !closing);
+    const bool selection_busy =
+        row >= 0 && row < static_cast<int>(candidates.size()) && local_work_owns_workspace(candidates[row]);
+    const bool inspectable_row =
+        row >= 0 && row < static_cast<int>(candidates.size()) && candidate_has_inspection(candidates[row]);
     inspect_frames->setEnabled(
-        row >= 0 && row < static_cast<int>(candidates.size()) && candidate_has_inspection(candidates[row]) &&
-        (!active_batch || remote) && !preview_owned && !promoting && !stopping && !closing);
+        inspectable_row && (remote || !workflow_busy) && !selection_busy && !closing && !close_after_workflow);
+    inspect_frames->setToolTip(
+        row < 0                            ? "Select a candidate to inspect the frames it calibrated from."
+            : !inspectable_row             ? "This candidate has no retained calibration frames to inspect."
+            : !inspect_frames->isEnabled() ? kWorkspaceInUseTip
+                                           : "Show the exact camera pairs, source times and matches used by the "
+                                             "selected candidate.");
+    // Retained output is a bounded file read and takes no game locks, so it
+    // stays available for finished rows and for the candidate running now.
+    // Its viewer is application-modal, though, so keep it out of states whose
+    // only way forward is a control it would cover: playback that Stop has to
+    // reach, a forced shutdown, and the workers that close this dialog or
+    // replace its rows underneath.
     view_runner_log->setEnabled(
         row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].workspace &&
         QFileInfo::exists(
             QString::fromStdString((candidates[row].workspace->game_directory / "runner.log").string())) &&
-        !active_batch && !preview_owned && !promoting && !stopping && !closing);
+        !promotion_worker && !preparation_worker && !preview_owned && pending_group_shutdowns == 0 && !closing &&
+        !close_after_workflow);
     if (workflow && workflow->hasSelection())
       view_runner_log->setEnabled(!closing);
     shared_rotation->setEnabled(editing_batch);
@@ -1133,8 +1153,10 @@ struct StitchingExperimentDialog::Impl {
       input->setEnabled(editing_batch);
     progress->setVisible(batch_started);
     if (still_preview) {
-      const bool idle = selected && candidates[row].workspace && !preview_process && !preparation_worker &&
-          !promotion_worker && !active_batch && !stopping && !closing;
+      // The still paints over the preview video widget, so any owned playback
+      // excludes it. A local batch only excludes the workspaces it writes.
+      const bool idle = selected && candidates[row].workspace && !preview_owned && !remote && !workflow_busy &&
+          !selection_busy && !close_after_workflow && !closing;
       still_preview->setSource(
           idle ? QString::fromStdString(candidates[row].workspace->game_directory.string()) : QString(),
           idle && candidates[row].stored ? QString::fromStdString(candidates[row].stored->artifact_generation_id)
@@ -1150,6 +1172,65 @@ struct StitchingExperimentDialog::Impl {
                QString::fromStdString((candidate.workspace->game_directory / "_hockeymon/calibration-frame-inspection" /
                                        candidate.workspace->invalidation_id / "frames.yaml")
                                           .string()));
+  }
+
+  // Inspection opens a candidate's own game directory under that game's config
+  // transaction lock, which waits and recovers interrupted journals. The saved
+  // still reads the same directory with nonblocking locks only. Keep both out
+  // of every workspace this dialog's own work can still write — and only this
+  // dialog's work: a remote workflow or a second hstream process holding that
+  // lock is invisible here, which is why the main calibration is excluded
+  // outright below rather than reasoned about.
+  // Playback this dialog still owns, including the window where the process
+  // has exited but its session fence has not released.
+  bool preview_session_owned() const {
+    return preview_process != nullptr || preview_completion_pending || preview_shutdown_ticket.has_value();
+  }
+
+  bool local_work_owns_workspace(const Candidate& candidate) const {
+    // Workers and shutdown accounting are not narrowed to one workspace. An
+    // owned preview excludes every row, not just the one playing: the inspector
+    // offers match editing, which claims this dialog's whole operation.
+    if (preparation_worker || promotion_worker || candidate_completion_pending || preview_session_owned() ||
+        pending_group_shutdowns > 0)
+      return true;
+    // batch_active spans the whole queue: launch_next_candidate() clears it
+    // with calibration_process when the last candidate retires.
+    if (!batch_active)
+      return false;
+    // Parking the UI thread on a lock would also stall the batch's own output
+    // draining and shutdown timers, and the main calibration's workspace is
+    // the selected game itself — the one directory another hstream process can
+    // be holding without this dialog knowing. Idle inspection still allows it,
+    // as it always has.
+    if (candidate.main_calibration)
+      return true;
+    if (candidate.queued || candidate.row == running_candidate)
+      return true;
+    // Queued and running candidates scan and copy frames inside their baseline
+    // and selection owner, so those workspaces are written too. A zero link is
+    // "no baseline"/"no owner" and names nobody.
+    return std::any_of(candidates.begin(), candidates.end(), [&candidate, this](const Candidate& user) {
+      if (!user.queued && user.row != running_candidate)
+        return false;
+      return (user.baseline_sequence != 0 && user.baseline_sequence == candidate.sequence) ||
+          (user.selection_owner_sequence != 0 && user.selection_owner_sequence == candidate.sequence);
+    });
+  }
+
+  // The one condition both the Play button and start_preview() consult, so a
+  // double-click cannot reach further than the button would. Cleanup is passed
+  // in because local_cleanup_unconfirmed() walks this operation's receipts:
+  // update_controls() already has the answer, and start_preview() lets
+  // claim_local_operation() check and report that case for itself.
+  bool can_preview_selected(bool cleanup_unconfirmed) const {
+    const int row = table->currentRow();
+    return row >= 0 && row < static_cast<int>(candidates.size()) && candidates[row].complete &&
+        !candidates[row].main_calibration && !candidates[row].selection_reuse_blocked && !cleanup_unconfirmed &&
+        !batch_active && !(workflow && (workflow->active() || workflow->busy())) && !promotion_worker &&
+        !preparation_worker && !preview_process && !preview_completion_pending &&
+        !preview_shutdown_ticket.has_value() && pending_group_shutdowns == 0 && !candidate_completion_pending &&
+        !close_after_workflow && !closing;
   }
 
   bool can_apply_selected() const {
@@ -1876,6 +1957,8 @@ struct StitchingExperimentDialog::Impl {
         return;
       const bool replay = preview_replay_pending && !stopping_preview && !closing;
       preview_replay_pending = false;
+      // Loop replays the row that was playing, not whatever is selected now.
+      const int replay_row = preview_candidate_row;
       const bool retained = candidates[preview_candidate_row].selection_reuse_blocked;
       const bool failed_to_start = preview_process && preview_process->error() == QProcess::FailedToStart;
       const auto persisted = persist_preview_process(true);
@@ -1891,7 +1974,7 @@ struct StitchingExperimentDialog::Impl {
         show_status("Preview stopped. The selected calibration is ready to use.");
       update_controls();
       if (replay)
-        start_preview(true);
+        start_preview(replay_row);
       else
         maybe_finish_close();
     });
@@ -2127,7 +2210,7 @@ struct StitchingExperimentDialog::Impl {
         const int edit_row = std::exchange(open_editor_after_row, -1);
         // Matching snapshots remain useful when subsequent geometry failed.
         if (candidate_has_inspection(candidates[edit_row]))
-          QTimer::singleShot(0, dialog, [this, edit_row]() { open_match_editor(edit_row); });
+          QTimer::singleShot(0, dialog, [this, edit_row]() { open_match_editor(edit_row, /*report_refusal=*/false); });
       }
       return;
     }
@@ -2285,8 +2368,10 @@ struct StitchingExperimentDialog::Impl {
       QTimer::singleShot(0, dialog, [this]() { launch_next_candidate(); });
       return;
     }
+    // The row's own status cell and the status line below identify what is
+    // running. Moving the selection would take the table away from whatever
+    // finished candidate the operator is reading.
     table->item(candidate.row, 5)->setText(scanning ? "Scanning players…" : "Calibrating…");
-    table->selectRow(candidate.row);
     progress->setValue(running_candidate);
     show_status(
         QString(scanning ? "Selecting player-rich frames for candidate %1 of %2…" : "Calibrating candidate %1 of %2…")
@@ -3117,8 +3202,17 @@ struct StitchingExperimentDialog::Impl {
     return persisted;
   }
 
-  void start_preview(bool validated = false) {
-    still_preview->setSource({});
+  // A nonnegative validated_row replays one exact row whose artifacts this
+  // dialog already checked. Every other entry re-reads the selection and
+  // validates it: double-clicking a ready row lands here directly, and the
+  // table stays live, so the selection can move under an asynchronous retry.
+  void start_preview(bool) = delete;
+  void start_preview(int validated_row = -1) {
+    const bool validated = validated_row >= 0;
+    // Unconfirmed cleanup is left to claim_local_operation(), which explains
+    // itself; nothing visible changes until the attempt gets that far.
+    if (!validated && !can_preview_selected(/*cleanup_unconfirmed=*/false))
+      return;
     if (!blend_settings_error.isEmpty()) {
       show_status(blend_settings_error, true);
       return;
@@ -3129,13 +3223,14 @@ struct StitchingExperimentDialog::Impl {
     }
     if (preview_process && preview_process->state() != QProcess::NotRunning)
       return;
-    const int row = table->currentRow();
+    const int row = validated ? validated_row : table->currentRow();
     if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidates[row].complete ||
         candidates[row].main_calibration || preparation_worker)
       return;
-    view_tabs->setCurrentIndex(0);
     if (!claim_local_operation())
       return;
+    still_preview->setSource({});
+    view_tabs->setCurrentIndex(0);
     if (!validated) {
       const auto workspace = *candidates[row].workspace;
       const std::string expected =
@@ -3164,7 +3259,7 @@ struct StitchingExperimentDialog::Impl {
           table->item(row, 5)->setText(candidates[row].failure);
           show_status(candidates[row].failure, true);
         } else if (!closing)
-          start_preview(true);
+          start_preview(row);
         update_controls();
         maybe_finish_close();
       });
@@ -3351,8 +3446,21 @@ struct StitchingExperimentDialog::Impl {
       std::optional<hm::stitching::CalibrationMatchSet> edited = std::nullopt,
       std::string expected_snapshot = {},
       QPointer<MatchEditorDialog> editor = {}) {
-    if (!store || preparation_worker || batch_active || (workflow && workflow->active()) || closing)
+    // The inspector can now be opened during a batch, and the match editor
+    // keeps running through one that starts after it opened. Both decided to
+    // offer this earlier, so say why rather than doing nothing.
+    if (!store || preparation_worker || batch_active || preview_session_owned() || (workflow && workflow->active()) ||
+        closing) {
+      if (!closing) {
+        const QString reason = !store ? QString("This game has no experiment store to hold another candidate.")
+                                      : QString(edited ? "Saving edited matches" : "Preparing an editable copy") +
+                " needs an idle dialog; retry once the current work finishes.";
+        show_status(reason, true);
+        if (editor)
+          editor->setSaving(false, reason);
+      }
       return;
+    }
     if (!ensure_session()) {
       if (editor)
         editor->setSaving(false, status->text());
@@ -3439,10 +3547,16 @@ struct StitchingExperimentDialog::Impl {
     update_controls();
   }
 
-  void open_match_editor(int row) {
-    if (closing || preparation_worker || batch_active || (workflow && workflow->active()) || row < 0 ||
-        row >= static_cast<int>(candidates.size()) || !candidates[row].workspace)
+  void open_match_editor(int row, bool report_refusal = true) {
+    if (closing || preparation_worker || batch_active || preview_session_owned() || (workflow && workflow->active()) ||
+        row < 0 || row >= static_cast<int>(candidates.size()) || !candidates[row].workspace) {
+      // A batch can start while the inspector is open, after it decided to
+      // offer editing. Report that instead of dismissing it silently.
+      if (report_refusal && !closing && row >= 0 && row < static_cast<int>(candidates.size()) &&
+          candidates[row].workspace)
+        show_status("Match editing needs an idle dialog; retry once the current work finishes.", true);
       return;
+    }
     using MatchSet = hm::stitching::CalibrationMatchSet;
     struct Result {
       absl::Status status;
@@ -3518,6 +3632,12 @@ struct StitchingExperimentDialog::Impl {
     const int row = table->currentRow();
     if (row < 0 || row >= static_cast<int>(candidates.size()) || !candidate_has_inspection(candidates[row]))
       return;
+    // The read below waits for this game's config transaction lock on the UI
+    // thread, so never aim it at a workspace our own work is still writing.
+    if (local_work_owns_workspace(candidates[row])) {
+      show_status(kWorkspaceInUseTip, true);
+      return;
+    }
     auto inspection = InspectStitchingExperimentFrames(*candidates[row].workspace);
     if (!inspection.ok()) {
       show_status(QString::fromStdString(inspection.status().ToString()), true);
