@@ -97,7 +97,9 @@ void SourceCameraProcess::Play() {
   pending_["play"] = status_.playing = true;
 }
 void SourceCameraProcess::Pause() {
-  pending_["play"] = status_.playing = false;
+  // Publish Pause with the worker's matching position. The previous poll can
+  // still describe moving playback when the user leaves the camera tab.
+  pending_["play"] = false;
 }
 void SourceCameraProcess::Seek(qint64 position) {
   pending_["seek"] = status_.position_ms = position;
