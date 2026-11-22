@@ -1,8 +1,11 @@
 # Recovering game ownership
 
-Play remains available while an operation owns the selected game. Clicking it
-opens **Game is busy**, without starting another pipeline. The main toolbar has
-no additional controls. All other conflicting mutations remain disabled.
+When a game is locked, the toolbar shows **Review ownership…** and explains why
+the controls are unavailable. After an interrupted local run, if the recorded
+process cannot be verified, the notice directs the operator to **Force release**
+once they have checked that the work has stopped. Review opens **Game is busy**.
+If cleanup finishes between display and click, Review still opens the dialog.
+The next Play is a separate action.
 
 The desktop dialog reports the operation, ID, host, PID, ownership start, record
 update, boot ID, process start ticks, workflow directory and cancellation intent.
@@ -51,7 +54,7 @@ New owner records use schema 2, adding `started_unix_ms` and
 `process_start_ticks`. Schema 1 remains readable, with unknown start identity.
 Older readers reject schema 2; update cooperating binaries together.
 
-The browser has the same Play entry, recorded details, Refresh and Request stop.
+The browser has the same Review ownership entry, recorded details, Refresh and Request stop.
 Its supervisor stores host, PID, boot, process start and start time where known;
 HTTP reads do not probe hosts or infer liveness. Stop targets the displayed run
 or exact experiment-session revision and preserves backend admission until

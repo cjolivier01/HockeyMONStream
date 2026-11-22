@@ -1,7 +1,10 @@
 #include "hstream/src/libs/common/GameOperationOwner.h"
 #include "hstream/src/libs/media/TestMp4.h"
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include "src/apps/hstream-ui/SupervisedProcess.h"
 #include "src/apps/hstream-ui/ValueControlWheel.h"
+
+#include <csignal>
 
 #include <QtGui/qguiapplication_platform.h>
 #include <xcb/xcb.h>
@@ -201,6 +204,23 @@ int main(int argc, char** argv) {
         "Playing arrow seek did not move backward 10 seconds");
     Check(play1->text() == "Pause camera", "Arrow seek paused a running camera");
     Check(!stop2->isEnabled(), "Second decoder remained owned");
+    // A fatal GPU error exits the worker. Its guard must reap the decoder and
+    // release the recording so the same window can play again.
+    auto* worker = app.findChild<QProcess*>("sourceCameraWorker");
+    Check(worker && hm::ui::SignalSupervisedProcess(*worker, SIGKILL).ok(), "Could not interrupt camera worker");
+    Wait(
+        [&] {
+          const auto owner = hm::game_operation::Inspect(game);
+          return owner.ok() && !owner->has_value() && play1->isEnabled() &&
+              Child<QLabel>(window, "camera1ExternalRenderNotice")->isVisible();
+        },
+        "Camera worker failure left the recording locked or hid the failure");
+    play1->click();
+    Wait(
+        [&] {
+          return play1->text() == "Pause camera" && target->property("sourceCameraPresentedPts").toLongLong() >= 0;
+        },
+        "The camera could not play again after a worker failure");
     // Another graph-building workflow retires the camera before admission.
     Child<QPushButton>(window, "startPipelineButton")->click();
     Check(!Child<QPushButton>(window, "camera1StopButton")->isEnabled(), "Program retained camera pipeline");

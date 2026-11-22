@@ -213,7 +213,8 @@ struct HStreamWindowTestAccess {
     require(
         window.start_button_->isEnabled() && !window.save_preset_button_->isEnabled() &&
             !window.clean_stitching_button_->isEnabled() && window.stitching_experiments_button_->isEnabled() &&
-            window.pipeline_state_->text().contains("remote-test"),
+            window.ownership_notice_->text().contains("Game locked by workflow") &&
+            window.start_button_->text() == "Review ownership…",
         "Remote ownership fences desktop mutations while experiment monitoring remains available");
     QTimer::singleShot(0, [&] {
       auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
@@ -229,8 +230,31 @@ struct HStreamWindowTestAccess {
     window.updateRunControls();
     require(
         window.start_button_->isEnabled() && window.save_preset_button_->isEnabled() &&
+            window.ownership_notice_->isHidden() && window.start_button_->text() == "Play" &&
             !window.pipeline_state_->text().startsWith("BUSY:"),
         "Desktop resumes after confirmed workflow cleanup");
+    auto missing = hm::game_operation::LocalOwner("pipeline", "previous-run", "missing-token");
+    missing.process_id = 2147483647;
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      require(lock.ok() && (*lock)->Claim(missing).ok(), "Claim missing local owner");
+    }
+    window.updateRunControls();
+    require(
+        !window.ownership_notice_->isHidden() && window.ownership_notice_->text().contains("Force release") &&
+            window.start_button_->isEnabled(),
+        "Missing local owner has a visible recovery action");
+    {
+      auto lock = hm::game_operation::Lock::Acquire(game);
+      require(lock.ok() && (*lock)->Release(missing.token, missing.revision, true).ok(), "Release missing fixture");
+    }
+    // The claim disappeared between the last poll and the user's click.
+    QTimer::singleShot(0, [&] {
+      auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
+      require(dialog, "Review still shows the released owner state without starting playback");
+      dialog->reject();
+    });
+    window.start_button_->click();
     require(window.beginGameOperation("pipeline"), "Desktop obtains main game admission");
     {
       auto lock = hm::game_operation::Lock::Acquire(game);

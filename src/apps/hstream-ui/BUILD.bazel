@@ -65,6 +65,8 @@ filegroup(
         "HStreamWindow.h",
         "GameOwnershipDialog.cpp",
         "GameOwnershipDialog.h",
+        "SourceCameraProcess.cpp",
+        "SourceCameraProcess.h",
         "SourceCameraPlayer.cpp",
         "SourceCameraPlayer.h",
         "SourceCameraTrack.cpp",
@@ -1013,8 +1015,8 @@ cc_test(
 
 cc_library(
     name = "hstream_window",
-    srcs = ["HStreamWindow.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
-    hdrs = ["HStreamWindow.h", "Int8PreparationDialog.h", "RinkFramingControls.h", "CameraControlSpecs.h"],
+    srcs = ["HStreamWindow.cpp", "SourceCameraProcess.cpp", "Int8PreparationDialog.cpp", "RinkFramingControls.cpp"],
+    hdrs = ["HStreamWindow.h", "SourceCameraProcess.h", "Int8PreparationDialog.h", "RinkFramingControls.h", "CameraControlSpecs.h"],
     copts = COMMON_COPTS,
     linkopts = ["-lxcb"],
     target_compatible_with = QT_UI_COMPATIBILITY,
@@ -1896,6 +1898,7 @@ cc_library(
 
 cc_test(
     name = "source_camera_playback_test",
+    data = [":hstream-ui"],
     srcs = ["SourceCameraPlaybackTest.cpp"],
     copts = COMMON_COPTS,
     tags = ["manual", "requires-gpu"],

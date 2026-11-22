@@ -46,10 +46,8 @@ QImage Presented(hm::ui::NativePreviewSurface& surface) {
   return image.scaled(surface.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 }
 
-void Compare(const QImage& actual, const QImage& expected) {
+bool Matches(const QImage& actual, const QImage& expected) {
   Check(actual.size() == expected.size(), "Reference frame dimensions differ");
-  if (const char* capture = std::getenv("HSTREAM_TEST_CAMERA_CAPTURE"))
-    Check(actual.save(QString::fromLocal8Bit(capture)), "Cannot save requested test screenshot");
   // Check each vertical strip independently: an overall average can hide stale
   // right-hand slices when most of a recording is stationary ice/background.
   for (int strip = 0; strip < 8; ++strip) {
@@ -78,8 +76,29 @@ void Compare(const QImage& actual, const QImage& expected) {
     Check(samples > 1000, "Too few smooth reference pixels in strip " + std::to_string(strip));
     const double mean = error / (samples * 3);
     std::cout << "strip " << strip << " mean pixel error " << mean << '\n';
-    Check(mean < 4.0, "Camera contains stale or incorrect pixels in strip " + std::to_string(strip));
+    if (mean >= 4.0)
+      return false;
   }
+  return true;
+}
+
+void Compare(hm::ui::NativePreviewSurface& surface, const QImage& expected) {
+  // On PRIME the display GPU can still be scanning out the prior frame when
+  // the rendering GPU acknowledges its swap. Keep the player paused and
+  // sample the native front buffer until the same pixel checks pass.
+  QElapsedTimer timer;
+  timer.start();
+  QImage actual;
+  bool matched;
+  do {
+    actual = Presented(surface);
+    matched = Matches(actual, expected);
+    if (!matched)
+      QThread::msleep(16);
+  } while (!matched && timer.elapsed() < 2000);
+  if (const char* capture = std::getenv("HSTREAM_TEST_CAMERA_CAPTURE"))
+    Check(actual.save(QString::fromLocal8Bit(capture)), "Cannot save requested test screenshot");
+  Check(matched, "Camera still contains stale or incorrect pixels after display scanout");
 }
 } // namespace
 
@@ -161,9 +180,9 @@ int main(int argc, char** argv) {
         return std::abs(status.position_ms - position) < 200 && status.presented_ns >= 0;
       });
       Check(!player.GetStatus().playing, "Paused seek resumed playback");
-      Compare(Presented(surface), expected);
+      Compare(surface, expected);
       Check(player.Redraw(), "Paused seek did not retain its GPU sample");
-      Compare(Presented(surface), expected);
+      Compare(surface, expected);
     }
     player.Play();
     Wait(player, [&](const auto& status) { return status.position_ms > target + 200; });
@@ -173,7 +192,7 @@ int main(int argc, char** argv) {
     player.Pause();
     player.Seek(target);
     Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
-    Compare(Presented(surface), expected);
+    Compare(surface, expected);
     player.Close();
     std::cout << "Full camera pixels match software decoding after repeated and cross-chapter seeks\n";
     return 0;

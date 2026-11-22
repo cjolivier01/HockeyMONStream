@@ -615,6 +615,12 @@ bazelisk build --config=opt --cpu=k8 //src/apps/hstream-ui:source_camera_playbac
 QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/source_camera_playback_test
 ```
 
+Desktop source playback runs the camera graph in a guarded child of the UI.
+The test interrupts that child during playback, checks the visible error and
+game release, then plays the same camera again in the original window. The
+worker and window exchange transport commands and frame timestamps. Video
+presentation still targets the original X11 window directly.
+
 The test generates short chapters in temporary storage and exercises actual GPU
 playback, paused cross-chapter seeking, tab departure, independent positions,
 mutually exclusive decoders and retirement before Program admission. Browser

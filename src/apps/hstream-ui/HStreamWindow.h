@@ -5,7 +5,7 @@
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
 #include "src/apps/hstream-ui/DetectorOptions.h"
-#include "src/apps/hstream-ui/SourceCameraPlayer.h"
+#include "src/apps/hstream-ui/SourceCameraProcess.h"
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -653,6 +653,8 @@ class HStreamWindow : public QMainWindow {
 
   QLabel* backend_mode_{nullptr};
   QLabel* pipeline_state_{nullptr};
+  QLabel* ownership_notice_{nullptr};
+  bool reviewing_ownership_{false};
   QProgressBar* playback_progress_{nullptr};
   QWidget* playback_seek_controls_{nullptr};
   QSlider* playback_seek_slider_{nullptr};
@@ -800,7 +802,7 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_surfaces_;
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
-  std::unique_ptr<hm::ui::SourceCameraPlayer> source_camera_player_;
+  std::unique_ptr<hm::ui::SourceCameraProcess> source_camera_player_;
   int source_camera_index_{-1};
   bool source_camera_available_{false};
   bool source_camera_redraw_pending_{false};
