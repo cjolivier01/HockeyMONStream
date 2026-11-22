@@ -27,7 +27,7 @@ class SourceCameraProcess {
   void Play();
   void Pause();
   void Seek(qint64 position);
-  bool Redraw();
+  void Redraw();
   Status Poll();
   Status GetStatus() const {
     return status_;

@@ -100,15 +100,16 @@ void SourceCameraProcess::Pause() {
   // Publish Pause with the worker's matching position. The previous poll can
   // still describe moving playback when the user leaves the camera tab.
   pending_["play"] = false;
+  // A tab return can clear the surface before the worker acknowledges Pause.
+  Redraw();
 }
 void SourceCameraProcess::Seek(qint64 position) {
   pending_["seek"] = status_.position_ms = position;
   status_.seeking = true;
   status_.presented_ns = -1;
 }
-bool SourceCameraProcess::Redraw() {
+void SourceCameraProcess::Redraw() {
   pending_["redraw"] = true;
-  return true;
 }
 
 SourceCameraProcess::Status SourceCameraProcess::Poll() {
@@ -140,7 +141,7 @@ SourceCameraProcess::Status SourceCameraProcess::Poll() {
     if (process_->error() == QProcess::FailedToStart)
       status_.error = "Could not start camera playback: " + process_->errorString();
     else
-      status_.error = QString("Camera playback stopped unexpectedly (worker exit %1).").arg(process_->exitCode());
+      status_.error = "The camera playback process stopped unexpectedly.";
   } else if (!awaiting_reply_) {
     const auto request = packet(pending_);
     retry_redraw_ = pending_.contains("redraw");

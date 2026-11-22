@@ -147,8 +147,8 @@ int main(int argc, char** argv) {
         },
         "A seek immediately after Pause must display the new frame and keep playback paused");
     QTest::qWait(150);
+    Wait([&] { return HasPicture(PresentedPixels(target)); }, "Paused camera lost its displayed picture");
     const QByteArray paused_pixels = PresentedPixels(target);
-    Check(HasPicture(paused_pixels), "Paused camera lost its displayed picture");
     QTest::qWait(600);
     Check(PresentedPixels(target) == paused_pixels, "Paused polling changed the last displayed frame");
     Check(remaps.shows == 0, "Paused camera polling remapped its video window");
@@ -160,6 +160,17 @@ int main(int argc, char** argv) {
     Check(std::abs(seek1->value() - paused) < 100, "Hidden camera kept advancing");
     tabs->setCurrentIndex(2);
     Wait([&] { return HasPicture(PresentedPixels(target)); }, "Returning to a paused camera lost its last frame");
+    const auto before_resume = target->property("sourceCameraPresentedPts").toLongLong();
+    // The first chapter's audio ends at 3 seconds. Its video continues to 13.
+    play1->click();
+    Wait(
+        [&] { return target->property("sourceCameraPresentedPts").toLongLong() > before_resume + 150000000; },
+        "Camera did not resume before testing a rapid tab return");
+    tabs->setCurrentIndex(0);
+    tabs->setCurrentIndex(2);
+    Wait(
+        [&] { return play1->text() == "Play camera" && HasPicture(PresentedPixels(target)); },
+        "Returning to the camera before Pause was acknowledged left its preview blank");
     seek1->setValue(14200);
     QTest::qWait(500);
     Check(std::abs(seek1->value() - 14200) < 150, "Paused seek did not cross chapters");

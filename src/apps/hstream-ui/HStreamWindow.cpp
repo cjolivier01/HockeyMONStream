@@ -7073,8 +7073,8 @@ void HStreamWindow::pollSourceCamera() {
   source_camera_seek_[camera]->setEnabled(source_camera_available_ && status.ready);
   source_camera_stop_[camera]->setEnabled(true);
   if (source_camera_redraw_pending_ && status.ready && camera_preview_render_targets_[camera]->isVisible()) {
-    if (status.playing || source_camera_player_->Redraw())
-      source_camera_redraw_pending_ = false;
+    source_camera_player_->Redraw();
+    source_camera_redraw_pending_ = false;
   }
 }
 
