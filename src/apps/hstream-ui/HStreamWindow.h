@@ -241,7 +241,7 @@ class HStreamWindow : public QMainWindow {
   void applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const;
 
   void startPipeline();
-  void playSourceCamera(int camera, bool play, std::optional<qint64> seek = {});
+  void playSourceCamera(int camera, std::optional<qint64> seek = {});
   void stopSourceCamera();
   void pollSourceCamera();
   void updateSourceCameraControls(bool available);
@@ -849,6 +849,7 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_completion_proof_pending_{false};
   bool archive_completion_proof_pending_{false};
   qint64 operation_retirement_started_ms_{0};
+  bool operation_retirement_proof_unavailable_{false};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};

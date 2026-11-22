@@ -139,7 +139,13 @@ int main(int argc, char** argv) {
     QTest::qWait(600);
     Check(remaps.shows == 0, "Camera polling remapped the video window during playback");
     play1->click();
-    Wait([&] { return play1->text() == "Play camera"; }, "Camera did not pause");
+    seek1->setValue(3000);
+    Wait(
+        [&] {
+          return play1->text() == "Play camera" &&
+              std::abs(target->property("sourceCameraPresentedPts").toLongLong() - 3000000000LL) < 150000000;
+        },
+        "A seek immediately after Pause must display the new frame and keep playback paused");
     QTest::qWait(150);
     const QByteArray paused_pixels = PresentedPixels(target);
     Check(HasPicture(paused_pixels), "Paused camera lost its displayed picture");
@@ -221,6 +227,34 @@ int main(int argc, char** argv) {
           return play1->text() == "Pause camera" && target->property("sourceCameraPresentedPts").toLongLong() >= 0;
         },
         "The camera could not play again after a worker failure");
+    // Withhold this test run's exact receipt after the guard has exited. The
+    // window must keep its claim until proof is available, and explain recovery.
+    worker = app.findChild<QProcess*>("sourceCameraWorker");
+    Check(worker, "Missing restarted worker");
+    const auto args = worker->arguments();
+    const auto index = args.indexOf("--receipt");
+    Check(index >= 0 && index + 1 < args.size(), "Missing test guard receipt path");
+    const QString receipt = args[index + 1];
+    worker->closeWriteChannel();
+    Check(worker->waitForFinished(10000), "Test guard did not finish");
+    Check(QFile::rename(receipt, receipt + ".withheld"), "Could not withhold test receipt");
+    auto* main_action = Child<QPushButton>(window, "startPipelineButton");
+    auto* notice = Child<QLabel>(window, "gameOwnershipNotice");
+    Wait(
+        [&] { return main_action->text() == "Review ownership…" && notice->isVisible(); },
+        "Missing camera proof did not expose ownership recovery");
+    Check(
+        !play1->isEnabled() && notice->text().contains("new window") &&
+            !Child<QLabel>(window, "camera1ExternalRenderNotice")->text().contains("retry"),
+        "Missing proof offered a disabled retry or omitted recovery instructions");
+    auto retained = hm::game_operation::Inspect(game);
+    Check(retained.ok() && retained->has_value(), "Missing proof released the recording");
+    Check(QFile::rename(receipt + ".withheld", receipt), "Could not restore exact test receipt");
+    Wait(
+        [&] { return main_action->text() == "Play" && notice->isHidden() && play1->isEnabled(); },
+        "Restoring exact proof did not allow playback");
+    play1->click();
+    Wait([&] { return target->property("sourceCameraPresentedPts").toLongLong() >= 0; }, "Camera did not reopen");
     // Another graph-building workflow retires the camera before admission.
     Child<QPushButton>(window, "startPipelineButton")->click();
     Check(!Child<QPushButton>(window, "camera1StopButton")->isEnabled(), "Program retained camera pipeline");

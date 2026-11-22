@@ -6969,7 +6969,7 @@ QStringList HStreamWindow::sourceCameraFiles(int camera) const {
   return {};
 }
 
-void HStreamWindow::playSourceCamera(int camera, bool play, std::optional<qint64> seek) {
+void HStreamWindow::playSourceCamera(int camera, std::optional<qint64> seek) {
   updateRunControls(); // Recheck durable ownership immediately before admission.
   if (!source_camera_available_ || camera < 0 || camera >= static_cast<int>(camera_optics_sources_.size()) ||
       preview_tabs_->currentIndex() != camera + 2)
@@ -7010,10 +7010,9 @@ void HStreamWindow::playSourceCamera(int camera, bool play, std::optional<qint64
   } else if (seek) {
     source_camera_player_->Seek(*seek);
   }
-  if (play)
+  // A seek preserves transport intent, including a pause awaiting its reply.
+  if (!seek)
     source_camera_player_->Play();
-  else
-    source_camera_player_->Pause();
   pollSourceCamera();
 }
 
@@ -7046,7 +7045,8 @@ void HStreamWindow::pollSourceCamera() {
   if (!status.error.isEmpty()) {
     appendLog("Camera preview: " + status.error);
     stopSourceCamera();
-    camera_preview_notices_[camera]->setText(status.error + " Choose Play camera to retry.");
+    camera_preview_notices_[camera]->setText(
+        operation_token_.empty() ? status.error + " Choose Play camera to retry." : status.error);
     camera_preview_notices_[camera]->show();
     return;
   }
@@ -7369,14 +7369,11 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
       if (source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing)
         source_camera_player_->Pause();
       else
-        playSourceCamera(camera_index, true);
+        playSourceCamera(camera_index);
       pollSourceCamera();
     });
     connect(stop, &QPushButton::clicked, this, [this] { stopSourceCamera(); });
-    const auto seek_camera = [this, camera_index](int value) {
-      const bool playing = source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing;
-      playSourceCamera(camera_index, playing, value);
-    };
+    const auto seek_camera = [this, camera_index](int value) { playSourceCamera(camera_index, value); };
     seek->setReleaseHandler([seek_camera](std::optional<int> value) { if (value) seek_camera(*value); });
     connect(seek, &QSlider::valueChanged, this, [seek, seek_camera](int value) {
       if (!seek->isSliderDown()) seek_camera(value);
@@ -7386,11 +7383,10 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
       shortcut->setContext(Qt::WidgetWithChildrenShortcut);
       connect(shortcut, &QShortcut::activated, this, [this, camera_index, key] {
         const bool active = source_camera_index_ == camera_index && source_camera_player_;
-        const auto status = active ? source_camera_player_->GetStatus() : hm::ui::SourceCameraPlayer::Status{};
-        const qint64 position = active ? status.position_ms : source_camera_positions_[camera_index];
+        const qint64 position =
+            active ? source_camera_player_->GetStatus().position_ms : source_camera_positions_[camera_index];
         playSourceCamera(
             camera_index,
-            active && status.playing,
             std::max<qint64>(0, position + (key == Qt::Key_Left ? -10000 : 10000)));
       });
     }
@@ -11963,13 +11959,16 @@ bool HStreamWindow::beginGameOperation(const std::string& kind) {
 }
 
 void HStreamWindow::releaseGameOperationIfStopped() {
+  operation_retirement_proof_unavailable_ = false;
   if (operation_token_.empty() || operation_starting_ || source_camera_index_ >= 0 ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
       live_rotation_authorization_pending_)
     return;
   auto stopped = hm::game_operation::LocalChildrenStopped(operation_token_);
-  if (!stopped.ok())
-    return; // Keep the durable claim until proof is available.
+  if (!stopped.ok()) {
+    operation_retirement_proof_unavailable_ = true;
+    return;
+  }
   if (!*stopped) {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     if (!operation_retirement_started_ms_)
@@ -19412,14 +19411,19 @@ void HStreamWindow::updateRunControls() {
     }
   }
 
-  if (!external_operation && pipeline_state_ && pipeline_state_->text().startsWith("BUSY:") &&
-      (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
-    pipeline_state_->setText("STOPPED");
-
-  if (pipeline_completion_proof_pending_ || archive_completion_proof_pending_) {
+  if (operation_retirement_proof_unavailable_ || pipeline_completion_proof_pending_ ||
+      archive_completion_proof_pending_) {
     external_operation = true;
+    ownership_notice =
+        "Game locked. This window could not verify cleanup. Choose Review ownership for details. "
+        "If the old work has stopped, reopen the game in a new window to use Force release.";
     if (pipeline_state_)
       pipeline_state_->setText("RECOVERY REQUIRED: supervisor shutdown proof is unavailable");
+  } else if (
+      !external_operation && pipeline_state_ &&
+      (pipeline_state_->text().startsWith("BUSY:") || pipeline_state_->text().startsWith("RECOVERY REQUIRED:")) &&
+      (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning)) {
+    pipeline_state_->setText("STOPPED");
   }
 
   if (backend_mode_)
