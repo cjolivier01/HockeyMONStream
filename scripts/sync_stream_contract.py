@@ -1271,6 +1271,7 @@ def generate(root, *, native_revision=None, include_revision=True):
             "start_seconds": playback_start_seconds(value("playback.start_seconds")),
             "calibration_seconds": time_seconds("stitching.stitch_frame_time"),
             "crop": boolean_value("hstream_ui.show_crop_dialog"),
+            "paint_rink_mask": boolean_value("hstream_ui.paint_rink_mask"),
             "leveling": boolean_value("hstream_ui.show_leveling_dialog"),
             "scoreboard": boolean_value("hstream_ui.show_scoreboard_dialog"),
             "playback_realtime": value("playback.realtime"),
