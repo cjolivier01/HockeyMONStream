@@ -619,6 +619,8 @@ The test also starts and cancels a local stitching experiment in a disposable ga
 with its saved vertical flip and changes the flip while paused. To repeat that handoff on original chapters, pass
 a left and right file to the same binary and set `TEST_TMPDIR` to a writable directory on their filesystem.
 The fixture hard-links the recordings and writes its settings and ownership records to the temporary game.
+Desktop playback and seeks run in the Qt process. On NVIDIA, chapter and flip changes retire the decoder and
+GL resources while retaining the X11 connection to the camera window. Stop also releases that connection.
 
 The test generates short chapters in temporary storage and exercises actual GPU
 playback, paused cross-chapter seeking, tab departure, independent positions,

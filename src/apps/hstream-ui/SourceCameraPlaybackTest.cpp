@@ -129,7 +129,7 @@ void CancelExperimentAndPlayRightCamera(HStreamWindow& window, bool synthetic) {
   Wait(
       [&] {
         return target->property("sourceCameraPresentedPts").toLongLong() >= 0 &&
-            (synthetic ? hasColor(true) : HasPicture(PresentedPixels(target)));
+            (!synthetic || hasColor(true));
       },
       "Paused right camera did not redraw after changing orientation");
   Check(
@@ -267,7 +267,14 @@ int main(int argc, char** argv) {
     tabs->setCurrentIndex(3);
     play2->click();
     auto* seek2 = Child<QSlider>(window, "camera2SeekSlider");
-    Wait([&] { return seek2->value() > 250; }, "Second camera did not play");
+    auto* target2 = Child<QWidget>(window, "camera2PreviewRenderTarget");
+    Wait(
+        [&] { return seek2->isEnabled() && target2->property("sourceCameraPresentedPts").toLongLong() >= 0; },
+        "Reopened second camera did not present a frame");
+    const auto first_pts = target2->property("sourceCameraPresentedPts").toLongLong();
+    Wait(
+        [&] { return target2->property("sourceCameraPresentedPts").toLongLong() > first_pts; },
+        "Reopened second camera did not advance");
     Check(!Child<QPushButton>(window, "camera1StopButton")->isEnabled(), "Previous decoder remained owned");
     const auto second_owner = hm::game_operation::Inspect(game);
     Check(

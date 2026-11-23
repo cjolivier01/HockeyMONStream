@@ -26,6 +26,7 @@ struct SourceCameraPlayer::Impl {
   };
   std::vector<Chapter> chapters;
 #ifndef HSTREAM_USE_HIP
+  hm::gpu_preview::X11DisplayConnection display;
   std::atomic<guint32> decoder_seek_sequence{GST_SEQNUM_INVALID};
 #endif
   GstElement* graph{nullptr};
@@ -249,6 +250,10 @@ struct SourceCameraPlayer::Impl {
 #ifdef HSTREAM_USE_HIP
       gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), window);
 #else
+      if (!hm::gpu_preview::use_camera_display(sink, display)) {
+        fail("Could not open the X11 display for the camera preview.");
+        return false;
+      }
       g_object_set(sink, "window-id", window, "channel", "source-camera", "enable-last-sample", TRUE, nullptr);
       hm::gpu_preview::set_source_geometry(sink, item.track.width, item.track.height);
 #endif
@@ -397,6 +402,9 @@ void SourceCameraPlayer::Seek(qint64 position_ms) {
 }
 void SourceCameraPlayer::Close() {
   impl_->retire();
+#ifndef HSTREAM_USE_HIP
+  impl_->display.reset();
+#endif
   impl_->chapters.clear();
   impl_->status = {};
   impl_->seek_ms.reset();
