@@ -179,7 +179,9 @@ absl::StatusOr<std::optional<AkazeCalibrationProfile>> read_akaze_calibration_pr
   return profile;
 }
 
-absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(const fs::path& game_dir) {
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(
+    const fs::path& game_dir,
+    const std::array<media::FrameFlip, 2>& flips) {
   const fs::path calibration_path = game_dir / "left_calibration.json";
   std::optional<AkazeCalibrationProfile> profile;
   HM_ASSIGN_OR_RETURN(profile, read_akaze_calibration_profile(game_dir));
@@ -193,7 +195,7 @@ absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(co
     const YAML::Node document = YAML::Load(profile->contents);
     if (!document.IsMap())
       return absl::InvalidArgumentError("AKAZE lens calibration root must be an object");
-    const auto parse_camera = [&](const char* key) -> absl::StatusOr<FisheyeLensCalibration> {
+    const auto parse_camera = [&](const char* key, media::FrameFlip flip) -> absl::StatusOr<FisheyeLensCalibration> {
       const YAML::Node node = document[key];
       if (!node || !node.IsMap()) {
         return absl::InvalidArgumentError(TO_STRING("AKAZE lens calibration is missing object " << key));
@@ -217,12 +219,16 @@ absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration_impl(co
           })) {
         return absl::InvalidArgumentError(TO_STRING("AKAZE lens calibration " << key << " contains invalid values"));
       }
+      if (flip.horizontal)
+        result.cx = result.resolution.width - 1 - result.cx;
+      if (flip.vertical)
+        result.cy = result.resolution.height - 1 - result.cy;
       return result;
     };
 
     AkazeMatchingCalibration result;
-    HM_ASSIGN_OR_RETURN(result.left, parse_camera("left_uniforms"));
-    HM_ASSIGN_OR_RETURN(result.right, parse_camera("right_uniforms"));
+    HM_ASSIGN_OR_RETURN(result.left, parse_camera("left_uniforms", flips[0]));
+    HM_ASSIGN_OR_RETURN(result.right, parse_camera("right_uniforms", flips[1]));
     result.source_profile_fingerprint = std::move(profile->fingerprint);
     std::cerr << "Using fisheye lens calibration from " << calibration_path << " for AKAZE feature detection"
               << std::endl;
@@ -1728,8 +1734,10 @@ absl::StatusOr<std::optional<std::array<double, 3>>> read_rink_leveling_response
   return read_rink_leveling_response_file_impl(path);
 }
 
-absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const fs::path& game_dir) {
-  return load_akaze_matching_calibration_impl(game_dir);
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(
+    const fs::path& game_dir,
+    const std::array<media::FrameFlip, 2>& flips) {
+  return load_akaze_matching_calibration_impl(game_dir, flips);
 }
 
 absl::Status save_stitched_image(
@@ -3467,8 +3475,12 @@ absl::Status create_control_points(
     };
   }
   AkazeMatchingCalibration akaze_calibration;
-  if (control_point_matcher == ControlPointMatcher::kAkazeHamming)
-    HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir));
+  if (control_point_matcher == ControlPointMatcher::kAkazeHamming) {
+    std::array<media::FrameFlip, 2> flips{};
+    if (ordered_input_cameras)
+      flips = {(*ordered_input_cameras)[0].flip, (*ordered_input_cameras)[1].flip};
+    HM_ASSIGN_OR_RETURN(akaze_calibration, load_akaze_matching_calibration(game_dir, flips));
+  }
   MappingBackend mapping_backend;
   HM_ASSIGN_OR_RETURN(mapping_backend, ParseMappingBackend(backend_choices.mapping_backend));
   if (mapping_backend == MappingBackend::kNona && akaze_calibration.left.has_value()) {

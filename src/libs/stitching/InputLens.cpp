@@ -369,8 +369,9 @@ absl::StatusOr<std::string> apply_input_lens(
         set("v", (*cameras)[images].horizontal_fov, false);
       for (size_t i = 0; i < current_lens.distortion.size(); ++i)
         set(std::string(1, 'a' + i).c_str(), current_lens.distortion[i], !independent && images != 0);
-      set("d", current_lens.center_offset[0] * w, !independent && images != 0);
-      set("e", current_lens.center_offset[1] * h, !independent && images != 0);
+      const auto flip = cameras ? (*cameras)[images].flip : media::FrameFlip{};
+      set("d", current_lens.center_offset[0] * (flip.horizontal ? -w : w), !independent && images != 0);
+      set("e", current_lens.center_offset[1] * (flip.vertical ? -h : h), !independent && images != 0);
       ++images;
     }
     output << line << '\n';

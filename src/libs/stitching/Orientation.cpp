@@ -159,7 +159,8 @@ absl::Status configure_game_orientation(
     if (!capture.read(first_frame) || first_frame.empty()) {
       return absl::InternalError("Failed to decode the orientation frame at the camera start: " + selected.file);
     }
-    const auto flip = SourceFrameFlip(flips, game_dir, playlist.front());
+    media::FrameFlip flip;
+    HM_ASSIGN_OR_RETURN(flip, SourceFrameFlip(flips, game_dir, playlist));
     if (flip.enabled())
       cv::flip(first_frame, first_frame, flip.horizontal ? (flip.vertical ? -1 : 1) : 0);
     auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled);

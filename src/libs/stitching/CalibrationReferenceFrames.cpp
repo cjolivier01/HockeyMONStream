@@ -267,8 +267,10 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
     HM_ASSIGN_OR_RETURN(flips, ReadCameraFrameFlips(config["stitching"]["input_cameras"]));
     std::array<media::FrameFlip, 2> ordered{};
     if (!flips.empty())
-      for (size_t i = 0; i < ordered.size(); ++i)
-        ordered[i] = SourceFrameFlip(flips, game, config["game"]["videos"][i ? "right" : "left"][0].as<std::string>());
+      for (size_t i = 0; i < ordered.size(); ++i) {
+        const auto playlist = config["game"]["videos"][i ? "right" : "left"].as<std::vector<std::string>>();
+        HM_ASSIGN_OR_RETURN(ordered[i], SourceFrameFlip(flips, game, playlist));
+      }
     std::vector<CalibrationFrameInput> inputs;
     for (const auto& pair : planned) {
       auto decoded = std::make_shared<std::array<CalibrationFrameSource, 2>>(pair);

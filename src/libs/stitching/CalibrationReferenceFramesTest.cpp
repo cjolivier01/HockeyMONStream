@@ -126,8 +126,11 @@ int main() {
   std::filesystem::copy_file(video, right_video);
   config["game"]["videos"]["right"][0] = "right-camera.mp4";
   auto oriented = YAML::Clone(config);
-  StitchInputCameras prescriptions{{"camera.mp4", {108, 70, {}}}, {"right-camera.mp4", {108, 70, {}}}};
-  prescriptions.at("camera.mp4").flip = {false, true};
+  // The left input was selected starting with the second chronological chapter.
+  std::filesystem::copy_file(video, game / "left-second.mp4");
+  oriented["game"]["videos"]["left"].push_back("left-second.mp4");
+  StitchInputCameras prescriptions{{"left-second.mp4", {108, 70, {}}}, {"right-camera.mp4", {108, 70, {}}}};
+  prescriptions.at("left-second.mp4").flip = {false, true};
   prescriptions.at("right-camera.mp4").flip = {true, true};
   oriented["stitching"]["input_cameras"] = WriteStitchInputCameras(prescriptions);
   auto flipped_inputs = EndRelativeCalibrationInputs(game, oriented, 3, {});
@@ -179,7 +182,10 @@ int main() {
   if (!selected.ok() || !selected->plan)
     return 1;
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(*selected->plan);
-  oriented["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(*selected->plan);
+  oriented = YAML::Clone(config);
+  prescriptions["camera.mp4"] = prescriptions.at("left-second.mp4");
+  prescriptions.erase("left-second.mp4");
+  oriented["stitching"]["input_cameras"] = WriteStitchInputCameras(prescriptions);
   expect(!EndRelativeCalibrationInputs(game, oriented, 2, {}).ok(), "Old selected stills cannot cross a camera flip");
   auto exact = EndRelativeCalibrationInputs(game, config, 2, {});
   expect(

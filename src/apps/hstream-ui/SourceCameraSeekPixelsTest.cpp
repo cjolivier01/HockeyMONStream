@@ -9,6 +9,7 @@
 #include <QtGui/QImage>
 #include <QtWidgets/QApplication>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace {
@@ -46,10 +47,9 @@ QImage Presented(hm::ui::NativePreviewSurface& surface) {
   return image.scaled(surface.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 }
 
-void Compare(const QImage& actual, const QImage& expected) {
+std::array<double, 8> StripErrors(const QImage& actual, const QImage& expected) {
   Check(actual.size() == expected.size(), "Reference frame dimensions differ");
-  if (const char* capture = std::getenv("HSTREAM_TEST_CAMERA_CAPTURE"))
-    Check(actual.save(QString::fromLocal8Bit(capture)), "Cannot save requested test screenshot");
+  std::array<double, 8> errors{};
   // Check each vertical strip independently: an overall average can hide stale
   // right-hand slices when most of a recording is stationary ice/background.
   for (int strip = 0; strip < 8; ++strip) {
@@ -76,9 +76,28 @@ void Compare(const QImage& actual, const QImage& expected) {
         ++samples;
       }
     Check(samples > 1000, "Too few smooth reference pixels in strip " + std::to_string(strip));
-    const double mean = error / (samples * 3);
-    std::cout << "strip " << strip << " mean pixel error " << mean << '\n';
-    Check(mean < 4.0, "Camera contains stale or incorrect pixels in strip " + std::to_string(strip));
+    errors[strip] = error / (samples * 3);
+  }
+  return errors;
+}
+
+void Compare(hm::ui::NativePreviewSurface& surface, const QImage& expected) {
+  // A submitted GL swap can reach the X11 front buffer after the sink reports
+  // its PTS. Observe the paused surface until every strip belongs to that frame.
+  QElapsedTimer elapsed;
+  elapsed.start();
+  for (;;) {
+    const auto actual = Presented(surface);
+    const auto errors = StripErrors(actual, expected);
+    const auto worst = std::max_element(errors.begin(), errors.end());
+    if (*worst < 4.0 || elapsed.elapsed() >= 1500) {
+      if (const char* capture = std::getenv("HSTREAM_TEST_CAMERA_CAPTURE"))
+        Check(actual.save(QString::fromLocal8Bit(capture)), "Cannot save requested test screenshot");
+      std::cout << "Maximum strip error " << *worst << " at strip " << (worst - errors.begin()) << '\n';
+      Check(*worst < 4.0, "Camera contains stale or incorrect pixels");
+      return;
+    }
+    QThread::msleep(10);
   }
 }
 } // namespace
@@ -161,9 +180,9 @@ int main(int argc, char** argv) {
         return std::abs(status.position_ms - position) < 200 && status.presented_ns >= 0;
       });
       Check(!player.GetStatus().playing, "Paused seek resumed playback");
-      Compare(Presented(surface), expected);
+      Compare(surface, expected);
       Check(player.Redraw(), "Paused seek did not retain its GPU sample");
-      Compare(Presented(surface), expected);
+      Compare(surface, expected);
     }
     player.Play();
     Wait(player, [&](const auto& status) { return status.position_ms > target + 200; });
@@ -173,12 +192,12 @@ int main(int argc, char** argv) {
     player.Pause();
     player.Seek(target);
     Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
-    Compare(Presented(surface), expected);
+    Compare(surface, expected);
     for (hm::media::FrameFlip flip : {hm::media::FrameFlip{true, false}, {false, true}, {true, true}, {}}) {
       player.SetFlip(flip);
       Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
       Check(!player.GetStatus().playing, "Changing the camera flip resumed paused playback");
-      Compare(Presented(surface), expected.mirrored(flip.horizontal, flip.vertical));
+      Compare(surface, expected.mirrored(flip.horizontal, flip.vertical));
     }
     player.Close();
     std::cout << "Full camera pixels match software decoding after repeated and cross-chapter seeks\n";

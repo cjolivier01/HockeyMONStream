@@ -145,8 +145,12 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       return saved_flips.status();
     if (*flips != *saved_flips)
       return absl::FailedPreconditionError("Camera flips must match the saved Program calibration");
-    for (size_t index = 0; index < result.chapters.size(); ++index)
-      result.flips[index] = stitching::SourceFrameFlip(*flips, result.game, result.chapters[index].front());
+    for (size_t index = 0; index < result.chapters.size(); ++index) {
+      const auto flip = stitching::SourceFrameFlip(*flips, result.game, chapter_names.at(index ? "right" : "left"));
+      if (!flip.ok())
+        return flip.status();
+      result.flips[index] = *flip;
+    }
     const auto chapters_status = stitching::ValidateCameraChapters(chapter_names);
     if (!chapters_status.ok())
       std::cerr << "Warning: " << chapters_status.message() << " Continuing with the selected inputs.\n";

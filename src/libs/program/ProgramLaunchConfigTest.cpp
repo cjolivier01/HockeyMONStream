@@ -66,6 +66,17 @@ int main(int argc, char** argv) {
         "Saved chapters or fractional synchronization changed");
     Check(result->camera["zoom-in-aggressiveness"].as<int>() == 61, "Game camera tuning did not override user tuning");
     Check(!result->tiling, "Baseline must leave two-half detection disabled");
+    auto flipped_game = YAML::Clone(game);
+    flipped_game["stitching"]["input_cameras"]["left1.mp4"] =
+        YAML::Load("{horizontal_fov: 110, vertical_fov: 70, input_lens: {}, flip_horizontal: true}");
+    flipped_game["stitching"]["input_cameras"]["left1.mp4"]["input_lens"] =
+        YAML::LoadFile((config_root / "baseline.yaml").string())["stitching"]["input_lens"];
+    Write(game_dir / "_hockeymon" / "config.yaml", flipped_game);
+    const auto flipped = load();
+    Check(flipped.ok(), flipped.status().ToString());
+    Check(
+        flipped->flips[0] == hm::media::FrameFlip{true, false} && !flipped->flips[1].enabled(),
+        "The first selected chapter must identify the camera after sorting its playlist");
     // Filename gaps are advisory. UI confirmation must remain usable on AMD;
     // unattended runners keep their existing noninteractive launch behavior.
     auto missing_chapter = YAML::Clone(game);

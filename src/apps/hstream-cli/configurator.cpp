@@ -6917,7 +6917,8 @@ absl::Status Configurator::apply_frame_offsets_and_sizes(
   for (size_t camera = 0; camera < playlists.size(); ++camera) {
     if (playlists[camera]->empty())
       continue;
-    const auto flip = stitching::SourceFrameFlip(flips, resolved_game_dir(), playlists[camera]->front());
+    media::FrameFlip flip;
+    HM_ASSIGN_OR_RETURN(flip, stitching::SourceFrameFlip(flips, resolved_game_dir(), *playlists[camera]));
     if (flip.enabled())
       pipeline["source" + std::to_string(camera)]["camera-input-flip"] = flip.nvFlipMethod();
     auto& format = formats[camera];
