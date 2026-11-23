@@ -1530,3 +1530,8 @@ after detection** is enabled. It displays the saved stitched still, uses the
 same brush and mask publication as the NVIDIA calibrator, and loads the
 accepted full-resolution mask for player filtering. AMD Program still needs
 saved alignment and a valid detected mask for the current output geometry.
+
+The AMD lifecycle test accepts `review_sigint review_sigterm` as case
+arguments. Use a disposable game with an unreviewed saved mask. Each case
+waits for the editor's ready record, sends the signal, and checks that the
+original mask survives while the review directory and game owner are released.

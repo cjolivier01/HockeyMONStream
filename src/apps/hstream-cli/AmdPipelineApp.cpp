@@ -79,6 +79,28 @@ void Require(bool ok, const std::string& message) {
   if (!ok)
     throw Failure(absl::InvalidArgumentError(message));
 }
+// Mask review can wait indefinitely before decoder construction. Restore the
+// startup signal dispositions when it finishes, before entering GPU setup.
+class ReviewStopSignal {
+ public:
+  explicit ReviewStopSignal(int signal) : signal_(signal) {
+    struct sigaction action {};
+    action.sa_handler = Stop;
+    sigemptyset(&action.sa_mask);
+    if (::sigaction(signal_, &action, &previous_) != 0)
+      throw Failure(absl::InternalError("Cannot install ice mask review cancellation handler"));
+  }
+  ~ReviewStopSignal() {
+    // On cancellation, keep subsequent Stop signals cooperative through owner release.
+    if (interrupted.load(std::memory_order_relaxed) == 0)
+      ::sigaction(signal_, &previous_, nullptr);
+  }
+
+ private:
+  int signal_;
+  struct sigaction previous_ {};
+};
+
 class Cancellation {
  public:
   Cancellation(
@@ -188,9 +210,14 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const hm::program::ProgramCalibrationRequest calibration{args.saved_stitch_time, args.expected_invalidation};
   Status(hm::program::ValidateProgramCalibrationSelection(launch.saved_game, calibration));
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
-  Status(hm::stitching::review_saved_field_mask(launch.game.string(), args.expected_invalidation.value_or(""), [] {
-    return interrupted.load(std::memory_order_relaxed) != 0;
-  }));
+  {
+    ReviewStopSignal interrupt(SIGINT), terminate(SIGTERM);
+    Status(hm::stitching::review_saved_field_mask(launch.game.string(), args.expected_invalidation.value_or(""), [] {
+      return interrupted.load(std::memory_order_relaxed) != 0;
+    }));
+  }
+  if (interrupted.load(std::memory_order_relaxed) != 0)
+    throw Failure(absl::CancelledError("Ice mask review cancelled"));
   auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
   const auto start = args.start.value_or(output_config.start_ns);
   const auto limit = args.limit;
