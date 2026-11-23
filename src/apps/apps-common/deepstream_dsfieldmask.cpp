@@ -587,8 +587,8 @@ bool create_render_audio_branch(
   }
   // During calibration, video can be clocked while the audio monitor is unpaced.
   // Its device clock stays at zero until enough PCM arrives, and PCM admission
-  // waits for paired video. Only PacedPlayback may select the device clock,
-  // after it has established sufficient buffering on both branches.
+  // waits for paired video. PacedPlayback explicitly selects the device clock
+  // for normal-speed playback and checks the buffering on both branches.
   g_object_set(
       G_OBJECT(audiosink), "provide-clock", FALSE, "sync", realtime, "async", FALSE, "max-lateness", gint64{-1},
       "qos", FALSE, NULL);
