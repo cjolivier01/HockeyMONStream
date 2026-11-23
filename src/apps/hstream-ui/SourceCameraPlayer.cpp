@@ -31,6 +31,7 @@ struct SourceCameraPlayer::Impl {
   GstElement* sink{nullptr};
   GstBus* bus{nullptr};
   Status status;
+  media::FrameFlip flip;
   size_t chapter{0};
   quint64 window{0};
   std::uint64_t generation{0};
@@ -207,6 +208,18 @@ struct SourceCameraPlayer::Impl {
     // CUDA-device RGBA. Conversion and presentation both remain on the GPU.
     g_object_set(convert, "compute-hw", 1, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, nullptr);
 #endif
+#ifdef HSTREAM_USE_HIP
+    if (!output && flip.enabled())
+      gst_util_set_object_arg(
+          G_OBJECT(sink),
+          "rotate-method",
+          flip.horizontal && flip.vertical ? "rotate-180"
+              : flip.horizontal            ? "horizontal-flip"
+                                           : "vertical-flip");
+#else
+    if (flip.enabled())
+      g_object_set(convert, "flip-method", flip.nvFlipMethod(), nullptr);
+#endif
     g_object_set(filter, "caps", caps, nullptr);
     gst_caps_unref(caps);
     g_object_set(sink, "sync", TRUE, "async", TRUE, "qos", TRUE, "enable-last-sample", TRUE, nullptr);
@@ -294,6 +307,17 @@ bool SourceCameraPlayer::Open(
   }
   return true;
 }
+void SourceCameraPlayer::SetFlip(media::FrameFlip flip) {
+  auto& s = *impl_;
+  if (s.flip == flip)
+    return;
+  s.flip = flip;
+  if (s.graph) {
+    s.seek_ms = std::clamp(s.status.position_ms, qint64{0}, s.status.duration_ms - 1);
+    s.openChapter(s.chapter);
+  }
+}
+
 void SourceCameraPlayer::Play() {
   auto& s = *impl_;
   if (!s.graph)

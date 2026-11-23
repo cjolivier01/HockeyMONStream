@@ -1494,6 +1494,13 @@ the rightmost strips, repeated seeks and chapter replacement. The AMD branch
 passes a local compile check; this pixel regression still needs AMD hardware
 qualification because `ripper` remains unreachable.
 
+Source-bound flips run in the AMD Program graph's first HIP color conversion.
+On the Radeon RX 9060 XT in `ripper`, the seven-format conversion test covers
+both axes, separately and together. With `GST_GL_PLATFORM=egl`, the standalone
+VA camera player also matches a software-decoded asymmetric H.264 frame after
+seek, chapter replacement, and paused changes through all four orientations.
+AMD Program source taps and fresh calibration retain the limitations above.
+
 Calibration reference defaults use the shared Qt controls on both backends: zero
 inherits Playback start, while nonzero references retain their sign. The shared
 CPU reference sampler wraps end-relative samples to the frozen Playback start.

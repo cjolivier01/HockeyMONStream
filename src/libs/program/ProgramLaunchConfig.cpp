@@ -135,6 +135,18 @@ absl::StatusOr<ProgramLaunchConfig> LoadProgramLaunchConfig(
       if (!std::isfinite(result.frame_offsets[index]) || result.frame_offsets[index] < 0)
         return absl::InvalidArgumentError("Camera synchronization must be a finite nonnegative frame offset");
     }
+    const auto flips = stitching::ReadCameraFrameFlips(
+        get_node(result.configuration.values, "stitching.input_cameras").value_or(YAML::Node()));
+    if (!flips.ok())
+      return flips.status();
+    const auto saved_flips =
+        stitching::ReadCameraFrameFlips(get_node(result.saved_game, "stitching.input_cameras").value_or(YAML::Node()));
+    if (!saved_flips.ok())
+      return saved_flips.status();
+    if (*flips != *saved_flips)
+      return absl::FailedPreconditionError("Camera flips must match the saved Program calibration");
+    for (size_t index = 0; index < result.chapters.size(); ++index)
+      result.flips[index] = stitching::SourceFrameFlip(*flips, result.game, result.chapters[index].front());
     const auto chapters_status = stitching::ValidateCameraChapters(chapter_names);
     if (!chapters_status.ok())
       std::cerr << "Warning: " << chapters_status.message() << " Continuing with the selected inputs.\n";

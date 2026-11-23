@@ -8,6 +8,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "hstream/src/libs/media/FrameFlip.h"
 #include "yaml-cpp/yaml.h"
 
 namespace hm::stitching {
@@ -51,9 +52,10 @@ struct StitchCameraOptics {
   std::optional<bool> auto_fov;
   std::optional<bool> auto_lens;
   std::optional<bool> frozen;
+  media::FrameFlip flip;
   bool operator==(const StitchCameraOptics& other) const {
     return horizontal_fov == other.horizontal_fov && vertical_fov == other.vertical_fov &&
-        input_lens == other.input_lens && source_size == other.source_size;
+        input_lens == other.input_lens && source_size == other.source_size && flip == other.flip;
   }
   bool operator!=(const StitchCameraOptics& other) const {
     return !(*this == other);
@@ -61,6 +63,10 @@ struct StitchCameraOptics {
 };
 
 using StitchInputCameras = std::map<std::string, StitchCameraOptics>;
+using CameraFrameFlips = std::map<std::string, media::FrameFlip>;
+CameraFrameFlips FrameFlips(const StitchInputCameras& cameras);
+absl::StatusOr<CameraFrameFlips> ReadCameraFrameFlips(const YAML::Node& input_cameras);
+
 absl::Status ValidateStitchCameraOptics(const StitchCameraOptics& camera);
 absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node);
 YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras, bool include_policies = true);

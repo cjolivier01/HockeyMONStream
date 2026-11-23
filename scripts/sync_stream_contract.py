@@ -378,6 +378,7 @@ def qt_layout(root):
         "stage_tabs": {"program": program, "stitched": stitched},
         "camera_tabs": {
             "controls": ["Optics", "Input"],
+            "input_controls": ["Source start", "Flip horizontally", "Flip vertically"],
             "visibility": "selected-sources",
             "order": ["left", "right"],
             "panorama_label": "Panorama",

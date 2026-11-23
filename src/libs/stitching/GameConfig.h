@@ -77,6 +77,9 @@ struct StitchCameraSelection {
     }
     return result;
   }
+  bool same_source_frames(const StitchCameraSelection& other) const {
+    return input_start_times == other.input_start_times && FrameFlips(input_cameras) == FrameFlips(other.input_cameras);
+  }
   bool requires_lens_mapping() const {
     if (input_cameras.empty())
       return input_lens != StitchInputLens{};
@@ -271,6 +274,10 @@ StitchCameraSelection merge_stitch_camera_snapshot(
     StitchCameraSelection snapshot,
     const StitchCameraSelection& current);
 std::string stitch_input_camera_key(const std::filesystem::path& game, const std::filesystem::path& source);
+media::FrameFlip SourceFrameFlip(
+    const CameraFrameFlips& flips,
+    const std::filesystem::path& game,
+    const std::filesystem::path& first_chapter);
 absl::StatusOr<std::array<StitchCameraOptics, 2>> resolve_stitch_input_camera_order(
     const std::filesystem::path& game,
     const YAML::Node& config,

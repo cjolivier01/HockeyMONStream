@@ -385,7 +385,13 @@ absl::StatusOr<std::string> reusable_selection_fingerprint(
         starts,
         hm::stitching::ReadCameraSourceStarts(
             stitching && stitching.IsMap() ? stitching["input_start_times"] : YAML::Node()));
-    if (starts != settings.camera->input_start_times)
+    hm::stitching::CameraFrameFlips flips;
+    HM_ASSIGN_OR_RETURN(
+        flips,
+        hm::stitching::ReadCameraFrameFlips(
+            stitching && stitching.IsMap() ? stitching["input_cameras"] : YAML::Node()));
+    if (starts != settings.camera->input_start_times ||
+        flips != hm::stitching::FrameFlips(settings.camera->input_cameras))
       return std::string();
   }
   std::string fingerprint;
@@ -420,12 +426,20 @@ absl::StatusOr<std::string> reusable_selection_fingerprint(
 
 absl::Status configure_candidate(
     YAML::Node config,
-    const StitchingExperimentSettings& settings,
+    StitchingExperimentSettings& settings,
     const std::string& invalidation_id) {
   hm::stitching::CameraSourceStarts previous_starts;
   HM_ASSIGN_OR_RETURN(previous_starts, hm::stitching::ReadCameraSourceStarts(config["stitching"]["input_start_times"]));
-  const bool starts_changed = settings.camera && previous_starts != settings.camera->input_start_times;
-  if (starts_changed)
+  hm::stitching::CameraFrameFlips flips;
+  HM_ASSIGN_OR_RETURN(flips, hm::stitching::ReadCameraFrameFlips(config["stitching"]["input_cameras"]));
+  const bool flips_changed = settings.camera && flips != hm::stitching::FrameFlips(settings.camera->input_cameras);
+  if (flips_changed)
+    settings.manual_control_points.reset();
+  else
+    promote_generated_video_roles(config);
+  const bool source_frames_changed =
+      settings.camera && (previous_starts != settings.camera->input_start_times || flips_changed);
+  if (source_frames_changed)
     hm::stitching::InvalidateStitchingSourceInputs(config);
   std::string selection;
   HM_ASSIGN_OR_RETURN(selection, reusable_selection_fingerprint(config, settings));
@@ -487,9 +501,8 @@ absl::Status configure_candidate(
   calibration["frame_count"] = settings.frame_count;
   calibration["status"] = "pending";
   calibration["rink_mask_status"] = "pending";
-  // Optical edits retain the synchronized inputs; a source trim starts a new
-  // input timeline and must discard the old offsets and selected frames.
-  calibration["stale_from"] = starts_changed ? "input" : "features";
+  // A different source trim or orientation requires new calibration inputs.
+  calibration["stale_from"] = source_frames_changed ? "input" : "features";
   calibration["artifacts_invalidated"] = false;
   calibration["invalidation_id"] = invalidation_id;
   remove_downstream_generation(config);
@@ -668,6 +681,14 @@ absl::Status copy_selected_frame_inputs(
       selected_starts,
       hm::stitching::ReadCameraSourceStarts(
           source_stitching && source_stitching.IsMap() ? source_stitching["input_start_times"] : YAML::Node()));
+  hm::stitching::CameraFrameFlips candidate_flips, selected_flips;
+  HM_ASSIGN_OR_RETURN(candidate_flips, hm::stitching::ReadCameraFrameFlips(config["stitching"]["input_cameras"]));
+  HM_ASSIGN_OR_RETURN(
+      selected_flips,
+      hm::stitching::ReadCameraFrameFlips(
+          source_stitching && source_stitching.IsMap() ? source_stitching["input_cameras"] : YAML::Node()));
+  if (candidate_flips != selected_flips)
+    return absl::FailedPreconditionError("Saved player frames use different camera flips. Select a new frame set.");
   if (candidate_starts != selected_starts)
     return absl::FailedPreconditionError(
         "Saved player frames use different camera starts. Remove that frame-count group or choose another frame count.");
@@ -1186,7 +1207,6 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     if (frozen_settings.camera)
       for (auto& [source, values] : frozen_settings.camera->input_cameras)
         values.frozen = true;
-    promote_generated_video_roles(config);
     const std::string invalidation_id = "stitch-experiment-" + std::to_string(::getpid()) + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence);
     HM_RETURN_IF_ERROR(configure_candidate(config, frozen_settings, invalidation_id));

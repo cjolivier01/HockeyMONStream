@@ -174,6 +174,12 @@ int main(int argc, char** argv) {
     player.Seek(target);
     Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
     Compare(Presented(surface), expected);
+    for (hm::media::FrameFlip flip : {hm::media::FrameFlip{true, false}, {false, true}, {true, true}, {}}) {
+      player.SetFlip(flip);
+      Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
+      Check(!player.GetStatus().playing, "Changing the camera flip resumed paused playback");
+      Compare(Presented(surface), expected.mirrored(flip.horizontal, flip.vertical));
+    }
     player.Close();
     std::cout << "Full camera pixels match software decoding after repeated and cross-chapter seeks\n";
     return 0;

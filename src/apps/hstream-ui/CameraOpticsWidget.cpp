@@ -140,6 +140,17 @@ CameraSourceStartWidget::CameraSourceStartWidget(QWidget* parent) : QWidget(pare
   start_->setDisplayFormat("HH:mm:ss.zzz");
   start_->setKeyboardTracking(false);
   form->addRow("Source start", start_);
+  horizontal_flip_ = new QCheckBox("Flip horizontally", this);
+  vertical_flip_ = new QCheckBox("Flip vertically", this);
+  horizontal_flip_->setObjectName("cameraFlipHorizontal");
+  vertical_flip_->setObjectName("cameraFlipVertical");
+  for (auto* box : {horizontal_flip_, vertical_flip_}) {
+    form->addRow(box);
+    connect(box, &QCheckBox::toggled, this, [this]() {
+      if (flipChanged)
+        flipChanged({horizontal_flip_->isChecked(), vertical_flip_->isChecked()});
+    });
+  }
   layout->addLayout(form);
   auto* description = new QLabel(
       "Skip to this position in this camera's recording before orientation, synchronization, or calibration. "
@@ -157,4 +168,10 @@ CameraSourceStartWidget::CameraSourceStartWidget(QWidget* parent) : QWidget(pare
 void CameraSourceStartWidget::setStart(double seconds) {
   const QSignalBlocker blocker(start_);
   start_->setTime(QTime::fromMSecsSinceStartOfDay(std::min(86399999, int(std::llround(seconds * 1000)))));
+}
+
+void CameraSourceStartWidget::setFlip(hm::media::FrameFlip flip) {
+  const QSignalBlocker horizontal(horizontal_flip_), vertical(vertical_flip_);
+  horizontal_flip_->setChecked(flip.horizontal);
+  vertical_flip_->setChecked(flip.vertical);
 }

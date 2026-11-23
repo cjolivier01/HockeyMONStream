@@ -1888,7 +1888,7 @@ cc_library(
     srcs = ["SourceCameraPlayer.cpp"],
     hdrs = ["SourceCameraPlayer.h"],
     copts = COMMON_COPTS,
-    deps = [":source_camera_track", ":camera_preview_output", "@qt//:qt_core", "@gstreamer"] + select({
+    deps = ["//src/libs/media:frame_flip", ":source_camera_track", ":camera_preview_output", "@qt//:qt_core", "@gstreamer"] + select({
         "//:use_hip": [],
         "//conditions:default": ["//src/apps/apps-common:hm_gpu_preview"],
     }),

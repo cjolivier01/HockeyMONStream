@@ -105,6 +105,7 @@ int AmdPanoramaFrame::device() const {
 struct AmdStitcher::Impl {
   int device, width{}, height{};
   size_t maximum_frames;
+  std::array<media::FrameFlip, 2> flips{};
   std::string generation;
   std::optional<stitching::StitchSourceSizes> source_sizes;
   cv::Mat rink_mask;
@@ -165,6 +166,7 @@ absl::StatusOr<std::unique_ptr<AmdStitcher>> AmdStitcher::Create(
         config.game_directory, generation, loaded_generation, config.calibration.invalidation_id.value_or("")));
     DeviceScope device(config.detector.device);
     auto impl = std::make_unique<Impl>(config.detector.device, maximum_frames);
+    impl->flips = config.flips;
     impl->source_sizes = artifacts.source_sizes;
     impl->generation = std::move(generation);
     impl->rink_mask = mask;
@@ -238,8 +240,8 @@ absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(Gst
     auto b = Take(gpu::VaHipFrame::Import(gst_sample_get_buffer(right), impl.stream, gpu::VaHipFrame::Access::kRead));
     const auto ai = Take(detection::DescribeVaDetectorImage(*a, li));
     const auto bi = Take(detection::DescribeVaDetectorImage(*b, ri));
-    Hip(gpu::ConvertToRgba16Float(ai, impl.left->data(), impl.left->pitch(), impl.stream));
-    Hip(gpu::ConvertToRgba16Float(bi, impl.right->data(), impl.right->pitch(), impl.stream));
+    Hip(gpu::ConvertToRgba16Float(ai, impl.left->data(), impl.left->pitch(), impl.stream, impl.flips[0]));
+    Hip(gpu::ConvertToRgba16Float(bi, impl.right->data(), impl.right->pitch(), impl.stream, impl.flips[1]));
     auto stitched = impl.stitcher->process(*impl.left, *impl.right, impl.stream, std::move(frame->impl_->pixels));
     Require(stitched.ok(), absl::InternalError(stitched.status().message()));
     frame->impl_->pixels = stitched.ConsumeValueOrDie();

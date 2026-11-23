@@ -379,9 +379,10 @@ absl::Status clean_stitching_artifacts_from_control_points(
 
 absl::Status configure_orientation(
     const std::string& game_dir,
-    const std::string& expected_invalidation_id = {},
-    const std::function<bool()>& is_cancelled = {},
-    const CameraSourceStarts& source_starts = {});
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled,
+    const CameraSourceStarts& source_starts,
+    const CameraFrameFlips& flips);
 
 bool is_scoreboard_configured(const std::string& game_dir);
 

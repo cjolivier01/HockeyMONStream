@@ -102,6 +102,11 @@ absl::StatusOr<std::string> player_frame_source_context(const YAML::Node& config
       context["input_lens"] = WriteStitchInputLens(camera.input_lens);
     if (!camera.input_cameras.empty())
       context["input_cameras"] = WriteStitchInputCameras(camera.input_cameras, false);
+    // Unlike lens/FOV, reflecting the source changes the pixels in a retained still.
+    for (const auto& [source, flip] : FrameFlips(camera.input_cameras)) {
+      context["input_flips"][source]["horizontal"] = flip.horizontal;
+      context["input_flips"][source]["vertical"] = flip.vertical;
+    }
     if (!camera.input_start_times.empty())
       context["input_start_times"] = WriteCameraSourceStarts(camera.input_start_times);
     context["stitch_frame_time"] =
@@ -1029,11 +1034,15 @@ StitchCameraSelection merge_stitch_camera_snapshot(
   }
   if (!current.automatic_lens())
     snapshot.input_lens = current.input_lens;
-  if (snapshot.input_cameras.empty() && (!current.automatic_fov() || !current.automatic_lens()))
+  if (snapshot.input_cameras.empty() &&
+      (!current.automatic_fov() || !current.automatic_lens() || !FrameFlips(current.input_cameras).empty()))
     for (const auto& [source, values] : current.input_cameras)
       snapshot.input_cameras[source] = {
           snapshot.horizontal_fov, snapshot.vertical_fov, snapshot.input_lens, values.source_size};
   for (auto& [source, values] : snapshot.input_cameras) {
+    const auto retained = current.input_cameras.find(source);
+    if (retained != current.input_cameras.end())
+      values.flip = retained->second.flip;
     const auto selected = current.for_source(source);
     if (!selected.automatic_fov()) {
       values.horizontal_fov = selected.horizontal_fov;
@@ -1052,6 +1061,14 @@ std::string stitch_input_camera_key(const std::filesystem::path& game, const std
   const auto absolute = (source.is_absolute() ? source : game / source).lexically_normal();
   const auto relative = absolute.lexically_relative(game.lexically_normal());
   return !relative.empty() && *relative.begin() != ".." ? relative.generic_string() : absolute.generic_string();
+}
+
+media::FrameFlip SourceFrameFlip(
+    const CameraFrameFlips& flips,
+    const std::filesystem::path& game,
+    const std::filesystem::path& first_chapter) {
+  const auto found = flips.find(stitch_input_camera_key(game, first_chapter));
+  return found == flips.end() ? media::FrameFlip{} : found->second;
 }
 
 absl::StatusOr<std::array<StitchCameraOptics, 2>> resolve_stitch_input_camera_order(

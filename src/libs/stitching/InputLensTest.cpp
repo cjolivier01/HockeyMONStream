@@ -104,6 +104,8 @@ int main() {
       "saving default optics must explicitly override inherited correction");
   std::array<StitchCameraOptics, 2> separate{
       {{125.12273264892974, 70.3657608, lens}, {97.077571333536923, 54.5934677, lens}}};
+  separate[0].flip = {true, false};
+  separate[1].flip = {false, true};
   separate[0].input_lens.optimization = "fixed";
   separate[1].input_lens.optimization = "refine";
   separate[1].input_lens.distortion[1] = 0.021905029420311552;

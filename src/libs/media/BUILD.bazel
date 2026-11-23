@@ -1,6 +1,12 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "frame_flip",
+    hdrs = ["FrameFlip.h"],
+    include_prefix = "hstream/src/libs/media",
+)
+
+cc_library(
     name = "mp4_audio_edit",
     srcs = ["Mp4AudioEdit.cpp"],
     hdrs = ["Mp4AudioEdit.h"],

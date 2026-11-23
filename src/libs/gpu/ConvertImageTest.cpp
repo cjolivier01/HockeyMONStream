@@ -37,7 +37,7 @@ struct Stream {
     (void)cudaStreamDestroy(value);
   }
 };
-void Test(PixelFormat format, int width, int height, cudaStream_t stream) {
+void Test(PixelFormat format, int width, int height, cudaStream_t stream, hm::media::FrameFlip flip = {}) {
   const size_t input_pitch = width * 8 + 24, output_pitch = width * 8 + 32;
   std::vector<uint8_t> input(input_pitch * height, 0xa5), uv(input_pitch * height, 0x5a);
   std::vector<std::array<float, 4>> expected(width * height);
@@ -115,7 +115,7 @@ void Test(PixelFormat format, int width, int height, cudaStream_t stream) {
       -.21324861f / factor,
       -.53290933f / factor,
       2.11240179f / factor};
-  Gpu(ConvertToRgba16Float(image, destination.data, output_pitch, stream));
+  Gpu(ConvertToRgba16Float(image, destination.data, output_pitch, stream, flip));
   std::vector<uint8_t> output(output_pitch * height + 32);
   Gpu(cudaMemcpyAsync(output.data(), destination.data, output.size(), cudaMemcpyDeviceToHost, stream));
   Gpu(cudaStreamSynchronize(stream));
@@ -124,7 +124,10 @@ void Test(PixelFormat format, int width, int height, cudaStream_t stream) {
     for (int x = 0; x < width; ++x)
       for (int c = 0; c < 4; ++c)
         Check(
-            std::abs(float(row[x * 4 + c]) - expected[y * width + x][c]) <= .13f,
+            std::abs(
+                float(row[x * 4 + c]) -
+                expected[(flip.vertical ? height - 1 - y : y) * width + (flip.horizontal ? width - 1 - x : x)][c]) <=
+                .13f,
             "Pixel mismatch (includes final row/column)");
     for (size_t i = width * 8; i < output_pitch; ++i)
       Check(output[y * output_pitch + i] == 0xa5, "Output pitch guard overwritten");
@@ -158,7 +161,8 @@ int main() {
           PixelFormat::kGray8,
           PixelFormat::kNv12,
           PixelFormat::kP010}) {
-      Test(format, 8, 6, stream.value);
+      for (hm::media::FrameFlip flip : {hm::media::FrameFlip{}, {true, false}, {false, true}, {true, true}})
+        Test(format, 8, 6, stream.value, flip);
       if (format != PixelFormat::kNv12 && format != PixelFormat::kP010) {
         Test(format, 1, 1, stream.value);
         Test(format, 7, 3, stream.value);

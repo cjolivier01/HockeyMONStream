@@ -2108,6 +2108,8 @@ absl::StatusOr<CanvasProvenanceCompatibility> check_stitch_algorithm_provenance_
       return CanvasProvenanceCompatibility{false, std::string(geometry.message())};
   }
   if (!configured.has_value()) {
+    if (provenance && provenance->camera && !FrameFlips(provenance->camera->input_cameras).empty())
+      return CanvasProvenanceCompatibility{false, "the source camera flips were cleared"};
     if (provenance && !provenance->manual_control_point_fingerprint.empty())
       return CanvasProvenanceCompatibility{false, "the manual control points were cleared"};
     if (provenance && !provenance->calibration_frame_selection_fingerprint.empty())
@@ -5620,7 +5622,8 @@ absl::Status configure_orientation(
     const std::string& game_dir,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    const CameraSourceStarts& source_starts) {
+    const CameraSourceStarts& source_starts,
+    const CameraFrameFlips& flips) {
   fs::path model_path;
   HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
   std::unique_ptr<RinkSegmentation> model;
@@ -5630,7 +5633,7 @@ absl::Status configure_orientation(
                             "started",
                             "GPU memory exhausted; finding the rink for camera orientation on CPU (may take longer)");
                       }));
-  return configure_game_orientation(game_dir, *model, expected_invalidation_id, is_cancelled, source_starts);
+  return configure_game_orientation(game_dir, *model, expected_invalidation_id, is_cancelled, source_starts, flips);
 }
 
 bool is_scoreboard_configured(const std::string& game_dir) {

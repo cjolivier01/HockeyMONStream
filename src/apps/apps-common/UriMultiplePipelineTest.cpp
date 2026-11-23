@@ -1522,6 +1522,7 @@ int run_mixed_packed_inputs(const fs::path& root) {
     configs[i].stitch_input_height = i ? 216 : 288;
     configs[i].video_format = g_strdup("RGB10A2_LE");
     configs[i].stitch_converter_buffers = 3;
+    configs[i].camera_input_flip = i ? 6 : 4;
   }
   NvDsSrcParentBin sources{};
   if (!create_multi_source_bin(2, configs, &sources))

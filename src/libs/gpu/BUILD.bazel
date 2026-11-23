@@ -55,7 +55,7 @@ cc_library(
     hdrs = ["ConvertImage.h"],
     include_prefix = "hstream/src/libs/gpu",
     visibility = ["//visibility:public"],
-    deps = [":image", ":runtime"],
+    deps = [":image", ":runtime", "//src/libs/media:frame_flip"],
 )
 
 gpu_library(

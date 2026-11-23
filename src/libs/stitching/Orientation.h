@@ -9,6 +9,7 @@
 #include "absl/status/statusor.h"
 
 #include "hstream/src/libs/stitching/CameraSourceStart.h"
+#include "hstream/src/libs/stitching/InputLens.h"
 #include "hstream/src/libs/stitching/RinkSegmentation.h"
 #include "hstream/src/libs/stitching/VideoDiscovery.h"
 
@@ -29,7 +30,8 @@ absl::Status configure_game_orientation(
     const RinkSegmentation& rink_model,
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
-    const CameraSourceStarts& source_starts = {});
+    const CameraSourceStarts& source_starts = {},
+    const CameraFrameFlips& flips = {});
 
 } // namespace stitching
 } // namespace hm
