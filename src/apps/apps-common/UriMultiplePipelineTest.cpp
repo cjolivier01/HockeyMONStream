@@ -1064,7 +1064,7 @@ int run_render_audio_initial_mute(
     return 5;
   }
   if (audio_sync != paced || audio_async || audio_qos || max_lateness != -1 || leaky != (paced ? 0 : 2) ||
-      (paced && provides_clock)) {
+      provides_clock) {
     std::cerr << "Unexpected local audio timing policy; realtime=" << realtime << " sync=" << audio_sync
               << ", async=" << audio_async << " leaky=" << leaky << " provides-clock=" << provides_clock << '\n';
     return 6;

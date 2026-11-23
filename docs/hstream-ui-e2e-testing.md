@@ -241,8 +241,10 @@ video and audio from their timestamps, disables preview frame sampling/leaky
 queues, and retains late video frames (`max-lateness=-1`, `qos=false`). The render
 terminator prerolls before the playback clock starts. Calibration runs with the
 unrestricted monitor policy so collecting frame pairs and crossing URI chapters
-cannot wait on output preroll. After calibration, playback recreates the graph at
-the requested start (including zero) and enables pacing. Hidden previews remain gated.
+cannot wait on output preroll. The unpaced ALSA monitor does not supply the
+pipeline clock. The stitched preview can advance while the device waits for its
+first paired audio samples. After calibration, playback recreates the graph at
+the requested start (including zero) and enables pacing when requested. Hidden previews remain gated.
 Slow processing can make playback stutter; it does not trigger frame skipping.
 
 The setting does not alter archive frames, timestamps, audio samples, encoding
