@@ -955,6 +955,41 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
   if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
       !expect(promote_saved().ok(), "unresolved Auto roles must match both current camera groups"))
     return false;
+  // Named root discovery writes absolute candidate-local paths for both roles.
+  const auto named_game = root / "named-game";
+  const auto named_candidate = root / "named-candidate";
+  const auto named_config = named_game / "_hockeymon/config.yaml";
+  const auto named_candidate_config = named_candidate / "_hockeymon/config.yaml";
+  auto absolute_candidate = YAML::Clone(reoriented);
+  YAML::Node named_parent = YAML::Clone(saved_flips);
+  named_parent["stitching"].remove("input_cameras");
+  auto named_flips = YAML::Node(YAML::NodeType::Map);
+  for (const char* role : {"left", "right"}) {
+    const auto filename = std::string(role) + ".mp4";
+    if (!write(named_game / filename, role))
+      return false;
+    fs::create_directories(named_candidate);
+    fs::create_symlink(named_game / filename, named_candidate / filename);
+    absolute_candidate["game"]["videos"][role][0] = (named_candidate / filename).string();
+    named_flips[filename] = YAML::Clone(reoriented["stitching"]["input_cameras"][
+        std::string(role) == "left" ? "cam1/left.mp4" : "cam2/right.mp4"]);
+  }
+  absolute_candidate["stitching"]["input_cameras"] = named_flips;
+  if (!write(named_config, YAML::Dump(named_parent)) ||
+      !write(named_candidate_config, YAML::Dump(absolute_candidate)))
+    return false;
+  const auto named = BuildStitchingExperimentSelectionConfig(named_candidate_config, named_config);
+  if (!expect(
+          named.ok() && YAML::Load(*named)["game"]["videos"]["left"][0].as<std::string>() == "left.mp4" &&
+              YAML::Load(*named)["game"]["videos"]["right"][0].as<std::string>() == "right.mp4",
+          "named root camera chapters must be promoted as game-relative paths"))
+    return false;
+  absolute_candidate["game"]["videos"]["left"][0] = (root / "another-game" / "left.mp4").string();
+  if (!write(named_candidate_config, YAML::Dump(absolute_candidate)) ||
+      !expect(
+          !BuildStitchingExperimentSelectionConfig(named_candidate_config, named_config).ok(),
+          "absolute chapters outside the candidate cannot become game inputs"))
+    return false;
   saved_flips["hstream_ui"]["video_roles"]["center"].push_back("panorama.mp4");
   if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
       !expect(!promote_saved().ok(), "a Center recording cannot adopt historical camera assignments"))

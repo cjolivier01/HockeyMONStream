@@ -1296,6 +1296,21 @@ configurator_internal::AutomaticHighBitDepthDecision configurator_internal::deci
   return decision;
 }
 
+bool configurator_internal::refresh_generated_camera_roles(
+    const YAML::Node& config,
+    const ExplicitStitchingVideoSelection& selection,
+    const stitching::VideosDict& discovered) {
+  if (selection.ui_roles_are_authoritative || (!selection.left_is_explicit && !selection.right_is_explicit) ||
+      discovered.empty() || discovered.count("left") || discovered.count("right"))
+    return false;
+  if (std::any_of(discovered.begin(), discovered.end(), [](const auto& item) { return is_cam_video_key(item.first); }))
+    return true;
+  // Root GoPro and Insta360 recordings use numeric group IDs. Their generated
+  // roles also expire when a source edit changes the pixels used to infer them.
+  return discovered.size() == 2 && !discovered.count("stitched") &&
+      get_node_value<std::string>(config, "hstream_ui.stitching_calibration.stale_from", "") == "input";
+}
+
 configurator_internal::ExplicitStitchingVideoSelection configurator_internal::select_explicit_stitching_videos(
     const YAML::Node& config,
     bool force) {
@@ -6745,7 +6760,6 @@ absl::Status Configurator::gather_stitching_videos(
   right_files = explicit_selection.right;
   bool explicit_left = explicit_selection.left_is_explicit;
   bool explicit_right = explicit_selection.right_is_explicit;
-  const bool runtime_videos_owned_by_ui_roles = explicit_selection.ui_roles_are_authoritative;
 
   stitching::CameraSourceStarts source_starts;
   HM_ASSIGN_OR_RETURN(
@@ -6755,11 +6769,8 @@ absl::Status Configurator::gather_stitching_videos(
   HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
-  const bool has_left_right_auto = videos.count("left") || videos.count("right");
-  if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&
-      (explicit_left || explicit_right)) {
-    std::cerr << "Ignoring stale generated game.videos left/right because camN Auto video sets are available"
-              << std::endl;
+  if (configurator_internal::refresh_generated_camera_roles(config_, explicit_selection, videos)) {
+    std::cerr << "Redetecting generated Left/Right assignments from the Auto camera recordings" << std::endl;
     left_files.clear();
     right_files.clear();
     explicit_left = false;

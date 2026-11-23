@@ -17,6 +17,7 @@
 #include "hstream/src/libs/common/pipeline_utils.h"
 #include "hstream/src/libs/stitching/CalibrationFailure.h"
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#include "hstream/src/libs/stitching/VideoDiscovery.h"
 
 struct NvDsConfig;
 struct NvDsPipeline;
@@ -59,6 +60,10 @@ struct ExplicitStitchingVideoSelection {
 };
 
 ExplicitStitchingVideoSelection select_explicit_stitching_videos(const YAML::Node& config, bool force);
+bool refresh_generated_camera_roles(
+    const YAML::Node& config,
+    const ExplicitStitchingVideoSelection& selection,
+    const stitching::VideosDict& discovered);
 absl::Status validate_mixed_explicit_auto_playlists(
     bool left_is_explicit,
     bool right_is_explicit,

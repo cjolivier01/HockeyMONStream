@@ -1581,6 +1581,23 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     HM_ASSIGN_OR_RETURN(selected_flips, hm::stitching::ReadCameraFrameFlips(selected_stitching["input_cameras"]));
     const bool reoriented = previous_flips != selected_flips;
     if (reoriented || input_stage_is_stale(current)) {
+      auto candidate_directory = fs::absolute(experiment_config).parent_path();
+      if (candidate_directory.filename() == "_hockeymon")
+        candidate_directory = candidate_directory.parent_path();
+      // Named root cameras can be saved as absolute paths inside the candidate.
+      // Keep external paths absolute so the playlist check below rejects them.
+      for (const char* role : {"left", "right"}) {
+        auto paths = selected["game"]["videos"][role];
+        if (!paths.IsSequence())
+          continue;
+        for (size_t i = 0; i < paths.size(); ++i) {
+          const fs::path path = paths[i].as<std::string>();
+          if (std::find(path.begin(), path.end(), "..") != path.end())
+            return absl::InvalidArgumentError("Selected camera chapters cannot contain parent traversal");
+          if (path.is_absolute())
+            paths[i] = hm::stitching::stitch_input_camera_key(candidate_directory, path);
+        }
+      }
       HM_RETURN_IF_ERROR(reconcile_oriented_video_paths(current, selected, game));
       for (const char* role : {"left", "right"})
         current["game"]["videos"][role] = YAML::Clone(selected["game"]["videos"][role]);
