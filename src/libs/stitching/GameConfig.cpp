@@ -1063,23 +1063,36 @@ std::string stitch_input_camera_key(const std::filesystem::path& game, const std
   return !relative.empty() && *relative.begin() != ".." ? relative.generic_string() : absolute.generic_string();
 }
 
+namespace {
+template <typename Settings>
+absl::StatusOr<typename Settings::const_iterator> camera_for_playlist(
+    const Settings& settings,
+    const fs::path& game,
+    const std::vector<std::string>& chapters) {
+  auto match = settings.end();
+  // The originally selected chapter may move when playback or a reused
+  // experiment sorts the recording's chapters.
+  if (!settings.empty())
+    for (const auto& chapter : chapters) {
+      const auto found = settings.find(stitch_input_camera_key(game, chapter));
+      if (found == settings.end())
+        continue;
+      if (match != settings.end() && match != found)
+        return absl::InvalidArgumentError("Multiple camera prescriptions match one recording");
+      match = found;
+    }
+  return match;
+}
+} // namespace
+
 absl::StatusOr<media::FrameFlip> SourceFrameFlip(
     const CameraFrameFlips& flips,
-    const std::filesystem::path& game,
+    const fs::path& game,
     const std::vector<std::string>& chapters) {
-  media::FrameFlip flip;
-  // The UI binds to the first selected file, which can move when Program
-  // sorts a recording's chapters into playback order.
-  if (!flips.empty())
-    for (const auto& chapter : chapters) {
-      const auto found = flips.find(stitch_input_camera_key(game, chapter));
-      if (found == flips.end())
-        continue;
-      if (flip.enabled() && !(flip == found->second))
-        return absl::InvalidArgumentError("Conflicting camera flips in one recording");
-      flip = found->second;
-    }
-  return flip;
+  const auto match = camera_for_playlist(flips, game, chapters);
+  if (!match.ok())
+    return match.status();
+  return *match == flips.end() ? media::FrameFlip{} : (*match)->second;
 }
 
 absl::StatusOr<std::array<StitchCameraOptics, 2>> resolve_stitch_input_camera_order(
@@ -1104,9 +1117,11 @@ absl::StatusOr<std::array<StitchCameraOptics, 2>> resolve_stitch_input_camera_or
                                                                                                 : YAML::Node();
       if (!playlist || !playlist.IsSequence() || !playlist.size() || !playlist[0].IsScalar())
         return absl::FailedPreconditionError("Independent camera optics require resolved Left/Right source playlists");
-      const auto source = stitch_input_camera_key(game, playlist[0].as<std::string>());
-      const auto found = camera.input_cameras.find(source);
-      if (found == camera.input_cameras.end() || !used.insert(source).second)
+      const auto match = camera_for_playlist(camera.input_cameras, game, playlist.as<std::vector<std::string>>());
+      if (!match.ok())
+        return match.status();
+      const auto found = *match;
+      if (found == camera.input_cameras.end() || !used.insert(found->first).second)
         return absl::FailedPreconditionError(
             "Camera optics snapshot does not match the selected sources; refresh automatic optics");
       result[index++] = found->second;

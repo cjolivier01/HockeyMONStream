@@ -7395,7 +7395,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
       updatePresetDirtyState();
     };
     source_start->flipChanged = [this, camera_index](hm::media::FrameFlip flip) {
-      if (camera_index >= camera_optics_sources_.size())
+      if (camera_index >= static_cast<int>(camera_optics_sources_.size()))
         return;
       camera_optics_result_.camera.input_cameras.at(camera_optics_sources_[camera_index]).flip = flip;
       input_lens_widget_->setCameraDetails(camera_optics_result_);

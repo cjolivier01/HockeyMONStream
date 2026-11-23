@@ -163,6 +163,18 @@ int main() {
   ok &= expect(
       ordered.ok() && (*ordered)[0] == separate[1] && (*ordered)[1] == separate[0],
       "Camera optics must follow discovered orientation, not enumeration order");
+  auto reused = YAML::Clone(config);
+  // A workspace reusing selected player frames copies chronological playback
+  // order into the explicit roles, even when chapter two supplied the camera key.
+  reused["hstream_ui"]["video_roles"]["left"] = YAML::Load("[earlier.MP4, GX010104.MP4]");
+  const auto reordered = resolve_stitch_input_camera_order("/game", reused, camera);
+  ok &= expect(
+      reordered.ok() && (*reordered)[0] == separate[1],
+      "Reused player frames must keep the selected camera optics and flip across chapter sorting");
+  reused["hstream_ui"]["video_roles"]["left"].push_back("GX010103.MP4");
+  ok &= expect(
+      !resolve_stitch_input_camera_order("/game", reused, camera).ok(),
+      "A recording cannot claim two camera prescriptions");
   config["game"]["videos"]["left"][0] = "replacement.MP4";
   ok &= expect(
       !resolve_stitch_input_camera_order("/game", config, camera).ok(),
