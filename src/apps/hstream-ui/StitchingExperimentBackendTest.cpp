@@ -925,6 +925,46 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
               YAML::Dump(YAML::Load(*swapped)["game"]["videos"]) == YAML::Dump(reoriented["game"]["videos"]),
           "promoting new Auto camera assignments must adopt the candidate's ordered playlists"))
     return false;
+  // Save Preset has already persisted the new axes. The input-stage marker
+  // still distinguishes the previous solve's generated roles from user roles.
+  auto saved_flips = YAML::Clone(reversed_parent);
+  saved_flips["stitching"]["input_cameras"] = YAML::Clone(reoriented["stitching"]["input_cameras"]);
+  saved_flips["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)))
+    return false;
+  const auto after_save = CreateStitchingExperimentWorkspace(game, root / "saved-flips", varied, 1);
+  if (!expect(after_save.ok(), "a saved flip must allow a new experiment solve"))
+    return false;
+  const auto pending = YAML::LoadFile((after_save->game_directory / "_hockeymon/config.yaml").string());
+  const auto pending_roles = pending["hstream_ui"]["video_roles"];
+  if (!expect(
+          (!pending_roles || (!pending_roles["left"] && !pending_roles["right"])) &&
+              pending["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input",
+          "queued experiments must redetect Auto roles after saving a camera flip"))
+    return false;
+  const auto promote_saved = [&] {
+    return BuildStitchingExperimentSelectionConfig(reoriented_path, game / "_hockeymon/config.yaml");
+  };
+  const auto saved_promotion = promote_saved();
+  if (!expect(
+          saved_promotion.ok() &&
+              YAML::Dump(YAML::Load(*saved_promotion)["game"]["videos"]) == YAML::Dump(reoriented["game"]["videos"]),
+          "saved flip flags must still adopt the newly solved Auto roles"))
+    return false;
+  saved_flips["game"].remove("videos");
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
+      !expect(promote_saved().ok(), "unresolved Auto roles must match both current camera groups"))
+    return false;
+  saved_flips["hstream_ui"]["video_roles"]["center"].push_back("panorama.mp4");
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
+      !expect(!promote_saved().ok(), "a Center recording cannot adopt historical camera assignments"))
+    return false;
+  saved_flips["hstream_ui"].remove("video_roles");
+  fs::rename(game / "cam2" / "right.mp4", game / "cam2" / "replacement.mp4");
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
+      !expect(!promote_saved().ok(), "replaced Auto recordings cannot adopt historical camera assignments"))
+    return false;
+  fs::rename(game / "cam2" / "replacement.mp4", game / "cam2" / "right.mp4");
   reversed_parent["hstream_ui"]["video_roles"] = YAML::Clone(parent_videos);
   if (!write(game / "_hockeymon/config.yaml", YAML::Dump(reversed_parent)) ||
       !expect(

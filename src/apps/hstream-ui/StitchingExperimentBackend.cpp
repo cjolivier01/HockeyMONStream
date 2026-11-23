@@ -16,6 +16,7 @@
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
+#include "hstream/src/libs/stitching/VideoDiscovery.h"
 
 #include <unistd.h>
 
@@ -320,6 +321,10 @@ absl::Status link_calibration_assets(
   return absl::OkStatus();
 }
 
+bool input_stage_is_stale(YAML::Node config) {
+  return config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>("") == "input";
+}
+
 void promote_generated_video_roles(YAML::Node config) {
   YAML::Node ui_roles = config["hstream_ui"]["video_roles"];
   const YAML::Node videos = config["game"]["videos"];
@@ -433,9 +438,10 @@ absl::Status configure_candidate(
   hm::stitching::CameraFrameFlips flips;
   HM_ASSIGN_OR_RETURN(flips, hm::stitching::ReadCameraFrameFlips(config["stitching"]["input_cameras"]));
   const bool flips_changed = settings.camera && flips != hm::stitching::FrameFlips(settings.camera->input_cameras);
+  const bool stale_input = input_stage_is_stale(config);
   if (flips_changed)
     settings.manual_control_points.reset();
-  else
+  if (!flips_changed && !stale_input)
     promote_generated_video_roles(config);
   const bool source_frames_changed =
       settings.camera && (previous_starts != settings.camera->input_start_times || flips_changed);
@@ -502,7 +508,7 @@ absl::Status configure_candidate(
   calibration["status"] = "pending";
   calibration["rink_mask_status"] = "pending";
   // A different source trim or orientation requires new calibration inputs.
-  calibration["stale_from"] = source_frames_changed ? "input" : "features";
+  calibration["stale_from"] = source_frames_changed || stale_input ? "input" : "features";
   calibration["artifacts_invalidated"] = false;
   calibration["invalidation_id"] = invalidation_id;
   remove_downstream_generation(config);
@@ -666,6 +672,55 @@ absl::Status reconcile_selected_video_paths(
     }
   }
   return absl::OkStatus();
+}
+
+// A new orientation solve may exchange Auto sides. Verify its bindings against
+// the operator's roles or the recording groups that the runner would discover.
+absl::Status reconcile_oriented_video_paths(YAML::Node current, const YAML::Node& selected, const fs::path& game) {
+  auto roles = current["hstream_ui"]["video_roles"];
+  auto videos = current["game"]["videos"];
+  const auto assigned = [](const YAML::Node& paths) { return paths.IsSequence() && paths.size() > 0; };
+  const bool explicit_left = assigned(roles["left"]), explicit_right = assigned(roles["right"]);
+  if (!explicit_left && !explicit_right && (assigned(roles["center"]) || assigned(videos["center"])))
+    return absl::AbortedError("The selected game now uses a Center recording");
+  const bool bound = (explicit_left || assigned(videos["left"])) && (explicit_right || assigned(videos["right"]));
+  if (bound && (explicit_left || explicit_right))
+    return reconcile_selected_video_paths(current, selected, game, true);
+
+  hm::stitching::VideosDict groups;
+  HM_ASSIGN_OR_RETURN(groups, hm::stitching::get_available_videos(fs::absolute(game).string()));
+  if (groups.count("stitched") && groups.size() == 1 && !explicit_left && !explicit_right)
+    return absl::AbortedError("The selected game now uses a panorama recording");
+  groups.erase("stitched");
+  const bool named = groups.count("left") || groups.count("right");
+  if (bound && (groups.empty() || named))
+    return reconcile_selected_video_paths(current, selected, game, true);
+  if (!named && (groups.size() != 2 || explicit_left || explicit_right))
+    return absl::AbortedError("The selected game's camera playlists cannot be resolved");
+
+  YAML::Node expected = YAML::Clone(current);
+  auto expected_videos = expected["game"]["videos"];
+  auto group = groups.begin();
+  for (const char* role : {"left", "right"}) {
+    expected_videos.remove(role);
+    if (assigned(roles[role]))
+      continue;
+    auto found = named ? groups.find(role) : group++;
+    if (found == groups.end())
+      return absl::AbortedError("The selected game's camera playlist could not be found");
+    for (const auto& chapter : found->second)
+      expected_videos[role].push_back(chapter.second);
+  }
+  auto matched = reconcile_selected_video_paths(expected, selected, game, true);
+  if (!named && absl::IsAborted(matched)) {
+    const auto left = YAML::Clone(expected_videos["left"]);
+    expected_videos["left"] = YAML::Clone(expected_videos["right"]);
+    expected_videos["right"] = left;
+    matched = reconcile_selected_video_paths(expected, selected, game, true);
+  }
+  if (matched.ok() && (explicit_left || explicit_right))
+    current["hstream_ui"]["video_roles"] = YAML::Clone(expected["hstream_ui"]["video_roles"]);
+  return matched;
 }
 
 absl::Status copy_selected_frame_inputs(
@@ -1525,22 +1580,12 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
     HM_ASSIGN_OR_RETURN(previous_flips, hm::stitching::ReadCameraFrameFlips(current_stitching["input_cameras"]));
     HM_ASSIGN_OR_RETURN(selected_flips, hm::stitching::ReadCameraFrameFlips(selected_stitching["input_cameras"]));
     const bool reoriented = previous_flips != selected_flips;
-    auto matched = reconcile_selected_video_paths(current, selected, game, reoriented);
-    if (reoriented && absl::IsAborted(matched)) {
-      // A new solve can reverse the two Auto assignments. Check the same
-      // recordings in the opposite order while preserving explicit UI roles.
-      auto videos = current["game"]["videos"];
-      if (videos["left"].IsSequence() && videos["right"].IsSequence()) {
-        const auto left = YAML::Clone(videos["left"]);
-        videos["left"] = YAML::Clone(videos["right"]);
-        videos["right"] = left;
-        matched = reconcile_selected_video_paths(current, selected, game, true);
-      }
-    }
-    HM_RETURN_IF_ERROR(matched);
-    if (reoriented) {
+    if (reoriented || input_stage_is_stale(current)) {
+      HM_RETURN_IF_ERROR(reconcile_oriented_video_paths(current, selected, game));
       for (const char* role : {"left", "right"})
         current["game"]["videos"][role] = YAML::Clone(selected["game"]["videos"][role]);
+    } else {
+      HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game));
     }
     const YAML::Node request = selected["hstream_ui"]["stitching_calibration"]["reframe"];
     if (request && !request.IsNull())

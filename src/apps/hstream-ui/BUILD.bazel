@@ -581,6 +581,7 @@ cc_library(
         "//src/libs/stitching:stitching_core",
         "//src/libs/stitching:stitching_calibration_controls",
         "//src/libs/stitching:transaction_state",
+        "//src/libs/stitching:video_discovery",
         "@yaml-cpp",
     ],
 )
