@@ -103,8 +103,13 @@ void CancelExperimentAndPlayRightCamera(HStreamWindow& window, bool synthetic) {
   Wait([&] { return status->text().startsWith("Batch cancelled."); }, "Experiment did not finish cancelling");
   dialog->close();
   // The real event loop delivers WA_DeleteOnClose before the next user click.
-  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-  Check(!dialog, "Cancelled experiment dialog did not close");
+  Wait(
+      [&] {
+        if (dialog)
+          QCoreApplication::sendPostedEvents(dialog.data(), QEvent::DeferredDelete);
+        return !dialog;
+      },
+      "Cancelled experiment dialog did not close");
 
   tabs->setCurrentIndex(3);
   Wait([&] { return play->isEnabled(); }, "Cancelled experiment retained the camera");
