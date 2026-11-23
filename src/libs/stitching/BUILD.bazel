@@ -386,13 +386,16 @@ cc_test(
 
 cc_test(
     name = "field_mask_persistence_test",
-  srcs = ["FieldMaskPersistenceTest.cpp"],
-  deps = cuda_dependencies("field_mask_persistence_test", [
-    ":stitching",
-    ":transaction_state",
-    "@opencv_linux//:opencv",
-    "@yaml-cpp",
-  ], testonly = True),
+    srcs = ["FieldMaskPersistenceTest.cpp"],
+    defines = select({"//:use_hip": ["HSTREAM_RINK_MASK_CORE_TEST"], "//conditions:default": []}),
+    deps = [
+        ":transaction_state",
+        "@opencv_linux//:opencv",
+        "@yaml-cpp",
+    ] + select({
+        "//:use_hip": [":stitching_core"],
+        "//conditions:default": [":stitching"],
+    }),
 )
 
 cc_test(

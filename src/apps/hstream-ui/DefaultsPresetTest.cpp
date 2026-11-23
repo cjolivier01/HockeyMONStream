@@ -283,6 +283,7 @@ int main(int argc, char** argv) {
   for (const bool baseline_crop : {false, true}) {
     YAML::Node custom = YAML::Load(original_baseline.toStdString());
     custom["hstream_ui"]["show_crop_dialog"] = baseline_crop;
+    custom["hstream_ui"]["paint_rink_mask"] = baseline_crop;
     custom["hstream_ui"]["show_leveling_dialog"] = !baseline_crop;
     custom["stitching"]["stitch_frame_time"] = "00:00:02.345";
     Write(custom_baseline.filePath("baseline.yaml"), QByteArray::fromStdString(YAML::Dump(custom)));
@@ -293,21 +294,24 @@ int main(int argc, char** argv) {
     calibration_selector->setCurrentIndex(0);
     auto* crop = Find<QCheckBox>(calibration, "showCropDialogCheck");
     auto* leveling = Find<QCheckBox>(calibration, "showLevelingDialogCheck");
+    auto* paint = Find<QCheckBox>(calibration, "paintRinkMaskCheck");
     auto* reference = Find<QLineEdit>(calibration, "stitchFrameTimeEdit");
     Require(
         crop->isEnabled() && leveling->isEnabled() && reference->isEnabled(),
         "Defaults must enable calibration prompt and reference controls");
     Require(
         crop->isChecked() == baseline_crop && leveling->isChecked() == !baseline_crop &&
-            reference->text() == "00:00:02.345",
+            paint->isChecked() == baseline_crop && reference->text() == "00:00:02.345",
         "Defaults ignored canonical calibration baseline values");
     crop->setChecked(!baseline_crop);
+    paint->setChecked(!baseline_crop);
     leveling->setChecked(baseline_crop);
     reference->setText("-00:00:01.125");
     Require(HStreamWindowTestAccess::Save(calibration), "Cannot save calibration defaults");
     const auto saved_defaults = YAML::LoadFile(defaults_path.toStdString());
     Require(
         saved_defaults["hstream_ui"]["show_crop_dialog"].as<bool>() == !baseline_crop &&
+            saved_defaults["hstream_ui"]["paint_rink_mask"].as<bool>() == !baseline_crop &&
             saved_defaults["hstream_ui"]["show_leveling_dialog"].as<bool>() == baseline_crop &&
             saved_defaults["stitching"]["stitch_frame_time"].as<std::string>() == "-00:00:01.125",
         "Calibration defaults were not saved under canonical keys");

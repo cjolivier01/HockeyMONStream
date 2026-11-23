@@ -555,8 +555,8 @@ RinkMaskPreparation RinkMaskPreparer(
   environment.insert("HM_GAME_DIR", game.absolutePath());
   for (const auto& key : environment.keys())
     if (key.startsWith("HSTREAM_UI_PREVIEW_") || key.startsWith("HSTREAM_CALIBRATION_") ||
-        key == "HSTREAM_RINK_LEVELING_FLOW" || key == "HSTREAM_PROJECTION_CROP_FLOW" || key == "HSTREAM_JOB_MANIFEST" ||
-        key == "HSTREAM_ARCHIVE_RUN_ID")
+        key == "HSTREAM_RINK_MASK_PAINT_FLOW" || key == "HSTREAM_RINK_LEVELING_FLOW" ||
+        key == "HSTREAM_PROJECTION_CROP_FLOW" || key == "HSTREAM_JOB_MANIFEST" || key == "HSTREAM_ARCHIVE_RUN_ID")
       environment.remove(key);
   const QString executable = QFileInfo(runner).isAbsolute() ? runner : QStandardPaths::findExecutable(runner);
   std::map<std::string, std::string> env;

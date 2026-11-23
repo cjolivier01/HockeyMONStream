@@ -249,8 +249,9 @@ int main(int argc, char** argv) {
                      "and runs without archive publication. Its supervisor must set a private\n"
                      "HSTREAM_RUNTIME_CACHE_DIR and clean it after every descendant has stopped.\n"
                      "Extra script arguments are appended as literal runner arguments in interactive mode.\n";
-        std::cout << "--calibration-prompts preserves explicitly configured rink-leveling and crop flows\n"
-                     "for managed jobs; the supervisor must service calibration prompts.\n";
+        std::cout
+            << "--calibration-prompts preserves explicitly configured leveling, crop and ice mask painting flows\n"
+               "for managed jobs; the supervisor must service calibration prompts.\n";
         std::cout << "--runtime-only forwards only the script's arguments, for native sampling and\n"
                      "runtime-info subcommands that cannot inherit a saved playback recipe.\n";
         std::cout << "--interactive-publication preserves interactive sinks and stdin through the managed finalizer.\n"
@@ -471,7 +472,7 @@ export HM_GAME_DIR="${game_root}"
       script += "cd -- " + quote(working.string()) + "\n";
     script += "unset HSTREAM_UI_PARENT_PID\n";
     if (!interactive && !calibration_prompts)
-      script += "unset HSTREAM_RINK_LEVELING_FLOW HSTREAM_PROJECTION_CROP_FLOW\n";
+      script += "unset HSTREAM_RINK_LEVELING_FLOW HSTREAM_PROJECTION_CROP_FLOW HSTREAM_RINK_MASK_PAINT_FLOW\n";
     if (!interactive)
       script +=
           "unset HSTREAM_CALIBRATION_PENDING HSTREAM_CALIBRATION_START_STAGE HSTREAM_CALIBRATION_INVALIDATION_ID\n";

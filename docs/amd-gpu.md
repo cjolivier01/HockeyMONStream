@@ -1521,3 +1521,12 @@ build stopped in the existing `VaDetectorImage.cpp` toolchain include chain
 validation remains incomplete on that host.
 
 Ownership Request stop and explicit force release use the abort path, never graceful partial publication. Completion checks durable ownership again before standalone file links and managed completion. AMD in-progress video uses an unnamed temporary inode; abort closes and discards it. Named working files and logs remain subject to the shared retention rules in `ownership-recovery.md`.
+
+
+### Manual ice mask review
+
+AMD Program can review its existing saved calibration when **Paint missed ice
+after detection** is enabled. It displays the saved stitched still, uses the
+same brush and mask publication as the NVIDIA calibrator, and loads the
+accepted full-resolution mask for player filtering. AMD Program still needs
+saved alignment and a valid detected mask for the current output geometry.

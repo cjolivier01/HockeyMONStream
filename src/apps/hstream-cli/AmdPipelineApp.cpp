@@ -41,6 +41,7 @@
 #include "hstream/src/libs/program/ProgramScoreboardConfig.h"
 #include "hstream/src/libs/program/VaProgramSink.h"
 #include "hstream/src/libs/publication/Publication.h"
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 
 namespace {
 static_assert(std::atomic<int>::is_always_lock_free, "Signal cancellation requires lock-free atomics");
@@ -187,6 +188,9 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
   const hm::program::ProgramCalibrationRequest calibration{args.saved_stitch_time, args.expected_invalidation};
   Status(hm::program::ValidateProgramCalibrationSelection(launch.saved_game, calibration));
   Status(hm::program::ValidateAmdProgramAdmission(launch.configuration));
+  Status(hm::stitching::review_saved_field_mask(launch.game.string(), args.expected_invalidation.value_or(""), [] {
+    return interrupted.load(std::memory_order_relaxed) != 0;
+  }));
   auto output_config = Take(hm::program::ResolveProgramOutputConfig(launch.configuration));
   const auto start = args.start.value_or(output_config.start_ns);
   const auto limit = args.limit;
