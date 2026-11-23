@@ -2,6 +2,7 @@
 
 #include <QtCore/QStringList>
 #include <memory>
+#include "hstream/src/libs/media/FrameFlip.h"
 
 class CameraExperimentPreviewOutput;
 namespace hm::ui {
@@ -28,6 +29,7 @@ class SourceCameraPlayer {
       qint64 timeout_ms,
       QString* error,
       std::shared_ptr<CameraExperimentPreviewOutput> output = {});
+  void SetFlip(media::FrameFlip flip);
   void Play();
   void Pause();
   // Repaint the retained GPU frame after a paused target was remapped/resized.

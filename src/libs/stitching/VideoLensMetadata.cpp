@@ -1196,8 +1196,10 @@ AutoInputLensResult ResolveAutoInputLensForCameras(
     optics.frozen = source_frozen;
     optics.auto_fov = selected.automatic_fov();
     optics.auto_lens = selected.automatic_lens();
-    if (const auto old = fallback.input_cameras.find(key); old != fallback.input_cameras.end())
+    if (const auto old = fallback.input_cameras.find(key); old != fallback.input_cameras.end()) {
       optics.source_size = old->second.source_size;
+      optics.flip = old->second.flip;
+    }
     if (!source_frozen && (selected.automatic_fov() || selected.automatic_lens())) {
       const auto metadata = ReadVideoLensMetadata(paths->front());
       if (metadata.ok() && metadata->width > 0 && metadata->height > 0 && metadata->width <= 32768 &&

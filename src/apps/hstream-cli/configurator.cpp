@@ -1296,6 +1296,21 @@ configurator_internal::AutomaticHighBitDepthDecision configurator_internal::deci
   return decision;
 }
 
+bool configurator_internal::refresh_generated_camera_roles(
+    const YAML::Node& config,
+    const ExplicitStitchingVideoSelection& selection,
+    const stitching::VideosDict& discovered) {
+  if (selection.ui_roles_are_authoritative || (!selection.left_is_explicit && !selection.right_is_explicit) ||
+      discovered.empty() || discovered.count("left") || discovered.count("right"))
+    return false;
+  if (std::any_of(discovered.begin(), discovered.end(), [](const auto& item) { return is_cam_video_key(item.first); }))
+    return true;
+  // Root GoPro and Insta360 recordings use numeric group IDs. Their generated
+  // roles also expire when a source edit changes the pixels used to infer them.
+  return discovered.size() == 2 && !discovered.count("stitched") &&
+      get_node_value<std::string>(config, "hstream_ui.stitching_calibration.stale_from", "") == "input";
+}
+
 configurator_internal::ExplicitStitchingVideoSelection configurator_internal::select_explicit_stitching_videos(
     const YAML::Node& config,
     bool force) {
@@ -6745,7 +6760,6 @@ absl::Status Configurator::gather_stitching_videos(
   right_files = explicit_selection.right;
   bool explicit_left = explicit_selection.left_is_explicit;
   bool explicit_right = explicit_selection.right_is_explicit;
-  const bool runtime_videos_owned_by_ui_roles = explicit_selection.ui_roles_are_authoritative;
 
   stitching::CameraSourceStarts source_starts;
   HM_ASSIGN_OR_RETURN(
@@ -6755,11 +6769,8 @@ absl::Status Configurator::gather_stitching_videos(
   HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
-  const bool has_left_right_auto = videos.count("left") || videos.count("right");
-  if (!force && has_cam_auto && !has_left_right_auto && !runtime_videos_owned_by_ui_roles &&
-      (explicit_left || explicit_right)) {
-    std::cerr << "Ignoring stale generated game.videos left/right because camN Auto video sets are available"
-              << std::endl;
+  if (configurator_internal::refresh_generated_camera_roles(config_, explicit_selection, videos)) {
+    std::cerr << "Redetecting generated Left/Right assignments from the Auto camera recordings" << std::endl;
     left_files.clear();
     right_files.clear();
     explicit_left = false;
@@ -6831,8 +6842,11 @@ absl::Status Configurator::gather_stitching_videos(
   }
 
   if (left_files.empty() && right_files.empty() && !videos.count("left") && !videos.count("right")) {
+    stitching::CameraFrameFlips flips;
+    HM_ASSIGN_OR_RETURN(
+        flips, stitching::ReadCameraFrameFlips(get_node(config_, "stitching.input_cameras").value_or(YAML::Node())));
     HM_RETURN_IF_ERROR(
-        stitching::configure_orientation(game_dir, active_stitching_invalidation_id_, {}, source_starts));
+        stitching::configure_orientation(game_dir, active_stitching_invalidation_id_, {}, source_starts, flips));
     HM_RETURN_IF_ERROR(import_stitching_orientation(game_dir));
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
@@ -6906,11 +6920,18 @@ absl::Status Configurator::apply_frame_offsets_and_sizes(
     size_t& hh,
     size_t& area,
     YAML::Node& pipeline) {
+  stitching::CameraFrameFlips flips;
+  HM_ASSIGN_OR_RETURN(
+      flips, stitching::ReadCameraFrameFlips(get_node(config_, "stitching.input_cameras").value_or(YAML::Node())));
   std::array<stitching::CameraTrackFormat, 2> formats{};
   const std::array<const std::vector<std::string>*, 2> playlists{&left_files, &right_files};
   for (size_t camera = 0; camera < playlists.size(); ++camera) {
     if (playlists[camera]->empty())
       continue;
+    media::FrameFlip flip;
+    HM_ASSIGN_OR_RETURN(flip, stitching::SourceFrameFlip(flips, resolved_game_dir(), *playlists[camera]));
+    if (flip.enabled())
+      pipeline["source" + std::to_string(camera)]["camera-input-flip"] = flip.nvFlipMethod();
     auto& format = formats[camera];
     HM_ASSIGN_OR_RETURN(format, stitching::ReadCameraTrackFormat(file_maybe_in_game_dir(playlists[camera]->front())));
     for (size_t chapter = 1; chapter < playlists[camera]->size(); ++chapter) {

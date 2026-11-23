@@ -5,6 +5,7 @@
 
 #include <QtCore/QElapsedTimer>
 #include <algorithm>
+#include <atomic>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -24,6 +25,10 @@ struct SourceCameraPlayer::Impl {
     qint64 start_ms;
   };
   std::vector<Chapter> chapters;
+#ifndef HSTREAM_USE_HIP
+  hm::gpu_preview::X11DisplayConnection display;
+  std::atomic<guint32> decoder_seek_sequence{GST_SEQNUM_INVALID};
+#endif
   GstElement* graph{nullptr};
   GstElement* parser{nullptr};
   GstElement* decoder{nullptr};
@@ -31,6 +36,7 @@ struct SourceCameraPlayer::Impl {
   GstElement* sink{nullptr};
   GstBus* bus{nullptr};
   Status status;
+  media::FrameFlip flip;
   size_t chapter{0};
   quint64 window{0};
   std::uint64_t generation{0};
@@ -50,6 +56,7 @@ struct SourceCameraPlayer::Impl {
     if (output)
       output->ReleaseSink();
 #ifndef HSTREAM_USE_HIP
+    decoder_seek_sequence = GST_SEQNUM_INVALID;
     if (sink && !output)
       hm::gpu_preview::quiesce(sink, 0);
 #endif
@@ -155,6 +162,21 @@ struct SourceCameraPlayer::Impl {
           ("Cannot link camera recording stream %s: %s", GST_PAD_NAME(pad), gst_pad_link_get_name(linked)),
           (nullptr));
   }
+#ifndef HSTREAM_USE_HIP
+  static GstPadProbeReturn waitForDecoderSeek(GstPad*, GstPadProbeInfo* info, gpointer data) {
+    if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
+      auto* event = GST_PAD_PROBE_INFO_EVENT(info);
+      if (GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
+        auto sequence = gst_event_get_seqnum(event);
+        if (sequence != GST_SEQNUM_INVALID &&
+            static_cast<Impl*>(data)->decoder_seek_sequence.compare_exchange_strong(sequence, GST_SEQNUM_INVALID))
+          return GST_PAD_PROBE_REMOVE;
+      }
+      return GST_PAD_PROBE_OK;
+    }
+    return GST_PAD_PROBE_DROP;
+  }
+#endif
   bool openChapter(size_t index) {
     retire();
     chapter = index;
@@ -207,6 +229,18 @@ struct SourceCameraPlayer::Impl {
     // CUDA-device RGBA. Conversion and presentation both remain on the GPU.
     g_object_set(convert, "compute-hw", 1, "nvbuf-memory-type", NVBUF_MEM_CUDA_DEVICE, nullptr);
 #endif
+#ifdef HSTREAM_USE_HIP
+    if (!output && flip.enabled())
+      gst_util_set_object_arg(
+          G_OBJECT(sink),
+          "rotate-method",
+          flip.horizontal && flip.vertical ? "rotate-180"
+              : flip.horizontal            ? "horizontal-flip"
+                                           : "vertical-flip");
+#else
+    if (flip.enabled())
+      g_object_set(convert, "flip-method", flip.nvFlipMethod(), nullptr);
+#endif
     g_object_set(filter, "caps", caps, nullptr);
     gst_caps_unref(caps);
     g_object_set(sink, "sync", TRUE, "async", TRUE, "qos", TRUE, "enable-last-sample", TRUE, nullptr);
@@ -216,6 +250,10 @@ struct SourceCameraPlayer::Impl {
 #ifdef HSTREAM_USE_HIP
       gst_video_overlay_set_window_handle(GST_VIDEO_OVERLAY(sink), window);
 #else
+      if (!hm::gpu_preview::use_camera_display(sink, display)) {
+        fail("Could not open the X11 display for the camera preview.");
+        return false;
+      }
       g_object_set(sink, "window-id", window, "channel", "source-camera", "enable-last-sample", TRUE, nullptr);
       hm::gpu_preview::set_source_geometry(sink, item.track.width, item.track.height);
 #endif
@@ -294,6 +332,17 @@ bool SourceCameraPlayer::Open(
   }
   return true;
 }
+void SourceCameraPlayer::SetFlip(media::FrameFlip flip) {
+  auto& s = *impl_;
+  if (s.flip == flip)
+    return;
+  s.flip = flip;
+  if (s.graph) {
+    s.seek_ms = std::clamp(s.status.position_ms, qint64{0}, s.status.duration_ms - 1);
+    s.openChapter(s.chapter);
+  }
+}
+
 void SourceCameraPlayer::Play() {
   auto& s = *impl_;
   if (!s.graph)
@@ -353,6 +402,9 @@ void SourceCameraPlayer::Seek(qint64 position_ms) {
 }
 void SourceCameraPlayer::Close() {
   impl_->retire();
+#ifndef HSTREAM_USE_HIP
+  impl_->display.reset();
+#endif
   impl_->chapters.clear();
   impl_->status = {};
   impl_->seek_ms.reset();
@@ -426,6 +478,30 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
       hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
 #endif
     s.status.presented_ns = -1;
+#ifndef HSTREAM_USE_HIP
+    const guint32 decoder_seek = gst_util_seqnum_next();
+    // Superseding a seek updates the existing probe. Stacking two probes that
+    // wait for different segments could permanently block the decoder.
+    if (item.track.codec == media::VideoCodec::kHevc &&
+        s.decoder_seek_sequence.exchange(decoder_seek) == GST_SEQNUM_INVALID) {
+      // The first flushing seek drains the previous segment. Do not let the
+      // demuxer queue pictures into NVDEC while its surfaces are being retired
+      // and reallocated. Admit compressed pictures only from the final seek.
+      auto* pad = gst_element_get_static_pad(s.parser, "src");
+      const auto probe = gst_pad_add_probe(
+          pad,
+          GstPadProbeType(
+              GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_BUFFER_LIST | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+          Impl::waitForDecoderSeek,
+          &s,
+          nullptr);
+      gst_object_unref(pad);
+      if (!probe) {
+        s.fail("Could not protect the camera decoder during the seek.");
+        return s.status;
+      }
+    }
+#endif
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA) && !defined(HSTREAM_USE_HIP)
     // Jetson's decoder can wait for its output task while propagating a
     // flushing seek. Release the renderer's PAUSED preroll first, so that
@@ -441,9 +517,8 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
       return s.status;
     }
 #endif
-    const auto seek = [&] {
-      return gst_element_seek(
-          s.graph,
+    const auto seek = [&](guint32 sequence) {
+      auto* event = gst_event_new_seek(
           1.0,
           GST_FORMAT_TIME,
           GstSeekFlags(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE),
@@ -451,8 +526,10 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
           s.stream_origin + (target - item.start_ms) * GST_MSECOND,
           GST_SEEK_TYPE_SET,
           s.stream_origin + item.track.duration_ns);
+      gst_event_set_seqnum(event, sequence);
+      return gst_element_send_event(s.graph, event);
     };
-    if (!seek()) {
+    if (!seek(gst_util_seqnum_next())) {
       s.fail("Camera recording rejected the seek.");
       return s.status;
     }
@@ -472,7 +549,7 @@ SourceCameraPlayer::Status SourceCameraPlayer::Poll() {
         s.output->SetGeneration(++s.generation);
       else
         hm::gpu_preview::set_renderer_generation(s.sink, ++s.generation);
-      if (!seek()) {
+      if (!seek(decoder_seek)) {
         s.fail("Camera recording rejected the seek after decoder restart.");
         return s.status;
       }

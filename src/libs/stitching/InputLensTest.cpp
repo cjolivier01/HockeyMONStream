@@ -104,13 +104,17 @@ int main() {
       "saving default optics must explicitly override inherited correction");
   std::array<StitchCameraOptics, 2> separate{
       {{125.12273264892974, 70.3657608, lens}, {97.077571333536923, 54.5934677, lens}}};
+  separate[0].flip = {true, false};
+  separate[1].flip = {false, true};
   separate[0].input_lens.optimization = "fixed";
   separate[1].input_lens.optimization = "refine";
   separate[1].input_lens.distortion[1] = 0.021905029420311552;
-  separate[1].input_lens.center_offset = {0.02, -0.03};
+  separate[0].input_lens.center_offset = {0.125, -0.125};
+  separate[1].input_lens.center_offset = {0.125, -0.125};
   const auto independent = ApplyStitchInputCameras(pto, separate);
   ok &= expect(
-      independent.ok() && independent->find("v=0") == std::string::npos &&
+      independent.ok() && independent->find("d-960 e-540") != std::string::npos &&
+          independent->find("d960 e540") != std::string::npos && independent->find("v=0") == std::string::npos &&
           independent->find("b=0") == std::string::npos &&
           independent->find("v97.077571333536923") != std::string::npos &&
           independent->find("v125.12273264892974") != std::string::npos &&
@@ -159,6 +163,18 @@ int main() {
   ok &= expect(
       ordered.ok() && (*ordered)[0] == separate[1] && (*ordered)[1] == separate[0],
       "Camera optics must follow discovered orientation, not enumeration order");
+  auto reused = YAML::Clone(config);
+  // A workspace reusing selected player frames copies chronological playback
+  // order into the explicit roles, even when chapter two supplied the camera key.
+  reused["hstream_ui"]["video_roles"]["left"] = YAML::Load("[earlier.MP4, GX010104.MP4]");
+  const auto reordered = resolve_stitch_input_camera_order("/game", reused, camera);
+  ok &= expect(
+      reordered.ok() && (*reordered)[0] == separate[1],
+      "Reused player frames must keep the selected camera optics and flip across chapter sorting");
+  reused["hstream_ui"]["video_roles"]["left"].push_back("GX010103.MP4");
+  ok &= expect(
+      !resolve_stitch_input_camera_order("/game", reused, camera).ok(),
+      "A recording cannot claim two camera prescriptions");
   config["game"]["videos"]["left"][0] = "replacement.MP4";
   ok &= expect(
       !resolve_stitch_input_camera_order("/game", config, camera).ok(),

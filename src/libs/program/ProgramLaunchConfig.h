@@ -3,6 +3,7 @@
 #include <array>
 #include <filesystem>
 #include <vector>
+#include "hstream/src/libs/media/FrameFlip.h"
 
 #include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/detection/TileInferenceConfig.h"
@@ -20,6 +21,7 @@ struct ProgramLaunchConfig {
   std::optional<detection::TileInferenceSettings> tiling;
   std::array<std::vector<std::filesystem::path>, 2> chapters;
   std::array<double, 2> frame_offsets;
+  std::array<media::FrameFlip, 2> flips{};
 };
 
 // Resolve saved Program playback configuration before GPU/model preparation.

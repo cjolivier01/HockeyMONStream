@@ -6622,7 +6622,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         format_stitch_frame_time(playback_start_time_edit_->time()));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
+    connect(
+        dialog, &QObject::destroyed, this, [this] { QTimer::singleShot(0, this, [this] { updateRunControls(); }); });
     dialog->show();
+    updateRunControls();
   });
   action_bar->addWidget(stitching_experiments_button_);
   highlights_button_ = new QPushButton(action_icon(ActionIcon::Document), "Highlights…");
@@ -6986,6 +6989,7 @@ void HStreamWindow::playSourceCamera(int camera, bool play, std::optional<qint64
     target->show();
     camera_preview_notices_[camera]->hide();
     QString error;
+    source_camera_player_->SetFlip(camera_optics_result_.camera.input_cameras.at(camera_optics_sources_[camera]).flip);
     if (!source_camera_player_->Open(files, target->winId(), pipeline_stop_timeout_ms_, &error)) {
       appendLog("Camera preview: " + error);
       stopSourceCamera();
@@ -7391,6 +7395,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
       else
         camera_source_starts_[source] = seconds;
       camera_optics_result_.camera.input_start_times = camera_source_starts_;
+      updatePresetDirtyState();
+    };
+    source_start->flipChanged = [this, camera_index](hm::media::FrameFlip flip) {
+      if (camera_index >= static_cast<int>(camera_optics_sources_.size()))
+        return;
+      camera_optics_result_.camera.input_cameras.at(camera_optics_sources_[camera_index]).flip = flip;
+      input_lens_widget_->setCameraDetails(camera_optics_result_);
+      if (source_camera_player_ && source_camera_index_ == static_cast<int>(camera_index))
+        source_camera_player_->SetFlip(flip);
       updatePresetDirtyState();
     };
     auto* optics_scroll = new QScrollArea(controls);
@@ -9143,6 +9156,9 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
     camera_start_widgets_[index]->setEnabled(!running);
     camera_start_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
     const auto& optics = result.camera.input_cameras.at(source);
+    camera_start_widgets_[index]->setFlip(optics.flip);
+    if (source_camera_player_ && source_camera_index_ == static_cast<int>(index))
+      source_camera_player_->SetFlip(optics.flip);
     const auto size = metadata.recording_size ? metadata.recording_size : optics.source_size;
     auto* controls = findChild<QTabWidget*>(QString("camera%1ControlTabs").arg(index + 1));
     controls->setTabText(0, size ? QString("Optics (%1×%2)").arg((*size)[0]).arg((*size)[1]) : QString("Optics"));
@@ -10619,7 +10635,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
         projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required;
     const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count &&
-        saved_camera_selection.input_start_times == active_camera_selection_.input_start_times;
+        saved_camera_selection.same_source_frames(active_camera_selection_);
     replay_selected_frames = retain_selected_frames;
     if (!retain_selected_frames)
       remove_yaml_path(config, {"stitching", "stitch_frame_time"});
@@ -10805,7 +10821,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(saved_mapping_backend, active_mapping_backend_);
     if (camera_changed)
-      reasons << "camera configuration/FOV/input lens/source start";
+      reasons << "camera configuration/FOV/input lens/source start or flip";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(saved_projection, active_projection_);
     if (projection_parameters_changed)
@@ -21812,11 +21828,10 @@ bool HStreamWindow::applySavedControlConfig(
   const bool sync_method_changed = saved_iteration_settings_.sync_method != stitchingIterationSettings().sync_method;
   const bool frame_count_changed =
       saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
-  const bool source_starts_changed =
-      saved_camera_selection_.input_start_times != stitchCameraSelection().input_start_times;
+  const bool source_frames_changed = !saved_camera_selection_.same_source_frames(stitchCameraSelection());
   const bool retain_selected_frames =
-      selected_plan_frame_count->has_value() && !frame_count_changed && !source_starts_changed;
-  if (source_starts_changed)
+      selected_plan_frame_count->has_value() && !frame_count_changed && !source_frames_changed;
+  if (source_frames_changed)
     hm::stitching::InvalidateStitchingSourceInputs(config);
   if (stitch_frame_time_changed && retain_selected_frames) {
     appendLog(
@@ -22126,7 +22141,7 @@ bool HStreamWindow::applySavedControlConfig(
        canvas_constraint.calibration_required)) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     QString stale_from =
-        source_starts_changed || stitch_frame_time_changed || sync_method_changed || frame_count_changed
+        source_frames_changed || stitch_frame_time_changed || sync_method_changed || frame_count_changed
         ? "input"
         : ((control_points_changed || control_point_matcher_changed) ? "features" : "canvas");
     const YAML::Node previous_status = map_value(calibration, "status");
@@ -22172,7 +22187,7 @@ bool HStreamWindow::applySavedControlConfig(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(previous_mapping_backend, selected_mapping_backend);
     if (camera_changed)
-      reasons << "camera configuration/FOV/input lens/source start";
+      reasons << "camera configuration/FOV/input lens/source start or flip";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(previous_projection, selected_projection);
     if (projection_parameters_changed)

@@ -170,6 +170,8 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
           "vertical_fov",
           "input_lens",
           "source_size",
+          "flip_horizontal",
+          "flip_vertical",
           "camera_config",
           "camera_automation",
           "auto_input_lens_frozen"};
@@ -185,6 +187,10 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
       if (!lens.ok())
         return lens.status();
       StitchCameraOptics camera{value["horizontal_fov"].as<double>(), value["vertical_fov"].as<double>(), *lens};
+      if (value["flip_horizontal"])
+        camera.flip.horizontal = value["flip_horizontal"].as<bool>();
+      if (value["flip_vertical"])
+        camera.flip.vertical = value["flip_vertical"].as<bool>();
       if (const auto size = value["source_size"]; size.IsDefined()) {
         if (!size.IsSequence() || size.size() != 2)
           return absl::InvalidArgumentError("Input-camera source_size must be [width, height]");
@@ -218,12 +224,31 @@ absl::StatusOr<StitchInputCameras> ReadStitchInputCameras(const YAML::Node& node
   }
 }
 
+CameraFrameFlips FrameFlips(const StitchInputCameras& cameras) {
+  CameraFrameFlips flips;
+  for (const auto& [source, camera] : cameras)
+    if (camera.flip.enabled())
+      flips.emplace(source, camera.flip);
+  return flips;
+}
+
+absl::StatusOr<CameraFrameFlips> ReadCameraFrameFlips(const YAML::Node& input_cameras) {
+  auto cameras = ReadStitchInputCameras(input_cameras);
+  if (!cameras.ok())
+    return cameras.status();
+  return FrameFlips(*cameras);
+}
+
 YAML::Node WriteStitchInputCameras(const StitchInputCameras& cameras, bool include_policies) {
   YAML::Node node(YAML::NodeType::Map);
   for (const auto& [source, camera] : cameras) {
     node[source]["horizontal_fov"] = camera.horizontal_fov;
     node[source]["vertical_fov"] = camera.vertical_fov;
     node[source]["input_lens"] = WriteStitchInputLens(camera.input_lens);
+    if (camera.flip.horizontal)
+      node[source]["flip_horizontal"] = true;
+    if (camera.flip.vertical)
+      node[source]["flip_vertical"] = true;
     if (camera.source_size)
       for (int dimension : *camera.source_size)
         node[source]["source_size"].push_back(dimension);
@@ -344,8 +369,9 @@ absl::StatusOr<std::string> apply_input_lens(
         set("v", (*cameras)[images].horizontal_fov, false);
       for (size_t i = 0; i < current_lens.distortion.size(); ++i)
         set(std::string(1, 'a' + i).c_str(), current_lens.distortion[i], !independent && images != 0);
-      set("d", current_lens.center_offset[0] * w, !independent && images != 0);
-      set("e", current_lens.center_offset[1] * h, !independent && images != 0);
+      const auto flip = cameras ? (*cameras)[images].flip : media::FrameFlip{};
+      set("d", current_lens.center_offset[0] * (flip.horizontal ? -w : w), !independent && images != 0);
+      set("e", current_lens.center_offset[1] * (flip.vertical ? -h : h), !independent && images != 0);
       ++images;
     }
     output << line << '\n';

@@ -23790,14 +23790,25 @@ int main(int argc, char** argv) {
     auto* right_start = require_child<QWidget>(&window, "camera2StartControls");
     left_start->findChild<QTimeEdit*>("cameraSourceStartTime")->setTime(QTime(0, 0, 5));
     right_start->findChild<QTimeEdit*>("cameraSourceStartTime")->setTime(QTime(0, 1, 48));
+    auto* left_flip = left_start->findChild<QCheckBox*>("cameraFlipHorizontal");
+    auto* right_flip = right_start->findChild<QCheckBox*>("cameraFlipVertical");
+    left_flip->setChecked(true);
+    right_flip->setChecked(true);
     auto before = HStreamWindowTestAccess::currentCameraSelection(&window);
+    if (!expect(
+            before.input_cameras.at("left.mp4").flip == hm::media::FrameFlip{true, false} &&
+                before.input_cameras.at("right.mp4").flip == hm::media::FrameFlip{false, true},
+            "Each Input tab must change just its own recording orientation"))
+      return 1;
     if (!expect(
             before.input_start_times == hm::stitching::CameraSourceStarts{{"left.mp4", 5}, {"right.mp4", 108}},
             "Each camera start must bind to its source, independently of optical values"))
       return 1;
     HStreamWindowTestAccess::discoverCameraRoles(&window, true);
     if (!expect(
-            HStreamWindowTestAccess::currentCameraSelection(&window).input_start_times == before.input_start_times &&
+            !left_flip->isChecked() && !right_flip->isChecked() &&
+                HStreamWindowTestAccess::currentCameraSelection(&window).input_start_times ==
+                    before.input_start_times &&
                 left_start->findChild<QTimeEdit*>("cameraSourceStartTime")->time() == QTime(0, 1, 48) &&
                 right_start->findChild<QTimeEdit*>("cameraSourceStartTime")->time() == QTime(0, 0, 5),
             "Auto role discovery must retain start-only edits and reorder their controls by source"))
@@ -23822,6 +23833,8 @@ int main(int argc, char** argv) {
     if (!expect(
             HStreamWindowTestAccess::currentCameraSelection(&window).input_start_times == before.input_start_times,
             "Camera source starts must survive Save Preset and reload"))
+      return 1;
+    if (!expect(left_flip->isChecked() && right_flip->isChecked(), "Camera flips must survive saving and reopening"))
       return 1;
     const auto capture = qEnvironmentVariable("HSTREAM_CAMERA_START_SCREENSHOT");
     if (!capture.isEmpty()) {

@@ -2089,6 +2089,11 @@ done:
   return ret;
 }
 
+static GstPad* uri_video_input_pad(const NvDsSrcBin* bin) {
+  GstElement* input = bin->camera_input_flip ? bin->camera_input_flip : bin->tee;
+  return input ? gst_element_get_static_pad(input, "sink") : nullptr;
+}
+
 static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbeInfo* info, gpointer u_data) {
   (void)pad;
   auto* probe_data = static_cast<UriListPadProbeData*>(u_data);
@@ -2446,7 +2451,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
         GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
       GstCaps* chapter_caps = nullptr;
       gst_event_parse_caps(event, &chapter_caps);
-      GstPad* tee_sink = gst_element_get_static_pad(bin->tee, "sink");
+      GstPad* tee_sink = uri_video_input_pad(bin);
       GstCaps* logical_caps = tee_sink ? gst_pad_get_current_caps(tee_sink) : nullptr;
       const gboolean caps_match = chapter_caps && logical_caps && gst_caps_is_equal(chapter_caps, logical_caps);
       if (logical_caps) {
@@ -2777,7 +2782,7 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
   if (!strncmp(name, "video", 5)) {
     NvDsSrcBin* bin = (NvDsSrcBin*)data;
     g_mutex_lock(&bin->uri_decode_pad_selection_mutex);
-    GstPad* sinkpad = gst_element_get_static_pad(bin->tee, "sink");
+    GstPad* sinkpad = uri_video_input_pad(bin);
     if (!sinkpad) {
       g_mutex_unlock(&bin->uri_decode_pad_selection_mutex);
       gst_caps_unref(caps);
@@ -4537,6 +4542,26 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   NVGSTDS_LINK_ELEMENT(bin->fakesink_queue, bin->fakesink);
 
+  // Both the source-preview tap and the stitch/dewarp branch consume these pixels.
+  bin->camera_input_flip = nullptr;
+  if (config->camera_input_flip) {
+    bin->camera_input_flip = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "camera_input_flip");
+    if (!bin->camera_input_flip)
+      goto done;
+    g_object_set(
+        bin->camera_input_flip,
+        "gpu-id",
+        config->gpu_id,
+        "flip-method",
+        config->camera_input_flip,
+        "disable-passthrough",
+        TRUE,
+        "nvbuf-memory-type",
+        config->nvbuf_memory_type,
+        NULL);
+    gst_bin_add(GST_BIN(bin->bin), bin->camera_input_flip);
+    NVGSTDS_LINK_ELEMENT(bin->camera_input_flip, bin->tee);
+  }
   if (config->dewarper_config.enable) {
     gst_bin_add_many(GST_BIN(bin->bin), bin->dewarper_bin.bin, NULL);
     NVGSTDS_LINK_ELEMENT(bin->tee, bin->dewarper_bin.bin);
@@ -5128,7 +5153,7 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
   gboolean ready = pending;
   for (guint source_id = 0; source_id < bin->num_bins && ready; ++source_id) {
     const NvDsSrcBin* source = &bin->sub_bins[source_id];
-    GstPad* sinkpad = source->tee ? gst_element_get_static_pad(source->tee, "sink") : nullptr;
+    GstPad* sinkpad = uri_video_input_pad(source);
     GstPad* peer = sinkpad ? gst_pad_get_peer(sinkpad) : nullptr;
     ready = peer && peer == source->uri_playlist_initial_seek_video_pad &&
         source->uri_playlist_initial_seek_video_probe != 0;
@@ -5170,7 +5195,7 @@ gboolean seek_uri_playlist_initial_positions(NvDsSrcParentBin* bin) {
       // Send the same upstream seek through the selected decoded video pad.
       // Refresh the peer for the second seek after decoder restart/relink.
       g_mutex_lock(&bin->uri_playlist_barrier_mutex);
-      GstPad* sinkpad = source->tee ? gst_element_get_static_pad(source->tee, "sink") : nullptr;
+      GstPad* sinkpad = uri_video_input_pad(source);
       GstPad* peer = sinkpad ? gst_pad_get_peer(sinkpad) : nullptr;
       if (peer && peer != source->uri_playlist_initial_seek_video_pad) {
         gst_object_unref(peer);

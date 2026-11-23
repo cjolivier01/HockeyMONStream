@@ -115,7 +115,8 @@ absl::Status configure_game_orientation(
     const RinkSegmentation& rink_model,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
-    const CameraSourceStarts& source_starts) {
+    const CameraSourceStarts& source_starts,
+    const CameraFrameFlips& flips) {
   const fs::path game_dir(game_dir_string);
   auto videos = get_available_videos(game_dir.string());
   if (!videos.ok())
@@ -158,6 +159,10 @@ absl::Status configure_game_orientation(
     if (!capture.read(first_frame) || first_frame.empty()) {
       return absl::InternalError("Failed to decode the orientation frame at the camera start: " + selected.file);
     }
+    media::FrameFlip flip;
+    HM_ASSIGN_OR_RETURN(flip, SourceFrameFlip(flips, game_dir, playlist));
+    if (flip.enabled())
+      cv::flip(first_frame, first_frame, flip.horizontal ? (flip.vertical ? -1 : 1) : 0);
     auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled);
     if (!rink.ok()) {
       return absl::Status(

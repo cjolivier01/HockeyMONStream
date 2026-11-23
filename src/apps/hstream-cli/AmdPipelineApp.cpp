@@ -314,25 +314,24 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
     case hm::stitching::BlendMode::kHardSeam:
       break;
   }
-  auto processor = Take(
-      hm::program::AmdProgramGraph::Create(
-          {launch.game,
-           detector_config,
-           launch.camera,
-           launch.amd.tracker,
-           blend,
-           launch.minimize_blend,
-           launch.amd.compact_stitch_workspace,
-           launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
-           launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>(),
-           calibration,
-           output_rink_map
-               ? std::optional<hm::rink_map::Configuration>({rink_settings, output_rink_map, launch.amd.gpu_id})
-               : std::nullopt},
-          launch.amd.output_pool_frames,
-          launch.amd.operation_timeout_ns,
-          launch.amd.cancellation_poll_ns,
-          [] { return AbortRequested(); }));
+  auto processor = Take(hm::program::AmdProgramGraph::Create(
+      {launch.game,
+       detector_config,
+       launch.camera,
+       launch.amd.tracker,
+       blend,
+       launch.minimize_blend,
+       launch.amd.compact_stitch_workspace,
+       launch.configuration.values["ice_boundaries"]["raise_bbox_center_by_height_ratio"].as<float>(),
+       launch.configuration.values["ice_boundaries"]["lower_bbox_bottom_by_height_ratio"].as<float>(),
+       calibration,
+       output_rink_map ? std::optional<hm::rink_map::Configuration>({rink_settings, output_rink_map, launch.amd.gpu_id})
+                       : std::nullopt,
+       launch.flips},
+      launch.amd.output_pool_frames,
+      launch.amd.operation_timeout_ns,
+      launch.amd.cancellation_poll_ns,
+      [] { return AbortRequested(); }));
   GstVideoInfo output_info{};
   Require(
       gst_video_info_set_format(&output_info, GST_VIDEO_FORMAT_P010_10LE, output_config.width, output_config.height),

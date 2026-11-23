@@ -125,6 +125,30 @@ int main() {
   const auto right_video = game / "right-camera.mp4";
   std::filesystem::copy_file(video, right_video);
   config["game"]["videos"]["right"][0] = "right-camera.mp4";
+  auto oriented = YAML::Clone(config);
+  // The left input was selected starting with the second chronological chapter.
+  std::filesystem::copy_file(video, game / "left-second.mp4");
+  oriented["game"]["videos"]["left"].push_back("left-second.mp4");
+  StitchInputCameras prescriptions{{"left-second.mp4", {108, 70, {}}}, {"right-camera.mp4", {108, 70, {}}}};
+  prescriptions.at("left-second.mp4").flip = {false, true};
+  prescriptions.at("right-camera.mp4").flip = {true, true};
+  oriented["stitching"]["input_cameras"] = WriteStitchInputCameras(prescriptions);
+  auto flipped_inputs = EndRelativeCalibrationInputs(game, oriented, 3, {});
+  expect(flipped_inputs.ok(), "Plan oriented stills on the same source timeline");
+  if (!flipped_inputs.ok())
+    return 1;
+  for (size_t side = 0; side < 2; ++side) {
+    const auto path = game / ("oriented-" + std::to_string(side) + ".png");
+    const auto& pair = flipped_inputs->front();
+    expect((side ? pair.right : pair.left)(path).ok(), "Write oriented calibration still");
+    auto original = cv::imread((game / ("0-" + std::to_string(side) + ".png")).string(), cv::IMREAD_UNCHANGED);
+    cv::Mat expected_pixels;
+    cv::flip(original, expected_pixels, side ? -1 : 0);
+    const auto actual = cv::imread(path.string(), cv::IMREAD_UNCHANGED);
+    expect(
+        !actual.empty() && cv::norm(expected_pixels, actual, cv::NORM_INF) == 0,
+        "Offline calibration must see the reflected pixels before feature extraction");
+  }
   PlayerFrameSelectionSettings selected_settings;
   selected_settings.frame_count = 2;
   PlayerFrameSelectionContext context{
@@ -158,6 +182,11 @@ int main() {
   if (!selected.ok() || !selected->plan)
     return 1;
   config["stitching"]["calibration_frame_selection"] = PlayerFrameSelectionPlanYaml(*selected->plan);
+  oriented = YAML::Clone(config);
+  prescriptions["camera.mp4"] = prescriptions.at("left-second.mp4");
+  prescriptions.erase("left-second.mp4");
+  oriented["stitching"]["input_cameras"] = WriteStitchInputCameras(prescriptions);
+  expect(!EndRelativeCalibrationInputs(game, oriented, 2, {}).ok(), "Old selected stills cannot cross a camera flip");
   auto exact = EndRelativeCalibrationInputs(game, config, 2, {});
   expect(
       exact.ok() && exact->at(0).left(game / "selected-tail.png").ok() &&

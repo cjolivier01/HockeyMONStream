@@ -4330,6 +4330,23 @@ game:
           selected.right[2] == ".hstream-ui/right/GX030002.MP4",
       "Explicit camera playlists with different physical chapter counts must be retained independently");
 
+  YAML::Node auto_game = YAML::Load(
+      "game: {videos: {left: [GX010101.MP4], right: [GX010102.MP4]}}");
+  const auto generated_roles = hm::configurator_internal::select_explicit_stitching_videos(auto_game, false);
+  const hm::stitching::VideosDict root_recordings{{"101", {{1, "GX010101.MP4"}}}, {"102", {{1, "GX010102.MP4"}}}};
+  ok &= expect(
+      !hm::configurator_internal::refresh_generated_camera_roles(auto_game, generated_roles, root_recordings),
+      "Root vendor recordings can reuse a current orientation");
+  auto_game["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
+  ok &= expect(
+      hm::configurator_internal::refresh_generated_camera_roles(auto_game, generated_roles, root_recordings),
+      "A saved camera flip must rerun orientation for root vendor recordings");
+  auto_game["hstream_ui"]["video_roles"] = YAML::Clone(auto_game["game"]["videos"]);
+  ok &= expect(
+      !hm::configurator_internal::refresh_generated_camera_roles(
+          auto_game, hm::configurator_internal::select_explicit_stitching_videos(auto_game, false), root_recordings),
+      "Explicit sides must survive an orientation change on root vendor recordings");
+
   YAML::Node saved_uneven_playlists(YAML::NodeType::Map);
   saved_uneven_playlists["game"]["videos"]["left"] = selected.left;
   saved_uneven_playlists["game"]["videos"]["right"] = selected.right;

@@ -14,6 +14,8 @@
 #include "hstream/src/apps/apps-common/PreviewCaptureReceipt.h"
 #include "hstream/src/libs/draw_display/RinkMiniMapOptions.h"
 
+struct _XDisplay;
+
 namespace hm::stitching {
 struct PlaybackRinkMap;
 }
@@ -76,6 +78,10 @@ void set_isolation_generation(GstElement* isolation, std::uint64_t generation);
 // permanent flow failure, preventing an isolated failed preview from waking
 // its queue indefinitely.
 void set_isolation_failure_peer(GstElement* isolation, GstElement* ingress);
+// Use one X11 client for successive camera graphs presenting to the same Qt
+// window. Call before starting each sink, after retiring its predecessor.
+using X11DisplayConnection = std::shared_ptr<_XDisplay>;
+bool use_camera_display(GstElement* sink, X11DisplayConnection& connection);
 void set_renderer_generation(GstElement* sink, std::uint64_t generation);
 bool isolation_active(GstElement* isolation);
 
