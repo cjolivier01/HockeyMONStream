@@ -615,6 +615,11 @@ bazelisk build --config=opt --cpu=k8 //src/apps/hstream-ui:source_camera_playbac
 QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/source_camera_playback_test
 ```
 
+The test also starts and cancels a local stitching experiment in a disposable game, then plays the right camera
+with its saved vertical flip and changes the flip while paused. To repeat that handoff on original chapters, pass
+a left and right file to the same binary and set `TEST_TMPDIR` to a writable directory on their filesystem.
+The fixture hard-links the recordings and writes its settings and ownership records to the temporary game.
+
 The test generates short chapters in temporary storage and exercises actual GPU
 playback, paused cross-chapter seeking, tab departure, independent positions,
 mutually exclusive decoders and retirement before Program admission. Browser
@@ -629,6 +634,10 @@ paused seek/redraw, video duration, audio-tail clipping and decoder retirement.
 Offset MP4/Matroska recordings also verify normalized positions and final-frame
 coverage. The native player translates through the demuxer's actual stream-time
 segment; physical source timestamps remain attached to presented frames.
+
+Desktop camera Play and Seek run in the Qt process. During an NVIDIA HEVC seek, a temporary GStreamer pad probe
+keeps compressed pictures out of NVDEC until the final seek segment reaches the decoder. A superseding seek
+updates the awaited segment. The probe removes itself before steady-state playback resumes.
 
 NVIDIA HEVC camera seeks restart the hardware decoder between two identical accurate
 seeks, matching the recorded-source and Highlights workaround. Without that

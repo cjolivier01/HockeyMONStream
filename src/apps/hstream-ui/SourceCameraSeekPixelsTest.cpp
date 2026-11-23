@@ -141,6 +141,7 @@ int main(int argc, char** argv) {
          "4",
          "-ss",
          std::to_string(target / 1000.0),
+         "-noautorotate", // Compare decoded camera pixels, including for MP4s with a display matrix.
          "-i",
          source.string(),
          "-map",
@@ -174,6 +175,15 @@ int main(int argc, char** argv) {
     const auto initial = Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
     const auto chapter_ms = initial.duration_ms / 2;
     Check(target >= 0 && target < chapter_ms, "Requested frame is outside the recording");
+    // Replace an in-flight seek before its segment has necessarily arrived.
+    for (int i = 0; i < 6; ++i) {
+      player.Seek(i % 2 ? target : target / 2);
+      player.Poll();
+    }
+    Wait(player, [&](const auto& status) {
+      return !status.seeking && std::abs(status.position_ms - target) < 200 && status.presented_ns >= 0;
+    });
+    Compare(surface, expected);
     for (const qint64 position : {target, chapter_ms + target, target}) {
       player.Seek(position);
       Wait(player, [&](const auto& status) {

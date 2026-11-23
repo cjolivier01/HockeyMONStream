@@ -4,12 +4,14 @@
 #include "src/apps/hstream-ui/ValueControlWheel.h"
 
 #include <QtGui/qguiapplication_platform.h>
+#include <QtTest/qtest_widgets.h>
 #include <xcb/xcb.h>
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QPointer>
 #include <QtCore/QThread>
 #include <QtTest/QTest>
-#include <QtTest/qtest_widgets.h>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QDialog>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -71,13 +73,85 @@ bool HasPicture(const QByteArray& pixels) {
       return true;
   return false;
 }
+void CancelExperimentAndPlayRightCamera(HStreamWindow& window, bool synthetic) {
+  auto* tabs = Child<QTabWidget>(window, "previewTabs");
+  tabs->setCurrentIndex(3);
+  auto* controls = Child<QWidget>(window, "camera2StartControls");
+  auto* flip = controls->findChild<QCheckBox*>("cameraFlipVertical");
+  Check(flip, "Missing right-camera vertical flip");
+  flip->setChecked(true);
+  auto* save = Child<QPushButton>(window, "savePresetButton");
+  if (save->isEnabled())
+    save->click();
+  Wait([&] { return !save->isEnabled(); }, "The test game preset did not save before experiments");
+  auto* experiments = Child<QPushButton>(window, "stitchingExperimentsButton");
+  Wait([&] { return experiments->isEnabled(); }, "Stitching experiments stayed disabled");
+  experiments->click();
+  QPointer<QDialog> dialog = Child<QDialog>(window, "stitchingExperimentDialog");
+  auto* add = Child<QPushButton>(window, "addStitchExperimentsToBatchButton");
+  Wait([&] { return add->isEnabled(); }, "Experiment editor did not become ready");
+  add->click();
+  auto* run = Child<QPushButton>(window, "startStitchExperimentBatchButton");
+  Wait([&] { return run->isEnabled(); }, "Experiment did not become runnable");
+  run->click();
+  auto* cancel = Child<QPushButton>(window, "cancelStitchExperimentsButton");
+  Wait([&] { return cancel->isEnabled(); }, "Experiment did not start");
+  cancel->click();
+  auto* status = Child<QLabel>(window, "stitchExperimentStatus");
+  Wait([&] { return status->text().startsWith("Batch cancelled."); }, "Experiment did not finish cancelling");
+  dialog->close();
+  Wait([&] { return !dialog || !dialog->isVisible(); }, "Cancelled experiment dialog did not close");
+
+  tabs->setCurrentIndex(3);
+  auto* play = Child<QPushButton>(window, "camera2PlayButton");
+  Wait([&] { return play->isEnabled(); }, "Cancelled experiment retained the camera");
+  play->click();
+  auto* target = Child<QWidget>(window, "camera2PreviewRenderTarget");
+  Wait(
+      [&] { return target->property("sourceCameraPresentedPts").toLongLong() > 250000000; },
+      "Right camera did not play after cancelling experiments");
+  const auto hasColor = [&](bool red) {
+    // Synthetic right camera is red above and blue below. Sample the upper
+    // quadrant to check its initial orientation and the paused flip.
+    const QByteArray pixels = PresentedPixels(target);
+    return static_cast<unsigned char>(pixels[red ? 2 : 0]) > 200 &&
+        static_cast<unsigned char>(pixels[red ? 0 : 2]) < 50;
+  };
+  if (synthetic)
+    Wait([&] { return hasColor(false); }, "Right camera opened with the wrong orientation");
+  play->click();
+  Wait([&] { return play->text() == "Play camera"; }, "Right camera did not pause");
+  const auto position = Child<QSlider>(window, "camera2SeekSlider")->value();
+  // Wait for the new graph's own presentation, even if the previous frame is
+  // still visible while the next poll updates the native surface.
+  target->setProperty("sourceCameraPresentedPts", qint64{-1});
+  flip->setChecked(false);
+  Wait(
+      [&] {
+        return target->property("sourceCameraPresentedPts").toLongLong() >= 0 &&
+            (synthetic ? hasColor(true) : HasPicture(PresentedPixels(target)));
+      },
+      "Paused right camera did not redraw after changing orientation");
+  Check(
+      std::abs(Child<QSlider>(window, "camera2SeekSlider")->value() - position) < 150 && play->text() == "Play camera",
+      "Changing orientation lost the paused right-camera position");
+  Child<QPushButton>(window, "camera2StopButton")->click();
+}
 } // namespace
 int main(int argc, char** argv) {
   try {
     hm::media::test::Directory root;
     const auto game = root.path / "game";
+    Check(argc == 1 || argc == 3, "Usage: source_camera_playback_test [left-chapter right-chapter]");
+    const bool supplied = argc == 3;
     for (const char* camera : {"cam1", "cam2"}) {
       std::filesystem::create_directories(game / camera);
+      if (supplied) {
+        // Use TEST_TMPDIR on the recordings' filesystem. Only the private test
+        // game receives settings, calibration workspaces and ownership records.
+        std::filesystem::create_hard_link(argv[std::string(camera) == "cam1" ? 1 : 2], game / camera / "GX010001.MP4");
+        continue;
+      }
       for (const char* chapter : {"GX010001.MP4", "GX020001.MP4", "GX030001.MP4"})
         hm::media::test::Ffmpeg(
             {"-f",
@@ -86,7 +160,10 @@ int main(int argc, char** argv) {
              std::string("testsrc2=s=640x360:r=25:d=") +
                  (chapter[3] == '1'       ? "13"
                       : chapter[3] == '3' ? "1"
-                                          : "3"),
+                                          : "3") +
+                 (std::string(camera) == "cam2"
+                      ? ",drawbox=y=0:w=iw:h=ih/2:c=red:t=fill,drawbox=y=ih/2:w=iw:h=ih/2:c=blue:t=fill"
+                      : ""),
              "-f",
              "lavfi",
              "-i",
@@ -101,16 +178,27 @@ int main(int argc, char** argv) {
     }
     std::filesystem::create_directories(game / "_hockeymon");
     // User import order differs from Program's recognized chapter order.
-    std::ofstream(game / "_hockeymon/config.yaml")
-        << "hstream_ui:\n  video_roles:\n"
-           "    left: [cam1/GX010001.MP4, cam1/GX030001.MP4, cam1/GX020001.MP4]\n"
-           "    right: [cam2/GX010001.MP4, cam2/GX030001.MP4, cam2/GX020001.MP4]\n";
+    std::ofstream config(game / "_hockeymon/config.yaml");
+    config << "hstream_ui:\n  video_roles:\n";
+    for (const auto& [side, camera] : {std::pair{"left", "cam1"}, std::pair{"right", "cam2"}}) {
+      config << "    " << side << ": [" << camera << "/GX010001.MP4";
+      if (!supplied)
+        config << ", " << camera << "/GX030001.MP4, " << camera << "/GX020001.MP4";
+      config << "]\n";
+    }
+    config.close();
     qputenv("HM_GAME_DIR", root.path.c_str());
     qputenv("HM_OUTPUT_WORK_DIR", (root.path / "output").c_str());
     qputenv("XDG_CONFIG_HOME", (root.path / "config").c_str());
     QApplication app(argc, argv);
     install_value_control_wheel_guard();
-    HStreamWindow window;
+    const auto runner = root.path / "waiting-runner";
+    std::ofstream(runner) << "#!/bin/sh\nexec sleep 30\n";
+    std::filesystem::permissions(runner, std::filesystem::perms::owner_all);
+    hm::ui::BackendOptions backend;
+    backend.name = "hstream";
+    backend.runner = QString::fromStdString(runner.string());
+    HStreamWindow window(nullptr, backend);
     window.resize(1400, 900);
     window.show();
     window.openGame("game", false, false);
@@ -120,6 +208,11 @@ int main(int argc, char** argv) {
     auto* seek1 = Child<QSlider>(window, "camera1SeekSlider");
     auto* stop2 = Child<QPushButton>(window, "camera2StopButton");
     Wait([&] { return play1->isEnabled(); }, "Camera playback never became available");
+    CancelExperimentAndPlayRightCamera(window, !supplied);
+    if (supplied) {
+      std::cout << "Right camera played after cancelling stitching experiments\n";
+      return 0;
+    }
     tabs->setCurrentIndex(2);
     play1->click();
     Wait([&] { return seek1->maximum() > 5000 && seek1->value() > 250; }, "First camera did not play");
