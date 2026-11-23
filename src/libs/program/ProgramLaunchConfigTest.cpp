@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
     flipped_game["stitching"]["input_cameras"]["left1.mp4"] =
         YAML::Load("{horizontal_fov: 110, vertical_fov: 70, input_lens: {}, flip_horizontal: true}");
     flipped_game["stitching"]["input_cameras"]["left1.mp4"]["input_lens"] =
-        YAML::LoadFile((config_root / "baseline.yaml").string())["stitching"]["input_lens"];
+        YAML::LoadFile((config_root / "baseline.yaml").string())["stitching"]["camera_configs"]["auto"]["input_lens"];
     Write(game_dir / "_hockeymon" / "config.yaml", flipped_game);
     const auto flipped = load();
     Check(flipped.ok(), flipped.status().ToString());
