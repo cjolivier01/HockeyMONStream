@@ -602,9 +602,10 @@ absl::Status copy_match_bundles(const fs::path& source, const fs::path& destinat
 absl::Status reconcile_selected_video_paths(
     YAML::Node current,
     const YAML::Node& selected,
-    const fs::path& game_directory) {
+    const fs::path& game_directory,
+    bool require_playlists = false) {
   const YAML::Node selection = selected["stitching"]["calibration_frame_selection"];
-  if (!selection || selection.IsNull())
+  if (!require_playlists && (!selection || selection.IsNull()))
     return absl::OkStatus();
   std::error_code error;
   const fs::path directory = fs::absolute(game_directory, error).lexically_normal();
@@ -1517,9 +1518,30 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
   try {
     YAML::Node selected = YAML::LoadFile(experiment_config.string());
     YAML::Node current = YAML::LoadFile(game_config.string());
-    HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game_config.parent_path().parent_path()));
+    const fs::path game = game_config.parent_path().parent_path();
     YAML::Node selected_stitching = selected["stitching"];
     YAML::Node current_stitching = current["stitching"];
+    hm::stitching::CameraFrameFlips previous_flips, selected_flips;
+    HM_ASSIGN_OR_RETURN(previous_flips, hm::stitching::ReadCameraFrameFlips(current_stitching["input_cameras"]));
+    HM_ASSIGN_OR_RETURN(selected_flips, hm::stitching::ReadCameraFrameFlips(selected_stitching["input_cameras"]));
+    const bool reoriented = previous_flips != selected_flips;
+    auto matched = reconcile_selected_video_paths(current, selected, game, reoriented);
+    if (reoriented && absl::IsAborted(matched)) {
+      // A new solve can reverse the two Auto assignments. Check the same
+      // recordings in the opposite order while preserving explicit UI roles.
+      auto videos = current["game"]["videos"];
+      if (videos["left"].IsSequence() && videos["right"].IsSequence()) {
+        const auto left = YAML::Clone(videos["left"]);
+        videos["left"] = YAML::Clone(videos["right"]);
+        videos["right"] = left;
+        matched = reconcile_selected_video_paths(current, selected, game, true);
+      }
+    }
+    HM_RETURN_IF_ERROR(matched);
+    if (reoriented) {
+      for (const char* role : {"left", "right"})
+        current["game"]["videos"][role] = YAML::Clone(selected["game"]["videos"][role]);
+    }
     const YAML::Node request = selected["hstream_ui"]["stitching_calibration"]["reframe"];
     if (request && !request.IsNull())
       return absl::FailedPreconditionError("The selected experiment still has a pending view edit");

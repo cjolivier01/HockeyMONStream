@@ -902,6 +902,36 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
           "ordinary promotion must preserve the destination's camera roles"))
     return false;
 
+  // Reversing both cameras can swap the inferred rink sides. The candidate's
+  // resolved playlists and frame offsets must travel together on promotion.
+  auto reversed_parent = YAML::Clone(original);
+  auto parent_videos = reversed_parent["game"]["videos"];
+  const auto left_playlist = YAML::Clone(parent_videos["left"]);
+  parent_videos["left"] = YAML::Clone(parent_videos["right"]);
+  parent_videos["right"] = left_playlist;
+  reversed_parent["hstream_ui"].remove("video_roles");
+  auto reoriented = YAML::Clone(ordinary);
+  StitchInputCameras input_cameras{{"cam1/left.mp4", {108, 70, {}}}, {"cam2/right.mp4", {108, 70, {}}}};
+  for (auto& [name, camera] : input_cameras)
+    camera.flip.horizontal = true;
+  reoriented["stitching"]["input_cameras"] = WriteStitchInputCameras(input_cameras);
+  const auto reoriented_path = candidate->game_directory / "reoriented.yaml";
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(reversed_parent)) ||
+      !write(reoriented_path, YAML::Dump(reoriented)))
+    return false;
+  const auto swapped = BuildStitchingExperimentSelectionConfig(reoriented_path, game / "_hockeymon/config.yaml");
+  if (!expect(
+          swapped.ok() &&
+              YAML::Dump(YAML::Load(*swapped)["game"]["videos"]) == YAML::Dump(reoriented["game"]["videos"]),
+          "promoting new Auto camera assignments must adopt the candidate's ordered playlists"))
+    return false;
+  reversed_parent["hstream_ui"]["video_roles"] = YAML::Clone(parent_videos);
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(reversed_parent)) ||
+      !expect(
+          !BuildStitchingExperimentSelectionConfig(reoriented_path, game / "_hockeymon/config.yaml").ok(),
+          "a promoted camera flip cannot reverse the operator's explicit roles"))
+    return false;
+
   if (!write(game / "_hockeymon/config.yaml", YAML::Dump(original)) || !fs::remove(game / "cam1" / "left.mp4") ||
       !fs::remove(game / "cam2" / "right.mp4"))
     return false;
