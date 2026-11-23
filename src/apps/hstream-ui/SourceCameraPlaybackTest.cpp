@@ -88,6 +88,8 @@ void CancelExperimentAndPlayRightCamera(HStreamWindow& window, bool synthetic) {
   Wait([&] { return experiments->isEnabled(); }, "Stitching experiments stayed disabled");
   experiments->click();
   QPointer<QDialog> dialog = Child<QDialog>(window, "stitchingExperimentDialog");
+  auto* play = Child<QPushButton>(window, "camera2PlayButton");
+  Check(!play->isEnabled(), "Right camera stayed enabled when experiments opened");
   auto* add = Child<QPushButton>(window, "addStitchExperimentsToBatchButton");
   Wait([&] { return add->isEnabled(); }, "Experiment editor did not become ready");
   add->click();
@@ -100,10 +102,11 @@ void CancelExperimentAndPlayRightCamera(HStreamWindow& window, bool synthetic) {
   auto* status = Child<QLabel>(window, "stitchExperimentStatus");
   Wait([&] { return status->text().startsWith("Batch cancelled."); }, "Experiment did not finish cancelling");
   dialog->close();
-  Wait([&] { return !dialog || !dialog->isVisible(); }, "Cancelled experiment dialog did not close");
+  // The real event loop delivers WA_DeleteOnClose before the next user click.
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+  Check(!dialog, "Cancelled experiment dialog did not close");
 
   tabs->setCurrentIndex(3);
-  auto* play = Child<QPushButton>(window, "camera2PlayButton");
   Wait([&] { return play->isEnabled(); }, "Cancelled experiment retained the camera");
   play->click();
   auto* target = Child<QWidget>(window, "camera2PreviewRenderTarget");

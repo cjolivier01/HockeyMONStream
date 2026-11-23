@@ -6622,7 +6622,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         format_stitch_frame_time(playback_start_time_edit_->time()));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
+    connect(
+        dialog, &QObject::destroyed, this, [this] { QTimer::singleShot(0, this, [this] { updateRunControls(); }); });
     dialog->show();
+    updateRunControls();
   });
   action_bar->addWidget(stitching_experiments_button_);
   highlights_button_ = new QPushButton(action_icon(ActionIcon::Document), "Highlights…");
