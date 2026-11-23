@@ -28,6 +28,8 @@ struct RinkProfile {
   std::vector<float> scores;
 };
 
+cv::Point2d rink_contour_centroid(const std::vector<cv::Mat>& masks);
+
 class RinkSegmentation {
  public:
   static constexpr int kInputWidth = 1344;

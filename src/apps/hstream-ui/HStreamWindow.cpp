@@ -17887,6 +17887,10 @@ void HStreamWindow::handleRinkMaskPaintOutput(const QString& line) {
     rink_mask_paint_dialog_ = nullptr;
     if (generation != pipeline_run_generation_ || pipeline_stop_requested_ || pipeline_final_output_draining_)
       return;
+    if (result == QDialog::Rejected) {
+      stopPipeline();
+      return;
+    }
     const QByteArray bytes = result == QDialog::Accepted ? dialog->response() : QByteArray("keep\n");
     QSaveFile response(QDir(path).filePath(".rink-mask-paint-response"));
     if (!response.open(QIODevice::WriteOnly) || response.write(bytes) != bytes.size() || !response.commit()) {

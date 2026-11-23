@@ -1584,6 +1584,43 @@ int main() {
       ok &= expect(
           review("keep\n", false) && corners() == std::make_pair<uint8_t, uint8_t>(0, 0),
           "keeping a new detection publishes only the detected ice");
+      const auto config_path = saved_state(timed) / "config.yaml";
+      const auto original = YAML::LoadFile(config_path.string());
+      const auto centroid = original["rink"]["ice_contours_mask_centroid"].as<std::vector<double>>();
+      auto legacy = YAML::Clone(original);
+      legacy["stitching"]["rink_mask_frame_time"] = "auto";
+      legacy["rink"]["mask_frame"] = YAML::Load("{selection: auto}");
+      legacy["rink"].remove("stitched_output_persisted_rotation_degrees");
+      legacy["rink"]["stitched_output_generation"] = *stitched_output_generation_id(*generation, 0.0);
+      std::ofstream(config_path) << legacy;
+      ok &= expect(review("1 12 12\n", true), "review a legacy automatic mask without optional source metadata");
+      const auto reviewed = YAML::LoadFile(config_path.string());
+      ok &= expect(
+          reviewed["rink"]["stitched_output_generation"].as<std::string>() == *output &&
+              reviewed["rink"]["ice_contours_mask_centroid"].as<std::vector<double>>() == centroid,
+          "a stroke on existing ice must preserve the original centroid and migrate legacy geometry");
+      std::ofstream(config_path) << original;
+      const auto mask_before_cancel =
+          cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      const auto cancelled = create_field_mask(
+          timed.string(),
+          writer,
+          *output,
+          {},
+          [&] {
+            for (const auto& entry : fs::directory_iterator(saved_state(timed)))
+              if (entry.is_directory() && fs::exists(entry.path() / "paint-preview.png"))
+                return true;
+            return false;
+          },
+          {},
+          description.frame);
+      ok &= expect(
+          absl::IsCancelled(cancelled) && YAML::Dump(YAML::LoadFile(config_path.string())) == YAML::Dump(original) &&
+              cv::countNonZero(
+                  mask_before_cancel !=
+                  cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE)) == 0,
+          "cancelling an open editor preserves the last published mask and configuration");
       // Another detection may start while an operator is still painting. It must be
       // able to acquire the artifact lock and retire the first response even on identical input.
       fs::path old_directory;

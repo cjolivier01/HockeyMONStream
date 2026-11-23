@@ -1,5 +1,6 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/common/RuntimeConsole.h"
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
@@ -4514,7 +4515,8 @@ absl::Status visit_current_field_mask_impl(
     const std::optional<std::string>& loaded_hugin_generation,
     const FieldMaskConsumer& consumer,
     bool nonblocking = false,
-    bool require_review = false) {
+    bool require_review = false,
+    YAML::Node* validated_rink = nullptr) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
@@ -4675,8 +4677,10 @@ absl::Status visit_current_field_mask_impl(
     return consumed;
   if (migrate_legacy_generation && generation_content_validated) {
     (*config)["rink"]["stitched_output_generation"] = current_output_generation;
-    return publish_game_config(root, YAML::Dump(*config) + "\n");
+    HM_RETURN_IF_ERROR(publish_game_config(root, YAML::Dump(*config) + "\n"));
   }
+  if (validated_rink)
+    *validated_rink = YAML::Clone((*config)["rink"]);
   return absl::OkStatus();
 }
 
@@ -5564,7 +5568,8 @@ absl::Status paint_detected_rink_mask(
   tinted.copyTo(preview, ice);
   if (!cv::imwrite((staging / "paint-preview.png").string(), preview))
     return absl::InternalError("Cannot write the ice mask painting preview");
-  std::cout << "HSTREAM_RINK_MASK_PAINT status=ready directory-hex=" << hex_encode(staging.string()) << std::endl;
+  hm::WriteRuntimeConsole(
+      ("HSTREAM_RINK_MASK_PAINT status=ready directory-hex=" + hex_encode(staging.string())).c_str());
   for (;;) {
     if (cancelled && cancelled())
       return absl::CancelledError("Ice mask painting cancelled");
@@ -5581,6 +5586,7 @@ absl::Status paint_detected_rink_mask(
     std::istringstream input(*response);
     std::string line;
     size_t points = 0;
+    const int original_ice_pixels = cv::countNonZero(profile.masks.front());
     while (std::getline(input, line)) {
       std::istringstream stroke(line);
       int diameter;
@@ -5605,12 +5611,13 @@ absl::Status paint_detected_rink_mask(
     }
     if (points == 0)
       return absl::InvalidArgumentError("No ice brush strokes supplied");
+    if (cv::countNonZero(profile.masks.front()) == original_ice_pixels)
+      return absl::OkStatus();
     profile.combined_mask = profile.masks.front().clone();
     for (size_t i = 1; i < profile.masks.size(); ++i)
       cv::bitwise_or(profile.combined_mask, profile.masks[i], profile.combined_mask);
     profile.combined_bbox = cv::boundingRect(profile.combined_mask);
-    const auto moments = cv::moments(profile.combined_mask, true);
-    profile.centroid = {moments.m10 / moments.m00, moments.m01 / moments.m00};
+    profile.centroid = rink_contour_centroid(profile.masks);
     return absl::OkStatus();
   }
 }
@@ -5656,7 +5663,7 @@ absl::Status review_detected_rink_mask(
   HM_ASSIGN_OR_RETURN(current_generation, HuginProject::GenerationId(game, *lock));
   if (current_generation != generation)
     return absl::AbortedError("Stitching changed while painting the ice mask");
-  std::cout << "HSTREAM_RINK_MASK_PAINT status=selected" << std::endl;
+  hm::WriteRuntimeConsole("HSTREAM_RINK_MASK_PAINT status=selected");
   return absl::OkStatus();
 }
 
@@ -5683,12 +5690,10 @@ absl::Status review_saved_field_mask(
       {},
       {},
       {},
-      [&](const std::string&, const std::optional<CanvasSize>&) -> absl::Status {
-        YAML::Node config;
-        HM_ASSIGN_OR_RETURN(config, load_config_or_empty(state / "config.yaml"));
-        snapshot = YAML::Clone(config["rink"]);
-        return absl::OkStatus();
-      }));
+      [](const std::string&, const std::optional<CanvasSize>&) { return absl::OkStatus(); },
+      /*nonblocking=*/false,
+      /*require_review=*/false,
+      &snapshot));
   try {
     const YAML::Node provenance = static_cast<const YAML::Node&>(snapshot)["mask_frame"];
     if (provenance && provenance["manually_reviewed"].as<bool>(false))
@@ -5744,10 +5749,12 @@ absl::Status review_saved_field_mask(
         frame.recording_time_ns = provenance["recording_time_ns"].as<uint64_t>();
       frame.input_id = provenance["input_id"].as<std::string>("");
       const auto sources = provenance["sources"];
-      if (sources && (!sources.IsSequence() || sources.size() > frame.sources.size()))
-        return absl::InvalidArgumentError("Invalid saved ice mask camera positions");
-      for (size_t i = 0; i < sources.size(); ++i)
-        frame.sources[i] = {sources[i]["video"].as<std::string>(), sources[i]["seconds"].as<double>()};
+      if (sources) {
+        if (!sources.IsSequence() || sources.size() > frame.sources.size())
+          return absl::InvalidArgumentError("Invalid saved ice mask camera positions");
+        for (size_t i = 0; i < sources.size(); ++i)
+          frame.sources[i] = {sources[i]["video"].as<std::string>(), sources[i]["seconds"].as<double>()};
+      }
     }
     cv::Mat stitched;
     HM_ASSIGN_OR_RETURN(stitched, decode(state / "s.png", cv::IMREAD_COLOR));

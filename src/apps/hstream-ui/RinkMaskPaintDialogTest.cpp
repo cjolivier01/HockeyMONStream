@@ -66,5 +66,15 @@ int main(int argc, char** argv) {
   if (dialog.response().trimmed() != strokes.front())
     return 1;
   undo->click();
-  return dialog.response() == "keep\n" && !undo->isEnabled() ? 0 : 1;
+  if (dialog.response() != "keep\n" || undo->isEnabled())
+    return 1;
+  for (auto* button : dialog.findChildren<QPushButton*>())
+    if (button->text() == "Use detected mask")
+      button->click();
+  if (dialog.result() != RinkMaskPaintDialog::UseDetectedMask)
+    return 1;
+  dialog.show();
+  QTest::mouseClick(canvas, Qt::LeftButton, Qt::NoModifier, point(73, 247));
+  QTest::keyClick(&dialog, Qt::Key_Escape);
+  return !dialog.isVisible() && dialog.result() == QDialog::Rejected ? 0 : 1;
 }

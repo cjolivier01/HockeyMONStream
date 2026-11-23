@@ -156,6 +156,8 @@ RinkMaskPaintDialog::RinkMaskPaintDialog(const QImage& preview, QWidget* parent)
   auto* keep = new QPushButton(action_icon(ActionIcon::Next), "Use detected mask");
   auto* save = new QPushButton(action_icon(ActionIcon::Apply), "Apply painted mask");
   save->setEnabled(false);
+  auto* cancel = new QPushButton(action_icon(ActionIcon::Cancel), "Cancel calibration");
+  bottom->addWidget(cancel);
   bottom->addWidget(keep);
   bottom->addWidget(save);
   layout->addLayout(bottom);
@@ -171,7 +173,8 @@ RinkMaskPaintDialog::RinkMaskPaintDialog(const QImage& preview, QWidget* parent)
     canvas_->undo();
     canvas_->changed(canvas_->response() != "keep\n", false);
   });
-  connect(keep, &QPushButton::clicked, this, &QDialog::reject);
+  connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
+  connect(keep, &QPushButton::clicked, this, [this] { done(UseDetectedMask); });
   connect(save, &QPushButton::clicked, this, &QDialog::accept);
 }
 
