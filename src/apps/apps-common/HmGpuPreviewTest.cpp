@@ -1107,9 +1107,26 @@ bool run_rink_mask_reactivation_test(Window window) {
   hm::gpu_preview::set_isolation_active(gate, false, 17);
   const bool quiesced = hm::gpu_preview::quiesce(sink, 17);
   const bool cache_cleared = hm::gpu_preview::renderer_rink_mask_cache_cleared_for_test(sink);
+  std::uint64_t generation = 0;
+  GstClockTime last_pts = GST_CLOCK_TIME_NONE;
+  hm::gpu_preview::presented_frame(sink, &generation, &last_pts);
   hm::gpu_preview::set_isolation_active(gate, true, 17);
   const bool reloaded = wait_for_condition(
       [&] { return hm::gpu_preview::renderer_rink_mask_loaded_for_test(sink, output_generation, 640, 360); },
+      std::chrono::seconds(10));
+
+  // The reported GPU fault happened after the first frame on reactivation.
+  unsigned advancing_frames = 0;
+  const bool resumed = reloaded && wait_for_condition(
+      [&] {
+        GstClockTime pts = GST_CLOCK_TIME_NONE;
+        if (hm::gpu_preview::presented_frame(sink, &generation, &pts) && generation == 17 &&
+            (!GST_CLOCK_TIME_IS_VALID(last_pts) || pts > last_pts)) {
+          ++advancing_frames;
+          last_pts = pts;
+        }
+        return advancing_frames >= 4;
+      },
       std::chrono::seconds(10));
 
   hm::gpu_preview::set_isolation_active(gate, false, 17);
@@ -1124,12 +1141,12 @@ bool run_rink_mask_reactivation_test(Window window) {
   else
     g_unsetenv("HSTREAM_CALIBRATION_INVALIDATION_ID");
   const bool passed =
-      initially_loaded && rink_captured && rink_visible && quiesced && cache_cleared && reloaded && screenshot_saved;
+      initially_loaded && rink_captured && rink_visible && quiesced && cache_cleared && resumed && screenshot_saved;
   if (!passed) {
     std::cerr << "Rink mask did not reload after same-generation renderer quiesce/reactivation: initial="
               << initially_loaded << " captured=" << rink_captured << " visible=" << rink_visible
               << " capture-size=" << rink_width << 'x' << rink_height << " capture-error=" << rink_capture_error
-              << " quiesced=" << quiesced << " cleared=" << cache_cleared << " reloaded=" << reloaded << '\n';
+              << " quiesced=" << quiesced << " cleared=" << cache_cleared << " resumed-frames=" << advancing_frames << '\n';
   }
   return passed;
 }

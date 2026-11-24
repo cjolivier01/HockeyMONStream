@@ -473,6 +473,7 @@ void gst_hm_preview_isolation_init(GstHmPreviewIsolation* self) {
 
 #if defined(__x86_64__) || defined(__aarch64__)
 
+#include "PreviewTexture.cuh"
 #include "hstream/src/apps/apps-common/PreviewOverlayGlPaths.h"
 #include "hstream/src/apps/apps-common/PreviewOverlayScene.h"
 #include "hstream/src/libs/draw_display/AnalyticsOverlayGl.h"
@@ -867,7 +868,7 @@ bool initialize_renderer(GstHmGpuPreviewSink* self) {
   if (!cuda_succeeded(
           self,
           cudaGraphicsGLRegisterImage(
-              &state->cuda_texture, state->texture, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard),
+              &state->cuda_texture, state->texture, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsSurfaceLoadStore),
           "cudaGraphicsGLRegisterImage") ||
       !cuda_succeeded(
           self, cudaStreamCreateWithFlags(&state->cuda_stream, cudaStreamNonBlocking), "cudaStreamCreate") ||
@@ -1487,27 +1488,35 @@ GstFlowReturn preview_sink_render_impl(GstBaseSink* base_sink, GstBuffer* buffer
   cudaError_t result = cudaGraphicsSubResourceGetMappedArray(&texture_array, state->cuda_texture, 0, 0);
   if (result != cudaSuccess)
     terminate_for_unsafe_cuda_state(self, "cudaGraphicsSubResourceGetMappedArray", result);
-  result = cudaMemcpy2DToArrayAsync(
-      texture_array,
-      0,
-      0,
-      params->dataPtr,
-      params->pitch,
-      static_cast<size_t>(state->negotiated_width) * 4,
-      state->negotiated_height,
-      cudaMemcpyDeviceToDevice,
-      state->cuda_stream);
+  // The driver's copy engine can fault on a remapped GL image (Xid 39).
+  // Write the mapped texture directly from CUDA threads on the preview stream.
+  cudaResourceDesc resource{};
+  resource.resType = cudaResourceTypeArray;
+  resource.res.array.array = texture_array;
+  cudaSurfaceObject_t destination{};
+  result = cudaCreateSurfaceObject(&destination, &resource);
+  if (result != cudaSuccess) {
+    const auto unmap = cudaGraphicsUnmapResources(1, &state->cuda_texture, state->cuda_stream);
+    if (unmap != cudaSuccess)
+      terminate_for_unsafe_cuda_state(self, "cudaGraphicsUnmapResources", unmap);
+    cuda_succeeded(self, result, "cudaCreateSurfaceObject");
+    return GST_FLOW_ERROR;
+  }
+  result = hm::gpu_preview::WritePreviewTexture(
+      destination, params->dataPtr, params->pitch, params->width, params->height, state->cuda_stream);
   if (result != cudaSuccess)
-    terminate_for_unsafe_cuda_state(self, "cudaMemcpy2DToArrayAsync", result);
-  result = cudaGraphicsUnmapResources(1, &state->cuda_texture, state->cuda_stream);
-  if (result != cudaSuccess)
-    terminate_for_unsafe_cuda_state(self, "cudaGraphicsUnmapResources", result);
+    terminate_for_unsafe_cuda_state(self, "WritePreviewTexture", result);
   result = cudaEventRecord(state->copy_complete, state->cuda_stream);
   if (result != cudaSuccess)
     terminate_for_unsafe_cuda_state(self, "cudaEventRecord", result);
+  // Retain the source buffer, surface object and array mapping until the kernel completes.
   wait_for_copy_or_terminate(self);
-  // The explicit completion event above is the source NvBufSurface lifetime
-  // barrier. No pixel plane has been mapped to host memory.
+  result = cudaDestroySurfaceObject(destination);
+  if (result != cudaSuccess)
+    terminate_for_unsafe_cuda_state(self, "cudaDestroySurfaceObject", result);
+  result = cudaGraphicsUnmapResources(1, &state->cuda_texture, state->cuda_stream);
+  if (result != cudaSuccess)
+    terminate_for_unsafe_cuda_state(self, "cudaGraphicsUnmapResources", result);
   mapping.reset();
   if (!state->failed.load()) {
     draw_texture(self, overlays);
