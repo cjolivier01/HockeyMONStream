@@ -244,17 +244,22 @@ struct HStreamWindowTestAccess {
         !window.ownership_notice_->isHidden() && window.ownership_notice_->text().contains("Force release") &&
             window.start_button_->isEnabled(),
         "Missing local owner has a visible recovery action");
+    QTest::keyPress(window.start_button_, Qt::Key_Space);
     {
       auto lock = hm::game_operation::Lock::Acquire(game);
       require(lock.ok() && (*lock)->Release(missing.token, missing.revision, true).ok(), "Release missing fixture");
     }
-    // The claim disappeared between the last poll and the user's click.
+    window.updateRunControls();
+    require(window.start_button_->text() == "Review ownership…", "A poll must preserve the held Review action");
     QTimer::singleShot(0, [&] {
       auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
       require(dialog, "Review still shows the released owner state without starting playback");
       dialog->reject();
     });
-    window.start_button_->click();
+    QTest::keyRelease(window.start_button_, Qt::Key_Space);
+    require(
+        window.pipeline_process_->state() == QProcess::NotRunning && window.start_button_->text() == "Play",
+        "Completing Review must leave processing stopped and offer a separate Play");
     require(window.beginGameOperation("pipeline"), "Desktop obtains main game admission");
     {
       auto lock = hm::game_operation::Lock::Acquire(game);

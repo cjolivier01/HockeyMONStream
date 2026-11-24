@@ -12025,7 +12025,8 @@ void HStreamWindow::requestPlay() {
   const auto game = gameDirectory(game_id_edit_->text().trimmed()).toStdString();
   const auto owner = hm::game_operation::Inspect(game);
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  if (!running && source_camera_player_ && owner.ok() && *owner && (**owner).token == operation_token_) {
+  if (!reviewing_ownership_ && !running && source_camera_player_ && owner.ok() && *owner &&
+      (**owner).token == operation_token_) {
     // Main Play has always retired this window's idle camera decoder before
     // starting processing. It is not a competing run requiring recovery.
     startPipeline();
@@ -19612,7 +19613,8 @@ void HStreamWindow::updateRunControls() {
   }
   if (start_button_) {
     const bool review = external_operation || running;
-    if (review != reviewing_ownership_) {
+    // Finish the action the operator pressed even if ownership changes before release.
+    if (!start_button_->isDown() && review != reviewing_ownership_) {
       reviewing_ownership_ = review;
       start_button_->setText(review ? "Review ownership…" : "Play");
       start_button_->setIcon(action_icon(review ? ActionIcon::Inspect : ActionIcon::Play));
