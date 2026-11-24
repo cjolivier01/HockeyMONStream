@@ -406,6 +406,9 @@ absl::StatusOr<std::optional<Owner>> Inspect(const std::filesystem::path& game) 
 }
 
 absl::StatusOr<RecoveryInfo> InspectRecovery(const std::filesystem::path& game) {
+  std::error_code error;
+  if (!std::filesystem::exists(game_storage::StateDirectory(game), error) && !error)
+    return RecoveryInfo{};
   auto lock = Lock::Acquire(game, false);
   if (!lock.ok())
     return lock.status();

@@ -1,5 +1,6 @@
 #include "src/apps/hstream-ui/SourceCameraPlayer.h"
 
+#include <gst/base/gstbasesink.h>
 #include <gst/gst.h>
 #include <gst/video/videooverlay.h>
 
@@ -76,6 +77,12 @@ struct SourceCameraPlayer::Impl {
     status.playing = false;
     retire();
   }
+  static void audioElementAdded(GstBin*, GstBin*, GstElement* element, gpointer) {
+    // The video track owns preroll. A shorter audio track may have no next
+    // sample when pausing and resuming at the end of its recorded audio.
+    if (GST_IS_BASE_SINK(element))
+      gst_base_sink_set_async_enabled(GST_BASE_SINK(element), FALSE);
+  }
   static void padAdded(GstElement* demux, GstPad* pad, gpointer data) noexcept {
     auto& self = *static_cast<Impl*>(data);
     GstElement* target = self.video_input;
@@ -112,6 +119,8 @@ struct SourceCameraPlayer::Impl {
               demux, CORE, MISSING_PLUGIN, ("Cannot create camera audio transport"), ("%s", message.c_str()));
           return;
         }
+      } else {
+        g_signal_connect(target, "deep-element-added", G_CALLBACK(audioElementAdded), nullptr);
       }
       auto* queue = gst_bin_get_by_name(GST_BIN(target), "camera_audio_input");
       // Encoded audio must buffer ahead of video decoder reorder/preroll. A
@@ -182,7 +191,8 @@ struct SourceCameraPlayer::Impl {
     chapter = index;
     const auto& item = chapters.at(index);
     graph = gst_pipeline_new("source-camera-preview");
-    if (graph && output) {
+    // A shorter audio track can stop its device clock before video playback ends.
+    if (graph) {
       auto* clock = gst_system_clock_obtain();
       gst_pipeline_use_clock(GST_PIPELINE(graph), clock);
       gst_object_unref(clock);

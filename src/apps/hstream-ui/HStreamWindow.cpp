@@ -5499,6 +5499,15 @@ HStreamWindow::~HStreamWindow() {
 }
 
 bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == start_button_) {
+    const auto type = event->type();
+    if (type == QEvent::MouseButtonPress || type == QEvent::MouseButtonDblClick || type == QEvent::MouseButtonRelease) {
+      if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+        start_mouse_pressed_ = type != QEvent::MouseButtonRelease;
+    } else if (type == QEvent::UngrabMouse || type == QEvent::Hide || type == QEvent::EnabledChange) {
+      start_mouse_pressed_ = false;
+    }
+  }
   if (source_camera_player_ && source_camera_index_ >= 0 &&
       watched == camera_preview_render_targets_[source_camera_index_] &&
       (event->type() == QEvent::Show || event->type() == QEvent::Resize))
@@ -6463,6 +6472,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
+  start_button_->installEventFilter(this);
   pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPause), "Pause");
   pause_button_->setObjectName("pausePipelineButton");
   auto* restart = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), "Restart Stage");
@@ -6709,6 +6719,12 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   action_bar->addWidget(stop_button_);
   root->addLayout(status_bar);
   root->addLayout(action_bar);
+  ownership_notice_ = new QLabel();
+  ownership_notice_->setObjectName("gameOwnershipNotice");
+  ownership_notice_->setTextFormat(Qt::PlainText);
+  ownership_notice_->setWordWrap(true);
+  ownership_notice_->hide();
+  root->addWidget(ownership_notice_);
 }
 
 void HStreamWindow::buildMainArea(QVBoxLayout* root) {
@@ -11986,13 +12002,16 @@ bool HStreamWindow::beginGameOperation(const std::string& kind) {
 }
 
 void HStreamWindow::releaseGameOperationIfStopped() {
+  operation_retirement_proof_unavailable_ = false;
   if (operation_token_.empty() || operation_starting_ || source_camera_index_ >= 0 ||
       (pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning) || isArchiveFinalizing() ||
       live_rotation_authorization_pending_)
     return;
   auto stopped = hm::game_operation::LocalChildrenStopped(operation_token_);
-  if (!stopped.ok())
-    return; // Keep the durable claim until proof is available.
+  if (!stopped.ok()) {
+    operation_retirement_proof_unavailable_ = true;
+    return;
+  }
   if (!*stopped) {
     const auto now = QDateTime::currentMSecsSinceEpoch();
     if (!operation_retirement_started_ms_)
@@ -12016,13 +12035,14 @@ void HStreamWindow::requestPlay() {
   const auto game = gameDirectory(game_id_edit_->text().trimmed()).toStdString();
   const auto owner = hm::game_operation::Inspect(game);
   const bool running = pipeline_process_ && pipeline_process_->state() != QProcess::NotRunning;
-  if (!running && source_camera_player_ && owner.ok() && *owner && (**owner).token == operation_token_) {
+  if (!reviewing_ownership_ && !running && source_camera_player_ && owner.ok() && *owner &&
+      (**owner).token == operation_token_) {
     // Main Play has always retired this window's idle camera decoder before
     // starting processing. It is not a competing run requiring recovery.
     startPipeline();
     return;
   }
-  if (!owner.ok() || owner->has_value() || running || pipeline_completion_proof_pending_ ||
+  if (reviewing_ownership_ || !owner.ok() || owner->has_value() || running || pipeline_completion_proof_pending_ ||
       archive_completion_proof_pending_) {
     const bool ours = !operation_token_.empty();
     GameOwnershipDialog dialog(
@@ -19487,30 +19507,50 @@ void HStreamWindow::updateRunControls() {
   }
   releaseGameOperationIfStopped();
   bool external_operation = false;
+  QString ownership_notice;
   if (!editing_defaults_ && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty()) {
     const auto game = gameDirectory(game_id_edit_->text().trimmed()).toStdString();
     if (std::filesystem::is_directory(game)) {
-      const auto owner = hm::game_operation::Inspect(game);
-      external_operation =
-          !owner.ok() || (owner->has_value() && ((**owner).token != operation_token_ || operation_token_.empty()));
+      const auto info = hm::game_operation::InspectRecovery(game);
+      external_operation = !info.ok() || (info->owner && info->owner->token != operation_token_);
       if (external_operation && pipeline_state_ &&
-          (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
-        pipeline_state_->setText(
-            owner.ok() && owner->has_value()
-                ? QString("BUSY: %1 %2")
-                      .arg(QString::fromStdString((**owner).kind), QString::fromStdString((**owner).id))
-                : "BUSY: checking game ownership");
+          (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning)) {
+        pipeline_state_->setText("BUSY: game locked");
+        if (!info.ok()) {
+          ownership_notice = "Checking game ownership. Choose Review ownership for details.";
+        } else {
+          const auto& owner = *info->owner;
+          if (info->local_host && owner.workflow_directory.empty() && owner.kind != "workflow" &&
+              !info->process_matches && !info->verified_reboot && operation_token_.empty()) {
+            ownership_notice = QString(
+                                   "Game locked. The previous %1 process (PID %2) could not be verified. "
+                                   "Choose Review ownership, then Force release if its work has stopped.")
+                                   .arg(QString::fromStdString(owner.kind))
+                                   .arg(owner.process_id);
+          } else {
+            ownership_notice =
+                QString(
+                    "Game locked by %1 on %2. Choose Review ownership to see who owns the game and how to release it.")
+                    .arg(QString::fromStdString(owner.kind), QString::fromStdString(owner.host));
+          }
+        }
+      }
     }
   }
 
-  if (!external_operation && pipeline_state_ && pipeline_state_->text().startsWith("BUSY:") &&
-      (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning))
-    pipeline_state_->setText("STOPPED");
-
-  if (pipeline_completion_proof_pending_ || archive_completion_proof_pending_) {
+  if (operation_retirement_proof_unavailable_ || pipeline_completion_proof_pending_ ||
+      archive_completion_proof_pending_) {
     external_operation = true;
+    ownership_notice =
+        "Game locked. This window could not verify cleanup. Choose Review ownership for details. "
+        "If the old work has stopped, reopen the game in a new window to use Force release.";
     if (pipeline_state_)
       pipeline_state_->setText("RECOVERY REQUIRED: supervisor shutdown proof is unavailable");
+  } else if (
+      !external_operation && pipeline_state_ &&
+      (pipeline_state_->text().startsWith("BUSY:") || pipeline_state_->text().startsWith("RECOVERY REQUIRED:")) &&
+      (!pipeline_process_ || pipeline_process_->state() == QProcess::NotRunning)) {
+    pipeline_state_->setText("STOPPED");
   }
 
   if (backend_mode_)
@@ -19577,10 +19617,22 @@ void HStreamWindow::updateRunControls() {
     prepare->setEnabled(!external_operation && !running && !finalizing);
   if (tiled_detection_check_)
     tiled_detection_check_->setEnabled(!backend_.isHockeyMon() && !external_operation && !running && !finalizing);
+  if (ownership_notice_) {
+    ownership_notice_->setText(ownership_notice);
+    ownership_notice_->setVisible(!ownership_notice.isEmpty());
+  }
   if (start_button_) {
+    const bool review = external_operation || running;
+    // Finish the action the operator pressed even if ownership changes before release.
+    if (!start_mouse_pressed_ && !start_button_->isDown() && review != reviewing_ownership_) {
+      reviewing_ownership_ = review;
+      start_button_->setText(review ? "Review ownership…" : "Play");
+      start_button_->setIcon(action_icon(review ? ActionIcon::Inspect : ActionIcon::Play));
+    }
     start_button_->setEnabled(
-        !editing_defaults_ && !waiting_for_start && !isArchiveFinalizing() && !archive_recovery_blocked &&
-        !live_rotation_authorization_pending_ && !findChild<QDialog*>("highlightsDialog"));
+        review || reviewing_ownership_ ||
+        (!editing_defaults_ && !waiting_for_start && !isArchiveFinalizing() && !archive_recovery_blocked &&
+         !live_rotation_authorization_pending_ && !findChild<QDialog*>("highlightsDialog")));
   }
   if (pause_button_) {
     pause_button_->setEnabled(

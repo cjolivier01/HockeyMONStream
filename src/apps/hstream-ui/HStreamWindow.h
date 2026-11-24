@@ -658,6 +658,9 @@ class HStreamWindow : public QMainWindow {
 
   QLabel* backend_mode_{nullptr};
   QLabel* pipeline_state_{nullptr};
+  QLabel* ownership_notice_{nullptr};
+  bool reviewing_ownership_{false};
+  bool start_mouse_pressed_{false};
   QProgressBar* playback_progress_{nullptr};
   QWidget* playback_seek_controls_{nullptr};
   QSlider* playback_seek_slider_{nullptr};
@@ -853,6 +856,7 @@ class HStreamWindow : public QMainWindow {
   bool pipeline_completion_proof_pending_{false};
   bool archive_completion_proof_pending_{false};
   qint64 operation_retirement_started_ms_{0};
+  bool operation_retirement_proof_unavailable_{false};
   QProcess* pipeline_process_{nullptr};
   QPushButton* start_button_{nullptr};
   QPushButton* pause_button_{nullptr};
