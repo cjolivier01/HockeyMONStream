@@ -227,6 +227,8 @@ hstream_ui:
   # Open native review dialogs automatically when their workflow needs input.
   show_crop_dialog: true
   show_leveling_dialog: true
+  # Review each freshly detected ice mask before it is used for playback.
+  paint_rink_mask: false
   show_scoreboard_dialog: true
   # Next-playback preview preferences; encoded outputs have separate rink-map settings.
   preview_rink_map:

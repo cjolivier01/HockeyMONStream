@@ -92,6 +92,8 @@ filegroup(
         "CameraExperimentSource.h",
         "RinkLevelingDialog.cpp",
         "RinkLevelingDialog.h",
+        "RinkMaskPaintDialog.cpp",
+        "RinkMaskPaintDialog.h",
         "RinkMapBackend.cpp",
         "RinkMapBackend.h",
         "RinkMapDialog.cpp",
@@ -314,6 +316,15 @@ cc_library(
     target_compatible_with = QT_UI_COMPATIBILITY,
     visibility = ["//visibility:public"],
     deps = ["//src/libs/common:game_operation_owner", "//src/libs/common:game_storage", "@qt//:qt_core", "//src/libs/recording", "//src/libs/publication"],
+)
+
+cc_library(
+    name = "rink_mask_paint_dialog",
+    srcs = ["RinkMaskPaintDialog.cpp"],
+    hdrs = ["RinkMaskPaintDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":action_icons", ":preview_dialog_window", "@qt//:qt_widgets"],
 )
 
 cc_library(
@@ -1052,6 +1063,7 @@ cc_library(
         ":player_analytics_controls",
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
+        ":rink_mask_paint_dialog",
         ":rink_map_dialog",
         ":value_control_wheel",
         ":scoreboard_selection_dialog",
@@ -1289,6 +1301,15 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":log_text_edit", ":supervised_process", "//src/libs/common:game_operation_owner", "//src/libs/common:baseline_config", ":action_icons", ":value_control_wheel", "@qt//:qt_test", "@qt//:qt_widgets", "@yaml-cpp"],
+)
+
+cc_test(
+    name = "rink_mask_paint_dialog_test",
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    srcs = ["RinkMaskPaintDialogTest.cpp"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [":rink_mask_paint_dialog", "@qt//:qt_test", "@qt//:qt_widgets"],
 )
 
 cc_test(

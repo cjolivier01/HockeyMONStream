@@ -50,7 +50,8 @@ def run(command, capture=False):
   environment = dict(os.environ)
   environment["HSTREAM_UI_PARENT_PID"] = str(os.getpid())
   for key in ("HSTREAM_CALIBRATION_PENDING", "HSTREAM_CALIBRATION_START_STAGE",
-              "HSTREAM_CALIBRATION_INVALIDATION_ID", "HSTREAM_RINK_LEVELING_FLOW", "HSTREAM_PROJECTION_CROP_FLOW"):
+              "HSTREAM_CALIBRATION_INVALIDATION_ID", "HSTREAM_RINK_LEVELING_FLOW", "HSTREAM_PROJECTION_CROP_FLOW",
+              "HSTREAM_RINK_MASK_PAINT_FLOW"):
     environment.pop(key, None)
   process = subprocess.Popen(command, env=environment, start_new_session=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE if capture else None, text=True)

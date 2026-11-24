@@ -223,6 +223,7 @@ cc_binary(
             "//src/libs/common:baseline_config", "//src/libs/common:config_path", "//src/libs/common:game_storage", "//src/libs/common:game_operation_owner",
             "//src/libs/common:runtime_console", "//src/libs/common:process_diagnostics", "//src/libs/common:utils_base",
             "//src/libs/stitching:stitching_algorithms",
+            "//src/libs/stitching:stitching_core",
         ],
         "//conditions:default": HSTREAM_CLI_DEPS,
     }),

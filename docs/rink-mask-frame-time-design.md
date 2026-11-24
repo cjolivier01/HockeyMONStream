@@ -157,3 +157,21 @@ invalidation, legacy/malformed provenance, and GPU lifecycle selection/reuse.
 The synthetic GPU fixture uses AKAZE/OpenCV mapping and a deterministic test
 rink profile; it exercises actual decoding, GPU stitching, and publication
 without requiring rink segmentation model inference.
+
+
+## Painting missed ice
+
+In **Stitched → Rink**, enable **Paint missed ice after detection**. The setting
+is saved in Defaults or the game preset as `hstream_ui.paint_rink_mask`. The
+next interactive calibration or Program run asks for a review when it needs a
+mask or encounters an older automatic mask. Green shows the detected ice.
+Click to add a circular spot, or drag to paint a stroke. Brush diameter is in
+preview pixels. Undo removes the last stroke. **Apply painted mask** accepts
+the additions. **Use detected mask** discards the draft and accepts detection.
+
+Each review belongs to one detection attempt. Starting another detection
+retires the old editor even when the source frame and stitched dimensions
+match. Saving publishes the full-resolution mask and revised rink geometry in
+the existing artifact transaction. The selected frame and recording timestamps
+remain bound to that mask. Replaying a reviewed mask reuses it. Unattended jobs
+use automatic detection unless a supervising interface services review prompts.

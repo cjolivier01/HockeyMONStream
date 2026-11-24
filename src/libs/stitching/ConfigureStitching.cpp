@@ -1,5 +1,6 @@
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/common/RuntimeConsole.h"
 #include "hstream/src/libs/common/StatusMacros.h"
 #include "hstream/src/libs/common/utils.h"
 #include "hstream/src/libs/stitching/CalibrationMatchImages.h"
@@ -390,8 +391,12 @@ absl::StatusOr<std::optional<std::array<double, 3>>> wait_for_rink_leveling_sele
   }
 }
 
-absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
-  constexpr size_t kMaximumResponseBytes = 256;
+bool rink_mask_review_requested() {
+  const char* flow = std::getenv("HSTREAM_RINK_MASK_PAINT_FLOW");
+  return flow && std::string_view(flow) == "1";
+}
+
+absl::StatusOr<std::string> read_selection_response_file(const fs::path& path, size_t maximum_bytes = 256) {
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
   if (descriptor < 0) {
     if (errno == ENOENT)
@@ -413,18 +418,18 @@ absl::StatusOr<std::string> read_selection_response_file(const fs::path& path) {
     return absl::FailedPreconditionError("Rink leveling response must be a regular file");
   if (metadata.st_size <= 0)
     return absl::InvalidArgumentError("Rink leveling response is empty");
-  if (static_cast<uintmax_t>(metadata.st_size) > kMaximumResponseBytes)
-    return absl::ResourceExhaustedError("Rink leveling response exceeds the 256-byte limit");
+  if (static_cast<uintmax_t>(metadata.st_size) > maximum_bytes)
+    return absl::ResourceExhaustedError("Calibration response exceeds its size limit");
 
   std::string contents;
   contents.reserve(static_cast<size_t>(metadata.st_size));
-  std::array<char, kMaximumResponseBytes + 1> buffer{};
+  std::array<char, 1024> buffer{};
   for (;;) {
     const ssize_t count = ::read(descriptor, buffer.data(), buffer.size());
     if (count > 0) {
       contents.append(buffer.data(), static_cast<size_t>(count));
-      if (contents.size() > kMaximumResponseBytes)
-        return absl::ResourceExhaustedError("Rink leveling response exceeds the 256-byte limit");
+      if (contents.size() > maximum_bytes)
+        return absl::ResourceExhaustedError("Calibration response exceeds its size limit");
       continue;
     }
     if (count == 0)
@@ -4509,7 +4514,9 @@ absl::Status visit_current_field_mask_impl(
     const std::optional<ValidatedStitchingArtifacts>& previously_validated,
     const std::optional<std::string>& loaded_hugin_generation,
     const FieldMaskConsumer& consumer,
-    bool nonblocking = false) {
+    bool nonblocking = false,
+    bool require_review = false,
+    YAML::Node* validated_rink = nullptr) {
   if (game_dir.empty()) {
     return absl::InvalidArgumentError("A game directory is required to load the field mask");
   }
@@ -4623,6 +4630,9 @@ absl::Status visit_current_field_mask_impl(
   try {
     const YAML::Node values = *config;
     const YAML::Node provenance = values["rink"]["mask_frame"];
+    if (require_review && rink_mask_review_requested() &&
+        (!provenance || !provenance.IsMap() || !provenance["manually_reviewed"].as<bool>(false)))
+      return absl::FailedPreconditionError("Detect the ice mask for manual review");
     const YAML::Node saved_time =
         provenance && provenance.IsMap() ? provenance["selection"] : YAML::Node(YAML::NodeType::Undefined);
     if ((provenance && !provenance.IsMap()) || (!saved_time && mask_time != "auto") ||
@@ -4667,8 +4677,10 @@ absl::Status visit_current_field_mask_impl(
     return consumed;
   if (migrate_legacy_generation && generation_content_validated) {
     (*config)["rink"]["stitched_output_generation"] = current_output_generation;
-    return publish_game_config(root, YAML::Dump(*config) + "\n");
+    HM_RETURN_IF_ERROR(publish_game_config(root, YAML::Dump(*config) + "\n"));
   }
+  if (validated_rink)
+    *validated_rink = YAML::Clone((*config)["rink"]);
   return absl::OkStatus();
 }
 
@@ -4722,7 +4734,9 @@ absl::StatusOr<cv::Mat> load_field_mask_impl(
           return absl::FailedPreconditionError("Field mask size does not match the stitched canvas");
         }
         return absl::OkStatus();
-      });
+      },
+      false,
+      true);
   if (!visit_status.ok())
     return visit_status;
   return mask;
@@ -5050,7 +5064,8 @@ absl::Status save_rink_profile_locked(
     const std::optional<double>& expected_persisted_rotation,
     const cv::Mat* stitched_image = nullptr,
     const RinkMaskFrameProvenance& frame = {},
-    const std::function<bool()>& is_cancelled = {}) {
+    const std::function<bool()>& is_cancelled = {},
+    bool manually_reviewed = false) {
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("Rink-mask calibration cancelled before publication");
   if (game_dir.empty() || profile.masks.empty()) {
@@ -5254,6 +5269,8 @@ absl::Status save_rink_profile_locked(
     }
     YAML::Node provenance(YAML::NodeType::Map);
     provenance["selection"] = frame.selection;
+    if (manually_reviewed)
+      provenance["manually_reviewed"] = true;
     if (frame.recording_time_ns)
       provenance["recording_time_ns"] = *frame.recording_time_ns;
     for (const auto& source : frame.sources) {
@@ -5510,6 +5527,249 @@ absl::Status save_rink_profile_with_stitched_image(
       &stitched_image);
 }
 
+namespace {
+
+struct RemoveInputDirectory {
+  fs::path path;
+  fs::path game;
+  ~RemoveInputDirectory() {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+    // Nested publication may have inventoried this scratch directory before
+    // returning to its owner. Remove that entry when the operation finishes.
+    refresh_manifest_after_cleanup(game);
+  }
+};
+
+absl::StatusOr<fs::path> create_mask_scratch(const fs::path& root) {
+  std::string pattern = (hm::game_storage::StateDirectory(root) / "hstream-field-mask-input-XXXXXX").string();
+  std::vector<char> writable(pattern.begin(), pattern.end());
+  writable.push_back('\0');
+  char* created = ::mkdtemp(writable.data());
+  if (created == nullptr)
+    return absl::InternalError("Unable to create private rink input directory");
+  const fs::path input_dir(created);
+  return input_dir; // mkdtemp creates this directory with mode 0700.
+}
+
+absl::Status paint_detected_rink_mask(
+    const fs::path& staging,
+    const cv::Mat& stitched,
+    RinkProfile& profile,
+    const std::function<bool()>& cancelled) {
+  // This is the one still already read for segmentation. All video frames remain on their existing GPU path.
+  const double scale = std::min({1., 1600. / stitched.cols, 900. / stitched.rows});
+  const cv::Size size(std::max(1, cvRound(stitched.cols * scale)), std::max(1, cvRound(stitched.rows * scale)));
+  cv::Mat preview, ice;
+  cv::resize(stitched, preview, size, 0, 0, cv::INTER_AREA);
+  cv::resize(profile.masks.front(), ice, size, 0, 0, cv::INTER_NEAREST);
+  cv::Mat tinted;
+  cv::addWeighted(preview, .65, cv::Mat(size, preview.type(), cv::Scalar(80, 220, 60)), .35, 0., tinted);
+  tinted.copyTo(preview, ice);
+  if (!cv::imwrite((staging / "paint-preview.png").string(), preview))
+    return absl::InternalError("Cannot write the ice mask painting preview");
+  hm::WriteRuntimeConsole(
+      ("HSTREAM_RINK_MASK_PAINT status=ready directory-hex=" + hex_encode(staging.string())).c_str());
+  for (;;) {
+    if (cancelled && cancelled())
+      return absl::CancelledError("Ice mask painting cancelled");
+    auto response = read_selection_response_file(staging / ".rink-mask-paint-response", 192 * 1024);
+    if (absl::IsNotFound(response.status())) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(40));
+      continue;
+    }
+    if (!response.ok())
+      return response.status();
+    if (*response == "keep\n")
+      return absl::OkStatus();
+    // Each line is a round stroke in integer preview pixel coordinates.
+    std::istringstream input(*response);
+    std::string line;
+    size_t points = 0;
+    const int original_ice_pixels = cv::countNonZero(profile.masks.front());
+    while (std::getline(input, line)) {
+      std::istringstream stroke(line);
+      int diameter;
+      if (!(stroke >> diameter) || diameter < 1 || diameter > 128)
+        return absl::InvalidArgumentError("Invalid ice brush diameter");
+      cv::Point previous;
+      bool first = true;
+      for (stroke >> std::ws; !stroke.eof(); stroke >> std::ws) {
+        int x, y;
+        if (!(stroke >> x >> y) || x < 0 || x >= size.width || y < 0 || y >= size.height || ++points > 12000)
+          return absl::InvalidArgumentError("Invalid ice brush position or too many points");
+        const cv::Point point(
+            std::clamp(cvRound((x + .5) * stitched.cols / size.width - .5), 0, stitched.cols - 1),
+            std::clamp(cvRound((y + .5) * stitched.rows / size.height - .5), 0, stitched.rows - 1));
+        const int width = std::clamp(cvRound(diameter / scale), 1, 32767);
+        cv::line(profile.masks.front(), first ? point : previous, point, cv::Scalar(255), width);
+        previous = point;
+        first = false;
+      }
+      if (first)
+        return absl::InvalidArgumentError("Empty ice brush stroke");
+    }
+    if (points == 0)
+      return absl::InvalidArgumentError("No ice brush strokes supplied");
+    if (cv::countNonZero(profile.masks.front()) == original_ice_pixels)
+      return absl::OkStatus();
+    profile.combined_mask = profile.masks.front().clone();
+    for (size_t i = 1; i < profile.masks.size(); ++i)
+      cv::bitwise_or(profile.combined_mask, profile.masks[i], profile.combined_mask);
+    profile.combined_bbox = cv::boundingRect(profile.combined_mask);
+    profile.centroid = rink_contour_centroid(profile.masks);
+    return absl::OkStatus();
+  }
+}
+
+// Only mask producers change this link, under the Hugin artifact lock. A new
+// detection retires the previous editor even if its canvas and pixels match.
+absl::Status retire_mask_review(const fs::path& game) {
+  const auto current = hm::game_storage::StateDirectory(game) / ".rink-mask-paint-current";
+  if (::unlink(current.c_str()) < 0 && errno != ENOENT)
+    return absl::InternalError("Cannot retire the previous ice mask review");
+  return absl::OkStatus();
+}
+
+absl::Status review_detected_rink_mask(
+    const fs::path& game,
+    const fs::path& staging,
+    const cv::Mat& stitched,
+    RinkProfile& profile,
+    std::unique_ptr<HuginProject::ArtifactLock>& lock,
+    const std::string& generation,
+    const std::function<bool()>& cancelled) {
+  const auto token = staging / "review-token";
+  const auto current = hm::game_storage::StateDirectory(game) / ".rink-mask-paint-current";
+  std::ofstream marker(token, std::ios::out | std::ios::trunc);
+  marker.close();
+  if (!marker || ::link(token.c_str(), current.c_str()) != 0)
+    return absl::InternalError("Cannot bind this editor to the detected ice mask");
+  auto owns_review = [&] {
+    std::error_code error;
+    return fs::equivalent(token, current, error) && !error;
+  };
+  // The desktop can inspect calibration while the user paints for any length of time.
+  lock.reset();
+  const auto result = paint_detected_rink_mask(
+      staging, stitched, profile, [&] { return (cancelled && cancelled()) || !owns_review(); });
+  HM_ASSIGN_OR_RETURN(lock, HuginProject::RecoverAndLock(game));
+  if (!owns_review())
+    return absl::AbortedError("A newer ice mask detection superseded this painting session");
+  HM_RETURN_IF_ERROR(retire_mask_review(game));
+  if (!result.ok())
+    return result;
+  std::string current_generation;
+  HM_ASSIGN_OR_RETURN(current_generation, HuginProject::GenerationId(game, *lock));
+  if (current_generation != generation)
+    return absl::AbortedError("Stitching changed while painting the ice mask");
+  hm::WriteRuntimeConsole("HSTREAM_RINK_MASK_PAINT status=selected");
+  return absl::OkStatus();
+}
+
+} // namespace
+
+// Saved-only Program backends can review the detected mask and exact stitched still
+// published by calibration. Ordinary playback never opens or decodes that still.
+absl::Status review_saved_field_mask(
+    const std::string& game_dir,
+    const std::string& expected_owner,
+    const std::function<bool()>& cancelled) {
+  if (!rink_mask_review_requested())
+    return absl::OkStatus();
+  const fs::path root(game_dir), state = hm::game_storage::StateDirectory(root);
+  const auto generation = current_stitched_output_generation_id(game_dir);
+  if (!generation.ok())
+    return generation.status();
+  YAML::Node snapshot;
+  HM_RETURN_IF_ERROR(visit_current_field_mask_impl(
+      game_dir,
+      *generation,
+      expected_owner,
+      {},
+      {},
+      {},
+      {},
+      [](const std::string&, const std::optional<CanvasSize>&) { return absl::OkStatus(); },
+      /*nonblocking=*/false,
+      /*require_review=*/false,
+      &snapshot));
+  try {
+    const YAML::Node provenance = static_cast<const YAML::Node&>(snapshot)["mask_frame"];
+    if (provenance && provenance["manually_reviewed"].as<bool>(false))
+      return absl::OkStatus();
+    auto lock = HuginProject::RecoverAndLock(root);
+    if (!lock.ok())
+      return lock.status();
+    std::string hugin;
+    HM_ASSIGN_OR_RETURN(hugin, HuginProject::GenerationId(root, **lock));
+    HM_RETURN_IF_ERROR(validate_output_generation_hugin(*generation, hugin));
+    YAML::Node config;
+    std::optional<double> rotation;
+    {
+      auto tx = GameConfigTransactionLock::Acquire(root);
+      if (!tx.ok())
+        return tx.status();
+      HM_ASSIGN_OR_RETURN(config, load_config_or_empty(state / "config.yaml"));
+      if (YAML::Dump(config["rink"]) != YAML::Dump(snapshot))
+        return absl::AbortedError("Saved ice mask changed before review");
+      HM_RETURN_IF_ERROR(validate_stitching_generation_owner(config, expected_owner));
+      HM_RETURN_IF_ERROR(validate_live_output_publication_authority(config, *generation, {}));
+      HM_ASSIGN_OR_RETURN(rotation, configured_post_stitch_rotation(config));
+    }
+    CanvasSize size;
+    HM_ASSIGN_OR_RETURN(size, get_mapping_canvas_size(root));
+    auto decode = [&](const fs::path& file, int mode) -> absl::StatusOr<cv::Mat> {
+      FieldMaskPng png;
+      HM_ASSIGN_OR_RETURN(png, read_field_mask_png(file.string(), size));
+      cv::Mat image = cv::imdecode(cv::Mat(1, png.encoded.size(), CV_8UC1, png.encoded.data()), mode);
+      if (image.empty())
+        return absl::DataLossError("Cannot decode saved ice mask review image");
+      return image;
+    };
+    RinkProfile profile;
+    const unsigned count = snapshot["ice_contours_mask_count"].as<unsigned>();
+    if (count == 0 || count > kMaximumRinkTransactionArtifacts - 2)
+      return absl::InvalidArgumentError("Invalid number of saved ice masks");
+    for (unsigned index = 0; index < count; ++index) {
+      cv::Mat mask;
+      HM_ASSIGN_OR_RETURN(mask, decode(state / ("rink_mask_" + std::to_string(index) + ".png"), cv::IMREAD_GRAYSCALE));
+      profile.masks.push_back(std::move(mask));
+    }
+    const auto center = snapshot["ice_contours_mask_centroid"].as<std::vector<double>>();
+    const auto bbox = snapshot["ice_contours_combined_bbox"].as<std::vector<double>>();
+    if (center.size() != 2 || bbox.size() != 4)
+      return absl::InvalidArgumentError("Invalid saved ice mask geometry");
+    profile.centroid = {center[0], center[1]};
+    profile.combined_bbox = {bbox[0], bbox[1], bbox[2] - bbox[0], bbox[3] - bbox[1]};
+    RinkMaskFrameProvenance frame;
+    HM_ASSIGN_OR_RETURN(frame.selection, read_rink_mask_frame_time(config));
+    if (provenance) {
+      if (provenance["recording_time_ns"])
+        frame.recording_time_ns = provenance["recording_time_ns"].as<uint64_t>();
+      frame.input_id = provenance["input_id"].as<std::string>("");
+      const auto sources = provenance["sources"];
+      if (sources) {
+        if (!sources.IsSequence() || sources.size() > frame.sources.size())
+          return absl::InvalidArgumentError("Invalid saved ice mask camera positions");
+        for (size_t i = 0; i < sources.size(); ++i)
+          frame.sources[i] = {sources[i]["video"].as<std::string>(), sources[i]["seconds"].as<double>()};
+      }
+    }
+    cv::Mat stitched;
+    HM_ASSIGN_OR_RETURN(stitched, decode(state / "s.png", cv::IMREAD_COLOR));
+    fs::path scratch;
+    HM_ASSIGN_OR_RETURN(scratch, create_mask_scratch(root));
+    RemoveInputDirectory cleanup{scratch, root};
+    HM_RETURN_IF_ERROR(retire_mask_review(root));
+    HM_RETURN_IF_ERROR(review_detected_rink_mask(root, scratch, stitched, profile, *lock, hugin, cancelled));
+    return save_rink_profile_locked(
+        game_dir, profile, hugin, *generation, {}, expected_owner, rotation, &stitched, frame, cancelled, true);
+  } catch (const YAML::Exception& error) {
+    return absl::InvalidArgumentError(std::string("Invalid saved ice mask: ") + error.what());
+  }
+}
+
 absl::Status create_field_mask(
     const std::string& game_dir,
     const CalibrationImageWriter& write_image,
@@ -5556,6 +5816,7 @@ absl::Status create_field_mask(
     if (!expected_output_generation.empty())
       HM_ASSIGN_OR_RETURN(expected_persisted_rotation, configured_post_stitch_rotation(*config));
   }
+  HM_RETURN_IF_ERROR(retire_mask_review(root));
   if (const char* delay = std::getenv("HM_TEST_RINK_INFERENCE_DELAY_MS")) {
     const long delay_ms = std::strtol(delay, nullptr, 10);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(0L, delay_ms));
@@ -5565,26 +5826,9 @@ absl::Status create_field_mask(
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
   }
-  std::string pattern = (hm::game_storage::StateDirectory(root) / "hstream-field-mask-input-XXXXXX").string();
-  std::vector<char> writable(pattern.begin(), pattern.end());
-  writable.push_back('\0');
-  char* created = ::mkdtemp(writable.data());
-  if (created == nullptr)
-    return absl::InternalError("Unable to create private rink input directory");
-  const fs::path input_dir(created);
-  struct RemoveInputDirectory {
-    fs::path path;
-    fs::path game;
-    ~RemoveInputDirectory() {
-      std::error_code ignored;
-      fs::remove_all(path, ignored);
-      // Nested publication may have inventoried this scratch directory before
-      // returning to its owner. Remove that entry when the operation finishes.
-      refresh_manifest_after_cleanup(game);
-    }
-  } input_cleanup{input_dir, game_dir};
-  if (::chmod(input_dir.c_str(), 0700) != 0)
-    return absl::InternalError("Unable to protect private rink input directory");
+  fs::path input_dir;
+  HM_ASSIGN_OR_RETURN(input_dir, create_mask_scratch(root));
+  RemoveInputDirectory input_cleanup{input_dir, root};
   const fs::path stitched_path = input_dir / "s.png";
   if (!write_image)
     return absl::InvalidArgumentError("A calibration image writer is required");
@@ -5594,29 +5838,24 @@ absl::Status create_field_mask(
     return absl::FailedPreconditionError("Unable to reload stitched frame for rink inference");
   if (is_cancelled && is_cancelled())
     return absl::CancelledError("Rink-mask calibration cancelled before inference");
-  if (forced_test_rink_profile_enabled()) {
-    return save_rink_profile_locked(
-        game_dir,
-        make_forced_test_rink_profile(stitched),
-        *hugin_generation,
-        expected_output_generation,
-        expected_output_authorization_id,
-        expected_invalidation_id,
-        expected_persisted_rotation,
-        &stitched,
-        frame,
-        is_cancelled);
-  }
-  fs::path model_path;
-  HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
-  std::unique_ptr<RinkSegmentation> model;
-  HM_ASSIGN_OR_RETURN(
-      model, RinkSegmentation::Create(model_path.string(), [] {
-        report_calibration_progress(
-            "rink-mask", "started", "GPU memory exhausted; finding the ice surface on CPU (may take longer)");
-      }));
   RinkProfile profile;
-  HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled));
+  if (forced_test_rink_profile_enabled()) {
+    profile = make_forced_test_rink_profile(stitched);
+  } else {
+    fs::path model_path;
+    HM_ASSIGN_OR_RETURN(model_path, rink_model_path());
+    std::unique_ptr<RinkSegmentation> model;
+    HM_ASSIGN_OR_RETURN(
+        model, RinkSegmentation::Create(model_path.string(), [] {
+          report_calibration_progress(
+              "rink-mask", "started", "GPU memory exhausted; finding the ice surface on CPU (may take longer)");
+        }));
+    HM_ASSIGN_OR_RETURN(profile, model->Infer(stitched, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled));
+  }
+  const bool review = rink_mask_review_requested();
+  if (review)
+    HM_RETURN_IF_ERROR(
+        review_detected_rink_mask(root, input_dir, stitched, profile, *hugin_lock, *hugin_generation, is_cancelled));
   return save_rink_profile_locked(
       game_dir,
       profile,
@@ -5627,7 +5866,8 @@ absl::Status create_field_mask(
       expected_persisted_rotation,
       &stitched,
       frame,
-      is_cancelled);
+      is_cancelled,
+      review);
 }
 
 absl::Status configure_orientation(

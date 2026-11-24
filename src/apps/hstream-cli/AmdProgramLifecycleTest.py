@@ -5,6 +5,7 @@ saved, unrotated calibrated game with at least two seconds remaining, plus
 ffprobe/ffmpeg. Video readback here is solely an offline output verifier.
 """
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,9 +40,12 @@ def verify_clip(path, frames):
 def run_case(cli, game, start, directory, case):
     path = directory / (case + ".mp4")
     seek = case == "queued_end_seek"
+    review = case in ("review_sigint", "review_sigterm")
+    review_directory = None
+    original_mask = None
     args = [
         cli, "-g", game, "--enable-sources=URI-MULTIPLE",
-        "--enable-sinks=" + ("FAKE" if seek else "ENCODE_FILE"),
+        "--enable-sinks=" + ("FAKE" if seek or review else "ENCODE_FILE"),
         "--start-time=" + start,
         "--options=pipeline.primary-gie.config-file=config_infer_yolov8_hockey_fp16.yaml",
         "--options=video_out.output_video_path=" + str(path),
@@ -51,6 +55,8 @@ def run_case(cli, game, start, directory, case):
     env = os.environ.copy()
     for name in ["HSTREAM_UI_PREVIEW_OVERLAYS", "HSTREAM_JOB_MANIFEST", "HSTREAM_UI_PARENT_PID"]:
         env.pop(name, None)
+    if review:
+        env["HSTREAM_RINK_MASK_PAINT_FLOW"] = "1"
     process = subprocess.Popen(
         args, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT, text=True, bufsize=1,
@@ -89,6 +95,13 @@ def run_case(cli, game, start, directory, case):
                 break
             log.append(line)
             seek_ok |= "HSTREAM_SEEK status=ok generation=1" in line
+            if review and line.startswith("HSTREAM_RINK_MASK_PAINT status=ready directory-hex="):
+                review_directory = Path(os.fsdecode(bytes.fromhex(line.split("directory-hex=")[1].strip())))
+                assert (review_directory / "paint-preview.png").is_file()
+                assert (review_directory.parent / "game-operation.yaml").is_file()
+                original_mask = hashlib.sha256((review_directory.parent / "rink_mask_0.png").read_bytes()).digest()
+                process.send_signal(signal.SIGINT if case == "review_sigint" else signal.SIGTERM)
+                acted = True
             if line.startswith("HSTREAM_AMD_FRAME "):
                 frames += 1
                 if not acted and frames >= (1 if case == "quit_one" else 20):
@@ -127,9 +140,16 @@ def run_case(cli, game, start, directory, case):
                     process.send_signal(signal.SIGINT)
         code = process.wait(timeout=5)
         expected = {"sigterm": 143, "abort_then_stop": 143, "paused_eof": 1, "queued_quit": 130}.get(case, 0)
+        if review:
+            expected = 130 if case == "review_sigint" else 143
         assert code == expected, (case, code, expected)
         if case not in ("queued_quit", "queued_end_seek", "limit_one"):
             assert acted, (case, "control request was never sent")
+        if review:
+            assert frames == 0 and review_directory and not review_directory.exists()
+            assert not (review_directory.parent / ".rink-mask-paint-current").exists()
+            assert not (review_directory.parent / "game-operation.yaml").exists()
+            assert hashlib.sha256((review_directory.parent / "rink_mask_0.png").read_bytes()).digest() == original_mask
         if case.startswith("paused_"):
             assert pause_acknowledged, (case, "pause was never acknowledged")
         published = code == 0 and not seek
@@ -166,7 +186,8 @@ if __name__ == "__main__":
     game = os.environ["HSTREAM_AMD_TEST_GAME_ID"]
     start = os.environ["HSTREAM_AMD_TEST_START_SECONDS"]
     with tempfile.TemporaryDirectory(prefix="amd-program-lifecycle-") as directory:
-        for case in [
+        # Pass review_sigint and review_sigterm for a disposable, unreviewed saved mask.
+        for case in sys.argv[2:] or [
             "queued_end_seek", "limit_one", "quit_one", "desktop_quit", "sigint", "paused_quit", "paused_desktop_quit",
             "paused_sigint", "sigterm", "abort_then_stop", "paused_eof", "queued_quit",
         ]:
