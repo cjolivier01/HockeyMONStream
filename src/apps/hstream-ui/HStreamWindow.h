@@ -660,6 +660,7 @@ class HStreamWindow : public QMainWindow {
   QLabel* pipeline_state_{nullptr};
   QLabel* ownership_notice_{nullptr};
   bool reviewing_ownership_{false};
+  bool start_mouse_pressed_{false};
   QProgressBar* playback_progress_{nullptr};
   QWidget* playback_seek_controls_{nullptr};
   QSlider* playback_seek_slider_{nullptr};

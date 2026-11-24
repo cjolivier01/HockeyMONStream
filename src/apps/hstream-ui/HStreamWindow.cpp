@@ -5499,6 +5499,15 @@ HStreamWindow::~HStreamWindow() {
 }
 
 bool HStreamWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == start_button_) {
+    const auto type = event->type();
+    if (type == QEvent::MouseButtonPress || type == QEvent::MouseButtonDblClick || type == QEvent::MouseButtonRelease) {
+      if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+        start_mouse_pressed_ = type != QEvent::MouseButtonRelease;
+    } else if (type == QEvent::UngrabMouse || type == QEvent::Hide || type == QEvent::EnabledChange) {
+      start_mouse_pressed_ = false;
+    }
+  }
   if (source_camera_player_ && source_camera_index_ >= 0 &&
       watched == camera_preview_render_targets_[source_camera_index_] &&
       (event->type() == QEvent::Show || event->type() == QEvent::Resize))
@@ -6463,6 +6472,7 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
 
   start_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), "Play");
   start_button_->setObjectName("startPipelineButton");
+  start_button_->installEventFilter(this);
   pause_button_ = new QPushButton(style()->standardIcon(QStyle::SP_MediaPause), "Pause");
   pause_button_->setObjectName("pausePipelineButton");
   auto* restart = new QPushButton(style()->standardIcon(QStyle::SP_BrowserReload), "Restart Stage");
@@ -19614,13 +19624,13 @@ void HStreamWindow::updateRunControls() {
   if (start_button_) {
     const bool review = external_operation || running;
     // Finish the action the operator pressed even if ownership changes before release.
-    if (!start_button_->isDown() && review != reviewing_ownership_) {
+    if (!start_mouse_pressed_ && !start_button_->isDown() && review != reviewing_ownership_) {
       reviewing_ownership_ = review;
       start_button_->setText(review ? "Review ownership…" : "Play");
       start_button_->setIcon(action_icon(review ? ActionIcon::Inspect : ActionIcon::Play));
     }
     start_button_->setEnabled(
-        review ||
+        review || reviewing_ownership_ ||
         (!editing_defaults_ && !waiting_for_start && !isArchiveFinalizing() && !archive_recovery_blocked &&
          !live_rotation_authorization_pending_ && !findChild<QDialog*>("highlightsDialog")));
   }

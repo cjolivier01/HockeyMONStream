@@ -235,31 +235,47 @@ struct HStreamWindowTestAccess {
         "Desktop resumes after confirmed workflow cleanup");
     auto missing = hm::game_operation::LocalOwner("pipeline", "previous-run", "missing-token");
     missing.process_id = 2147483647;
-    {
-      auto lock = hm::game_operation::Lock::Acquire(game);
-      require(lock.ok() && (*lock)->Claim(missing).ok(), "Claim missing local owner");
+    for (const bool use_mouse : {false, true}) {
+      {
+        auto lock = hm::game_operation::Lock::Acquire(game);
+        require(lock.ok() && (*lock)->Claim(missing).ok(), "Claim missing local owner");
+      }
+      window.updateRunControls();
+      require(
+          !window.ownership_notice_->isHidden() && window.ownership_notice_->text().contains("Force release") &&
+              window.start_button_->isEnabled(),
+          "Missing local owner has a visible recovery action");
+      if (use_mouse) {
+        QTest::mousePress(window.start_button_, Qt::LeftButton);
+        QTest::mouseMove(window.start_button_, QPoint(-3, 5));
+        require(!window.start_button_->isDown(), "Moving outside disarms the held button");
+      } else {
+        QTest::keyPress(window.start_button_, Qt::Key_Space);
+      }
+      {
+        auto lock = hm::game_operation::Lock::Acquire(game);
+        require(lock.ok() && (*lock)->Release(missing.token, missing.revision, true).ok(), "Release missing fixture");
+      }
+      window.updateRunControls();
+      require(window.start_button_->text() == "Review ownership…", "A poll must preserve the held Review action");
+      if (use_mouse) {
+        QTest::mouseMove(window.start_button_, window.start_button_->rect().center());
+        require(window.start_button_->isDown(), "Returning inside rearms the same press");
+      }
+      QTimer::singleShot(0, [&] {
+        auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
+        require(dialog, "Review still shows the released owner state without starting playback");
+        dialog->reject();
+      });
+      if (use_mouse) {
+        QTest::mouseRelease(window.start_button_, Qt::LeftButton);
+      } else {
+        QTest::keyRelease(window.start_button_, Qt::Key_Space);
+      }
+      require(
+          window.pipeline_process_->state() == QProcess::NotRunning && window.start_button_->text() == "Play",
+          "Completing Review must leave processing stopped and offer a separate Play");
     }
-    window.updateRunControls();
-    require(
-        !window.ownership_notice_->isHidden() && window.ownership_notice_->text().contains("Force release") &&
-            window.start_button_->isEnabled(),
-        "Missing local owner has a visible recovery action");
-    QTest::keyPress(window.start_button_, Qt::Key_Space);
-    {
-      auto lock = hm::game_operation::Lock::Acquire(game);
-      require(lock.ok() && (*lock)->Release(missing.token, missing.revision, true).ok(), "Release missing fixture");
-    }
-    window.updateRunControls();
-    require(window.start_button_->text() == "Review ownership…", "A poll must preserve the held Review action");
-    QTimer::singleShot(0, [&] {
-      auto* dialog = window.findChild<QDialog*>("gameOwnershipDialog");
-      require(dialog, "Review still shows the released owner state without starting playback");
-      dialog->reject();
-    });
-    QTest::keyRelease(window.start_button_, Qt::Key_Space);
-    require(
-        window.pipeline_process_->state() == QProcess::NotRunning && window.start_button_->text() == "Play",
-        "Completing Review must leave processing stopped and offer a separate Play");
     require(window.beginGameOperation("pipeline"), "Desktop obtains main game admission");
     {
       auto lock = hm::game_operation::Lock::Acquire(game);
