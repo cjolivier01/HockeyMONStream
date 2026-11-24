@@ -6622,7 +6622,10 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
         format_stitch_frame_time(playback_start_time_edit_->time()));
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowModality(Qt::WindowModal);
+    connect(
+        dialog, &QObject::destroyed, this, [this] { QTimer::singleShot(0, this, [this] { updateRunControls(); }); });
     dialog->show();
+    updateRunControls();
   });
   action_bar->addWidget(stitching_experiments_button_);
   highlights_button_ = new QPushButton(action_icon(ActionIcon::Document), "Highlights…");
@@ -6969,7 +6972,7 @@ QStringList HStreamWindow::sourceCameraFiles(int camera) const {
   return {};
 }
 
-void HStreamWindow::playSourceCamera(int camera, std::optional<qint64> seek) {
+void HStreamWindow::playSourceCamera(int camera, bool play, std::optional<qint64> seek) {
   updateRunControls(); // Recheck durable ownership immediately before admission.
   if (!source_camera_available_ || camera < 0 || camera >= static_cast<int>(camera_optics_sources_.size()) ||
       preview_tabs_->currentIndex() != camera + 2)
@@ -6984,7 +6987,7 @@ void HStreamWindow::playSourceCamera(int camera, std::optional<qint64> seek) {
     if (!beginGameOperation("pipeline"))
       return;
     source_camera_index_ = camera; // Retain admission until the graph is destroyed.
-    source_camera_player_ = std::make_unique<hm::ui::SourceCameraProcess>();
+    source_camera_player_ = std::make_unique<hm::ui::SourceCameraPlayer>();
     auto* surface = camera_preview_surfaces_[camera];
     auto* target = static_cast<hm::ui::NativePreviewSurface*>(camera_preview_render_targets_[camera]);
     target->setImageMode(false);
@@ -6992,16 +6995,8 @@ void HStreamWindow::playSourceCamera(int camera, std::optional<qint64> seek) {
     target->show();
     camera_preview_notices_[camera]->hide();
     QString error;
-    if (!source_camera_player_->Open(
-            files,
-            target->winId(),
-            pipeline_stop_timeout_ms_,
-            pipeline_kill_timeout_ms_,
-            operation_game_,
-            operation_token_,
-            baseline_config_["workflow"]["shutdown_timeout_seconds"].as<int64_t>() * 1000,
-            baseline_config_["workflow"]["poll_interval_ms"].as<int64_t>(),
-            &error)) {
+    source_camera_player_->SetFlip(camera_optics_result_.camera.input_cameras.at(camera_optics_sources_[camera]).flip);
+    if (!source_camera_player_->Open(files, target->winId(), pipeline_stop_timeout_ms_, &error)) {
       appendLog("Camera preview: " + error);
       stopSourceCamera();
       return;
@@ -7010,9 +7005,10 @@ void HStreamWindow::playSourceCamera(int camera, std::optional<qint64> seek) {
   } else if (seek) {
     source_camera_player_->Seek(*seek);
   }
-  // A seek preserves transport intent, including a pause awaiting its reply.
-  if (!seek)
+  if (play)
     source_camera_player_->Play();
+  else
+    source_camera_player_->Pause();
   pollSourceCamera();
 }
 
@@ -7045,9 +7041,6 @@ void HStreamWindow::pollSourceCamera() {
   if (!status.error.isEmpty()) {
     appendLog("Camera preview: " + status.error);
     stopSourceCamera();
-    camera_preview_notices_[camera]->setText(
-        operation_token_.empty() ? status.error + " Choose Play camera to retry." : status.error);
-    camera_preview_notices_[camera]->show();
     return;
   }
   if (status.width > 0 && status.height > 0) {
@@ -7073,8 +7066,8 @@ void HStreamWindow::pollSourceCamera() {
   source_camera_seek_[camera]->setEnabled(source_camera_available_ && status.ready);
   source_camera_stop_[camera]->setEnabled(true);
   if (source_camera_redraw_pending_ && status.ready && camera_preview_render_targets_[camera]->isVisible()) {
-    source_camera_player_->Redraw();
-    source_camera_redraw_pending_ = false;
+    if (status.playing || source_camera_player_->Redraw())
+      source_camera_redraw_pending_ = false;
   }
 }
 
@@ -7369,11 +7362,14 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
       if (source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing)
         source_camera_player_->Pause();
       else
-        playSourceCamera(camera_index);
+        playSourceCamera(camera_index, true);
       pollSourceCamera();
     });
     connect(stop, &QPushButton::clicked, this, [this] { stopSourceCamera(); });
-    const auto seek_camera = [this, camera_index](int value) { playSourceCamera(camera_index, value); };
+    const auto seek_camera = [this, camera_index](int value) {
+      const bool playing = source_camera_index_ == camera_index && source_camera_player_ && source_camera_player_->GetStatus().playing;
+      playSourceCamera(camera_index, playing, value);
+    };
     seek->setReleaseHandler([seek_camera](std::optional<int> value) { if (value) seek_camera(*value); });
     connect(seek, &QSlider::valueChanged, this, [seek, seek_camera](int value) {
       if (!seek->isSliderDown()) seek_camera(value);
@@ -7383,10 +7379,11 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
       shortcut->setContext(Qt::WidgetWithChildrenShortcut);
       connect(shortcut, &QShortcut::activated, this, [this, camera_index, key] {
         const bool active = source_camera_index_ == camera_index && source_camera_player_;
-        const qint64 position =
-            active ? source_camera_player_->GetStatus().position_ms : source_camera_positions_[camera_index];
+        const auto status = active ? source_camera_player_->GetStatus() : hm::ui::SourceCameraPlayer::Status{};
+        const qint64 position = active ? status.position_ms : source_camera_positions_[camera_index];
         playSourceCamera(
             camera_index,
+            active && status.playing,
             std::max<qint64>(0, position + (key == Qt::Key_Left ? -10000 : 10000)));
       });
     }
@@ -7404,6 +7401,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
       else
         camera_source_starts_[source] = seconds;
       camera_optics_result_.camera.input_start_times = camera_source_starts_;
+      updatePresetDirtyState();
+    };
+    source_start->flipChanged = [this, camera_index](hm::media::FrameFlip flip) {
+      if (camera_index >= static_cast<int>(camera_optics_sources_.size()))
+        return;
+      camera_optics_result_.camera.input_cameras.at(camera_optics_sources_[camera_index]).flip = flip;
+      input_lens_widget_->setCameraDetails(camera_optics_result_);
+      if (source_camera_player_ && source_camera_index_ == static_cast<int>(camera_index))
+        source_camera_player_->SetFlip(flip);
       updatePresetDirtyState();
     };
     auto* optics_scroll = new QScrollArea(controls);
@@ -9156,6 +9162,9 @@ void HStreamWindow::updateInputCameraTabs(const hm::stitching::AutoInputLensResu
     camera_start_widgets_[index]->setEnabled(!running);
     camera_start_widgets_[index]->setProperty("cameraSource", QString::fromStdString(source));
     const auto& optics = result.camera.input_cameras.at(source);
+    camera_start_widgets_[index]->setFlip(optics.flip);
+    if (source_camera_player_ && source_camera_index_ == static_cast<int>(index))
+      source_camera_player_->SetFlip(optics.flip);
     const auto size = metadata.recording_size ? metadata.recording_size : optics.source_size;
     auto* controls = findChild<QTabWidget*>(QString("camera%1ControlTabs").arg(index + 1));
     controls->setTabText(0, size ? QString("Optics (%1×%2)").arg((*size)[0]).arg((*size)[1]) : QString("Optics"));
@@ -10632,7 +10641,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
         mapping_backend_changed || camera_changed || projection_changed || projection_parameters_changed ||
         projection_framing_changed || run_autooptimizer_changed || canvas_constraint.calibration_required;
     const bool retain_selected_frames = selected_plan_frame_count.has_value() && saved_frame_count == frame_count &&
-        saved_camera_selection.input_start_times == active_camera_selection_.input_start_times;
+        saved_camera_selection.same_source_frames(active_camera_selection_);
     replay_selected_frames = retain_selected_frames;
     if (!retain_selected_frames)
       remove_yaml_path(config, {"stitching", "stitch_frame_time"});
@@ -10818,7 +10827,7 @@ bool HStreamWindow::prepareStitchingCalibrationRun(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(saved_mapping_backend, active_mapping_backend_);
     if (camera_changed)
-      reasons << "camera configuration/FOV/input lens/source start";
+      reasons << "camera configuration/FOV/input lens/source start or flip";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(saved_projection, active_projection_);
     if (projection_parameters_changed)
@@ -21859,11 +21868,10 @@ bool HStreamWindow::applySavedControlConfig(
   const bool sync_method_changed = saved_iteration_settings_.sync_method != stitchingIterationSettings().sync_method;
   const bool frame_count_changed =
       saved_stitching_calibration_frame_count_ != 0 && saved_stitching_calibration_frame_count_ != selected_frame_count;
-  const bool source_starts_changed =
-      saved_camera_selection_.input_start_times != stitchCameraSelection().input_start_times;
+  const bool source_frames_changed = !saved_camera_selection_.same_source_frames(stitchCameraSelection());
   const bool retain_selected_frames =
-      selected_plan_frame_count->has_value() && !frame_count_changed && !source_starts_changed;
-  if (source_starts_changed)
+      selected_plan_frame_count->has_value() && !frame_count_changed && !source_frames_changed;
+  if (source_frames_changed)
     hm::stitching::InvalidateStitchingSourceInputs(config);
   if (stitch_frame_time_changed && retain_selected_frames) {
     appendLog(
@@ -22173,7 +22181,7 @@ bool HStreamWindow::applySavedControlConfig(
        canvas_constraint.calibration_required)) {
     YAML::Node calibration = config["hstream_ui"]["stitching_calibration"];
     QString stale_from =
-        source_starts_changed || stitch_frame_time_changed || sync_method_changed || frame_count_changed
+        source_frames_changed || stitch_frame_time_changed || sync_method_changed || frame_count_changed
         ? "input"
         : ((control_points_changed || control_point_matcher_changed) ? "features" : "canvas");
     const YAML::Node previous_status = map_value(calibration, "status");
@@ -22219,7 +22227,7 @@ bool HStreamWindow::applySavedControlConfig(
     if (mapping_backend_changed)
       reasons << QString("mapping backend %1 -> %2").arg(previous_mapping_backend, selected_mapping_backend);
     if (camera_changed)
-      reasons << "camera configuration/FOV/input lens/source start";
+      reasons << "camera configuration/FOV/input lens/source start or flip";
     if (projection_changed)
       reasons << QString("projection %1 -> %2").arg(previous_projection, selected_projection);
     if (projection_parameters_changed)

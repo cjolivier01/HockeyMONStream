@@ -13,6 +13,17 @@ absolute effective starts of 00:05.354146 and 01:48 with the audio matcher.
 A weak match fails with a request to choose overlapping events instead of saving
 an arbitrary offset.
 
+**Flip horizontally** mirrors the recording left to right. **Flip vertically** swaps
+top and bottom. Select both for a 180° rotation. Each camera’s Input tab applies
+its choices to the decoded camera preview and to the source frames used for rink
+orientation, calibration and stitching. Changing either box updates a paused
+preview at its current position. Save Preset retains the choices for this recording.
+
+The optional `flip_horizontal` and `flip_vertical` booleans belong to that
+recording’s prescription under `stitching.input_cameras`. The bundled empty map
+leaves every recording in its original orientation. A flip change invalidates
+calibration and retained frame pairs.
+
 ## Configuration and ownership
 
 ```yaml

@@ -34,6 +34,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/stitching:video_discovery",
     "//src/libs/media:stereo_frame_plan",
     "//src/apps/int8-calib-builder:bf16_engine",
     "//src/libs/stitching:calibration_failure_protocol",

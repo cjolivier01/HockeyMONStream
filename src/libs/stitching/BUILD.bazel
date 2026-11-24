@@ -143,6 +143,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/media:frame_flip",
     "//src/libs/common:game_operation_owner",
     "//src/libs/common:game_storage",
     ":player_frame_input_store",

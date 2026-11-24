@@ -51,6 +51,7 @@ typedef struct {
   gfloat camera_saturation;
   gfloat camera_exposure_compensation;
   gint flip_method;
+  gint camera_input_flip;
   gchar* exposure_time_range;
   gchar* gain_range;
   gboolean camera_auto_focus;
@@ -114,6 +115,7 @@ typedef struct {
   GstElement* enc_filter;
   GstElement* encbin_que;
   GstElement* tee;
+  GstElement* camera_input_flip;
   GstElement* tee_rtsp_pre_decode;
   GstElement* tee_rtsp_post_decode;
   GstElement* fakesink_queue;

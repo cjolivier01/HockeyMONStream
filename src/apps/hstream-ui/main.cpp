@@ -34,8 +34,7 @@ int main(int argc, char** argv) {
       return 0;
     }
   }
-  const bool camera_worker = argc > 1 && QString::fromLocal8Bit(argv[1]) == "--source-camera-worker";
-  hm::diagnostics::Initialize(camera_worker ? "hstream-ui-camera" : "hstream-ui", argc ? argv[0] : nullptr);
+  hm::diagnostics::Initialize("hstream-ui", argc ? argv[0] : nullptr);
   install_qt_diagnostics();
   hm::ui_internal::configure_application_identity();
 #ifndef HSTREAM_USE_HIP
@@ -59,10 +58,6 @@ int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "xcb");
   }
 #endif
-  if (camera_worker) {
-    QCoreApplication worker(argc, argv);
-    return hm::ui::RunSourceCameraProcess(worker.arguments().mid(2));
-  }
   QApplication app(argc, argv);
   install_value_control_wheel_guard();
   QCommandLineParser parser;

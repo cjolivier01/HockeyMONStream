@@ -9,6 +9,7 @@
 #include <QtGui/QImage>
 #include <QtWidgets/QApplication>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace {
@@ -46,8 +47,9 @@ QImage Presented(hm::ui::NativePreviewSurface& surface) {
   return image.scaled(surface.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
 }
 
-bool Matches(const QImage& actual, const QImage& expected) {
+std::array<double, 8> StripErrors(const QImage& actual, const QImage& expected) {
   Check(actual.size() == expected.size(), "Reference frame dimensions differ");
+  std::array<double, 8> errors{};
   // Check each vertical strip independently: an overall average can hide stale
   // right-hand slices when most of a recording is stationary ice/background.
   for (int strip = 0; strip < 8; ++strip) {
@@ -74,31 +76,29 @@ bool Matches(const QImage& actual, const QImage& expected) {
         ++samples;
       }
     Check(samples > 1000, "Too few smooth reference pixels in strip " + std::to_string(strip));
-    const double mean = error / (samples * 3);
-    std::cout << "strip " << strip << " mean pixel error " << mean << '\n';
-    if (mean >= 4.0)
-      return false;
+    errors[strip] = error / (samples * 3);
   }
-  return true;
+  return errors;
 }
 
 void Compare(hm::ui::NativePreviewSurface& surface, const QImage& expected) {
-  // On PRIME the display GPU can still be scanning out the prior frame when
-  // the rendering GPU acknowledges its swap. Keep the player paused and
-  // sample the native front buffer until the same pixel checks pass.
-  QElapsedTimer timer;
-  timer.start();
-  QImage actual;
-  bool matched;
-  do {
-    actual = Presented(surface);
-    matched = Matches(actual, expected);
-    if (!matched)
-      QThread::msleep(16);
-  } while (!matched && timer.elapsed() < 2000);
-  if (const char* capture = std::getenv("HSTREAM_TEST_CAMERA_CAPTURE"))
-    Check(actual.save(QString::fromLocal8Bit(capture)), "Cannot save requested test screenshot");
-  Check(matched, "Camera still contains stale or incorrect pixels after display scanout");
+  // A submitted GL swap can reach the X11 front buffer after the sink reports
+  // its PTS. Observe the paused surface until every strip belongs to that frame.
+  QElapsedTimer elapsed;
+  elapsed.start();
+  for (;;) {
+    const auto actual = Presented(surface);
+    const auto errors = StripErrors(actual, expected);
+    const auto worst = std::max_element(errors.begin(), errors.end());
+    if (*worst < 4.0 || elapsed.elapsed() >= 1500) {
+      if (const char* capture = std::getenv("HSTREAM_TEST_CAMERA_CAPTURE"))
+        Check(actual.save(QString::fromLocal8Bit(capture)), "Cannot save requested test screenshot");
+      std::cout << "Maximum strip error " << *worst << " at strip " << (worst - errors.begin()) << '\n';
+      Check(*worst < 4.0, "Camera contains stale or incorrect pixels");
+      return;
+    }
+    QThread::msleep(10);
+  }
 }
 } // namespace
 
@@ -141,6 +141,7 @@ int main(int argc, char** argv) {
          "4",
          "-ss",
          std::to_string(target / 1000.0),
+         "-noautorotate", // Compare decoded camera pixels, including for MP4s with a display matrix.
          "-i",
          source.string(),
          "-map",
@@ -174,6 +175,15 @@ int main(int argc, char** argv) {
     const auto initial = Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
     const auto chapter_ms = initial.duration_ms / 2;
     Check(target >= 0 && target < chapter_ms, "Requested frame is outside the recording");
+    // Replace an in-flight seek before its segment has necessarily arrived.
+    for (int i = 0; i < 6; ++i) {
+      player.Seek(i % 2 ? target : target / 2);
+      player.Poll();
+    }
+    Wait(player, [&](const auto& status) {
+      return !status.seeking && std::abs(status.position_ms - target) < 200 && status.presented_ns >= 0;
+    });
+    Compare(surface, expected);
     for (const qint64 position : {target, chapter_ms + target, target}) {
       player.Seek(position);
       Wait(player, [&](const auto& status) {
@@ -193,6 +203,12 @@ int main(int argc, char** argv) {
     player.Seek(target);
     Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
     Compare(surface, expected);
+    for (hm::media::FrameFlip flip : {hm::media::FrameFlip{true, false}, {false, true}, {true, true}, {}}) {
+      player.SetFlip(flip);
+      Wait(player, [](const auto& status) { return status.presented_ns >= 0; });
+      Check(!player.GetStatus().playing, "Changing the camera flip resumed paused playback");
+      Compare(surface, expected.mirrored(flip.horizontal, flip.vertical));
+    }
     player.Close();
     std::cout << "Full camera pixels match software decoding after repeated and cross-chapter seeks\n";
     return 0;

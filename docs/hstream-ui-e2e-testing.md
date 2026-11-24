@@ -241,8 +241,10 @@ video and audio from their timestamps, disables preview frame sampling/leaky
 queues, and retains late video frames (`max-lateness=-1`, `qos=false`). The render
 terminator prerolls before the playback clock starts. Calibration runs with the
 unrestricted monitor policy so collecting frame pairs and crossing URI chapters
-cannot wait on output preroll. After calibration, playback recreates the graph at
-the requested start (including zero) and enables pacing. Hidden previews remain gated.
+cannot wait on output preroll. The unpaced ALSA monitor does not supply the
+pipeline clock. The stitched preview can advance while the device waits for its
+first paired audio samples. After calibration, playback recreates the graph at
+the requested start (including zero) and enables pacing when requested. Hidden previews remain gated.
 Slow processing can make playback stutter; it does not trigger frame skipping.
 
 The setting does not alter archive frames, timestamps, audio samples, encoding
@@ -615,11 +617,12 @@ bazelisk build --config=opt --cpu=k8 //src/apps/hstream-ui:source_camera_playbac
 QT_QPA_PLATFORM=xcb bazel-bin/src/apps/hstream-ui/source_camera_playback_test
 ```
 
-Desktop source playback runs the camera graph in a guarded child of the UI.
-The test interrupts that child during playback, checks the visible error and
-game release, then plays the same camera again in the original window. The
-worker and window exchange transport commands and frame timestamps. Video
-presentation still targets the original X11 window directly.
+The test also starts and cancels a local stitching experiment in a disposable game, then plays the right camera
+with its saved vertical flip and changes the flip while paused. To repeat that handoff on original chapters, pass
+a left and right file to the same binary and set `TEST_TMPDIR` to a writable directory on their filesystem.
+The fixture hard-links the recordings and writes its settings and ownership records to the temporary game.
+Desktop playback and seeks run in the Qt process. On NVIDIA, chapter and flip changes retire the decoder and
+GL resources while retaining the X11 connection to the camera window. Stop also releases that connection.
 
 The test generates short chapters in temporary storage and exercises actual GPU
 playback, paused cross-chapter seeking, tab departure, independent positions,
@@ -635,6 +638,10 @@ paused seek/redraw, video duration, audio-tail clipping and decoder retirement.
 Offset MP4/Matroska recordings also verify normalized positions and final-frame
 coverage. The native player translates through the demuxer's actual stream-time
 segment; physical source timestamps remain attached to presented frames.
+
+Desktop camera Play and Seek run in the Qt process. During an NVIDIA HEVC seek, a temporary GStreamer pad probe
+keeps compressed pictures out of NVDEC until the final seek segment reaches the decoder. A superseding seek
+updates the awaited segment. The probe removes itself before steady-state playback resumes.
 
 NVIDIA HEVC camera seeks restart the hardware decoder between two identical accurate
 seeks, matching the recorded-source and Highlights workaround. Without that

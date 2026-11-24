@@ -902,6 +902,111 @@ bool inherited_camera_handoff(const fs::path& root, bool saved_offsets = false) 
           "ordinary promotion must preserve the destination's camera roles"))
     return false;
 
+  // Reversing both cameras can swap the inferred rink sides. The candidate's
+  // resolved playlists and frame offsets must travel together on promotion.
+  auto reversed_parent = YAML::Clone(original);
+  auto parent_videos = reversed_parent["game"]["videos"];
+  const auto left_playlist = YAML::Clone(parent_videos["left"]);
+  parent_videos["left"] = YAML::Clone(parent_videos["right"]);
+  parent_videos["right"] = left_playlist;
+  reversed_parent["hstream_ui"].remove("video_roles");
+  auto reoriented = YAML::Clone(ordinary);
+  StitchInputCameras input_cameras{{"cam1/left.mp4", {108, 70, {}}}, {"cam2/right.mp4", {108, 70, {}}}};
+  for (auto& [name, camera] : input_cameras)
+    camera.flip.horizontal = true;
+  reoriented["stitching"]["input_cameras"] = WriteStitchInputCameras(input_cameras);
+  const auto reoriented_path = candidate->game_directory / "reoriented.yaml";
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(reversed_parent)) ||
+      !write(reoriented_path, YAML::Dump(reoriented)))
+    return false;
+  const auto swapped = BuildStitchingExperimentSelectionConfig(reoriented_path, game / "_hockeymon/config.yaml");
+  if (!expect(
+          swapped.ok() &&
+              YAML::Dump(YAML::Load(*swapped)["game"]["videos"]) == YAML::Dump(reoriented["game"]["videos"]),
+          "promoting new Auto camera assignments must adopt the candidate's ordered playlists"))
+    return false;
+  // Save Preset has already persisted the new axes. The input-stage marker
+  // still distinguishes the previous solve's generated roles from user roles.
+  auto saved_flips = YAML::Clone(reversed_parent);
+  saved_flips["stitching"]["input_cameras"] = YAML::Clone(reoriented["stitching"]["input_cameras"]);
+  saved_flips["hstream_ui"]["stitching_calibration"]["stale_from"] = "input";
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)))
+    return false;
+  const auto after_save = CreateStitchingExperimentWorkspace(game, root / "saved-flips", varied, 1);
+  if (!expect(after_save.ok(), "a saved flip must allow a new experiment solve"))
+    return false;
+  const auto pending = YAML::LoadFile((after_save->game_directory / "_hockeymon/config.yaml").string());
+  const auto pending_roles = pending["hstream_ui"]["video_roles"];
+  if (!expect(
+          (!pending_roles || (!pending_roles["left"] && !pending_roles["right"])) &&
+              pending["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>() == "input",
+          "queued experiments must redetect Auto roles after saving a camera flip"))
+    return false;
+  const auto promote_saved = [&] {
+    return BuildStitchingExperimentSelectionConfig(reoriented_path, game / "_hockeymon/config.yaml");
+  };
+  const auto saved_promotion = promote_saved();
+  if (!expect(
+          saved_promotion.ok() &&
+              YAML::Dump(YAML::Load(*saved_promotion)["game"]["videos"]) == YAML::Dump(reoriented["game"]["videos"]),
+          "saved flip flags must still adopt the newly solved Auto roles"))
+    return false;
+  saved_flips["game"].remove("videos");
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
+      !expect(promote_saved().ok(), "unresolved Auto roles must match both current camera groups"))
+    return false;
+  // Named root discovery writes absolute candidate-local paths for both roles.
+  const auto named_game = root / "named-game";
+  const auto named_candidate = root / "named-candidate";
+  const auto named_config = named_game / "_hockeymon/config.yaml";
+  const auto named_candidate_config = named_candidate / "_hockeymon/config.yaml";
+  auto absolute_candidate = YAML::Clone(reoriented);
+  YAML::Node named_parent = YAML::Clone(saved_flips);
+  named_parent["stitching"].remove("input_cameras");
+  auto named_flips = YAML::Node(YAML::NodeType::Map);
+  for (const char* role : {"left", "right"}) {
+    const auto filename = std::string(role) + ".mp4";
+    if (!write(named_game / filename, role))
+      return false;
+    fs::create_directories(named_candidate);
+    fs::create_symlink(named_game / filename, named_candidate / filename);
+    absolute_candidate["game"]["videos"][role][0] = (named_candidate / filename).string();
+    named_flips[filename] = YAML::Clone(reoriented["stitching"]["input_cameras"][
+        std::string(role) == "left" ? "cam1/left.mp4" : "cam2/right.mp4"]);
+  }
+  absolute_candidate["stitching"]["input_cameras"] = named_flips;
+  if (!write(named_config, YAML::Dump(named_parent)) ||
+      !write(named_candidate_config, YAML::Dump(absolute_candidate)))
+    return false;
+  const auto named = BuildStitchingExperimentSelectionConfig(named_candidate_config, named_config);
+  if (!expect(
+          named.ok() && YAML::Load(*named)["game"]["videos"]["left"][0].as<std::string>() == "left.mp4" &&
+              YAML::Load(*named)["game"]["videos"]["right"][0].as<std::string>() == "right.mp4",
+          "named root camera chapters must be promoted as game-relative paths"))
+    return false;
+  absolute_candidate["game"]["videos"]["left"][0] = (root / "another-game" / "left.mp4").string();
+  if (!write(named_candidate_config, YAML::Dump(absolute_candidate)) ||
+      !expect(
+          !BuildStitchingExperimentSelectionConfig(named_candidate_config, named_config).ok(),
+          "absolute chapters outside the candidate cannot become game inputs"))
+    return false;
+  saved_flips["hstream_ui"]["video_roles"]["center"].push_back("panorama.mp4");
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
+      !expect(!promote_saved().ok(), "a Center recording cannot adopt historical camera assignments"))
+    return false;
+  saved_flips["hstream_ui"].remove("video_roles");
+  fs::rename(game / "cam2" / "right.mp4", game / "cam2" / "replacement.mp4");
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(saved_flips)) ||
+      !expect(!promote_saved().ok(), "replaced Auto recordings cannot adopt historical camera assignments"))
+    return false;
+  fs::rename(game / "cam2" / "replacement.mp4", game / "cam2" / "right.mp4");
+  reversed_parent["hstream_ui"]["video_roles"] = YAML::Clone(parent_videos);
+  if (!write(game / "_hockeymon/config.yaml", YAML::Dump(reversed_parent)) ||
+      !expect(
+          !BuildStitchingExperimentSelectionConfig(reoriented_path, game / "_hockeymon/config.yaml").ok(),
+          "a promoted camera flip cannot reverse the operator's explicit roles"))
+    return false;
+
   if (!write(game / "_hockeymon/config.yaml", YAML::Dump(original)) || !fs::remove(game / "cam1" / "left.mp4") ||
       !fs::remove(game / "cam2" / "right.mp4"))
     return false;

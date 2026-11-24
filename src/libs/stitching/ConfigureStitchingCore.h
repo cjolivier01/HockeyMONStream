@@ -187,7 +187,9 @@ bool can_configure_stitching(const YAML::Node& config);
 
 // Loads paired GoPro Mission KB4 lens profiles for calibration-time AKAZE matching. A missing profile is optional;
 // malformed or incomplete existing profiles fail closed.
-absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(const std::filesystem::path& game_dir);
+absl::StatusOr<AkazeMatchingCalibration> load_akaze_matching_calibration(
+    const std::filesystem::path& game_dir,
+    const std::array<media::FrameFlip, 2>& flips = {});
 
 // Resolves the immutable backend tuple consumed by a calibration worker. This
 // reader must not mutate the shared yaml-cpp document while traversing it.
@@ -379,9 +381,10 @@ absl::Status clean_stitching_artifacts_from_control_points(
 
 absl::Status configure_orientation(
     const std::string& game_dir,
-    const std::string& expected_invalidation_id = {},
-    const std::function<bool()>& is_cancelled = {},
-    const CameraSourceStarts& source_starts = {});
+    const std::string& expected_invalidation_id,
+    const std::function<bool()>& is_cancelled,
+    const CameraSourceStarts& source_starts,
+    const CameraFrameFlips& flips);
 
 bool is_scoreboard_configured(const std::string& game_dir);
 

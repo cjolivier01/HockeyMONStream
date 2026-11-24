@@ -16,6 +16,7 @@
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "hstream/src/libs/stitching/StitchingAlgorithms.h"
 #include "hstream/src/libs/stitching/TransactionState.h"
+#include "hstream/src/libs/stitching/VideoDiscovery.h"
 
 #include <unistd.h>
 
@@ -320,6 +321,10 @@ absl::Status link_calibration_assets(
   return absl::OkStatus();
 }
 
+bool input_stage_is_stale(YAML::Node config) {
+  return config["hstream_ui"]["stitching_calibration"]["stale_from"].as<std::string>("") == "input";
+}
+
 void promote_generated_video_roles(YAML::Node config) {
   YAML::Node ui_roles = config["hstream_ui"]["video_roles"];
   const YAML::Node videos = config["game"]["videos"];
@@ -385,7 +390,13 @@ absl::StatusOr<std::string> reusable_selection_fingerprint(
         starts,
         hm::stitching::ReadCameraSourceStarts(
             stitching && stitching.IsMap() ? stitching["input_start_times"] : YAML::Node()));
-    if (starts != settings.camera->input_start_times)
+    hm::stitching::CameraFrameFlips flips;
+    HM_ASSIGN_OR_RETURN(
+        flips,
+        hm::stitching::ReadCameraFrameFlips(
+            stitching && stitching.IsMap() ? stitching["input_cameras"] : YAML::Node()));
+    if (starts != settings.camera->input_start_times ||
+        flips != hm::stitching::FrameFlips(settings.camera->input_cameras))
       return std::string();
   }
   std::string fingerprint;
@@ -420,12 +431,21 @@ absl::StatusOr<std::string> reusable_selection_fingerprint(
 
 absl::Status configure_candidate(
     YAML::Node config,
-    const StitchingExperimentSettings& settings,
+    StitchingExperimentSettings& settings,
     const std::string& invalidation_id) {
   hm::stitching::CameraSourceStarts previous_starts;
   HM_ASSIGN_OR_RETURN(previous_starts, hm::stitching::ReadCameraSourceStarts(config["stitching"]["input_start_times"]));
-  const bool starts_changed = settings.camera && previous_starts != settings.camera->input_start_times;
-  if (starts_changed)
+  hm::stitching::CameraFrameFlips flips;
+  HM_ASSIGN_OR_RETURN(flips, hm::stitching::ReadCameraFrameFlips(config["stitching"]["input_cameras"]));
+  const bool flips_changed = settings.camera && flips != hm::stitching::FrameFlips(settings.camera->input_cameras);
+  const bool stale_input = input_stage_is_stale(config);
+  if (flips_changed)
+    settings.manual_control_points.reset();
+  if (!flips_changed && !stale_input)
+    promote_generated_video_roles(config);
+  const bool source_frames_changed =
+      settings.camera && (previous_starts != settings.camera->input_start_times || flips_changed);
+  if (source_frames_changed)
     hm::stitching::InvalidateStitchingSourceInputs(config);
   std::string selection;
   HM_ASSIGN_OR_RETURN(selection, reusable_selection_fingerprint(config, settings));
@@ -487,9 +507,8 @@ absl::Status configure_candidate(
   calibration["frame_count"] = settings.frame_count;
   calibration["status"] = "pending";
   calibration["rink_mask_status"] = "pending";
-  // Optical edits retain the synchronized inputs; a source trim starts a new
-  // input timeline and must discard the old offsets and selected frames.
-  calibration["stale_from"] = starts_changed ? "input" : "features";
+  // A different source trim or orientation requires new calibration inputs.
+  calibration["stale_from"] = source_frames_changed || stale_input ? "input" : "features";
   calibration["artifacts_invalidated"] = false;
   calibration["invalidation_id"] = invalidation_id;
   remove_downstream_generation(config);
@@ -589,9 +608,10 @@ absl::Status copy_match_bundles(const fs::path& source, const fs::path& destinat
 absl::Status reconcile_selected_video_paths(
     YAML::Node current,
     const YAML::Node& selected,
-    const fs::path& game_directory) {
+    const fs::path& game_directory,
+    bool require_playlists = false) {
   const YAML::Node selection = selected["stitching"]["calibration_frame_selection"];
-  if (!selection || selection.IsNull())
+  if (!require_playlists && (!selection || selection.IsNull()))
     return absl::OkStatus();
   std::error_code error;
   const fs::path directory = fs::absolute(game_directory, error).lexically_normal();
@@ -654,6 +674,55 @@ absl::Status reconcile_selected_video_paths(
   return absl::OkStatus();
 }
 
+// A new orientation solve may exchange Auto sides. Verify its bindings against
+// the operator's roles or the recording groups that the runner would discover.
+absl::Status reconcile_oriented_video_paths(YAML::Node current, const YAML::Node& selected, const fs::path& game) {
+  auto roles = current["hstream_ui"]["video_roles"];
+  auto videos = current["game"]["videos"];
+  const auto assigned = [](const YAML::Node& paths) { return paths.IsSequence() && paths.size() > 0; };
+  const bool explicit_left = assigned(roles["left"]), explicit_right = assigned(roles["right"]);
+  if (!explicit_left && !explicit_right && (assigned(roles["center"]) || assigned(videos["center"])))
+    return absl::AbortedError("The selected game now uses a Center recording");
+  const bool bound = (explicit_left || assigned(videos["left"])) && (explicit_right || assigned(videos["right"]));
+  if (bound && (explicit_left || explicit_right))
+    return reconcile_selected_video_paths(current, selected, game, true);
+
+  hm::stitching::VideosDict groups;
+  HM_ASSIGN_OR_RETURN(groups, hm::stitching::get_available_videos(fs::absolute(game).string()));
+  if (groups.count("stitched") && groups.size() == 1 && !explicit_left && !explicit_right)
+    return absl::AbortedError("The selected game now uses a panorama recording");
+  groups.erase("stitched");
+  const bool named = groups.count("left") || groups.count("right");
+  if (bound && (groups.empty() || named))
+    return reconcile_selected_video_paths(current, selected, game, true);
+  if (!named && (groups.size() != 2 || explicit_left || explicit_right))
+    return absl::AbortedError("The selected game's camera playlists cannot be resolved");
+
+  YAML::Node expected = YAML::Clone(current);
+  auto expected_videos = expected["game"]["videos"];
+  auto group = groups.begin();
+  for (const char* role : {"left", "right"}) {
+    expected_videos.remove(role);
+    if (assigned(roles[role]))
+      continue;
+    auto found = named ? groups.find(role) : group++;
+    if (found == groups.end())
+      return absl::AbortedError("The selected game's camera playlist could not be found");
+    for (const auto& chapter : found->second)
+      expected_videos[role].push_back(chapter.second);
+  }
+  auto matched = reconcile_selected_video_paths(expected, selected, game, true);
+  if (!named && absl::IsAborted(matched)) {
+    const auto left = YAML::Clone(expected_videos["left"]);
+    expected_videos["left"] = YAML::Clone(expected_videos["right"]);
+    expected_videos["right"] = left;
+    matched = reconcile_selected_video_paths(expected, selected, game, true);
+  }
+  if (matched.ok() && (explicit_left || explicit_right))
+    current["hstream_ui"]["video_roles"] = YAML::Clone(expected["hstream_ui"]["video_roles"]);
+  return matched;
+}
+
 absl::Status copy_selected_frame_inputs(
     YAML::Node config,
     const YAML::Node& source_config,
@@ -668,6 +737,14 @@ absl::Status copy_selected_frame_inputs(
       selected_starts,
       hm::stitching::ReadCameraSourceStarts(
           source_stitching && source_stitching.IsMap() ? source_stitching["input_start_times"] : YAML::Node()));
+  hm::stitching::CameraFrameFlips candidate_flips, selected_flips;
+  HM_ASSIGN_OR_RETURN(candidate_flips, hm::stitching::ReadCameraFrameFlips(config["stitching"]["input_cameras"]));
+  HM_ASSIGN_OR_RETURN(
+      selected_flips,
+      hm::stitching::ReadCameraFrameFlips(
+          source_stitching && source_stitching.IsMap() ? source_stitching["input_cameras"] : YAML::Node()));
+  if (candidate_flips != selected_flips)
+    return absl::FailedPreconditionError("Saved player frames use different camera flips. Select a new frame set.");
   if (candidate_starts != selected_starts)
     return absl::FailedPreconditionError(
         "Saved player frames use different camera starts. Remove that frame-count group or choose another frame count.");
@@ -1186,7 +1263,6 @@ static absl::StatusOr<StitchingExperimentWorkspace> create_workspace(
     if (frozen_settings.camera)
       for (auto& [source, values] : frozen_settings.camera->input_cameras)
         values.frozen = true;
-    promote_generated_video_roles(config);
     const std::string invalidation_id = "stitch-experiment-" + std::to_string(::getpid()) + "-" +
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence);
     HM_RETURN_IF_ERROR(configure_candidate(config, frozen_settings, invalidation_id));
@@ -1497,9 +1573,37 @@ absl::StatusOr<std::string> BuildStitchingExperimentSelectionConfig(
   try {
     YAML::Node selected = YAML::LoadFile(experiment_config.string());
     YAML::Node current = YAML::LoadFile(game_config.string());
-    HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game_config.parent_path().parent_path()));
+    const fs::path game = game_config.parent_path().parent_path();
     YAML::Node selected_stitching = selected["stitching"];
     YAML::Node current_stitching = current["stitching"];
+    hm::stitching::CameraFrameFlips previous_flips, selected_flips;
+    HM_ASSIGN_OR_RETURN(previous_flips, hm::stitching::ReadCameraFrameFlips(current_stitching["input_cameras"]));
+    HM_ASSIGN_OR_RETURN(selected_flips, hm::stitching::ReadCameraFrameFlips(selected_stitching["input_cameras"]));
+    const bool reoriented = previous_flips != selected_flips;
+    if (reoriented || input_stage_is_stale(current)) {
+      auto candidate_directory = fs::absolute(experiment_config).parent_path();
+      if (candidate_directory.filename() == "_hockeymon")
+        candidate_directory = candidate_directory.parent_path();
+      // Named root cameras can be saved as absolute paths inside the candidate.
+      // Keep external paths absolute so the playlist check below rejects them.
+      for (const char* role : {"left", "right"}) {
+        auto paths = selected["game"]["videos"][role];
+        if (!paths.IsSequence())
+          continue;
+        for (size_t i = 0; i < paths.size(); ++i) {
+          const fs::path path = paths[i].as<std::string>();
+          if (std::find(path.begin(), path.end(), "..") != path.end())
+            return absl::InvalidArgumentError("Selected camera chapters cannot contain parent traversal");
+          if (path.is_absolute())
+            paths[i] = hm::stitching::stitch_input_camera_key(candidate_directory, path);
+        }
+      }
+      HM_RETURN_IF_ERROR(reconcile_oriented_video_paths(current, selected, game));
+      for (const char* role : {"left", "right"})
+        current["game"]["videos"][role] = YAML::Clone(selected["game"]["videos"][role]);
+    } else {
+      HM_RETURN_IF_ERROR(reconcile_selected_video_paths(current, selected, game));
+    }
     const YAML::Node request = selected["hstream_ui"]["stitching_calibration"]["reframe"];
     if (request && !request.IsNull())
       return absl::FailedPreconditionError("The selected experiment still has a pending view edit");

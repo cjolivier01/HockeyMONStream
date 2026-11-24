@@ -44,8 +44,12 @@ class CameraSourceStartWidget : public QWidget {
  public:
   explicit CameraSourceStartWidget(QWidget* parent = nullptr);
   void setStart(double seconds);
+  void setFlip(hm::media::FrameFlip flip);
+  std::function<void(hm::media::FrameFlip)> flipChanged;
   std::function<void(double)> changed;
 
  private:
   QTimeEdit* start_;
+  QCheckBox* horizontal_flip_;
+  QCheckBox* vertical_flip_;
 };

@@ -1064,7 +1064,7 @@ int run_render_audio_initial_mute(
     return 5;
   }
   if (audio_sync != paced || audio_async || audio_qos || max_lateness != -1 || leaky != (paced ? 0 : 2) ||
-      (paced && provides_clock)) {
+      provides_clock) {
     std::cerr << "Unexpected local audio timing policy; realtime=" << realtime << " sync=" << audio_sync
               << ", async=" << audio_async << " leaky=" << leaky << " provides-clock=" << provides_clock << '\n';
     return 6;
@@ -1522,6 +1522,7 @@ int run_mixed_packed_inputs(const fs::path& root) {
     configs[i].stitch_input_height = i ? 216 : 288;
     configs[i].video_format = g_strdup("RGB10A2_LE");
     configs[i].stitch_converter_buffers = 3;
+    configs[i].camera_input_flip = i ? 6 : 4;
   }
   NvDsSrcParentBin sources{};
   if (!create_multi_source_bin(2, configs, &sources))

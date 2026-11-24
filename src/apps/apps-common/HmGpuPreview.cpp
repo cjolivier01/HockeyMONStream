@@ -544,6 +544,7 @@ struct RendererState {
   guint64 presented_window_id{0};
   GstVideoInfo video_info{};
   bool have_caps{false};
+  hm::gpu_preview::X11DisplayConnection camera_display;
   Display* display{nullptr};
   GLXContext context{nullptr};
   Window cleanup_window{0};
@@ -746,7 +747,7 @@ bool initialize_renderer(GstHmGpuPreviewSink* self) {
     return false;
   }
   initialize_xlib_once();
-  state->display = XOpenDisplay(nullptr);
+  state->display = state->camera_display ? state->camera_display.get() : XOpenDisplay(nullptr);
   if (!state->display) {
     post_sink_failure(self, "could not open the X11 display");
     return false;
@@ -1661,8 +1662,12 @@ bool destroy_renderer_locked(GstHmGpuPreviewSink* self) {
   if (state->display && state->cleanup_colormap)
     XFreeColormap(state->display, state->cleanup_colormap);
   state->cleanup_colormap = 0;
-  if (state->display)
-    XCloseDisplay(state->display);
+  if (state->display) {
+    if (state->camera_display)
+      XSync(state->display, False);
+    else
+      XCloseDisplay(state->display);
+  }
   state->display = nullptr;
   return true;
 }
@@ -2047,6 +2052,30 @@ void set_isolation_failure_peer(GstElement* isolation, GstElement* ingress) {
   if (!self->state)
     return;
   g_weak_ref_set(&self->state->failure_peer, ingress ? G_OBJECT(ingress) : nullptr);
+}
+
+bool use_camera_display(GstElement* sink, X11DisplayConnection& connection) {
+#if defined(__x86_64__) || defined(__aarch64__)
+  if (!sink || !G_TYPE_CHECK_INSTANCE_TYPE(sink, gst_hm_gpu_preview_sink_get_type()))
+    return false;
+  auto* state = reinterpret_cast<GstHmGpuPreviewSink*>(sink)->state;
+  if (!state)
+    return false;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->display)
+    return false;
+  if (!connection) {
+    initialize_xlib_once();
+    auto* display = XOpenDisplay(nullptr);
+    if (!display)
+      return false;
+    connection = X11DisplayConnection(display, XCloseDisplay);
+  }
+  state->camera_display = connection;
+  return true;
+#else
+  return false;
+#endif
 }
 
 void set_renderer_generation(GstElement* sink, std::uint64_t generation) {

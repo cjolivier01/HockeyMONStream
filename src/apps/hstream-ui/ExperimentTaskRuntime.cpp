@@ -74,6 +74,10 @@ QJsonObject camera_json(const hm::stitching::StitchCameraSelection& camera) {
         {"horizontal_fov", values.horizontal_fov},
         {"vertical_fov", values.vertical_fov},
         {"input_lens", input_lens_json(values.input_lens)}};
+    if (values.flip.horizontal)
+      prescription.insert("flip_horizontal", true);
+    if (values.flip.vertical)
+      prescription.insert("flip_vertical", true);
     if (values.source_size)
       prescription.insert("source_size", QJsonArray{(*values.source_size)[0], (*values.source_size)[1]});
     if (!values.configuration.empty())

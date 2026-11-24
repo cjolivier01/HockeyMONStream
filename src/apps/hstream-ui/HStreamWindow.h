@@ -5,7 +5,7 @@
 #include "src/apps/hstream-ui/ApplicationIdentity.h"
 #include "src/apps/hstream-ui/BackendOptions.h"
 #include "src/apps/hstream-ui/DetectorOptions.h"
-#include "src/apps/hstream-ui/SourceCameraProcess.h"
+#include "src/apps/hstream-ui/SourceCameraPlayer.h"
 
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
@@ -241,7 +241,7 @@ class HStreamWindow : public QMainWindow {
   void applyScoreboardPromptEnvironment(QProcessEnvironment& environment) const;
 
   void startPipeline();
-  void playSourceCamera(int camera, std::optional<qint64> seek = {});
+  void playSourceCamera(int camera, bool play, std::optional<qint64> seek = {});
   void stopSourceCamera();
   void pollSourceCamera();
   void updateSourceCameraControls(bool available);
@@ -802,7 +802,7 @@ class HStreamWindow : public QMainWindow {
   std::vector<QWidget*> camera_preview_surfaces_;
   std::vector<QWidget*> camera_preview_render_targets_;
   std::vector<QLabel*> camera_preview_notices_;
-  std::unique_ptr<hm::ui::SourceCameraProcess> source_camera_player_;
+  std::unique_ptr<hm::ui::SourceCameraPlayer> source_camera_player_;
   int source_camera_index_{-1};
   bool source_camera_available_{false};
   bool source_camera_redraw_pending_{false};

@@ -932,6 +932,12 @@ bool expect_akaze_profile_changes_require_regeneration(const fs::path& tmpdir) {
     return false;
   }
   const auto loaded = hm::stitching::load_akaze_matching_calibration(changed);
+  const auto reflected = hm::stitching::load_akaze_matching_calibration(changed, {{{true, false}, {false, true}}});
+  if (!loaded.ok() || !reflected.ok() || !loaded->left || !loaded->right || !reflected->left || !reflected->right ||
+      reflected->left->cx != loaded->left->resolution.width - 1 - loaded->left->cx ||
+      reflected->left->cy != loaded->left->cy || reflected->right->cx != loaded->right->cx ||
+      reflected->right->cy != loaded->right->resolution.height - 1 - loaded->right->cy)
+    return false;
   if (!loaded.ok() || !loaded->source_profile_fingerprint.has_value() ||
       !write_akaze_provenance(changed, "sha256:" + *loaded->source_profile_fingerprint) ||
       !expect_configured(changed, true, "matching AKAZE profile provenance must be reusable") ||

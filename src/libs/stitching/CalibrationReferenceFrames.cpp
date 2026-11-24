@@ -70,9 +70,15 @@ CalibrationImageWriter Writer(
     size_t camera,
     int compression_level,
     std::function<bool()> is_cancelled,
-    bool exact = false) {
-  return [ffmpeg = std::move(ffmpeg), sources = std::move(sources), camera, compression_level, is_cancelled, exact](
-             const std::filesystem::path& output) {
+    bool exact,
+    media::FrameFlip flip) {
+  return [ffmpeg = std::move(ffmpeg),
+          sources = std::move(sources),
+          camera,
+          compression_level,
+          is_cancelled,
+          exact,
+          flip](const std::filesystem::path& output) {
     if (is_cancelled && is_cancelled())
       return absl::CancelledError("Calibration frame extraction cancelled");
     const auto began = std::chrono::steady_clock::now();
@@ -108,7 +114,8 @@ CalibrationImageWriter Writer(
          "-frames:v",
          "1",
          "-vf",
-         "showinfo",
+         std::string(flip.enabled() ? "format=rgb48be," : "") + (flip.horizontal ? "hflip," : "") +
+             (flip.vertical ? "vflip," : "") + "showinfo",
          "-fps_mode",
          "passthrough",
          "-pix_fmt",
@@ -256,12 +263,20 @@ absl::StatusOr<std::vector<CalibrationFrameInput>> EndRelativeCalibrationInputs(
       }
       HM_ASSIGN_OR_RETURN(planned, PlanCalibrationReferenceFrames(cameras, reference, count, *playback_start_ns));
     }
+    CameraFrameFlips flips;
+    HM_ASSIGN_OR_RETURN(flips, ReadCameraFrameFlips(config["stitching"]["input_cameras"]));
+    std::array<media::FrameFlip, 2> ordered{};
+    if (!flips.empty())
+      for (size_t i = 0; i < ordered.size(); ++i) {
+        const auto playlist = config["game"]["videos"][i ? "right" : "left"].as<std::vector<std::string>>();
+        HM_ASSIGN_OR_RETURN(ordered[i], SourceFrameFlip(flips, game, playlist));
+      }
     std::vector<CalibrationFrameInput> inputs;
     for (const auto& pair : planned) {
       auto decoded = std::make_shared<std::array<CalibrationFrameSource, 2>>(pair);
       CalibrationFrameInput input{
-          Writer(*ffmpeg, decoded, 0, compression_level, is_cancelled, selected),
-          Writer(*ffmpeg, decoded, 1, compression_level, is_cancelled, selected),
+          Writer(*ffmpeg, decoded, 0, compression_level, is_cancelled, selected, ordered[0]),
+          Writer(*ffmpeg, decoded, 1, compression_level, is_cancelled, selected, ordered[1]),
           pair[0],
           pair[1]};
       input.decoded_sources = decoded;

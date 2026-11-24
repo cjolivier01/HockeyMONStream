@@ -584,12 +584,14 @@ bool create_render_audio_branch(
     // Apply backpressure only in explicitly paced playback. Archive audio
     // retains its own lossless queue and unchanged sample timestamps.
     g_object_set(G_OBJECT(queue), "leaky", 0, NULL);
-    // Shared paced presentation installs the monitor's physical clock only
-    // after resolving its device bounds and bounded video retention. Until
-    // then the incomplete graph cannot provide a presentation clock.
-    g_object_set(G_OBJECT(audiosink), "provide-clock", FALSE, NULL);
   }
-  g_object_set(G_OBJECT(audiosink), "sync", realtime, "async", FALSE, "max-lateness", gint64{-1}, "qos", FALSE, NULL);
+  // During calibration, video can be clocked while the audio monitor is unpaced.
+  // Its device clock stays at zero until enough PCM arrives, and PCM admission
+  // waits for paired video. PacedPlayback explicitly selects the device clock
+  // for normal-speed playback and checks the buffering on both branches.
+  g_object_set(
+      G_OBJECT(audiosink), "provide-clock", FALSE, "sync", realtime, "async", FALSE, "max-lateness", gint64{-1},
+      "qos", FALSE, NULL);
   if (*hmaudio_config->alsa_dest_device) {
     g_object_set(G_OBJECT(audiosink), "device", hmaudio_config->alsa_dest_device, NULL);
   }

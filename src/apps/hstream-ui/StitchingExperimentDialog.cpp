@@ -4419,6 +4419,10 @@ StitchingExperimentDialog::StitchingExperimentDialog(
       auto* source_start = new CameraSourceStartWidget(controls);
       source_start->setProperty("cameraSource", QString::fromStdString(source));
       source_start->setStart(hm::stitching::CameraSourceStart(s.camera_settings.input_start_times, {}, source));
+      source_start->setFlip(s.camera_settings.input_cameras.at(source).flip);
+      source_start->flipChanged = [&s, source](hm::media::FrameFlip flip) {
+        s.camera_settings.input_cameras.at(source).flip = flip;
+      };
       source_start->changed = [&s, source](double seconds) {
         if (seconds == 0)
           s.camera_settings.input_start_times.erase(source);
