@@ -73,16 +73,18 @@ class BackendPreview;
 namespace hm::ui_internal {
 
 struct StitchingIterationSettings {
-  // Startup resolves all four values from the required baseline. Empty storage
+  // Startup resolves the values from the required baseline. Empty storage
   // must never supply policy for an absent configuration key.
   QString sync_method;
   bool show_crop_dialog{};
   bool show_leveling_dialog{};
   QString playback_start_time;
+  bool paint_rink_mask{};
 
   bool operator!=(const StitchingIterationSettings& other) const {
     return sync_method != other.sync_method || show_crop_dialog != other.show_crop_dialog ||
-        show_leveling_dialog != other.show_leveling_dialog || playback_start_time != other.playback_start_time;
+        show_leveling_dialog != other.show_leveling_dialog || playback_start_time != other.playback_start_time ||
+        paint_rink_mask != other.paint_rink_mask;
   }
 };
 
@@ -361,6 +363,8 @@ class HStreamWindow : public QMainWindow {
   void requestScoreboardSelection();
   bool sendScoreboardCommand(const QString& property, const QString& value);
   bool handleScoreboardControlOutput(const QString& line);
+  void handleRinkMaskPaintOutput(const QString& line);
+  void closeRinkMaskPaintDialog();
   void handleRinkLevelingOutput(const QString& line);
   void handleProjectionCropOutput(const QString& line);
   void switchPipelineRenderTarget(int tab_index);
@@ -579,6 +583,7 @@ class HStreamWindow : public QMainWindow {
       bool* applied = nullptr);
   QStringList enabledSinkNames(bool job_export = false) const;
   bool isCalibrationRun() const;
+  bool activeRunSkipsRinkMask() const;
   // Re-reads the game directory for published archives. Highlights has nothing
   // to cut from until one exists, so the button follows this.
   void refreshArchiveAvailability();
@@ -761,6 +766,7 @@ class HStreamWindow : public QMainWindow {
   QTimeEdit* playback_start_time_edit_{nullptr};
   QCheckBox* gyro_sync_check_{nullptr};
   QCheckBox* show_crop_dialog_check_{nullptr};
+  QCheckBox* paint_rink_mask_check_{nullptr};
   QCheckBox* show_leveling_dialog_check_{nullptr};
   QString enabled_gyro_sync_method_{"auto"};
   hm::ui_internal::StitchingIterationSettings default_iteration_settings_;
@@ -1072,6 +1078,7 @@ class HStreamWindow : public QMainWindow {
   ScoreboardSelectionDialog* scoreboard_selection_dialog_{nullptr};
   ProjectionCropDialog* projection_crop_dialog_{nullptr};
   std::string pending_crop_geometry_;
+  QDialog* rink_mask_paint_dialog_{nullptr};
   RinkLevelingDialog* rink_leveling_dialog_{nullptr};
   QDialog* calibration_dialog_{nullptr};
   QLabel* calibration_icon_{nullptr};

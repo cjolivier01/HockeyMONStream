@@ -1,5 +1,9 @@
 #include "hstream/src/libs/stitching/CanvasConstraintCheck.h"
+#ifdef HSTREAM_RINK_MASK_CORE_TEST
+#include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
+#else
 #include "hstream/src/libs/stitching/ConfigureStitching.h"
+#endif
 #include "hstream/src/libs/stitching/FieldMaskArtifact.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/HuginProject.h"
@@ -11,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -156,10 +161,16 @@ int main() {
               hm::stitching::validate_stitched_output_generation(
                   root.string(), initial_output_generation, "superseded-owner")),
       "stitching-only completion must reject a superseded persisted calibration owner");
-  NvBufSurfaceParams cancelled_surface_params{};
-  hm::surface::Surface cancelled_surface(&cancelled_surface_params);
+#ifdef HSTREAM_RINK_MASK_CORE_TEST
+  const hm::stitching::CalibrationImageWriter unused_surface = [](const fs::path&) {
+    return absl::InternalError("Rejected mask work attempted to read pixels");
+  };
+#else
+  NvBufSurfaceParams surface_params{};
+  hm::surface::Surface unused_surface(&surface_params);
+#endif
   const auto cancelled_rink =
-      hm::stitching::create_field_mask(root.string(), cancelled_surface, {}, {}, [] { return true; });
+      hm::stitching::create_field_mask(root.string(), unused_surface, {}, {}, [] { return true; });
   ok &= expect(
       absl::IsCancelled(cancelled_rink),
       "an already-cancelled rink-mask generation must stop before GPU readback or inference");
@@ -609,15 +620,8 @@ int main() {
             YAML::LoadFile((saved_state(root) / "config.yaml").string())["rink"]["scoreboard"]["perspective_polygon"]
                 .IsNull(),
         "the current exact live generation must commit scoreboard invalidation after runtime acceptance");
-    NvBufSurfaceParams superseded_live_surface_params{};
-    hm::surface::Surface superseded_live_surface(&superseded_live_surface_params);
     const absl::Status superseded_pre_inference = hm::stitching::create_field_mask(
-        root.string(),
-        superseded_live_surface,
-        live_override_generation,
-        "rink-run-a",
-        {},
-        live_override_authorization_id);
+        root.string(), unused_surface, live_override_generation, "rink-run-a", {}, live_override_authorization_id);
     ok &= expect(
         absl::IsAborted(superseded_pre_inference),
         "field-mask inference must fence a superseded same-generation authorization before GPU readback");
@@ -804,10 +808,8 @@ int main() {
     ok &= expect(
         !hm::stitching::is_field_mask_configured(root.string()),
         "same-canvas Hugin recalibration must invalidate a mask from the previous output generation");
-    NvBufSurfaceParams stale_surface_params{};
-    hm::surface::Surface stale_surface(&stale_surface_params);
     const auto stale_publication =
-        hm::stitching::create_field_mask(root.string(), stale_surface, initial_output_generation);
+        hm::stitching::create_field_mask(root.string(), unused_surface, initial_output_generation);
     ok &= expect(
         absl::IsAborted(stale_publication),
         "downstream inference must reject a frame produced by the previous Hugin generation");
@@ -1541,6 +1543,140 @@ int main() {
       if (!published.ok())
         std::cerr << published << '\n';
       ok &= expect(published.ok(), "timed mask publication adopts the retained input");
+      ::setenv("HSTREAM_RINK_MASK_PAINT_FLOW", "1", 1);
+      auto review = [&](std::string reply, bool saved) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+        auto cancelled = [&]() {
+          for (const auto& entry : fs::directory_iterator(saved_state(timed))) {
+            if (entry.path().filename().string().find("hstream-field-mask-input-") != 0 ||
+                !fs::exists(entry.path() / "paint-preview.png"))
+              continue;
+            const auto response = entry.path() / ".rink-mask-paint-response";
+            if (!fs::exists(response))
+              std::ofstream(response) << reply;
+          }
+          return std::chrono::steady_clock::now() > deadline;
+        };
+        const auto status = saved
+            ? review_saved_field_mask(timed.string(), {}, cancelled)
+            : create_field_mask(timed.string(), writer, *output, {}, cancelled, {}, description.frame);
+        if (!status.ok())
+          std::cerr << status << '\n';
+        return status.ok();
+      };
+      auto corners = [&] {
+        const cv::Mat pixels = cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+        return std::make_pair(pixels.at<unsigned char>(0, 0), pixels.at<unsigned char>(23, 31));
+      };
+      ok &= expect(
+          !is_field_mask_configured_for_stitching_config(timed.string(), 0, 0.0),
+          "enabling review on an existing automatic mask should request a review");
+      ok &= expect(
+          review("1 0 0\n5 26 23 31 23\n", true) && corners() == std::make_pair<uint8_t, uint8_t>(255, 255),
+          "saved Program review adds a dot and a wide stroke to the original mask");
+      ok &= expect(
+          is_field_mask_configured_for_stitching_config(timed.string(), 0, 0.0) &&
+              review_saved_field_mask(timed.string(), {}, [] { return true; }).ok(),
+          "replaying a reviewed generation must not prompt again");
+      ok &= expect(
+          review("3 0 0\n", false) && corners() == std::make_pair<uint8_t, uint8_t>(255, 0),
+          "fresh inference must discard all strokes from the previous detection");
+      ok &= expect(
+          review("keep\n", false) && corners() == std::make_pair<uint8_t, uint8_t>(0, 0),
+          "keeping a new detection publishes only the detected ice");
+      const auto config_path = saved_state(timed) / "config.yaml";
+      const auto original = YAML::LoadFile(config_path.string());
+      const auto centroid = original["rink"]["ice_contours_mask_centroid"].as<std::vector<double>>();
+      auto legacy = YAML::Clone(original);
+      legacy["stitching"]["rink_mask_frame_time"] = "auto";
+      legacy["rink"]["mask_frame"] = YAML::Load("{selection: auto}");
+      legacy["rink"].remove("stitched_output_persisted_rotation_degrees");
+      legacy["rink"]["stitched_output_generation"] = *stitched_output_generation_id(*generation, 0.0);
+      std::ofstream(config_path) << legacy;
+      ok &= expect(review("1 12 12\n", true), "review a legacy automatic mask without optional source metadata");
+      const auto reviewed = YAML::LoadFile(config_path.string());
+      ok &= expect(
+          reviewed["rink"]["stitched_output_generation"].as<std::string>() == *output &&
+              reviewed["rink"]["ice_contours_mask_centroid"].as<std::vector<double>>() == centroid,
+          "a stroke on existing ice must preserve the original centroid and migrate legacy geometry");
+      std::ofstream(config_path) << original;
+      const auto mask_before_cancel =
+          cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE);
+      const auto cancelled = create_field_mask(
+          timed.string(),
+          writer,
+          *output,
+          {},
+          [&] {
+            for (const auto& entry : fs::directory_iterator(saved_state(timed)))
+              if (entry.is_directory() && fs::exists(entry.path() / "paint-preview.png"))
+                return true;
+            return false;
+          },
+          {},
+          description.frame);
+      ok &= expect(
+          absl::IsCancelled(cancelled) && YAML::Dump(YAML::LoadFile(config_path.string())) == YAML::Dump(original) &&
+              cv::countNonZero(
+                  mask_before_cancel !=
+                  cv::imread((saved_state(timed) / "rink_mask_0.png").string(), cv::IMREAD_GRAYSCALE)) == 0,
+          "cancelling an open editor preserves the last published mask and configuration");
+      // Another detection may start while an operator is still painting. It must be
+      // able to acquire the artifact lock and retire the first response even on identical input.
+      fs::path old_directory;
+      std::atomic<bool> waiting{false}, stop_waiting{false};
+      auto old = std::async(std::launch::async, [&] {
+        return create_field_mask(
+            timed.string(),
+            writer,
+            *output,
+            {},
+            [&] {
+              if (!waiting) {
+                for (const auto& entry : fs::directory_iterator(saved_state(timed))) {
+                  if (entry.path().filename().string().find("hstream-field-mask-input-") == 0 &&
+                      fs::exists(entry.path() / "paint-preview.png")) {
+                    old_directory = entry.path();
+                    waiting = true;
+                    break;
+                  }
+                }
+              }
+              return stop_waiting.load();
+            },
+            {},
+            description.frame);
+      });
+      const auto wait_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      while (!waiting && std::chrono::steady_clock::now() < wait_deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      if (waiting) {
+        // This write belongs to the new directory only. An earlier prompt stays unanswered.
+        auto replacement = create_field_mask(
+            timed.string(),
+            writer,
+            *output,
+            {},
+            [&] {
+              for (const auto& entry : fs::directory_iterator(saved_state(timed))) {
+                if (entry.path() == old_directory)
+                  continue;
+                const auto token = entry.path() / "review-token";
+                std::error_code error;
+                if (fs::equivalent(token, saved_state(timed) / ".rink-mask-paint-current", error) &&
+                    fs::exists(entry.path() / "paint-preview.png") &&
+                    !fs::exists(entry.path() / ".rink-mask-paint-response"))
+                  std::ofstream(entry.path() / ".rink-mask-paint-response") << "keep\n";
+              }
+              return std::chrono::steady_clock::now() > wait_deadline + std::chrono::seconds(10);
+            },
+            {},
+            description.frame);
+        ok &= expect(replacement.ok(), "new detection publishes while an old editor is open");
+      }
+      stop_waiting = true;
+      ok &= expect(waiting && absl::IsAborted(old.get()), "superseded editor cannot publish over a new detection");
+      ::unsetenv("HSTREAM_RINK_MASK_PAINT_FLOW");
       const auto inventory = YAML::LoadFile((saved_state(timed) / "manifest.json").string());
       bool inventory_current = true;
       for (const auto& entry : inventory["files"]) {

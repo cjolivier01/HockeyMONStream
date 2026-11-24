@@ -99,7 +99,8 @@ const std::set<QString>& control_roots() {
       "hstream_ui.stitching_calibration.control_points",
       "hstream_ui.stitching_calibration.frame_count",
       "hstream_ui.show_crop_dialog",
-      "hstream_ui.show_leveling_dialog"};
+      "hstream_ui.show_leveling_dialog",
+      "hstream_ui.paint_rink_mask"};
   return roots;
 }
 void validate_controls(const QJsonObject& object, const QString& prefix = {}, size_t depth = 0) {

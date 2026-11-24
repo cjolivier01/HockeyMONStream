@@ -1,4 +1,5 @@
 #include "src/apps/hstream-ui/HStreamWindow.h"
+#include <QtGui/QImageReader>
 
 #include "hstream/src/libs/common/ConfigPath.h"
 #include "hstream/src/libs/common/GameOperationOwner.h"
@@ -30,6 +31,7 @@
 #include "src/apps/hstream-ui/HighlightsDialog.h"
 #endif
 #include "src/apps/hstream-ui/CameraOpticsWidget.h"
+#include "src/apps/hstream-ui/GameOwnershipDialog.h"
 #include "src/apps/hstream-ui/InputLensWidget.h"
 #include "src/apps/hstream-ui/Int8PreparationDialog.h"
 #include "src/apps/hstream-ui/NativePreviewSurface.h"
@@ -38,8 +40,8 @@
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
-#include "src/apps/hstream-ui/GameOwnershipDialog.h"
 #include "src/apps/hstream-ui/RinkMapDialog.h"
+#include "src/apps/hstream-ui/RinkMaskPaintDialog.h"
 #include "src/apps/hstream-ui/RuntimeOptions.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
@@ -4688,6 +4690,8 @@ hm::ui_internal::StitchingIterationSettings read_stitching_iteration_settings(
     settings.show_crop_dialog = node.as<bool>();
   if (lookup_yaml_path(config, "hstream_ui.show_leveling_dialog", &node))
     settings.show_leveling_dialog = node.as<bool>();
+  if (lookup_yaml_path(config, "hstream_ui.paint_rink_mask", &node))
+    settings.paint_rink_mask = node.as<bool>();
   const auto canonical = hm::config::NormalizeRuntimeControlLayer(config);
   if (lookup_yaml_path(canonical, "playback.start_seconds", &node)) {
     const double seconds = node.as<double>();
@@ -4710,6 +4714,7 @@ void write_stitching_iteration_settings(
   config["stitching"]["sync_method"] = settings.sync_method.toStdString();
   config["hstream_ui"]["show_crop_dialog"] = settings.show_crop_dialog;
   config["hstream_ui"]["show_leveling_dialog"] = settings.show_leveling_dialog;
+  config["hstream_ui"]["paint_rink_mask"] = settings.paint_rink_mask;
   config["playback"]["start_seconds"] =
       parse_stitch_frame_time(settings.playback_start_time)->msecsSinceStartOfDay() / 1000.0;
 }
@@ -5091,7 +5096,10 @@ void HStreamWindow::loadBaselineDefaults() {
   // A saved preference must not hide a broken canonical baseline. Validate
   // required prompt policy before applying the user overlay.
   for (const char* path :
-       {"hstream_ui.show_crop_dialog", "hstream_ui.show_leveling_dialog", "hstream_ui.show_scoreboard_dialog"}) {
+       {"hstream_ui.show_crop_dialog",
+        "hstream_ui.show_leveling_dialog",
+        "hstream_ui.paint_rink_mask",
+        "hstream_ui.show_scoreboard_dialog"}) {
     YAML::Node value;
     if (!lookup_yaml_path(loaded->values, path, &value) || !value.IsScalar())
       throw std::runtime_error(QString("Bundled baseline requires boolean UI default %1").arg(path).toStdString());
@@ -5169,6 +5177,7 @@ void HStreamWindow::loadBaselineDefaults() {
   hm::ui_internal::StitchingIterationSettings iteration_defaults;
   iteration_defaults.show_crop_dialog = boolean("hstream_ui.show_crop_dialog");
   iteration_defaults.show_leveling_dialog = boolean("hstream_ui.show_leveling_dialog");
+  iteration_defaults.paint_rink_mask = boolean("hstream_ui.paint_rink_mask");
   default_show_scoreboard_dialog_ = boolean("hstream_ui.show_scoreboard_dialog");
   static_cast<void>(hm::ui::ReadInt8PreparationDefaults(baseline_config_));
   default_iteration_settings_ = read_stitching_iteration_settings(baseline_config_, iteration_defaults);
@@ -6356,7 +6365,13 @@ void HStreamWindow::buildTopBar(QVBoxLayout* root) {
   set_control_help(
       show_leveling_dialog_check_,
       "Open rink leveling during stitching setup. Select goal-line corners by default, or mark vertical posts. Level rink remains available when unchecked.");
-  for (QCheckBox* check : {gyro_sync_check_, show_crop_dialog_check_, show_leveling_dialog_check_})
+  paint_rink_mask_check_ = new QCheckBox("Paint missed ice after detection");
+  paint_rink_mask_check_->setObjectName("paintRinkMaskCheck");
+  set_control_help(
+      paint_rink_mask_check_,
+      "Review the detected ice and paint missing areas before playback. A new detection starts with a clean brush layer.");
+  for (QCheckBox* check :
+       {gyro_sync_check_, show_crop_dialog_check_, show_leveling_dialog_check_, paint_rink_mask_check_})
     connect(check, &QCheckBox::toggled, this, [this] { updatePresetDirtyState(); });
   playback_start_time_edit_ = new QTimeEdit();
   playback_start_time_edit_->setObjectName("playbackStartTimeEdit");
@@ -8357,6 +8372,7 @@ void HStreamWindow::buildCameraControls(QVBoxLayout* parent, bool program_stage)
     rink_layout->addWidget(rink_default_button_, 4, 0);
     rink_layout->addWidget(rink_leveling_button_, 4, 1);
     rink_layout->addWidget(show_leveling_dialog_check_, 5, 0, 1, 2);
+    rink_layout->addWidget(paint_rink_mask_check_, 17, 0, 1, 2);
     auto* mask_time_label = new QLabel("Ice mask frame");
     mask_time_label->setBuddy(rink_mask_time_mode_);
     rink_layout->addWidget(mask_time_label, 6, 0);
@@ -8832,6 +8848,10 @@ QStringList HStreamWindow::enabledSinkNames(bool job_export) const {
   }
   sinks.removeDuplicates();
   return sinks;
+}
+
+bool HStreamWindow::activeRunSkipsRinkMask() const {
+  return active_run_is_calibration_ && !active_iteration_settings_.paint_rink_mask;
 }
 
 bool HStreamWindow::isCalibrationRun() const {
@@ -10277,7 +10297,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
     if (already_completed) {
       // Publishing maps completes the solve independently of later rink-mask
       // work and playback restart. A downstream error must not demote it.
-      if (status == "complete" && !active_run_is_calibration_ &&
+      if (status == "complete" && !activeRunSkipsRinkMask() &&
           calibration["rink_mask_status"].as<std::string>("") != "complete") {
         calibration["rink_mask_status"] = "complete";
         const auto publish = publish_yaml_config(config_path, config);
@@ -10347,7 +10367,7 @@ bool HStreamWindow::saveStitchingCalibrationState(
   if (status == "complete") {
     calibration.remove("stale_from");
     calibration.remove("artifacts_invalidated");
-    calibration["rink_mask_status"] = active_run_is_calibration_ ? "omitted" : "complete";
+    calibration["rink_mask_status"] = activeRunSkipsRinkMask() ? "omitted" : "complete";
   } else if (!stale_from.isEmpty()) {
     calibration["stale_from"] = stale_from.toStdString();
     calibration["artifacts_invalidated"] = artifacts_invalidated;
@@ -11058,7 +11078,7 @@ void HStreamWindow::showStitchingCalibrationDialog() {
     setStitchingCalibrationStage(stage, "complete", {});
   }
   setStitchingCalibrationStage(start_stage, "started", {});
-  if (active_run_is_calibration_)
+  if (activeRunSkipsRinkMask())
     setStitchingCalibrationStage("rink-mask", "skipped", {});
   calibration_dialog_->show();
   // Let the outer event loop paint the dialog. Dispatching runner output here
@@ -11229,7 +11249,7 @@ void HStreamWindow::handleStitchingCalibrationOutput(const QString& line) {
       for (const CalibrationStageSpec& spec : kCalibrationStages) {
         const QString stage_id = QString::fromLatin1(spec.id);
         setStitchingCalibrationStage(
-            stage_id, active_run_is_calibration_ && stage_id == "rink-mask" ? "skipped" : "complete", {});
+            stage_id, activeRunSkipsRinkMask() && stage_id == "rink-mask" ? "skipped" : "complete", {});
       }
       if (calibration_headline_)
         calibration_headline_->setText("Restarting playback…");
@@ -11302,6 +11322,7 @@ QString HStreamWindow::stitchingCalibrationFailureAnalysis(const QString& messag
 }
 
 void HStreamWindow::completeStitchingCalibration() {
+  closeRinkMaskPaintDialog();
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
   if (projection_crop_dialog_)
@@ -11341,7 +11362,7 @@ void HStreamWindow::completeStitchingCalibration() {
   for (const CalibrationStageSpec& spec : kCalibrationStages) {
     const QString stage_id = QString::fromLatin1(spec.id);
     setStitchingCalibrationStage(
-        stage_id, active_run_is_calibration_ && stage_id == "rink-mask" ? "skipped" : "complete", {});
+        stage_id, activeRunSkipsRinkMask() && stage_id == "rink-mask" ? "skipped" : "complete", {});
   }
   if (calibration_icon_) {
     calibration_icon_->setPixmap(style()->standardIcon(QStyle::SP_DialogApplyButton).pixmap(32, 32));
@@ -11398,6 +11419,7 @@ void HStreamWindow::completeStitchingCalibration() {
 }
 
 void HStreamWindow::failStitchingCalibration(const QString& message) {
+  closeRinkMaskPaintDialog();
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
   if (projection_crop_dialog_)
@@ -11483,6 +11505,8 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
     args << QString("--clean-expected-invalidation-id=%1").arg(active_calibration_invalidation_id_);
   if (calibration_only) {
     args << "--stitching-calibration-only";
+    if (!standalone && stitchingIterationSettings().paint_rink_mask)
+      args << "--stitching-calibration-with-ice-mask";
     args << "-c" << pipelineConfigPath("ds_hockey_app_config.yaml");
     QStringList sinks = enabledSinkNames(job_export);
     if (embed_render_window && !sinks.contains("RENDER")) {
@@ -12613,6 +12637,9 @@ void HStreamWindow::startPipeline() {
   // This private UI/backend handshake must never be enabled by a stale parent
   // environment for OpenCV or non-calibration runs.
   env.remove("HSTREAM_RINK_LEVELING_FLOW");
+  env.remove("HSTREAM_RINK_MASK_PAINT_FLOW");
+  if (active_iteration_settings_.paint_rink_mask)
+    env.insert("HSTREAM_RINK_MASK_PAINT_FLOW", "1");
   env.remove("HSTREAM_PROJECTION_CROP_FLOW");
   // Program can discover missing maps after launch. The backend only asks
   // during actual calibration; unchanged playback never emits a crop request.
@@ -12876,6 +12903,7 @@ void HStreamWindow::stopPipeline(bool publish_partial) {
   deferred_restart_requested_ = false;
   deferred_restart_game_id_.clear();
   calibration_restart_requested_ = false;
+  closeRinkMaskPaintDialog();
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
   if (projection_crop_dialog_)
@@ -13174,6 +13202,7 @@ void HStreamWindow::handlePipelineFinished(int exit_code, QProcess::ExitStatus e
   pipeline_render_embedded_ = false;
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  closeRinkMaskPaintDialog();
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
   if (projection_crop_dialog_)
@@ -13487,6 +13516,7 @@ void HStreamWindow::handlePipelineError(QProcess::ProcessError error) {
   clearPreviewFrames();
   if (scoreboard_selection_dialog_)
     scoreboard_selection_dialog_->closeAfterBackendCompletion();
+  closeRinkMaskPaintDialog();
   if (rink_leveling_dialog_)
     rink_leveling_dialog_->closeAfterBackendCompletion();
   if (projection_crop_dialog_)
@@ -13627,6 +13657,7 @@ void HStreamWindow::handlePipelineOutputLine(const QString& line, bool stderr_ou
     handleRuntimeControlResponse(trimmed);
   handleScoreboardSelectorOutput(trimmed);
   handleRinkLevelingOutput(trimmed);
+  handleRinkMaskPaintOutput(trimmed);
   handleProjectionCropOutput(trimmed);
   handleStitchingCalibrationOutput(trimmed);
 }
@@ -17809,6 +17840,82 @@ void HStreamWindow::handleScoreboardSelectorOutput(const QString& line) {
   }
 }
 
+void HStreamWindow::closeRinkMaskPaintDialog() {
+  if (auto* dialog = std::exchange(rink_mask_paint_dialog_, nullptr))
+    dialog->close();
+}
+
+void HStreamWindow::handleRinkMaskPaintOutput(const QString& line) {
+  static const QRegularExpression ready(R"(^HSTREAM_RINK_MASK_PAINT status=ready directory-hex=([0-9a-f]+)$)");
+  const auto match = ready.match(line);
+  if (!match.hasMatch() || !active_iteration_settings_.paint_rink_mask || active_run_game_id_.isEmpty() ||
+      pipeline_stop_requested_ || pipeline_final_output_draining_ || !pipeline_run_generation_)
+    return;
+  const QString path = QString::fromUtf8(QByteArray::fromHex(match.captured(1).toLatin1()));
+  const QFileInfo dir(path);
+  const QFileInfo preview(QDir(path).filePath("paint-preview.png"));
+  static const QRegularExpression name(R"(^hstream-field-mask-input-[a-zA-Z0-9]{6}$)");
+  if (dir.isSymLink() || !dir.isDir() || !name.match(dir.fileName()).hasMatch() ||
+      dir.dir().canonicalPath() != QDir(gameDirectory(active_run_game_id_) + "/_hockeymon").canonicalPath() ||
+      preview.isSymLink() || !preview.isFile()) {
+    appendLog("Invalid ice mask painting session. Stopping calibration.");
+    stopPipeline();
+    return;
+  }
+  if (rink_mask_paint_dialog_ && rink_mask_paint_dialog_->property("paintDirectory").toString() == path) {
+    rink_mask_paint_dialog_->raise();
+    return;
+  }
+  QImageReader reader(preview.filePath(), "png");
+  const QSize size = reader.size();
+  if (!size.isValid() || size.width() > 1600 || size.height() > 900) {
+    appendLog("Invalid ice mask preview dimensions. Stopping calibration.");
+    stopPipeline();
+    return;
+  }
+  const QImage image = reader.read();
+  if (image.isNull()) {
+    appendLog("Cannot read the ice mask preview. Stopping calibration.");
+    stopPipeline();
+    return;
+  }
+  closeRinkMaskPaintDialog();
+  auto* dialog =
+      new RinkMaskPaintDialog(image, calibration_dialog_ ? static_cast<QWidget*>(calibration_dialog_) : this);
+  dialog->setProperty("paintDirectory", path);
+  rink_mask_paint_dialog_ = dialog;
+  connect(dialog, &QObject::destroyed, this, [this, dialog] {
+    if (rink_mask_paint_dialog_ == dialog)
+      rink_mask_paint_dialog_ = nullptr;
+  });
+  const auto generation = pipeline_run_generation_;
+  connect(dialog, &QDialog::finished, this, [this, dialog, generation, path](int result) {
+    dialog->deleteLater();
+    if (rink_mask_paint_dialog_ != dialog)
+      return;
+    rink_mask_paint_dialog_ = nullptr;
+    if (generation != pipeline_run_generation_ || pipeline_stop_requested_ || pipeline_final_output_draining_)
+      return;
+    if (result == QDialog::Rejected) {
+      stopPipeline();
+      return;
+    }
+    const QByteArray bytes = result == QDialog::Accepted ? dialog->response() : QByteArray("keep\n");
+    QSaveFile response(QDir(path).filePath(".rink-mask-paint-response"));
+    if (!response.open(QIODevice::WriteOnly) || response.write(bytes) != bytes.size() || !response.commit()) {
+      appendLog("Cannot return the painted ice mask. Stopping calibration.");
+      stopPipeline();
+    } else if (preview_status_) {
+      preview_status_->setText("Applying ice mask");
+    }
+  });
+  if (calibration_pending_)
+    setStitchingCalibrationStage("rink-mask", "started", "Waiting for ice mask painting");
+  if (preview_status_)
+    preview_status_->setText("Waiting for ice mask painting");
+  dialog->open();
+}
+
 void HStreamWindow::handleRinkLevelingOutput(const QString& line) {
   static const QRegularExpression ready_pattern(
       R"(^HSTREAM_RINK_LEVELING\s+status=ready\s+directory-hex=([0-9a-f]+)$)");
@@ -20523,6 +20630,8 @@ hm::ui_internal::StitchingIterationSettings HStreamWindow::stitchingIterationSet
     settings.show_crop_dialog = show_crop_dialog_check_->isChecked();
   if (show_leveling_dialog_check_)
     settings.show_leveling_dialog = show_leveling_dialog_check_->isChecked();
+  if (paint_rink_mask_check_)
+    settings.paint_rink_mask = paint_rink_mask_check_->isChecked();
   if (playback_start_time_edit_)
     settings.playback_start_time = format_stitch_frame_time(playback_start_time_edit_->time());
   return settings;
@@ -20540,6 +20649,7 @@ void HStreamWindow::setStitchingIterationSettings(const hm::ui_internal::Stitchi
   set_check(gyro_sync_check_, settings.sync_method != "audio");
   set_check(show_crop_dialog_check_, settings.show_crop_dialog);
   set_check(show_leveling_dialog_check_, settings.show_leveling_dialog);
+  set_check(paint_rink_mask_check_, settings.paint_rink_mask);
   if (playback_start_time_edit_) {
     const QSignalBlocker blocker(playback_start_time_edit_);
     const QTime time = *parse_stitch_frame_time(settings.playback_start_time);
@@ -20559,7 +20669,8 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
        {static_cast<QWidget*>(playback_start_time_edit_),
         static_cast<QWidget*>(gyro_sync_check_),
         static_cast<QWidget*>(show_crop_dialog_check_),
-        static_cast<QWidget*>(show_leveling_dialog_check_)}) {
+        static_cast<QWidget*>(show_leveling_dialog_check_),
+        static_cast<QWidget*>(paint_rink_mask_check_)}) {
     if (control)
       control->setEnabled(!running && !finalizing);
   }

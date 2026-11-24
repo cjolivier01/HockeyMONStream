@@ -65,26 +65,6 @@ std::vector<Candidate> top_candidates(const float* logits) {
   return candidates;
 }
 
-cv::Point2d contour_centroid(const std::vector<cv::Mat>& masks) {
-  cv::Point2d sum(0.0, 0.0);
-  size_t count = 0;
-  for (const cv::Mat& mask : masks) {
-    std::vector<std::vector<cv::Point>> contours;
-    std::vector<cv::Vec4i> hierarchy;
-    cv::findContours(mask.clone(), contours, hierarchy, cv::RETR_CCOMP, cv::CHAIN_APPROX_NONE);
-    for (const auto& contour : contours) {
-      for (const auto& point : contour) {
-        sum.x += point.x;
-        sum.y += point.y;
-        ++count;
-      }
-    }
-  }
-  if (count == 0)
-    return {};
-  return {sum.x / static_cast<double>(count), sum.y / static_cast<double>(count)};
-}
-
 absl::Status validate_profile_geometry(const RinkProfile& profile, int width, int height) {
   if (!std::isfinite(profile.centroid.x) || !std::isfinite(profile.centroid.y) ||
       !std::isfinite(profile.combined_bbox.x) || !std::isfinite(profile.combined_bbox.y) ||
@@ -103,6 +83,26 @@ absl::Status validate_profile_geometry(const RinkProfile& profile, int width, in
 }
 
 } // namespace
+
+cv::Point2d rink_contour_centroid(const std::vector<cv::Mat>& masks) {
+  cv::Point2d sum(0.0, 0.0);
+  size_t count = 0;
+  for (const cv::Mat& mask : masks) {
+    std::vector<std::vector<cv::Point>> contours;
+    std::vector<cv::Vec4i> hierarchy;
+    cv::findContours(mask.clone(), contours, hierarchy, cv::RETR_CCOMP, cv::CHAIN_APPROX_NONE);
+    for (const auto& contour : contours) {
+      for (const auto& point : contour) {
+        sum.x += point.x;
+        sum.y += point.y;
+        ++count;
+      }
+    }
+  }
+  if (count == 0)
+    return {};
+  return {sum.x / static_cast<double>(count), sum.y / static_cast<double>(count)};
+}
 
 RinkSegmentation::RinkSegmentation(std::unique_ptr<hm::onnx::Session> session) : session_(std::move(session)) {}
 
@@ -242,7 +242,7 @@ absl::StatusOr<RinkProfile> RinkSegmentation::Postprocess(
   if (!have_bbox)
     return absl::InternalError("Ice-rink masks were unexpectedly empty");
   result.combined_bbox = {min_x, min_y, max_x - min_x, max_y - min_y};
-  result.centroid = contour_centroid(result.masks);
+  result.centroid = rink_contour_centroid(result.masks);
   auto validation = validate_profile_geometry(result, input.source_width, input.source_height);
   if (!validation.ok())
     return validation;

@@ -20,6 +20,7 @@
 #include "src/apps/hstream-ui/ProjectionCropDialog.h"
 #include "src/apps/hstream-ui/RinkFramingControls.h"
 #include "src/apps/hstream-ui/RinkLevelingDialog.h"
+#include "src/apps/hstream-ui/RinkMaskPaintDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 
 #include <QtTest/qtest_widgets.h>
@@ -1293,6 +1294,13 @@ for line in sys.stdin:
 
   static void handleProjectionCropOutput(HStreamWindow* window, const QString& line) {
     window->handleProjectionCropOutput(line);
+  }
+
+  static QDialog* receiveIceMaskPrompt(HStreamWindow* window, const QString& directory, bool enabled) {
+    window->active_iteration_settings_.paint_rink_mask = enabled;
+    window->handleRinkMaskPaintOutput(
+        "HSTREAM_RINK_MASK_PAINT status=ready directory-hex=" + directory.toUtf8().toHex());
+    return window->rink_mask_paint_dialog_;
   }
 
   static void handleRinkLevelingOutput(HStreamWindow* window, const QString& line) {
@@ -5313,6 +5321,22 @@ bool test_rink_leveling_response_protocol(HStreamWindow* window) {
   HStreamWindowTestAccess::handleProjectionCropOutput(window, crop_ready);
   const bool crop_stop_ignored = !fs::exists(staging_dir / ".projection-crop-response");
   HStreamWindowTestAccess::setPipelineStopRequested(window, false);
+  QTemporaryDir paint(QString::fromStdString((game_dir / "_hockeymon/hstream-field-mask-input-XXXXXX").string()));
+  if (!paint.isValid() || !source.save(paint.filePath("paint-preview.png")))
+    return expect(false, "Could not write the ice painting fixture");
+  if (HStreamWindowTestAccess::receiveIceMaskPrompt(window, paint.path(), false))
+    return expect(false, "Ice painting must be opt-in");
+  auto* brush = HStreamWindowTestAccess::receiveIceMaskPrompt(window, paint.path(), true);
+  if (!brush || !brush->isVisible())
+    return expect(false, "The pipeline ready record must open the ice mask editor");
+  for (auto* button : brush->findChildren<QPushButton*>())
+    if (button->text() == "Use detected mask")
+      button->click();
+  QFile paint_response(paint.filePath(".rink-mask-paint-response"));
+  if (!paint_response.open(QIODevice::ReadOnly) || paint_response.readAll() != "keep\n")
+    return expect(false, "The explicit keep action must resume calibration with the detected mask");
+  paint_response.close();
+  HStreamWindowTestAccess::receiveIceMaskPrompt(window, paint.path(), false);
   fs::remove_all(staging_dir, error);
   return expect(
              crop_opened && crop_default_ok && crop_closed && crop_no_stale_response && crop_applied &&
