@@ -2,6 +2,8 @@
 
 #include <cuda_runtime.h>
 
+#include <cstdint>
+
 namespace hm::gpu_preview {
 namespace {
 
@@ -10,8 +12,13 @@ __global__ void write_rgba(
   const unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
   const unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
   if (x < width && y < height) {
-    const auto* row = reinterpret_cast<const uchar4*>(rgba + y * pitch);
-    surf2Dwrite(row[x], destination, x * sizeof(uchar4), y);
+    const auto* pixel = rgba + y * pitch + x * sizeof(uchar4);
+    // NvBufSurface describes rows in bytes. Preserve RGBA subviews and odd
+    // pitches while using a vector load for the normal aligned device pool.
+    const uchar4 color = reinterpret_cast<std::uintptr_t>(pixel) % alignof(uchar4) == 0
+        ? *reinterpret_cast<const uchar4*>(pixel)
+        : make_uchar4(pixel[0], pixel[1], pixel[2], pixel[3]);
+    surf2Dwrite(color, destination, x * sizeof(uchar4), y);
   }
 }
 

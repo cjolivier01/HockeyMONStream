@@ -589,6 +589,16 @@ cuda_library(
     deps = cuda_dependencies("preview_texture_cuda", ["//toolchains/jetson:cuda_runtime"]),
 )
 
+cc_test(
+    name = "preview_texture_test",
+    srcs = ["PreviewTextureTest.cpp"],
+    tags = ["manual", "requires-deepstream-hw"],
+    deps = cuda_dependencies("preview_texture_test", [
+        ":preview_texture_cuda",
+        "//toolchains/jetson:cuda_runtime",
+    ], testonly = True),
+)
+
 cc_library(
     name = "hm_gpu_preview",
     srcs = ["HmGpuPreview.cpp"],
