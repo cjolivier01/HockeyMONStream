@@ -1,4 +1,5 @@
 load("//bazel:cuda_dependencies.bzl", "cuda_dependencies")
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
 
 INCLUDE_PREFIX = "hstream/src/apps/apps-common"
 
@@ -580,6 +581,14 @@ cc_test(
     ],
 )
 
+cuda_library(
+    name = "preview_texture_cuda",
+    srcs = ["PreviewTexture.cu"],
+    hdrs = ["PreviewTexture.cuh"],
+    copts = ["-Xcompiler=-fPIC"],
+    deps = cuda_dependencies("preview_texture_cuda", ["//toolchains/jetson:cuda_runtime"]),
+)
+
 cc_library(
     name = "hm_gpu_preview",
     srcs = ["HmGpuPreview.cpp"],
@@ -589,6 +598,7 @@ cc_library(
     linkopts = ["-lGL", "-lX11"],
     visibility = ["//visibility:public"],
     deps = cuda_dependencies("hm_gpu_preview", [
+        ":preview_texture_cuda",
         ":preview_capture_receipt",
         "//src/libs/draw_display:rink_mini_map_options",
         ":rink_mask_image",
