@@ -1,5 +1,7 @@
 #include "src/apps/hstream-ui/WebRinkEditor.h"
 
+#include <limits>
+
 #include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/RinkLeveling.h"
 #include "src/apps/hstream-ui/WebJobSpec.h"
@@ -10,6 +12,13 @@
 
 namespace hm::web {
 namespace {
+// The sender read and hashed this project at the Hugin bound, so the field
+// cannot be narrower. RequiredString measures in int.
+static_assert(
+    hm::stitching::HuginProject::kMaximumProjectBytes <= size_t(std::numeric_limits<int>::max()),
+    "The Hugin project bound must fit the JSON field limit");
+constexpr int kMaximumProjectField = int(hm::stitching::HuginProject::kMaximumProjectBytes);
+
 template <typename T>
 T take(absl::StatusOr<T> value) {
   if (!value.ok())
@@ -34,7 +43,11 @@ std::array<double, 3> angles(const QJsonObject& request, const QString& key) {
 QJsonObject RinkEditor(const QJsonObject& request) {
   const auto localized = take(
       hm::stitching::LocalizeCalibrationPreviewImages(
-          RequiredString(request, "pto", 4 * 1024 * 1024).toStdString(),
+          // WebSavedCalibration read and hashed this project at the Hugin
+          // bound before sending it, so rejecting it here at a smaller one
+          // fails a saved calibration with a field-validation message.
+          // LocalizeCalibrationPreviewImages below owns the real size gate.
+          RequiredString(request, "pto", kMaximumProjectField).toStdString(),
           RequiredString(request, "sourceDirectory", 4096).toStdString()));
   const auto lens = hm::stitching::HuginProject::ValidateLensCenters(localized);
   if (!lens.ok())

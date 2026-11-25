@@ -850,15 +850,12 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
     return PinnedLoadArtifact(name, descriptor, (*opened)->metadata);
   }
 
+  // Every one of these names is one maximum_stitch_artifact_bytes already
+  // answers; restating three of them as literals is how the two drift apart.
   uint64_t maximum_bytes = 0;
-  if (name == "left.png" || name == "right.png" || name == "seam_file.png") {
+  if (name == "left.png" || name == "right.png" || name == "seam_file.png" || path.extension() == ".pto" ||
+      name == kStitchCanvasProvenanceArtifact || name == kStitchGenerationArtifact) {
     maximum_bytes = maximum_stitch_artifact_bytes(name);
-  } else if (path.extension() == ".pto") {
-    maximum_bytes = 64ULL * 1024ULL * 1024ULL;
-  } else if (name == kStitchCanvasProvenanceArtifact) {
-    maximum_bytes = 4096;
-  } else if (name == kStitchGenerationArtifact) {
-    maximum_bytes = 16ULL * 1024ULL;
   } else {
     return absl::InvalidArgumentError("Unrecognized stitch snapshot artifact: " + path.string());
   }
