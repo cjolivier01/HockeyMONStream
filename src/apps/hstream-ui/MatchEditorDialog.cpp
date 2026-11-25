@@ -82,7 +82,7 @@ class MatchView : public QGraphicsView {
     // frame exceeds Qt's default limit if first decoded into a 64-bit QImage.
     QImage decoded = readCalibrationPng(filename, size, true);
     if (decoded.isNull())
-      decoded = reader.read(); // Also support interlaced PNGs accepted by Qt.
+      decoded = reader.read();
     if (decoded.isNull())
       return "Cannot decode camera image: " + reader.errorString();
     if (decoded.size() != size)
