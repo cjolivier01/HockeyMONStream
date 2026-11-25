@@ -58,7 +58,8 @@ absl::StatusOr<std::vector<cv::Vec3d>> transformRays(
     bool reverse,
     bool allow_outside,
     const std::function<bool()>& cancelled) {
-  if (count > 65536 || input.size() > 4 * 1024 * 1024 || pto.size() > 4 * 1024 * 1024)
+  if (count > 65536 || input.size() > 4 * 1024 * 1024 ||
+      pto.size() > maximum_stitch_artifact_bytes("autooptimiser_out.pto"))
     return absl::ResourceExhaustedError("Rink projection exceeds its startup budget");
   auto executable = HuginProject::ResolveExecutable("HM_PANO_TRAFO", "pano_trafo");
   if (!executable.ok())
@@ -302,7 +303,9 @@ absl::StatusOr<std::shared_ptr<const PlaybackRinkMap>> LoadPlaybackRinkMap(
     if (canvas.width != (**provenance).canvas_width || canvas.height != (**provenance).canvas_height)
       return absl::FailedPreconditionError("Mapping TIFFs do not match their published canvas");
     auto project = read_bounded_regular_file_no_follow(
-        hm::game_storage::StateDirectory(directory) / "autooptimiser_out.pto", 4 * 1024 * 1024, "rink project");
+        hm::game_storage::StateDirectory(directory) / "autooptimiser_out.pto",
+        maximum_stitch_artifact_bytes("autooptimiser_out.pto"),
+        "rink project");
     if (!project.ok())
       return project.status();
     pto = *project;

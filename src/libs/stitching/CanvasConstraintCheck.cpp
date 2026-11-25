@@ -88,15 +88,33 @@ int fresh_stitch_lstat(const char* path, struct stat* metadata) {
   return fresh_stitch_stat_at(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, metadata);
 }
 
+constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumTiffArtifactBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaximumPngArtifactBytes = 512ULL * 1024ULL * 1024ULL;
+
+uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
+  const auto ends_with = [name](std::string_view suffix) {
+    return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
+  };
+  if (ends_with(".pto"))
+    return kMaximumPtoArtifactBytes;
+  if (ends_with(".tif"))
+    return kMaximumTiffArtifactBytes;
+  if (ends_with(".png"))
+    return kMaximumPngArtifactBytes;
+  if (name == kStitchCanvasProvenanceArtifact)
+    return 4096;
+  if (name == kStitchGenerationArtifact)
+    return 16ULL * 1024ULL;
+  return 0;
+}
+
 namespace {
 
 namespace fs = std::filesystem;
 
 constexpr size_t kHardMaximumArtifactDimension = 65536;
 constexpr uint64_t kHardMaximumArtifactPixels = 256ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumPtoArtifactBytes = 64ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumTiffArtifactBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumPngArtifactBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr const char* kLegacyStitchTransactionPrefix = ".hstream-stitch-";
 constexpr unsigned long kFuseSuperMagic = 0x65735546UL;
 constexpr unsigned long kMsDosSuperMagic = 0x4d44UL;
@@ -1547,23 +1565,6 @@ absl::StatusOr<bool> has_current_stitch_transaction_protocol(const fs::path& tra
 }
 
 } // namespace
-
-uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
-  const auto ends_with = [name](std::string_view suffix) {
-    return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
-  };
-  if (ends_with(".pto"))
-    return kMaximumPtoArtifactBytes;
-  if (ends_with(".tif"))
-    return kMaximumTiffArtifactBytes;
-  if (ends_with(".png"))
-    return kMaximumPngArtifactBytes;
-  if (name == kStitchCanvasProvenanceArtifact)
-    return 4096;
-  if (name == kStitchGenerationArtifact)
-    return 16ULL * 1024ULL;
-  return 0;
-}
 
 struct PreparedStitchGenerationPublication::Impl {
   std::string logical_id;

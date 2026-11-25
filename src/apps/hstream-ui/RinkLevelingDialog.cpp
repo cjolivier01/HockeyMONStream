@@ -44,7 +44,9 @@ const QStringList kInProgressSnapshotFiles = {
     "left.png",
     "right.png"};
 
-QByteArray readFile(const QString& path, qint64 limit = 1024 * 1024) {
+constexpr qint64 kMaximumReadFileBytes = 1024 * 1024;
+
+QByteArray readFile(const QString& path, qint64 limit = kMaximumReadFileBytes) {
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly) || file.size() > limit)
     return {};
@@ -66,11 +68,12 @@ bool writeFile(const QString& path, const QByteArray& contents) {
 // artifacts, so they take the publisher's own limit instead of a number chosen
 // here: a 16-bit camera-resolution PNG runs past 128 MiB, and a stricter local
 // bound silently empties the revision and leaves the dialog with no image.
-// config.yaml is the one entry that is not a stitch artifact; it gets the same
-// bound playback uses when it reads that file.
+// config.yaml is the one entry that is not a stitch artifact, so it takes
+// readFile's own limit below - hashing a config this dialog would then read as
+// empty would skip the calibration-status check instead of failing.
 qint64 maximumSnapshotBytes(const QString& name) {
   if (name == "config.yaml")
-    return 4 * 1024 * 1024;
+    return kMaximumReadFileBytes;
   return static_cast<qint64>(hm::stitching::maximum_stitch_artifact_bytes(name.toStdString()));
 }
 

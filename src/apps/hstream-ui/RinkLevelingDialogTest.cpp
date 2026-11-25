@@ -314,8 +314,10 @@ int main(int argc, char** argv) {
     const QByteArray original = read(game.filePath("_hockeymon/left.png"));
     const qint64 oversized = 130LL * 1024 * 1024;
     QFile still(game.filePath("_hockeymon/left.png"));
+    ok &= expect(!original.isEmpty(), "the camera still fixture must be readable before it is grown");
     ok &= expect(
-        still.open(QIODevice::ReadWrite) && still.resize(oversized) && (still.close(), true),
+        still.open(QIODevice::ReadWrite) && still.resize(oversized) && (still.close(), true) &&
+            QFileInfo(game.filePath("_hockeymon/left.png")).size() == oversized,
         "test must be able to grow the camera still past the old cap");
     ok &= expect(
         !RinkLevelingDialog::sourceRevision(game.path()).isEmpty(),
@@ -331,6 +333,8 @@ int main(int argc, char** argv) {
     ok &= write(game.filePath("_hockeymon/left.png"), original);
   }
   const auto revision = RinkLevelingDialog::sourceRevision(game.path());
+  // Later cases compare against this; an empty revision would match vacuously.
+  ok &= expect(!revision.isEmpty(), "the restored fixture must still produce a snapshot revision");
   {
     RinkLevelingDialog dialog(game.path(), {0, -33, 2});
     dialog.show();
