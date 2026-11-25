@@ -16,10 +16,24 @@ struct Stats {
   std::map<unsigned, unsigned> expected;
   unsigned batches = 0;
   bool valid = true;
+  bool stream_started = false;
+  bool segment_received = false;
 };
 
 GstPadProbeReturn inspect(GstPad*, GstPadProbeInfo* info, gpointer data) {
   auto& stats = *static_cast<Stats*>(data);
+  if (info->type & GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM) {
+    const auto type = GST_EVENT_TYPE(GST_PAD_PROBE_INFO_EVENT(info));
+    if (type == GST_EVENT_STREAM_START) {
+      stats.stream_started = true;
+      stats.segment_received = false;
+    } else if (type == GST_EVENT_SEGMENT) {
+      stats.valid &= stats.stream_started;
+      stats.segment_received = true;
+    }
+    return GST_PAD_PROBE_OK;
+  }
+  stats.valid &= stats.stream_started && stats.segment_received;
   auto* batch = gst_buffer_get_nvds_batch_meta(GST_PAD_PROBE_INFO_BUFFER(info));
   if (!batch || !batch->num_frames_in_batch) {
     stats.valid = false;
@@ -99,20 +113,27 @@ bool run(
     stats.expected[i * id_stride] = lengths[i];
   auto* sink = gst_bin_get_by_name(GST_BIN(pipeline), "sink");
   auto* pad = gst_element_get_static_pad(sink, "sink");
-  gst_pad_add_probe(pad, GST_PAD_PROBE_TYPE_BUFFER, inspect, &stats, nullptr);
+  gst_pad_add_probe(
+      pad,
+      static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+      inspect,
+      &stats,
+      nullptr);
   gst_object_unref(pad);
   gst_object_unref(sink);
   auto* bus = gst_element_get_bus(pipeline);
   bool ok = true;
   for (unsigned pass = 0; pass < passes && ok; ++pass) {
+    const bool cancel_this_pass = cancel && pass == 0;
+    stats.stream_started = stats.segment_received = false;
     stats.frames.clear();
     stats.batches = 0;
     ok &= gst_element_set_state(pipeline, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
     auto* message = gst_bus_timed_pop_filtered(
         bus,
-        cancel ? 100 * GST_MSECOND : 10 * GST_SECOND,
+        cancel_this_pass ? 100 * GST_MSECOND : 10 * GST_SECOND,
         static_cast<GstMessageType>(GST_MESSAGE_EOS | GST_MESSAGE_ERROR));
-    if (!cancel)
+    if (!cancel_this_pass)
       ok &= message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_EOS;
     if (message && GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
       gchar* debug = nullptr;
@@ -126,7 +147,7 @@ bool run(
       gst_message_unref(message);
     gst_element_set_state(pipeline, GST_STATE_NULL);
     ok &= stats.valid;
-    if (!cancel) {
+    if (!cancel_this_pass) {
       for (unsigned i = 0; i < lengths.size(); ++i)
         ok &= stats.frames[i * id_stride] == lengths[i];
     }
@@ -160,6 +181,7 @@ int main(int argc, char** argv) {
   ok = run({8, 8, 8}, 0, false, false, false, 1, "P010_10LE") && ok;
   ok = run({8, 8, 1}, 0, false, true) && ok;
   ok = run({4, 4, 4}, 100000) && ok;
+  ok = run({8, 8, 8}, 150000, true, false, false, 1, "RGBA", 2) && ok;
   ok = run({100, 100, 100}, 500000, true) && ok;
   return ok ? 0 : 1;
 }

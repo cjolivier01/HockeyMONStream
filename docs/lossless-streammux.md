@@ -4,7 +4,8 @@
 registered privately by `apps-common/HStreamLosslessMux.cpp`. It batches one or
 more inputs without copying their video pixels to the CPU. `create_multi_source_bin`
 selects it for recorded URI playlists, including single-source stitched-output
-playback. Ordinary live-camera sources and `nvmultiurisrcbin` keep their existing
+playback. Existing mixed graphs containing two recorded playlists retain their
+lossless stereo mux selection. Ordinary live-camera sources and `nvmultiurisrcbin` keep their existing
 SDK paths.
 
 “Lossless” means a wall-clock batch deadline never forces an incomplete batch.
@@ -41,8 +42,9 @@ No AMD path uses this NVIDIA SDK element; AMD decoding and stitching are unchang
 
 - `//src/apps/apps-common:hstream_lossless_nvstreammux_inputs_test`: real GPU
   inputs with one through four sources, empty/unequal inputs, delayed frames and
-  EOS, cancellation, repeated playback, sparse pad IDs, synchronization, NV12,
-  RGBA and P010. Checks complete membership, frame counts/order, PTS and metadata.
+  EOS, cancellation, completed and cancelled playback followed by replay, sparse pad IDs, synchronization, NV12,
+  RGBA and P010. Checks stream-start/segment ordering, complete membership, frame counts/order,
+  PTS and metadata.
 - `//src/apps/apps-common:uri_multiple_mux_inputs_test`:
   production URI playlist decoding and audio across chapters with one through four
   inputs, including unequal three-input playlists.

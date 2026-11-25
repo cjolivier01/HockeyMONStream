@@ -4722,7 +4722,8 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   // Recorded inputs retain every frame, including single-source playback.
   // The two-camera decoder rendezvous remains independent of mux selection.
   bin->lossless_nvstreammux = FALSE;
-  if (uri_playlist_source_count > 0 && uri_playlist_source_count == enabled_source_count) {
+  if (uri_playlist_source_count == 2 ||
+      (uri_playlist_source_count > 0 && uri_playlist_source_count == enabled_source_count)) {
     if (!register_hstream_lossless_nvstreammux()) {
       NVGSTDS_ERR_MSG_V("Failed to register the lossless URI-playlist stream mux");
       goto done;

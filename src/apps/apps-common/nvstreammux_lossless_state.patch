@@ -1,31 +1,24 @@
 --- gstnvstreammux.cpp
 +++ gstnvstreammux.cpp
-@@ -878,6 +878,7 @@
-               LOGD("failed to set caps [%s] on source pad\n", gst_caps_to_string(caps));
+@@ -879,4 +879,5 @@
                GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
                  gst_caps_to_string(caps));
 +              g_mutex_unlock (&mux->ctx_lock);
                return FALSE;
              }
-           }
-@@ -898,6 +899,7 @@
-            LOGD("failed to set updated caps [%s] on source pad\n", gst_caps_to_string(caps));
+@@ -899,4 +900,5 @@
             GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
                gst_caps_to_string(caps));
 +           g_mutex_unlock (&mux->ctx_lock);
             return FALSE;
          }
-
-@@ -1067,6 +1069,7 @@
-          LOGD("failed to set updated caps [%s] on source pad\n", gst_caps_to_string(caps));
+@@ -1068,4 +1070,5 @@
           GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
              gst_caps_to_string(caps));
 +         g_mutex_unlock (&mux->ctx_lock);
           return FALSE;
        }
-
-@@ -1536,6 +1539,23 @@
-     case GST_STATE_CHANGE_READY_TO_NULL:
+@@ -1537,4 +1540,21 @@
        break;
      case GST_STATE_CHANGE_READY_TO_PAUSED:
 +      // Initialize before upstream streaming threads can deliver CAPS/EOS.
@@ -47,9 +40,7 @@
 +      }
        mux->helper->handle_ready_pause();
 
-       break;
-@@ -1547,6 +1567,10 @@
-       break;
+@@ -1548,4 +1568,8 @@
      case GST_STATE_CHANGE_PAUSED_TO_READY:
      {
 +        /* The lossless backend waits without a timeout. Wake its source task
@@ -58,12 +49,17 @@
 +
          GHashTableIter iter;
          gpointer value;
-         gint key = 0;
-@@ -1561,7 +1585,6 @@
-           }
+@@ -1562,5 +1586,4 @@
          }
          g_mutex_unlock (&mux->ctx_lock);
 -        mux->helper->handle_stop();
          if (mux->pad_task_created)
          {
-           gst_pad_stop_task (mux->srcpad);
+@@ -1572,4 +1595,7 @@
+         mux->pad_task_created = FALSE;
+         mux->eos_sent = FALSE;
++        // Replaying after EOS or cancellation is a fresh downstream stream.
++        mux->pushed_stream_start_once = false;
++        mux->segment_sent = FALSE;
+     }
+       break;

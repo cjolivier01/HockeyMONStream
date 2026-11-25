@@ -493,6 +493,28 @@ source1:
   }
   gst_object_unref(playlist_sources->bin);
 
+  // A third ordinary input must not remove the lossless mux from the
+  // existing two-playlist rendezvous when the replacement SDK mux is active.
+  auto mixed_config = YAML::Clone(uri_playlist_config);
+  mixed_config["source2"]["enable"] = 1;
+  mixed_config["source2"]["type"] = 2;
+  mixed_config["source2"]["source-id"] = 2;
+  mixed_config["source2"]["uri"] = "file:///tmp/ordinary-input.mp4";
+  auto parsed_mixed = std::make_unique<NvDsConfig>();
+  auto mixed_sources = std::make_unique<NvDsSrcParentBin>();
+  if (!parse_config_yaml(mixed_config, parsed_mixed.get(), "/tmp") || parsed_mixed->num_source_sub_bins != 3 ||
+      !create_multi_source_bin(3, parsed_mixed->multi_source_config, mixed_sources.get())) {
+    std::cerr << "Could not construct mixed playlist/ordinary sources\n";
+    return 1;
+  }
+  const bool preserves_pairing =
+      mixed_sources->uri_playlist_exact_pairing_enabled && mixed_sources->lossless_nvstreammux;
+  gst_object_unref(mixed_sources->bin);
+  if (!preserves_pairing) {
+    std::cerr << "Mixed graph dropped the existing lossless stereo rendezvous\n";
+    return 1;
+  }
+
   const YAML::Node single_playback_config = YAML::Load(R"yaml(
 application:
   enable-perf-measurement: 0
