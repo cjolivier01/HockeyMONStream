@@ -27,6 +27,7 @@ absl::StatusOr<Plan> MakePlan(
     int output_height,
     int requested_width,
     int requested_height,
-    Position position);
+    Position position,
+    Orientation flip = {});
 bool ValidatePlan(const Plan& plan);
 } // namespace hm::scoreboard

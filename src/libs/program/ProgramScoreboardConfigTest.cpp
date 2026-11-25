@@ -34,15 +34,29 @@ int main(int argc, char** argv) {
     auto plan = hm::program::PrepareProgramScoreboard(**result, "saved", 1000, 1000, 3840, 2160);
     Check(
         plan.ok() && plan->width == 384 && plan->height == 192 && plan->left == 0, "Native aspect adjustment changed");
-    for (size_t i = 0; i < 4; ++i) {
-      const double x = (i == 1 || i == 2) ? plan->width - 1 : 0;
-      const double y = i >= 2 ? plan->height - 1 : 0;
-      const auto* h = plan->inverse;
-      const double denominator = h[6] * x + h[7] * y + h[8];
-      Check(
-          std::abs((h[0] * x + h[1] * y + h[2]) / denominator - (*result)->polygon[i][0]) < .001 &&
-              std::abs((h[3] * x + h[4] * y + h[5]) / denominator - (*result)->polygon[i][1]) < .001,
-          "Projected rectangle corner changed");
+    for (const bool horizontal : {false, true}) {
+      for (const bool vertical : {false, true}) {
+        const auto selected = resolve(
+            {std::string("rink.scoreboard.flip_horizontal=") + (horizontal ? "true" : "false"),
+             std::string("rink.scoreboard.flip_vertical=") + (vertical ? "true" : "false")},
+            game);
+        Check(selected.ok() && selected->has_value(), "Flip options rejected");
+        const auto oriented = hm::program::PrepareProgramScoreboard(**selected, "saved", 1000, 1000, 3840, 2160);
+        Check(
+            oriented.ok() && oriented->width == plan->width && oriented->height == plan->height &&
+                oriented->left == plan->left && oriented->top == plan->top,
+            "Flip moved scoreboard");
+        for (size_t i = 0; i < 4; ++i) {
+          const double x = ((i == 1 || i == 2) != horizontal) ? oriented->width - 1 : 0;
+          const double y = ((i >= 2) != vertical) ? oriented->height - 1 : 0;
+          const auto* h = oriented->inverse;
+          const double denominator = h[6] * x + h[7] * y + h[8];
+          Check(
+              std::abs((h[0] * x + h[1] * y + h[2]) / denominator - (*result)->polygon[i][0]) < .001 &&
+                  std::abs((h[3] * x + h[4] * y + h[5]) / denominator - (*result)->polygon[i][1]) < .001,
+              "Projected rectangle corner changed");
+        }
+      }
     }
     for (const double scale : {0.5, 1.0, 2.0}) {
       const auto scaled = resolve({"rink.scoreboard.scoreboard_scale=" + std::to_string(scale)}, game);

@@ -7243,6 +7243,15 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   connect(
       scoreboard_scale_spin_, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
       [this] { updatePresetDirtyState(); });
+  auto add_flip = [&](ScoreboardFlipControl& control, const char* label, const char* name) {
+    control.check = new QCheckBox(label);
+    control.check->setObjectName(name);
+    control.check->setToolTip("Flip the scoreboard overlay on the next playback, including recordings and streams.");
+    program_footer->addWidget(control.check);
+    connect(control.check, &QCheckBox::toggled, this, [this] { updatePresetDirtyState(); });
+  };
+  add_flip(scoreboard_flips_[0], "Flip horizontally", "scoreboardFlipHorizontal");
+  add_flip(scoreboard_flips_[1], "Flip vertically", "scoreboardFlipVertical");
   scoreboard_controls_status_ = new QLabel();
   scoreboard_controls_status_->setObjectName("scoreboardControlsStatus");
   scoreboard_controls_status_->setWordWrap(true);
@@ -11677,6 +11686,10 @@ QStringList HStreamWindow::pipelineArguments(bool standalone, bool job_export) c
   }
   if (!isCalibrationRun() && scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_)
     args << QString("--options=rink.scoreboard.scoreboard_scale=%1").arg(scoreboard_scale_spin_->value(), 0, 'g', 17);
+  for (const auto& flip : scoreboard_flips_) {
+    if (!isCalibrationRun() && flip.check && flip.check->isChecked() != flip.saved)
+      args << QString("--options=rink.scoreboard.%1=%2").arg(flip.key, flip.check->isChecked() ? "true" : "false");
+  }
   args << "--options=pipeline.hmaudio.enable=1";
   return args;
 }
@@ -17565,6 +17578,18 @@ void HStreamWindow::loadScoreboardControls(const YAML::Node& config) {
   scoreboard_scale_spin_->setRange(std::min(0.1, scale), std::max(4.0, scale));
   scoreboard_scale_spin_->setValue(scale);
   saved_scoreboard_scale_ = scoreboard_scale_spin_->value();
+  for (auto& flip : scoreboard_flips_) {
+    const bool baseline = baseline_layer_["rink"]["scoreboard"][flip.key].as<bool>();
+    bool checked = baseline;
+    for (const auto& layer : {user_layer_, config}) {
+      YAML::Node value;
+      if (lookup_yaml_path(layer, QStringLiteral("rink.scoreboard.") + flip.key, &value))
+        checked = value.IsNull() ? baseline : value.as<bool>();
+    }
+    const QSignalBlocker flip_blocker(flip.check);
+    flip.check->setChecked(checked);
+    flip.saved = checked;
+  }
   scoreboard_controls_status_->clear();
   updateScoreboardControls();
 }
@@ -17581,7 +17606,10 @@ void HStreamWindow::updateScoreboardControls() {
     }
   }
   const bool selecting = scoreboard_reselect_waiting_ || scoreboard_selection_dialog_;
-  scoreboard_scale_spin_->setEnabled(!running && !isArchiveFinalizing() && !selecting && !calibration_pending_);
+  const bool editable = !running && !isArchiveFinalizing() && !selecting && !calibration_pending_;
+  scoreboard_scale_spin_->setEnabled(editable);
+  for (const auto& flip : scoreboard_flips_)
+    flip.check->setEnabled(editable);
   const bool available = !isArchiveFinalizing() && !isCalibrationRun() && !calibration_pending_ &&
       pending_scoreboard_property_.isEmpty() && pending_playback_seek_generation_ == 0 &&
       playback_seek_recovery_generation_ == 0 && pending_process_pause_generation_ == 0 &&
@@ -20701,6 +20729,8 @@ void HStreamWindow::updateStitchFrameTimeAvailability() {
 void HStreamWindow::captureSavedControlState() {
   saved_output_rink_map_ = outputRinkMapState();
   saved_scoreboard_scale_ = scoreboard_scale_spin_->value();
+  for (auto& flip : scoreboard_flips_)
+    flip.saved = flip.check->isChecked();
   storeProjectionParameterControls();
   saved_camera_controls_.clear();
   for (const auto& [id, default_value] : camera_defaults_) {
@@ -20769,7 +20799,12 @@ void HStreamWindow::updatePresetDirtyState() {
   const bool retry_required = !game_id.isEmpty() && preset_save_retry_game_ids_.count(game_id) != 0;
   const bool projection_framing_dirty = (saved_mapping_backend_ == "nona" || mappingBackend() == "nona") &&
       saved_projection_framing_ != stitchProjectionFraming();
-  bool dirty = (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) ||
+  const bool scoreboard_flip_dirty =
+      std::any_of(std::begin(scoreboard_flips_), std::end(scoreboard_flips_), [](const auto& flip) {
+        return flip.check && flip.check->isChecked() != flip.saved;
+      });
+  bool dirty = scoreboard_flip_dirty ||
+      (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) ||
       defaults_reset_pending_ || defaults_save_retry_ || retry_required ||
       saved_auto_input_lens_frozen_ != autoInputLensFrozen() || detectorSelectionChanged() ||
       (tiled_detection_check_ && tiled_detection_check_->isChecked() != saved_tiled_detection_) ||
@@ -21926,6 +21961,10 @@ bool HStreamWindow::applySavedControlConfig(
       config["output"]["rink-map"]["size"] = after[1].toStdString();
     if (before.size() != 3 || before[2] != after[2])
       config["output"]["rink-map"]["position"] = after[2].toStdString();
+  }
+  for (const auto& flip : scoreboard_flips_) {
+    if (flip.check && flip.check->isChecked() != flip.saved)
+      config["rink"]["scoreboard"][flip.key] = flip.check->isChecked();
   }
   if (scoreboard_scale_spin_ && scoreboard_scale_spin_->value() != saved_scoreboard_scale_) {
     config["rink"]["scoreboard"]["scoreboard_scale"] = scoreboard_scale_spin_->value();

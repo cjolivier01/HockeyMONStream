@@ -11,6 +11,7 @@ struct ProgramScoreboardConfig {
   std::string generation;
   int requested_width, requested_height;
   scoreboard::Position position;
+  scoreboard::Orientation flip;
 };
 // Resolve saved polygon, dimensions and placement without opening GPU state.
 // Disabled and all-zero sentinel polygons return no overlay. An enabled overlay

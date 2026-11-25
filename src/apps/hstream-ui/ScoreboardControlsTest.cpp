@@ -70,18 +70,28 @@ int main(int argc, char** argv) {
     const auto config_path = root.filePath("games/one/_hockeymon/config.yaml");
     Write(
         config_path,
-        "rink: {scoreboard: {scoreboard_scale: 1.2}}\npipeline: {hmplaycropper: {private-properties: {scoreboard-scale: 1.7}}}\n");
+        "rink: {scoreboard: {scoreboard_scale: 1.2, flip_vertical: true}}\npipeline: {hmplaycropper: {private-properties: {scoreboard-scale: 1.7}}}\n");
     QApplication app(argc, argv);
     install_value_control_wheel_guard();
     HStreamWindow window;
     auto* game = Find<QComboBox>(window, "gameSelector");
     auto* scale = Find<QDoubleSpinBox>(window, "scoreboardScaleSpin");
+    auto* horizontal = Find<QCheckBox>(window, "scoreboardFlipHorizontal");
+    auto* vertical = Find<QCheckBox>(window, "scoreboardFlipVertical");
     auto* save = Find<QPushButton>(window, "savePresetButton");
     game->setCurrentIndex(game->findText("two"));
     Check(scale->value() == 1, "Fresh game must read baseline scale 1");
     game->setCurrentIndex(game->findText("one"));
     Check(scale->value() == 1.7, "Native scale alias must win within the game layer");
     Check(HStreamWindowTestAccess::scaleDisabledDuringPlayback(window), "Scale must be disabled during playback");
+    Check(!horizontal->isChecked() && vertical->isChecked(), "Game scoreboard flips did not load independently");
+    horizontal->click();
+    vertical->click();
+    const auto args = HStreamWindowTestAccess::args(window);
+    Check(
+        args.contains("--options=rink.scoreboard.flip_horizontal=true") &&
+            args.contains("--options=rink.scoreboard.flip_vertical=false"),
+        "Draft scoreboard flips missing from Play");
     scale->setValue(.75);
     QWheelEvent wheel(
         QPointF(1, 1), QPointF(1, 1), QPoint(), QPoint(0, 120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
@@ -99,6 +109,7 @@ int main(int argc, char** argv) {
         "Saved scale kept a conflicting alias");
     HStreamWindowTestAccess::reload(window);
     Check(scale->value() == .75, "Saved scale did not reload");
+    Check(horizontal->isChecked() && !vertical->isChecked(), "Saved scoreboard flips did not reload");
     auto with_polygon = YAML::Clone(saved);
     const auto polygon = YAML::Load("[[10,10],[30,10],[30,20],[10,20]]");
     with_polygon["rink"]["scoreboard"]["perspective_polygon"] = polygon;
@@ -113,6 +124,7 @@ int main(int argc, char** argv) {
             retained["rink"]["stitched_output_generation"].as<std::string>() == "unchanged-scoreboard-canvas",
         "Scale changed selected source corners or their generation");
     game->setCurrentIndex(game->findText("two"));
+    Check(!horizontal->isChecked() && !vertical->isChecked(), "Scoreboard flips leaked into another game");
     Check(scale->value() == 1, "Game scale leaked into another game");
     HStreamWindowTestAccess::defaults(window);
     scale->setValue(2);

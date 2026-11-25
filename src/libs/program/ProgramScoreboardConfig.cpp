@@ -154,6 +154,10 @@ absl::StatusOr<std::optional<ProgramScoreboardConfig>> ResolveProgramScoreboardC
     if (!parsed)
       return absl::InvalidArgumentError("Scoreboard position requires upper-left, upper-center or upper-right");
     result.position = *parsed;
+    const auto flip = [&](const std::string& path) {
+      return Flag(BaselineOnNull(config, Select(config, {path}), path));
+    };
+    result.flip = {flip("rink.scoreboard.flip_horizontal"), flip("rink.scoreboard.flip_vertical")};
     const auto filter = get_node(config.values, "rink.scoreboard.resize_filter");
     const auto sharpen = get_node(config.values, "rink.scoreboard.sharpen_amount");
     if (!filter || !sharpen)
@@ -182,6 +186,7 @@ absl::StatusOr<scoreboard::Plan> PrepareProgramScoreboard(
       output_height,
       config.requested_width,
       config.requested_height,
-      config.position);
+      config.position,
+      config.flip);
 }
 } // namespace hm::program
