@@ -639,6 +639,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":action_icons",
+        ":calibration_image",
         "//src/libs/stitching:calibration_matches",
         "@qt//:qt_widgets",
     ],

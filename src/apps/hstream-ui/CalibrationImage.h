@@ -7,5 +7,5 @@
 QSize scoreboardPreviewSize(const QSize& source_size);
 
 // Bounded display proxies for saved calibration artifacts; no video readback.
-QImage readCalibrationPng(const QString& path, const QSize& size);
+QImage readCalibrationPng(const QString& path, const QSize& size, bool require_native_size = false);
 QImage readCalibrationTiff(const QString& path, int maximum_dimension);

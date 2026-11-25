@@ -1,6 +1,7 @@
 #include "src/apps/hstream-ui/MatchEditorDialog.h"
 
 #include "src/apps/hstream-ui/ActionIcons.h"
+#include "src/apps/hstream-ui/CalibrationImage.h"
 
 #include <algorithm>
 #include <cmath>
@@ -77,11 +78,15 @@ class MatchView : public QGraphicsView {
         size.height() > hm::stitching::kMaximumEditableImageDimension ||
         qint64(size.width()) * size.height() > kMaximumImagePixels)
       return "Camera image dimensions differ from the retained match set or exceed the editor's limit.";
-    QImage decoded = reader.read();
+    // Decode the native camera rows directly into display pixels. An 8K RGB16
+    // frame exceeds Qt's default limit if first decoded into a 64-bit QImage.
+    QImage decoded = readCalibrationPng(filename, size, true);
+    if (decoded.isNull())
+      decoded = reader.read(); // Also support interlaced PNGs accepted by Qt.
     if (decoded.isNull())
       return "Cannot decode camera image: " + reader.errorString();
-    // QImageReader supports RGB/RGBA 16-bit PNG. Conversion is only for display;
-    // saved images and floating-point match coordinates are never resampled.
+    if (decoded.size() != size)
+      return "Camera image dimensions changed while opening the retained match set.";
     image_->setPixmap(QPixmap::fromImage(decoded.convertToFormat(QImage::Format_RGB32)));
     ready_ = !image_->pixmap().isNull();
     fit();
