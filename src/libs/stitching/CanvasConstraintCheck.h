@@ -2,10 +2,14 @@
 
 #include <sys/stat.h>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <istream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -49,6 +53,14 @@ struct CanvasConstraintCompatibility {
 
 inline constexpr char kStitchCanvasProvenanceArtifact[] = "stitching_canvas_provenance";
 inline constexpr char kStitchGenerationArtifact[] = "stitching_generation_id";
+
+// Camera PNGs can occupy any representable file size. Other artifacts have format-specific bounds.
+uint64_t maximum_stitch_artifact_bytes(std::string_view name);
+
+// Read or seek within one pinned regular file and verify its identity after the callback.
+absl::Status with_regular_file_stream(
+    const std::filesystem::path& path,
+    const std::function<absl::Status(std::istream&, uint64_t)>& read);
 
 // Identity checks must fetch current NFS attributes, including after fsync.
 // These preserve stat/fstat/lstat follow semantics and errno on failure.

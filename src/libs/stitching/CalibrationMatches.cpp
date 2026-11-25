@@ -30,7 +30,6 @@ namespace hm::stitching {
 namespace {
 namespace fs = std::filesystem;
 constexpr size_t kMaximumDocumentBytes = 32 * 1024 * 1024;
-constexpr size_t kMaximumImageBytes = 512ULL * 1024 * 1024;
 struct Descriptor {
   int value{-1};
   ~Descriptor() {
@@ -76,9 +75,8 @@ std::string image_name(size_t index, size_t camera) {
 absl::StatusOr<YAML::Node> image_identity(const fs::path& path) {
   Descriptor fd{::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
   struct stat before{}, after{};
-  if (fd.value < 0 || ::fstat(fd.value, &before) || !S_ISREG(before.st_mode) || before.st_size < 33 ||
-      uint64_t(before.st_size) > kMaximumImageBytes)
-    return absl::FailedPreconditionError("Calibration input is not a bounded regular PNG: " + path.string());
+  if (fd.value < 0 || ::fstat(fd.value, &before) || !S_ISREG(before.st_mode) || before.st_size < 33)
+    return absl::FailedPreconditionError("Calibration input is not a regular PNG: " + path.string());
   std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> hash(EVP_MD_CTX_new(), EVP_MD_CTX_free);
   if (!hash || !EVP_DigestInit_ex(hash.get(), EVP_sha256(), nullptr))
     return absl::InternalError("Cannot hash calibration input");
@@ -109,7 +107,7 @@ absl::StatusOr<YAML::Node> image_identity(const fs::path& path) {
       result["height"] = h;
     }
     total += count;
-    if (total > kMaximumImageBytes || !EVP_DigestUpdate(hash.get(), buffer.data(), count))
+    if (total > static_cast<uint64_t>(before.st_size) || !EVP_DigestUpdate(hash.get(), buffer.data(), count))
       return absl::FailedPreconditionError("Calibration input changed during hashing");
   }
   if (::fstat(fd.value, &after) || total != uint64_t(before.st_size) || before.st_size != after.st_size ||
@@ -129,8 +127,8 @@ absl::Status copy_image(const fs::path& from, const fs::path& to) {
   Descriptor destination{::open(to.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600)};
   struct stat metadata{};
   if (source.value < 0 || destination.value < 0 || ::fstat(source.value, &metadata) || !S_ISREG(metadata.st_mode) ||
-      metadata.st_size < 0 || uint64_t(metadata.st_size) > kMaximumImageBytes)
-    return absl::FailedPreconditionError("Cannot copy bounded calibration input");
+      metadata.st_size < 0)
+    return absl::FailedPreconditionError("Cannot copy calibration input");
   if (::ioctl(destination.value, FICLONE, source.value) != 0) {
     std::array<char, 65536> bytes;
     size_t total = 0;
@@ -143,7 +141,7 @@ absl::Status copy_image(const fs::path& from, const fs::path& to) {
       if (!count)
         break;
       total += count;
-      if (total > kMaximumImageBytes)
+      if (total > static_cast<uint64_t>(metadata.st_size))
         return absl::FailedPreconditionError("Calibration input grew during copy");
       size_t written = 0;
       while (written < size_t(count)) {
@@ -321,8 +319,7 @@ absl::StatusOr<CalibrationMatchSet> load_matches(
         const YAML::Node node = frames[i][camera ? "right" : "left"];
         const auto path = input_dir / image_name(i, camera);
         const auto identity = node["image"];
-        if (!fingerprint_valid(identity["sha256"].as<std::string>()) || identity["bytes"].as<uint64_t>() < 33 ||
-            identity["bytes"].as<uint64_t>() > kMaximumImageBytes)
+        if (!fingerprint_valid(identity["sha256"].as<std::string>()) || identity["bytes"].as<int64_t>() < 33)
           return absl::InvalidArgumentError("Invalid calibration input image identity");
         if (verify_images) {
           YAML::Node actual;

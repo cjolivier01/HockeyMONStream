@@ -11,7 +11,6 @@
 namespace hm::stitching {
 
 inline constexpr size_t kMaximumEditableMatchesPerPair = 10000;
-inline constexpr size_t kMaximumEditableImageBytes = 512ULL * 1024 * 1024;
 inline constexpr size_t kMaximumEditableImagePixels = 64ULL * 1024 * 1024;
 inline constexpr int kMaximumEditableImageDimension = 32768;
 

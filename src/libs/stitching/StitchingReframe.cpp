@@ -402,7 +402,10 @@ absl::Status supported(const Snapshot& requested, bool review_unchanged_view = f
   return absl::OkStatus();
 }
 
-absl::StatusOr<std::string> file_sha256(const fs::path& path, size_t maximum_bytes, bool follow_symlink = false) {
+absl::StatusOr<std::string> file_sha256(
+    const fs::path& path,
+    std::optional<uint64_t> maximum_bytes = std::nullopt,
+    bool follow_symlink = false) {
   const int descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NONBLOCK | (follow_symlink ? 0 : O_NOFOLLOW));
   if (descriptor < 0)
     return absl::FailedPreconditionError("Cannot read reframe source " + path.string() + ": " + std::strerror(errno));
@@ -414,7 +417,7 @@ absl::StatusOr<std::string> file_sha256(const fs::path& path, size_t maximum_byt
   } cleanup{descriptor};
   struct stat before{};
   if (::fstat(descriptor, &before) || !S_ISREG(before.st_mode) || before.st_size <= 0 ||
-      static_cast<uint64_t>(before.st_size) > maximum_bytes)
+      (maximum_bytes && static_cast<uint64_t>(before.st_size) > *maximum_bytes))
     return absl::FailedPreconditionError("Reframe source must be a nonempty bounded regular file: " + path.string());
   std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
   if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1)
@@ -430,7 +433,7 @@ absl::StatusOr<std::string> file_sha256(const fs::path& path, size_t maximum_byt
     if (!count)
       break;
     total += static_cast<size_t>(count);
-    if (total > maximum_bytes || EVP_DigestUpdate(context.get(), buffer.data(), count) != 1)
+    if (total > static_cast<uint64_t>(before.st_size) || EVP_DigestUpdate(context.get(), buffer.data(), count) != 1)
       return absl::AbortedError("Reframe source changed during hashing");
   }
   struct stat after{};
@@ -652,9 +655,7 @@ absl::StatusOr<StitchingReframeIntent> validate_intent(const fs::path& directory
       return absl::InvalidArgumentError("Invalid representative PNG hash in reframe intent");
     std::string actual;
     HM_ASSIGN_OR_RETURN(
-        actual,
-        file_sha256(
-            hm::game_storage::StateDirectory(directory) / (camera ? "right.png" : "left.png"), 512ULL * 1024 * 1024));
+        actual, file_sha256(hm::game_storage::StateDirectory(directory) / (camera ? "right.png" : "left.png")));
     if (actual != result.source_image_sha256[camera])
       return absl::AbortedError("A saved representative PNG changed; reframe request was preserved");
   }
@@ -810,9 +811,7 @@ static absl::StatusOr<bool> prepare_reframe_intent_locked(
       for (size_t camera = 0; camera < 2; ++camera) {
         HM_ASSIGN_OR_RETURN(
             hashes[camera],
-            file_sha256(
-                hm::game_storage::StateDirectory(directory) / (camera ? "right.png" : "left.png"),
-                512ULL * 1024 * 1024));
+            file_sha256(hm::game_storage::StateDirectory(directory) / (camera ? "right.png" : "left.png")));
         record["source_image_sha256"].push_back(hashes[camera]);
       }
       HM_RETURN_IF_ERROR(validate_selected_inputs(directory, before, source, hashes));

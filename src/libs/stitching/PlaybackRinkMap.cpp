@@ -2,6 +2,7 @@
 #include "hstream/src/libs/common/GameStorage.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -139,14 +140,27 @@ absl::StatusOr<std::string> RinkMapCalibrationRevision(const std::filesystem::pa
   if (!hash || EVP_DigestInit_ex(hash.get(), EVP_sha256(), nullptr) != 1)
     return absl::InternalError("Could not initialize rink calibration digest");
   for (const char* name : {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"}) {
-    auto bytes = read_bounded_regular_file_no_follow(
-        hm::game_storage::StateDirectory(directory) / name, 128 * 1024 * 1024, "rink-map calibration");
-    if (!bytes.ok())
-      return bytes.status();
-    const std::string size = std::to_string(bytes->size());
-    for (std::string_view part : {std::string_view(name), std::string_view(size), std::string_view(*bytes)})
-      if (EVP_DigestUpdate(hash.get(), part.data(), part.size()) != 1)
+    const auto path = hm::game_storage::StateDirectory(directory) / name;
+    const auto status = with_regular_file_stream(path, [&](std::istream& input, uint64_t size) {
+      if (size > maximum_stitch_artifact_bytes(name))
+        return absl::FailedPreconditionError("Invalid rink-map calibration: " + path.string());
+      const auto length = std::to_string(size);
+      if (EVP_DigestUpdate(hash.get(), name, std::string_view(name).size()) != 1 ||
+          EVP_DigestUpdate(hash.get(), length.data(), length.size()) != 1)
         return absl::InternalError("Could not hash rink calibration");
+      std::array<char, 65536> chunk;
+      while (size > 0) {
+        const auto count = static_cast<std::streamsize>(std::min<uint64_t>(size, chunk.size()));
+        if (!input.read(chunk.data(), count))
+          return absl::DataLossError("Unable to read rink calibration: " + path.string());
+        if (EVP_DigestUpdate(hash.get(), chunk.data(), count) != 1)
+          return absl::InternalError("Could not hash rink calibration");
+        size -= count;
+      }
+      return absl::OkStatus();
+    });
+    if (!status.ok())
+      return status;
   }
   unsigned char digest[EVP_MAX_MD_SIZE];
   unsigned length = 0;

@@ -103,7 +103,6 @@ constexpr size_t kHardMaximumArtifactDimension = 65536;
 constexpr uint64_t kHardMaximumArtifactPixels = 256ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserRemapTiffBytes = kHardMaximumArtifactPixels * 4 + 32ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumParserPlacementTiffBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
-constexpr uint64_t kMaximumParserSeamPngBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr uint64_t kMinimumFieldMaskPngBudgetBytes = 1024ULL * 1024ULL;
 constexpr uint64_t kMaximumFieldMaskPngBudgetBytes = 128ULL * 1024ULL * 1024ULL;
 constexpr size_t kMaximumAkazeCalibrationBytes = 1024ULL * 1024ULL;
@@ -853,7 +852,7 @@ absl::StatusOr<PinnedLoadArtifact> pin_stitch_snapshot_artifact(const fs::path& 
 
   uint64_t maximum_bytes = 0;
   if (name == "left.png" || name == "right.png" || name == "seam_file.png") {
-    maximum_bytes = kMaximumParserSeamPngBytes;
+    maximum_bytes = maximum_stitch_artifact_bytes(name);
   } else if (path.extension() == ".pto") {
     maximum_bytes = 64ULL * 1024ULL * 1024ULL;
   } else if (name == kStitchCanvasProvenanceArtifact) {
