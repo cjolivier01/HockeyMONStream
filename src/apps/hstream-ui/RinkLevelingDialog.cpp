@@ -67,7 +67,7 @@ QByteArray sourceRevisionForFiles(const QString& directory, const QStringList& f
   for (const QString& name : files) {
     QFile file(QDir(directory).filePath(name));
     const auto maximum =
-        name == "config.yaml" ? 128ULL * 1024 * 1024 : hm::stitching::maximum_stitch_artifact_bytes(name.toStdString());
+        name == "config.yaml" ? 4ULL * 1024 * 1024 : hm::stitching::maximum_stitch_artifact_bytes(name.toStdString());
     if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || static_cast<uint64_t>(file.size()) > maximum ||
         !hash.addData(&file))
       return {};
