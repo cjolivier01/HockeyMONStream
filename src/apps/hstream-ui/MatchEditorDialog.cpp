@@ -42,9 +42,7 @@ QPointF endpoint(const FeatureMatch& match, int camera) {
 }
 
 // These are retained offline stills, not video surfaces. Only the current pair
-// is decoded. Retain native pixels for accurate editing, with explicit bounds
-// on encoded bytes and decoded dimensions; Qt also enforces its allocation cap.
-constexpr qint64 kMaximumImageBytes = hm::stitching::kMaximumEditableImageBytes;
+// is decoded. Retain native pixels for accurate editing and check decoded geometry.
 constexpr qint64 kMaximumImagePixels = hm::stitching::kMaximumEditableImagePixels;
 
 class MatchView : public QGraphicsView {
@@ -70,8 +68,8 @@ class MatchView : public QGraphicsView {
     ready_ = false;
     const QString filename = QString::fromStdString(path.string());
     QFileInfo info(filename);
-    if (!info.isFile() || info.isSymLink() || info.size() > kMaximumImageBytes)
-      return "Camera image is missing or exceeds the editor's file limit.";
+    if (!info.isFile() || info.isSymLink())
+      return "Camera image is missing or is not a regular file.";
     QImageReader reader(filename, "png");
     const QSize size = reader.size();
     if (size != QSize(expected.width, expected.height) || size.width() <= 0 || size.height() <= 0 ||

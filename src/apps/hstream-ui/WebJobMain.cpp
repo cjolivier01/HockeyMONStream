@@ -553,7 +553,8 @@ QJsonObject editable_matches_result(const Request& request, const Request& sourc
       "editor_limits",
       QJsonObject{
           {"maximum_matches_per_pair", int(hm::stitching::kMaximumEditableMatchesPerPair)},
-          {"maximum_image_bytes", qint64(hm::stitching::kMaximumEditableImageBytes)},
+          // Retain the numeric contract for older editors. Any representable file size is supported.
+          {"maximum_image_bytes", std::numeric_limits<qint64>::max()},
           {"maximum_image_pixels", qint64(hm::stitching::kMaximumEditableImagePixels)},
           {"maximum_image_dimension", hm::stitching::kMaximumEditableImageDimension}});
   return result;

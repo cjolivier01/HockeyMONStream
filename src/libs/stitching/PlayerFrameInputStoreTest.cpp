@@ -292,7 +292,7 @@ bool run(const fs::path& root) {
   ok &= rejects("oversized-manifest", [](const fs::path& bundle) {
     write_bytes(bundle / "frames.yaml", std::string(256 * 1024 + 1, ' '));
   });
-  ok &= rejects("oversized-png", [](const fs::path& bundle) {
+  ok &= rejects("png-size-changed-after-publication", [](const fs::path& bundle) {
     fs::resize_file(bundle / "left_0.png", 512ULL * 1024 * 1024 + 1);
   });
   ok &= rejects(
@@ -399,6 +399,13 @@ bool run(const fs::path& root) {
   ok &= expect(
       !PublishPlayerFrameInputs(incomplete, changed_plan, images).ok(), "publication rejects a mutated frozen plan");
 
+  const fs::path large_game = root / "large-original";
+  fs::create_directories(large_game);
+  fs::resize_file(images[0][0], 512ULL * 1024 * 1024 + 1);
+  ok &= expect(
+      PublishPlayerFrameInputs(large_game, plan, images).ok(), "A selected camera original over 512 MiB must publish");
+  auto large_bundle = LoadPlayerFrameInputs(large_game, plan);
+  ok &= expect(large_bundle.ok() && large_bundle->has_value(), "The large selected camera original must reopen");
   return ok;
 }
 

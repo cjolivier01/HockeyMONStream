@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 
@@ -26,7 +27,6 @@ namespace hm::stitching {
 namespace {
 namespace fs = std::filesystem;
 constexpr size_t kMaximumManifestBytes = 256 * 1024;
-constexpr size_t kMaximumImageBytes = 512ULL * 1024 * 1024;
 constexpr size_t kMaximumThumbnailBytes = 4 * 1024 * 1024;
 constexpr uint64_t kMaximumImagePixels = 128ULL * 1024 * 1024;
 
@@ -73,17 +73,18 @@ std::string name(size_t index, size_t camera, const char* extension) {
   return std::string(camera == 0 ? "left_" : "right_") + std::to_string(index) + extension;
 }
 
-// Stream a bounded regular inode. In particular, do not read a full 8K image
+// Stream one regular inode. In particular, do not read a full 8K image
 // into memory merely to hash it, and never block opening a replaced FIFO.
-absl::StatusOr<YAML::Node> file_identity(const fs::path& path, size_t maximum_bytes, bool png) {
+absl::StatusOr<YAML::Node> file_identity(const fs::path& path, bool png) {
   Descriptor descriptor{::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
   if (descriptor.value < 0)
     return io_error("Cannot open saved frame " + path.string());
   struct stat before{};
   if (::fstat(descriptor.value, &before) != 0)
     return io_error("Cannot stat saved frame");
-  if (!S_ISREG(before.st_mode) || before.st_size <= 0 || static_cast<uint64_t>(before.st_size) > maximum_bytes)
-    return absl::FailedPreconditionError("Saved frame is not a bounded regular image: " + path.string());
+  if (!S_ISREG(before.st_mode) || before.st_size <= 0 ||
+      (!png && static_cast<uint64_t>(before.st_size) > kMaximumThumbnailBytes))
+    return absl::FailedPreconditionError("Invalid saved frame: " + path.string());
   std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> digest(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
   if (!digest || EVP_DigestInit_ex(digest.get(), EVP_sha256(), nullptr) != 1)
     return absl::InternalError("Cannot initialize saved frame digest");
@@ -118,7 +119,7 @@ absl::StatusOr<YAML::Node> file_identity(const fs::path& path, size_t maximum_by
       result["color"] = color;
     }
     total += count;
-    if (total > maximum_bytes || EVP_DigestUpdate(digest.get(), buffer.data(), count) != 1)
+    if (total > static_cast<uint64_t>(before.st_size) || EVP_DigestUpdate(digest.get(), buffer.data(), count) != 1)
       return absl::FailedPreconditionError("Saved frame changed or could not be hashed");
   }
   struct stat after{};
@@ -144,7 +145,7 @@ absl::Status verify_file(const fs::path& path, const YAML::Node& expected, bool 
   if (!expected.IsMap())
     return absl::InvalidArgumentError("Saved frame manifest has no image identity");
   YAML::Node actual;
-  HM_ASSIGN_OR_RETURN(actual, file_identity(path, png ? kMaximumImageBytes : kMaximumThumbnailBytes, png));
+  HM_ASSIGN_OR_RETURN(actual, file_identity(path, png));
   for (const char* field : {"bytes", "sha256", "width", "height", "depth", "color"}) {
     if (!png && std::string(field) != "bytes" && std::string(field) != "sha256")
       continue;
@@ -333,7 +334,7 @@ static absl::Status publish_player_frame_inputs(
     for (size_t index = 0; index < images.size(); ++index) {
       for (size_t camera = 0; camera < 2; ++camera) {
         YAML::Node source_identity;
-        HM_ASSIGN_OR_RETURN(source_identity, file_identity(images[index][camera], kMaximumImageBytes, true));
+        HM_ASSIGN_OR_RETURN(source_identity, file_identity(images[index][camera], true));
         HM_RETURN_IF_ERROR(verify_file((**existing).images[index][camera], source_identity, true));
       }
     }
@@ -362,9 +363,10 @@ static absl::Status publish_player_frame_inputs(
       for (size_t camera = 0; camera < 2; ++camera) {
         const fs::path png = staging.path / name(index, camera, ".png");
         const fs::path jpg = staging.path / name(index, camera, ".jpg");
-        HM_RETURN_IF_ERROR(snapshot_regular_file_for_rollback(images[index][camera], png, false, kMaximumImageBytes));
+        HM_RETURN_IF_ERROR(
+            snapshot_regular_file_for_rollback(images[index][camera], png, false, std::numeric_limits<size_t>::max()));
         YAML::Node identity;
-        HM_ASSIGN_OR_RETURN(identity, file_identity(png, kMaximumImageBytes, true));
+        HM_ASSIGN_OR_RETURN(identity, file_identity(png, true));
         if (saved && identity["sha256"].as<std::string>() != saved->image_digests.at(index)[camera])
           return absl::AbortedError("Saved source frame changed while its bundle was copied");
         if (saved) {
@@ -387,7 +389,7 @@ static absl::Status publish_player_frame_inputs(
             return absl::InternalError("Cannot write saved frame thumbnail");
         }
         YAML::Node thumbnail_identity;
-        HM_ASSIGN_OR_RETURN(thumbnail_identity, file_identity(jpg, kMaximumThumbnailBytes, false));
+        HM_ASSIGN_OR_RETURN(thumbnail_identity, file_identity(jpg, false));
         if (saved && thumbnail_identity["sha256"].as<std::string>() != saved->thumbnail_digests.at(index)[camera])
           return absl::AbortedError("Saved source thumbnail changed while its bundle was copied");
         pair[camera == 0 ? "left" : "right"]["image"] = identity;
