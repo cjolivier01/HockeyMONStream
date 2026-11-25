@@ -10364,6 +10364,7 @@ bool test_output_controls(HStreamWindow* window) {
     return false;
   // The phone copy is a third independent route: selecting it must not
   // disturb the other two, and all three must be able to run together.
+  archive->setChecked(true);
   program_mobile->setChecked(true);
   if (!expect(
           HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_PROGRAM_MOBILE_FILE") &&

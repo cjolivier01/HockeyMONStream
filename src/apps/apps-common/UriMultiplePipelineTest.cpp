@@ -163,8 +163,10 @@ void inspect_hardware_decoder(GstBin*, GstBin*, GstElement* element, gpointer da
         auto* stats = static_cast<DecoderSettingsStats*>(data);
         GstElement* decoder = gst_pad_get_parent_element(pad);
         guint extra = G_MAXUINT;
-        gboolean latency = !stats->low_latency;
-        g_object_get(decoder, "num-extra-surfaces", &extra, "low-latency-mode", &latency, nullptr);
+        gboolean latency = FALSE;
+        g_object_get(decoder, "num-extra-surfaces", &extra, nullptr);
+        if (g_object_class_find_property(G_OBJECT_GET_CLASS(decoder), "low-latency-mode"))
+          g_object_get(decoder, "low-latency-mode", &latency, nullptr);
         gst_object_unref(decoder);
         if (extra == stats->extra_surfaces && latency == stats->low_latency)
           ++stats->verified;
@@ -2046,14 +2048,15 @@ int main(int argc, char** argv) {
   std::vector<std::string> main10, shifted_main10;
   for (unsigned chapter = 0; chapter < 3; ++chapter) {
     const fs::path path = tmpdir / ("main10_" + std::to_string(chapter) + ".mp4");
-    if (!make_synthetic_mp4(path, 1, chapter * 60, 440, true)) {
+    // Jetson HEVC decoding requires both dimensions to be at least 180.
+    if (!make_synthetic_mp4(path, 1, chapter * 60, 440, true, 0, "384x216")) {
       fs::remove_all(tmpdir);
       return 2;
     }
     main10.push_back(to_file_uri(path));
     const fs::path shifted_path = tmpdir / ("main10_shifted_" + std::to_string(chapter) + ".mp4");
     const double duration = chapter == 0 ? 0.8 : (chapter == 1 ? 1.2 : 1.0);
-    if (!make_synthetic_mp4(shifted_path, duration, chapter * 60 + 30, 494, true)) {
+    if (!make_synthetic_mp4(shifted_path, duration, chapter * 60 + 30, 494, true, 0, "384x216")) {
       fs::remove_all(tmpdir);
       return 2;
     }
@@ -2064,9 +2067,19 @@ int main(int argc, char** argv) {
   // inputs qualify ownership/counts; the full-canvas memory regression is in
   // scripts/test_uri_playlist_memory.py.
   if (!startup_seek_only) {
+    // Jetson's decoder exposes surface counts but not the dGPU-only latency
+    // property. Exercise every supported setting, without querying absent ones.
+    GstElement* decoder = gst_element_factory_make("nvv4l2decoder", nullptr);
+    if (!decoder)
+      return 2;
+    const bool supports_low_latency =
+        g_object_class_find_property(G_OBJECT_GET_CLASS(decoder), "low-latency-mode") != nullptr;
+    gst_object_unref(decoder);
     for (const bool main10_codec : {false, true}) {
       for (const guint extra_surfaces : {0U, 1U, 2U}) {
         for (const bool low_latency : {false, true}) {
+          if (low_latency && !supports_low_latency)
+            continue;
           std::cout << "Decoder matrix: main10=" << main10_codec << " extra=" << extra_surfaces
                     << " low-latency=" << low_latency << std::endl;
           const int matrix_rc = run_lossless_two_camera_mux(
