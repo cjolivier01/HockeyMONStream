@@ -1903,8 +1903,10 @@ int main(int argc, char** argv) {
               "same-stage zero-time replacements must reach PLAYING before restart completes")) {
         return false;
       }
-      // Playback still owns the game. Inspect its completed generation without
-      // requesting mutation/recovery authority from the test process.
+      // Retire playback before inspecting its completed generation: a running
+      // context may briefly hold the admission lock while publishing inventory.
+      if (!stop_successfully(&multi_context_zero, "same-stage zero-time playback must remain controllable"))
+        return false;
       const auto persisted = hm::stitching::load_game_config_file(game / "_hockeymon/config.yaml", true);
       if (!expect(persisted.ok(), persisted.status().ToString().c_str()))
         return false;
@@ -1918,7 +1920,7 @@ int main(int argc, char** argv) {
               "an explicit zero CLI time must remove the nonzero dependency and own its new generation")) {
         return false;
       }
-      return stop_successfully(&multi_context_zero, "same-stage zero-time playback must remain controllable");
+      return true;
     }();
   }
 
