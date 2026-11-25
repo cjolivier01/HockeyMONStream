@@ -10962,6 +10962,9 @@ bool test_output_controls(HStreamWindow* window) {
 }
 
 bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false) {
+  // Earlier scenarios can fill the bounded log and invalidate character offsets
+  // when this run appends. Give this fixture its own log before taking a mark.
+  HStreamWindowTestAccess::clearLog(window);
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
   auto* secondary =
       require_child<QCheckBox>(window, with_4k ? "outputToggle_archive-program-4k" : "outputToggle_archive-stitched");
