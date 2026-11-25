@@ -113,7 +113,8 @@ cc_library(
 # DeepStream's new nvstreammux uses a wall-clock partial-batch timeout. That is
 # appropriate for live analytics but can silently split an exact stereo pair
 # after a file/chapter transition. Build a private, statically registered mux
-# from the SDK source with only that recovery policy disabled. The generated
+# from the SDK source with deadline flushing disabled and event/state waits
+# fixed for arbitrary recorded input counts. The generated
 # copies keep the SDK installation and Jetson sysroot immutable.
 genrule(
     name = "hstream_lossless_nvstreammux_backend_sources",
@@ -169,7 +170,7 @@ cc_library(
 
 # The replacement mux is format-preserving, but NVIDIA's public pad template
 # omits P010 even though the batching backend carries its NvBufSurface without
-# conversion. HStream's two-camera mux adds that caps declaration so 10-bit
+# conversion. HStream's recorded-input mux adds that caps declaration so 10-bit
 # decode can remain P010 until the post-mux GPU conversion into RGB10A2.
 genrule(
     name = "hstream_lossless_nvstreammux_gst_source",

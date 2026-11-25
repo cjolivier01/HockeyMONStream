@@ -518,7 +518,7 @@ source0:
   GstElementFactory* single_mux_factory = gst_element_get_factory(single_sources->streammux);
   const gchar* single_mux_name =
       single_mux_factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(single_mux_factory)) : nullptr;
-  if (single_sources->uri_playlist_exact_pairing_enabled || g_strcmp0(single_mux_name, "hstreamlosslessmux") == 0) {
+  if (single_sources->uri_playlist_exact_pairing_enabled || g_strcmp0(single_mux_name, "hstreamlosslessmux") != 0) {
     std::cerr << "Parsed single stitched-output source incorrectly enabled exact two-camera pairing\n";
     gst_object_unref(single_sources->bin);
     return 1;

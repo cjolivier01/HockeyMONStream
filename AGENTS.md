@@ -13,6 +13,12 @@
 - `git worktree add` does not populate submodules; run `git submodule update --init --recursive` in the new worktree when `external/hm` is needed.
 - Remove the worktree once its branch merges (`git worktree remove ../hstream-<task>`), and run `git worktree prune` if the directory was deleted by hand, otherwise the stale entry keeps its branch locked.
 
+`apps-common/HStreamLosslessMux.*` and the `nvstreammux_lossless*.patch` files
+own deadline-free NVIDIA batching for one or more recorded inputs. Stereo
+playlist rendezvous remains separate; other input counts drain independently.
+See `docs/lossless-streammux.md` for SDK compatibility and the two-camera
+stitching boundary.
+
 ## Native runtime execution
 
 - `src/libs/runtime_worker/` and `src/apps/hstream-runtime-worker/` own the generic
