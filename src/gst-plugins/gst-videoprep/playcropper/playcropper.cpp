@@ -355,6 +355,14 @@ bool PlayCropperPriv::SetProperty(const Property& prop) {
   } else if (key == "scoreboard-projected-height") {
     scoreboard_projected_height_ = prop.value;
     scoreboard_.reset();
+  } else if (key == "scoreboard-flip-horizontal" || key == "scoreboard-flip-vertical") {
+    if (prop.value != "0" && prop.value != "1")
+      return false;
+    if (key == "scoreboard-flip-horizontal")
+      scoreboard_flip_.horizontal = prop.value == "1";
+    else
+      scoreboard_flip_.vertical = prop.value == "1";
+    scoreboard_.reset();
   } else if (key == "scoreboard-scale") {
     double scale = 0;
     std::istringstream input(prop.value);
@@ -1222,7 +1230,7 @@ absl::Status PlayCropperPriv::RenderScoreboard(
     // that by throwing, and this runs on a bare worker thread.
     try {
       scoreboard_ = std::make_unique<hm::scoreboard::Scoreboard<uchar4>>(
-          scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height);
+          scoreboard_perspective_polygion_, scoreboard_width, scoreboard_height, true, nullptr, scoreboard_flip_);
       if (size_t(scoreboard_->getWidth()) > out_surface.width() || size_t(scoreboard_->getHeight()) > out_surface.height()) {
         scoreboard_.reset();
         return absl::InvalidArgumentError("Aspect-adjusted scoreboard must fit within the output");

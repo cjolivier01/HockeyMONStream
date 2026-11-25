@@ -39,7 +39,8 @@ class Scoreboard {
       int destWidth,
       int destHeight,
       bool autoAspect = true,
-      const cv::Rect* clipBox = nullptr);
+      const cv::Rect* clipBox = nullptr,
+      Orientation flip = {});
 
   /**
    * @brief Applies the perspective warp transformation to the input image.

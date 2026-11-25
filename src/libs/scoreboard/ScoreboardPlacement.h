@@ -24,6 +24,11 @@ inline constexpr const char* kScalePaths[] = {
     "pipeline.hmplaycropper.private-properties.scoreboard_scale",
     "pipeline.hmplaycropper.private-properties.scoreboard-scale"};
 
+struct Orientation {
+  bool horizontal{};
+  bool vertical{};
+};
+
 enum class Position { kUpperLeft, kUpperCenter, kUpperRight };
 
 inline std::optional<Position> ParsePosition(std::string_view value) {

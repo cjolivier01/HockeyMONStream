@@ -36,32 +36,41 @@ int main() {
         opaque.at<cv::Vec4b>(y, x)[3] = 255;
     for (const double scale : {0.5, 1.0, 2.0}) {
       const int width = 32 * scale, height = 20 * scale;
-      hm::scoreboard::Scoreboard<uchar4> scoreboard(points, width, height, false);
       const std::vector<cv::Point2f> target{
           {0, 0}, {float(width - 1), 0}, {float(width - 1), float(height - 1)}, {0, float(height - 1)}};
       cv::Mat expected;
       cv::warpPerspective(
           opaque, expected, cv::getPerspectiveTransform(points, target), cv::Size(width, height), cv::INTER_LINEAR);
-      for (const auto position :
-           {hm::scoreboard::Position::kUpperLeft,
-            hm::scoreboard::Position::kUpperCenter,
-            hm::scoreboard::Position::kUpperRight}) {
-        cv::Mat background(64, 96, CV_8UC4, cv::Scalar(7, 11, 13, 255));
-        hm::CudaMat<uchar4> output(background);
-        auto output_surface = Surface(output);
-        const auto status = scoreboard.forward_prod(&input_surface, &output_surface, true, nullptr, position);
-        Check(status.ok(), status.ToString().c_str());
-        Check(cudaDeviceSynchronize() == cudaSuccess, "Warp synchronization failed");
-        const cv::Mat actual = output.download();
-        const int left = hm::scoreboard::HorizontalOffset(position, 96, width);
-        // OpenCV quantizes interpolation weights to 1/32, CUDA uses floats.
-        Check(
-            cv::norm(actual(cv::Rect(left, 0, width, height)), expected, cv::NORM_INF) <= 8,
-            "CUDA must sample original RGB once and ignore video alpha");
-        expected.copyTo(background(cv::Rect(left, 0, width, height)));
-        Check(cv::norm(actual, background, cv::NORM_INF) <= 8, "Overlay changed pixels outside its target");
-        const auto cached = scoreboard.forward_prod(&input_surface, &output_surface, false, nullptr, position);
-        Check(cached.ok() && cudaDeviceSynchronize() == cudaSuccess, "Cached scoreboard reuse failed");
+      for (bool horizontal : {false, true}) {
+        for (bool vertical : {false, true}) {
+          hm::scoreboard::Scoreboard<uchar4> scoreboard(points, width, height, false, nullptr, {horizontal, vertical});
+          cv::Mat oriented;
+          if (horizontal || vertical)
+            cv::flip(expected, oriented, horizontal && vertical ? -1 : horizontal ? 1 : 0);
+          else
+            oriented = expected;
+          for (const auto position :
+               {hm::scoreboard::Position::kUpperLeft,
+                hm::scoreboard::Position::kUpperCenter,
+                hm::scoreboard::Position::kUpperRight}) {
+            cv::Mat background(64, 96, CV_8UC4, cv::Scalar(7, 11, 13, 255));
+            hm::CudaMat<uchar4> output(background);
+            auto output_surface = Surface(output);
+            const auto status = scoreboard.forward_prod(&input_surface, &output_surface, true, nullptr, position);
+            Check(status.ok(), status.ToString().c_str());
+            Check(cudaDeviceSynchronize() == cudaSuccess, "Warp synchronization failed");
+            const cv::Mat actual = output.download();
+            const int left = hm::scoreboard::HorizontalOffset(position, 96, width);
+            // OpenCV quantizes interpolation weights to 1/32, CUDA uses floats.
+            Check(
+                cv::norm(actual(cv::Rect(left, 0, width, height)), oriented, cv::NORM_INF) <= 8,
+                "CUDA must sample original RGB once and ignore video alpha");
+            oriented.copyTo(background(cv::Rect(left, 0, width, height)));
+            Check(cv::norm(actual, background, cv::NORM_INF) <= 8, "Overlay changed pixels outside its target");
+            const auto cached = scoreboard.forward_prod(&input_surface, &output_surface, false, nullptr, position);
+            Check(cached.ok() && cudaDeviceSynchronize() == cudaSuccess, "Cached scoreboard reuse failed");
+          }
+        }
       }
     }
     Check(cv::norm(source, input.download(), cv::NORM_INF) == 0, "Scoreboard modified the shared panorama");

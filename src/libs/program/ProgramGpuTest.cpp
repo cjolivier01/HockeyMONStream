@@ -716,7 +716,7 @@ void TestMinifyYuv(bool ten_bit, Pattern pattern, cudaStream_t stream) {
     for (int x = 0; x < out_size; ++x)
       Check(std::abs(code(uvs, x, y) - std::lround(color.uv_offset)) <= 1, "minifying YUV crop shifted chroma");
 }
-void TestScoreboard(bool ten_bit, double scale, cudaStream_t stream) {
+void TestScoreboard(bool ten_bit, double scale, hm::scoreboard::Orientation flip, cudaStream_t stream) {
   constexpr int sw = 32, sh = 24, ow = 64, oh = 32;
   constexpr size_t pitch = 160;
   std::vector<cv::float16_t> source(sw * sh * 4);
@@ -739,16 +739,21 @@ void TestScoreboard(bool ten_bit, double scale, cudaStream_t stream) {
   const YuvOutput output{
       luma.data, chroma.data, pitch, pitch, ow, oh, ten_bit ? PixelFormat::kP010 : PixelFormat::kNv12, color};
   const FrameTransformGeometry transform{hm::BBox(0, 0, sw, sh), hm::Point{0, 0}, hm::BBox(4, 4, 28, 20), 0};
-  const auto made = hm::scoreboard::MakePlan(
-      {{{2, 2}, {26, 3}, {25, 19}, {3, 18}}},
-      sw,
-      sh,
-      ow,
-      oh,
-      int(25 * scale),
-      int(17 * scale),
-      hm::scoreboard::Position::kUpperRight);
-  Check(made.ok(), made.status().ToString().c_str());
+  const auto make_plan = [&](hm::scoreboard::Orientation orientation) {
+    return hm::scoreboard::MakePlan(
+        {{{2, 2}, {26, 3}, {25, 19}, {3, 18}}},
+        sw,
+        sh,
+        ow,
+        oh,
+        int(25 * scale),
+        int(17 * scale),
+        hm::scoreboard::Position::kUpperRight,
+        orientation);
+  };
+  const auto made = make_plan(flip);
+  const auto reference = make_plan({});
+  Check(made.ok() && reference.ok(), "Could not map scoreboard polygon");
   const auto plan = *made;
   Gpu(RenderProgramYuv(image, output, transform, 0, false, 1.3f, stream, &plan));
   std::vector<uint8_t> ys(pitch * oh + 32), uvs(pitch * oh / 2 + 32);
@@ -763,8 +768,9 @@ void TestScoreboard(bool ten_bit, double scale, cudaStream_t stream) {
     double sx = 4. + double(x) / ow * 24, sy = 4. + double(y) / oh * 16;
     double gain = exposure_gain(1.3f);
     if (x >= plan.left && x < plan.left + plan.width && y < plan.height) {
-      const double px = x - plan.left, py = y;
-      const auto* h = plan.inverse;
+      const double px = flip.horizontal ? plan.width - 1 - (x - plan.left) : x - plan.left;
+      const double py = flip.vertical ? plan.height - 1 - y : y;
+      const auto* h = reference->inverse;
       const double d = h[6] * px + h[7] * py + h[8];
       sx = (h[0] * px + h[1] * py + h[2]) / d;
       sy = (h[3] * px + h[4] * py + h[5]) / d;
@@ -868,11 +874,15 @@ int main() {
       TestMinifyRegistration(vertical, 0, 8, 4, stream.value);
     }
     for (const double scale : {0.5, 1.0, 1.5}) {
-      TestScoreboard(false, scale, stream.value);
-      TestScoreboard(true, scale, stream.value);
+      for (bool horizontal : {false, true}) {
+        for (bool vertical : {false, true}) {
+          TestScoreboard(false, scale, {horizontal, vertical}, stream.value);
+          TestScoreboard(true, scale, {horizontal, vertical}, stream.value);
+        }
+      }
     }
     std::cout
-        << "6 scoreboard, 30 minifying crop, 8 YUV output and 21 Program crop/rotation/tone format cases passed\n";
+        << "24 scoreboard, 30 minifying crop, 8 YUV output and 21 Program crop/rotation/tone format cases passed\n";
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

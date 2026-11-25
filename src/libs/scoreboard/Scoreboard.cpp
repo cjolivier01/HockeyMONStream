@@ -1,6 +1,7 @@
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
 #include "ScoreboardCuda.h"
 #include "hstream/src/libs/common/Status.h"
+#include "hstream/src/libs/scoreboard/ScoreboardRectangle.h"
 
 #include "cupano/pano/cudaMat.h"
 #include "cupano/utils/showImage.h"
@@ -91,7 +92,8 @@ Scoreboard<T_pixel>::Scoreboard(
     int destWidth,
     int destHeight,
     bool autoAspect,
-    const cv::Rect* clipBox)
+    const cv::Rect* clipBox,
+    Orientation flip)
     : destWidth_(destWidth), destHeight_(destHeight) {
   if (srcPts.size() != 4) {
     throw std::runtime_error("Scoreboard: exactly 4 source points required.");
@@ -153,12 +155,7 @@ Scoreboard<T_pixel>::Scoreboard(
     }
   }
 
-  // Define destination points: top-left, top-right, bottom-right, bottom-left.
-  std::vector<cv::Point2f> dstPts;
-  dstPts.push_back(cv::Point2f(0, 0)); // top-left
-  dstPts.push_back(cv::Point2f(destWidth_ - 1, 0)); // top-right
-  dstPts.push_back(cv::Point2f(destWidth_ - 1, destHeight_ - 1)); // bottom-right
-  dstPts.push_back(cv::Point2f(0, destHeight_ - 1)); // bottom-left
+  const auto dstPts = RectangleCorners(destWidth_, destHeight_, flip);
 
   // Map the original crop directly to the final, scaled destination rectangle.
   perspectiveMatrix_ = cv::getPerspectiveTransform(srcPts_, dstPts);

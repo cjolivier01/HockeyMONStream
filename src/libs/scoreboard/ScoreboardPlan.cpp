@@ -1,4 +1,5 @@
 #include "hstream/src/libs/scoreboard/ScoreboardPlan.h"
+#include "hstream/src/libs/scoreboard/ScoreboardRectangle.h"
 
 #include <opencv2/imgproc.hpp>
 
@@ -45,7 +46,8 @@ absl::StatusOr<Plan> MakePlan(
     int output_height,
     int requested_width,
     int requested_height,
-    Position position) {
+    Position position,
+    Orientation flip) {
   if (source_width < 2 || source_height < 2 || output_width < 2 || output_height < 2 || requested_width < 2 ||
       requested_height < 2 || requested_width > output_width || requested_height > output_height ||
       (position != Position::kUpperLeft && position != Position::kUpperCenter && position != Position::kUpperRight))
@@ -76,8 +78,7 @@ absl::StatusOr<Plan> MakePlan(
       return absl::InvalidArgumentError("Scoreboard aspect-adjusted height exceeds output");
     height = static_cast<int>(height_candidate);
   }
-  const std::vector<cv::Point2f> destination{
-      {0, 0}, {float(width - 1), 0}, {float(width - 1), float(height - 1)}, {0, float(height - 1)}};
+  const auto destination = RectangleCorners(width, height, flip);
   const auto inverse = cv::getPerspectiveTransform(destination, source);
   Plan plan{
       source_width,

@@ -1011,6 +1011,8 @@ int main() {
           mapped_defaults["ds-playtracker"]["fixed-edge-rotation-angle"].as<double>() == 10.0 &&
           mapped_defaults["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%10" &&
           mapped_defaults["hmplaycropper"]["scoreboard-projected-height"].as<std::string>() == "%20" &&
+          mapped_defaults["hmplaycropper"]["private-properties"]["scoreboard-flip-horizontal"].as<int>() == 0 &&
+          mapped_defaults["hmplaycropper"]["private-properties"]["scoreboard-flip-vertical"].as<int>() == 0 &&
           mapped_defaults["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.0 &&
           !mapped_defaults["hmplaycropper"]["scoreboard-perspective-polygon"].IsDefined(),
       "Every supported non-tracker native default must be filled from the bundled canonical baseline");
@@ -1660,6 +1662,7 @@ int main() {
   canonical_overrides["rink"]["camera"]["fixed_edge_rotation_angle"].push_back(22.0);
   canonical_overrides["rink"]["scoreboard"]["projected_width"] = "%11";
   canonical_overrides["rink"]["scoreboard"]["projected_height"] = "%22";
+  canonical_overrides["rink"]["scoreboard"]["flip_horizontal"] = true;
   canonical_overrides["rink"]["scoreboard"]["scoreboard_scale"] = 1.25;
   canonical_overrides["rink"]["scoreboard"]["position"] = "upper-center";
   for (const auto& point : std::vector<std::pair<int, int>>{{1, 2}, {3, 4}, {5, 6}, {7, 8}}) {
@@ -1715,6 +1718,8 @@ int main() {
           mapped_canonical["ds-playtracker"]["fixed-edge-rotation-angle-right"].as<double>() == 22.0 &&
           mapped_canonical["hmplaycropper"]["scoreboard-projected-width"].as<std::string>() == "%11" &&
           mapped_canonical["hmplaycropper"]["scoreboard-projected-height"].as<std::string>() == "%22" &&
+          mapped_canonical["hmplaycropper"]["private-properties"]["scoreboard-flip-horizontal"].as<int>() == 1 &&
+          mapped_canonical["hmplaycropper"]["private-properties"]["scoreboard-flip-vertical"].as<int>() == 0 &&
           mapped_canonical["hmplaycropper"]["scoreboard-scale"].as<double>() == 1.25 &&
           mapped_canonical["hmplaycropper"]["scoreboard-position"].as<std::string>() == "upper-center" &&
           mapped_canonical["hmplaycropper"]["scoreboard-perspective-polygon"].as<std::string>() == "1,2,3,4,5,6,7,8" &&
