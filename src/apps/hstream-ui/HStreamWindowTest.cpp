@@ -1851,6 +1851,10 @@ for line in sys.stdin:
     return window->baseline_config_["preview_overlays"][key].as<bool>();
   }
 
+  static std::string baselineControlPointSelection(HStreamWindow* window) {
+    return window->baseline_config_["stitching"]["control_point_selection"].as<std::string>();
+  }
+
   static void clearLog(HStreamWindow* window) {
     if (window->log_)
       window->log_->clear();
@@ -13104,6 +13108,9 @@ bool test_camera_controls(HStreamWindow* window) {
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   {
     YAML::Node capped(YAML::NodeType::Map);
+    // A completed current-generation fixture must record its match policy.
+    capped["stitching"]["control_point_selection"] =
+        HStreamWindowTestAccess::baselineControlPointSelection(window);
     capped["stitching"]["max_output_width"] = 4096;
     capped["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
     capped["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 2048;
@@ -13238,6 +13245,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   {
     YAML::Node private_only(YAML::NodeType::Map);
+    private_only["stitching"]["control_point_selection"] =
+        HStreamWindowTestAccess::baselineControlPointSelection(window);
     private_only["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1536;
     private_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
     private_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
@@ -13674,6 +13683,8 @@ bool test_camera_controls(HStreamWindow* window) {
         fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/rink_mask_0.png";
     const fs::path rotation_only_snapshot = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/s.png";
     YAML::Node rotation_only = YAML::LoadFile(config.string());
+    rotation_only["stitching"]["control_point_selection"] =
+        HStreamWindowTestAccess::baselineControlPointSelection(window);
     rotation_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
     rotation_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
     rotation_only["rink"]["ice_contours_mask_count"] = 1;
