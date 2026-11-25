@@ -139,8 +139,12 @@ absl::StatusOr<std::string> RinkMapCalibrationRevision(const std::filesystem::pa
   if (!hash || EVP_DigestInit_ex(hash.get(), EVP_sha256(), nullptr) != 1)
     return absl::InternalError("Could not initialize rink calibration digest");
   for (const char* name : {"autooptimiser_out.pto", "stitching_canvas_provenance", "left.png", "right.png"}) {
+    // These are published stitch artifacts, so accept whatever the transaction
+    // publishes. A 16-bit camera-resolution still passes 128 MiB on its own.
     auto bytes = read_bounded_regular_file_no_follow(
-        hm::game_storage::StateDirectory(directory) / name, 128 * 1024 * 1024, "rink-map calibration");
+        hm::game_storage::StateDirectory(directory) / name,
+        maximum_stitch_artifact_bytes(name),
+        "rink-map calibration");
     if (!bytes.ok())
       return bytes.status();
     const std::string size = std::to_string(bytes->size());

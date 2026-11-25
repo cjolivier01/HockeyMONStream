@@ -118,23 +118,6 @@ const std::array<const char*, 9> kGenerationArtifacts = {
     "seam_file.png",
 };
 
-uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
-  const auto ends_with = [name](std::string_view suffix) {
-    return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
-  };
-  if (ends_with(".pto"))
-    return kMaximumPtoArtifactBytes;
-  if (ends_with(".tif"))
-    return kMaximumTiffArtifactBytes;
-  if (ends_with(".png"))
-    return kMaximumPngArtifactBytes;
-  if (name == kStitchCanvasProvenanceArtifact)
-    return 4096;
-  if (name == kStitchGenerationArtifact)
-    return 16ULL * 1024ULL;
-  return 0;
-}
-
 absl::StatusOr<uint64_t> maximum_open_tiff_artifact_bytes(int descriptor, const fs::path& path) {
   const int tiff_descriptor = ::dup(descriptor);
   if (tiff_descriptor < 0)
@@ -1564,6 +1547,23 @@ absl::StatusOr<bool> has_current_stitch_transaction_protocol(const fs::path& tra
 }
 
 } // namespace
+
+uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
+  const auto ends_with = [name](std::string_view suffix) {
+    return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
+  };
+  if (ends_with(".pto"))
+    return kMaximumPtoArtifactBytes;
+  if (ends_with(".tif"))
+    return kMaximumTiffArtifactBytes;
+  if (ends_with(".png"))
+    return kMaximumPngArtifactBytes;
+  if (name == kStitchCanvasProvenanceArtifact)
+    return 4096;
+  if (name == kStitchGenerationArtifact)
+    return 16ULL * 1024ULL;
+  return 0;
+}
 
 struct PreparedStitchGenerationPublication::Impl {
   std::string logical_id;

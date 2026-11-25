@@ -2,10 +2,12 @@
 
 #include <sys/stat.h>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -49,6 +51,13 @@ struct CanvasConstraintCompatibility {
 
 inline constexpr char kStitchCanvasProvenanceArtifact[] = "stitching_canvas_provenance";
 inline constexpr char kStitchGenerationArtifact[] = "stitching_generation_id";
+
+// Largest size accepted for a published stitch artifact of this name. Readers
+// outside the transaction must bound these files by the same limit the
+// transaction publishes them under; a stricter local number rejects valid
+// artifacts, and 16-bit camera-resolution stills are the usual casualty.
+// Returns 0 for names that are not stitch artifacts.
+uint64_t maximum_stitch_artifact_bytes(std::string_view name);
 
 // Identity checks must fetch current NFS attributes, including after fsync.
 // These preserve stat/fstat/lstat follow semantics and errno on failure.
