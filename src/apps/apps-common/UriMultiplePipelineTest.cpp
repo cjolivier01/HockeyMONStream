@@ -312,9 +312,14 @@ GstPadProbeReturn inspect_mux_batches_probe(GstPad* /*pad*/, GstPadProbeInfo* in
         const auto physical = stats->movie_origins.at(frame_meta->source_id) +
             gst_util_uint64_scale((*stats->mixed_first_index + sequence) % 15, GST_SECOND, 15);
         const auto logical = gst_util_uint64_scale(sequence, GST_SECOND, 15);
-        stats->mixed_timeline_valid &=
+        const bool valid =
             std::abs(int64_t(decoded_sequence->source_pts) - int64_t(physical)) <= int64_t(stats->physical_tick) &&
             std::abs(int64_t(frame_meta->buf_pts) - int64_t(logical)) <= 2;
+        if (!valid && stats->mixed_timeline_valid)
+          std::cerr << "Mixed timestamp mismatch: source=" << frame_meta->source_id << " sequence=" << sequence
+                    << " physical=" << decoded_sequence->source_pts << " expected=" << physical
+                    << " logical=" << frame_meta->buf_pts << " expected=" << logical << '\n';
+        stats->mixed_timeline_valid &= valid;
       }
       ++stats->next_decoded_sequence_by_source[frame_meta->source_id];
     }
@@ -383,7 +388,10 @@ bool make_synthetic_mp4(
     if (b_frames)
       cmd << "-bf 2 ";
   }
-  cmd << "-movflags +faststart " << shell_quote(path);
+  // Signed composition offsets keep short B-frame clips' presentation duration
+  // equal to their frame count / rate. Otherwise qtdemux can advertise 14/29
+  // fps for these 15/30 fps fixtures before decoding even begins.
+  cmd << "-movflags +faststart" << (b_frames ? "+negative_cts_offsets" : "") << " " << shell_quote(path);
   return run_shell(cmd.str());
 }
 
@@ -1392,7 +1400,12 @@ int run_decode_compose_encode(
     for (guint camera = 0; camera < 2; ++camera) {
       if (!pairs.mixed_timeline_valid || pairs.frames_by_source[camera] != expected_frames ||
           pairs.decode_mux_sequence_mismatches || pairs.missing_decoded_sequence_meta || !pairs.exact_frame_pairs) {
-        std::cerr << "Mixed camera lost its trim-relative frame phase or sequence\n";
+        std::cerr << "Mixed camera lost its trim-relative frame phase or sequence: camera=" << camera
+                  << " frames=" << pairs.frames_by_source[camera] << " expected=" << expected_frames
+                  << " timeline=" << pairs.mixed_timeline_valid
+                  << " mismatches=" << pairs.decode_mux_sequence_mismatches
+                  << " missing=" << pairs.missing_decoded_sequence_meta << " paired=" << pairs.exact_frame_pairs
+                  << '\n';
         return 7;
       }
     }

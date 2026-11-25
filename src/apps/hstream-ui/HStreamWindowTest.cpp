@@ -390,13 +390,16 @@ while True:
     window.handlePipelineFinished(0, QProcess::NormalExit);
     QTest::qWait(100);
     struct stat blocked_inventory{};
+    // Contended ownership inspection may offer Review ownership. It must not
+    // offer Play or publish the archive while rollback holds the config lock.
     const bool publication_waited = ::stat(inventory_path.c_str(), &blocked_inventory) == 0 &&
-        blocked_inventory.st_dev == original_inventory.st_dev && blocked_inventory.st_ino == original_inventory.st_ino &&
+        blocked_inventory.st_dev == original_inventory.st_dev &&
+        blocked_inventory.st_ino == original_inventory.st_ino &&
         blocked_inventory.st_size == original_inventory.st_size &&
         blocked_inventory.st_mtim.tv_sec == original_inventory.st_mtim.tv_sec &&
         blocked_inventory.st_mtim.tv_nsec == original_inventory.st_mtim.tv_nsec && inventory_pin.seek(0) &&
         inventory_pin.readAll() == original_bytes && window.live_rotation_authorization_pending_ &&
-        window.pending_pipeline_completion_ && !window.start_button_->isEnabled() &&
+        window.pending_pipeline_completion_ && (!window.start_button_->isEnabled() || window.reviewing_ownership_) &&
         window.archive_finalize_process_->state() == QProcess::NotRunning && QFileInfo::exists(source) &&
         !window.operation_token_.empty() && !window.close();
     rollback_lock->reset();
@@ -1509,6 +1512,10 @@ for line in sys.stdin:
 
   static bool liveRotationAuthorizationPending(HStreamWindow* window) {
     return window->live_rotation_authorization_pending_;
+  }
+
+  static bool reviewingOwnership(HStreamWindow* window) {
+    return window->reviewing_ownership_;
   }
 
   static void holdRuntimeControlsForPause(HStreamWindow* window) {
@@ -9516,7 +9523,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         inventory_during_rollback_identity.st_mtim.tv_sec == inventory_before_exit_identity.st_mtim.tv_sec &&
         inventory_during_rollback_identity.st_mtim.tv_nsec == inventory_before_exit_identity.st_mtim.tv_nsec &&
         inventory_during_rollback.readAll() == inventory_before_exit_bytes &&
-        HStreamWindowTestAccess::liveRotationAuthorizationPending(window) && !start->isEnabled();
+        HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
+        (!start->isEnabled() || HStreamWindowTestAccess::reviewingOwnership(window));
     inventory_during_rollback.close();
     if (rejection_exit_lock.ok())
       rejection_exit_lock->reset();
@@ -17065,6 +17073,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     copied_config_node["stitching"].remove("stitch_frame_time");
   copied_config_node["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
   copied_config_node["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  // This completed fixture represents the current selection policy. Leaving
+  // it absent claims legacy matches and correctly invalidates calibration.
+  copied_config_node["stitching"]["control_point_selection"] = baseline["stitching"]["control_point_selection"];
   copied_config_node["stitching"]["mapping_backend"] = "nona";
   copied_config_node["stitching"]["run_autooptimizer"] = true;
   copied_config_node["hstream_ui"]["stitching_calibration"]["status"] = "complete";
