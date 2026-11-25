@@ -44,7 +44,14 @@ const QStringList kInProgressSnapshotFiles = {
     "left.png",
     "right.png"};
 
-QByteArray readFile(const QString& path, qint64 limit = 1024 * 1024) {
+// Shared by readFile and the config.yaml entry in sourceRevisionForFiles, so
+// the snapshot cannot hash a config that readFile then returns empty for. 4 MiB
+// is the most common bound for this file across the native and web readers;
+// what matters here is that one constant serves both, in the direction that
+// widens the read rather than narrowing the hash.
+constexpr uint64_t kMaximumReadFileBytes = 4 * 1024 * 1024;
+
+QByteArray readFile(const QString& path, qint64 limit = kMaximumReadFileBytes) {
   QFile file(path);
   if (!file.open(QIODevice::ReadOnly) || file.size() > limit)
     return {};
@@ -66,8 +73,11 @@ QByteArray sourceRevisionForFiles(const QString& directory, const QStringList& f
   QCryptographicHash hash(QCryptographicHash::Sha256);
   for (const QString& name : files) {
     QFile file(QDir(directory).filePath(name));
-    const auto maximum =
-        name == "config.yaml" ? 4ULL * 1024 * 1024 : hm::stitching::maximum_stitch_artifact_bytes(name.toStdString());
+    // config.yaml is the one entry that is not a stitch artifact, so it takes
+    // readFile's own limit: hashing a config this dialog would then read back
+    // as empty skips the calibration-status check below instead of failing.
+    const auto maximum = name == "config.yaml" ? kMaximumReadFileBytes
+                                               : hm::stitching::maximum_stitch_artifact_bytes(name.toStdString());
     if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || static_cast<uint64_t>(file.size()) > maximum ||
         !hash.addData(&file))
       return {};
@@ -335,8 +345,17 @@ void RinkLevelingDialog::loadSnapshot() {
       return;
     }
     try {
-      const YAML::Node config =
-          YAML::Load(readFile(QDir(temporary_.path() + "/_hockeymon").filePath("config.yaml")).toStdString());
+      const QByteArray config_contents = readFile(QDir(temporary_.path() + "/_hockeymon").filePath("config.yaml"));
+      // An empty read must not reach YAML::Load. A null document satisfies
+      // CheckSavedRecordingGeometry and leaves the status check below untaken,
+      // so the dialog would treat an unreadable config as a complete
+      // calibration. Matching the bounds above removes the only path that
+      // reaches this today; a truncated or unreadable file still can.
+      if (config_contents.isEmpty()) {
+        load_error_ = "Could not read the game's calibration settings. Repair the config and recalibrate first.";
+        return;
+      }
+      const YAML::Node config = YAML::Load(config_contents.toStdString());
       const auto geometry =
           hm::stitching::HuginProject::CheckSavedRecordingGeometry(game_directory_.toStdString(), config);
       if (!geometry.ok()) {

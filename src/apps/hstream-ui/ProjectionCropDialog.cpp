@@ -42,9 +42,9 @@ constexpr int kRendererProgressPartialBytes = 4 * 1024;
 constexpr double kMinimumSpan = 0.0001;
 constexpr std::array<double, 4> kFullCrop{0, 1, 0, 1};
 
-QByteArray readFile(const QString& path) {
+QByteArray readFile(const QString& path, qint64 limit = 16 * 1024 * 1024) {
   QFile file(path);
-  return file.open(QIODevice::ReadOnly) && file.size() <= 16 * 1024 * 1024 ? file.readAll() : QByteArray();
+  return file.open(QIODevice::ReadOnly) && file.size() <= limit ? file.readAll() : QByteArray();
 }
 
 // The crop does not affect the projection's coordinate system.
@@ -570,7 +570,10 @@ void ProjectionCropDialog::loadPreview() {
       return;
     }
   }
-  const QByteArray pto = readFile(QDir(temporary_.path() + "/_hockeymon").filePath("autooptimiser_out.pto"));
+  // The snapshot revision already hashed this file at the shared bound.
+  const QByteArray pto = readFile(
+      QDir(temporary_.path() + "/_hockeymon").filePath("autooptimiser_out.pto"),
+      static_cast<qint64>(hm::stitching::maximum_stitch_artifact_bytes("autooptimiser_out.pto")));
   const auto prepared = hm::stitching::PrepareRinkLevelingProject(pto.toStdString());
   const auto localized = hm::stitching::LocalizeCalibrationPreviewImages(
       pto.toStdString(), (in_progress_calibration_ ? game_directory_ : game_directory_ + "/_hockeymon").toStdString());
