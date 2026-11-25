@@ -155,7 +155,7 @@ absl::StatusOr<std::optional<ProgramScoreboardConfig>> ResolveProgramScoreboardC
       return absl::InvalidArgumentError("Scoreboard position requires upper-left, upper-center or upper-right");
     result.position = *parsed;
     const auto flip = [&](const std::string& path) {
-      return Flag(BaselineOnNull(config, Select(config, {path}), path));
+      return BaselineOnNull(config, Select(config, {path}), path).as<bool>();
     };
     result.flip = {flip("rink.scoreboard.flip_horizontal"), flip("rink.scoreboard.flip_vertical")};
     const auto filter = get_node(config.values, "rink.scoreboard.resize_filter");

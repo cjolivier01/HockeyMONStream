@@ -34,12 +34,14 @@ struct HStreamWindowTestAccess {
     auto* original = window.pipeline_process_;
     window.pipeline_process_ = &process;
     window.updateScoreboardControls();
-    const bool disabled = !window.scoreboard_scale_spin_->isEnabled();
+    const bool disabled = !window.scoreboard_scale_spin_->isEnabled() &&
+        !window.scoreboard_flips_[0].check->isEnabled() && !window.scoreboard_flips_[1].check->isEnabled();
     process.kill();
     const bool stopped = process.waitForFinished(5000);
     window.pipeline_process_ = original;
     window.updateScoreboardControls();
-    return disabled && stopped && window.scoreboard_scale_spin_->isEnabled();
+    return disabled && stopped && window.scoreboard_scale_spin_->isEnabled() &&
+        window.scoreboard_flips_[0].check->isEnabled() && window.scoreboard_flips_[1].check->isEnabled();
   }
 };
 namespace {
@@ -127,6 +129,7 @@ int main(int argc, char** argv) {
     Check(!horizontal->isChecked() && !vertical->isChecked(), "Scoreboard flips leaked into another game");
     Check(scale->value() == 1, "Game scale leaked into another game");
     HStreamWindowTestAccess::defaults(window);
+    vertical->click();
     scale->setValue(2);
     Check(HStreamWindowTestAccess::save(window), "Could not save default scale");
     Check(
@@ -135,6 +138,7 @@ int main(int argc, char** argv) {
                 .as<double>() == 2,
         "Default scale did not persist");
     HStreamWindowTestAccess::reset(window);
+    Check(!vertical->isChecked(), "Reset did not restore baseline orientation");
     Check(scale->value() == 1 && HStreamWindowTestAccess::save(window), "Reset did not restore baseline scale");
     const auto reset = YAML::LoadFile(root.filePath(".config/hstream-ui/defaults.yaml").toStdString());
     Check(reset.IsMap() && reset.size() == 0, "Reset left a scale override");
