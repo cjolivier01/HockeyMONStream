@@ -1419,14 +1419,21 @@ if [[ -z "${SHLIB_DEPENDS}" ]]; then
   cat "${SHLIBDEPS_LOG}" >&2
   exit 1
 fi
-# ORT's CUDA 13 provider loads cuDNN 9 with dlopen; DT_NEEDED alone
-# cannot produce its package dependency. Require the package matching the toolkit.
+# ORT's CUDA 13 provider loads cuDNN 9 with dlopen; DT_NEEDED alone cannot
+# produce its package dependency.  cuDNN 9's runtime SONAME is stable across
+# NVIDIA's CUDA 12 and 13 package channels, and its libraries do not link a
+# CUDA runtime directly.  Permit either channel so deploying HStream beside an
+# existing CUDA 12 cuDNN development environment does not replace that SDK.
+# The CUDA 13 runtime dependencies emitted above still bind HStream itself to
+# the DeepStream/CUDA 13 ABI it was built against.
 CUDNN_PACKAGE="libcudnn9-cuda-${EXPECTED_CUDA_SONAME}"
+CUDNN_COMPAT_PACKAGE="libcudnn9-cuda-12"
 if ! dpkg-query -W -f='${Status}' "${CUDNN_PACKAGE}" 2>/dev/null | grep -qx 'install ok installed'; then
-  echo "ERROR: ${CUDNN_PACKAGE} is required for ONNX Runtime CUDA inference." >&2
+  echo "ERROR: ${CUDNN_PACKAGE} is required to build the CUDA ${EXPECTED_CUDA_SONAME} package." >&2
   exit 1
 fi
-SHLIB_DEPENDS="${SHLIB_DEPENDS}, ${CUDNN_PACKAGE}"
+CUDNN_VERSION="$(dpkg-query -W -f='${Version}' "${CUDNN_PACKAGE}")"
+SHLIB_DEPENDS="${SHLIB_DEPENDS}, ${CUDNN_PACKAGE} (>= ${CUDNN_VERSION}) | ${CUDNN_COMPAT_PACKAGE} (>= ${CUDNN_VERSION})"
 if [[ "${TARGET_PLATFORM}" == "jetson" ]]; then
   # DeepStream 9.1's tracker needs MQTT and unversioned CUDA aliases, but
   # its package omits these dependencies. The aliases belong to -dev packages.
