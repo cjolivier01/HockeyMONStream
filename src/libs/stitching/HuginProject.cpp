@@ -823,14 +823,7 @@ uint32_t png_crc32(const unsigned char* type, const unsigned char* data, size_t 
   return crc ^ 0xffffffffU;
 }
 
-absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
-  auto encoded = read_bounded_hugin_file(path, kMaximumParserPngBytes);
-  if (!encoded.ok()) {
-    if (absl::IsNotFound(encoded.status()))
-      return absl::FailedPreconditionError("Invalid PNG header: " + path.string());
-    return encoded.status();
-  }
-  std::istringstream input(*encoded, std::ios::in | std::ios::binary);
+absl::StatusOr<PngLayout> parse_png_layout(std::istream& input, const fs::path& path) {
   const std::array<unsigned char, 8> signature = {137, 80, 78, 71, 13, 10, 26, 10};
   std::array<unsigned char, 8> file_signature{};
   input.read(reinterpret_cast<char*>(file_signature.data()), static_cast<std::streamsize>(file_signature.size()));
@@ -916,6 +909,24 @@ absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
     return absl::FailedPreconditionError("PNG is missing its IHDR chunk: " + path.string());
   if (!have_end)
     return absl::FailedPreconditionError("PNG is missing its IEND chunk: " + path.string());
+  return layout;
+}
+
+absl::StatusOr<PngLayout> read_png_layout(const fs::path& path) {
+  PngLayout layout;
+  const auto status = with_regular_file_stream(path, [&](std::istream& input, uint64_t size) {
+    if (path.filename() != "left.png" && path.filename() != "right.png" && size > kMaximumParserPngBytes)
+      return absl::FailedPreconditionError("Invalid or oversized Hugin file: " + path.string());
+    auto result = parse_png_layout(input, path);
+    if (!result.ok())
+      return result.status();
+    layout = *result;
+    return absl::OkStatus();
+  });
+  if (absl::IsNotFound(status))
+    return absl::FailedPreconditionError("Invalid PNG header: " + path.string());
+  if (!status.ok())
+    return status;
   return layout;
 }
 

@@ -454,6 +454,7 @@ cc_test(
         ":projection_crop_dialog",
         ":rink_leveling_dialog",
         "//src/libs/stitching:game_config",
+        "//src/libs/stitching:playback_rink_map",
         "@qt//:qt_widgets",
         "@yaml-cpp",
     ],

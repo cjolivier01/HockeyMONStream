@@ -66,7 +66,10 @@ QByteArray sourceRevisionForFiles(const QString& directory, const QStringList& f
   QCryptographicHash hash(QCryptographicHash::Sha256);
   for (const QString& name : files) {
     QFile file(QDir(directory).filePath(name));
-    if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || file.size() > 128 * 1024 * 1024 || !hash.addData(&file))
+    const auto maximum =
+        name == "config.yaml" ? 128ULL * 1024 * 1024 : hm::stitching::maximum_stitch_artifact_bytes(name.toStdString());
+    if (!file.open(QIODevice::ReadOnly) || file.size() <= 0 || static_cast<uint64_t>(file.size()) > maximum ||
+        !hash.addData(&file))
       return {};
   }
   return hash.result();

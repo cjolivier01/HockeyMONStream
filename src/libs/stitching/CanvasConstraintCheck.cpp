@@ -118,6 +118,8 @@ const std::array<const char*, 9> kGenerationArtifacts = {
     "seam_file.png",
 };
 
+} // namespace
+
 uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
   const auto ends_with = [name](std::string_view suffix) {
     return name.size() >= suffix.size() && name.substr(name.size() - suffix.size()) == suffix;
@@ -126,6 +128,8 @@ uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
     return kMaximumPtoArtifactBytes;
   if (ends_with(".tif"))
     return kMaximumTiffArtifactBytes;
+  if (name == "left.png" || name == "right.png")
+    return std::numeric_limits<off_t>::max();
   if (ends_with(".png"))
     return kMaximumPngArtifactBytes;
   if (name == kStitchCanvasProvenanceArtifact)
@@ -135,6 +139,7 @@ uint64_t maximum_stitch_artifact_bytes(std::string_view name) {
   return 0;
 }
 
+namespace {
 absl::StatusOr<uint64_t> maximum_open_tiff_artifact_bytes(int descriptor, const fs::path& path) {
   const int tiff_descriptor = ::dup(descriptor);
   if (tiff_descriptor < 0)
@@ -1564,6 +1569,33 @@ absl::StatusOr<bool> has_current_stitch_transaction_protocol(const fs::path& tra
 }
 
 } // namespace
+
+absl::Status with_regular_file_stream(
+    const fs::path& path,
+    const std::function<absl::Status(std::istream&, uint64_t)>& read) {
+  const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+  if (fd < 0 && errno == ENOENT)
+    return absl::NotFoundError("Missing file: " + path.string());
+  if (fd < 0)
+    return absl::FailedPreconditionError("Unable to open " + path.string() + ": " + std::strerror(errno));
+  struct Close {
+    int fd;
+    ~Close() {
+      ::close(fd);
+    }
+  } close{fd};
+  struct stat before {
+  }, after{};
+  if (fresh_stitch_fstat(fd, &before) != 0 || !S_ISREG(before.st_mode) || before.st_size < 0)
+    return absl::FailedPreconditionError("Invalid regular file: " + path.string());
+  std::ifstream input(fs::path("/proc/self/fd") / std::to_string(fd), std::ios::binary);
+  if (!input)
+    return absl::InternalError("Unable to read " + path.string());
+  const auto status = read(input, static_cast<uint64_t>(before.st_size));
+  if (fresh_stitch_fstat(fd, &after) != 0 || !stitch_stat_matches(before, after))
+    return absl::AbortedError("File changed while being read: " + path.string());
+  return status;
+}
 
 struct PreparedStitchGenerationPublication::Impl {
   std::string logical_id;
