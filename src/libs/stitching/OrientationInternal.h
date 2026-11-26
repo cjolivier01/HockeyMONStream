@@ -4,11 +4,17 @@
 #include <map>
 #include <string>
 
+#include <opencv2/core.hpp>
+
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "hstream/src/libs/media/FrameFlip.h"
 
 namespace hm::stitching::orientation_internal {
 
 using VideoChapterMap = std::map<int, std::string>;
+
+absl::StatusOr<cv::Mat> read_orientation_frame(const std::string& file, double start_seconds, media::FrameFlip flip);
 
 // Persists an already-resolved camera ordering. Runtime Program launches may
 // legitimately add this derived mapping while retaining a completed stitching

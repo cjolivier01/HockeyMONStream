@@ -219,7 +219,12 @@ cc_library(
   hdrs = ["OrientationInternal.h"],
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:private"],
-  deps = ["@com_google_absl//absl/status:status"],
+  deps = [
+    "//src/libs/media:frame_flip",
+    "@com_google_absl//absl/status:status",
+    "@com_google_absl//absl/status:statusor",
+    "@opencv_linux//:opencv",
+  ],
 )
 
 cc_library(
@@ -632,6 +637,7 @@ cc_test(
     ":game_config",
     ":orientation_internal",
     ":stitching",
+    "//src/libs/common:process",
     "@yaml-cpp",
   ], testonly = True),
 )
