@@ -127,6 +127,6 @@ bazel-bin/src/gst-plugins/gst-videoprep/playcropper/scoreboard_camera_test \
 It runs two main hardware decoders, the real stitcher and output cropper, with
 20 warm-up and 100 measured frames per variant. It checks frame counts and PTS.
 It excludes inference and encoding, so its result is not an end-to-end FPS claim.
-One RTX 5090 run with two 8K inputs measured 110.6 FPS without the scoreboard and
-110.5 FPS with a 1080p scoreboard. A third 8K recording measured 110.1 versus
-105.8 FPS. These are individual measurements, not zero-regression guarantees.
+One RTX 5090 run with two 8K inputs measured 110.5 FPS without the scoreboard and
+110.0 FPS with a 1080p scoreboard. A third 8K recording measured 110.4 versus
+105.5 FPS. These are individual measurements, not zero-regression guarantees.
