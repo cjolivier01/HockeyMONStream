@@ -390,13 +390,16 @@ while True:
     window.handlePipelineFinished(0, QProcess::NormalExit);
     QTest::qWait(100);
     struct stat blocked_inventory{};
+    // Contended ownership inspection may offer Review ownership. It must not
+    // offer Play or publish the archive while rollback holds the config lock.
     const bool publication_waited = ::stat(inventory_path.c_str(), &blocked_inventory) == 0 &&
-        blocked_inventory.st_dev == original_inventory.st_dev && blocked_inventory.st_ino == original_inventory.st_ino &&
+        blocked_inventory.st_dev == original_inventory.st_dev &&
+        blocked_inventory.st_ino == original_inventory.st_ino &&
         blocked_inventory.st_size == original_inventory.st_size &&
         blocked_inventory.st_mtim.tv_sec == original_inventory.st_mtim.tv_sec &&
         blocked_inventory.st_mtim.tv_nsec == original_inventory.st_mtim.tv_nsec && inventory_pin.seek(0) &&
         inventory_pin.readAll() == original_bytes && window.live_rotation_authorization_pending_ &&
-        window.pending_pipeline_completion_ && !window.start_button_->isEnabled() &&
+        window.pending_pipeline_completion_ && (!window.start_button_->isEnabled() || window.reviewing_ownership_) &&
         window.archive_finalize_process_->state() == QProcess::NotRunning && QFileInfo::exists(source) &&
         !window.operation_token_.empty() && !window.close();
     rollback_lock->reset();
@@ -1511,6 +1514,10 @@ for line in sys.stdin:
     return window->live_rotation_authorization_pending_;
   }
 
+  static bool reviewingOwnership(HStreamWindow* window) {
+    return window->reviewing_ownership_;
+  }
+
   static void holdRuntimeControlsForPause(HStreamWindow* window) {
     window->pipeline_paused_ = true;
   }
@@ -1842,6 +1849,10 @@ for line in sys.stdin:
 
   static bool baselinePreviewOverlay(HStreamWindow* window, const char* key) {
     return window->baseline_config_["preview_overlays"][key].as<bool>();
+  }
+
+  static std::string baselineControlPointSelection(HStreamWindow* window) {
+    return window->baseline_config_["stitching"]["control_point_selection"].as<std::string>();
   }
 
   static void clearLog(HStreamWindow* window) {
@@ -9516,7 +9527,8 @@ bool test_pipeline_buttons(HStreamWindow* window) {
         inventory_during_rollback_identity.st_mtim.tv_sec == inventory_before_exit_identity.st_mtim.tv_sec &&
         inventory_during_rollback_identity.st_mtim.tv_nsec == inventory_before_exit_identity.st_mtim.tv_nsec &&
         inventory_during_rollback.readAll() == inventory_before_exit_bytes &&
-        HStreamWindowTestAccess::liveRotationAuthorizationPending(window) && !start->isEnabled();
+        HStreamWindowTestAccess::liveRotationAuthorizationPending(window) &&
+        (!start->isEnabled() || HStreamWindowTestAccess::reviewingOwnership(window));
     inventory_during_rollback.close();
     if (rejection_exit_lock.ok())
       rejection_exit_lock->reset();
@@ -10356,6 +10368,7 @@ bool test_output_controls(HStreamWindow* window) {
     return false;
   // The phone copy is a third independent route: selecting it must not
   // disturb the other two, and all three must be able to run together.
+  archive->setChecked(true);
   program_mobile->setChecked(true);
   if (!expect(
           HStreamWindowTestAccess::pipelineArguments(window).join(' ').contains("ENCODE_PROGRAM_MOBILE_FILE") &&
@@ -10953,6 +10966,9 @@ bool test_output_controls(HStreamWindow* window) {
 }
 
 bool test_dual_archive_finalization(HStreamWindow* window, bool with_4k = false) {
+  // Earlier scenarios can fill the bounded log and invalidate character offsets
+  // when this run appends. Give this fixture its own log before taking a mark.
+  HStreamWindowTestAccess::clearLog(window);
   auto* archive = require_child<QCheckBox>(window, "outputToggle_archive-file");
   auto* secondary =
       require_child<QCheckBox>(window, with_4k ? "outputToggle_archive-program-4k" : "outputToggle_archive-stitched");
@@ -13092,6 +13108,9 @@ bool test_camera_controls(HStreamWindow* window) {
   const fs::path config = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/config.yaml";
   {
     YAML::Node capped(YAML::NodeType::Map);
+    // A completed current-generation fixture must record its match policy.
+    capped["stitching"]["control_point_selection"] =
+        HStreamWindowTestAccess::baselineControlPointSelection(window);
     capped["stitching"]["max_output_width"] = 4096;
     capped["pipeline"]["hmstitcher"]["properties"]["max-output-width"] = 2048;
     capped["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 2048;
@@ -13226,6 +13245,8 @@ bool test_camera_controls(HStreamWindow* window) {
   }
   {
     YAML::Node private_only(YAML::NodeType::Map);
+    private_only["stitching"]["control_point_selection"] =
+        HStreamWindowTestAccess::baselineControlPointSelection(window);
     private_only["pipeline"]["hmstitcher"]["private-properties"]["stitch_max_output_width"] = 1536;
     private_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
     private_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
@@ -13662,6 +13683,8 @@ bool test_camera_controls(HStreamWindow* window) {
         fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/rink_mask_0.png";
     const fs::path rotation_only_snapshot = fs::path(window->gameDirectoryText().toStdString()) / "_hockeymon/s.png";
     YAML::Node rotation_only = YAML::LoadFile(config.string());
+    rotation_only["stitching"]["control_point_selection"] =
+        HStreamWindowTestAccess::baselineControlPointSelection(window);
     rotation_only["hstream_ui"]["stitching_calibration"]["status"] = "complete";
     rotation_only["hstream_ui"]["stitching_calibration"]["rink_mask_status"] = "complete";
     rotation_only["rink"]["ice_contours_mask_count"] = 1;
@@ -17065,6 +17088,9 @@ bool test_nonzero_user_stitch_frame_default(const QString& source_game_directory
     copied_config_node["stitching"].remove("stitch_frame_time");
   copied_config_node["stitching"]["post_stitch_rotate_degrees"] = YAML::Node(YAML::NodeType::Null);
   copied_config_node["stitching"]["control_point_matcher"] = "superpoint-lightglue";
+  // This completed fixture represents the current selection policy. Leaving
+  // it absent claims legacy matches and correctly invalidates calibration.
+  copied_config_node["stitching"]["control_point_selection"] = baseline["stitching"]["control_point_selection"];
   copied_config_node["stitching"]["mapping_backend"] = "nona";
   copied_config_node["stitching"]["run_autooptimizer"] = true;
   copied_config_node["hstream_ui"]["stitching_calibration"]["status"] = "complete";
