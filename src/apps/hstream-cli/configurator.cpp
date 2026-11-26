@@ -6577,6 +6577,26 @@ absl::Status Configurator::apply_scoreboard_perspective(YAML::Node& pipeline) {
   if (!pipeline["hmplaycropper"].IsDefined()) {
     return absl::OkStatus();
   }
+  const auto camera = get_node(config_, "rink.scoreboard.camera");
+  if (!camera || !camera->IsMap() || !(*camera)["enabled"].IsScalar())
+    return absl::InvalidArgumentError("Effective baseline is missing rink.scoreboard.camera.enabled");
+  auto private_properties = pipeline["hmplaycropper"]["private-properties"];
+  if ((*camera)["enabled"].as<bool>()) {
+    YAML::Node prepared;
+    prepared["camera"] = YAML::Clone(*camera);
+    prepared["resize_filter"] = config_["rink"]["scoreboard"]["resize_filter"];
+    prepared["sharpen_amount"] = config_["rink"]["scoreboard"]["sharpen_amount"];
+    prepared["game_directory"] = resolved_game_dir().string();
+    const auto serialized = YAML::Dump(prepared);
+    auto* encoded = g_base64_encode(reinterpret_cast<const guchar*>(serialized.data()), serialized.size());
+    std::string property(encoded);
+    while (!property.empty() && property.back() == '=')
+      property.pop_back();
+    pipeline["hmplaycropper"]["private-properties"]["scoreboard-camera"] = property;
+    g_free(encoded);
+  } else if (private_properties.IsMap()) {
+    private_properties.remove("scoreboard-camera");
+  }
   const auto map_playcropper_scalar = [&](const std::string& dest_key, const std::string& src_key) -> absl::Status {
     std::optional<YAML::Node> src_node = get_node(config_, src_key);
     if (!src_node || !src_node->IsDefined())
@@ -6779,7 +6799,7 @@ absl::Status Configurator::gather_stitching_videos(
       source_starts,
       stitching::ReadCameraSourceStarts(get_node(config_, "stitching.input_start_times").value_or(YAML::Node())));
   stitching::VideosDict videos;
-  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir, false, &config_));
   const bool has_cam_auto =
       std::any_of(videos.begin(), videos.end(), [](const auto& item) { return is_cam_video_key(item.first); });
   if (configurator_internal::refresh_generated_camera_roles(config_, explicit_selection, videos)) {
@@ -6859,7 +6879,7 @@ absl::Status Configurator::gather_stitching_videos(
     HM_ASSIGN_OR_RETURN(
         flips, stitching::ReadCameraFrameFlips(get_node(config_, "stitching.input_cameras").value_or(YAML::Node())));
     HM_RETURN_IF_ERROR(
-        stitching::configure_orientation(game_dir, active_stitching_invalidation_id_, {}, source_starts, flips));
+        stitching::configure_orientation(game_dir, active_stitching_invalidation_id_, {}, source_starts, flips, &config_));
     HM_RETURN_IF_ERROR(import_stitching_orientation(game_dir));
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();
@@ -6958,6 +6978,10 @@ absl::Status Configurator::apply_frame_offsets_and_sizes(
       format.constant_rate &= next->constant_rate;
       format.timebase_tick_ns = std::max(format.timebase_tick_ns, next->timebase_tick_ns);
     }
+    // The final compositor needs this clock before decodebin prerolls. Mixed
+    // rates below replace it with the shared, decimated game-camera clock.
+    pipeline["source" + std::to_string(camera)]["camera-fps-n"] = format.fps_n;
+    pipeline["source" + std::to_string(camera)]["camera-fps-d"] = format.fps_d;
     const std::string side = camera ? "right" : "left";
     const auto frames = get_node_value<double>(offsets, side, 0.0);
     const long double ns = static_cast<long double>(frames) * format.fps_d * GST_SECOND / format.fps_n;
@@ -7085,7 +7109,7 @@ absl::Status Configurator::set_output_dimensions(
     // If we don't have left/right files, we may still know dimensions from a stitched output
     if (ww == 0 || hh == 0) {
       stitching::VideosDict videos;
-      HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+      HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir, false, &config_));
       if (videos.count("stitched")) {
         const auto& stitched_chapters = videos.at("stitched");
         bool all_exist = true;
@@ -9538,7 +9562,7 @@ YAML::Node Configurator::auto_config(YAML::Node&& config) {
 
 absl::StatusOr<bool> Configurator::does_need_stitching(const std::string& game_dir) const {
   stitching::VideosDict videos;
-  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir));
+  HM_ASSIGN_OR_RETURN(videos, stitching::get_available_videos(game_dir, false, &config_));
   if (videos.empty()) {
     return false;
   }
@@ -10256,6 +10280,60 @@ absl::Status Configurator::prepare_initial_pipeline_position(
     NvDsPipeline& pipeline,
     const NvDsConfig& config,
     uint64_t start_time_ns) {
+  const auto camera = get_node(config_, "rink.scoreboard.camera");
+  auto* cropper = pipeline.common_elements.hmplaycropper_bin.playcropper;
+  // Calibration and source-only stages have no final scoreboard compositor.
+  if (cropper && camera && camera->IsMap() && (*camera)["enabled"].as<bool>()) {
+    const bool camera_live = !(*camera)["uri"].IsNull();
+    if (camera_live != static_cast<bool>(pipeline.multi_src_bin.live_source))
+      return absl::InvalidArgumentError(
+          "Scoreboard source must be recorded for recorded games and live for live games");
+    if (camera_live) {
+      auto* clock = gst_system_clock_obtain();
+      gst_pipeline_use_clock(GST_PIPELINE(pipeline.pipeline), clock);
+      gst_object_unref(clock);
+    } else {
+      const auto& source = config.multi_source_config[0];
+      int fps_n = source.camera_fps_n, fps_d = source.camera_fps_d;
+      if (fps_n <= 0 || fps_d <= 0) {
+        // A single prerecorded panorama has no stitching preparation pass.
+        // Inspect its original track before NULL -> READY, when decoded caps
+        // are not available yet. Never use the scoreboard's own frame rate.
+        const std::string playlist = source.uri_list ? source.uri_list : source.uri ? source.uri : "";
+        const auto uri = playlist.substr(0, playlist.find(';'));
+        gchar* filename = g_filename_from_uri(uri.c_str(), nullptr, nullptr);
+        if (!filename)
+          return absl::FailedPreconditionError("Recorded scoreboard requires a local game-camera clock");
+        const std::filesystem::path path(filename);
+        g_free(filename);
+        auto format = stitching::ReadCameraTrackFormat(path);
+        if (!format.ok())
+          return format.status();
+        fps_n = format->fps_n;
+        const auto divisor = int64_t(format->fps_d) * std::max(source.frame_decimation, 1);
+        if (divisor > INT_MAX)
+          return absl::OutOfRangeError("Recorded game-camera clock denominator overflows");
+        fps_d = static_cast<int>(divisor);
+      }
+      const auto frame = gst_util_uint64_scale_ceil(start_time_ns, fps_n, uint64_t(fps_d) * GST_SECOND);
+      const auto timeline = std::to_string(frame) + "," + std::to_string(fps_n) + "," + std::to_string(fps_d);
+      GstState state = GST_STATE_NULL;
+      gst_element_get_state(cropper, &state, nullptr, 0);
+      if (state == GST_STATE_NULL) {
+        gchar* properties = nullptr;
+        g_object_get(cropper, "plugin-private-config", &properties, nullptr);
+        const auto value = std::string(properties ? properties : "") + ";scoreboard-camera-timeline=" + timeline;
+        g_free(properties);
+        g_object_set(cropper, "plugin-private-config", value.c_str(), nullptr);
+      } else {
+        auto* event = gst_event_new_custom(
+            GST_EVENT_CUSTOM_DOWNSTREAM_OOB,
+            gst_structure_new("hstream-scoreboard-timeline", "value", G_TYPE_STRING, timeline.c_str(), nullptr));
+        if (!gst_element_send_event(cropper, event))
+          return absl::FailedPreconditionError("Cannot restore scoreboard camera after game seek");
+      }
+    }
+  }
   const bool needs_position =
       start_time_ns || config.hmsticher_config.left_frame_offset_ns || config.hmsticher_config.right_frame_offset_ns;
   if (!needs_position) {

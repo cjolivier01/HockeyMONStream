@@ -88,3 +88,134 @@ cc_test(
     tags = ["manual", "requires-deepstream-hw"],
     deps = [":scoreboard", "@opencv_linux//:opencv"],
 )
+
+cc_library(
+    name = "camera_region",
+    srcs = ["CameraRegion.cpp"],
+    hdrs = ["CameraRegion.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/libs/gpu:image",
+        "@com_google_absl//absl/status:statusor",
+        "@opencv_linux//:opencv",
+    ],
+)
+
+cc_test(
+    name = "camera_region_test",
+    srcs = ["CameraRegionTest.cpp"],
+    deps = [
+        ":camera_region",
+        ":plan",
+    ],
+)
+
+cc_library(
+    name = "camera_frames",
+    srcs = ["CameraFrames.cpp"],
+    hdrs = ["CameraFrames.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "camera_decoder",
+    srcs = ["CameraDecoder.cpp"],
+    hdrs = ["CameraDecoder.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":camera_clock",
+        ":camera_region",
+        "//src/libs/gpu/vaapi:va_element",
+        "//src/libs/media:mp4_video_track",
+        "@com_google_absl//absl/status:statusor",
+        "@gstreamer",
+    ],
+)
+
+cc_test(
+    name = "camera_decoder_test",
+    srcs = ["CameraDecoderTest.cpp"],
+    tags = [
+        "local",
+        "manual",
+        "requires-gpu",
+    ],
+    deps = [
+        ":camera_clock",
+        ":camera_decoder",
+        ":camera_images",
+        ":camera_session",
+        "//src/libs/media:mp4_video_track",
+        "//src/libs/media:test_mp4",
+    ],
+)
+
+cc_test(
+    name = "camera_frames_test",
+    srcs = ["CameraFramesTest.cpp"],
+    deps = [":camera_frames"],
+)
+
+cc_library(
+    name = "camera_images",
+    srcs = ["CameraImages.cpp"],
+    hdrs = ["CameraImages.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":camera_decoder",
+        "//src/libs/gpu:convert_image",
+    ] + select({
+        "//:use_hip": ["//src/libs/detection:va_detector_image"],
+        "//conditions:default": ["//src/libs/common:surface"],
+    }),
+)
+
+cc_library(
+    name = "camera_session",
+    srcs = ["CameraSession.cpp"],
+    hdrs = ["CameraSession.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":camera_clock",
+        ":camera_frames",
+        ":camera_images",
+    ],
+)
+
+cc_library(
+    name = "camera_config",
+    srcs = ["CameraConfig.cpp"],
+    hdrs = ["CameraConfig.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":camera_session",
+        "//src/libs/media:mp4_video_track",
+        "@yaml-cpp",
+    ],
+)
+
+cc_test(
+    name = "camera_config_test",
+    srcs = ["CameraConfigTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    data = ["//configs:baseline.yaml"],
+    deps = [
+        ":camera_config",
+        "//src/libs/media:test_mp4",
+    ],
+)
+
+cc_library(
+    name = "camera_clock",
+    srcs = ["CameraClock.cpp"],
+    hdrs = ["CameraClock.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
+)

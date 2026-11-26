@@ -6,8 +6,11 @@
 #include "hstream/src/libs/common/ConfigLayers.h"
 #include "hstream/src/libs/common/UserConfig.h"
 #include "hstream/src/libs/common/utils.h"
+#include "hstream/src/libs/media/Mp4VideoTrack.h"
+#include "hstream/src/libs/media/VideoStill.h"
 #include "hstream/src/libs/playtracker_replay/ReplaySession.h"
 #include "hstream/src/libs/recording/Database.h"
+#include "hstream/src/libs/scoreboard/CameraConfig.h"
 #include "hstream/src/libs/stitching/AutoInputLens.h"
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
@@ -51,6 +54,7 @@
 #include <QtCore/QProcess>
 #include <QtCore/QProcessEnvironment>
 #include <QtCore/QSaveFile>
+#include <QtCore/QSet>
 #include <QtCore/QTemporaryDir>
 #include <QtGui/QGuiApplication>
 #include <algorithm>
@@ -1399,9 +1403,89 @@ QJsonObject run_saved_calibration(const Request& request, QJsonArray& artifacts)
   return result;
 }
 
+QJsonObject scoreboard_camera_preview(const Request& request, QJsonArray& artifacts) {
+  require(
+      request.payload.size() == 2 && request.payload.contains("uri") && request.payload.contains("preview_time"),
+      "Invalid scoreboard camera preview request");
+  const auto baseline = take(hm::baseline_config::load()).values["rink"]["scoreboard"]["camera"];
+  const auto seek =
+      take(hm::scoreboard::ParseCameraStartOffset(RequiredString(request.payload, "preview_time").toStdString()));
+  require(seek >= 0, "Preview time must be nonnegative");
+  const auto timeout_ms = baseline["operation_timeout_ms"].as<int64_t>();
+  require(timeout_ms > 0 && timeout_ms <= INT64_MAX / 1000000, "Invalid scoreboard preview timeout");
+  const auto timeout = timeout_ms * 1000000;
+  const bool live = !request.payload.value("uri").isNull();
+  std::vector<std::unique_ptr<PinnedArchive>> pins;
+  std::string source;
+  int64_t local = seek;
+  if (live) {
+    require(request.authorized_media.isEmpty(), "Live preview cannot contain recorded sources");
+    source = RequiredString(request.payload, "uri", 4096).toStdString();
+    local = 0;
+  } else {
+    const auto media = request.runtime.value("scoreboard_media").toArray();
+    require(
+        !media.isEmpty() && media.size() <= 128 && media.size() == request.authorized_media.size(),
+        "Incomplete scoreboard preview media");
+    QSet<QString> admitted;
+    for (const auto& item : media) {
+      require(item.isObject(), "Invalid scoreboard preview media");
+      const auto value = item.toObject();
+      const auto path = RequiredString(value, "path", 4096);
+      require(request.authorized_media.contains(path), "Scoreboard source was not admitted");
+      require(!admitted.contains(path), "Duplicate scoreboard preview source");
+      admitted.insert(path);
+      Request bound = request;
+      bound.authorized_media = QJsonArray{path};
+      bound.runtime = QJsonObject{{"scoreboard_source", value}};
+      auto pin = std::make_unique<PinnedArchive>(bound, "scoreboard_source");
+      if (source.empty()) {
+        const auto track = take(hm::media::ReadMp4VideoTrack(pin->path(), timeout, [] { return interrupted != 0; }));
+        if (local < track.duration_ns)
+          source = pin->path().string();
+        else
+          local -= track.duration_ns;
+      }
+      pins.push_back(std::move(pin));
+    }
+    require(!source.empty(), "Preview time exceeds the scoreboard recording");
+  }
+  const auto still = take(
+      hm::media::ReadVideoStill(
+          source,
+          live,
+          local,
+          baseline["preview_max_dimension"].as<int>(),
+          baseline["preview_max_source_pixels"].as<int64_t>(),
+          timeout,
+          [] { return interrupted != 0; }));
+  for (const auto& pin : pins)
+    pin->Verify();
+  require(!interrupted, "Scoreboard preview cancelled");
+  const auto path = request.root / "scoreboard-camera.png";
+  require(!fs::exists(path) && !fs::is_symlink(path), "Scoreboard preview already exists");
+  QImage image(still.rgba.data(), still.width, still.height, still.width * 4, QImage::Format_RGBA8888);
+  QSaveFile output(qs(path));
+  require(output.open(QIODevice::WriteOnly), "Cannot create scoreboard preview");
+  require(
+      image.save(&output, "PNG") && output.flush() && ::fsync(output.handle()) == 0 && output.commit(),
+      "Cannot publish scoreboard preview");
+  artifacts.append(Artifact(request, path, "image"));
+  return {
+      {"version", 1},
+      {"preview", "scoreboard-camera.png"},
+      {"width", still.width},
+      {"height", still.height},
+      {"source_width", still.source_width},
+      {"source_height", still.source_height},
+      {"time_ns", QString::number(still.time_ns)}};
+}
+
 QJsonObject execute(const Request& request, QJsonArray& artifacts) {
   if (request.operation == "source-camera-preview")
     return source_camera_preview(request);
+  if (request.operation == "scoreboard-camera-preview")
+    return scoreboard_camera_preview(request, artifacts);
   if (request.operation == "calibration-failure-diagnose")
     return hm::web::DiagnoseCalibrationFailure(request, [] { return interrupted != 0; });
   if (request.operation == "detector-controls-read") {

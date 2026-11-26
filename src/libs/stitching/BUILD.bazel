@@ -640,6 +640,7 @@ cc_test(
     ":orientation_internal",
     ":stitching",
     "//src/libs/common:process",
+    "//src/libs/media:test_mp4",
     "@yaml-cpp",
   ], testonly = True),
 )
@@ -1125,6 +1126,10 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:public"],
   deps = [
+    "//src/libs/common:baseline_config",
+    "//src/libs/common:config_layers",
+    "//src/libs/common:user_config",
+    "@yaml-cpp",
     "//src/libs/common:status_macros",
     "//src/libs/common:utils_base",
     "@com_google_absl//absl/status:status",

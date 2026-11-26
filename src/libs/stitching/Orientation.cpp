@@ -135,13 +135,14 @@ absl::StatusOr<std::string> classify_rink_orientation(const cv::Mat& binary_mask
 
 absl::Status configure_game_orientation(
     const std::string& game_dir_string,
-    const RinkSegmentation& rink_model,
+    const std::function<absl::StatusOr<RinkProfile>(const cv::Mat&)>& infer_rink,
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     const CameraSourceStarts& source_starts,
-    const CameraFrameFlips& flips) {
+    const CameraFrameFlips& flips,
+    const YAML::Node* effective_config) {
   const fs::path game_dir(game_dir_string);
-  auto videos = get_available_videos(game_dir.string());
+  auto videos = get_available_videos(game_dir.string(), false, effective_config);
   if (!videos.ok())
     return videos.status();
   const auto chapters_status = ValidateDiscoveredCameraChapters(*videos);
@@ -180,7 +181,7 @@ absl::Status configure_game_orientation(
         first_frame,
         orientation_internal::read_orientation_frame(
             selected.file, selected.start_seconds, selected.display.corrected(flip)));
-    auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled);
+    auto rink = infer_rink(first_frame);
     if (!rink.ok()) {
       return absl::Status(
           rink.status().code(),

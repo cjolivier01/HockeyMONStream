@@ -18,19 +18,20 @@ using Clock = std::chrono::steady_clock;
 struct Interrupt {
   Clock::time_point deadline;
   const std::function<bool()>& cancelled;
+  const std::function<Clock::time_point()>& operation_now;
   bool did_cancel{false}, expired{false}, callback_failed{false};
   int Poll() noexcept {
     try {
       did_cancel |= cancelled && cancelled();
+      expired |= (operation_now ? operation_now() : Clock::now()) >= deadline;
     } catch (...) {
       callback_failed = true;
     }
-    expired |= Clock::now() >= deadline;
     return did_cancel || expired || callback_failed;
   }
   absl::Status Status() const {
     if (callback_failed)
-      return absl::InternalError("MP4 cancellation callback threw an exception");
+      return absl::InternalError("MP4 metadata callback threw an exception");
     if (did_cancel)
       return absl::CancelledError("MP4 metadata discovery cancelled");
     if (expired)
@@ -49,13 +50,21 @@ absl::StatusOr<int64_t> Nanoseconds(int64_t ticks, AVRational base) {
 absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
     const std::filesystem::path& file,
     int64_t timeout_ns,
-    const std::function<bool()>& is_cancelled) {
+    const std::function<bool()>& is_cancelled,
+    const std::function<Clock::time_point()>& operation_now) {
   if (timeout_ns <= 0)
     return absl::InvalidArgumentError("MP4 metadata requires a positive timeout");
-  const auto now = Clock::now();
+  Clock::time_point now;
+  try {
+    now = operation_now ? operation_now() : Clock::now();
+  } catch (...) {
+    return absl::InternalError("MP4 metadata clock callback threw an exception");
+  }
   const auto duration = std::chrono::nanoseconds(timeout_ns);
   Interrupt interrupt{
-      duration > Clock::time_point::max() - now ? Clock::time_point::max() : now + duration, is_cancelled};
+      duration > Clock::time_point::max() - now ? Clock::time_point::max() : now + duration,
+      is_cancelled,
+      operation_now};
   if (interrupt.Poll())
     return interrupt.Status();
   std::error_code error;

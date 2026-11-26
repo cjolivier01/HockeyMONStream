@@ -11,6 +11,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/media/TestMp4.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 
@@ -38,14 +39,10 @@ void touch(const fs::path& path) {
 }
 
 bool test_camera_flips_with_display_rotation(const fs::path& root) {
-  const auto ffmpeg = hm::findExecutable("ffmpeg", {"PATH"});
-  if (!expect(ffmpeg.has_value(), "ffmpeg is required for the rotated camera fixture"))
-    return false;
   const std::string file = (root / "rotated.mp4").string();
   // Only the top-left quadrant of the encoded frame is white.
-  const int generated = hm::run_command(
-      {*ffmpeg,
-       "-v",
+  hm::media::test::Ffmpeg(
+      {"-v",
        "error",
        "-noautorotate",
        "-display_rotation",
@@ -58,12 +55,7 @@ bool test_camera_flips_with_display_rotation(const fs::path& root) {
        "1",
        "-c:v",
        "libx264",
-       file},
-      "",
-      {},
-      {});
-  if (!expect(generated == 0, "generate an MP4 with a 180-degree display matrix"))
-    return false;
+       file});
   const auto window = hm::stitching::CameraRecordingWindowAt({file}, 0, 1);
   if (!expect(window.ok(), "read the camera display matrix"))
     return false;
@@ -90,6 +82,46 @@ bool test_camera_flips_with_display_rotation(const fs::path& root) {
 
 } // namespace
 
+bool test_unsaved_scoreboard_exclusion(const fs::path& root) {
+  const auto game = root / "scoreboard-override";
+  fs::create_directories(game / "cam1");
+  fs::create_directories(game / "cam2");
+  hm::media::test::Chapter(game / "cam1/clip.mp4", "black", "0");
+  hm::media::test::Chapter(game / "cam2/clip.mp4", "white", "0");
+  touch(game / "cam3/scoreboard.mp4"); // Invalid media must never reach orientation decoding.
+  auto config = YAML::Load("rink: {scoreboard: {camera: {enabled: true, files: [cam3/scoreboard.mp4]}}}");
+  for (const bool enabled : {true, false}) {
+    config["rink"]["scoreboard"]["camera"]["enabled"] = enabled;
+    int calls = 0;
+    const auto status = hm::stitching::configure_game_orientation(
+        game.string(),
+        [&](const cv::Mat& image) -> absl::StatusOr<hm::stitching::RinkProfile> {
+          if (image.empty())
+            return absl::InternalError("Missing game-camera frame");
+          hm::stitching::RinkProfile profile;
+          profile.combined_mask = cv::Mat::zeros(40, 80, CV_8U);
+          profile.combined_mask(cv::Rect(calls++ == 0 ? 70 : 0, 0, 10, 40)).setTo(255);
+          return profile;
+        },
+        {},
+        {},
+        {},
+        {},
+        &config);
+    if (!expect(status.ok() && calls == 2, "Auto orientation must preserve unsaved scoreboard exclusions")) {
+      std::cerr << status << '\n';
+      return false;
+    }
+    const auto saved = YAML::LoadFile((saved_state(game) / "config.yaml").string());
+    if (!expect(
+            saved["game"]["videos"]["left"][0].as<std::string>() == "cam1/clip.mp4" &&
+                saved["game"]["videos"]["right"][0].as<std::string>() == "cam2/clip.mp4",
+            "Scoreboard exclusion changed the resolved game-camera roles"))
+      return false;
+  }
+  return true;
+}
+
 int main() {
   bool ok = true;
   cv::Mat mask = cv::Mat::zeros(40, 80, CV_8U);
@@ -108,6 +140,7 @@ int main() {
   if (created != nullptr) {
     const fs::path root(created);
     ok &= test_camera_flips_with_display_rotation(root);
+    ok &= test_unsaved_scoreboard_exclusion(root);
     touch(root / "cam10" / "GA020123.MP4");
     touch(root / "cam10" / "GX010123.MP4");
     touch(root / "cam2" / "VID_20260102_030405_002.mp4");

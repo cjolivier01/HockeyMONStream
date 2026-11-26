@@ -8569,6 +8569,11 @@ bool test_pipeline_buttons(HStreamWindow* window) {
               std::abs(preview_target->width() * 9 - preview_target->height() * 16) <= 16 &&
               program_focus->x() == preview_target->width() - program_focus->width() - 6 && program_focus->y() == 6,
           "Focused Program video must grow at 16:9 with its restore control pinned to the top-right")) {
+    std::cerr << "Program normal host=" << program_normal_host_size.width() << "x" << program_normal_host_size.height()
+              << " focused=" << program_host->width() << "x" << program_host->height()
+              << " target=" << preview_target->width() << "x" << preview_target->height()
+              << " restore=" << program_focus->x() << "," << program_focus->y()
+              << " width=" << program_focus->width() << '\n';
     return false;
   }
   if (!expect_composed_focus_control(

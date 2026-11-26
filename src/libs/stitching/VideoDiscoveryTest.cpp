@@ -75,7 +75,7 @@ int main() {
       std::ofstream(file).put('x');
     }
     const auto discovered = hm::stitching::get_available_videos(directory);
-    Check(discovered.ok(), "Cannot discover camera directories");
+    Check(discovered.ok(), "Cannot discover camera directories: " + discovered.status().ToString());
     Check(
         !hm::stitching::ValidateDiscoveredCameraChapters(*discovered).ok(),
         "Renumbered Auto maps must retain filename gap detection");
@@ -133,6 +133,55 @@ int main() {
     std::ofstream(outputs_root / "one.mp4").put('x');
     auto outputs = hm::stitching::get_available_videos(outputs_root.string());
     Check(outputs.ok() && outputs->empty(), "Arbitrary root outputs must not become camera inputs");
+    const auto auxiliary_root = root / "auxiliary";
+    for (int camera = 1; camera <= 3; ++camera) {
+      const auto directory = auxiliary_root / ("cam" + std::to_string(camera));
+      std::filesystem::create_directories(directory);
+      std::ofstream(directory / "clip.mp4").put('x');
+    }
+    std::filesystem::create_directories(auxiliary_root / "_hockeymon");
+    const auto settings = auxiliary_root / "_hockeymon/config.yaml";
+    std::ofstream(settings) << "rink: {scoreboard: {camera: {enabled: true, files: [cam3/clip.mp4]}}}\n";
+    auto auxiliary = hm::stitching::get_available_videos(auxiliary_root.string());
+    Check(
+        auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
+        "Scoreboard-only camera entered automatic stitching discovery");
+    auto override = YAML::Load("rink: {scoreboard: {camera: {enabled: false}}}");
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
+    Check(
+        auxiliary.ok() && auxiliary->size() == 3,
+        "An override without scoreboard files did not restore ordinary discovery");
+    override["rink"]["scoreboard"]["camera"]["files"].push_back("cam3/clip.mp4");
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
+    Check(
+        auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
+        "Disabling the overlay turned its recording into a game camera");
+    override = YAML::Load("rink: {scoreboard: {camera: {enabled: true, files: []}}}");
+    override["rink"]["scoreboard"]["camera"]["files"].push_back((auxiliary_root / "cam2/../cam3/clip.mp4").string());
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
+    Check(
+        auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
+        "Equivalent absolute scoreboard path entered stitching discovery");
+    std::ofstream(auxiliary_root / "cam3/game.mp4").put('x');
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string());
+    Check(
+        auxiliary.ok() && auxiliary->size() == 3 && auxiliary->at("cam3").size() == 1 &&
+            auxiliary->at("cam3").at(1) == (auxiliary_root / "cam3/game.mp4").string(),
+        "Excluded scoreboard recording made a standalone game camera ambiguous");
+    std::filesystem::remove(auxiliary_root / "cam3/game.mp4");
+    std::filesystem::remove_all(auxiliary_root / "cam1");
+    std::filesystem::remove_all(auxiliary_root / "cam2");
+    std::ofstream(auxiliary_root / "left.mp4").put('x');
+    std::ofstream(auxiliary_root / "right.mp4").put('x');
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string());
+    Check(
+        auxiliary.ok() && auxiliary->size() == 2 && auxiliary->count("left") && auxiliary->count("right"),
+        "A scoreboard-only cam directory hid the root Left/Right game cameras");
+    override["rink"]["scoreboard"]["camera"]["enabled"] = false;
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
+    Check(
+        auxiliary.ok() && auxiliary->count("left") && auxiliary->count("right") && auxiliary->size() == 2,
+        "A disabled scoreboard-only directory hid the root game cameras");
     std::filesystem::remove_all(root);
     std::cout << "Camera chapter validation passed\n";
     return 0;

@@ -61,7 +61,7 @@ cc_test(
 cc_library(
     name = "render_settings",
     hdrs = ["ProgramRenderSettings.h"],
-    deps = ["//src/libs/scoreboard:plan", "//src/libs/draw_display:rink_mini_map_core"],
+    deps = ["//src/libs/scoreboard:plan", "//src/libs/draw_display:rink_mini_map_core", "//src/libs/gpu:image"],
     include_prefix = "hstream/src/libs/program",
 )
 
@@ -181,7 +181,7 @@ cc_test(
     name = "gpu_test",
     srcs = ["ProgramGpuTest.cpp"],
     tags = ["manual", "requires-gpu"],
-    deps = [":gpu", ":shadow_tone_curve", "@opencv_linux//:opencv"],
+    deps = [":gpu", ":shadow_tone_curve", "@opencv_linux//:opencv", "//src/libs/scoreboard:camera_region"],
 )
 
 cc_test(
@@ -429,7 +429,7 @@ cc_library(
     srcs = ["ProgramScoreboardConfig.cpp"],
     hdrs = ["ProgramScoreboardConfig.h"],
     include_prefix = "hstream/src/libs/program",
-    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/scoreboard:plan"],
+    deps = ["//src/libs/common:config_layers", "//src/libs/common:config_path", "//src/libs/scoreboard:plan", "//src/libs/scoreboard:camera_region"],
 )
 cc_test(
     name = "scoreboard_config_test",

@@ -1,12 +1,14 @@
 #pragma once
 
 #include "cupano/pano/cudaMat.h"
-#include "hstream/src/libs/program/FrameGeometry.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CudaStreamCompletionFence.h"
 #include "hstream/src/gst-plugins/gst-videoprep/algorithm-base/CustomAlgorithmBase.h"
 #include "hstream/src/libs/draw_display/Fonts.h"
 #include "hstream/src/libs/draw_display/PlayerOverlays.h"
+#include "hstream/src/libs/program/FrameGeometry.h"
+#include "hstream/src/libs/scoreboard/CameraConfig.h"
 #include "hstream/src/libs/scoreboard/Scoreboard.h"
+#include "hstream/src/libs/scoreboard/ScoreboardPlan.h"
 
 #include <atomic>
 #include <chrono>
@@ -35,6 +37,7 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   // -DSCustomLibraryBase
   BufferResult ProcessBuffer(GstBuffer* inbuf) override;
   bool SetProperty(const Property& prop) override;
+  bool HandleEvent(GstEvent* event) override;
   std::optional<std::pair<float, float>> FixedEdgeRotationAngles() override;
   // DSCustomLibraryBase-
 
@@ -90,6 +93,22 @@ class PlayCropperPriv : public CustomAlgorithmBase {
   std::atomic<float> shadow_lift_percent_{0.0f};
   std::atomic_bool lift_shadow_black_point_{false};
   std::atomic<float> exposure_{0.0f};
+  absl::Status ConfigureScoreboardCamera(const std::string& encoded);
+  absl::Status SetScoreboardCameraTimeline(const std::string& value);
+  absl::Status StartScoreboardCamera(int64_t game_start);
+  absl::Status RenderScoreboardCamera(surface::Surface output, const NvDsFrameMeta* frame, cudaStream_t stream);
+  void CancelScoreboardCamera();
+  std::optional<scoreboard::CameraSessionConfig> scoreboard_camera_config_;
+  std::shared_ptr<scoreboard::CameraSession> scoreboard_camera_session_;
+  std::mutex scoreboard_camera_mutex_;
+  std::atomic<bool> scoreboard_camera_stopping_{false};
+  std::atomic<bool> scoreboard_camera_enabled_{false};
+  std::vector<std::shared_ptr<const gpu::Image>> scoreboard_camera_images_;
+  std::optional<scoreboard::Plan> scoreboard_camera_plan_;
+  scoreboard::Position scoreboard_camera_plan_position_{};
+  uint64_t scoreboard_camera_origin_frame_{0}, scoreboard_camera_epoch_{0};
+  int scoreboard_camera_fps_n_{0}, scoreboard_camera_fps_d_{0};
+  GstElement* scoreboard_camera_element_{nullptr};
   bool show_scoreboard_{false};
   std::atomic<hm::scoreboard::Position> scoreboard_position_{hm::scoreboard::Position::kUpperLeft};
   std::atomic<bool> scoreboard_reselect_requested_{false};

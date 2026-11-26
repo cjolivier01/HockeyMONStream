@@ -48,6 +48,36 @@ int main(int argc, char** argv) {
         absl::IsInternal(
             ReadMp4VideoTrack(ordinary, 1000000000, []() -> bool { throw std::runtime_error("cancel"); }).status()),
         "Throwing callback escaped through FFmpeg");
+    const auto paused_time = std::chrono::steady_clock::time_point{};
+    Check(
+        ReadMp4VideoTrack(ordinary, 1, {}, [&] { return paused_time; }).ok(),
+        "A suspended operation clock was charged wall time");
+    Check(
+        absl::IsCancelled(ReadMp4VideoTrack(
+                              ordinary, 1, [] { return true; }, [&] { return paused_time; })
+                              .status()),
+        "Suspending deadline accounting must not suppress cancellation");
+    int ticks = 0;
+    Check(
+        absl::IsDeadlineExceeded(
+            ReadMp4VideoTrack(ordinary, 1, {}, [&] { return paused_time + std::chrono::nanoseconds(ticks++); })
+                .status()),
+        "Metadata ignored the caller's advancing operation clock");
+    for (const int failure_call : {0, 1}) {
+      int calls = 0;
+      Check(
+          absl::IsInternal(ReadMp4VideoTrack(
+                               ordinary,
+                               1000000000,
+                               {},
+                               [&] {
+                                 if (calls++ == failure_call)
+                                   throw std::runtime_error("clock");
+                                 return paused_time;
+                               })
+                               .status()),
+          "Throwing operation clock escaped metadata discovery");
+    }
     Check(absl::IsDeadlineExceeded(ReadMp4VideoTrack(ordinary, 1, {}).status()), "Expired deadline accepted");
     Check(absl::IsInvalidArgument(ReadMp4VideoTrack(ordinary, 0, {}).status()), "Zero deadline accepted");
     Check(absl::IsNotFound(ReadMp4VideoTrack(root.path / "missing", 1000000000, {}).status()), "Missing file accepted");

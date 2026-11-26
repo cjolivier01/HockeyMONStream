@@ -688,7 +688,7 @@ absl::Status reconcile_oriented_video_paths(YAML::Node current, const YAML::Node
     return reconcile_selected_video_paths(current, selected, game, true);
 
   hm::stitching::VideosDict groups;
-  HM_ASSIGN_OR_RETURN(groups, hm::stitching::get_available_videos(fs::absolute(game).string()));
+  HM_ASSIGN_OR_RETURN(groups, hm::stitching::get_available_videos(fs::absolute(game).string(), false, &current));
   if (groups.count("stitched") && groups.size() == 1 && !explicit_left && !explicit_right)
     return absl::AbortedError("The selected game now uses a panorama recording");
   groups.erase("stitched");

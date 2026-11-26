@@ -1090,6 +1090,7 @@ cc_library(
         "//src/libs/stitching:video_discovery",
         "@qt//:qt_widgets",
         "@yaml-cpp",
+        ":scoreboard_camera_dialog",
     ] + select({
         "//:use_hip": [],
         "//conditions:default": [":camera_experiment_dialog", ":highlights_dialog"],
@@ -1749,6 +1750,8 @@ cc_binary(
         "@qt//:qt_core",
         "@qt//:qt_gui",
         "@yaml-cpp",
+        "//src/libs/media:video_still",
+        "//src/libs/scoreboard:camera_config",
     ]),
 )
 
@@ -2005,4 +2008,52 @@ cc_test(
     env = {"QT_QPA_PLATFORM": "offscreen"},
     target_compatible_with = QT_UI_COMPATIBILITY,
     deps = [":game_ownership_dialog", "//src/libs/common:game_operation_owner", "@qt//:qt_widgets"],
+)
+
+cc_library(
+    name = "scoreboard_camera_dialog",
+    srcs = ["ScoreboardCameraDialog.cpp"],
+    hdrs = ["ScoreboardCameraDialog.h"],
+    copts = COMMON_COPTS,
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":action_icons",
+        ":preview_dialog_window",
+        ":scoreboard_selection_dialog",
+        "//src/libs/media:mp4_video_track",
+        "//src/libs/media:video_still",
+        "//src/libs/scoreboard:camera_config",
+        "@qt//:qt_widgets",
+    ],
+)
+
+cc_test(
+    name = "scoreboard_camera_dialog_test",
+    srcs = ["ScoreboardCameraDialogTest.cpp"],
+    args = ["$(location //configs:baseline.yaml)"],
+    copts = COMMON_COPTS,
+    data = ["//configs:baseline.yaml"],
+    env = {"QT_QPA_PLATFORM": "offscreen"},
+    target_compatible_with = QT_UI_COMPATIBILITY,
+    deps = [
+        ":scoreboard_camera_dialog",
+        ":scoreboard_selection_dialog",
+        ":value_control_wheel",
+        "//src/libs/media:test_mp4",
+        "@qt//:qt_widgets",
+    ],
+)
+
+sh_test(
+    name = "web_scoreboard_camera_test",
+    srcs = ["WebScoreboardCameraTest.py"],
+    args = [
+        "$(location :hstream-web-job)",
+        "$(location //configs:baseline.yaml)",
+    ],
+    data = [
+        ":hstream-web-job",
+        "//configs:baseline.yaml",
+    ],
+    target_compatible_with = QT_UI_COMPATIBILITY,
 )

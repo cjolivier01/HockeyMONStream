@@ -27,6 +27,7 @@ class ScoreboardSelectionCanvas : public QWidget {
   explicit ScoreboardSelectionCanvas(QWidget* parent = nullptr);
 
   bool setImage(const QString& path);
+  bool setPreview(const QImage& image, const QSize& source_size);
   void setPoints(const QVector<QPoint>& points);
   const QVector<QPoint>& points() const;
   QSize imageSize() const;

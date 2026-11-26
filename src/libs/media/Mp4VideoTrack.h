@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -41,5 +42,7 @@ struct Mp4VideoTrack {
 absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
     const std::filesystem::path& file,
     int64_t timeout_ns,
-    const std::function<bool()>& is_cancelled);
+    const std::function<bool()>& is_cancelled,
+    // Optional operation clock for callers which suspend timeout accounting.
+    const std::function<std::chrono::steady_clock::time_point()>& operation_now = {});
 } // namespace hm::media

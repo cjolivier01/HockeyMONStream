@@ -1,5 +1,6 @@
 #include "hstream/src/libs/program/ProgramGpu.h"
 #include "hstream/src/libs/program/ShadowToneCurve.h"
+#include "hstream/src/libs/scoreboard/CameraRegion.h"
 
 #include <opencv2/core.hpp>
 #include <algorithm>
@@ -822,10 +823,120 @@ void TestScoreboard(bool ten_bit, double scale, hm::scoreboard::Orientation flip
       "Scoreboard accepted malformed transform");
 }
 
+void TestIndependentScoreboardCamera(bool ten_bit, cudaStream_t stream) {
+  constexpr int sw = 64, sh = 32, cw = 12, ch = 8;
+  constexpr size_t pitch = 160;
+  Buffer panorama(sw * sh), camera(cw * ch), luma(pitch * sh), chroma(pitch * sh / 2);
+  Gpu(cudaMemsetAsync(panorama.data, 32, sw * sh, stream));
+  Gpu(cudaMemsetAsync(camera.data, 192, cw * ch, stream));
+  const Image main{panorama.data, nullptr, sw, 0, sw, sh, PixelFormat::kGray8};
+  const Image auxiliary{camera.data, nullptr, cw, 0, cw, ch, PixelFormat::kGray8};
+  const float maximum = ten_bit ? 1023 : 255;
+  const YuvOutput output{
+      luma.data,
+      chroma.data,
+      pitch,
+      pitch,
+      sw,
+      sh,
+      ten_bit ? PixelFormat::kP010 : PixelFormat::kNv12,
+      {.2126f, .0722f, 0, maximum, ten_bit ? 512.f : 128.f, maximum}};
+  const FrameTransformGeometry transform{hm::BBox(0, 0, sw, sh), hm::Point{0, 0}, hm::BBox(0, 0, sw, sh), 0};
+  const auto plan = hm::scoreboard::MakePlan(
+      {{{1, 1}, {10, 1}, {10, 6}, {1, 6}}}, cw, ch, sw, sh, 18, 10, hm::scoreboard::Position::kUpperLeft);
+  Check(plan.ok(), "independent camera plan rejected");
+  Gpu(RenderProgramYuv(main, output, transform, 0, false, 0, stream, &*plan, &auxiliary));
+  std::vector<uint8_t> pixels(pitch * sh);
+  Gpu(cudaMemcpyAsync(pixels.data(), luma.data, pixels.size(), cudaMemcpyDeviceToHost, stream));
+  Gpu(cudaStreamSynchronize(stream));
+  for (int y = 0; y < sh; ++y)
+    for (int x = 0; x < sw; ++x) {
+      const bool inside =
+          x >= plan->left && y >= plan->top && x < plan->left + plan->width && y < plan->top + plan->height;
+      const int actual =
+          ten_bit ? reinterpret_cast<const uint16_t*>(pixels.data() + y * pitch)[x] >> 6 : pixels[y * pitch + x];
+      const float value = inside ? 192.f : (x == sw - 1 || y == sh - 1) ? 0.f : 32.f;
+      const int expected = std::lround(value * maximum / 255);
+      Check(std::abs(actual - expected) <= 1, "scoreboard sampled panorama instead of independent camera");
+    }
+  Check(
+      RenderProgramYuv(main, output, transform, 0, false, 0, stream, &*plan) == cudaErrorInvalidValue,
+      "camera geometry accepted against unrelated panorama");
+  Check(
+      RenderProgramYuv(main, output, transform, 0, false, 0, stream, nullptr, &auxiliary) == cudaErrorInvalidValue,
+      "independent camera accepted without its plan");
+  auto bad = auxiliary;
+  bad.plane0 = luma.data;
+  Check(
+      RenderProgramYuv(main, output, transform, 0, false, 0, stream, &*plan, &bad) == cudaErrorInvalidValue,
+      "scoreboard source may alias render destination");
+  bad = auxiliary;
+  bad.width += 1;
+  Check(
+      RenderProgramYuv(main, output, transform, 0, false, 0, stream, &*plan, &bad) == cudaErrorInvalidValue,
+      "scoreboard accepted changed camera geometry");
+}
+
+void TestCroppedCameraComposite(cudaStream_t stream) {
+  constexpr int sw = 640, sh = 480, ow = 256, oh = 128;
+  constexpr size_t pitch = ow * 4 + 64;
+  std::vector<uint8_t> source(sw * sh * 4);
+  for (int y = 0; y < sh; ++y)
+    for (int x = 0; x < sw; ++x) {
+      auto* pixel = &source[(y * sw + x) * 4];
+      pixel[0] = x / 3;
+      pixel[1] = y / 2;
+      pixel[2] = (x + y) / 5;
+      pixel[3] = 0;
+    }
+  Buffer input(source.size()), full_output(pitch * oh + 32), crop_output(pitch * oh + 32);
+  Gpu(cudaMemcpyAsync(input.data, source.data(), source.size(), cudaMemcpyHostToDevice, stream));
+  const Image image{input.data, nullptr, sw * 4, 0, sw, sh, PixelFormat::kRgba8};
+  const std::array<std::array<float, 2>, 4> polygon{
+      {{101.25f, 31.75f}, {311.5f, 43.25f}, {307.75f, 126.5f}, {105.5f, 130.25f}}};
+  const auto region = hm::scoreboard::MakeCameraRegion(polygon, sw, sh, 2);
+  Check(region.ok(), "camera crop fixture rejected");
+  const auto cropped = hm::scoreboard::CropCameraImage(image, *region);
+  Check(cropped.ok(), "camera GPU view rejected");
+  for (const auto flip : {hm::scoreboard::Orientation{}, hm::scoreboard::Orientation{true, true}}) {
+    const auto full_plan =
+        hm::scoreboard::MakePlan(polygon, sw, sh, ow, oh, 80, 40, hm::scoreboard::Position::kUpperRight, flip);
+    const auto crop_plan = hm::scoreboard::MakePlan(
+        region->polygon, region->width, region->height, ow, oh, 80, 40, hm::scoreboard::Position::kUpperRight, flip);
+    Check(full_plan.ok() && crop_plan.ok(), "camera composite plans rejected");
+    Gpu(cudaMemsetAsync(full_output.data, 0xa5, pitch * oh + 32, stream));
+    Gpu(cudaMemsetAsync(crop_output.data, 0xa5, pitch * oh + 32, stream));
+    const PackedOutput full{full_output.data, pitch, ow, oh, PixelFormat::kRgba8};
+    const PackedOutput crop{crop_output.data, pitch, ow, oh, PixelFormat::kRgba8};
+    Gpu(CompositeScoreboard(image, full, *full_plan, stream));
+    Gpu(CompositeScoreboard(*cropped, crop, *crop_plan, stream));
+    std::vector<uint8_t> reference(pitch * oh + 32), actual(pitch * oh + 32);
+    Gpu(cudaMemcpyAsync(reference.data(), full.data, reference.size(), cudaMemcpyDeviceToHost, stream));
+    Gpu(cudaMemcpyAsync(actual.data(), crop.data, actual.size(), cudaMemcpyDeviceToHost, stream));
+    Gpu(cudaStreamSynchronize(stream));
+    for (size_t index = 0; index < actual.size(); ++index) {
+      const size_t y = index / pitch, column = index % pitch, x = column / 4;
+      const bool inside = y < size_t(full_plan->height) && x >= size_t(full_plan->left) &&
+          x < size_t(full_plan->left + full_plan->width) && column < ow * 4;
+      Check(std::abs(int(actual[index]) - int(reference[index])) <= 1, "GPU cropped/full-frame overlay mismatch");
+      if (!inside)
+        Check(actual[index] == 0xa5, "scoreboard modified panorama, pitch padding or allocation guard");
+      else if (column % 4 == 3)
+        Check(actual[index] == 255, "decoder alpha erased the scoreboard");
+    }
+    Check(
+        CompositeScoreboard(image, crop, *crop_plan, stream) == cudaErrorInvalidValue,
+        "scoreboard accepted stale crop coordinates");
+  }
+}
+
 } // namespace
 int main() {
   try {
     Stream stream;
+    TestCroppedCameraComposite(stream.value);
+    TestIndependentScoreboardCamera(false, stream.value);
+    TestIndependentScoreboardCamera(true, stream.value);
     for (auto format :
          {PixelFormat::kRgba8,
           PixelFormat::kRgb8,

@@ -104,6 +104,19 @@ bool ScoreboardSelectionCanvas::setImage(const QString& path) {
   return !image_.isNull();
 }
 
+bool ScoreboardSelectionCanvas::setPreview(const QImage& image, const QSize& source_size) {
+  if (image.isNull() || source_size.isEmpty() || image.width() > source_size.width() ||
+      image.height() > source_size.height())
+    return false;
+  reference_marks_.clear();
+  image_ = image;
+  image_size_ = source_size;
+  view_initialized_ = false;
+  invalidateViewportCache();
+  update();
+  return true;
+}
+
 void ScoreboardSelectionCanvas::setPoints(const QVector<QPoint>& points) {
   points_.clear();
   if (!image_.isNull()) {

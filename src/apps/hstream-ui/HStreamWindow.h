@@ -361,6 +361,7 @@ class HStreamWindow : public QMainWindow {
   void updateScoreboardControls();
   void changeScoreboardPosition();
   void requestScoreboardSelection();
+  void configureScoreboardCamera();
   bool sendScoreboardCommand(const QString& property, const QString& value);
   bool handleScoreboardControlOutput(const QString& line);
   void handleRinkMaskPaintOutput(const QString& line);
@@ -1065,6 +1066,8 @@ class HStreamWindow : public QMainWindow {
   QString complete_log_;
   QString scoreboard_selector_url_;
   QPushButton* scoreboard_select_button_{nullptr};
+  QPushButton* scoreboard_camera_button_{nullptr};
+  YAML::Node scoreboard_camera_config_;
   QComboBox* scoreboard_position_combo_{nullptr};
   QDoubleSpinBox* scoreboard_scale_spin_{nullptr};
   double saved_scoreboard_scale_{};

@@ -197,7 +197,8 @@ __global__ void RenderYuv(
     float amount,
     bool lift_black,
     float gain,
-    scoreboard::Plan overlay) {
+    scoreboard::Plan overlay,
+    gpu::Image scoreboard_source) {
   const int x = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
   const int y = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
   if (x >= output.width || y >= output.height)
@@ -210,7 +211,7 @@ __global__ void RenderYuv(
     for (int i = 0; i < 2; ++i) {
       const auto base =
           SampleArea(input, x + i, y + j, output.width, output.height, t, 4, gamma, amount, lift_black, gain);
-      const auto p = ScoreboardPixel(input, x + i, y + j, overlay, base);
+      const auto p = ScoreboardPixel(scoreboard_source, x + i, y + j, overlay, base);
       const float r = gpu::Clamp(p.x, 0, 255) / 255;
       const float g = gpu::Clamp(p.y, 0, 255) / 255;
       const float b = gpu::Clamp(p.z, 0, 255) / 255;
@@ -223,6 +224,19 @@ __global__ void RenderYuv(
   auto* chroma = static_cast<uint8_t*>(output.uv) + (y / 2) * output.uv_pitch;
   StoreCode(chroma, x, color.uv_offset + color.uv_range * u * .25f, ten_bit);
   StoreCode(chroma, x + 1, color.uv_offset + color.uv_range * v * .25f, ten_bit);
+}
+__global__ void CompositeScoreboardKernel(gpu::Image source, PackedOutput output, scoreboard::Plan plan) {
+  const unsigned x = blockIdx.x * blockDim.x + threadIdx.x;
+  const unsigned y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= static_cast<unsigned>(plan.width) || y >= static_cast<unsigned>(plan.height))
+    return;
+  const auto pixel = ScoreboardPixel(source, x + plan.left, y + plan.top, plan, make_float4(0, 0, 0, 255));
+  auto* destination = static_cast<uint8_t*>(output.data) + size_t(y + plan.top) * output.pitch +
+      size_t(x + plan.left) * 4;
+  destination[0] = static_cast<uint8_t>(gpu::Clamp(pixel.x + .5f, 0, 255));
+  destination[1] = static_cast<uint8_t>(gpu::Clamp(pixel.y + .5f, 0, 255));
+  destination[2] = static_cast<uint8_t>(gpu::Clamp(pixel.z + .5f, 0, 255));
+  destination[3] = 255;
 }
 // Source pixels per output pixel along one axis, rounded up to whole taps
 // once the reduction is steep enough to be worth averaging at all.
@@ -299,10 +313,14 @@ cudaError_t RenderProgramYuv(
     bool lift_black,
     float exposure,
     cudaStream_t stream,
-    const scoreboard::Plan* overlay) {
+    const scoreboard::Plan* overlay,
+    const gpu::Image* scoreboard_source) {
+  const auto& overlay_input = scoreboard_source ? *scoreboard_source : input;
+  if (scoreboard_source && !overlay)
+    return cudaErrorInvalidValue;
   if (overlay &&
-      (!scoreboard::ValidatePlan(*overlay) || overlay->source_width != input.width ||
-       overlay->source_height != input.height || overlay->output_width != output.width ||
+      (!scoreboard::ValidatePlan(*overlay) || !gpu::ValidateImage(overlay_input) || overlay->source_width != overlay_input.width ||
+       overlay->source_height != overlay_input.height || overlay->output_width != output.width ||
        overlay->output_height != output.height))
     return cudaErrorInvalidValue;
   const gpu::Image destination{
@@ -342,6 +360,14 @@ cudaError_t RenderProgramYuv(
          Overlaps(input.plane1, input.pitch1 * (input.height / 2), plane)))
       return cudaErrorInvalidValue;
   }
+  if (scoreboard_source) {
+    for (const auto& plane : planes) {
+      if (Overlaps(overlay_input.plane0, overlay_input.pitch0 * overlay_input.height, plane) ||
+          ((overlay_input.format == gpu::PixelFormat::kNv12 || overlay_input.format == gpu::PixelFormat::kP010) &&
+           Overlaps(overlay_input.plane1, overlay_input.pitch1 * (overlay_input.height / 2), plane)))
+        return cudaErrorInvalidValue;
+    }
+  }
   Transform transform{
       t.source_rect.left,
       t.source_rect.top,
@@ -363,7 +389,28 @@ cudaError_t RenderProgramYuv(
       shadow_lift_amount(lift),
       lift_black,
       exposure_gain(exposure),
-      overlay ? *overlay : scoreboard::Plan{});
+      overlay ? *overlay : scoreboard::Plan{},
+      overlay_input);
+  return cudaGetLastError();
+}
+
+cudaError_t CompositeScoreboard(
+    const gpu::Image& source,
+    const PackedOutput& output,
+    const scoreboard::Plan& plan,
+    cudaStream_t stream) {
+  const gpu::Image destination{
+      output.data, nullptr, output.pitch, 0, output.width, output.height, output.format};
+  if (output.format != gpu::PixelFormat::kRgba8 || !gpu::ValidateImage(source) ||
+      !gpu::ValidateImage(destination) || !scoreboard::ValidatePlan(plan) || plan.source_width != source.width ||
+      plan.source_height != source.height || plan.output_width != output.width || plan.output_height != output.height)
+    return cudaErrorInvalidValue;
+  if (Overlaps(source.plane0, source.pitch0 * source.height, output) ||
+      ((source.format == gpu::PixelFormat::kNv12 || source.format == gpu::PixelFormat::kP010) &&
+       Overlaps(source.plane1, source.pitch1 * (source.height / 2), output)))
+    return cudaErrorInvalidValue;
+  const dim3 block(16, 16), grid((plan.width + 15) / 16, (plan.height + 15) / 16);
+  CompositeScoreboardKernel<<<grid, block, 0, stream>>>(source, output, plan);
   return cudaGetLastError();
 }
 } // namespace hm::playcropper

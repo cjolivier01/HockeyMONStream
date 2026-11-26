@@ -43,6 +43,7 @@
 #include "src/apps/hstream-ui/RinkMapDialog.h"
 #include "src/apps/hstream-ui/RinkMaskPaintDialog.h"
 #include "src/apps/hstream-ui/RuntimeOptions.h"
+#include "src/apps/hstream-ui/ScoreboardCameraDialog.h"
 #include "src/apps/hstream-ui/ScoreboardSelectionDialog.h"
 #include "src/apps/hstream-ui/StitchingExperimentDialog.h"
 #include "src/apps/hstream-ui/StitchingStillPreview.h"
@@ -7209,6 +7210,7 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
 
   preview_status_ = new QLabel("Pipeline stopped");
   preview_status_->setObjectName("previewStatusLabel");
+  preview_status_->setWordWrap(true);
   auto* program_footer = new QHBoxLayout();
   program_footer->addWidget(preview_status_, 1);
   scoreboard_select_button_ = new QPushButton(action_icon(ActionIcon::Crop), "Select scoreboard…");
@@ -7225,6 +7227,13 @@ void HStreamWindow::buildPreviewPane(QVBoxLayout* root) {
   scoreboard_position_combo_->setToolTip(
       "Scoreboard placement in Program output, including recordings and streams. Saved for this game; applies live during playback.");
   program_footer->addWidget(scoreboard_select_button_);
+  scoreboard_camera_button_ = new QPushButton(action_icon(ActionIcon::Camera), QString());
+  scoreboard_camera_button_->setObjectName("scoreboardCameraButton");
+  scoreboard_camera_button_->setAccessibleName("Extra camera…");
+  scoreboard_camera_button_->setToolTip(
+      "Extra scoreboard camera: choose its source, crop its image, and set its start offset.");
+  program_footer->addWidget(scoreboard_camera_button_);
+  connect(scoreboard_camera_button_, &QPushButton::clicked, this, &HStreamWindow::configureScoreboardCamera);
   program_footer->addWidget(new QLabel("Position:"));
   program_footer->addWidget(scoreboard_position_combo_);
   scoreboard_scale_spin_ = new QDoubleSpinBox();
@@ -17543,6 +17552,7 @@ void HStreamWindow::failArchiveFinalization(const QString& message) {
 }
 
 void HStreamWindow::loadScoreboardControls(const YAML::Node& config) {
+  scoreboard_camera_config_ = YAML::Clone(merge_yaml_maps(baseline_config_, config)["rink"]["scoreboard"]["camera"]);
   if (!scoreboard_position_combo_)
     return;
   QString position = "upper-left";
@@ -17608,6 +17618,9 @@ void HStreamWindow::updateScoreboardControls() {
   const bool selecting = scoreboard_reselect_waiting_ || scoreboard_selection_dialog_;
   const bool editable = !running && !isArchiveFinalizing() && !selecting && !calibration_pending_;
   scoreboard_scale_spin_->setEnabled(editable);
+  if (scoreboard_camera_button_)
+    scoreboard_camera_button_->setEnabled(
+        editable && !editing_defaults_ && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
   for (const auto& flip : scoreboard_flips_)
     flip.check->setEnabled(editable);
   const bool available = !isArchiveFinalizing() && !isCalibrationRun() && !calibration_pending_ &&
@@ -17616,7 +17629,9 @@ void HStreamWindow::updateScoreboardControls() {
       pending_process_resume_generation_ == 0 &&
       (!running || ((!pipeline_paused_ || pipeline_cooperative_pause_) && !pipeline_stop_requested_));
   const bool live = running && scoreboard_runtime_ready_ && active_run_game_id_ == game_id_edit_->text().trimmed();
-  scoreboard_select_button_->setEnabled(scoreboard_selection_dialog_ || (available && live && !selecting));
+  const bool separate_camera = scoreboard_camera_config_.IsMap() && scoreboard_camera_config_["enabled"].as<bool>();
+  scoreboard_select_button_->setEnabled(
+      !separate_camera && (scoreboard_selection_dialog_ || (available && live && !selecting)));
   scoreboard_position_combo_->setEnabled(
       available && !selecting && (!running || live) && game_id_edit_ && !game_id_edit_->text().trimmed().isEmpty());
   const QString ready_text = "Scoreboard placement also applies to recordings and streams.";
@@ -17650,6 +17665,51 @@ bool HStreamWindow::sendScoreboardCommand(const QString& property, const QString
     updateScoreboardControls();
   });
   return true;
+}
+
+void HStreamWindow::configureScoreboardCamera() {
+  if (!scoreboard_camera_button_ || !scoreboard_camera_button_->isEnabled())
+    return;
+  const fs::path directory(gameDirectory(game_id_edit_->text().trimmed()).toStdString());
+  try {
+    const auto path = directory / "_hockeymon/config.yaml";
+    const auto config = fs::exists(path) ? YAML::LoadFile(path.string()) : YAML::Node(YAML::NodeType::Map);
+    scoreboard_camera_config_ = YAML::Clone(merge_yaml_maps(baseline_config_, config)["rink"]["scoreboard"]["camera"]);
+  } catch (const std::exception& error) {
+    scoreboard_controls_status_->setText("Could not load scoreboard camera: " + QString::fromUtf8(error.what()));
+    return;
+  }
+  const auto initial = YAML::Dump(scoreboard_camera_config_);
+  ScoreboardCameraDialog dialog(scoreboard_camera_config_, QString::fromStdString(directory.string()), this);
+  if (dialog.exec() != QDialog::Accepted)
+    return;
+  absl::Status status;
+  {
+    auto lock = hm::stitching::GameConfigTransactionLock::TryAcquire(directory);
+    if (!lock.ok())
+      status = lock.status();
+    else {
+      try {
+        const auto path = directory / "_hockeymon/config.yaml";
+        auto config = fs::exists(path) ? YAML::LoadFile(path.string()) : YAML::Node(YAML::NodeType::Map);
+        const auto effective = merge_yaml_maps(baseline_config_, config);
+        if (YAML::Dump(effective["rink"]["scoreboard"]["camera"]) != initial)
+          status = absl::AbortedError("Scoreboard camera settings changed while the dialog was open. Open it again.");
+        else {
+          config["rink"]["scoreboard"]["camera"] = dialog.selection();
+          status = publish_yaml_config(path, config);
+          if (status.ok())
+            scoreboard_camera_config_ = YAML::Clone(dialog.selection());
+        }
+      } catch (const std::exception& error) {
+        status = absl::InternalError(error.what());
+      }
+    }
+  }
+  scoreboard_controls_status_->setText(
+      status.ok() ? "Scoreboard camera saved for the next playback."
+                  : "Could not save scoreboard camera: " + QString::fromStdString(status.ToString()));
+  updateScoreboardControls();
 }
 
 void HStreamWindow::requestScoreboardSelection() {

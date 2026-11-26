@@ -422,7 +422,8 @@ absl::Status AmdProgramRenderer::Render(
         settings.lift_shadow_black_point,
         settings.exposure,
         impl.stream,
-        settings.scoreboard ? &*settings.scoreboard : nullptr));
+        settings.scoreboard ? &*settings.scoreboard : nullptr,
+        settings.scoreboard_source.get()));
     if (preview) {
       namespace a = draw_display::analytics;
       const auto& commands = preview->Build(transform, yuv.width, yuv.height);

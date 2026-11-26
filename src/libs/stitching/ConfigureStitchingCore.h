@@ -389,7 +389,8 @@ absl::Status configure_orientation(
     const std::string& expected_invalidation_id,
     const std::function<bool()>& is_cancelled,
     const CameraSourceStarts& source_starts,
-    const CameraFrameFlips& flips);
+    const CameraFrameFlips& flips,
+    const YAML::Node* effective_config = nullptr);
 
 bool is_scoreboard_configured(const std::string& game_dir);
 
