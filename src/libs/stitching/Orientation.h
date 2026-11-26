@@ -27,11 +27,12 @@ absl::StatusOr<OrientationScores> rink_orientation_scores(const cv::Mat& binary_
 absl::StatusOr<std::string> classify_rink_orientation(const cv::Mat& binary_mask);
 absl::Status configure_game_orientation(
     const std::string& game_dir,
-    const RinkSegmentation& rink_model,
+    const std::function<absl::StatusOr<RinkProfile>(const cv::Mat&)>& infer_rink,
     const std::string& expected_invalidation_id = {},
     const std::function<bool()>& is_cancelled = {},
     const CameraSourceStarts& source_starts = {},
-    const CameraFrameFlips& flips = {});
+    const CameraFrameFlips& flips = {},
+    const YAML::Node* effective_config = nullptr);
 
 } // namespace stitching
 } // namespace hm

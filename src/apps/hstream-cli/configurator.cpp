@@ -6879,7 +6879,7 @@ absl::Status Configurator::gather_stitching_videos(
     HM_ASSIGN_OR_RETURN(
         flips, stitching::ReadCameraFrameFlips(get_node(config_, "stitching.input_cameras").value_or(YAML::Node())));
     HM_RETURN_IF_ERROR(
-        stitching::configure_orientation(game_dir, active_stitching_invalidation_id_, {}, source_starts, flips));
+        stitching::configure_orientation(game_dir, active_stitching_invalidation_id_, {}, source_starts, flips, &config_));
     HM_RETURN_IF_ERROR(import_stitching_orientation(game_dir));
     left_files = config_["game"]["videos"]["left"].as<std::vector<std::string>>();
     right_files = config_["game"]["videos"]["right"].as<std::vector<std::string>>();

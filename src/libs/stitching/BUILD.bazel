@@ -640,6 +640,7 @@ cc_test(
     ":orientation_internal",
     ":stitching",
     "//src/libs/common:process",
+    "//src/libs/media:test_mp4",
     "@yaml-cpp",
   ], testonly = True),
 )

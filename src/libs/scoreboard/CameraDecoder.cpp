@@ -276,8 +276,13 @@ struct CameraDecoder::Impl {
     if (!seek(retire_hevc ? gst_util_seqnum_next() : sequence))
       return Retire(absl::UnavailableError("Scoreboard video seek refused"));
     if (retire_hevc) {
-      if (gst_element_set_state(decoder, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE ||
-          !gst_element_sync_state_with_parent(decoder) || !seek(sequence))
+      // Retire conversion imports with the decoder surfaces. In particular,
+      // Jetson can recycle a surface descriptor after NULL; a converter which
+      // survives that retirement can retain an import of the previous image.
+      if (gst_element_set_state(converter, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE ||
+          gst_element_set_state(decoder, GST_STATE_NULL) == GST_STATE_CHANGE_FAILURE ||
+          !gst_element_sync_state_with_parent(converter) || !gst_element_sync_state_with_parent(decoder) ||
+          !seek(sequence))
         return Retire(absl::UnavailableError("Cannot retire scoreboard HEVC seek surfaces"));
     }
     status = WaitState(deadline);

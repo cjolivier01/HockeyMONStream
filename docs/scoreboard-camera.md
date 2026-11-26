@@ -32,7 +32,9 @@ from independent timestamp/duration rounding join at the next actual source PTS.
 MP4 timestamps are restored to their declared track ticks when qtdemux's
 composition-offset subtraction introduces a one-nanosecond rounding error.
 Seeks decode keyframe preroll and retain original presentation intervals; they
-do not clip the preceding picture to the new start time.
+do not clip the preceding picture to the new start time. NVIDIA HEVC seeks retire
+the converter together with decoder surfaces so retained conversion imports cannot
+refer to recycled Jetson surfaces. Strict pixel comparisons cover repeated seeks.
 
 The game cameras own the output clock, resolution and format. The scoreboard
 never participates in choosing the stitched frame rate. Selection happens at
@@ -130,3 +132,8 @@ It excludes inference and encoding, so its result is not an end-to-end FPS claim
 One RTX 5090 run with two 8K inputs measured 110.5 FPS without the scoreboard and
 110.0 FPS with a 1080p scoreboard. A third 8K recording measured 110.4 versus
 105.5 FPS. These are individual measurements, not zero-regression guarantees.
+
+Configured scoreboard recordings remain excluded from game-camera discovery when
+its camera checkbox is off. Clear the file selection to release that source role.
+Runtime configuration overrides carry the same exclusions through Auto orientation;
+both one-pass and two-stage calibration retain the resulting camera assignments.

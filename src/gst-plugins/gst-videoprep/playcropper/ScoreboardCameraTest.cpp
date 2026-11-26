@@ -455,18 +455,23 @@ void CheckMixedOverlay(
                     stream));
           Cuda(cudaStreamSynchronize(stream));
           const auto actual = output.Pixels(), wanted = expected.Pixels();
+          int max_difference = 0;
+          size_t different = 0;
           for (int y = plan.top; y < plan.top + plan.height; ++y)
             for (int x = plan.left; x < plan.left + plan.width; ++x)
-              for (int c = 0; c < 4; ++c)
-                if (actual[(y * 320 + x) * 4 + c] != wanted[(y * 320 + x) * 4 + c])
-                  Check(
-                      false,
-                      "Wrong scoreboard pixels: source_fps=" + std::to_string(scoreboard_fps) +
-                          " game_fps=" + std::to_string(game_fps) + " ten_bit=" + std::to_string(ten_bit) +
-                          " origin=" + std::to_string(origin) + " frame=" + std::to_string(i) +
-                          " offset=" + std::to_string(offset_frames) + " source=" + std::to_string(source_frame) +
-                          " actual=" + std::to_string(actual[(y * 320 + x) * 4 + c]) +
-                          " expected=" + std::to_string(wanted[(y * 320 + x) * 4 + c]));
+              for (int c = 0; c < 4; ++c) {
+                const auto pixel = (y * 320 + x) * 4 + c;
+                const int difference = std::abs(int(actual[pixel]) - int(wanted[pixel]));
+                max_difference = std::max(max_difference, difference);
+                different += difference != 0;
+              }
+          Check(
+              max_difference == 0,
+              "Wrong scoreboard pixels: source_fps=" + std::to_string(scoreboard_fps) +
+                  " game_fps=" + std::to_string(game_fps) + " ten_bit=" + std::to_string(ten_bit) + " origin=" +
+                  std::to_string(origin) + " frame=" + std::to_string(i) + " offset=" + std::to_string(offset_frames) +
+                  " source=" + std::to_string(source_frame) + " max_difference=" + std::to_string(max_difference) +
+                  " different_channels=" + std::to_string(different));
         }
       }
     }

@@ -2415,30 +2415,10 @@ absl::Status StitcherPriv::GenerateOutput(
           return absl::FailedPreconditionError("Stitching is not configured");
         } else {
           CalibrationWatchdogSuspension watchdog_suspension(owner_element_);
-          if (!orientation_ran_) {
-            std::optional<YAML::Node> saved;
-            HM_ASSIGN_OR_RETURN(
-                saved, stitching::load_game_config_file(hm::game_storage::StatePath(config_file_, "config.yaml")));
-            const auto settings = saved && saved->IsMap() ? (*saved)["stitching"] : YAML::Node();
-            stitching::CameraSourceStarts starts;
-            stitching::CameraFrameFlips flips;
-            HM_ASSIGN_OR_RETURN(
-                starts,
-                stitching::ReadCameraSourceStarts(settings.IsMap() ? settings["input_start_times"] : YAML::Node()));
-            HM_ASSIGN_OR_RETURN(
-                flips, stitching::ReadCameraFrameFlips(settings.IsMap() ? settings["input_cameras"] : YAML::Node()));
-            absl::Status orientation_status = stitching::configure_orientation(
-                config_file_,
-                calibration_invalidation_id_,
-                [this] { return calibration_cancelled_.load(std::memory_order_acquire); },
-                starts,
-                flips);
-            if (!orientation_status.ok()) {
-              std::cerr << orientation_status << "\n" << std::flush;
-              return orientation_status;
-            }
-            orientation_ran_ = true;
-          }
+          // As in one-pass calibration, source pads already carry Configurator's
+          // resolved Left/Right assignment. Rediscovery here would discard
+          // runtime-only scoreboard exclusions and explicit camera roles.
+          orientation_ran_ = true;
           absl::Status configure_status = stitching::configure_stitching(
               config_file_,
               batch_calibration_frame_pairs,

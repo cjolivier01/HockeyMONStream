@@ -561,8 +561,8 @@ absl::StatusOr<VideosDict> get_available_videos(
     } else
       owned = config::MergeNodes(owned, *effective_config, false);
     const auto camera = owned["rink"]["scoreboard"]["camera"];
-    if (!camera["enabled"].as<bool>())
-      return discover_videos(directory, prune, {});
+    // Disabling the overlay does not turn its configured recordings into
+    // game cameras. Clearing the file selection releases that separate role.
     std::set<fs::path> excluded;
     for (const auto& file : camera["files"]) {
       auto path = fs::path(file.as<std::string>());
