@@ -1,5 +1,6 @@
 #include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/common/GameStorage.h"
+#include "hstream/src/libs/stitching/VideoLensMetadata.h"
 
 #include "hstream/src/libs/stitching/GameConfig.h"
 
@@ -548,6 +549,8 @@ absl::StatusOr<std::string> CalibrationMatchSourceContext(const YAML::Node& conf
         return absl::InvalidArgumentError("Invalid match source synchronization");
       context[role]["offset"] = offset;
     }
+    if (RecordingUsesDisplayTransform(game, config))
+      context["camera_display_orientation"] = "recorded";
     return digest(YAML::Dump(context));
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError("Cannot identify calibration match sources: " + std::string(error.what()));

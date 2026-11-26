@@ -286,6 +286,24 @@ int main(int argc, char** argv) {
       expect(!partial.ok() || !partial->unavailable_reason.empty(), "Truncation cannot yield a complete lens");
     }
     auto good = movie(fixture);
+    // A movie-level quarter turn applies even when the track has no rotation.
+    Bytes mvhd(36);
+    for (int32_t coefficient : {0, -65536, 0, 65536, 0, 0, 0, 0, 1 << 30})
+      append(mvhd, be(static_cast<uint32_t>(coefficient)));
+    auto rotated_payload = atom("mvhd", mvhd);
+    append(rotated_payload, Bytes(good.begin() + 8, good.end()));
+    write(dir / "portrait.mp4", atom("moov", rotated_payload));
+    const auto portrait = ReadVideoLensMetadata(dir / "portrait.mp4");
+    const auto landscape = ParseVideoLensMetadata(fixture);
+    expect(
+        portrait.ok() && landscape.ok() && portrait->display.transpose && portrait->width == landscape->height &&
+            portrait->height == landscape->width && portrait->vertical_fov == landscape->horizontal_fov &&
+            portrait->horizontal_fov == landscape->vertical_fov &&
+            std::abs(
+                portrait->camera.horizontal_fov / portrait->width -
+                landscape->camera.horizontal_fov / landscape->width) < 1e-12 &&
+            portrait->camera.input_lens.distortion == landscape->camera.input_lens.distortion,
+        "Movie rotation must preserve the fitted angular scale and transpose the measured coverage");
     write(dir / "left.mp4", good);
     write(dir / "right.mp4", good);
     write(dir / "zoomed.mp4", movie(gopro(0.36623674631118774f, "HS EIS", false, true, false)));

@@ -147,6 +147,7 @@ struct UriListPadProbeData {
   guint uri_index;
   GstClockTime base;
   gboolean is_video;
+  gboolean transpose;
   GstClockTime initial_offset;
   GstSegment physical_segment;
   GstClockTime video_origin;
@@ -2360,7 +2361,8 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       gint width = 0, height = 0;
       const auto* format = gst_caps_get_structure(caps, 0);
       if (!gst_structure_get_int(format, "width", &width) || !gst_structure_get_int(format, "height", &height) ||
-          width != bin->config->stitch_input_width || height != bin->config->stitch_input_height)
+          (probe_data->transpose ? height : width) != bin->config->stitch_input_width ||
+          (probe_data->transpose ? width : height) != bin->config->stitch_input_height)
         return fail_uri_playlist_initial_positioning(bin, "decoded camera dimensions differ from the recording header");
     }
     if (probe_data->is_video && bin->config && bin->config->frame_decimation > 0 &&
@@ -2450,31 +2452,51 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       // EOS after one camera's entire playlist is permanently exhausted.
       return GST_PAD_PROBE_DROP;
     }
-    if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
-        GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
-      GstCaps* chapter_caps = nullptr;
-      gst_event_parse_caps(event, &chapter_caps);
-      GstPad* tee_sink = uri_video_input_pad(bin);
-      GstCaps* logical_caps = tee_sink ? gst_pad_get_current_caps(tee_sink) : nullptr;
-      const gboolean caps_match = chapter_caps && logical_caps && gst_caps_is_equal(chapter_caps, logical_caps);
-      if (logical_caps) {
-        gst_caps_unref(logical_caps);
+    if (probe_data->is_video && GST_EVENT_TYPE(event) == GST_EVENT_CAPS) {
+      GstCaps* raw = nullptr;
+      gst_event_parse_caps(event, &raw);
+      // Keep a reference in display coordinates across decoder replacements.
+      // A portrait-coded chapter may display on the same grid as a landscape one.
+      GstCaps* displayed = gst_caps_copy(raw);
+      auto* structure = gst_caps_get_structure(displayed, 0);
+      if (probe_data->transpose) {
+        int w, h, n, d;
+        if (gst_structure_get_int(structure, "width", &w) && gst_structure_get_int(structure, "height", &h))
+          gst_structure_set(structure, "width", G_TYPE_INT, h, "height", G_TYPE_INT, w, nullptr);
+        if (gst_structure_get_fraction(structure, "pixel-aspect-ratio", &n, &d))
+          gst_structure_set(structure, "pixel-aspect-ratio", GST_TYPE_FRACTION, d, n, nullptr);
       }
-      if (tee_sink) {
-        gst_object_unref(tee_sink);
+      if (probe_data->uri_index == bin->uri_playlist_initial_uri_index) {
+        g_object_set_data_full(
+            G_OBJECT(bin->tee),
+            "hstream-camera-display-caps",
+            displayed,
+            reinterpret_cast<GDestroyNotify>(gst_caps_unref));
+      } else {
+        auto* previous = static_cast<GstCaps*>(g_object_get_data(G_OBJECT(bin->tee), "hstream-camera-display-caps"));
+        const bool compatible = previous && gst_caps_is_equal(previous, displayed);
+        gst_caps_unref(displayed);
+        if (!compatible) {
+          cancel_uri_playlist_source(bin, TRUE);
+          GST_ELEMENT_ERROR(
+              bin->src_elem,
+              STREAM,
+              FORMAT,
+              ("Camera chapter video format changed"),
+              ("source=%u uri_index=%u", bin->source_id, probe_data->uri_index));
+          return GST_PAD_PROBE_DROP;
+        }
+        GstPad* input = uri_video_input_pad(bin);
+        GstCaps* accepted = input ? gst_pad_get_current_caps(input) : nullptr;
+        const bool needs_new_input_caps = bin->camera_input_flip && accepted && !gst_caps_is_equal(accepted, raw);
+        if (accepted)
+          gst_caps_unref(accepted);
+        if (input)
+          gst_object_unref(input);
+        // Equal CAPS remain sticky. A changed coded grid must reach the GPU
+        // converter so it renegotiates its input before the first new frame.
+        return needs_new_input_caps ? GST_PAD_PROBE_OK : GST_PAD_PROBE_DROP;
       }
-      if (!caps_match) {
-        cancel_uri_playlist_source(bin, TRUE);
-        GST_ELEMENT_ERROR(
-            bin->src_elem,
-            STREAM,
-            FORMAT,
-            ("Camera chapter video format changed"),
-            ("source=%u uri_index=%u", bin->source_id, probe_data->uri_index));
-      }
-      // Equal caps are already sticky on the logical source. Re-emitting them can make nvstreammux close a batch at
-      // a file boundary; changed caps are a hard error because the playlist can no longer be one lossless stream.
-      return GST_PAD_PROBE_DROP;
     }
     if (probe_data->is_video && probe_data->uri_index > bin->uri_playlist_initial_uri_index &&
         GST_EVENT_TYPE(event) == GST_EVENT_SEGMENT) {
@@ -2816,7 +2838,9 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       if (bin->camera_input_flip) {
         const auto* methods = static_cast<const std::vector<int>*>(
             g_object_get_data(G_OBJECT(bin->camera_input_flip), "hstream-camera-transforms"));
-        g_object_set(bin->camera_input_flip, "flip-method", (*methods)[probe_data->uri_index], nullptr);
+        const int method = (*methods)[probe_data->uri_index];
+        probe_data->transpose = method % 2;
+        g_object_set(bin->camera_input_flip, "flip-method", method, nullptr);
       }
       if (bin->config && bin->config->frame_decimation > 0)
         hm::uri_playlist_internal::discover_uri_playlist_duration(
@@ -4442,11 +4466,7 @@ static absl::StatusOr<std::vector<int>> camera_chapter_transforms(
         display = *metadata;
       }
     }
-    if (after.transpose) {
-      display.transpose = !display.transpose;
-      std::swap(display.flip.horizontal, display.flip.vertical);
-    }
-    methods.push_back(display.corrected(after.flip).nvFlipMethod());
+    methods.push_back(display.followedBy(after).nvFlipMethod());
   }
   return methods;
 }

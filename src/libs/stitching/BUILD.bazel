@@ -485,6 +485,7 @@ cc_library(
     ":canvas_constraint_check",
     ":feature_matcher",
     ":game_config",
+    ":video_lens_metadata",
     ":transaction_state",
     "//src/libs/common:status_macros",
     "//src/libs/common:utils_base",

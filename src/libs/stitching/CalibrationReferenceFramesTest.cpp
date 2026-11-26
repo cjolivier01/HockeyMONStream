@@ -5,7 +5,9 @@
 #include <cmath>
 #include <iostream>
 #include "hstream/src/libs/common/Process.h"
+#include "hstream/src/libs/stitching/CalibrationMatches.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/HuginProject.h"
 #include "hstream/src/libs/stitching/PlayerFrameSelection.h"
 #include "yaml-cpp/yaml.h"
 
@@ -176,6 +178,23 @@ int main() {
           !actual.empty() && cv::norm(expected, actual, cv::NORM_INF) == 0,
           "Calibration PNG must apply its display rotation before the manual corrections");
     }
+  }
+  {
+    auto interrupted = YAML::Clone(tagged);
+    interrupted["stitching"]["calibration_frame_selection"]["context"]["decode_anchor_ns"] = "0";
+    expect(
+        !HuginProject::CheckSavedRecordingGeometry(game, interrupted).ok(),
+        "An interrupted calibration cannot reuse old selected inputs for tagged cameras");
+    interrupted["stitching"]["calibration_frame_selection"]["context"]["camera_display_orientation"] = "recorded";
+    expect(
+        HuginProject::CheckSavedRecordingGeometry(game, interrupted).ok(),
+        "Fresh selected inputs are valid before the first canvas exists");
+    const auto oriented_context = CalibrationMatchSourceContext(interrupted, game);
+    std::filesystem::copy_file(video, rotated, std::filesystem::copy_options::overwrite_existing);
+    const auto raw_context = CalibrationMatchSourceContext(interrupted, game);
+    expect(
+        oriented_context.ok() && raw_context.ok() && *oriented_context != *raw_context,
+        "Retained manual match coordinates must bind the recording display convention");
   }
   PlayerFrameSelectionSettings selected_settings;
   selected_settings.frame_count = 2;

@@ -3311,6 +3311,10 @@ absl::Status create_control_points(
       if (!backend_choices.calibration_frame_selection_fingerprint.empty()) {
         PlayerFrameSelectionPlan plan;
         HM_ASSIGN_OR_RETURN(plan, ParsePlayerFrameSelectionPlan(config["stitching"]["calibration_frame_selection"]));
+        const auto orientation = plan.context.find("camera_display_orientation");
+        if (display_oriented && (orientation == plan.context.end() || orientation->second != "recorded"))
+          return absl::FailedPreconditionError(
+              "Selected frames predate camera display orientation. Restart calibration from input.");
         selected_plan = std::move(plan);
       }
     } else {

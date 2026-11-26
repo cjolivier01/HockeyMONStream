@@ -652,7 +652,11 @@ VideoLensMetadata displayed_metadata(VideoLensMetadata result, media::DisplayTra
   if (display.transpose) {
     std::swap(result.width, result.height);
     std::swap(result.horizontal_fov, result.vertical_fov);
-    std::swap(result.camera.horizontal_fov, result.camera.vertical_fov);
+    // The fitted equidistant HFOV controls angular scale per pixel. The
+    // measured vertical coverage is independent of its polynomial correction.
+    result.camera.horizontal_fov *= double(result.width) / result.height;
+    if (result.vertical_fov)
+      result.camera.vertical_fov = *result.vertical_fov;
     std::swap(center[0], center[1]);
   }
   if (display.flip.horizontal)
@@ -660,6 +664,23 @@ VideoLensMetadata displayed_metadata(VideoLensMetadata result, media::DisplayTra
   if (display.flip.vertical)
     center[1] = -center[1];
   return result;
+}
+
+media::DisplayTransform read_header_transform(Mp4& mp4, const Mp4::Atom& header, unsigned offset) {
+  require(header.size >= 1, "Missing MP4 header version");
+  const auto version = mp4.read(header.pos, 1).front();
+  require(version <= 1, "Unsupported MP4 header version");
+  if (version == 1)
+    offset += 12; // creation time, modification time and duration are 64-bit.
+  require(header.size >= offset + 36, "Truncated MP4 display matrix");
+  const auto bytes = mp4.read(header.pos + offset, 36);
+  int32_t matrix[9];
+  for (size_t i = 0; i < 9; ++i)
+    matrix[i] = static_cast<int32_t>(integer(bytes.data() + 4 * i, 4));
+  const auto transform = media::ParseDisplayMatrix(matrix);
+  if (!transform.ok())
+    throw Unsupported(std::string(transform.status().message()));
+  return *transform;
 }
 
 VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_only) {
@@ -683,6 +704,7 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
   }
   size_t width = 0, height = 0;
   media::DisplayTransform display;
+  media::DisplayTransform movie_display;
   std::map<std::string, Mp4::Atom> dji_track;
   // Camera metadata and video sample descriptions are contained in moov.
   // Do not interpret a legacy unboxed Insta360 trailer as more MP4 atoms.
@@ -690,6 +712,8 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
     if (top.type != "moov")
       continue;
     for (const auto& a : mp4.atoms(top.pos, top.size)) {
+      if (a.type == "mvhd")
+        movie_display = read_header_transform(mp4, a, 36);
       if (!dimensions_only && a.type == "udta") {
         for (const auto& g : mp4.atoms(a.pos, a.size))
           if (g.type == "GPMF") {
@@ -715,25 +739,12 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
         require(width == 0, "Multiple video tracks need independent lens models");
         width = integer(b.data() + 40, 2);
         height = integer(b.data() + 42, 2);
-        if (leaves.count("tkhd")) {
-          const auto& header = leaves.at("tkhd");
-          require(header.size >= 1, "Missing MP4 track header version");
-          const auto version = mp4.read(header.pos, 1).front();
-          require(version <= 1, "Unsupported MP4 track header version");
-          const unsigned offset = version == 1 ? 52 : 40;
-          require(header.size >= offset + 36, "Truncated MP4 track display matrix");
-          const auto bytes = mp4.read(header.pos + offset, 36);
-          int32_t matrix[9];
-          for (size_t i = 0; i < 9; ++i)
-            matrix[i] = static_cast<int32_t>(integer(bytes.data() + 4 * i, 4));
-          const auto transform = media::ParseDisplayMatrix(matrix);
-          if (!transform.ok())
-            throw Unsupported(std::string(transform.status().message()));
-          display = *transform;
-        }
+        if (leaves.count("tkhd"))
+          display = read_header_transform(mp4, leaves.at("tkhd"), 40);
       }
     }
   }
+  display = display.followedBy(movie_display);
   if (dimensions_only) {
     require(width && height && width <= 32768 && height <= 32768, "Recording has no usable video dimensions");
     VideoLensMetadata result;

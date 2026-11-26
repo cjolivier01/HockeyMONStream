@@ -1535,10 +1535,17 @@ int run_mixed_packed_inputs(const fs::path& root, bool tagged_chapter = false) {
     std::vector<std::string> chapters{to_file_uri(file)};
     if (tagged_chapter) {
       const auto rotated = root / ("rotated-" + std::to_string(i) + ".mp4");
-      if (!run_shell(
-              "ffmpeg -v error -y -display_rotation 180 -i " + shell_quote(file) + " -c copy " + shell_quote(rotated)))
+      const auto portrait = root / "portrait.mp4";
+      if (i && !make_synthetic_mp4(portrait, 1, 0, 440, true, 0, "216x384"))
         return 1;
-      chapters.push_back(to_file_uri(rotated));
+      if (!run_shell(
+              "ffmpeg -v error -y -display_rotation " + std::string(i ? "90" : "180") + " -i " +
+              shell_quote(i ? portrait : file) + " -c copy " + shell_quote(rotated)))
+        return 1;
+      if (i)
+        chapters.insert(chapters.begin(), to_file_uri(rotated));
+      else
+        chapters.push_back(to_file_uri(rotated));
     }
     configure_uri_multiple_source(configs[i], chapters, i);
     configs[i].stitch_input_width = i ? 384 : 512;
@@ -1613,8 +1620,8 @@ int run_mixed_packed_inputs(const fs::path& root, bool tagged_chapter = false) {
     std::cerr << "Packed frames observed: " << stats.batches << "\n";
   if (tagged_chapter) {
     for (int i = 0; i < 2; ++i) {
-      std::vector<int> expected(15, i ? 6 : 4);
-      expected.insert(expected.end(), 15, i ? 4 : 6);
+      std::vector<int> expected(15, i ? 7 : 4);
+      expected.insert(expected.end(), 15, 6);
       if (observed[i].methods != expected) {
         std::cerr << "Camera " << i << " applied the wrong display transform at a chapter boundary\n";
         return 4;
@@ -1978,7 +1985,8 @@ int main(int argc, char** argv) {
   const bool mixed_only = argc == 2 && std::string(argv[1]) == "--mixed-sources-only";
   const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
   const bool startup_seek_only = argc == 2 && std::string(argv[1]) == "--startup-seek-only";
-  if (!decoder_matrix_only && !startup_seek_only && !mixed_only) {
+  const bool display_only = argc == 2 && std::string(argv[1]) == "--display-chapters-only";
+  if (!decoder_matrix_only && !startup_seek_only && !mixed_only && !display_only) {
     if (const int rc = run_realtime_render_tests())
       return rc;
   }
@@ -1990,13 +1998,17 @@ int main(int argc, char** argv) {
   fs::create_directories(tmpdir);
 
   const fs::path a0 = tmpdir / "left_0.mp4";
-  if (mixed_only || (!decoder_matrix_only && !startup_seek_only)) {
+  if (!decoder_matrix_only && !startup_seek_only) {
     for (guint i = 0; i < 2; ++i)
       if (!make_synthetic_mp4(
               tmpdir / ("packed-" + std::to_string(i) + ".mp4"), 1, 0, 440, true, 0, i ? "384x216" : "512x288"))
         return 1;
     if (const auto result = run_mixed_packed_inputs(tmpdir, true))
       return result;
+    if (display_only) {
+      fs::remove_all(tmpdir);
+      return 0;
+    }
     const auto fast = tmpdir / "fast.mp4";
     if (!make_synthetic_mp4(a0, 1, 0, 440, false, 0, "256x144", 15, true) ||
         !make_synthetic_mp4(fast, 1, 90, 660, false, 0, "192x96", 30, true))

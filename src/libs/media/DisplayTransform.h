@@ -12,6 +12,10 @@ struct DisplayTransform {
   DisplayTransform corrected(FrameFlip correction) const {
     return {transpose, {flip.horizontal != correction.horizontal, flip.vertical != correction.vertical}};
   }
+  DisplayTransform followedBy(DisplayTransform after) const {
+    const FrameFlip axes = after.transpose ? FrameFlip{flip.vertical, flip.horizontal} : flip;
+    return DisplayTransform{transpose != after.transpose, axes}.corrected(after.flip);
+  }
   int nvFlipMethod() const {
     if (!transpose)
       return flip.nvFlipMethod();

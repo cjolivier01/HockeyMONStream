@@ -14,7 +14,7 @@
 namespace hm::stitching {
 
 using StitchSourceSizes = std::array<std::array<int, 2>, 2>;
-// Consume the source-size suffix of versions 22-25, restoring the earlier
+// Consume the source-size suffix of versions 22-29, restoring the earlier
 // provenance layout for both the full and lightweight canvas readers.
 absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(
     std::vector<std::string>& lines,

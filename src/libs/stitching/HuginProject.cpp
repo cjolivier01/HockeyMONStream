@@ -2105,9 +2105,19 @@ absl::Status HuginProject::CheckSavedRecordingGeometry(const fs::path& game, con
   const auto calibrated = ReadSourceImageSizes(hm::game_storage::StateDirectory(game));
   const auto provenance_path = hm::game_storage::StateDirectory(game) / kStitchCanvasProvenanceArtifact;
   std::error_code error;
-  if (!calibrated && !fs::exists(provenance_path, error) && !error)
+  const bool has_canvas = fs::exists(provenance_path, error);
+  const auto settings = config && config.IsMap() ? config["stitching"] : YAML::Node();
+  const auto selection = settings && settings.IsMap() ? settings["calibration_frame_selection"] : YAML::Node();
+  const auto context = selection && selection.IsMap() ? selection["context"] : YAML::Node();
+  const auto orientation = context && context.IsMap() ? context["camera_display_orientation"] : YAML::Node();
+  const bool old_selection =
+      selection && selection.IsMap() && !(orientation && orientation.IsScalar() && orientation.Scalar() == "recorded");
+  if (!calibrated && !has_canvas && !old_selection && !error)
     return absl::OkStatus();
   if (RecordingUsesDisplayTransform(game, config)) {
+    if (old_selection)
+      return absl::FailedPreconditionError(
+          "Selected frames predate camera display orientation. Restart calibration from input.");
     const auto provenance = ReadCanvasProvenanceLocked(game);
     if (!provenance.ok())
       return provenance.status();

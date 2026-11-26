@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
       const auto tagged = root.path / ("rotation-" + std::to_string(quarter) + ".mp4");
       test::Ffmpeg(
           {"-display_rotation", std::to_string(90 * quarter), "-i", ordinary.string(), "-c", "copy", tagged.string()});
-      const auto info = ReadMp4VideoTrack(tagged, 1000000000, {});
+      const auto info = ReadMp4VideoTrack(tagged, std::numeric_limits<int64_t>::max(), {});
       Check(info.ok(), info.status().ToString());
       Check(
           info->display.nvFlipMethod() == quarter && info->displayWidth() == (quarter % 2 ? 192 : 384) &&
