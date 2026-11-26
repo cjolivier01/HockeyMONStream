@@ -475,7 +475,13 @@ int run_pipeline(
   g_main_loop_run(loop);
 
   if (source_parent) {
-    cancel_uri_playlist_frame_barrier(source_parent);
+    if (bus_state.exit_code == 0) {
+      // Match CLI shutdown after EOS: release the last decoder and its capture
+      // pool before destroying the pipeline and unloading the Jetson SDK.
+      stop_uri_playlist_sources_gracefully(source_parent);
+    } else {
+      cancel_uri_playlist_frame_barrier(source_parent);
+    }
   }
   gst_element_set_state(pipeline, GST_STATE_NULL);
   if (bus_state.timeout_id) {
