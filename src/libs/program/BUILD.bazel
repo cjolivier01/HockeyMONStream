@@ -327,6 +327,7 @@ cc_library(
     deps = [
         ":amd_program_types", ":gpu", ":va_program_output", ":render_settings", ":calibration", ":preview_boxes",
         "//src/libs/gpu:convert_image",
+        "//src/libs/media:camera_display_caps",
         "//src/libs/detection:hip_detector", "//src/libs/detection:va_detector_image",
         "//src/libs/tracking:program_tracking", "//src/libs/stitching:stitching_core",
         "@hm-cupano//src/pano:cuda_pano",

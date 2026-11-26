@@ -1,6 +1,19 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
+    name = "camera_display_caps",
+    hdrs = ["CameraDisplayCaps.h"],
+    include_prefix = "hstream/src/libs/media",
+    deps = ["@gstreamer"],
+)
+
+cc_test(
+    name = "camera_display_caps_test",
+    srcs = ["CameraDisplayCapsTest.cpp"],
+    deps = [":camera_display_caps"],
+)
+
+cc_library(
     name = "frame_flip",
     hdrs = ["FrameFlip.h"],
     include_prefix = "hstream/src/libs/media",

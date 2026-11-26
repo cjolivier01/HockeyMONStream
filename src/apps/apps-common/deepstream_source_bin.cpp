@@ -26,11 +26,11 @@
 #include <vector>
 
 #include <cuda_runtime_api.h>
-#include <nvbufsurface.h>
 #include <gst/audio/audio.h>
 #include <gst/pbutils/pbutils.h>
 #include <gst/rtp/gstrtcpbuffer.h>
 #include <gst/rtsp/gstrtsptransport.h>
+#include <nvbufsurface.h>
 #include "deepstream_common.h"
 #include "deepstream_sources.h"
 #include "hstream/src/apps/apps-common/DecoderPadLink.h"
@@ -38,6 +38,7 @@
 #include "hstream/src/apps/apps-common/UriPlaylistCapturePoolDrain.h"
 #include "hstream/src/apps/apps-common/UriPlaylistDiscovery.h"
 #include "hstream/src/libs/common/ShutdownWatchdog.h"
+#include "hstream/src/libs/media/CameraDisplayCaps.h"
 #include "hstream/src/libs/stitching/Synchronization.h"
 
 #include "hstream/src/libs/camera/AutoFocus.h"
@@ -2475,15 +2476,7 @@ static GstPadProbeReturn uri_list_video_pad_event_probe(GstPad* pad, GstPadProbe
       gst_event_parse_caps(event, &raw);
       // Keep a reference in display coordinates across decoder replacements.
       // A portrait-coded chapter may display on the same grid as a landscape one.
-      GstCaps* displayed = gst_caps_copy(raw);
-      auto* structure = gst_caps_get_structure(displayed, 0);
-      if (probe_data->transpose) {
-        int w, h, n, d;
-        if (gst_structure_get_int(structure, "width", &w) && gst_structure_get_int(structure, "height", &h))
-          gst_structure_set(structure, "width", G_TYPE_INT, h, "height", G_TYPE_INT, w, nullptr);
-        if (gst_structure_get_fraction(structure, "pixel-aspect-ratio", &n, &d))
-          gst_structure_set(structure, "pixel-aspect-ratio", GST_TYPE_FRACTION, d, n, nullptr);
-      }
+      GstCaps* displayed = hm::media::CameraDisplayCaps(raw, probe_data->transpose);
       if (probe_data->uri_index == bin->uri_playlist_initial_uri_index) {
         g_object_set_data_full(
             G_OBJECT(bin->tee),

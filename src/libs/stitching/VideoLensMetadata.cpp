@@ -19,6 +19,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/mem.h>
 }
 
@@ -731,10 +732,12 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
       if (s.size < 16)
         continue;
       const auto b = mp4.read(s.pos, std::min<uint64_t>(s.size, 100));
-      const std::string format(b.begin() + 12, b.begin() + 16);
-      if (format == "djmd")
+      const uint32_t format = AV_RL32(b.data() + 12);
+      if (format == MKTAG('d', 'j', 'm', 'd'))
         dji_track = leaves;
-      if (format == "hvc1" || format == "hev1" || format == "avc1") {
+      const AVCodecTag* const tags[]{avformat_get_mov_video_tags(), nullptr};
+      const AVCodecID codec = av_codec_get_id(tags, format);
+      if (codec == AV_CODEC_ID_H264 || codec == AV_CODEC_ID_HEVC) {
         require(b.size() >= 44, "Truncated video sample description");
         require(width == 0, "Multiple video tracks need independent lens models");
         width = integer(b.data() + 40, 2);

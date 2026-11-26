@@ -10,6 +10,7 @@
 #include "cupano/pano/cudaPano.h"
 #include "hstream/src/libs/detection/VaDetectorImage.h"
 #include "hstream/src/libs/gpu/ConvertImage.h"
+#include "hstream/src/libs/media/CameraDisplayCaps.h"
 #include "hstream/src/libs/program/VaProgramOutput.h"
 #include "hstream/src/libs/stitching/ConfigureStitchingCore.h"
 
@@ -113,7 +114,8 @@ struct AmdStitcher::Impl {
   std::unique_ptr<pano::cuda::CudaStitchPano<half4, half4>> stitcher;
   std::unique_ptr<CudaMat<half4>> left, right;
   std::vector<std::shared_ptr<AmdPanoramaFrame>> frames;
-  GstVideoInfo left_info{}, right_info{};
+  // Per camera, the two allowed coded formats indexed by whether the chapter transposes.
+  GstCaps* camera_caps[2][2]{};
   bool inputs_bound{false}, retired{false};
   Impl(int device, size_t maximum_frames) : device(device), maximum_frames(maximum_frames) {}
   ~Impl() {
@@ -122,6 +124,9 @@ struct AmdStitcher::Impl {
     Cleanup(hipSetDevice(device));
     if (stream)
       Cleanup(hipStreamSynchronize(stream));
+    for (auto& camera : camera_caps)
+      for (auto& caps : camera)
+        gst_clear_caps(&caps);
     frames.clear();
     right.reset();
     left.reset();
@@ -210,17 +215,12 @@ absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(
       if (display[i].transpose)
         std::swap(sizes[i][0], sizes[i][1]);
     }
+    GstCaps* caps[]{gst_sample_get_caps(left), gst_sample_get_caps(right)};
     if (impl.inputs_bound) {
-      Require(
-          sizes[0] == std::array<int, 2>{impl.left->width(), impl.left->height()} &&
-              sizes[1] == std::array<int, 2>{impl.right->width(), impl.right->height()} &&
-              (li.width != impl.left_info.width || gst_video_info_is_equal(&li, &impl.left_info)) &&
-              (ri.width != impl.right_info.width || gst_video_info_is_equal(&ri, &impl.right_info)) &&
-              li.fps_n == impl.left_info.fps_n && li.fps_d == impl.left_info.fps_d &&
-              gst_video_colorimetry_is_equal(&li.colorimetry, &impl.left_info.colorimetry) &&
-              GST_VIDEO_INFO_FORMAT(&li) == GST_VIDEO_INFO_FORMAT(&impl.left_info) &&
-              GST_VIDEO_INFO_FORMAT(&ri) == GST_VIDEO_INFO_FORMAT(&impl.right_info),
-          absl::InvalidArgumentError("Program input caps changed; reconstruct its calibrated processor"));
+      for (size_t i = 0; i < sizes.size(); ++i)
+        Require(
+            gst_caps_is_equal(caps[i], impl.camera_caps[i][display[i].transpose]),
+            absl::InvalidArgumentError("Program input caps changed; reconstruct its calibrated processor"));
     } else {
       Status(stitching::CheckStitchSourceSizes(impl.source_sizes, sizes));
       impl.left = std::make_unique<CudaMat<half4>>(1, sizes[0][0], sizes[0][1]);
@@ -228,8 +228,10 @@ absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(
       Require(
           impl.left->is_valid() && impl.right->is_valid(),
           absl::ResourceExhaustedError("Cannot allocate Program camera workspace"));
-      impl.left_info = li;
-      impl.right_info = ri;
+      for (size_t i = 0; i < sizes.size(); ++i) {
+        impl.camera_caps[i][display[i].transpose] = gst_caps_ref(caps[i]);
+        impl.camera_caps[i][!display[i].transpose] = media::CameraDisplayCaps(caps[i], true);
+      }
       impl.inputs_bound = true;
     }
     std::shared_ptr<AmdPanoramaFrame> frame;

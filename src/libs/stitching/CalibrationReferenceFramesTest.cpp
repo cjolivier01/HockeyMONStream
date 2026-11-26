@@ -154,11 +154,22 @@ int main() {
   const auto rotated = game / "rotated.mp4";
   expect(
       hm::run_command(
-          {*ffmpeg, "-v", "error", "-display_rotation", "180", "-i", video.string(), "-c", "copy", rotated.string()},
+          {*ffmpeg,
+           "-v",
+           "error",
+           "-display_rotation",
+           "180",
+           "-i",
+           video.string(),
+           "-c",
+           "copy",
+           "-tag:v",
+           "avc3",
+           rotated.string()},
           "",
           {},
           {}) == 0,
-      "Create a still source with a display matrix");
+      "Create a rotated H.264 source with an in-band parameter set sample entry");
   auto tagged = YAML::Clone(config);
   tagged["game"]["videos"]["left"][0] = "rotated.mp4";
   StitchInputCameras tagged_cameras{{"rotated.mp4", {108, 70, {}}}};
