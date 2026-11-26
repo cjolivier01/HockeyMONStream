@@ -768,6 +768,13 @@ def generate(root, *, native_revision=None, include_revision=True):
         qt_control_id="scoreboardScaleSpin", qt_stage="program", qt_tab="Runtime"
     )
 
+    for key, label, identifier in (
+        ("flip_horizontal", "Flip horizontally", "scoreboardFlipHorizontal"),
+        ("flip_vertical", "Flip vertically", "scoreboardFlipVertical"),
+    ):
+        add("rink.scoreboard." + key, "Program scoreboard", label=label)
+        fields[-1].update(qt_control_id=identifier, qt_stage="program", qt_tab="Runtime")
+
     for key, choices in {
         "control_point_matcher": [
             "akaze-hamming",
