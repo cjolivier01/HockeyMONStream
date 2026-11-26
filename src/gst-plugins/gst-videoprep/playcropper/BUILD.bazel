@@ -181,7 +181,7 @@ cc_test(
     name = "scoreboard_camera_test",
     srcs = ["ScoreboardCameraTest.cpp"],
     args = ["$(location //configs:baseline.yaml)"],
-    data = ["//configs:baseline.yaml"],
+    data = ["//configs:baseline.yaml", "//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
     linkopts = ["-lnvdsbufferpool"],
     tags = [
         "manual",
@@ -191,6 +191,7 @@ cc_test(
         "scoreboard_camera_test",
         [
             ":playcropper",
+            "//src/gst-plugins/testutils:gst_plugin_test_harness",
             "//src/gst-plugins/gst-videoprep/stitcher",
             "//src/libs/program:gpu",
             "//src/libs/media:test_mp4",

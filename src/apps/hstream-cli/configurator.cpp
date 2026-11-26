@@ -6978,6 +6978,10 @@ absl::Status Configurator::apply_frame_offsets_and_sizes(
       format.constant_rate &= next->constant_rate;
       format.timebase_tick_ns = std::max(format.timebase_tick_ns, next->timebase_tick_ns);
     }
+    // The final compositor needs this clock before decodebin prerolls. Mixed
+    // rates below replace it with the shared, decimated game-camera clock.
+    pipeline["source" + std::to_string(camera)]["camera-fps-n"] = format.fps_n;
+    pipeline["source" + std::to_string(camera)]["camera-fps-d"] = format.fps_d;
     const std::string side = camera ? "right" : "left";
     const auto frames = get_node_value<double>(offsets, side, 0.0);
     const long double ns = static_cast<long double>(frames) * format.fps_d * GST_SECOND / format.fps_n;
@@ -10288,12 +10292,29 @@ absl::Status Configurator::prepare_initial_pipeline_position(
       gst_object_unref(clock);
     } else if (auto* cropper = pipeline.common_elements.hmplaycropper_bin.playcropper) {
       const auto& source = config.multi_source_config[0];
-      if (source.camera_fps_n <= 0 || source.camera_fps_d <= 0)
-        return absl::FailedPreconditionError("Recorded scoreboard requires the game's rational output clock");
-      const auto frame =
-          gst_util_uint64_scale_ceil(start_time_ns, source.camera_fps_n, uint64_t(source.camera_fps_d) * GST_SECOND);
-      const auto timeline =
-          std::to_string(frame) + "," + std::to_string(source.camera_fps_n) + "," + std::to_string(source.camera_fps_d);
+      int fps_n = source.camera_fps_n, fps_d = source.camera_fps_d;
+      if (fps_n <= 0 || fps_d <= 0) {
+        // A single prerecorded panorama has no stitching preparation pass.
+        // Inspect its original track before NULL -> READY, when decoded caps
+        // are not available yet. Never use the scoreboard's own frame rate.
+        const std::string playlist = source.uri_list ? source.uri_list : source.uri ? source.uri : "";
+        const auto uri = playlist.substr(0, playlist.find(';'));
+        gchar* filename = g_filename_from_uri(uri.c_str(), nullptr, nullptr);
+        if (!filename)
+          return absl::FailedPreconditionError("Recorded scoreboard requires a local game-camera clock");
+        const std::filesystem::path path(filename);
+        g_free(filename);
+        auto format = stitching::ReadCameraTrackFormat(path);
+        if (!format.ok())
+          return format.status();
+        fps_n = format->fps_n;
+        const auto divisor = int64_t(format->fps_d) * std::max(source.frame_decimation, 1);
+        if (divisor > INT_MAX)
+          return absl::OutOfRangeError("Recorded game-camera clock denominator overflows");
+        fps_d = static_cast<int>(divisor);
+      }
+      const auto frame = gst_util_uint64_scale_ceil(start_time_ns, fps_n, uint64_t(fps_d) * GST_SECOND);
+      const auto timeline = std::to_string(frame) + "," + std::to_string(fps_n) + "," + std::to_string(fps_d);
       GstState state = GST_STATE_NULL;
       gst_element_get_state(cropper, &state, nullptr, 0);
       if (state == GST_STATE_NULL) {

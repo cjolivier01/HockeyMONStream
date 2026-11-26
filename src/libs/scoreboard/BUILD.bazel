@@ -126,6 +126,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":camera_clock",
         ":camera_region",
         "//src/libs/gpu/vaapi:va_element",
         "//src/libs/media:mp4_video_track",
@@ -143,6 +144,7 @@ cc_test(
         "requires-gpu",
     ],
     deps = [
+        ":camera_clock",
         ":camera_decoder",
         ":camera_images",
         ":camera_session",
@@ -179,6 +181,7 @@ cc_library(
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
     deps = [
+        ":camera_clock",
         ":camera_frames",
         ":camera_images",
     ],
@@ -206,4 +209,13 @@ cc_test(
         ":camera_config",
         "//src/libs/media:test_mp4",
     ],
+)
+
+cc_library(
+    name = "camera_clock",
+    srcs = ["CameraClock.cpp"],
+    hdrs = ["CameraClock.h"],
+    include_prefix = INCLUDE_PREFIX,
+    visibility = ["//visibility:public"],
+    deps = ["@gstreamer"],
 )

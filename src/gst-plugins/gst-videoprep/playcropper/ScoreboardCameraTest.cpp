@@ -1,5 +1,8 @@
+#include <gst/rtsp-server/rtsp-server.h>
+#include <thread>
 #include "hstream/src/gst-plugins/gst-videoprep/playcropper/playcropper.h"
 #include "hstream/src/gst-plugins/gst-videoprep/stitcher/stitcher.h"
+#include "hstream/src/gst-plugins/testutils/GstPluginTestHarness.h"
 #include "hstream/src/libs/media/Mp4VideoTrack.h"
 #include "hstream/src/libs/media/TestMp4.h"
 #include "hstream/src/libs/program/ProgramGpu.h"
@@ -199,6 +202,136 @@ void Benchmark(
               << " height=" << track.height << " seconds=" << seconds << " fps=" << 100 / seconds << std::endl;
   }
 }
+void CheckLiveOverlay(const std::filesystem::path& baseline, cudaStream_t stream) {
+  Check(
+      hm::gst::test::load_plugin_from_runfiles("src/gst-plugins/gst-videoprep/libnvdsgst_videoprep.so"),
+      "Cannot load live cropper element");
+  hm::media::test::Directory directory;
+  const auto recording = directory.path / "live.mp4";
+  hm::media::test::Ffmpeg(
+      {"-f",
+       "lavfi",
+       "-i",
+       "color=red:s=384x216:r=30:d=3",
+       "-c:v",
+       "libx264",
+       "-preset",
+       "ultrafast",
+       recording.string()});
+  auto* context = g_main_context_new();
+  auto* loop = g_main_loop_new(context, FALSE);
+  auto* server = gst_rtsp_server_new();
+  gst_rtsp_server_set_address(server, "127.0.0.1");
+  gst_rtsp_server_set_service(server, "0");
+  auto* mounts = gst_rtsp_server_get_mount_points(server);
+  auto* factory = gst_rtsp_media_factory_new();
+  auto* escaped = g_strescape(recording.c_str(), nullptr);
+  const auto launch = std::string("( filesrc location=\"") + escaped +
+      "\" ! qtdemux name=d d.video_0 ! queue ! h264parse ! identity sync=true ! rtph264pay name=pay0 pt=96 )";
+  g_free(escaped);
+  gst_rtsp_media_factory_set_launch(factory, launch.c_str());
+  g_signal_connect(
+      factory,
+      "media-configure",
+      G_CALLBACK(+[](GstRTSPMediaFactory*, GstRTSPMedia*, gpointer) {
+        g_usleep(300000); // Deliberately slow handshake; startup must await actual coverage.
+      }),
+      nullptr);
+  gst_rtsp_mount_points_add_factory(mounts, "/scoreboard", factory);
+  gst_object_unref(mounts);
+  auto* source = gst_rtsp_server_create_source(server, nullptr, nullptr);
+  Check(source, "Cannot start live scoreboard fixture");
+  g_source_attach(source, context);
+  std::thread serving([&] { g_main_loop_run(loop); });
+  const auto cleanup = [&] {
+    g_main_loop_quit(loop);
+    serving.join();
+    g_source_destroy(source);
+    g_source_unref(source);
+    gst_object_unref(server);
+    g_main_loop_unref(loop);
+    g_main_context_unref(context);
+  };
+  try {
+    auto prepared = YAML::LoadFile(baseline.string());
+    prepared["camera"] = YAML::Clone(prepared["rink"]["scoreboard"]["camera"]);
+    prepared["camera"]["enabled"] = true;
+    prepared["camera"]["uri"] =
+        "rtsp://127.0.0.1:" + std::to_string(gst_rtsp_server_get_bound_port(server)) + "/scoreboard";
+    prepared["camera"]["codec"] = "h264";
+    prepared["camera"]["source_dimensions"] = YAML::Load("[384,216]");
+    prepared["camera"]["polygon"] = YAML::Load("[[96,40],[223,40],[223,103],[96,103]]");
+    prepared["game_directory"] = directory.path.string();
+    prepared["resize_filter"] = "bilinear";
+    prepared["sharpen_amount"] = 0;
+    for (const bool initially_visible : {false, true}) {
+      Surface input(320, 192, 2), stitched(320, 192), output(320, 192);
+      std::vector<unsigned char> background(320 * 192 * 4, 32);
+      for (size_t i = 3; i < background.size(); i += 4)
+        background[i] = 255;
+      input.Pixels(&background);
+      input.Pixels(&background, 1);
+      hm::stitcher::StitcherPriv stitcher(0, 2);
+      Check(
+          hm::stitcher::StitcherOutputFailureTestPeer::Prepare(stitcher, stream, 320, 192),
+          "Live stitcher setup failed");
+      auto* element = gst_element_factory_make("playcropper", nullptr);
+      auto* clock = gst_system_clock_obtain();
+      gst_element_set_clock(element, clock);
+      {
+        Cropper cropper(stream);
+        Check(cropper.SetProperty({"scoreboard-camera", Encoded(prepared)}), "Live camera config rejected");
+        Check(cropper.SetProperty({"show-scoreboard", initially_visible ? "1" : "0"}), "Initial visibility rejected");
+        hm::DSCustom_CreateParams params{};
+        params.m_element = GST_BASE_TRANSFORM(element);
+        const auto ready = cropper.PreCapsInit(&params);
+        Check(ready.ok(), ready.ToString());
+        gst_element_set_base_time(element, gst_clock_get_time(clock));
+        for (unsigned index = 0; index < 24; ++index) {
+          if (index == 12)
+            Check(cropper.SetProperty({"show-scoreboard", "1"}), "Show rejected");
+          auto* batch = nvds_create_batch_meta(2);
+          for (unsigned camera = 0; camera < 2; ++camera) {
+            auto* frame = nvds_acquire_frame_meta_from_pool(batch);
+            frame->batch_id = frame->source_id = frame->pad_index = camera;
+            frame->buf_pts = gst_util_uint64_scale(index, GST_SECOND, 60);
+            frame->frame_num = index;
+            frame->num_surfaces_per_frame = 1;
+            frame->source_frame_width = 320;
+            frame->source_frame_height = 192;
+            nvds_add_frame_meta_to_batch(batch, frame);
+          }
+          auto status = stitcher.GenerateOutput(batch, input.value, stitched.value);
+          Check(status.ok(), status.ToString());
+          status = cropper.GenerateOutput(batch, stitched.value, output.value);
+          Check(status.ok(), status.ToString());
+          const auto* frame = static_cast<NvDsFrameMeta*>(batch->frame_meta_list->data);
+          Check(
+              batch->num_frames_in_batch == 1 && frame->frame_num == int(index) &&
+                  frame->buf_pts == gst_util_uint64_scale(index, GST_SECOND, 60),
+              "Live scoreboard changed game clock");
+          const auto pixels = output.Pixels();
+          bool red_overlay = false;
+          for (size_t y = 10; y < 30; ++y)
+            for (size_t x = 20; x < 60; ++x) {
+              const auto pixel = (y * 320 + x) * 4;
+              red_overlay |= int(pixels[pixel]) > int(pixels[pixel + 2]) + 80;
+            }
+          Check(
+              red_overlay == (initially_visible || index >= 12),
+              "Live overlay visibility changed output incorrectly at frame " + std::to_string(index));
+          nvds_destroy_batch_meta(batch);
+        }
+      }
+      gst_object_unref(clock);
+      gst_object_unref(element);
+    }
+  } catch (...) {
+    cleanup();
+    throw;
+  }
+  cleanup();
+}
 void CheckMixedOverlay(
     const std::filesystem::path& baseline,
     unsigned scoreboard_fps,
@@ -354,6 +487,7 @@ int main(int argc, char** argv) {
       Cuda(cudaStreamDestroy(stream));
       return 0;
     }
+    CheckLiveOverlay(argv[1], stream);
     CheckMixedOverlay(argv[1], 25, 50, false, stream);
     CheckMixedOverlay(argv[1], 30, 60, true, stream);
     CheckMixedOverlay(argv[1], 120, 60, true, stream);

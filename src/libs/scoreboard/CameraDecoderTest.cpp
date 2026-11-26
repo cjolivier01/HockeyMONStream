@@ -1,6 +1,9 @@
 #include "hstream/src/libs/scoreboard/CameraDecoder.h"
+#include <signal.h>
+#include <sys/wait.h>
 #include "hstream/src/libs/media/Mp4VideoTrack.h"
 #include "hstream/src/libs/media/TestMp4.h"
+#include "hstream/src/libs/scoreboard/CameraClock.h"
 #include "hstream/src/libs/scoreboard/CameraImages.h"
 #include "hstream/src/libs/scoreboard/CameraSession.h"
 
@@ -255,7 +258,44 @@ void CheckFractionalSession(
     }
   }
 }
-void CheckLive(CameraDecoderConfig config, const std::filesystem::path& recording) {
+void CheckEditedOrigin(
+    const std::filesystem::path& source,
+    const std::filesystem::path& path,
+    const CameraDecoderConfig& config) {
+  hm::media::test::Ffmpeg(
+      {"-i", source.string(), "-map", "0:v", "-c", "copy", "-output_ts_offset", "0.12345", path.string()});
+  const auto track = Take(hm::media::ReadMp4VideoTrack(path, 5 * GST_SECOND, {}));
+  Check(track.start_ns > 0, "Edit-list fixture lost its nonzero origin");
+  auto decoder = Take(CameraDecoder::Create(config));
+  auto images = Take(CameraImages::Create(config.gpu_id, config.region.width, config.region.height, 1));
+  Status(decoder->OpenFile(path, 0));
+  std::vector<std::vector<uint16_t>> pixels;
+  for (unsigned index = 0; index < 25; ++index) {
+    auto frame = Take(decoder->Read());
+    Check(
+        frame && frame->time == GstClockTime(track.start_ns) + index * 40 * GST_MSECOND,
+        "Edit-list rounding changed the original track timeline");
+    pixels.push_back(Pixels(*Take(images->Copy(*frame, config.region))));
+  }
+  decoder.reset();
+  images.reset();
+  for (const auto start : {GstClockTime(0), GstClockTime(420 * GST_MSECOND)}) {
+    CameraSessionConfig session_config{};
+    session_config.decoder = config;
+    session_config.chapters = {
+        {path, 0, track.duration_ns, track.start_ns}, {path, track.duration_ns, track.duration_ns, track.start_ns}};
+    session_config.game_start_ns = start;
+    session_config.epoch = 1;
+    auto session = Take(CameraSession::Start(session_config));
+    for (auto time = start; time < GstClockTime(2 * track.duration_ns); time += 20 * GST_MSECOND) {
+      const auto index = (time % track.duration_ns) / (40 * GST_MSECOND);
+      Check(
+          Pixels(*Take(session->Select(time))) == pixels[index],
+          "Edit-list origin or seek changed the selected scoreboard picture");
+    }
+  }
+}
+void CheckLive(CameraDecoderConfig config, const std::filesystem::path& recording, bool pause = false) {
   auto* context = g_main_context_new();
   auto* loop = g_main_loop_new(context, FALSE);
   auto* server = gst_rtsp_server_new();
@@ -314,12 +354,12 @@ void CheckLive(CameraDecoderConfig config, const std::filesystem::path& recordin
     decoder->Cancel();
     Check(absl::IsCancelled(decoder->Read().status()), "Live decoder ignored cancellation");
     decoder.reset();
-    const auto start = gst_clock_get_time(clock) + 250 * GST_MSECOND;
+    const auto initial = gst_clock_get_time(clock);
     CameraSessionConfig live{
         config,
         {},
         0,
-        static_cast<int64_t>(start),
+        static_cast<int64_t>(initial),
         7,
         "rtsp://127.0.0.1:" + std::to_string(gst_rtsp_server_get_bound_port(server)) + "/scoreboard",
         clock,
@@ -327,8 +367,17 @@ void CheckLive(CameraDecoderConfig config, const std::filesystem::path& recordin
         200,
         false};
     auto session = Take(CameraSession::Start(live));
-    for (unsigned index = 0; index < 30; ++index)
+    Status(session->WaitReady());
+    const auto start = gst_clock_get_time(clock);
+    for (unsigned index = 0; index < 30; ++index) {
       Take(session->Select(start + index * 20 * GST_MSECOND));
+      if (pause && index == 0) {
+        // The controller acknowledges pause before the desktop SIGSTOPs it.
+        CameraClock::SetPaused(true);
+        raise(SIGSTOP);
+        CameraClock::SetPaused(false);
+      }
+    }
     session->Cancel();
     session.reset();
   } catch (...) {
@@ -348,14 +397,15 @@ int main(int argc, char** argv) {
     }
     const bool va = argc >= 3 && std::string(argv[1]) == "--va";
     const int next = va ? 3 : 1;
+    const bool pause_child = argc == next + 2 && std::string(argv[next]) == "--pause-live";
     const bool prepared = argc == next + 2 && std::string(argv[next]) == "--fixtures";
-    Check(argc == next || prepared, "Usage: camera_decoder_test [--va NODE] [--fixtures DIRECTORY]");
+    Check(argc == next || prepared || pause_child, "Usage: camera_decoder_test [--va NODE] [--fixtures DIRECTORY]");
     hm::media::test::Directory directory;
     for (const bool hevc : {false, true}) {
       const auto path =
           (prepared ? std::filesystem::path(argv[next + 1]) : directory.path) / (hevc ? "main10.mp4" : "h264.mp4");
       std::cerr << "Fixture " << path << std::endl;
-      if (!prepared)
+      if (!prepared && !pause_child)
         Video(path, hevc);
       CameraDecoderConfig config{
           va ? CameraDecodeBackend::kVa : CameraDecodeBackend::kNvidia,
@@ -370,6 +420,11 @@ int main(int argc, char** argv) {
           2,
           5 * GST_SECOND,
           10 * GST_MSECOND};
+      if (pause_child) {
+        config.operation_timeout = GST_SECOND;
+        CheckLive(config, argv[next + 1], true);
+        return 0;
+      }
       auto decoder = Take(CameraDecoder::Create(config));
       std::cerr << "Open" << std::endl;
       Status(decoder->OpenFile(path, 0));
@@ -400,9 +455,30 @@ int main(int argc, char** argv) {
           config,
           hevc,
           prepared && hevc);
+      CheckEditedOrigin(path, directory.path / (hevc ? "edited-hevc.mp4" : "edited-h264.mp4"), config);
       if (!hevc) {
         std::cerr << "Live" << std::endl;
         CheckLive(config, path);
+        // Exec a clean GPU process; never use an inherited CUDA/HIP context
+        // after fork. The RTSP fixture pauses with the reader process.
+        const auto child = fork();
+        Check(child >= 0, "Cannot fork pause fixture");
+        if (!child) {
+          if (va)
+            execl(argv[0], argv[0], "--va", argv[2], "--pause-live", path.c_str(), nullptr);
+          else
+            execl(argv[0], argv[0], "--pause-live", path.c_str(), nullptr);
+          _exit(127);
+        }
+        int result = 0;
+        Check(
+            waitpid(child, &result, WUNTRACED) == child && WIFSTOPPED(result),
+            "Live pause fixture failed before suspension");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        kill(child, SIGCONT);
+        Check(
+            waitpid(child, &result, 0) == child && WIFEXITED(result) && WEXITSTATUS(result) == 0,
+            "Live scoreboard charged process suspension against its operation budget");
       }
       config.source_width += 2;
       auto changed = Take(CameraDecoder::Create(config));

@@ -1,6 +1,7 @@
 #include "hstream/src/libs/scoreboard/CameraDecoder.h"
 #include "hstream/src/libs/gpu/vaapi/VaElement.h"
 #include "hstream/src/libs/media/Mp4VideoTrack.h"
+#include "hstream/src/libs/scoreboard/CameraClock.h"
 
 #include <gst/app/gstappsink.h>
 #include <gst/base/gstbasetransform.h>
@@ -13,7 +14,7 @@
 
 namespace hm::scoreboard {
 namespace {
-using Clock = std::chrono::steady_clock;
+using Clock = CameraClock;
 
 } // namespace
 
@@ -35,6 +36,8 @@ struct CameraDecoder::Impl {
   GstClockTime previous = GST_CLOCK_TIME_NONE;
   GstClockTime requested_start = 0;
   int time_base_n = 0, time_base_d = 0;
+  GstClockTime stream_origin = GST_CLOCK_TIME_NONE;
+  GstClockTime track_origin = 0;
   std::atomic<guint32> decoder_seek_sequence{GST_SEQNUM_INVALID};
   explicit Impl(const CameraDecoderConfig& value) : config(value) {}
   void FlushOutput() {
@@ -424,6 +427,8 @@ absl::Status CameraDecoder::OpenFile(const std::filesystem::path& path, GstClock
     return impl_->Retire(track.status());
   impl_->time_base_n = track->time_base_n;
   impl_->time_base_d = track->time_base_d;
+  impl_->track_origin = track->start_ns;
+  impl_->stream_origin = GST_CLOCK_TIME_NONE;
   // GStreamer 1.24's VA transform closes its filter on PAUSED -> READY but
   // opens it only on NULL -> READY. READY alone cannot renegotiate a chapter.
   // Keep the elements, but fully reset their driver state before changing files.
@@ -438,11 +443,38 @@ absl::Status CameraDecoder::OpenFile(const std::filesystem::path& path, GstClock
   status = impl_->State(GST_STATE_PAUSED, deadline);
   if (!status.ok())
     return status;
+  // qtdemux applies movie edit-list rounding independently of the track's
+  // timebase. Bind its actual initial stream origin before any seek, so that
+  // both timelines describe the same original picture even with an edit list.
+  CameraDecodedFrame preroll;
+  while (!preroll.sample) {
+    status = impl_->Check();
+    if (!status.ok())
+      return status;
+    const auto wait = impl_->Poll(deadline);
+    if (!wait)
+      return impl_->Retire(absl::DeadlineExceededError("Scoreboard initial frame timed out"));
+    preroll.sample.reset(gst_app_sink_try_pull_preroll(GST_APP_SINK(impl_->sink), wait));
+    if (!preroll.sample && gst_app_sink_is_eos(GST_APP_SINK(impl_->sink)))
+      return impl_->Retire(absl::DataLossError("Scoreboard recording has no initial frame"));
+  }
+  auto* buffer = gst_sample_get_buffer(preroll.sample.get());
+  const auto* segment = gst_sample_get_segment(preroll.sample.get());
+  if (!buffer || !segment || segment->format != GST_FORMAT_TIME)
+    return impl_->Retire(absl::DataLossError("Scoreboard initial frame has no time segment"));
+  impl_->stream_origin = gst_segment_to_stream_time(segment, GST_FORMAT_TIME, GST_BUFFER_PTS(buffer));
+  preroll.sample.reset();
+  if (!GST_CLOCK_TIME_IS_VALID(impl_->stream_origin))
+    return impl_->Retire(absl::DataLossError("Scoreboard initial frame has no stream timestamp"));
+  const auto relative_start = start > impl_->track_origin ? start - impl_->track_origin : 0;
+  if (relative_start > G_MAXINT64 || impl_->stream_origin > G_MAXINT64 - relative_start)
+    return impl_->Retire(absl::OutOfRangeError("Scoreboard seek exceeds the stream timeline"));
   // NULL retired all decoder surfaces. Starting at zero needs no flushing
   // seek, and avoids racing a short file's demux task against its own preroll.
   impl_->previous = GST_CLOCK_TIME_NONE;
   impl_->requested_start = start;
-  status = start ? impl_->Seek(start, deadline) : impl_->State(GST_STATE_PLAYING, deadline);
+  status = relative_start ? impl_->Seek(impl_->stream_origin + relative_start, deadline)
+                          : impl_->State(GST_STATE_PLAYING, deadline);
   if (status.ok())
     impl_->opened = true;
   return status;
@@ -560,12 +592,18 @@ absl::StatusOr<std::optional<CameraDecodedFrame>> CameraDecoder::Read() {
       // incorrectly repeating the preceding frame at a shared clock boundary.
       // Recover the original track tick only within that rounding tolerance;
       // do not infer a constant frame rate or hide real timestamp gaps.
+      if (frame.time < impl_->stream_origin)
+        return impl_->Retire(absl::DataLossError("Scoreboard frame precedes its original stream origin"));
+      frame.time -= impl_->stream_origin;
       const auto unit = uint64_t(impl_->time_base_n) * GST_SECOND;
       const auto tick = gst_util_uint64_scale_round(frame.time, impl_->time_base_d, unit);
       const auto original = gst_util_uint64_scale(tick, unit, impl_->time_base_d);
       const auto difference = original > frame.time ? original - frame.time : frame.time - original;
       if (difference <= 1)
         frame.time = original;
+      if (frame.time >= GST_CLOCK_TIME_NONE - impl_->track_origin)
+        return impl_->Retire(absl::OutOfRangeError("Scoreboard frame exceeds the track timeline"));
+      frame.time += impl_->track_origin;
     }
     if (!GST_CLOCK_TIME_IS_VALID(frame.time) || (!impl_->config.live && !GST_CLOCK_TIME_IS_VALID(frame.duration)) ||
         !frame.duration || (GST_CLOCK_TIME_IS_VALID(impl_->previous) && frame.time <= impl_->previous))

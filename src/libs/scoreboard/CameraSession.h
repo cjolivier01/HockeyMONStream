@@ -37,6 +37,8 @@ class CameraSession {
   absl::StatusOr<std::shared_ptr<const gpu::Image>> Select(
       int64_t game_time_ns,
       const std::function<bool()>& cancelled = {});
+  // Live startup barrier: establish a decoded interval before starting game capture.
+  absl::Status WaitReady();
   void Cancel();
 
  private:

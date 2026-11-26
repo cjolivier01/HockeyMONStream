@@ -206,7 +206,7 @@ absl::Status PlayCropperPriv::PreCapsInit(DSCustom_CreateParams* params) {
   runtime_output_size_ = !(output_width && output_height);
   scoreboard_camera_element_ = GST_ELEMENT(params->m_element);
   HM_RETURN_IF_ERROR(Super::PreCapsInit(params));
-  if (scoreboard_camera_config_ && scoreboard_camera_config_->decoder.live && show_scoreboard_)
+  if (scoreboard_camera_config_ && scoreboard_camera_config_->decoder.live)
     HM_RETURN_IF_ERROR(StartScoreboardCamera(0));
   return absl::OkStatus();
 };
@@ -821,7 +821,7 @@ absl::Status PlayCropperPriv::GenerateOutput(
     // Scoreboard
     if (scoreboard_reselect_requested_.exchange(false, std::memory_order_acq_rel) && !scoreboard_camera_config_)
       HM_RETURN_IF_ERROR(EnsureScoreboardPerspectiveConfigured(incoming_surface, frame_meta, true));
-    if (show_scoreboard_) {
+    if (show_scoreboard_ || (scoreboard_camera_config_ && scoreboard_camera_config_->decoder.live)) {
       completion_fence.MarkSubmitted();
       HM_RETURN_IF_ERROR(RenderScoreboard(incoming_surface, outgoing_surface, frame_meta, cuda_stream_));
     }

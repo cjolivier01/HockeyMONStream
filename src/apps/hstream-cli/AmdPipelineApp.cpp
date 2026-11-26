@@ -1,3 +1,4 @@
+#include "hstream/src/libs/scoreboard/CameraClock.h"
 #include <X11/Xlib.h>
 #undef Status
 #include <fcntl.h>
@@ -542,6 +543,7 @@ void Run(const hm::program::AmdPipelineOptions& args, std::filesystem::path& own
               if (!status.ok())
                 return status;
             }
+            hm::scoreboard::CameraClock::SetPaused(paused);
             if (!paused)
               reset_rates();
             return absl::OkStatus();

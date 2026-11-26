@@ -143,17 +143,35 @@ int main() {
     const auto settings = auxiliary_root / "_hockeymon/config.yaml";
     std::ofstream(settings) << "rink: {scoreboard: {camera: {enabled: true, files: [cam3/clip.mp4]}}}\n";
     auto auxiliary = hm::stitching::get_available_videos(auxiliary_root.string());
-    Check(auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
-          "Scoreboard-only camera entered automatic stitching discovery");
+    Check(
+        auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
+        "Scoreboard-only camera entered automatic stitching discovery");
     auto override = YAML::Load("rink: {scoreboard: {camera: {enabled: false}}}");
     auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
-    Check(auxiliary.ok() && auxiliary->size() == 3,
-          "Explicit disabled camera override did not restore ordinary discovery");
+    Check(
+        auxiliary.ok() && auxiliary->size() == 3,
+        "Explicit disabled camera override did not restore ordinary discovery");
     override = YAML::Load("rink: {scoreboard: {camera: {enabled: true, files: []}}}");
     override["rink"]["scoreboard"]["camera"]["files"].push_back((auxiliary_root / "cam2/../cam3/clip.mp4").string());
     auxiliary = hm::stitching::get_available_videos(auxiliary_root.string(), false, &override);
-    Check(auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
-          "Equivalent absolute scoreboard path entered stitching discovery");
+    Check(
+        auxiliary.ok() && auxiliary->size() == 2 && !auxiliary->count("cam3"),
+        "Equivalent absolute scoreboard path entered stitching discovery");
+    std::ofstream(auxiliary_root / "cam3/game.mp4").put('x');
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string());
+    Check(
+        auxiliary.ok() && auxiliary->size() == 3 && auxiliary->at("cam3").size() == 1 &&
+            auxiliary->at("cam3").at(1) == (auxiliary_root / "cam3/game.mp4").string(),
+        "Excluded scoreboard recording made a standalone game camera ambiguous");
+    std::filesystem::remove(auxiliary_root / "cam3/game.mp4");
+    std::filesystem::remove_all(auxiliary_root / "cam1");
+    std::filesystem::remove_all(auxiliary_root / "cam2");
+    std::ofstream(auxiliary_root / "left.mp4").put('x');
+    std::ofstream(auxiliary_root / "right.mp4").put('x');
+    auxiliary = hm::stitching::get_available_videos(auxiliary_root.string());
+    Check(
+        auxiliary.ok() && auxiliary->size() == 2 && auxiliary->count("left") && auxiliary->count("right"),
+        "A scoreboard-only cam directory hid the root Left/Right game cameras");
     std::filesystem::remove_all(root);
     std::cout << "Camera chapter validation passed\n";
     return 0;

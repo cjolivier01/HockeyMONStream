@@ -1,4 +1,5 @@
 #include "hstream/src/libs/scoreboard/CameraSession.h"
+#include "hstream/src/libs/scoreboard/CameraClock.h"
 
 #include <limits>
 #include <thread>
@@ -20,6 +21,8 @@ struct CameraSession::Impl {
   std::thread worker;
   std::mutex mutex;
   absl::Status failure;
+  std::condition_variable ready_changed;
+  bool ready = false, finished = false, cancelled = false;
   explicit Impl(const CameraSessionConfig& value) : config(value), frames(value.decoder.queued_frames) {
     if (config.live_clock)
       gst_object_ref(config.live_clock);
@@ -92,6 +95,11 @@ struct CameraSession::Impl {
         return absl::CancelledError("Scoreboard camera session retired");
       if (result != CameraFrames::PublishResult::kPublished)
         return absl::DataLossError("Scoreboard presentation intervals overlap or cannot be queued");
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        ready = true;
+        ready_changed.notify_all();
+      }
     }
   }
   absl::Status Run() {
@@ -163,13 +171,18 @@ absl::StatusOr<std::unique_ptr<CameraSession>> CameraSession::Start(const Camera
       state->failure = std::move(status);
     }
     state->frames.End(state->config.epoch);
+    {
+      std::lock_guard<std::mutex> lock(state->mutex);
+      state->finished = true;
+      state->ready_changed.notify_all();
+    }
   });
   return std::unique_ptr<CameraSession>(new CameraSession(std::move(impl)));
 }
 absl::StatusOr<std::shared_ptr<const gpu::Image>> CameraSession::Select(
     int64_t game_time_ns,
     const std::function<bool()>& cancelled) {
-  using Clock = std::chrono::steady_clock;
+  using Clock = CameraClock;
   const auto now = Clock::now();
   const auto allowance = std::chrono::nanoseconds(impl_->config.decoder.operation_timeout);
   const auto deadline = allowance >= Clock::time_point::max() - now ? Clock::time_point::max() : now + allowance;
@@ -180,9 +193,7 @@ absl::StatusOr<std::shared_ptr<const gpu::Image>> CameraSession::Select(
       return absl::CancelledError("Scoreboard camera session cancelled");
     }
     const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - Clock::now());
-    const auto wait = cancelled
-        ? std::min(remaining, std::chrono::nanoseconds(impl_->config.decoder.cancellation_poll_interval))
-        : remaining;
+    const auto wait = std::min(remaining, std::chrono::nanoseconds(impl_->config.decoder.cancellation_poll_interval));
     selected = impl_->frames.WaitSelect(impl_->config.epoch, game_time_ns, wait);
     if (selected.status != CameraFrames::SelectionStatus::kTimeout || Clock::now() >= deadline)
       break;
@@ -200,7 +211,31 @@ absl::StatusOr<std::shared_ptr<const gpu::Image>> CameraSession::Select(
     return absl::DeadlineExceededError("Matching scoreboard frame did not arrive");
   return absl::DataLossError("No scoreboard frame covers the requested output time");
 }
+absl::Status CameraSession::WaitReady() {
+  std::unique_lock<std::mutex> lock(impl_->mutex);
+  const auto now = CameraClock::now();
+  const auto allowance = std::chrono::nanoseconds(impl_->config.decoder.operation_timeout);
+  const auto deadline =
+      allowance >= CameraClock::time_point::max() - now ? CameraClock::time_point::max() : now + allowance;
+  while (!impl_->ready && !impl_->finished && !impl_->cancelled) {
+    const auto remaining = deadline - CameraClock::now();
+    if (remaining <= std::chrono::nanoseconds::zero())
+      return absl::DeadlineExceededError("Scoreboard camera did not establish its initial interval");
+    impl_->ready_changed.wait_for(
+        lock, std::min(remaining, std::chrono::nanoseconds(impl_->config.decoder.cancellation_poll_interval)));
+  }
+  if (impl_->cancelled)
+    return absl::CancelledError("Scoreboard camera startup cancelled");
+  if (!impl_->failure.ok())
+    return impl_->failure;
+  return impl_->ready ? absl::OkStatus() : absl::DataLossError("Scoreboard camera ended before its first interval");
+}
 void CameraSession::Cancel() {
+  {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    impl_->cancelled = true;
+    impl_->ready_changed.notify_all();
+  }
   impl_->frames.Cancel();
   impl_->decoder->Cancel();
 }

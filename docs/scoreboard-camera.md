@@ -64,7 +64,11 @@ sensor capture synchronization. Enable sender NTP synchronization only when the
 cameras and game-source configuration provide a common synchronized timestamp
 reference. The AMD Program runner and browser Program admission currently support
 recorded game inputs; their existing live-game limitation remains. The shared VA
-scoreboard decoder itself has loopback RTSP coverage.
+scoreboard decoder itself has loopback RTSP coverage. Live startup waits for a
+complete scoreboard interval before game capture starts. Hiding its overlay keeps
+the bounded live queue moving, so showing it again uses the existing connection.
+Explicit process pauses suspend decoder and compositor timeout budgets on both
+backends; they do not alter recorded media timestamps.
 
 Independent scoreboard playback requires the native HStream backend. The
 HockeyMON Python Program backend rejects an enabled extra camera at launch;
@@ -99,8 +103,11 @@ allowing a new crop to be saved.
 `camera_frames_test` covers interval boundaries, backpressure, gaps, cancellation,
 EOS and epochs. `camera_decoder_test` checks H.264/HEVC, full-frame versus GPU-crop
 pixels, retained images, partial-read shutdown, repeated seeks, chapters,
-60000/1001 timestamps and RTSP. `scoreboard_camera_test` exercises the actual
-NVIDIA stitcher and cropper with positive/negative offsets and seeks.
+60000/1001 timestamps, fractional MP4 edit-list origins, RTSP and real SIGSTOP/resume. `scoreboard_camera_test` exercises the actual
+NVIDIA stitcher and cropper with positive/negative offsets and seeks. Its live
+case includes a slow RTSP handshake and initially hidden overlays.
+`configurator_scoreboard_test` checks the pre-preroll game clock for a single
+recording, equal-rate pairs and mixed-rate pairs.
 Mixed-source cases cover 25-to-50, 30-to-60, 120-to-60 and 24-to-60 fps, different
 source dimensions, and 8/10-bit inputs while asserting unchanged game PTS and
 frame counts. The shared decoder/session tests also check skipped and repeated

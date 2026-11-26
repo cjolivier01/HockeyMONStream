@@ -1,3 +1,4 @@
+#include "hstream/src/libs/scoreboard/CameraClock.h"
 #include "OutputRinkMap.h"
 #include "hstream/src/libs/common/BaselineConfig.h"
 #include "hstream/src/libs/common/GameOperationOwner.h"
@@ -7070,6 +7071,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       process_clock_paused_.insert(process_clock_paused_.end(), paused.begin(), paused.end());
       process_pause_generation_ = generation;
       process_pause_active_ = true;
+      hm::scoreboard::CameraClock::SetPaused(true);
       set_uri_playlist_process_paused(TRUE);
       // The UI may stop all threads as soon as it reads this acknowledgment.
       g_print("HSTREAM_PROCESS_PAUSE status=prepared generation=%" G_GUINT64_FORMAT "\n", generation);
@@ -7088,6 +7090,7 @@ bool PipelineApplication::handle_runtime_command_line(const std::string& line) {
       }
       process_clock_paused_.clear();
       process_pause_active_ = false;
+      hm::scoreboard::CameraClock::SetPaused(false);
       set_uri_playlist_process_paused(FALSE);
       g_print("HSTREAM_PROCESS_PAUSE status=resumed generation=%" G_GUINT64_FORMAT "\n", generation);
       std::fflush(stdout);

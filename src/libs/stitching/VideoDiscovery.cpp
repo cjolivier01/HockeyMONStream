@@ -162,7 +162,8 @@ int get_lr_part_number(const std::string& filename) {
  */
 absl::StatusOr<std::vector<std::string>> find_matching_files(
     const std::string& re_pattern,
-    const std::string& directory) {
+    const std::string& directory,
+    const std::set<fs::path>& excluded) {
   std::regex pattern(re_pattern);
   std::vector<std::string> matching_files;
   if (!fs::is_directory(directory)) {
@@ -171,7 +172,7 @@ absl::StatusOr<std::vector<std::string>> find_matching_files(
   // Iterate over each file in the directory.
   for (const auto& entry : fs::directory_iterator(directory)) {
     std::string filename = entry.path().filename().string();
-    if (std::regex_search(filename, pattern)) {
+    if (std::regex_search(filename, pattern) && !excluded.count(fs::weakly_canonical(entry.path()))) {
       matching_files.push_back(entry.path().string());
     }
   }
@@ -199,12 +200,13 @@ std::pair<VideosDict, VideosDict> prune_chapters(const VideosDict& videos) {
  * Returns a list of ((video_id, chapter), full_path) sorted by (video_id, chapter).
  */
 absl::StatusOr<std::vector<std::pair<std::pair<long, int>, std::string>>> find_vendor_chapter_pairs(
-    const std::string& directory) {
+    const std::string& directory,
+    const std::set<fs::path>& excluded) {
   std::vector<std::pair<std::pair<long, int>, std::string>> pairs;
 
   // GoPro
   std::vector<std::string> files;
-  HM_ASSIGN_OR_RETURN(files, find_matching_files(GOPRO_FILE_PATTERN, directory));
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(GOPRO_FILE_PATTERN, directory, excluded));
   for (const auto& f : files) {
     try {
       auto vc = gopro_get_video_and_chapter(fs::path(f));
@@ -215,7 +217,7 @@ absl::StatusOr<std::vector<std::pair<std::pair<long, int>, std::string>>> find_v
   }
 
   // Insta360
-  HM_ASSIGN_OR_RETURN(files, find_matching_files(INSTA360_FILE_PATTERN, directory));
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(INSTA360_FILE_PATTERN, directory, excluded));
   for (const auto& f : files) {
     long video_id = 0;
     int chapter = 0;
@@ -247,14 +249,18 @@ VideoChapter pairs_to_linear_chapter_map(const std::vector<std::pair<std::pair<l
  * If renumber is true, chapters are returned as 1..N in file order; otherwise
  * they retain the part number from the filename (e.g., left-3.mp4 -> 3).
  */
-absl::StatusOr<VideoChapter> collect_lr_chapters(const std::string& directory, bool left_side, bool renumber) {
+absl::StatusOr<VideoChapter> collect_lr_chapters(
+    const std::string& directory,
+    bool left_side,
+    bool renumber,
+    const std::set<fs::path>& excluded) {
   VideoChapter chapter_map;
   const char* single_pattern = left_side ? LEFT_FILE_PATTERN : RIGHT_FILE_PATTERN;
   const char* parts_pattern = left_side ? LEFT_PART_FILE_PATTERN : RIGHT_PART_FILE_PATTERN;
 
   // Single file (left.mp4 / right.mp4)
   std::vector<std::string> files;
-  HM_ASSIGN_OR_RETURN(files, find_matching_files(single_pattern, directory));
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(single_pattern, directory, excluded));
   if (!files.empty()) {
     // Expect exactly one plain file; use the first.
     chapter_map[1] = files.front();
@@ -262,7 +268,7 @@ absl::StatusOr<VideoChapter> collect_lr_chapters(const std::string& directory, b
   }
 
   // Parts (left-1.mp4, left-2.mp4, ...)
-  HM_ASSIGN_OR_RETURN(files, find_matching_files(parts_pattern, directory));
+  HM_ASSIGN_OR_RETURN(files, find_matching_files(parts_pattern, directory, excluded));
   if (!files.empty()) {
     std::sort(files.begin(), files.end(), [](const std::string& a, const std::string& b) {
       return get_lr_part_number(a) < get_lr_part_number(b);
@@ -290,28 +296,31 @@ absl::StatusOr<VideoChapter> collect_lr_chapters(const std::string& directory, b
  * otherwise fall back to left/right patterns or one unnumbered video. Output keys are 1..N in
  * the discovered order.
  */
-absl::StatusOr<VideoChapter> collect_chapters_for_dir(const std::string& directory) {
+absl::StatusOr<VideoChapter> collect_chapters_for_dir(
+    const std::string& directory,
+    const std::set<fs::path>& excluded) {
   // Vendor-specific (GoPro, Insta360)
   std::vector<std::pair<std::pair<long, int>, std::string>> pairs;
-  HM_ASSIGN_OR_RETURN(pairs, find_vendor_chapter_pairs(directory));
+  HM_ASSIGN_OR_RETURN(pairs, find_vendor_chapter_pairs(directory, excluded));
   if (!pairs.empty()) {
     return pairs_to_linear_chapter_map(pairs);
   }
 
   // Plain left/right within this directory, renumbered 1..N
   VideoChapter chapter_map;
-  HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/true, /*renumber=*/true));
+  HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/true, /*renumber=*/true, excluded));
   if (!chapter_map.empty()) {
     return chapter_map;
   }
-  HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/false, /*renumber=*/true));
+  HM_ASSIGN_OR_RETURN(chapter_map, collect_lr_chapters(directory, /*left_side=*/false, /*renumber=*/true, excluded));
   if (!chapter_map.empty()) {
     return chapter_map;
   }
   // Add imports each unnumbered file into its own camN directory. Do not infer
   // a chapter order if a manually assembled directory contains several files.
   for (const auto& entry : fs::directory_iterator(directory)) {
-    if (entry.is_regular_file() && IsStandaloneCameraFile(entry.path().filename().string())) {
+    if (entry.is_regular_file() && IsStandaloneCameraFile(entry.path().filename().string()) &&
+        !excluded.count(fs::weakly_canonical(entry.path()))) {
       if (!chapter_map.empty()) {
         return absl::InvalidArgumentError("Auto requires one unnumbered recording per camera directory: " + directory);
       }
@@ -429,7 +438,10 @@ absl::Status ValidateDiscoveredCameraChapters(const VideosDict& cameras) {
  * @param prune If true, prunes videos that don't have matching chapters.
  * @return The videos dictionary.
  */
-static absl::StatusOr<VideosDict> discover_videos(const std::string& dir_name, bool prune) {
+static absl::StatusOr<VideosDict> discover_videos(
+    const std::string& dir_name,
+    bool prune,
+    const std::set<fs::path>& excluded) {
   if (!fs::is_directory(dir_name)) {
     return absl::InvalidArgumentError(
         TO_STRING("Directory \"" << dir_name << "\" doesn't exist or is not a directory"));
@@ -458,7 +470,7 @@ static absl::StatusOr<VideosDict> discover_videos(const std::string& dir_name, b
     for (const auto& cam_name : cam_dirs) {
       std::string cam_path = (fs::path(dir_name) / cam_name).string();
       VideoChapter chapter_map;
-      HM_ASSIGN_OR_RETURN(chapter_map, collect_chapters_for_dir(cam_path));
+      HM_ASSIGN_OR_RETURN(chapter_map, collect_chapters_for_dir(cam_path, excluded));
       if (!chapter_map.empty()) {
         videos_dict[cam_name] = std::move(chapter_map);
       }
@@ -481,7 +493,7 @@ static absl::StatusOr<VideosDict> discover_videos(const std::string& dir_name, b
 
   // Fallback: scan the root directory.
   std::vector<std::pair<std::pair<long, int>, std::string>> vendor_pairs;
-  HM_ASSIGN_OR_RETURN(vendor_pairs, find_vendor_chapter_pairs(dir_name));
+  HM_ASSIGN_OR_RETURN(vendor_pairs, find_vendor_chapter_pairs(dir_name, excluded));
   for (const auto& item : vendor_pairs) {
     long video_id = item.first.first;
     int chapter = item.first.second;
@@ -492,19 +504,19 @@ static absl::StatusOr<VideosDict> discover_videos(const std::string& dir_name, b
 
   // Plain left/right in the root directory (non-renumbered chapters).
   VideoChapter left_map;
-  HM_ASSIGN_OR_RETURN(left_map, collect_lr_chapters(dir_name, /*left_side=*/true, /*renumber=*/false));
+  HM_ASSIGN_OR_RETURN(left_map, collect_lr_chapters(dir_name, /*left_side=*/true, /*renumber=*/false, excluded));
   if (!left_map.empty()) {
     videos_dict["left"] = left_map;
   }
   VideoChapter right_map;
-  HM_ASSIGN_OR_RETURN(right_map, collect_lr_chapters(dir_name, /*left_side=*/false, /*renumber=*/false));
+  HM_ASSIGN_OR_RETURN(right_map, collect_lr_chapters(dir_name, /*left_side=*/false, /*renumber=*/false, excluded));
   if (!right_map.empty()) {
     videos_dict["right"] = right_map;
   }
 
   // Process any pre-stitched files.
   std::vector<std::string> stitched_files;
-  HM_ASSIGN_OR_RETURN(stitched_files, find_matching_files(STITCHED_FILE_PATTERN, dir_name));
+  HM_ASSIGN_OR_RETURN(stitched_files, find_matching_files(STITCHED_FILE_PATTERN, dir_name, excluded));
   if (!stitched_files.empty()) {
     std::sort(stitched_files.begin(), stitched_files.end());
     videos_dict["stitched"][1] = stitched_files.back();
@@ -529,8 +541,6 @@ absl::StatusOr<VideosDict> get_available_videos(
     const std::string& directory,
     bool prune,
     const YAML::Node* effective_config) {
-  VideosDict videos;
-  HM_ASSIGN_OR_RETURN(videos, discover_videos(directory, prune));
   try {
     const auto baseline = baseline_config::load();
     if (!baseline.ok())
@@ -552,7 +562,7 @@ absl::StatusOr<VideosDict> get_available_videos(
       owned = config::MergeNodes(owned, *effective_config, false);
     const auto camera = owned["rink"]["scoreboard"]["camera"];
     if (!camera["enabled"].as<bool>())
-      return videos;
+      return discover_videos(directory, prune, {});
     std::set<fs::path> excluded;
     for (const auto& file : camera["files"]) {
       auto path = fs::path(file.as<std::string>());
@@ -560,20 +570,7 @@ absl::StatusOr<VideosDict> get_available_videos(
         path = fs::path(directory) / path;
       excluded.insert(fs::weakly_canonical(path));
     }
-    for (auto group = videos.begin(); group != videos.end();) {
-      auto& chapters = group->second;
-      for (auto chapter = chapters.begin(); chapter != chapters.end();) {
-        if (excluded.count(fs::weakly_canonical(chapter->second)))
-          chapter = chapters.erase(chapter);
-        else
-          ++chapter;
-      }
-      if (chapters.empty())
-        group = videos.erase(group);
-      else
-        ++group;
-    }
-    return videos;
+    return discover_videos(directory, prune, excluded);
   } catch (const std::exception& error) {
     return absl::InvalidArgumentError(std::string("Cannot resolve scoreboard-only camera recordings: ") + error.what());
   }

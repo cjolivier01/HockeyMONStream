@@ -110,7 +110,7 @@ absl::Status PlayCropperPriv::StartScoreboardCamera(int64_t game_start) {
   }
   if (scoreboard_camera_stopping_.load(std::memory_order_acquire))
     session->Cancel();
-  return absl::OkStatus();
+  return config.decoder.live ? session->WaitReady() : absl::OkStatus();
 }
 absl::Status PlayCropperPriv::RenderScoreboardCamera(
     surface::Surface output,
@@ -156,6 +156,12 @@ absl::Status PlayCropperPriv::RenderScoreboardCamera(
     std::lock_guard<std::mutex> lock(scoreboard_camera_mutex_);
     session = scoreboard_camera_session_;
   }
+  std::shared_ptr<const gpu::Image> image;
+  HM_ASSIGN_OR_RETURN(image, session->Select(game_time));
+  // Continue draining the bounded live queue while hidden. A later Show uses
+  // the same camera clock and cannot start a connection behind the game frame.
+  if (!show_scoreboard_)
+    return absl::OkStatus();
   const auto position = scoreboard_position_.load(std::memory_order_relaxed);
   if (!scoreboard_camera_plan_ || scoreboard_camera_plan_->output_width != int(output.width()) ||
       scoreboard_camera_plan_->output_height != int(output.height()) || scoreboard_camera_plan_position_ != position) {
@@ -192,8 +198,6 @@ absl::Status PlayCropperPriv::RenderScoreboardCamera(
     scoreboard_camera_plan_ = plan;
     scoreboard_camera_plan_position_ = position;
   }
-  std::shared_ptr<const gpu::Image> image;
-  HM_ASSIGN_OR_RETURN(image, session->Select(game_time));
   // Retain all images until GenerateOutput's completion fence has run, including
   // errors and multi-surface batches. The next call releases the previous set.
   scoreboard_camera_images_.push_back(image);

@@ -34,6 +34,7 @@ HSTREAM_CLI_RUNTIME_DATA = [
 ]
 
 HSTREAM_CLI_DEPS = [
+    "//src/libs/scoreboard:camera_clock",
     "//src/libs/stitching:video_discovery",
     "//src/libs/media:stereo_frame_plan",
     "//src/apps/int8-calib-builder:bf16_engine",
@@ -225,7 +226,7 @@ cc_binary(
             "//src/libs/common:runtime_console", "//src/libs/common:process_diagnostics", "//src/libs/common:utils_base",
             "//src/libs/stitching:stitching_algorithms",
             "//src/libs/stitching:stitching_core",
-            "//src/libs/scoreboard:camera_config",
+            "//src/libs/scoreboard:camera_config", "//src/libs/scoreboard:camera_clock",
         ],
         "//conditions:default": HSTREAM_CLI_DEPS,
     }),
@@ -774,4 +775,17 @@ cc_test(
     linkopts = HSTREAM_CLI_LINKOPTS,
     deps = HSTREAM_CLI_DEPS,
     target_compatible_with = select({"//:use_hip": ["@platforms//:incompatible"], "//conditions:default": []}),
+)
+
+cc_test(
+    name = "configurator_scoreboard_test",
+    srcs = ["ConfiguratorScoreboardTest.cpp", "configurator.cpp"] + glob(["*.h"]),
+    copts = HSTREAM_CLI_COPTS,
+    data = ["//src/gst-plugins/gst-videoprep:libnvdsgst_videoprep.so"],
+    linkopts = HSTREAM_CLI_LINKOPTS,
+    deps = cuda_dependencies("configurator_scoreboard_test", HSTREAM_CLI_DEPS + [
+        "//src/gst-plugins/testutils:gst_plugin_test_harness",
+        "//src/libs/media:test_mp4",
+    ], testonly = True),
+    tags = ["local"],
 )
