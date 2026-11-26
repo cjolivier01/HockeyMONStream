@@ -618,8 +618,8 @@ build_deepstream_transition_deb() {
     return 1
   fi
 
-  control_member="$(ar t "${source_deb}" | awk '/^control[.]tar[.]/{print; exit}')"
-  data_member="$(ar t "${source_deb}" | awk '/^data[.]tar[.]/{print; exit}')"
+  control_member="$(ar t "${source_deb}" | awk '/^control[.]tar([.]|$)/{print; exit}')"
+  data_member="$(ar t "${source_deb}" | awk '/^data[.]tar([.]|$)/{print; exit}')"
   if [[ -z "${control_member}" || -z "${data_member}" ]]; then
     echo "ERROR: malformed DeepStream Debian artifact." >&2
     return 1
@@ -628,6 +628,7 @@ build_deepstream_transition_deb() {
     *.zst) control_compression=(--zstd) ;;
     *.xz) control_compression=(-J) ;;
     *.gz) control_compression=(-z) ;;
+    control.tar) control_compression=() ;;
     *) echo "ERROR: unsupported DeepStream control archive: ${control_member}" >&2; return 1 ;;
   esac
 
@@ -644,21 +645,29 @@ build_deepstream_transition_deb() {
 
   relationship_list="$(printf ', %s' "${relationships[@]}")"
   relationship_list="${relationship_list#, }"
-  # Edit the first paragraph only, and edit it as Deb822 rather than as lines:
-  # a relationship can be folded across continuation lines, so the list joins
-  # the field's last line, and a missing field goes in before the blank line
-  # that ends the paragraph.  After one, it would start a second paragraph and
-  # dpkg would refuse the whole control file.  Field names are matched without
-  # case, because a second Replaces beside a "replaces" is also unparsable.
+  # Edit the first paragraph only, and edit it as Deb822 rather than as lines.
+  # A relationship can be folded across continuation lines, so the list joins
+  # the field's last line.  A missing field goes in before the blank line that
+  # ends the paragraph; after one, it would start a second paragraph with no
+  # Package and dpkg would refuse the whole control file.  Blank lines before
+  # the first field do not end anything, because the paragraph has not begun.
+  # Field names are matched without case and tolerate the space dpkg allows
+  # before the colon, since a second Replaces beside a "replaces" or a
+  # "Replaces " is equally unparsable.
   awk -v list="${relationship_list}" '
-    function field_at(line,   slot, name) {
+    function field_at(line,   slot, name, head) {
+      if (match(line, /^[^ \t:]+[ \t]*:/) == 0) { return "" }
+      head = substr(line, 1, RLENGTH - 1)
+      sub(/[ \t]*$/, "", head)
       for (slot = 1; slot <= wanted_count; slot++) {
         name = wanted[slot]
-        if (toupper(substr(line, 1, length(name) + 1)) == toupper(name ":")) { return name }
+        if (toupper(head) == toupper(name)) { return name }
       }
       return ""
     }
-    BEGIN { wanted_count = split("Conflicts Replaces", wanted, " "); in_paragraph = 1 }
+    BEGIN { wanted_count = split("Conflicts Replaces", wanted, " ") }
+    !started && /^$/ { leading[++leading_count] = $0; next }
+    !started { started = 1; in_paragraph = 1 }
     in_paragraph && /^$/ { in_paragraph = 0 }
     in_paragraph {
       paragraph[++paragraph_count] = $0
@@ -680,11 +689,15 @@ build_deepstream_transition_deb() {
           paragraph[++paragraph_count] = name ": " list
         }
       }
+      for (line = 1; line <= leading_count; line++) { print leading[line] }
       for (line = 1; line <= paragraph_count; line++) { print paragraph[line] }
       for (line = 1; line <= rest_count; line++) { print rest[line] }
     }
-  ' "${control_dir}/control" >"${control_dir}/control.rewritten"
-  mv -f "${control_dir}/control.rewritten" "${control_dir}/control"
+  ' "${control_dir}/control" >"${output_dir}/control.rewritten"
+  # Written outside the extracted tree: a control member carrying its own
+  # "control.rewritten" symlink would otherwise aim this redirection, which
+  # runs as root, at whatever the artifact chose.
+  mv -f "${output_dir}/control.rewritten" "${control_dir}/control"
   tar "${control_compression[@]}" -cf "${output_dir}/${control_member}" -C "${control_dir}" .
 
   # Assemble the members directly.  Rebuilding with dpkg-deb would recompress
@@ -713,8 +726,16 @@ build_deepstream_transition_deb() {
   rm -rf "${control_dir:?}" "${output_dir:?}/${control_member}"
 
   # dpkg-deb reads the control member, so this proves the archive it was
-  # written into is one dpkg can walk.
+  # written into is one dpkg can walk.  It does not read the payload, so the
+  # header the assembly wrote for it is compared with the source's: a short
+  # write there would reach APT as a package dpkg only rejects at unpack,
+  # after it has already removed the release being replaced.
   dpkg-deb --info "${output_deb}" >/dev/null
+  if [[ "$(ar tv "${output_deb}" | awk -v member="${data_member}" '$NF == member {print $3; exit}')" \
+        != "$(ar tv "${source_deb}" | awk -v member="${data_member}" '$NF == member {print $3; exit}')" ]]; then
+    echo "ERROR: the DeepStream transition artifact did not carry the whole payload." >&2
+    return 1
+  fi
   for relationship in Conflicts Replaces; do
     metadata="$(dpkg-deb -f "${output_deb}" "${relationship}")"
     for package in "${relationships[@]}"; do
@@ -1206,10 +1227,23 @@ requested_hstream_version="$(dpkg-deb -f "${HSTREAM_DEB}" Version)"
 # own conflicts with the legacy binaries/sample-data packages.
 old_deepstream_packages=()
 if [[ "${NO_DEEPSTREAM}" -eq 0 ]]; then
+  # Read the inventory in this shell rather than through a pipeline, so a
+  # broken dpkg database stops here.  Deciding the transition off a query
+  # that failed would hand APT an artifact with no Replaces, and APT removes
+  # the old release before dpkg discovers it cannot unpack the new one.
+  # Exit 1 is the wildcard matching nothing, which is a clean host.
+  deepstream_inventory=""
+  deepstream_inventory_status=0
+  deepstream_inventory="$(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' \
+    'deepstream-*' 2>/dev/null)" || deepstream_inventory_status=$?
+  if [[ "${deepstream_inventory_status}" -gt 1 ]]; then
+    echo "ERROR: cannot read the installed DeepStream packages (dpkg-query exited ${deepstream_inventory_status})." >&2
+    exit 1
+  fi
   while IFS= read -r package_name; do
     old_deepstream_packages+=("${package_name}")
-  done < <(dpkg-query -W -f='${binary:Package}\t${db:Status-Abbrev}\n' 'deepstream-*' 2>/dev/null \
-    | superseded_deepstream_packages "${DEEPSTREAM_PACKAGE}" || true)
+  done < <(printf '%s\n' "${deepstream_inventory}" \
+    | superseded_deepstream_packages "${DEEPSTREAM_PACKAGE}")
 fi
 install_deepstream_deb="${DEEPSTREAM_DEB}"
 if [[ "${#old_deepstream_packages[@]}" -gt 0 ]]; then
@@ -1231,13 +1265,20 @@ while read -r removed_package; do
   allowed=0
   if [[ "${removed_package}" == hmstream ]]; then allowed=1; fi
   for package in "${old_deepstream_packages[@]}"; do
-    if [[ "${removed_package}" == "${package}" ]]; then allowed=1; break; fi
+    # APT names a foreign-architecture package "deepstream-9.1:arm64" and the
+    # native one "deepstream-9.1"; the inventory holds the bare name.
+    if [[ "${removed_package}" == "${package}" || "${removed_package}" == "${package}:"* ]]; then
+      allowed=1
+      break
+    fi
   done
   if [[ "${allowed}" -eq 0 ]]; then
     echo "ERROR: this installation would remove dependent package ${removed_package}; refusing." >&2
     exit 1
   fi
-done < <(awk '$1 == "Remv" {print $2}' <<<"${simulation}")
+  # A host with APT::Get::Purge set turns these removals into purges, so the
+  # guard has to read both verbs or it judges nothing at all on that host.
+done < <(awk '$1 == "Remv" || $1 == "Purg" {print $2}' <<<"${simulation}")
 
 if [[ "${NO_DEEPSTREAM}" -eq 1 ]]; then
   # The assignment above already failed the installation if APT could not
