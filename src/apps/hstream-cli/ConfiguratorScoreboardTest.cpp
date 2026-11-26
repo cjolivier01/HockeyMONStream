@@ -9,9 +9,10 @@ GST_DEBUG_CATEGORY(NVDS_APP);
 
 namespace hm {
 struct ConfiguratorTestAccess {
-  static void Enable(Configurator& value) {
+  static void Enable(Configurator& value, bool live = false) {
     value.config_["rink"]["scoreboard"]["camera"]["enabled"] = true;
-    value.config_["rink"]["scoreboard"]["camera"]["uri"] = YAML::Node(YAML::NodeType::Null);
+    value.config_["rink"]["scoreboard"]["camera"]["uri"] =
+        live ? YAML::Node("rtsp://scoreboard/live") : YAML::Node(YAML::NodeType::Null);
   }
   static absl::Status Rates(
       Configurator& value,
@@ -43,6 +44,13 @@ int main() {
            "libx264",
            (directory.path / (std::to_string(fps) + ".mp4")).string()});
     hm::Configurator configurator("scoreboard-clock", "configs", -1);
+    for (const bool live : {false, true}) {
+      hm::ConfiguratorTestAccess::Enable(configurator, live);
+      auto pipeline = std::make_unique<NvDsPipeline>();
+      auto config = std::make_unique<NvDsConfig>();
+      const auto status = configurator.prepare_initial_pipeline_position(*pipeline, *config, 0);
+      Check(status.ok(), "A stage without a scoreboard compositor must ignore scoreboard clock setup");
+    }
     hm::ConfiguratorTestAccess::Enable(configurator);
     for (int count : {1, 2}) {
       for (const bool mixed : {false, true}) {

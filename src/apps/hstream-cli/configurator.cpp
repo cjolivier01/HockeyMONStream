@@ -10281,7 +10281,9 @@ absl::Status Configurator::prepare_initial_pipeline_position(
     const NvDsConfig& config,
     uint64_t start_time_ns) {
   const auto camera = get_node(config_, "rink.scoreboard.camera");
-  if (camera && camera->IsMap() && (*camera)["enabled"].as<bool>()) {
+  auto* cropper = pipeline.common_elements.hmplaycropper_bin.playcropper;
+  // Calibration and source-only stages have no final scoreboard compositor.
+  if (cropper && camera && camera->IsMap() && (*camera)["enabled"].as<bool>()) {
     const bool camera_live = !(*camera)["uri"].IsNull();
     if (camera_live != static_cast<bool>(pipeline.multi_src_bin.live_source))
       return absl::InvalidArgumentError(
@@ -10290,7 +10292,7 @@ absl::Status Configurator::prepare_initial_pipeline_position(
       auto* clock = gst_system_clock_obtain();
       gst_pipeline_use_clock(GST_PIPELINE(pipeline.pipeline), clock);
       gst_object_unref(clock);
-    } else if (auto* cropper = pipeline.common_elements.hmplaycropper_bin.playcropper) {
+    } else {
       const auto& source = config.multi_source_config[0];
       int fps_n = source.camera_fps_n, fps_d = source.camera_fps_d;
       if (fps_n <= 0 || fps_d <= 0) {

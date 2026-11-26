@@ -422,7 +422,10 @@ absl::Status CameraDecoder::OpenFile(const std::filesystem::path& path, GstClock
         absl::InvalidArgumentError("Scoreboard reader requires a regular local file and finite seek time"));
   const auto deadline = impl_->Deadline();
   const auto track = media::ReadMp4VideoTrack(
-      path, impl_->config.operation_timeout, [this] { return impl_->cancelled.load(std::memory_order_relaxed); });
+      path,
+      impl_->config.operation_timeout,
+      [this] { return impl_->cancelled.load(std::memory_order_relaxed); },
+      [] { return CameraClock::now(); });
   if (!track.ok())
     return impl_->Retire(track.status());
   impl_->time_base_n = track->time_base_n;
