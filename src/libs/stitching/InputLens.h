@@ -16,7 +16,9 @@ namespace hm::stitching {
 using StitchSourceSizes = std::array<std::array<int, 2>, 2>;
 // Consume the source-size suffix of versions 22-25, restoring the earlier
 // provenance layout for both the full and lightweight canvas readers.
-absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(std::vector<std::string>& lines);
+absl::StatusOr<std::optional<StitchSourceSizes>> ReadStitchSourceSizeSuffix(
+    std::vector<std::string>& lines,
+    bool* display_oriented = nullptr);
 absl::Status CheckStitchSourceSizes(const std::optional<StitchSourceSizes>& expected, const StitchSourceSizes& actual);
 
 // Source-image optics, independent of the panorama's output projection.

@@ -2813,6 +2813,11 @@ static void cb_newpad(GstElement* decodebin, GstPad* pad, gpointer data) {
       probe_data->base = bin->prev_accumulated_base;
       probe_data->initial_offset = uri_playlist_initial_offset(bin, TRUE);
       g_mutex_unlock(mutex);
+      if (bin->camera_input_flip) {
+        const auto* methods = static_cast<const std::vector<int>*>(
+            g_object_get_data(G_OBJECT(bin->camera_input_flip), "hstream-camera-transforms"));
+        g_object_set(bin->camera_input_flip, "flip-method", (*methods)[probe_data->uri_index], nullptr);
+      }
       if (bin->config && bin->config->frame_decimation > 0)
         hm::uri_playlist_internal::discover_uri_playlist_duration(
             bin->uri_list[probe_data->uri_index], &probe_data->video_origin, &probe_data->matroska_timestamps);
@@ -4408,11 +4413,50 @@ done:
   return ret;
 }
 
+static absl::StatusOr<std::vector<int>> camera_chapter_transforms(
+    const NvDsSrcBin& bin,
+    const NvDsSourceConfig& config) {
+  // Native method order is shared with nvvideoconvert's flip-method property.
+  constexpr hm::media::DisplayTransform corrections[] = {
+      {},
+      {true, {false, true}},
+      {false, {true, true}},
+      {true, {true, false}},
+      {false, {true, false}},
+      {true, {true, true}},
+      {false, {false, true}},
+      {true, {}}};
+  if (config.camera_input_flip < 0 || config.camera_input_flip >= int(std::size(corrections)))
+    return absl::InvalidArgumentError("Invalid camera input flip method");
+  const auto after = corrections[config.camera_input_flip];
+  std::vector<int> methods;
+  for (guint i = 0; i < std::max(1U, bin.num_uri_list); ++i) {
+    const char* uri = bin.num_uri_list ? bin.uri_list[i] : config.uri;
+    hm::media::DisplayTransform display;
+    if (uri && g_str_has_prefix(uri, "file:")) {
+      std::unique_ptr<gchar, decltype(&g_free)> filename(g_filename_from_uri(uri, nullptr, nullptr), g_free);
+      if (filename && g_file_test(filename.get(), G_FILE_TEST_IS_REGULAR)) {
+        auto metadata = hm::stitching::ReadCameraDisplayTransform(filename.get());
+        if (!metadata.ok())
+          return metadata.status();
+        display = *metadata;
+      }
+    }
+    if (after.transpose) {
+      display.transpose = !display.transpose;
+      std::swap(display.flip.horizontal, display.flip.vertical);
+    }
+    methods.push_back(display.corrected(after.flip).nvFlipMethod());
+  }
+  return methods;
+}
+
 static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* bin) {
   gboolean ret = FALSE;
   GstCaps* caps = NULL;
   GstCapsFeatures* feature = NULL;
   bin->config = config;
+  absl::StatusOr<std::vector<int>> chapter_transforms;
   const bool packed10 = config->stitch_input_width && g_strcmp0(config->video_format, "RGB10A2_LE") == 0;
   const char* converter = NVDS_ELEM_VIDEO_CONV;
 #if defined(__aarch64__) && !defined(AARCH64_IS_SBSA)
@@ -4547,7 +4591,13 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
 
   // Both the source-preview tap and the stitch/dewarp branch consume these pixels.
   bin->camera_input_flip = nullptr;
-  if (config->camera_input_flip) {
+  chapter_transforms = camera_chapter_transforms(*bin, *config);
+  if (!chapter_transforms.ok()) {
+    NVGSTDS_ERR_MSG_V(
+        "Cannot configure camera display orientation: %s", chapter_transforms.status().ToString().c_str());
+    goto done;
+  }
+  if (std::any_of(chapter_transforms->begin(), chapter_transforms->end(), [](int method) { return method != 0; })) {
     bin->camera_input_flip = gst_element_factory_make(NVDS_ELEM_VIDEO_CONV, "camera_input_flip");
     if (!bin->camera_input_flip)
       goto done;
@@ -4556,12 +4606,17 @@ static gboolean create_uridecode_src_bin(NvDsSourceConfig* config, NvDsSrcBin* b
         "gpu-id",
         config->gpu_id,
         "flip-method",
-        config->camera_input_flip,
+        chapter_transforms->front(),
         "disable-passthrough",
         TRUE,
         "nvbuf-memory-type",
         config->nvbuf_memory_type,
         NULL);
+    g_object_set_data_full(
+        G_OBJECT(bin->camera_input_flip),
+        "hstream-camera-transforms",
+        new std::vector<int>(std::move(*chapter_transforms)),
+        [](gpointer p) { delete static_cast<std::vector<int>*>(p); });
     gst_bin_add(GST_BIN(bin->bin), bin->camera_input_flip);
     NVGSTDS_LINK_ELEMENT(bin->camera_input_flip, bin->tee);
   }

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/Synchronization.h"
+#include "hstream/src/libs/media/DisplayMatrix.h"
 
 #include <algorithm>
 #include <chrono>
@@ -34,7 +35,7 @@ struct AudioInput {
     avcodec_free_context(&codec);
     avformat_close_input(&format);
   }
-  absl::Status Open(const std::string& file) {
+  absl::Status Open(const std::string& file, bool probe_packets = true) {
     if ((avformat_version() >> 16) != LIBAVFORMAT_VERSION_MAJOR ||
         (avcodec_version() >> 16) != LIBAVCODEC_VERSION_MAJOR || (avutil_version() >> 16) != LIBAVUTIL_VERSION_MAJOR)
       return absl::FailedPreconditionError("Synchronization requires matching FFmpeg headers and runtime libraries");
@@ -45,7 +46,7 @@ struct AudioInput {
         [](void* value) { return int(std::chrono::steady_clock::now() > static_cast<AudioInput*>(value)->deadline); },
         this};
     if (avformat_open_input(&format, file.c_str(), nullptr, nullptr) < 0 ||
-        avformat_find_stream_info(format, nullptr) < 0)
+        (probe_packets && avformat_find_stream_info(format, nullptr) < 0))
       return absl::NotFoundError("Cannot read synchronization source: " + file);
     return absl::OkStatus();
   }
@@ -205,6 +206,17 @@ absl::StatusOr<std::vector<float>> ReadAudio(const CameraRecordingWindow& window
 }
 } // namespace
 
+absl::StatusOr<media::DisplayTransform> ReadCameraDisplayTransform(const std::string& file) {
+  AudioInput input;
+  auto status = input.Open(file, false);
+  if (!status.ok())
+    return status;
+  const int index = av_find_best_stream(input.format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  if (index < 0)
+    return media::DisplayTransform{}; // Audio-only URI.
+  return media::StreamDisplayTransform(*input.format->streams[index]);
+}
+
 absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file) {
   AudioInput input;
   const auto status = input.Open(file);
@@ -217,9 +229,12 @@ absl::StatusOr<CameraTrackFormat> ReadCameraTrackFormat(const std::string& file)
   const auto fps = stream->avg_frame_rate;
   if (fps.num <= 0 || fps.den <= 0 || stream->codecpar->width <= 0 || stream->codecpar->height <= 0)
     return absl::FailedPreconditionError("Camera requires known geometry and frame rate: " + file);
+  const auto display = media::StreamDisplayTransform(*stream);
+  if (!display.ok())
+    return display.status();
   return CameraTrackFormat{
-      stream->codecpar->width,
-      stream->codecpar->height,
+      display->transpose ? stream->codecpar->height : stream->codecpar->width,
+      display->transpose ? stream->codecpar->width : stream->codecpar->height,
       fps.num,
       fps.den,
       av_cmp_q(fps, stream->r_frame_rate) == 0,
@@ -264,7 +279,10 @@ absl::StatusOr<CameraRecordingWindow> CameraRecordingWindowAt(
     const double take = std::min(duration - local, duration_seconds - result.duration_seconds);
     const double origin = stream->start_time == AV_NOPTS_VALUE ? 0 : stream->start_time * av_q2d(stream->time_base);
     const bool matroska = std::string_view(input.format->iformat->name).find("matroska") != std::string_view::npos;
-    result.chapters.push_back({file, local, take, origin, matroska});
+    const auto display = media::StreamDisplayTransform(*stream);
+    if (!display.ok())
+      return display.status();
+    result.chapters.push_back({file, local, take, origin, matroska, *display});
     result.duration_seconds += take;
     if (result.duration_seconds >= duration_seconds)
       break;

@@ -187,7 +187,10 @@ absl::StatusOr<std::unique_ptr<AmdStitcher>> AmdStitcher::Create(
   }
 }
 
-absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(GstSample* left, GstSample* right) {
+absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(
+    GstSample* left,
+    GstSample* right,
+    std::array<media::DisplayTransform, 2> display) {
   auto& impl = *impl_;
   if (impl.retired)
     return absl::FailedPreconditionError("AMD Program retired after processing failure");
@@ -201,14 +204,27 @@ absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(Gst
         li.fps_n == ri.fps_n && li.fps_d == ri.fps_d &&
             gst_video_colorimetry_is_equal(&li.colorimetry, &ri.colorimetry),
         absl::InvalidArgumentError("Program camera frame rate or colorimetry differs"));
+    stitching::StitchSourceSizes sizes{{{li.width, li.height}, {ri.width, ri.height}}};
+    for (size_t i = 0; i < sizes.size(); ++i) {
+      display[i] = display[i].corrected(impl.flips[i]);
+      if (display[i].transpose)
+        std::swap(sizes[i][0], sizes[i][1]);
+    }
     if (impl.inputs_bound) {
       Require(
-          gst_video_info_is_equal(&li, &impl.left_info) && gst_video_info_is_equal(&ri, &impl.right_info),
+          sizes[0] == std::array<int, 2>{impl.left->width(), impl.left->height()} &&
+              sizes[1] == std::array<int, 2>{impl.right->width(), impl.right->height()} &&
+              (li.width != impl.left_info.width || gst_video_info_is_equal(&li, &impl.left_info)) &&
+              (ri.width != impl.right_info.width || gst_video_info_is_equal(&ri, &impl.right_info)) &&
+              li.fps_n == impl.left_info.fps_n && li.fps_d == impl.left_info.fps_d &&
+              gst_video_colorimetry_is_equal(&li.colorimetry, &impl.left_info.colorimetry) &&
+              GST_VIDEO_INFO_FORMAT(&li) == GST_VIDEO_INFO_FORMAT(&impl.left_info) &&
+              GST_VIDEO_INFO_FORMAT(&ri) == GST_VIDEO_INFO_FORMAT(&impl.right_info),
           absl::InvalidArgumentError("Program input caps changed; reconstruct its calibrated processor"));
     } else {
-      Status(stitching::CheckStitchSourceSizes(impl.source_sizes, {{{li.width, li.height}, {ri.width, ri.height}}}));
-      impl.left = std::make_unique<CudaMat<half4>>(1, li.width, li.height);
-      impl.right = std::make_unique<CudaMat<half4>>(1, ri.width, ri.height);
+      Status(stitching::CheckStitchSourceSizes(impl.source_sizes, sizes));
+      impl.left = std::make_unique<CudaMat<half4>>(1, sizes[0][0], sizes[0][1]);
+      impl.right = std::make_unique<CudaMat<half4>>(1, sizes[1][0], sizes[1][1]);
       Require(
           impl.left->is_valid() && impl.right->is_valid(),
           absl::ResourceExhaustedError("Cannot allocate Program camera workspace"));
@@ -240,8 +256,8 @@ absl::StatusOr<std::shared_ptr<const AmdPanoramaFrame>> AmdStitcher::Process(Gst
     auto b = Take(gpu::VaHipFrame::Import(gst_sample_get_buffer(right), impl.stream, gpu::VaHipFrame::Access::kRead));
     const auto ai = Take(detection::DescribeVaDetectorImage(*a, li));
     const auto bi = Take(detection::DescribeVaDetectorImage(*b, ri));
-    Hip(gpu::ConvertToRgba16Float(ai, impl.left->data(), impl.left->pitch(), impl.stream, impl.flips[0]));
-    Hip(gpu::ConvertToRgba16Float(bi, impl.right->data(), impl.right->pitch(), impl.stream, impl.flips[1]));
+    Hip(gpu::ConvertToRgba16Float(ai, impl.left->data(), impl.left->pitch(), impl.stream, display[0]));
+    Hip(gpu::ConvertToRgba16Float(bi, impl.right->data(), impl.right->pitch(), impl.stream, display[1]));
     auto stitched = impl.stitcher->process(*impl.left, *impl.right, impl.stream, std::move(frame->impl_->pixels));
     Require(stitched.ok(), absl::InternalError(stitched.status().message()));
     frame->impl_->pixels = stitched.ConsumeValueOrDie();

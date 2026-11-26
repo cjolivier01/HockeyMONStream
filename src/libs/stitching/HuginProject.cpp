@@ -375,7 +375,8 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
   std::vector<std::string> lines;
   for (std::string line; std::getline(input, line);)
     lines.push_back(std::move(line));
-  auto sizes = ReadStitchSourceSizeSuffix(lines);
+  bool display_oriented = false;
+  auto sizes = ReadStitchSourceSizeSuffix(lines, &display_oriented);
   if (!sizes.ok())
     return sizes.status();
   // Versions 18-21 append the match-selection mode to the corresponding
@@ -397,6 +398,7 @@ absl::StatusOr<HuginProject::CanvasProvenance> parse_canvas_provenance(const std
     if (!parsed.ok())
       return parsed.status();
     parsed->source_sizes = *sizes;
+    parsed->display_oriented = display_oriented;
     parsed->control_point_selection = selection;
     return parsed;
   }
@@ -2101,6 +2103,18 @@ std::optional<StitchSourceSizes> HuginProject::ReadSourceImageSizes(const fs::pa
 
 absl::Status HuginProject::CheckSavedRecordingGeometry(const fs::path& game, const YAML::Node& config) {
   const auto calibrated = ReadSourceImageSizes(hm::game_storage::StateDirectory(game));
+  const auto provenance_path = hm::game_storage::StateDirectory(game) / kStitchCanvasProvenanceArtifact;
+  std::error_code error;
+  if (!calibrated && !fs::exists(provenance_path, error) && !error)
+    return absl::OkStatus();
+  if (RecordingUsesDisplayTransform(game, config)) {
+    const auto provenance = ReadCanvasProvenanceLocked(game);
+    if (!provenance.ok())
+      return provenance.status();
+    if (!*provenance || !(**provenance).display_oriented)
+      return absl::FailedPreconditionError(
+          "Camera display orientation changed. Restart stitching calibration from input.");
+  }
   return calibrated ? CheckCalibrationRecordingSizes(game, config, *calibrated) : absl::OkStatus();
 }
 
@@ -3282,10 +3296,10 @@ absl::Status render_staged_project(
       : options.projection_parameters;
   HM_RETURN_IF_ERROR(ValidateStitchProjectionParameters(*generated_projection, generated_projection_parameters));
   provenance.imbue(std::locale::classic());
-  provenance << std::setprecision(std::numeric_limits<double>::max_digits10)
-             << (options.input_cameras.empty()
-                     ? (options.manual_control_point_fingerprint.empty() ? "version=22\n" : "version=23\n")
-                     : (options.manual_control_point_fingerprint.empty() ? "version=24\n" : "version=25\n"))
+  provenance << std::setprecision(std::numeric_limits<double>::max_digits10) << "version="
+             << (options.display_oriented ? 26 : 22) + (options.input_cameras.empty() ? 0 : 2) +
+          (options.manual_control_point_fingerprint.empty() ? 0 : 1)
+             << '\n'
              << "max-output-width=" << options.max_output_width.value_or(0) << '\n'
              << "max-canvas-dimension=" << options.max_canvas_dimension.value_or(0) << '\n'
              << "source-canvas-width=" << source_canvas.first << '\n'
@@ -3434,6 +3448,7 @@ absl::Status HuginProject::Reframe(const fs::path& game_dir, const ReframeOption
   source_config_lock->reset();
 
   Options options;
+  options.display_oriented = provenance->display_oriented;
   options.camera_configuration = provenance->camera->configuration;
   options.horizontal_fov = provenance->camera->horizontal_fov;
   options.vertical_fov = provenance->camera->vertical_fov;

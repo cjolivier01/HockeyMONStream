@@ -28,12 +28,12 @@ namespace fs = std::filesystem;
 absl::StatusOr<cv::Mat> orientation_internal::read_orientation_frame(
     const std::string& file,
     double start_seconds,
-    media::FrameFlip flip) {
+    media::DisplayTransform display) {
   cv::VideoCapture capture(file);
   if (!capture.isOpened())
     return absl::NotFoundError("Failed to open orientation video: " + file);
-  // Camera flips use encoded pixel axes, just as the playback decoder and calibration still writer do.
-  // A GoPro display matrix can otherwise turn the image once before we apply the selected flips.
+  // Apply the same display matrix and subsequent manual corrections as the GPU decoder.
+  // Suppress the decoder's implicit rotation so that the matrix is applied exactly once.
   if (capture.get(cv::CAP_PROP_ORIENTATION_AUTO) > 0 && !capture.set(cv::CAP_PROP_ORIENTATION_AUTO, 0))
     return absl::FailedPreconditionError("Failed to disable automatic video rotation for orientation: " + file);
   if (start_seconds > 0 && !capture.set(cv::CAP_PROP_POS_MSEC, start_seconds * 1000))
@@ -41,8 +41,10 @@ absl::StatusOr<cv::Mat> orientation_internal::read_orientation_frame(
   cv::Mat frame;
   if (!capture.read(frame) || frame.empty())
     return absl::InternalError("Failed to decode the orientation frame at the camera start: " + file);
-  if (flip.enabled())
-    cv::flip(frame, frame, flip.horizontal ? (flip.vertical ? -1 : 1) : 0);
+  if (display.transpose)
+    cv::transpose(frame, frame);
+  if (display.flip.enabled())
+    cv::flip(frame, frame, display.flip.horizontal ? (display.flip.vertical ? -1 : 1) : 0);
   return frame;
 }
 
@@ -175,7 +177,9 @@ absl::Status configure_game_orientation(
     HM_ASSIGN_OR_RETURN(flip, SourceFrameFlip(flips, game_dir, playlist));
     cv::Mat first_frame;
     HM_ASSIGN_OR_RETURN(
-        first_frame, orientation_internal::read_orientation_frame(selected.file, selected.start_seconds, flip));
+        first_frame,
+        orientation_internal::read_orientation_frame(
+            selected.file, selected.start_seconds, selected.display.corrected(flip)));
     auto rink = rink_model.Infer(first_frame, RinkSegmentation::kHockeyMomInferenceScale, is_cancelled);
     if (!rink.ok()) {
       return absl::Status(

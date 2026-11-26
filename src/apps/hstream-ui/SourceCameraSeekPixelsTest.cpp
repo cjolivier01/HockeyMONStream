@@ -112,7 +112,10 @@ int main(int argc, char** argv) {
     const qint64 target = supplied ? std::llround(std::stod(argv[2]) * 1000) : 1000;
     if (!supplied)
       hm::media::test::Ffmpeg(
-          {"-f",
+          {"-display_rotation",
+           "180",
+           "-noautorotate",
+           "-f",
            "lavfi",
            "-i",
            "testsrc2=s=640x360:r=6:d=2,hue=h=n*40,scale=7680:4320:flags=neighbor",
@@ -141,7 +144,6 @@ int main(int argc, char** argv) {
          "4",
          "-ss",
          std::to_string(target / 1000.0),
-         "-noautorotate", // Compare decoded camera pixels, including for MP4s with a display matrix.
          "-i",
          source.string(),
          "-map",

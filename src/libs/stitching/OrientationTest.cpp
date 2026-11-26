@@ -12,6 +12,7 @@
 
 #include "hstream/src/libs/common/Process.h"
 #include "hstream/src/libs/stitching/GameConfig.h"
+#include "hstream/src/libs/stitching/Synchronization.h"
 
 namespace fs = std::filesystem;
 
@@ -56,16 +57,20 @@ bool test_camera_flips_with_display_rotation(const fs::path& root) {
        "-frames:v",
        "1",
        "-c:v",
-       "mpeg4",
+       "libx264",
        file},
       "",
       {},
       {});
   if (!expect(generated == 0, "generate an MP4 with a 180-degree display matrix"))
     return false;
+  const auto window = hm::stitching::CameraRecordingWindowAt({file}, 0, 1);
+  if (!expect(window.ok(), "read the camera display matrix"))
+    return false;
   for (bool horizontal : {false, true}) {
     for (bool vertical : {false, true}) {
-      const auto frame = hm::stitching::orientation_internal::read_orientation_frame(file, 0, {horizontal, vertical});
+      const auto frame = hm::stitching::orientation_internal::read_orientation_frame(
+          file, 0, window->chapters.front().display.corrected({horizontal, vertical}));
       if (!expect(frame.ok(), "decode the rotated camera fixture")) {
         std::cerr << frame.status() << '\n';
         return false;
@@ -73,10 +78,10 @@ bool test_camera_flips_with_display_rotation(const fs::path& root) {
       cv::Mat channel;
       cv::extractChannel(*frame, channel, 0);
       cv::Mat expected = cv::Mat::zeros(48, 64, CV_8U);
-      expected(cv::Rect(horizontal ? 32 : 0, vertical ? 24 : 0, 32, 24)).setTo(255);
+      expected(cv::Rect(horizontal ? 0 : 32, vertical ? 0 : 24, 32, 24)).setTo(255);
       if (!expect(
               channel.size() == expected.size() && cv::countNonZero((channel > 128) != expected) == 0,
-              "rink inference must receive only the selected flips on encoded pixels"))
+              "rink inference must receive the displayed image with the selected corrections"))
         return false;
     }
   }

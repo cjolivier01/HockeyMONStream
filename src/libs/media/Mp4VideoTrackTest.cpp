@@ -30,6 +30,17 @@ int main(int argc, char** argv) {
           "Video track inherited an audio tail or lost its start/fps/frame count");
       Check(info->bitrate && *info->bitrate > 0, "MP4 video header bitrate was lost");
     }
+    for (int quarter = 1; quarter < 4; ++quarter) {
+      const auto tagged = root.path / ("rotation-" + std::to_string(quarter) + ".mp4");
+      test::Ffmpeg(
+          {"-display_rotation", std::to_string(90 * quarter), "-i", ordinary.string(), "-c", "copy", tagged.string()});
+      const auto info = ReadMp4VideoTrack(tagged, 1000000000, {});
+      Check(info.ok(), info.status().ToString());
+      Check(
+          info->display.nvFlipMethod() == quarter && info->displayWidth() == (quarter % 2 ? 192 : 384) &&
+              info->displayHeight() == (quarter % 2 ? 384 : 192),
+          "Incorrect display transform or rotated dimensions");
+    }
     Check(
         absl::IsCancelled(ReadMp4VideoTrack(ordinary, 1000000000, [] { return true; }).status()),
         "Cancellation was ignored");

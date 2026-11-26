@@ -47,6 +47,7 @@ struct Frame {
   Phase phase{Phase::kPair};
   uint64_t sequence{};
   std::shared_ptr<GstSample> left, right;
+  std::array<media::DisplayTransform, 2> display{};
   std::shared_ptr<const AmdPanoramaFrame> panorama;
   size_t detection_count{};
   tracking::ProgramObservation observation;
@@ -123,7 +124,7 @@ class Stitch final : public gst::Component {
   explicit Stitch(std::unique_ptr<AmdStitcher> stage) : stage_(std::move(stage)) {}
   absl::StatusOr<GstBuffer*> Process(GstBuffer* input) override {
     auto& frame = Get(input, Phase::kPair);
-    frame.panorama = Take(stage_->Process(frame.left.get(), frame.right.get()));
+    frame.panorama = Take(stage_->Process(frame.left.get(), frame.right.get(), frame.display));
     frame.left.reset();
     frame.right.reset();
     frame.phase = Phase::kPanorama;
@@ -412,7 +413,8 @@ absl::StatusOr<AmdProgramFrame> AmdProgramGraph::Process(
     GstSample* left,
     GstSample* right,
     GstClockTime time,
-    GstClockTime duration) {
+    GstClockTime duration,
+    std::array<media::DisplayTransform, 2> display) {
   auto& impl = *impl_;
   if (impl.failed)
     return absl::FailedPreconditionError("Program graph retired after failure");
@@ -422,6 +424,7 @@ absl::StatusOr<AmdProgramFrame> AmdProgramGraph::Process(
     Require(left && right, "Program requires both source samples");
     auto frame = std::make_shared<Frame>();
     frame->sequence = sequence;
+    frame->display = display;
     frame->left = {gst_sample_ref(left), gst_sample_unref};
     frame->right = {gst_sample_ref(right), gst_sample_unref};
     auto output = impl.processing->Run(Envelope(std::move(frame), time, duration));

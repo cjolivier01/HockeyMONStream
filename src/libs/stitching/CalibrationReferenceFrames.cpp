@@ -93,6 +93,23 @@ CalibrationImageWriter Writer(
     // Input -ss uses the preceding keyframe, then accurate decode/discard. Only
     // one still is encoded. CPU image access is confined to offline calibration,
     // whose feature matcher and PNG/EXIF store already consume CPU images.
+    media::DisplayTransform display;
+    HM_ASSIGN_OR_RETURN(display, ReadCameraDisplayTransform(requested.video));
+    display = display.corrected(flip);
+    // Convert chroma to full-resolution RGB before reordering pixels, matching
+    // the camera still used by OpenCV even with subsampled input.
+    std::string filter;
+    if (display.nvFlipMethod() != 0) {
+      filter = "format=rgb48be,";
+      if (display.transpose) {
+        filter += "transpose=clock,";
+        display.flip.horizontal = !display.flip.horizontal;
+      }
+      if (display.flip.horizontal)
+        filter += "hflip,";
+      if (display.flip.vertical)
+        filter += "vflip,";
+    }
     const int status = hm::run_command(
         {ffmpeg,
          "-seek_timestamp",
@@ -102,10 +119,10 @@ CalibrationImageWriter Writer(
          "info",
          "-hwaccel",
          "auto",
-         "-noautorotate",
          "-ss",
          time.str(),
          "-copyts",
+         "-noautorotate",
          "-i",
          requested.video.string(),
          "-map",
@@ -114,8 +131,7 @@ CalibrationImageWriter Writer(
          "-frames:v",
          "1",
          "-vf",
-         std::string(flip.enabled() ? "format=rgb48be," : "") + (flip.horizontal ? "hflip," : "") +
-             (flip.vertical ? "vflip," : "") + "showinfo",
+         filter + "showinfo",
          "-fps_mode",
          "passthrough",
          "-pix_fmt",

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "hstream/src/libs/media/DisplayTransform.h"
+
 #include <gst/gst.h>
 #include <gst/video/video-info.h>
 
@@ -31,6 +33,9 @@ struct VaVideoFrame {
   // File-relative stream time, independent of the seek's running-time origin.
   GstClockTime time = GST_CLOCK_TIME_NONE;
   GstClockTime duration = GST_CLOCK_TIME_NONE;
+  // The VA surface is in coded coordinates. The following HIP color conversion
+  // applies the chapter matrix in the same pass that writes stitcher inputs.
+  media::DisplayTransform display{};
 };
 
 // Local MP4 video reader with explicitly selected VA decoding and linear

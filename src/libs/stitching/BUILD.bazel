@@ -220,7 +220,7 @@ cc_library(
   include_prefix = INCLUDE_PREFIX,
   visibility = ["//visibility:private"],
   deps = [
-    "//src/libs/media:frame_flip",
+    "//src/libs/media:display_transform",
     "@com_google_absl//absl/status:status",
     "@com_google_absl//absl/status:statusor",
     "@opencv_linux//:opencv",
@@ -285,6 +285,7 @@ cc_library(
     ":calibration_match_images",
     ":calibration_matches",
     ":calibration_frame_exif",
+    "//src/libs/media:display_transform",
     ":player_frame_input_store",
     ":imu_synchronization",
     ":canvas_constraint_check",
@@ -1048,7 +1049,7 @@ cc_library(
     hdrs = ["VideoLensMetadata.h"],
     include_prefix = INCLUDE_PREFIX,
     visibility = ["//visibility:public"],
-    deps = [":game_config", ":calibration_frame_exif"],
+    deps = [":game_config", ":calibration_frame_exif", "//src/libs/media:display_transform"],
 )
 
 cc_library(

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/media/Mp4VideoTrack.h"
+#include "hstream/src/libs/media/DisplayMatrix.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -114,6 +115,9 @@ absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
     return length.status();
   if (*length <= 0 || *start > std::numeric_limits<int64_t>::max() - *length)
     return absl::DataLossError("MP4 video duration is empty or overflows its clock");
+  const auto display = StreamDisplayTransform(*video);
+  if (!display.ok())
+    return display.status();
   return Mp4VideoTrack{
       codec->codec_id == AV_CODEC_ID_H264 ? VideoCodec::kH264 : VideoCodec::kHevc,
       codec->width,
@@ -129,6 +133,7 @@ absl::StatusOr<Mp4VideoTrack> ReadMp4VideoTrack(
       video->start_time,
       video->time_base.num,
       video->time_base.den,
-      codec->bit_rate > 0 ? std::optional<uint64_t>(codec->bit_rate) : std::nullopt};
+      codec->bit_rate > 0 ? std::optional<uint64_t>(codec->bit_rate) : std::nullopt,
+      *display};
 }
 } // namespace hm::media

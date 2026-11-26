@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "absl/status/statusor.h"
+#include "hstream/src/libs/media/DisplayTransform.h"
 
 namespace hm::media {
 enum class VideoCodec { kH264, kHevc };
@@ -24,6 +25,13 @@ struct Mp4VideoTrack {
   int time_base_n, time_base_d;
   // Header video bitrate only; absence does not fall back to whole-file/audio.
   std::optional<uint64_t> bitrate;
+  DisplayTransform display{};
+  int displayWidth() const {
+    return display.transpose ? height : width;
+  }
+  int displayHeight() const {
+    return display.transpose ? width : height;
+  }
 };
 // Read one ordinary local MP4's video-track metadata without opening a codec,
 // decoding images, or probing via GstDiscoverer. The video duration excludes

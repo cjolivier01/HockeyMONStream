@@ -149,6 +149,34 @@ int main() {
         !actual.empty() && cv::norm(expected_pixels, actual, cv::NORM_INF) == 0,
         "Offline calibration must see the reflected pixels before feature extraction");
   }
+  const auto rotated = game / "rotated.mp4";
+  expect(
+      hm::run_command(
+          {*ffmpeg, "-v", "error", "-display_rotation", "180", "-i", video.string(), "-c", "copy", rotated.string()},
+          "",
+          {},
+          {}) == 0,
+      "Create a still source with a display matrix");
+  auto tagged = YAML::Clone(config);
+  tagged["game"]["videos"]["left"][0] = "rotated.mp4";
+  StitchInputCameras tagged_cameras{{"rotated.mp4", {108, 70, {}}}};
+  for (bool horizontal : {false, true}) {
+    for (bool vertical : {false, true}) {
+      tagged_cameras.at("rotated.mp4").flip = {horizontal, vertical};
+      tagged["stitching"]["input_cameras"] = WriteStitchInputCameras(tagged_cameras);
+      auto pairs = EndRelativeCalibrationInputs(game, tagged, 1, {});
+      const auto output = game / ("rotated-" + std::to_string(horizontal) + std::to_string(vertical) + ".png");
+      if (!pairs.ok() || !pairs->front().left(output).ok())
+        return 1;
+      auto expected = cv::imread((game / "0-0.png").string(), cv::IMREAD_UNCHANGED);
+      if (!horizontal || !vertical)
+        cv::flip(expected, expected, horizontal ? 0 : vertical ? 1 : -1);
+      const auto actual = cv::imread(output.string(), cv::IMREAD_UNCHANGED);
+      expect(
+          !actual.empty() && cv::norm(expected, actual, cv::NORM_INF) == 0,
+          "Calibration PNG must apply its display rotation before the manual corrections");
+    }
+  }
   PlayerFrameSelectionSettings selected_settings;
   selected_settings.frame_count = 2;
   PlayerFrameSelectionContext context{

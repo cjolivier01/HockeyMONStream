@@ -24,7 +24,8 @@ class AmdProgramGraph {
       GstSample* left,
       GstSample* right,
       GstClockTime time,
-      GstClockTime duration);
+      GstClockTime duration,
+      std::array<media::DisplayTransform, 2> display = {});
   // Takes ownership of output on every path; returns the rendered owned buffer.
   absl::StatusOr<GstBuffer*> Render(
       GstBuffer* output,

@@ -1,4 +1,5 @@
 #include "hstream/src/libs/stitching/VideoLensMetadata.h"
+#include "hstream/src/libs/media/DisplayMatrix.h"
 
 #include <sys/stat.h>
 #include <algorithm>
@@ -635,12 +636,32 @@ VideoLensMetadata read_container_dimensions(Mp4& source, const char* format) {
     require(
         !result.width && codec->width > 0 && codec->height > 0 && codec->width <= 32768 && codec->height <= 32768,
         "Ambiguous or invalid video track geometry");
-    result.width = codec->width;
-    result.height = codec->height;
+    const auto display = media::StreamDisplayTransform(*stream);
+    if (!display.ok())
+      throw Unsupported(std::string(display.status().message()));
+    result.display = *display;
+    result.width = display->transpose ? codec->height : codec->width;
+    result.height = display->transpose ? codec->width : codec->height;
   }
   require(result.width, "Missing video track geometry");
   return result;
 }
+VideoLensMetadata displayed_metadata(VideoLensMetadata result, media::DisplayTransform display) {
+  result.display = display;
+  auto& center = result.camera.input_lens.center_offset;
+  if (display.transpose) {
+    std::swap(result.width, result.height);
+    std::swap(result.horizontal_fov, result.vertical_fov);
+    std::swap(result.camera.horizontal_fov, result.camera.vertical_fov);
+    std::swap(center[0], center[1]);
+  }
+  if (display.flip.horizontal)
+    center[0] = -center[0];
+  if (display.flip.vertical)
+    center[1] = -center[1];
+  return result;
+}
+
 VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_only) {
   std::optional<VideoLensMetadata> vendor;
   if (!dimensions_only) {
@@ -661,6 +682,7 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
       return read_container_dimensions(mp4, "avi");
   }
   size_t width = 0, height = 0;
+  media::DisplayTransform display;
   std::map<std::string, Mp4::Atom> dji_track;
   // Camera metadata and video sample descriptions are contained in moov.
   // Do not interpret a legacy unboxed Insta360 trailer as more MP4 atoms.
@@ -693,6 +715,22 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
         require(width == 0, "Multiple video tracks need independent lens models");
         width = integer(b.data() + 40, 2);
         height = integer(b.data() + 42, 2);
+        if (leaves.count("tkhd")) {
+          const auto& header = leaves.at("tkhd");
+          require(header.size >= 1, "Missing MP4 track header version");
+          const auto version = mp4.read(header.pos, 1).front();
+          require(version <= 1, "Unsupported MP4 track header version");
+          const unsigned offset = version == 1 ? 52 : 40;
+          require(header.size >= offset + 36, "Truncated MP4 track display matrix");
+          const auto bytes = mp4.read(header.pos + offset, 36);
+          int32_t matrix[9];
+          for (size_t i = 0; i < 9; ++i)
+            matrix[i] = static_cast<int32_t>(integer(bytes.data() + 4 * i, 4));
+          const auto transform = media::ParseDisplayMatrix(matrix);
+          if (!transform.ok())
+            throw Unsupported(std::string(transform.status().message()));
+          display = *transform;
+        }
       }
     }
   }
@@ -701,13 +739,13 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
     VideoLensMetadata result;
     result.width = width;
     result.height = height;
-    return result;
+    return displayed_metadata(result, display);
   }
   if (vendor) {
     require(
         width != 0 && width == vendor->width && height == vendor->height,
         "Lens metadata dimensions do not match the recorded video track");
-    return *vendor;
+    return displayed_metadata(std::move(*vendor), display);
   }
   if (!dji_track.empty()) {
     const auto offsets = dji_track.find(dji_track.count("co64") ? "co64" : "stco"), sizes = dji_track.find("stsz");
@@ -722,7 +760,7 @@ VideoLensMetadata read_file(const std::filesystem::path& path, bool dimensions_o
       require(size.size() >= 16, "Missing DJI sample size");
       length = integer(size.data() + 12, 4);
     }
-    return parse_dji(mp4.read(integer(offset.data() + 8, n), length), width, height);
+    return displayed_metadata(parse_dji(mp4.read(integer(offset.data() + 8, n), length), width, height), display);
   }
   throw Unsupported("No supported lens metadata; original camera files may be required");
 }
@@ -785,6 +823,13 @@ absl::StatusOr<VideoLensMetadata> ReadVideoLensMetadata(const std::filesystem::p
   return read_cached_metadata(video, false);
 }
 
+absl::StatusOr<media::DisplayTransform> ReadRecordingDisplayTransform(const std::filesystem::path& recording) {
+  const auto track = read_cached_metadata(recording, true);
+  if (!track.ok())
+    return track.status();
+  return track->display;
+}
+
 absl::StatusOr<std::array<int, 2>> ReadRecordingSize(const std::filesystem::path& recording) {
   const auto track = read_cached_metadata(recording, true);
   if (!track.ok())
@@ -799,6 +844,32 @@ absl::Status CheckCalibrationFrameSize(const std::filesystem::path& recording, c
         recording.filename().string() + " is " + std::to_string((*size)[0]) + "x" + std::to_string((*size)[1]) +
         ", but its calibration uses " + std::to_string(calibrated[0]) + "x" + std::to_string(calibrated[1]));
   return absl::OkStatus();
+}
+
+bool RecordingUsesDisplayTransform(const std::filesystem::path& game, const YAML::Node& config) {
+  const auto child = [](const YAML::Node& parent, const char* key) {
+    return parent && parent.IsMap() ? parent[key] : YAML::Node(YAML::NodeType::Undefined);
+  };
+  const auto roles = child(child(config, "hstream_ui"), "video_roles");
+  const auto videos = child(child(config, "game"), "videos");
+  const auto tagged = [&](const YAML::Node& chapter) {
+    if (!chapter || !chapter.IsScalar() || chapter.Scalar().empty())
+      return false;
+    const auto display = ReadRecordingDisplayTransform(game / chapter.Scalar());
+    return display.ok() && display->nvFlipMethod() != 0;
+  };
+  for (const char* role : {"left", "right"}) {
+    const auto selected = child(roles, role);
+    const auto playlist = selected && selected.IsSequence() && selected.size() ? selected : child(videos, role);
+    if (playlist && playlist.IsSequence()) {
+      for (const auto& chapter : playlist)
+        if (tagged(chapter))
+          return true;
+    } else if (tagged(playlist)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 absl::Status CheckCalibrationRecordingSizes(
