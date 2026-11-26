@@ -13,18 +13,6 @@
 
 ## CLI
 
-- Make `hstreamlosslessmux` work with a single input. Today it only handles two
-  cameras: `create_multi_source_bin` in `deepstream_source_bin.cpp` selects it
-  on `uri_playlist_source_count == 2` and anything else gets the stock mux.
-  Point it at one source and the pipeline stalls — `uri_multiple_pipeline_test`
-  goes from 20s to a 300s timeout, hanging in `run_single_uri_multiple_source`,
-  the stitched-output playback case. Likely in the first hunk of
-  `nvstreammux_lossless.patch`, which drops the forced partial-batch flush so a
-  batch only leaves on `is_ready()`; with one source that never becomes true.
-  Worth fixing because single-source playback is then stuck on the stock mux,
-  and so misses the `P010_10LE` caps the same patch set adds for 10-bit. Two
-  assertions pin the current split and would need updating:
-  `UriMultiplePipelineTest.cpp` and `PluginPropertyYamlParserTest.cpp`.
 
 ## Misc
 

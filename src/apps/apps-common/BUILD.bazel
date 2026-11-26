@@ -449,6 +449,14 @@ cc_library(
 )
 
 cc_test(
+    name = "hstream_lossless_nvstreammux_inputs_test",
+    srcs = ["HStreamLosslessMuxInputsTest.cpp"],
+    size = "medium",
+    tags = ["manual", "requires-deepstream-hw"],
+    deps = [":hstream_lossless_nvstreammux", "@deepstream//:deepstream_lib", "@gstreamer"],
+)
+
+cc_test(
     name = "hstream_lossless_nvstreammux_caps_test",
     srcs = ["HStreamLosslessMuxCapsTest.cpp"],
     deps = [
@@ -836,6 +844,15 @@ cc_test(
         ":webrtc_endpoint",
         "@gstreamer",
     ],
+)
+
+cc_test(
+    name = "uri_multiple_mux_inputs_test",
+    srcs = ["UriMultiplePipelineTest.cpp"],
+    args = ["--mux-inputs-only"],
+    size = "medium",
+    tags = ["local", "manual", "no-cache", "requires-deepstream-hw"],
+    deps = [":deepstream_apps_common", ":webrtc_endpoint", "@gstreamer"],
 )
 
 cc_test(
