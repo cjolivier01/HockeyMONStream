@@ -38,6 +38,35 @@ cc_test(
 )
 
 cc_library(
+    name = "detector_preprocessing_check",
+    srcs = ["DetectorPreprocessingCheck.cpp"],
+    hdrs = ["DetectorPreprocessingCheck.h"],
+    include_prefix = INCLUDE_PREFIX,
+    linkopts = ["-ldl"],
+    visibility = ["//visibility:public"],
+    deps = cuda_dependencies("detector_preprocessing_check", [
+        "//toolchains/jetson:cuda_runtime",
+        "@local_cuda//:cuda_headers",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@deepstream//:deepstream_lib",
+    ]),
+)
+
+cc_test(
+    name = "detector_preprocessing_check_test",
+    srcs = ["DetectorPreprocessingCheckTest.cpp"],
+    linkopts = ["-Wl,--export-dynamic"],
+    tags = ["manual", "requires-gpu"],
+    deps = cuda_dependencies("detector_preprocessing_check_test", [
+        ":detector_preprocessing_check",
+        "//toolchains/jetson:cuda_runtime",
+        "@local_cuda//:cuda_headers",
+    ], testonly = True),
+)
+
+cc_library(
     name = "pipeline_startup_error",
     srcs = ["PipelineStartupError.cpp"],
     hdrs = ["PipelineStartupError.h"],
@@ -449,6 +478,14 @@ cc_library(
 )
 
 cc_test(
+    name = "hstream_lossless_nvstreammux_inputs_test",
+    srcs = ["HStreamLosslessMuxInputsTest.cpp"],
+    size = "medium",
+    tags = ["manual", "requires-deepstream-hw"],
+    deps = [":hstream_lossless_nvstreammux", "@deepstream//:deepstream_lib", "@gstreamer"],
+)
+
+cc_test(
     name = "hstream_lossless_nvstreammux_caps_test",
     srcs = ["HStreamLosslessMuxCapsTest.cpp"],
     deps = [
@@ -836,6 +873,15 @@ cc_test(
         ":webrtc_endpoint",
         "@gstreamer",
     ],
+)
+
+cc_test(
+    name = "uri_multiple_mux_inputs_test",
+    srcs = ["UriMultiplePipelineTest.cpp"],
+    args = ["--mux-inputs-only"],
+    size = "medium",
+    tags = ["local", "manual", "no-cache", "requires-deepstream-hw"],
+    deps = [":deepstream_apps_common", ":webrtc_endpoint", "@gstreamer"],
 )
 
 cc_test(

@@ -1479,12 +1479,12 @@ int run_single_uri_multiple_source(const std::string& uri) {
   }
   GstElementFactory* mux_factory = gst_element_get_factory(src_parent.streammux);
   const gchar* mux_name = mux_factory ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(mux_factory)) : nullptr;
-  if (src_parent.uri_playlist_exact_pairing_enabled || g_strcmp0(mux_name, "hstreamlosslessmux") == 0) {
-    std::cerr << "Single stitched-output playback incorrectly enabled the two-camera lossless barrier\n";
+  if (src_parent.uri_playlist_exact_pairing_enabled || g_strcmp0(mux_name, "hstreamlosslessmux") != 0) {
+    std::cerr << "Single playback must use the lossless mux without the two-camera barrier\n";
     return 3;
   }
-  if (src_parent.lossless_nvstreammux) {
-    std::cerr << "Single stitched-output playback recorded a lossless mux selection it did not make\n";
+  if (!src_parent.lossless_nvstreammux) {
+    std::cerr << "Single playback did not record its lossless mux selection\n";
     return 3;
   }
   g_object_set(
@@ -1524,6 +1524,78 @@ int run_single_uri_multiple_source(const std::string& uri) {
   if (counter.buffers != 15) {
     std::cerr << "Single URI-MULTIPLE source emitted " << counter.buffers << " frames instead of 15\n";
     return 5;
+  }
+  return 0;
+}
+
+// Exercise the production decoder/playlist bin, including chapter transitions,
+// with more inputs than the stereo-only rendezvous supports.
+int run_n_uri_playlists(const std::string& uri, guint count, bool unequal = false) {
+  std::vector<NvDsSourceConfig> configs(count);
+  for (guint i = 0; i < count; ++i)
+    configure_uri_multiple_source(configs[i], std::vector<std::string>(unequal ? i + 1 : 2, uri), i);
+  NvDsSrcParentBin parent{};
+  if (!create_multi_source_bin(count, configs.data(), &parent) || !parent.lossless_nvstreammux ||
+      parent.uri_playlist_exact_pairing_enabled != (count == 2))
+    return 2;
+  g_object_set(parent.streammux, "batch-size", count, "sync-inputs", FALSE, nullptr);
+  auto* pipeline = gst_pipeline_new("n-uri-playlists");
+  auto* sink = gst_element_factory_make("fakesink", nullptr);
+  g_object_set(sink, "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, nullptr);
+  auto* audio = gst_element_factory_make("fakesink", nullptr);
+  g_object_set(audio, "sync", FALSE, "async", FALSE, "enable-last-sample", FALSE, nullptr);
+  gst_bin_add_many(GST_BIN(pipeline), parent.bin, sink, audio, nullptr);
+  if (!link_uri_source_audio_src(&parent.sub_bins[0], audio))
+    return 3;
+  AudioTimelineStats audio_stats{};
+  auto* audio_pad = gst_element_get_static_pad(audio, "sink");
+  gst_pad_add_probe(
+      audio_pad,
+      static_cast<GstPadProbeType>(GST_PAD_PROBE_TYPE_BUFFER | GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM),
+      inspect_audio_timeline_probe,
+      &audio_stats,
+      nullptr);
+  gst_object_unref(audio_pad);
+  if (!gst_element_link(parent.bin, sink))
+    return 3;
+  struct Stats {
+    std::vector<guint64> frames;
+    bool valid = true;
+  } stats{std::vector<guint64>(count)};
+  auto* pad = gst_element_get_static_pad(sink, "sink");
+  gst_pad_add_probe(
+      pad,
+      GST_PAD_PROBE_TYPE_BUFFER,
+      [](GstPad*, GstPadProbeInfo* info, gpointer data) {
+        auto& stats = *static_cast<Stats*>(data);
+        auto* batch = gst_buffer_get_nvds_batch_meta(GST_PAD_PROBE_INFO_BUFFER(info));
+        if (!batch) {
+          stats.valid = false;
+          return GST_PAD_PROBE_OK;
+        }
+        std::set<guint> ids;
+        for (auto* item = batch->frame_meta_list; item; item = item->next) {
+          auto* frame = static_cast<NvDsFrameMeta*>(item->data);
+          if (frame->pad_index >= stats.frames.size() || !ids.insert(frame->pad_index).second) {
+            stats.valid = false;
+            continue;
+          }
+          stats.valid &= frame->frame_num == static_cast<gint>(stats.frames[frame->pad_index]++);
+        }
+        stats.valid &= ids.size() == batch->num_frames_in_batch;
+        return GST_PAD_PROBE_OK;
+      },
+      &stats,
+      nullptr);
+  gst_object_unref(pad);
+  const int result = run_pipeline(pipeline, 20, &parent);
+  stats.valid &= audio_stats.buffers > 0 && audio_stats.eos_events == 1 && audio_stats.invalid_timestamps == 0 &&
+      audio_stats.discontinuities == 0;
+  for (guint i = 0; i < count; ++i)
+    stats.valid &= stats.frames[i] == 15 * (unequal ? i + 1 : 2);
+  if (result || !stats.valid) {
+    std::cerr << count << "-input playlist failed frame/metadata continuity across chapters\n";
+    return result ? result : 5;
   }
   return 0;
 }
@@ -1968,6 +2040,8 @@ int main(int argc, char** argv) {
   g_setenv("USE_NEW_NVSTREAMMUX", "yes", TRUE);
   gst_init(&argc, &argv);
   GST_DEBUG_CATEGORY_INIT(NVDS_APP, "NVDS_APP", 0, nullptr);
+  if (argc == 3 && std::string(argv[1]) == "--single-input-only")
+    return run_single_uri_multiple_source(argv[2]);
   if (argc == 3 && std::string(argv[1]) == "--packed-inputs-only")
     return run_mixed_packed_inputs(fs::absolute(argv[2]));
   if (argc == 2 && std::string(argv[1]) == "--webrtc-audio-pressure-only")
@@ -1982,11 +2056,12 @@ int main(int argc, char** argv) {
   }
   if (argc == 2 && std::string(argv[1]) == "--render-video-sink-only")
     return run_headless_render_video_sink();
+  const bool mux_inputs_only = argc == 2 && std::string(argv[1]) == "--mux-inputs-only";
   const bool mixed_only = argc == 2 && std::string(argv[1]) == "--mixed-sources-only";
   const bool decoder_matrix_only = argc == 2 && std::string(argv[1]) == "--decoder-matrix-only";
   const bool startup_seek_only = argc == 2 && std::string(argv[1]) == "--startup-seek-only";
   const bool display_only = argc == 2 && std::string(argv[1]) == "--display-chapters-only";
-  if (!decoder_matrix_only && !startup_seek_only && !mixed_only && !display_only) {
+  if (!decoder_matrix_only && !startup_seek_only && !mixed_only && !display_only && !mux_inputs_only) {
     if (const int rc = run_realtime_render_tests())
       return rc;
   }
@@ -1998,6 +2073,17 @@ int main(int argc, char** argv) {
   fs::create_directories(tmpdir);
 
   const fs::path a0 = tmpdir / "left_0.mp4";
+  if (mux_inputs_only) {
+    if (!make_synthetic_mp4(a0, 1, 0, 440))
+      return 1;
+    for (guint count : {1U, 2U, 3U, 4U})
+      if (const int result = run_n_uri_playlists(to_file_uri(a0), count))
+        return result;
+    if (const int result = run_n_uri_playlists(to_file_uri(a0), 3, true))
+      return result;
+    fs::remove_all(tmpdir);
+    return 0;
+  }
   if (!decoder_matrix_only && !startup_seek_only) {
     for (guint i = 0; i < 2; ++i)
       if (!make_synthetic_mp4(

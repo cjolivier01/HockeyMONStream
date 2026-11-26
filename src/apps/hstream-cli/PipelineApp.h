@@ -283,6 +283,7 @@ class PipelineApplication {
   // std::vector<std::unique_ptr<HmApp>> app_ctx_;
   std::map<long, std::vector<std::shared_ptr<HmApp>>> stage_app_contexts_;
   std::map<long, std::map</*instance_number=*/int, Window>> stage_windows_;
+  std::set<unsigned> checked_detector_gpus_;
   std::set<AppCtx*> one_pass_calibration_contexts_;
 
   long current_stage_{0};

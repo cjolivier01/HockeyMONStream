@@ -1,6 +1,8 @@
 --- a/nvstreammux_batch.cpp
 +++ b/nvstreammux_batch.cpp
-@@ -216,17 +216,5 @@
+@@ -219,21 +219,9 @@
+ bool BatchPolicy::is_ready_or_due(Batch * batch)
+ {
 -    bool batch_ready = is_ready(batch);
 -
 -    if(!batch_ready)
@@ -18,32 +20,125 @@
 -        }
 -    }
 -    return batch_ready;
-+    /* HStream file stitching is lossless: an incomplete camera pair must
++    /* HStream file stitching is lossless: an incomplete input batch must
 +     * never be emitted merely because a wall-clock deadline elapsed. The
 +     * decoder rendezvous and downstream sequence metadata checks provide the
 +     * corresponding liveness and integrity failures. */
 +    return is_ready(batch);
+ }
+
 --- a/nvstreammux.cpp
 +++ b/nvstreammux.cpp
-@@ -333,2 +332,0 @@
+@@ -305,5 +305,4 @@
+ {
+     bool ret_push_batch_called = false;
+-    bool push_events_called = false;
+     debug_print("%s %d %p\n", __func__, __LINE__, out_buf);
+     /** documentation for push_events() calls in this API:
+@@ -326,24 +325,53 @@
+             break;
+         }
 -        NanoSecondsType wait_time;
 -
-@@ -341,0 +340,7 @@
+-        if(!push_events_called)
+-        {
+-            lck.unlock();
+-            push_events();
+-            lck.lock();
+-            push_events_called = true;
++        // Drain leading events on every pass, even with a partial batch.
++        // In particular, EOS retires a source only after its queue drains.
++        lck.unlock();
++        push_events();
++        lck.lock();
++        if(stop_task)
++        {
++            break;
++        }
++
 +        /* all_pads_eos is set only after every input queue, including its
 +         * final EOS event, has drained. Do not wait for a partial-batch
 +         * deadline once no complete batch remains. */
 +        if(all_pads_eos)
 +        {
 +            break;
-+        }
-@@ -344,2 +349 @@
+         }
+
+         batch = batch_policy.form_batch(batch, batch_policy.get_batch_size());
 -        wait_time = batch_policy.calculate_wait();
 -        bool wait_not_past_max = wait_time > (std::chrono::milliseconds(0));
 +        const bool wait_not_past_max = true;
-@@ -350,3 +354,3 @@
+         debug_print("wait_not_past_max=%d acc_batch=%d\n", wait_not_past_max, batch->acc_batch);
+         if(!batch_policy.is_ready(batch) && wait_not_past_max )
+         {
+             debug_print("DEBUGME\n");
 -            //std::cout << "waiting got " << wait_time.count() << "\n";
 -            /** Wait for new buffers on pads or if no buffer comes in, upto wait_time */
 -            cv.wait_for(lck, wait_time);
-+            /* Only a peer buffer, EOS, cancellation, or teardown may end a
-+             * lossless file-batch wait; wall-clock time never may. */
-+            cv.wait(lck);
++            // Event delivery temporarily releases mutex above. Do not miss
++            // a notification that arrived in that window, including empty
++            // inputs reaching EOS before the source task starts waiting.
++            bool pending_event = false;
++            for (const auto& input : inputs)
++            {
++                std::lock_guard<std::mutex> pad_lock(input.second->mutex);
++                pending_event |= !input.second->queue.empty() &&
++                    input.second->queue.front()->type == ENTRY_EVENT;
++            }
++            if(stop_task || all_pads_eos || pending_event)
++            {
++                continue;
++            }
++            if(synch_buffer || batch_policy.get_config().enable_source_rate_control)
++            {
++                // Timestamp/rate eligibility can change without another
++                // input notification. Retry at the configured scheduler
++                // cadence; this never authorizes a partial batch push.
++                cv.wait_for(lck, batch_policy.get_max_duration_delay());
++            }
++            else
++            {
++                cv.wait(lck);
++            }
+             if(batch->acc_batch == 0)
+             {
+@@ -562,4 +590,11 @@
+     lck_m.lock();
+     std::unique_lock<std::mutex> lck(pad->mutex);
++    if(stop_task)
++    {
++        // A producer may have been waiting at capacity when stop cleared
++        // its queue. Do not repopulate a retired mux after it wakes.
++        delete buffer;
++        return;
++    }
+     if(pad->state == SOURCE_STATE_IDLE)
+     {
+@@ -676,9 +711,11 @@
+     if(prev_state == SOURCE_STATE_IDLE)
+     {
++            lck.unlock();
+             lck_m.unlock();
+-            lck.unlock();
+             push_events();
++            // Match every other path: mux mutex precedes the pad mutex.
++            // Two empty inputs can otherwise deadlock while handling EOS.
++            lck_m.lock();
+             lck.lock();
+-            lck_m.lock();
+     }
+     return ret;
+--- a/nvstreammux_pads.cpp
++++ b/nvstreammux_pads.cpp
+@@ -128,4 +128,11 @@
+     queue.clear();
+     event_indices.clear();
++    // Clearing queued buffers must release producers blocked at capacity.
++    // The queue and its count are protected separately.
++    {
++        std::lock_guard<std::mutex> count_lock(mutex_buffer_count);
++        buffer_count = 0;
++        cv_input_full.notify_all();
++    }
+     state = SOURCE_STATE_IDLE;
+ }

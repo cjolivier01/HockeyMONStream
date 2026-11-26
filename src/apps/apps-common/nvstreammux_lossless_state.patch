@@ -1,29 +1,46 @@
 --- gstnvstreammux.cpp
 +++ gstnvstreammux.cpp
-@@ -878,6 +878,7 @@
-               LOGD("failed to set caps [%s] on source pad\n", gst_caps_to_string(caps));
+@@ -879,4 +879,5 @@
                GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
                  gst_caps_to_string(caps));
 +              g_mutex_unlock (&mux->ctx_lock);
                return FALSE;
              }
-           }
-@@ -898,5 +899,6 @@
-            LOGD("failed to set updated caps [%s] on source pad\n", gst_caps_to_string(caps));
+@@ -899,4 +900,5 @@
             GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
                gst_caps_to_string(caps));
 +           g_mutex_unlock (&mux->ctx_lock);
             return FALSE;
          }
-@@ -1067,5 +1069,6 @@
-          LOGD("failed to set updated caps [%s] on source pad\n", gst_caps_to_string(caps));
+@@ -1068,4 +1070,5 @@
           GST_ERROR_OBJECT (element, "failed to set caps [%s] on source pad\n",
              gst_caps_to_string(caps));
 +         g_mutex_unlock (&mux->ctx_lock);
           return FALSE;
        }
-@@ -1547,6 +1550,10 @@
+@@ -1537,4 +1540,21 @@
        break;
+     case GST_STATE_CHANGE_READY_TO_PAUSED:
++      // Initialize before upstream streaming threads can deliver CAPS/EOS.
++      // Configuring under GST_OBJECT_LOCK in a CAPS callback can deadlock
++      // against another input pushing a serialized event while holding the
++      // helper mutex, and late initialization discards early EOS accounting.
++      if (!mux->module_initialized)
++        configure_module(mux);
++      // A new playback starts with every requested source active. Waiting
++      // for each CAPS callback to clear old EOS lets the first source emit
++      // undersized batches while its peers are still starting.
++      for (GList *item = element->sinkpads; item; item = item->next) {
++        guint id = 0;
++        if (sscanf(GST_PAD_NAME(item->data), "sink_%u", &id) == 1) {
++          SinkPad *input = mux->helper->get_pad(id);
++          if (input)
++            mux->helper->reset_pad(input);
++        }
++      }
+       mux->helper->handle_ready_pause();
+
+@@ -1548,4 +1568,8 @@
      case GST_STATE_CHANGE_PAUSED_TO_READY:
      {
 +        /* The lossless backend waits without a timeout. Wake its source task
@@ -32,12 +49,17 @@
 +
          GHashTableIter iter;
          gpointer value;
-         gint key = 0;
-@@ -1561,7 +1568,6 @@
-           }
+@@ -1562,5 +1586,4 @@
          }
          g_mutex_unlock (&mux->ctx_lock);
 -        mux->helper->handle_stop();
          if (mux->pad_task_created)
          {
-           gst_pad_stop_task (mux->srcpad);
+@@ -1572,4 +1595,7 @@
+         mux->pad_task_created = FALSE;
+         mux->eos_sent = FALSE;
++        // Replaying after EOS or cancellation is a fresh downstream stream.
++        mux->pushed_stream_start_once = false;
++        mux->segment_sent = FALSE;
+     }
+       break;

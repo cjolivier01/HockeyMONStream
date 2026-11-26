@@ -440,7 +440,7 @@ static GMutex* uri_playlist_mutex(NvDsSrcBin* bin) {
 }
 
 static gboolean uri_playlist_terminal_locked(const NvDsSrcBin* bin) {
-  return !bin || (bin->parent_bin ? bin->parent_bin->uri_playlist_terminal : bin->uri_list_permanently_ended);
+  return !bin || bin->uri_list_permanently_ended || (bin->parent_bin && bin->parent_bin->uri_playlist_terminal);
 }
 
 static void advance_uri_playlist_base_locked(NvDsSrcBin* bin) {
@@ -1323,6 +1323,24 @@ static void mark_uri_playlist_terminal(NvDsSrcBin* bin) {
     return;
   }
   NvDsSrcParentBin* parent = bin->parent_bin;
+  if (parent && !parent->uri_playlist_exact_pairing_enabled) {
+    // Only the stereo rendezvous owns a shared shortest-camera frontier.
+    // Independent playlists must drain their own final frames before EOS;
+    // ending one of N inputs must not retire the other decoders.
+    g_mutex_lock(&parent->uri_playlist_barrier_mutex);
+    const gboolean already_terminal = uri_playlist_terminal_locked(bin);
+    bin->uri_list_permanently_ended = TRUE;
+    bin->uri_switch_pending = FALSE;
+    bin->uri_terminal_audio_cutoff = uri_playlist_logical_video_end_locked(bin);
+    bin->uri_terminal_audio_drain_pending = FALSE;
+    g_cond_broadcast(&parent->uri_playlist_barrier_cond);
+    g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
+    if (!already_terminal) {
+      send_uri_audio_eos(bin, FALSE);
+      send_uri_video_eos(bin);
+    }
+    return;
+  }
   std::vector<NvDsSrcBin*> sources = uri_playlist_sources(parent);
   if (!parent) {
     sources.push_back(bin);
@@ -1449,7 +1467,7 @@ gboolean wait_at_uri_playlist_frame_barrier(NvDsSrcBin* bin, guint64 sequence, G
   gint64 stall_waited_seconds = 0;
   gint64 stalled_seconds = 0;
   g_mutex_lock(&parent->uri_playlist_barrier_mutex);
-  if (parent->uri_playlist_terminal) {
+  if (uri_playlist_terminal_locked(bin)) {
     g_mutex_unlock(&parent->uri_playlist_barrier_mutex);
     return FALSE;
   }
@@ -4729,9 +4747,11 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
   gboolean ret = FALSE;
   guint i = 0;
   guint uri_playlist_source_count = 0;
+  guint enabled_source_count = 0;
   const gchar* streammux_factory = NVDS_ELEM_STREAM_MUX;
 
   for (i = 0; i < num_sub_bins; ++i) {
+    enabled_source_count += configs[i].enable != FALSE;
     const gboolean has_explicit_playlist = configs[i].uri_list && *configs[i].uri_list;
     if (configs[i].enable && (configs[i].type == NV_DS_SOURCE_URI_MULTIPLE || has_explicit_playlist)) {
       ++uri_playlist_source_count;
@@ -4773,14 +4793,11 @@ gboolean create_multi_source_bin(guint num_sub_bins, NvDsSourceConfig* configs, 
 
   g_object_set(bin->bin, "message-forward", TRUE, NULL);
 
-  // Two recorded cameras must never have an incomplete pair flushed on a
-  // wall-clock deadline, which is what the lossless mux is for. It stays tied
-  // to that pairing: with one source its batch never becomes ready and the
-  // pipeline stalls, which uri_multiple_pipeline_test catches. The choice no
-  // longer depends on USE_NEW_NVSTREAMMUX, since this element is ours and is
-  // registered here rather than resolved through DeepStream's plugin.
+  // Recorded inputs retain every frame, including single-source playback.
+  // The two-camera decoder rendezvous remains independent of mux selection.
   bin->lossless_nvstreammux = FALSE;
-  if (uri_playlist_source_count == 2) {
+  if (uri_playlist_source_count == 2 ||
+      (uri_playlist_source_count > 0 && uri_playlist_source_count == enabled_source_count)) {
     if (!register_hstream_lossless_nvstreammux()) {
       NVGSTDS_ERR_MSG_V("Failed to register the lossless URI-playlist stream mux");
       goto done;
