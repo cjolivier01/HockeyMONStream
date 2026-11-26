@@ -3,7 +3,7 @@
 #include "absl/cleanup/cleanup.h"
 #include "absl/strings/str_cat.h"
 
-#include <cuda_runtime.h>
+#include <cuda_runtime_api.h>
 #include <dlfcn.h>
 #include <nvds_version.h>
 
@@ -15,22 +15,7 @@
 namespace hm::pipeline {
 namespace {
 
-absl::Status CudaStatus(cudaError_t error, const char* operation) {
-  if (error == cudaSuccess)
-    return absl::OkStatus();
-  std::string message = absl::StrCat(
-      operation, " failed with ", cudaGetErrorName(error), " (", int(error), "): ", cudaGetErrorString(error));
-  if (error == cudaErrorUnsupportedPtxVersion || error == cudaErrorNoKernelImageForDevice) {
-    if (message.back() != '.')
-      message.push_back('.');
-    message += " Use a compatible NVIDIA driver or DeepStream build.";
-  }
-  return absl::FailedPreconditionError(message);
-}
-
 absl::Status Probe(unsigned gpu_id) {
-  if (auto status = CudaStatus(cudaSetDevice(gpu_id), "Select GPU"); !status.ok())
-    return status;
   // nvinfer has already loaded the SDK. Keep its TensorRT dependencies local,
   // and honor interposition exactly as a normal SDK kernel call does.
   void* sdk = dlopen("libnvds_infer.so", RTLD_LAZY | RTLD_LOCAL | RTLD_NOLOAD);
@@ -46,43 +31,69 @@ absl::Status Probe(unsigned gpu_id) {
   if (!convert)
     return absl::FailedPreconditionError("Loaded DeepStream library lacks NvDsInferConvert_C3ToP3Float");
 
-  // The CLI and DeepStream can use different libcudart majors. Check the launch
-  // on the same host thread, using the SDK's own CUDA last-error slot.
-  auto launch_error = reinterpret_cast<cudaError_t (*)()>(dlsym(sdk, "cudaGetLastError"));
-  if (!launch_error)
-    return absl::FailedPreconditionError("Cannot inspect the DeepStream CUDA runtime's launch status");
+  // DeepStream and the CLI can load different libcudart majors. All stream,
+  // allocation and launch-error operations must use the SDK's runtime.
+#define SDK_CUDA(name) reinterpret_cast<decltype(&::name)>(dlsym(sdk, #name))
+  const auto set_device = SDK_CUDA(cudaSetDevice);
+  const auto create_stream = SDK_CUDA(cudaStreamCreateWithFlags);
+  const auto destroy_stream = SDK_CUDA(cudaStreamDestroy);
+  const auto allocate = SDK_CUDA(cudaMalloc);
+  const auto release = SDK_CUDA(cudaFree);
+  const auto copy = SDK_CUDA(cudaMemcpyAsync);
+  const auto synchronize = SDK_CUDA(cudaStreamSynchronize);
+  const auto launch_error = SDK_CUDA(cudaGetLastError);
+  const auto error_name = SDK_CUDA(cudaGetErrorName);
+  const auto error_string = SDK_CUDA(cudaGetErrorString);
+#undef SDK_CUDA
+  if (!set_device || !create_stream || !destroy_stream || !allocate || !release || !copy || !synchronize ||
+      !launch_error || !error_name || !error_string)
+    return absl::FailedPreconditionError("Cannot resolve the DeepStream CUDA runtime's preprocessing functions");
+  const auto cuda_status = [&](cudaError_t error, const char* operation) {
+    if (error == cudaSuccess)
+      return absl::OkStatus();
+    std::string message =
+        absl::StrCat(operation, " failed with ", error_name(error), " (", int(error), "): ", error_string(error));
+    if (error == cudaErrorUnsupportedPtxVersion || error == cudaErrorNoKernelImageForDevice) {
+      if (message.back() != '.')
+        message.push_back('.');
+      message += " Use a compatible NVIDIA driver or DeepStream build.";
+    }
+    return absl::FailedPreconditionError(message);
+  };
 
-  cudaStream_t stream{};
-  if (auto status = CudaStatus(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "Create probe stream");
-      !status.ok())
+  if (auto status = cuda_status(set_device(gpu_id), "Select GPU"); !status.ok())
     return status;
-  absl::Cleanup close_stream = [&] { cudaStreamDestroy(stream); };
+  cudaStream_t stream{};
+  if (auto status = cuda_status(create_stream(&stream, cudaStreamNonBlocking), "Create probe stream"); !status.ok())
+    return status;
+  absl::Cleanup close_stream = [&] { destroy_stream(stream); };
   struct Sample {
     float planar[6];
     unsigned char rgb[6];
   };
-  Sample* device{};
-  if (auto status = CudaStatus(cudaMalloc(&device, sizeof(Sample)), "Allocate probe pixels"); !status.ok())
+  void* allocation{};
+  if (auto status = cuda_status(allocate(&allocation, sizeof(Sample)), "Allocate probe pixels"); !status.ok())
     return status;
-  absl::Cleanup free_sample = [&] { cudaFree(device); };
+  absl::Cleanup free_sample = [&] { release(allocation); };
+  auto* device = static_cast<Sample*>(allocation);
   // Two RGB pixels with an exact binary scale. A kernel that silently fails
   // to launch leaves the known zero output intact.
   Sample input{{}, {2, 4, 6, 8, 10, 12}};
-  if (auto status = CudaStatus(
-          cudaMemcpyAsync(device, &input, sizeof(input), cudaMemcpyHostToDevice, stream), "Upload probe pixels");
+  if (auto status =
+          cuda_status(copy(device, &input, sizeof(input), cudaMemcpyHostToDevice, stream), "Upload probe pixels");
       !status.ok())
     return status;
   convert(device->planar, device->rgb, 2, 1, 6, 0.5f, nullptr, stream);
-  if (auto status = CudaStatus(launch_error(), "DeepStream RGB preprocessing kernel"); !status.ok())
+  if (auto status = cuda_status(launch_error(), "DeepStream RGB preprocessing kernel"); !status.ok())
     return status;
 
   std::array<float, 6> result{};
-  if (auto status = CudaStatus(
-          cudaMemcpyAsync(result.data(), device->planar, sizeof(device->planar), cudaMemcpyDeviceToHost, stream),
+  if (auto status = cuda_status(
+          copy(result.data(), device->planar, sizeof(device->planar), cudaMemcpyDeviceToHost, stream),
           "Read probe tensor");
       !status.ok())
     return status;
-  if (auto status = CudaStatus(cudaStreamSynchronize(stream), "Complete probe stream"); !status.ok())
+  if (auto status = cuda_status(synchronize(stream), "Complete probe stream"); !status.ok())
     return status;
   if (result == std::array<float, 6>{})
     return absl::FailedPreconditionError("DeepStream preprocessing returned all zeros for a nonzero RGB test image");

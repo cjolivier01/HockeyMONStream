@@ -8,7 +8,8 @@
 
 namespace {
 bool leave_tensor_zero;
-}
+decltype(&cudaMemsetAsync) sdk_memset;
+} // namespace
 
 // Stand in for a conversion routine which returns normally after a failed
 // launch. One mode leaves the original zeros, the other corrupts one float.
@@ -21,7 +22,7 @@ void NvDsInferConvert_C3ToP3Float(
     float,
     float*,
     cudaStream_t stream) {
-  if (!leave_tensor_zero && cudaMemsetAsync(output, 1, sizeof(float), stream) != cudaSuccess)
+  if (!leave_tensor_zero && sdk_memset(output, 1, sizeof(float), stream) != cudaSuccess)
     std::abort();
 }
 
@@ -30,6 +31,12 @@ int main() {
   void* sdk = dlopen("libnvds_infer.so", RTLD_NOW | RTLD_LOCAL);
   if (!sdk) {
     std::cerr << dlerror() << '\n';
+    return 1;
+  }
+  sdk_memset = reinterpret_cast<decltype(sdk_memset)>(dlsym(sdk, "cudaMemsetAsync"));
+  if (!sdk_memset) {
+    std::cerr << dlerror() << '\n';
+    dlclose(sdk);
     return 1;
   }
   for (bool zero : {true, false}) {
